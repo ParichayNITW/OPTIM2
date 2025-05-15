@@ -77,7 +77,7 @@ with st.sidebar:
         SFC_J     = st.number_input("SFC Jamnagar (gm/bhp/hr)", value=150.0, step=1.0)
         SFC_R     = st.number_input("SFC Rajkot (gm/bhp/hr)",   value=150.0, step=1.0)
         SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=150.0, step=1.0)
-        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=500,    step=0.1)
+        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=500.0,    step=0.1)
         Price_HSD = st.number_input("HSD Rate (INR/L)",        value=70.0,   step=0.5)
     run = st.button("🚀 Run Optimization")
 
