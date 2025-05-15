@@ -16,31 +16,37 @@ st.set_page_config(
 )
 
 
-
 # ---------------------
 # Custom CSS
 # ---------------------
 st.markdown(
     """
     <style>
-      .reportview-container, .main, .block-container, .sidebar .sidebar-content { background: none !important; }
-      .stMetric > div {
-        background: rgba(255,255,255,0.05) !important;
-        backdrop-filter: blur(5px);
-        border-radius: 8px;
-        padding: 12px;
-        color: #FFFFFF;
-        text-align: center;
+      /* Light-theme styles */
+      html[data-theme="light"] .block-container,
+      html[data-theme="light"] .sidebar .sidebar-content {
+        background-color: #f8f9fa !important;  /* Soft off-white */
+        color: #212529 !important;             /* Dark slate text */
       }
-      /* NEW: Center label & value */
+
+      /* Dark-theme styles */
+      html[data-theme="dark"] .block-container,
+      html[data-theme="dark"] .sidebar .sidebar-content {
+        background-color: #1e1e2e !important;   /* Deep neutral blue-gray */
+        color: #e5e5e5 !important;             /* Soft off-white text */
+      }
+
+      /* Shared metric card styling */
+      .stMetric > div {
+        background: rgba(255, 255, 255, 0.08) !important; 
+        backdrop-filter: blur(4px);
+        border-radius: 6px;
+        padding: 10px;
+      }
       .stMetric .metric-value,
       .stMetric .metric-label {
-        display: block !important;
-        width: 100% !important;
         text-align: center !important;
       }
-      .section-title { font-size: 1.3rem; font-weight: 600; color: #FFFFFF; margin-top: 1rem; }
-      /* … rest of your styles … */
     </style>
     """,
     unsafe_allow_html=True
@@ -48,7 +54,7 @@ st.markdown(
 
 
 # ---------------------
-# Title (logo removed)
+# Title 
 # ---------------------
 st.markdown(
     "<h1 style='color:#FFFFFF'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
