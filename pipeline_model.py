@@ -4,10 +4,10 @@ from pyomo.opt import SolverFactory, SolverManagerFactory
 from math import log10
 
 # Tell NEOS who you are
-os.environ['NEOS_EMAIL'] = 'parichay.nitwarangal@gmail.com'
+os.environ["NEOS_EMAIL"] = "parichay.nitwarangal@gmail.com"
 
 # Toggle between local and NEOS remote solving
-REMOTE_SOLVE = True
+# REMOTE_SOLVE = True
 
 
 def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
@@ -357,17 +357,15 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
      # ----------------
      # SOLVE via NEOS (bonmin on NEOS server)
      # ----------------
-     # Build a NEOS manager, and pass the solver name as a string.
-     from pyomo.opt import SolverManagerFactory
-     opts = {'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
- 
+     
      neos_mgr = SolverManagerFactory('neos')
-     # Directly request bonmin on NEOS—no local SolverFactory call
+     # Directly request bonmin on NEOS
      results = neos_mgr.solve(
          model,
          opt='bonmin',
          tee=True,
-         options=opts
+	 timeout=600
+         options={'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
      )
 
 
@@ -472,4 +470,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
         'coef_T_surendranagar':  pyo.value(T5),
     }
 
+    # Return results plus solver status
+    res["_solver_status"] = str(results.solver.status) 
+    res["_termination_condition"] = str(results.solver.termination_condition)
     return res
