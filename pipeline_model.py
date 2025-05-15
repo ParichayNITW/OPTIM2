@@ -364,8 +364,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     results = neos_mgr.solve(
         model,
         opt='bonmin',
-        tee=True,
-        timeout=600,
+        tee=True,        
         options=opts
     )
 
