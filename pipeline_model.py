@@ -366,10 +366,10 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     opts = {'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
     
     # Create the NEOS manager
-    neos_mgr = SolverManagerFactory('neos')
+    neos = SolverManagerFactory('neos')
 
     # Submit the model to NEOS, requesting 'bonmin' remotely
-    results = neos_mgr.solve(model, opt='bonmin', tee=True, options=opts)
+    results = neos.solve(model, opt='bonmin', tee=True, options=opts)
 
 
 
