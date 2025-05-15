@@ -23,12 +23,7 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* DARK MODE BASE */
-      body, .block-container, .sidebar .sidebar-content {
-        background-color: #0e1117 !important;
-        color: #fafafa !important;
-      }
-      /* YOUR FROSTED-GLASS METRIC CARDS */
+      .reportview-container, .main, .block-container, .sidebar .sidebar-content { background: none !important; }
       .stMetric > div {
         background: rgba(255,255,255,0.05) !important;
         backdrop-filter: blur(5px);
@@ -37,23 +32,28 @@ st.markdown(
         color: #FFFFFF;
         text-align: center;
       }
+      /* NEW: Center label & value */
       .stMetric .metric-value,
       .stMetric .metric-label {
         display: block !important;
         width: 100% !important;
         text-align: center !important;
       }
-      .section-title {
-        font-size: 1.3rem; font-weight: 600;
-        color: #FFFFFF; margin-top: 1rem;
-      }
+      .section-title { font-size: 1.3rem; font-weight: 600; color: #FFFFFF; margin-top: 1rem; }
+      /* … rest of your styles … */
     </style>
     """,
     unsafe_allow_html=True
 )
 
 
-st.title("Mixed Integer Non Linear Convex Optimization of Pipeline Operations")
+# ---------------------
+# Title (logo removed)
+# ---------------------
+st.markdown(
+    "<h1 style='color:#FFFFFF'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
+    unsafe_allow_html=True
+)
 
 
 # ---------------------
