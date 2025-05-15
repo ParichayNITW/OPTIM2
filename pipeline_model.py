@@ -354,19 +354,20 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
 
 
 
-     # ----------------
-     # SOLVE via NEOS (bonmin on NEOS server)
-     # ----------------
-     
-     neos_mgr = SolverManagerFactory('neos')
-     # Directly request bonmin on NEOS
-     results = neos_mgr.solve(
-         model,
-         opt='bonmin',
-         tee=True,
-	 timeout=600
-         options={'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
-     )
+    # ----------------
+    # SOLVE via NEOS (bonmin on NEOS server)
+    # ----------------
+    from pyomo.opt import SolverManagerFactory
+    opts = {'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
+
+    neos_mgr = SolverManagerFactory('neos')
+    results = neos_mgr.solve(
+        model,
+        opt='bonmin',
+        tee=True,
+        timeout=600,
+        options=opts
+    )
 
 
 
