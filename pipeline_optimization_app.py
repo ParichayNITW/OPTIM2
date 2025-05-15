@@ -79,11 +79,22 @@ with st.sidebar:
         SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=150.0, step=1.0)
         RateDRA   = st.number_input("DRA Rate (INR/L)",        value=500.0,    step=0.1)
         Price_HSD = st.number_input("HSD Rate (INR/L)",        value=70.0,   step=0.5)
+    neos_email= st.text_input("NEOS Email", "")    
     run = st.button("🚀 Run Optimization")
 
 if run:
-    with st.spinner("Solving pipeline optimization..."):
+    if not neos_email:
+        st.sidebar.error("Enter your NEOS-registered email.")
+        st.stop()
+    os.environ["NEOS_EMAIL"] = neos_email
+
+
+    with st.spinner("⏳ Solving pipeline optimization...this can take upto 10 mins"):
         res = solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD)
+
+    # Display NEOS response
+    st.markdown(f"**Solver status:** {res.get('_solver_status')}  \n"
+                f"**Termination condition:** {res.get('_termination_condition')}")
 
     stations = ["Vadinar","Jamnagar","Rajkot","Surendranagar","Viramgam"]
     params = {
