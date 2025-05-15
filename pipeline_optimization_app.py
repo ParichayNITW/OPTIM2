@@ -62,10 +62,7 @@ st.markdown(
 # ---------------------
 # Title 
 # ---------------------
-st.markdown(
-    "<h1 style='color:#FFFFFF'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
-    unsafe_allow_html=True
-)
+st.title("Mixed Integer Non Linear Convex Optimization of Pipeline Operations")
 
 
 # ---------------------
