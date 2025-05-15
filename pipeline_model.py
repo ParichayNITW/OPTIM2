@@ -358,14 +358,18 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     # SOLVE via NEOS (bonmin on NEOS server)
     # ----------------
     from pyomo.opt import SolverManagerFactory
-    opts = {'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
-
     neos_mgr = SolverManagerFactory('neos')
     results = neos_mgr.solve(
         model,
         opt='bonmin',
-        tee=True,        
-        options=opts
+        tee=True,
+        timelimit=3000,      # seconds
+        keepfiles=False,     # don’t retain the intermediate files
+        options={            # still pass tolerances here
+            'tol': 1e-3,
+            'acceptable_tol': 1e-3,
+            'max_iter': 100000
+        }
     )
 
 
