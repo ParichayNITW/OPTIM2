@@ -354,19 +354,24 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
 
 
 
-     # --------------------
+    # --------------------
     # SOLVE using Bonmin locally
-    opts = {'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
+    
     #solver = SolverFactory('bonmin')
     #if not solver.available():
     #    raise RuntimeError("Bonmin solver is not available. Please install Couenne or configure NEOS solver plugin.")
     #results = solver.solve(model, tee=True, options=opts)
+    
+    from pyomo.opt import SolverFactory, SolverManagerFactory
+    opts = {'tol':1e-3, 'acceptable_tol':1e-3, 'max_cpu_time':3000, 'max_iter':100000}
+    # Create Bonmin handle without local validation
+    bonmin = SolverFactory('bonmin')
+    bonmin.set_executable('bonmin', validate=False)
 
-    # new NEOS-based solve
-    from pyomo.opt import SolverManagerFactory, SolverFactory
+    # Create the NEOS manager
     neos_mgr = SolverManagerFactory('neos')
-    bonmin    = SolverFactory('bonmin')  # solver name only
 
+    # Submit remotely
     results = neos_mgr.solve(model, opt=bonmin, tee=True, options=opts)
 
 
