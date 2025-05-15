@@ -22,30 +22,27 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* Light theme container & sidebar */
+      /* Base container & sidebar backgrounds */
       html[data-theme="light"] .block-container,
       html[data-theme="light"] .sidebar .sidebar-content {
-        background-color: #f8f9fa !important;
-        color: #212529 !important;
+        background-color: #f8f9fa !important;  /* light background */
+        color: #212529 !important;             /* dark text */
       }
-      /* Dark theme container & sidebar */
       html[data-theme="dark"] .block-container,
       html[data-theme="dark"] .sidebar .sidebar-content {
-        background-color: #1e1e2e !important;
-        color: #e5e5e5 !important;
+        background-color: #1e1e2e !important;   /* dark background */
+        color: #e5e5e5 !important;             /* light text */
       }
 
-      /* Make the page title visible in both themes */
-      html[data-theme="light"] .css-1vkm6nb h1,  /* Streamlit’s title selector */
+      /* Page title (<h1>) color per theme */
       html[data-theme="light"] h1 {
-        color: #212529 !important;
+        color: #212529 !important;             /* dark in light mode */
       }
-      html[data-theme="dark"] .css-1vkm6nb h1,
       html[data-theme="dark"] h1 {
-        color: #fafafa !important;
+        color: #fafafa !important;             /* light in dark mode */
       }
 
-      /* Frosted‐glass metric cards */
+      /* Frosted-glass metric cards */
       .stMetric > div {
         background: rgba(255,255,255,0.08) !important;
         backdrop-filter: blur(4px);
@@ -60,6 +57,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 # ---------------------
 # Title 
