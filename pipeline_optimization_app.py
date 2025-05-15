@@ -17,17 +17,13 @@ st.set_page_config(
 
 
 
-# 2) Single unified CSS block:
+# ---------------------
+# Custom CSS
+# ---------------------
 st.markdown(
     """
     <style>
-      /* DARK MODE BASE */
-      body, .block-container, .sidebar .sidebar-content {
-        background-color: #0e1117 !important;
-        color: #fafafa !important;
-      }
-
-      /* YOUR FROSTED GLASS METRICS */
+      .reportview-container, .main, .block-container, .sidebar .sidebar-content { background: none !important; }
       .stMetric > div {
         background: rgba(255,255,255,0.05) !important;
         backdrop-filter: blur(5px);
@@ -36,28 +32,19 @@ st.markdown(
         color: #FFFFFF;
         text-align: center;
       }
-      /* Center metric label & value */
+      /* NEW: Center label & value */
       .stMetric .metric-value,
       .stMetric .metric-label {
         display: block !important;
         width: 100% !important;
         text-align: center !important;
       }
-
-      /* SECTION TITLES */
-      .section-title {
-        font-size: 1.3rem; font-weight: 600;
-        color: #FFFFFF; margin-top: 1rem;
-      }
-
-      /* ADDITIONAL STYLES… if any */
-      /* e.g. override sidebar header */
-      .css-1oe6wy5 { color: #fafafa !important; }
+      .section-title { font-size: 1.3rem; font-weight: 600; color: #FFFFFF; margin-top: 1rem; }
+      /* … rest of your styles … */
     </style>
     """,
     unsafe_allow_html=True
 )
-
 
 
 # ---------------------
