@@ -1,5 +1,25 @@
 import os
 import streamlit as st
+
+# Force dark mode via CSS override
+st.markdown(
+    """
+    <style>
+      /* Backgrounds */
+      .main, .block-container, .css-18e3th9 {
+        background-color: #0e1117 !important;
+        color: #fafafa !important;
+      }
+      /* Sidebar */
+      .sidebar .sidebar-content {
+        background-color: #262730 !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -66,26 +86,11 @@ with st.sidebar:
         SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=220.0, step=1.0)
         RateDRA   = st.number_input("DRA Rate (INR/L)",        value=1.0,    step=0.1)
         Price_HSD = st.number_input("HSD Rate (INR/L)",        value=90.0,   step=0.5)
-
-        neos_email = st.text_input("NEOS Email", "")
     run = st.button("🚀 Run Optimization")
 
 if run:
-    if not neos_email:
-        st.error("❗ Enter your NEOS-registered email above.")
-        st.stop()
-
-    # Set email for NEOS
-    os.environ["NEOS_EMAIL"] = neos_email
-
     with st.spinner("Solving pipeline optimization..."):
-        try:
-            res = solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD)
-        except Exception as e:
-            st.error(f"❌ Solver error:\n{e}")
-            st.stop()
-
-    st.success("✅ Optimization complete!")
+        res = solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD)
 
     stations = ["Vadinar","Jamnagar","Rajkot","Surendranagar","Viramgam"]
     params = {
@@ -423,6 +428,3 @@ if run:
 
     st.markdown("---")
     st.caption("© 2025 Developed by Parichay Das. All rights reserved.")
-
-else:
-    st.info("🔹 Fill in inputs on the left, then click 🚀 Run Optimization.")
