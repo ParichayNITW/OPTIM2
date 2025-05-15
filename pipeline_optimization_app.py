@@ -22,23 +22,32 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* Light-theme styles */
+      /* Light theme container & sidebar */
       html[data-theme="light"] .block-container,
       html[data-theme="light"] .sidebar .sidebar-content {
-        background-color: #f8f9fa !important;  /* Soft off-white */
-        color: #212529 !important;             /* Dark slate text */
+        background-color: #f8f9fa !important;
+        color: #212529 !important;
       }
-
-      /* Dark-theme styles */
+      /* Dark theme container & sidebar */
       html[data-theme="dark"] .block-container,
       html[data-theme="dark"] .sidebar .sidebar-content {
-        background-color: #1e1e2e !important;   /* Deep neutral blue-gray */
-        color: #e5e5e5 !important;             /* Soft off-white text */
+        background-color: #1e1e2e !important;
+        color: #e5e5e5 !important;
       }
 
-      /* Shared metric card styling */
+      /* Make the page title visible in both themes */
+      html[data-theme="light"] .css-1vkm6nb h1,  /* Streamlit’s title selector */
+      html[data-theme="light"] h1 {
+        color: #212529 !important;
+      }
+      html[data-theme="dark"] .css-1vkm6nb h1,
+      html[data-theme="dark"] h1 {
+        color: #fafafa !important;
+      }
+
+      /* Frosted‐glass metric cards */
       .stMetric > div {
-        background: rgba(255, 255, 255, 0.08) !important; 
+        background: rgba(255,255,255,0.08) !important;
         backdrop-filter: blur(4px);
         border-radius: 6px;
         padding: 10px;
@@ -51,7 +60,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 
 # ---------------------
 # Title 
