@@ -137,7 +137,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     # --------------------
 
     # Section 1: Vadinar → Jamnagar
-    model.NOP1   = pyo.Var(domain=pyo.NonNegativeIntegers, bounds=(1,2), initialize=1)
+    model.NOP1   = pyo.Var(domain=pyo.NonNegativeIntegers, bounds=(1,3), initialize=1)
     NOP1 = model.NOP1
 
     # integer bounds for N1_u
@@ -354,7 +354,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     opts = {
        'tol': 1e-3,
        'acceptable_tol': 1e-3,
-       'max_cpu_time': 300,
+       'max_cpu_time': 3000,
        'max_iter': 100000
     }
     neos_mgr = SolverManagerFactory('neos')
