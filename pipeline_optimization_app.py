@@ -65,14 +65,14 @@ st.markdown(
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Adjust Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)",      value=1000.0, step=10.0)
-        KV        = st.number_input("Viscosity (cSt)",        value=1.0,    step=0.1)
-        rho       = st.number_input("Density (kg/m³)",        value=850.0,  step=10.0)
-        SFC_J     = st.number_input("SFC Jamnagar (gm/bhp/hr)", value=210.0, step=1.0)
-        SFC_R     = st.number_input("SFC Rajkot (gm/bhp/hr)",   value=215.0, step=1.0)
-        SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=220.0, step=1.0)
-        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=1.0,    step=0.1)
-        Price_HSD = st.number_input("HSD Rate (INR/L)",        value=90.0,   step=0.5)
+        FLOW      = st.number_input("Flow rate (m³/hr)",      value=2000.0, step=10.0)
+        KV        = st.number_input("Viscosity (cSt)",        value=10.0,    step=0.1)
+        rho       = st.number_input("Density (kg/m³)",        value=880.0,  step=10.0)
+        SFC_J     = st.number_input("SFC Jamnagar (gm/bhp/hr)", value=150.0, step=1.0)
+        SFC_R     = st.number_input("SFC Rajkot (gm/bhp/hr)",   value=150.0, step=1.0)
+        SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=150.0, step=1.0)
+        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=500.0,    step=0.1)
+        Price_HSD = st.number_input("HSD Rate (INR/L)",        value=70.0,   step=0.5)
     run = st.button("🚀 Run Optimization")
 
 if run:
