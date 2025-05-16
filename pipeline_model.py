@@ -360,7 +360,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     neos_mgr = SolverManagerFactory('neos')
     results = neos_mgr.solve(
         model,
-        solver='couenne',    # or 'bonmin' 
+        solver='bonmin',    # or 'couenne' 
         opt=opts,
         keepfiles=False,
 	tee=True
