@@ -28,23 +28,34 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      .reportview-container, .main, .block-container, .sidebar .sidebar-content { background: none !important; }
+      .reportview-container, .main, .block-container, .sidebar .sidebar-content {
+        background: none !important;
+      }
       .stMetric > div {
         background: rgba(255,255,255,0.05) !important;
         backdrop-filter: blur(5px);
         border-radius: 8px;
         padding: 12px;
-        color: #FFFFFF;
+        color: var(--text-primary-color) !important;
         text-align: center;
       }
-      /* NEW: Center label & value */
+      /* Center label & value */
       .stMetric .metric-value,
       .stMetric .metric-label {
         display: block !important;
         width: 100% !important;
         text-align: center !important;
       }
-      .section-title { font-size: 1.3rem; font-weight: 600; color: #FFFFFF; margin-top: 1rem; }
+      /* Theme-adaptive text helper */
+      .color-adapt {
+        color: var(--text-primary-color) !important;
+      }
+      .section-title {
+        font-size: 1.3rem;
+        font-weight: 600;
+        color: var(--text-primary-color) !important;
+        margin-top: 1rem;
+      }
       /* … rest of your styles … */
     </style>
     """,
@@ -55,9 +66,10 @@ st.markdown(
 # Title (logo removed)
 # ---------------------
 st.markdown(
-    "<h1 style='color:#FFFFFF'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
+    "<h1 class='color-adapt'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
     unsafe_allow_html=True
 )
+
 
 # ---------------------
 # Sidebar Inputs
