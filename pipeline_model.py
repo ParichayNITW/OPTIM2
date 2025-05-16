@@ -1,14 +1,10 @@
 import os
 import pyomo.environ as pyo
-from pyomo.opt import SolverFactory, SolverManagerFactory
+from pyomo.opt import SolverManagerFactory
 from math import log10
 
 # Tell NEOS who you are
 os.environ['NEOS_EMAIL'] = 'parichay.nitwarangal@gmail.com'
-
-# Toggle between local and NEOS remote solving
-REMOTE_SOLVE = True
-
 
 def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     """
@@ -470,5 +466,4 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
         'coef_S_surendranagar':  pyo.value(S5),
         'coef_T_surendranagar':  pyo.value(T5),
     }
-
     return res
