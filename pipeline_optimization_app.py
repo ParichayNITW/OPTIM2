@@ -1,18 +1,18 @@
 import os
 import streamlit as st
-
-if 'NEOS_EMAIL' in st.secrets:
-    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
-else:
-    st.error("🛑  NEOS_EMAIL not found in secrets. Please add it.")
-
-
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 from pipeline_model import solve_pipeline
+
+
+if 'NEOS_EMAIL' in st.secrets:
+    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
+else:
+    st.error("🛑  NEOS_EMAIL not found in secrets. Please add it.")
+
 
 # ---------------------
 # Page configuration
