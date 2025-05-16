@@ -354,7 +354,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
     opts = {
        'tol': 1e-3,
        'acceptable_tol': 1e-3,
-       'max_cpu_time': 3000,
+       'max_cpu_time': 300,
        'max_iter': 100000
     }
     neos_mgr = SolverManagerFactory('neos')
@@ -363,6 +363,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
         solver='couenne',    # or 'bonmin' 
         opt=opts,
         keepfiles=False
+	tee=True
     )
     model.solutions.load_from(results)
 
