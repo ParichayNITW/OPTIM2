@@ -1,5 +1,12 @@
 import os
 import streamlit as st
+
+if 'NEOS_EMAIL' in st.secrets:
+    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
+else:
+    st.error("🛑  NEOS_EMAIL not found in secrets. Please add it.")
+
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -15,55 +22,42 @@ st.set_page_config(
     layout="wide"
 )
 
-
 # ---------------------
 # Custom CSS
 # ---------------------
 st.markdown(
     """
     <style>
-      /* Base container & sidebar backgrounds */
-      html[data-theme="light"] .block-container,
-      html[data-theme="light"] .sidebar .sidebar-content {
-        background-color: #f8f9fa !important;  /* light background */
-        color: #212529 !important;             /* dark text */
-      }
-      html[data-theme="dark"] .block-container,
-      html[data-theme="dark"] .sidebar .sidebar-content {
-        background-color: #1e1e2e !important;   /* dark background */
-        color: #e5e5e5 !important;             /* light text */
-      }
-
-      /* Page title (<h1>) color per theme */
-      html[data-theme="light"] h1 {
-        color: #212529 !important;             /* dark in light mode */
-      }
-      html[data-theme="dark"] h1 {
-        color: #fafafa !important;             /* light in dark mode */
-      }
-
-      /* Frosted-glass metric cards */
+      .reportview-container, .main, .block-container, .sidebar .sidebar-content { background: none !important; }
       .stMetric > div {
-        background: rgba(255,255,255,0.08) !important;
-        backdrop-filter: blur(4px);
-        border-radius: 6px;
-        padding: 10px;
+        background: rgba(255,255,255,0.05) !important;
+        backdrop-filter: blur(5px);
+        border-radius: 8px;
+        padding: 12px;
+        color: #FFFFFF;
+        text-align: center;
       }
+      /* NEW: Center label & value */
       .stMetric .metric-value,
       .stMetric .metric-label {
+        display: block !important;
+        width: 100% !important;
         text-align: center !important;
       }
+      .section-title { font-size: 1.3rem; font-weight: 600; color: #FFFFFF; margin-top: 1rem; }
+      /* … rest of your styles … */
     </style>
     """,
     unsafe_allow_html=True
 )
 
-
 # ---------------------
-# Title 
+# Title (logo removed)
 # ---------------------
-st.title("Mixed Integer Non Linear Convex Optimization of Pipeline Operations")
-
+st.markdown(
+    "<h1 style='color:#FFFFFF'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
+    unsafe_allow_html=True
+)
 
 # ---------------------
 # Sidebar Inputs
@@ -71,30 +65,19 @@ st.title("Mixed Integer Non Linear Convex Optimization of Pipeline Operations")
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Adjust Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)",      value=2000.0, step=10.0)
-        KV        = st.number_input("Viscosity (cSt)",        value=5.0,    step=0.1)
-        rho       = st.number_input("Density (kg/m³)",        value=880.0,  step=10.0)
-        SFC_J     = st.number_input("SFC Jamnagar (gm/bhp/hr)", value=150.0, step=1.0)
-        SFC_R     = st.number_input("SFC Rajkot (gm/bhp/hr)",   value=150.0, step=1.0)
-        SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=150.0, step=1.0)
-        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=500.0,    step=0.1)
-        Price_HSD = st.number_input("HSD Rate (INR/L)",        value=70.0,   step=0.5)
-    neos_email= st.text_input("NEOS Email", "")    
+        FLOW      = st.number_input("Flow rate (m³/hr)",      value=1000.0, step=10.0)
+        KV        = st.number_input("Viscosity (cSt)",        value=1.0,    step=0.1)
+        rho       = st.number_input("Density (kg/m³)",        value=850.0,  step=10.0)
+        SFC_J     = st.number_input("SFC Jamnagar (gm/bhp/hr)", value=210.0, step=1.0)
+        SFC_R     = st.number_input("SFC Rajkot (gm/bhp/hr)",   value=215.0, step=1.0)
+        SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=220.0, step=1.0)
+        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=1.0,    step=0.1)
+        Price_HSD = st.number_input("HSD Rate (INR/L)",        value=90.0,   step=0.5)
     run = st.button("🚀 Run Optimization")
 
 if run:
-    if not neos_email:
-        st.sidebar.error("Enter your NEOS-registered email.")
-        st.stop()
-    os.environ["NEOS_EMAIL"] = neos_email
-
-
-    with st.spinner("⏳ Solving pipeline optimization...this can take upto 10 mins"):
+    with st.spinner("Solving pipeline optimization..."):
         res = solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD)
-
-    # Display NEOS response
-    st.markdown(f"**Solver status:** {res.get('_solver_status')}  \n"
-                f"**Termination condition:** {res.get('_termination_condition')}")
 
     stations = ["Vadinar","Jamnagar","Rajkot","Surendranagar","Viramgam"]
     params = {
