@@ -301,7 +301,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
 
 
 
-  # ----------------
+    # ----------------
     # PUMP EFFICIENCIES
     # ----------------
     FLOW1_EQ = FLOW1*DOL1/N1
@@ -354,23 +354,21 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
 
 
 
-# NEOS-only solve
-opts = {
-    'tol': 1e-3,
-    'acceptable_tol': 1e-3,
-    'max_cpu_time': 3000,
-    'max_iter': 100000
-}
-neos_mgr = SolverManagerFactory('neos')
-results = neos_mgr.solve(
-    model,
-    solver='bonmin',    # or 'couenne' if you prefer
-    opt=opts,
-    keepfiles=False
-)
-model.solutions.load_from(results)
-return results
-
+    # NEOS-only solve
+    opts = {
+       'tol': 1e-3,
+       'acceptable_tol': 1e-3,
+       'max_cpu_time': 3000,
+       'max_iter': 100000
+    }
+    neos_mgr = SolverManagerFactory('neos')
+    results = neos_mgr.solve(
+        model,
+        solver='bonmin',    # or 'couenne' 
+        opt=opts,
+        keepfiles=False
+    )
+    model.solutions.load_from(results)
 
 
     # ----------------
