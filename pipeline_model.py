@@ -362,7 +362,7 @@ def solve_pipeline(FLOW, KV, rho, SFC_J, SFC_R, SFC_S, RateDRA, Price_HSD):
         model,
         solver='couenne',    # or 'bonmin' 
         opt=opts,
-        keepfiles=False
+        keepfiles=False,
 	tee=True
     )
     model.solutions.load_from(results)
