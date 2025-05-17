@@ -22,17 +22,23 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
 
     # ───── READ STATION DATA ─────
     length, d_inner, thickness, roughness, elevation = {},{},{},{},{}
+    smys_dict, df_dict = {},{}
     has_pump, max_pumps_dict = {},{}
     Acoef,Bcoef,Ccoef = {},{},{}
     Pcoef,Qcoef,Rcoef,Scoef,Tcoef = {},{},{},{},{}
     min_rpm, max_rpm = {},{}
 
     for i, stn in enumerate(stations, start=1):
+        # geometry + fluid path
         length[i]    = stn['L']
         d_inner[i]   = stn['D'] - 2*stn['t']
         thickness[i] = stn['t']
         roughness[i] = stn['rough']
         elevation[i] = stn['elev']
+        # structural parameters
+        smys_dict[i] = stn.get('SMYS', 52000.0)
+        df_dict[i]   = stn.get('DF',   0.72)
+        # pump?
         if stn.get('is_pump', False):
             has_pump[i]        = True
             max_pumps_dict[i]  = stn['max_pumps']
@@ -43,35 +49,36 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
         else:
             has_pump[i] = False
 
-    # terminal elevation + required head
+    # terminal
     elevation[N+1] = terminal['elevation']
     min_residual   = terminal['min_residual']
 
     # ───── PARAMETERS ─────
-    model.L   = pyo.Param(model.I, initialize=length)
-    model.d   = pyo.Param(model.I, initialize=d_inner)
-    model.t   = pyo.Param(model.I, initialize=thickness)
-    model.e   = pyo.Param(model.I, initialize=roughness)
-    model.z   = pyo.Param(model.Nodes, initialize=elevation)
+    model.L    = pyo.Param(model.I, initialize=length)
+    model.d    = pyo.Param(model.I, initialize=d_inner)
+    model.t    = pyo.Param(model.I, initialize=thickness)
+    model.e    = pyo.Param(model.I, initialize=roughness)
+    model.SMYS = pyo.Param(model.I, initialize=smys_dict)    # ← added
+    model.DF   = pyo.Param(model.I, initialize=df_dict)      # ← added
+    model.z    = pyo.Param(model.Nodes, initialize=elevation)
 
     pump_idxs = [i for i in model.I if has_pump[i]]
     model.PUMPS = pyo.Set(initialize=pump_idxs)
 
     if pump_idxs:
         model.max_pumps = pyo.Param(model.PUMPS, initialize=max_pumps_dict)
-        model.A  = pyo.Param(model.PUMPS, initialize=Acoef)
-        model.B  = pyo.Param(model.PUMPS, initialize=Bcoef)
-        model.C  = pyo.Param(model.PUMPS, initialize=Ccoef)
-        model.Pp = pyo.Param(model.PUMPS, initialize=Pcoef)
-        model.Qp = pyo.Param(model.PUMPS, initialize=Qcoef)
-        model.Rp = pyo.Param(model.PUMPS, initialize=Rcoef)
-        model.Sp = pyo.Param(model.PUMPS, initialize=Scoef)
-        model.Tp = pyo.Param(model.PUMPS, initialize=Tcoef)
-        model.MinRPM = pyo.Param(model.PUMPS, initialize=min_rpm)
-        model.DOL    = pyo.Param(model.PUMPS, initialize=max_rpm)
+        model.A         = pyo.Param(model.PUMPS, initialize=Acoef)
+        model.B         = pyo.Param(model.PUMPS, initialize=Bcoef)
+        model.C         = pyo.Param(model.PUMPS, initialize=Ccoef)
+        model.Pp        = pyo.Param(model.PUMPS, initialize=Pcoef)
+        model.Qp        = pyo.Param(model.PUMPS, initialize=Qcoef)
+        model.Rp        = pyo.Param(model.PUMPS, initialize=Rcoef)
+        model.Sp        = pyo.Param(model.PUMPS, initialize=Scoef)
+        model.Tp        = pyo.Param(model.PUMPS, initialize=Tp:=Tcoef)
+        model.MinRPM    = pyo.Param(model.PUMPS, initialize=min_rpm)
+        model.DOL       = pyo.Param(model.PUMPS, initialize=max_rpm)
 
-    # ───── DECISION VARIABLES ─────
-    # Number of pumps: now lower‐bound = 0
+    # ───── VARIABLES ─────
     def bounds_nop(m,i):
         return (0, m.max_pumps[i]) if i in m.PUMPS else (0,0)
     model.NOP = pyo.Var(model.I,
@@ -79,7 +86,6 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
                         bounds=bounds_nop,
                         initialize=0)
 
-    # Speed in 10‐unit steps
     def bounds_n(m,i):
         if i in m.PUMPS:
             lo = int(pyo.value(m.MinRPM[i]) + 9)//10
@@ -87,24 +93,23 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             return (lo, hi)
         return (0,0)
     model.N_u = pyo.Var(model.I,
-                       domain=pyo.NonNegativeIntegers,
-                       bounds=bounds_n,
-                       initialize=lambda m,i: bounds_n(m,i)[0])
-    model.N = pyo.Expression(model.I, rule=lambda m,i: 10*m.N_u[i])
+                        domain=pyo.NonNegativeIntegers,
+                        bounds=bounds_n,
+                        initialize=lambda m,i: bounds_n(m,i)[0])
+    model.N   = pyo.Expression(model.I, rule=lambda m,i: 10*m.N_u[i])
 
-    # Drag reduction
     model.DR_u = pyo.Var(model.I,
                          domain=pyo.NonNegativeIntegers,
                          bounds=(0,4),
                          initialize=4)
     model.DR   = pyo.Expression(model.I, rule=lambda m,i: 10*m.DR_u[i])
 
-    # Residual head at each node
-    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=min_residual)
-    # enforce terminal head == required residual
+    model.RH = pyo.Var(model.Nodes,
+                       domain=pyo.NonNegativeReals,
+                       initialize=min_residual)
     model.term_head = pyo.Constraint(expr=model.RH[N+1] == min_residual)
 
-    # ───── HYDRAULICS & PUMP EQUATIONS ─────
+    # ───── HYDRAULICS ─────
     g = 9.81
     v, Re, f = {},{},{}
     for i in model.I:
@@ -164,8 +169,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
 
     # ───── SOLVE ─────
     mgr = SolverManagerFactory('neos')
-    res = mgr.solve(model, solver='couenne', tee=False)
-    model.solutions.load_from(res)
+    sol = mgr.solve(model, solver='couenne', tee=False)
+    model.solutions.load_from(sol)
 
     # ───── EXTRACT ─────
     out = {}
@@ -176,13 +181,12 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
           'speed':          float(pyo.value(model.N[i])),
           'efficiency':     float(EFFP[i]*100),
           'power_cost':     float((model.rho*model.FLOW*9.81*TDH[i]*model.NOP[i]) \
-                             /(3600*1000*EFFP[i]*0.95)*24 \
-                             * (stations[i-1]['rate']
-                                if stn['power_type']=='Grid'
-                                else ((stn['sfc']*1.34102)/(1000*820)*1000*24*Price_HSD))),
+                                 /(3600*1000*EFFP[i]*0.95)*24 \
+                                 * (stations[i-1]['rate']
+                                    if stn['power_type']=='Grid'
+                                    else ((stn['sfc']*1.34102)/(1000*820)*1000*24*Price_HSD))),
           'dra_cost':       float((model.DR[i]/4)/1e6*model.FLOW*1000*24*Rate_DRA),
-          'head_loss':      float((f[i]*(model.L[i]*1000/model.d[i])*(v[i]**2/(2*g))
-                                 *(1-model.DR[i]/100))),
+          'head_loss':      float(DH[i]),
           'residual_head':  float(pyo.value(model.RH[i])),
           'velocity':       float(v[i]),
           'reynolds_number':float(Re[i]),
