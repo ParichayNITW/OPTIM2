@@ -357,3 +357,6 @@ if run:
             fig_int.update_layout(xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)", height=600)
             fig_int.update_yaxes(tickformat=".2f")
             st.plotly_chart(fig_int, use_container_width=True)
+
+    st.markdown("---")
+    st.caption("© 2025 Developed by Parichay Das. All rights reserved.")
