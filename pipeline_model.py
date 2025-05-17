@@ -111,9 +111,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
     m.DRu = pyo.Var(m.Seg, domain=pyo.NonNegativeIntegers, bounds=(0,4), initialize=0)
     m.DR  = pyo.Expression(m.Seg, rule=lambda m,i: 10*m.DRu[i])
 
-    # Build constraints and objective
+        # Build constraints and objective
     power_terms = []
     dra_terms   = []
+    eff_map     = {}  # store per-segment efficiency
     for i in m.Seg:
         dia = pyo.value(m.Dout[i]) - 2*pyo.value(m.t[i])
         if dia <= 0:
@@ -135,9 +136,11 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             m.add_component(f"maop_{i}", pyo.Constraint(
                 expr=m.RH[i] + PH*m.NOP[i] <= MAOP_val
             ))
+            # compute efficiency and store
             eqf = m.FLOW*m.maxRPM[i]/m.N[i] if pyo.value(m.N[i])>0 else 0
-            eff = (m.Pcoef[i]*eqf**4 + m.Qcoef[i]*eqf**3 + m.Rcoef[i]*eqf**2 + m.Scoef[i]*eqf + m.Tcoef[i]) / 100
-            base = (m.rho*m.FLOW*9.81*PH*m.NOP[i])/(3600*1000*eff*0.95)
+            eff_i = (m.Pcoef[i]*eqf**4 + m.Qcoef[i]*eqf**3 + m.Rcoef[i]*eqf**2 + m.Scoef[i]*eqf + m.Tcoef[i]) / 100
+            eff_map[i] = eff_i
+            base = (m.rho*m.FLOW*9.81*PH*m.NOP[i])/(3600*1000*eff_i*0.95)
             ec = base*24*m.ElecRt[i]
             dc = base*24*(m.SFC[i]*1.34102/1000/820)*1000*m.Price_HSD
             power_terms.append(m.isGrid[i]*ec + (1-m.isGrid[i])*dc)
@@ -152,10 +155,11 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             m.add_component(f"maop_{i}", pyo.Constraint(
                 expr=m.RH[i] <= MAOP_val
             ))
+            eff_map[i] = 0.0
             power_terms.append(0)
         dra_terms.append((m.DR[i]/1e6)*m.FLOW*24*1000*m.Rate_DRA)
 
-    m.Obj = pyo.Objective(expr=sum(power_terms) + sum(dra_terms), sense=pyo.minimize)
+    m.Obj = pyo.Objective(expr=sum(power_terms) + sum(dra_terms), sense=pyo.minimize)(expr=sum(power_terms) + sum(dra_terms), sense=pyo.minimize)
 
     results = SolverManagerFactory('neos').solve(m, solver='couenne', tee=False)
     m.solutions.load_from(results)
