@@ -52,8 +52,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             Acoef[i], Bcoef[i], Ccoef[i] = stn['A'], stn['B'], stn['C']
             Pcoef[i], Qcoef[i] = stn['P'], stn['Q']
             Rcoef[i], Scoef[i], Tcoef[i] = stn['R'], stn['S'], stn['T']
-            minRPM_map[i]      = stn.get('min_rpm', 0)
-            maxRPM_map[i]      = stn.get('max_rpm', 0)
+            minRPM_map[i] = stn.get('MinRPM', 0)  # map front-end MinRPM
+            maxRPM_map[i] = stn.get('DOL', 0)      # map front-end DOL
             isGrid_map[i]      = 1 if stn.get('power_source', 'Diesel') == 'Grid' else 0
             ElecRt_map[i]      = stn.get('power_rate', 0)
             SFC_map[i]         = stn.get('SFC', 0)
