@@ -135,9 +135,11 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             m.add_component(f"bal_{i}", pyo.Constraint(
                 expr=m.RH[i] + PH*m.NOP[i] >= SH + const_HL*(1 - m.DR[i]/100)
             ))
-            # MAOP constraint
-            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i]) * 10000/m.rho
+                        # MAOP constraint (evaluate D_out symbolically to float to avoid divide-by-zero)
+            MAOP_val = (2*pyo.value(m.t[i])*(pyo.value(m.SMYS[i])*0.070307)*pyo.value(m.DF[i]) / pyo.value(m.Dout[i])) * 10000/pyo.value(m.rho)
             m.add_component(f"maop_{i}", pyo.Constraint(
+                expr=m.RH[i] + PH*m.NOP[i] <= MAOP_val
+            ))
                 expr=m.RH[i] + PH*m.NOP[i] <= MAOP
             ))
             # Pump efficiency (expression)
