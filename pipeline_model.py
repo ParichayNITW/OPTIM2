@@ -167,8 +167,12 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
         # Objective
     m.Obj = pyo.Objective(expr=sum(pwr_costs) + sum(dra_costs), sense=pyo.minimize)
 
-    # Solve
-    results = SolverManagerFactory('neos').solve(m, solver='couenne', tee=False) SolverManagerFactory('neos').solve(m, solver='couenne', tee=False)
+        # Solve
+    results = SolverManagerFactory('neos').solve(
+        m,
+        solver='couenne',
+        tee=False
+    )
     m.solutions.load_from(results)
 
     # extract
