@@ -86,6 +86,7 @@ with st.sidebar:
     add_col, rem_col = st.columns(2)
     add_btn = add_col.button("➕ Add Station")
     rem_btn = rem_col.button("🗑️ Remove Station")
+
     if 'stations' not in st.session_state:
         # initialize with one pump station
         st.session_state.stations = [{
@@ -132,12 +133,12 @@ with st.sidebar:
                 stn['max_pumps'] = st.number_input("Available Pumps", min_value=1,
                     value=stn['max_pumps'], step=1, key=f"mpumps{idx}")
                 stn['MinRPM']    = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                stn['DOL']       = st.number_input("Rated RPM", value=stn['DOL'],    key=f"dol{idx}")
+                stn['DOL']       = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
                 stn['max_dr']    = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr{idx}")
-                st.file_uploader("Pump Head Curve (img)",     type=["png","jpg","jpeg"], key=f"headimg{idx}")
-                st.file_uploader("Efficiency Curve (img)",    type=["png","jpg","jpeg"], key=f"effimg{idx}")
+                st.file_uploader("Pump Head Curve (img)", type=["png","jpg","jpeg"], key=f"headimg{idx}")
+                st.file_uploader("Efficiency Curve (img)", type=["png","jpg","jpeg"], key=f"effimg{idx}")
 
-    # ——— HERE: Terminal Station inputs ———
+    # ——— Terminal Station inputs ———
     st.markdown("---")
     st.subheader("🏁 Terminal Station")
     terminal_name   = st.text_input("Terminal Station Name", value="Terminal")
@@ -146,26 +147,46 @@ with st.sidebar:
 
     run = st.button("🚀 Run Optimization")
 
-# ———————————————————————————————————————————————————————————————————————————————————
-
 if run:
     with st.spinner("Solving pipeline optimization..."):
-        stations_data  = st.session_state.stations
-        terminal_data  = {
+        # Prepare input data for solver
+        stations_data = [dict(s) for s in st.session_state.stations]
+        # Transform station data keys to match model expectations
+        for stn in stations_data:
+            stn['z'] = stn.get('elev', 0.0)
+            stn['e'] = stn.get('rough', 0.0)
+            if stn.get('is_pump', False):
+                stn['pump'] = True
+                if stn.get('power_type') == "Grid":
+                    # Electric pump: remove or zero SFC and set electricity cost
+                    stn['sfc'] = 0.0
+                    stn['cost_per_kwh'] = stn.get('rate', 0.0)
+                else:
+                    # Diesel pump: ensure SFC is present (nonzero if provided)
+                    stn['pump'] = True
+                # Keep pump curve coefficients as is
+            else:
+                stn['pump'] = False
+                # Remove pump-related keys to avoid misidentification as pump
+                for key in ['A','B','C','P','Q','R','S','T','MinRPM','DOL','max_dr','sfc','rate','max_pumps','power_type']:
+                    stn.pop(key, None)
+        terminal_data = {
             "name":        terminal_name,
             "elev":        terminal_elev,
             "min_residual": residual_head
         }
+        terminal_data['z'] = terminal_data.get('elev', 0.0)
         res = solve_pipeline(stations_data, terminal_data, FLOW, KV, rho, RateDRA, Price_HSD)
 
     # KPI Cards
-    total_cost = res.get('total_cost',0)
-    total_pumps = sum(res.get(f"num_pumps_{s['name'].lower()}",0) for s in stations_data)
-    speeds = [res.get(f"speed_{s['name'].lower()}",0) for s in stations_data]
-    effs   = [res.get(f"efficiency_{s['name'].lower()}",0) for s in stations_data]
-    avg_speed = np.mean(speeds) if speeds else 0
-    avg_eff   = np.mean(effs)   if effs   else 0
-    c1,c2,c3,c4 = st.columns(4)
+    total_cost = res.get('total_cost', 0)
+    total_pumps = sum(res.get(s['name'].strip().lower(), {}).get('num_pumps', 0) for s in stations_data)
+    # Only consider pump stations for speed/efficiency averages
+    pump_speeds = [res.get(s['name'].strip().lower(), {}).get('speed', 0) for s in stations_data if res.get(s['name'].strip().lower(), {}).get('num_pumps', 0) > 0]
+    pump_effs   = [res.get(s['name'].strip().lower(), {}).get('efficiency', 0) for s in stations_data if res.get(s['name'].strip().lower(), {}).get('num_pumps', 0) > 0]
+    avg_speed = np.mean(pump_speeds) if pump_speeds else 0
+    avg_eff   = np.mean(pump_effs)   if pump_effs   else 0
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Cost (INR)", f"₹{total_cost:,.2f}")
     c2.metric("Total Pumps", total_pumps)
     c3.metric("Avg Speed (rpm)", f"{avg_speed:.2f}")
@@ -173,29 +194,42 @@ if run:
 
     # Summary table
     station_names = [s['name'] for s in stations_data] + [terminal_data['name']]
+
     summary = {"Process Particulars": [
         "Power & Fuel cost (INR/day)", "DRA cost (INR/day)", "No. of Pumps",
         "Pump Speed (rpm)", "Pump Efficiency (%)", "Reynold's No.",
         "Dynamic Head Loss (m)", "Velocity (m/s)", "Residual Head (m)",
         "SDH (m)", "Drag Reduction (%)"
     ]}
-    for s in station_names:
-        key = s.lower()
-        num = int(res.get(f"num_pumps_{key}", 0))
-        sp = res.get(f"speed_{key}", 0) if num > 0 else 0
-        ef = res.get(f"efficiency_{key}", 0) if num > 0 else 0
-        summary[s] = [
-            round(res.get(f"power_cost_{key}", 0), 2),
-            round(res.get(f"dra_cost_{key}", 0), 2),
+    for i, name in enumerate(station_names):
+        key = name.strip().lower()
+        station_res = res.get(key, {})
+        num = int(station_res.get('num_pumps', 0))
+        sp = station_res.get('speed', 0) if num > 0 else 0
+        ef = station_res.get('efficiency', 0) if num > 0 else 0
+        if i < len(station_names) - 1:
+            next_key = station_names[i+1].strip().lower()
+            next_resid = res.get(next_key, {}).get('residual_head', 0)
+            if i+1 == len(station_names) - 1:
+                # Next is terminal
+                z_diff = terminal_data['elev'] - stations_data[i]['elev']
+            else:
+                z_diff = stations_data[i+1]['elev'] - stations_data[i]['elev']
+            sdh_val = station_res.get('head_loss', 0) + next_resid + z_diff
+        else:
+            sdh_val = 0
+        summary[name] = [
+            round(station_res.get('power_cost', 0), 2),
+            round(station_res.get('dra_cost', 0), 2),
             num,
             round(sp, 2),
             round(ef, 2),
-            round(res.get(f"reynolds_{key}", 0), 2),
-            round(res.get(f"head_loss_{key}", 0), 2),
-            round(res.get(f"velocity_{key}", 0), 2),
-            round(res.get(f"residual_head_{key}", 0), 2),
-            round(res.get(f"sdh_{key}", 0), 2),
-            round(res.get(f"drag_reduction_{key}", 0), 2)
+            round(station_res.get('reynolds_number', 0), 2),
+            round(station_res.get('head_loss', 0), 2),
+            round(station_res.get('velocity', 0), 2),
+            round(station_res.get('residual_head', 0), 2),
+            round(sdh_val, 2),
+            round(station_res.get('drag_reduction', 0), 2)
         ]
     df_sum = pd.DataFrame(summary)
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Summary Table", "💰 Cost Charts", "⚙️ Performance Charts", "🌀 System Curves", "🔄 Pump-System Interaction"])
@@ -210,9 +244,9 @@ if run:
     with tab2:
         st.markdown("<div class='section-title'>Cost Breakdown per Station</div>", unsafe_allow_html=True)
         df_cost = pd.DataFrame({
-            "Station": station_names[:-1],  # exclude terminal (no cost)
-            "Power & Fuel (INR/day)": [res.get(f"power_cost_{s.lower()}", 0) for s in station_names[:-1]],
-            "DRA (INR/day)": [res.get(f"dra_cost_{s.lower()}", 0) for s in station_names[:-1]]
+            "Station": station_names[:-1],
+            "Power & Fuel (INR/day)": [res.get(s.strip().lower(), {}).get('power_cost', 0) for s in station_names[:-1]],
+            "DRA (INR/day)": [res.get(s.strip().lower(), {}).get('dra_cost', 0) for s in station_names[:-1]]
         })
         fig_cost = px.bar(
             df_cost.melt(id_vars="Station", value_vars=["Power & Fuel (INR/day)", "DRA (INR/day)"], var_name="Type", value_name="Amount"),
@@ -228,7 +262,7 @@ if run:
             st.markdown("<div class='section-title'>Performance Metrics</div>", unsafe_allow_html=True)
             df_perf = pd.DataFrame({
                 "Station": station_names[:-1],
-                "Head Loss (m)": [res.get(f"head_loss_{s.lower()}", 0) for s in station_names[:-1]]
+                "Head Loss (m)": [res.get(s.strip().lower(), {}).get('head_loss', 0) for s in station_names[:-1]]
             })
             fig_hl = go.Figure(go.Bar(x=df_perf["Station"], y=df_perf["Head Loss (m)"]))
             fig_hl.update_layout(title_text="Head Loss by Segment", xaxis_title="Station", yaxis_title="Head Loss (m)")
@@ -236,16 +270,18 @@ if run:
             st.plotly_chart(fig_hl, use_container_width=True)
         with pump_tab:
             st.markdown("<div class='section-title'>Pump Characteristic Curves</div>", unsafe_allow_html=True)
-            pump_stations = [s for s in station_names[:-1] if res.get(f"coef_A_{s.lower()}", None) is not None]
+            pump_stations = [s['name'] for s in stations_data if s.get('is_pump', False)]
             selected = st.multiselect("Select stations", pump_stations, default=pump_stations)
             flow_range = np.arange(0, max(4500, FLOW+1), 100)
             for stn in selected:
-                key = stn.lower()
-                A = res.get(f"coef_A_{key}", None)
-                B = res.get(f"coef_B_{key}", None)
-                C = res.get(f"coef_C_{key}", None)
-                dol = res.get(f"dol_{key}", None)
-                mn = res.get(f"min_rpm_{key}", None)
+                station = next((x for x in stations_data if x['name'] == stn), None)
+                if not station:
+                    continue
+                A = station.get('A', station.get('a', None))
+                B = station.get('B', station.get('b', None))
+                C = station.get('C', station.get('c', None))
+                dol = station.get('DOL', station.get('dol', None))
+                mn = station.get('MinRPM', station.get('min_rpm', None))
                 if None in [A, B, C, dol, mn]:
                     continue
                 dfs = []
@@ -261,19 +297,20 @@ if run:
             st.markdown("<div class='section-title'>Pump Efficiency Curves</div>", unsafe_allow_html=True)
             flow_range = np.arange(0, max(4500, FLOW+1), 100)
             for stn in pump_stations:
-                key = stn.lower()
-                Pcoef = res.get(f"coef_P_{key}", None)
-                Qcoef = res.get(f"coef_Q_{key}", None)
-                Rcoef = res.get(f"coef_R_{key}", None)
-                Scoef = res.get(f"coef_S_{key}", None)
-                Tcoef = res.get(f"coef_T_{key}", None)
-                dol = res.get(f"dol_{key}", None)
-                mn = res.get(f"min_rpm_{key}", None)
+                station = next((x for x in stations_data if x['name'] == stn), None)
+                if not station:
+                    continue
+                Pcoef = station.get('P', station.get('p', None))
+                Qcoef = station.get('Q', station.get('q', None))
+                Rcoef = station.get('R', station.get('r', None))
+                Scoef = station.get('S', station.get('s', None))
+                Tcoef = station.get('T', station.get('tcoef', None))
+                dol = station.get('DOL', station.get('dol', None))
+                mn = station.get('MinRPM', station.get('min_rpm', None))
                 if None in [Pcoef, Qcoef, Rcoef, Scoef, Tcoef, dol, mn]:
                     continue
                 dfs = []
                 for rpm in np.arange(mn, dol+1, 100):
-                    # Equivalent flow at rated speed
                     flow_eq = flow_range * dol / rpm
                     E_curve = (Pcoef*flow_eq**4 + Qcoef*flow_eq**3 + Rcoef*flow_eq**2 + Scoef*flow_eq + Tcoef) / 100
                     mask = E_curve > 0
@@ -291,10 +328,8 @@ if run:
         st.markdown("<div class='section-title'>System Curves of SDHR</div>", unsafe_allow_html=True)
         flow_arr = np.arange(0, max(4500, FLOW+1), 100)
         for i, stn in enumerate(station_names[:-1], start=1):
-            # skip non-pump stations for system curve plotting
             if not stations_data[i-1]['is_pump']:
                 continue
-            # static head diff of segment i
             sd = stations_data[i-1]['elev'] if i == 1 else (stations_data[i-1]['elev'] - (stations_data[i-2]['elev'] if i-2 >= 0 else 0))
             d = stations_data[i-1]['D'] - 2*stations_data[i-1]['t']
             rough = stations_data[i-1]['rough']
@@ -315,12 +350,10 @@ if run:
     with tab5:
         st.markdown("<div class='section-title'>Pump-System Interaction</div>", unsafe_allow_html=True)
         flow_arr = np.arange(0, max(4500, FLOW+1), 100)
-        for stn in station_names[:-1]:
-            if res.get(f"coef_A_{stn.lower()}", None) is None:
-                continue
-            # system curves
-            p_idx = station_names.index(stn) + 1  # segment index for this station
-            d = (stations_data[p_idx-1]['D'] - 2*stations_data[p_idx-1]['t']) if p_idx <= len(stations_data) else stations_data[-1]['D']
+        pump_station_names = [s['name'] for s in stations_data if s.get('is_pump', False)]
+        for stn in pump_station_names:
+            p_idx = station_names.index(stn) + 1
+            d = (stations_data[p_idx-1]['D'] - 2*stations_data[p_idx-1]['t'])
             rough = stations_data[p_idx-1]['rough']
             L_seg = stations_data[p_idx-1]['L']
             dfs = []
@@ -330,18 +363,15 @@ if run:
                 f = 0.25/(np.log10((rough/d/3.7)+(5.74/(Re**0.9)))**2)
                 DH = (f*(L_seg*1000/d)*(v**2/(2*9.81))) * (1 - dra/100)
                 dfs.append(pd.DataFrame({"Flow (m³/hr)": flow_arr, "Head (m)": stations_data[p_idx-1]['elev'] + DH, "Curve": f"System DRA {dra}%"}))
-            # pump curves for various series configurations
-            key = stn.lower()
-            A = res.get(f"coef_A_{key}"); B = res.get(f"coef_B_{key}"); C = res.get(f"coef_C_{key}")
-            dol = res.get(f"dol_{key}"); mn = res.get(f"min_rpm_{key}")
-            num_installed = int(res.get(f"num_pumps_{key}", 1))
+            station = stations_data[p_idx-1]
+            A = station.get('A'); B = station.get('B'); C = station.get('C')
+            dol = station.get('DOL', station.get('dol')); mn = station.get('MinRPM', station.get('min_rpm'))
+            num_installed = int(res.get(stn.strip().lower(), {}).get('num_pumps', 1))
             for rpm in np.arange(mn, dol+1, 100):
                 H_curve = (A*flow_arr**2 + B*flow_arr + C) * (rpm/dol)**2
                 dfs.append(pd.DataFrame({"Flow (m³/hr)": flow_arr, "Head (m)": H_curve, "Curve": f"Pump {rpm} rpm"}))
-                # current optimized series total
                 if num_installed > 1:
                     dfs.append(pd.DataFrame({"Flow (m³/hr)": flow_arr, "Head (m)": H_curve * num_installed, "Curve": f"Pump Total {rpm} x{num_installed}"}))
-                # Hypothetical 2-pump series (for comparison)
                 dfs.append(pd.DataFrame({"Flow (m³/hr)": flow_arr, "Head (m)": H_curve * 2, "Curve": f"2 pumps in series {rpm} rpm"}))
             df_comb = pd.concat(dfs, ignore_index=True)
             fig_int = px.line(df_comb, x="Flow (m³/hr)", y="Head (m)", color="Curve", title=f"Pump-System Interaction ({stn})")
