@@ -48,8 +48,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             Pcoef[i] = s['P']; Qcoef[i] = s['Q']
             Rcoef[i] = s['R']; Scoef[i] = s['S']; Tcoef[i] = s['T']
             minRPM[i] = s['MinRPM']; maxRPM[i] = s['DOL']
-            isGrid[i] = 1 if s['power_source']=="Grid" else 0
-            ElecRt[i] = s.get('power_rate',0)
+            isGrid[i]  = 1 if s['power_type']=="Grid" else 0
+            ElecRt[i]  = s['rate']
             SFC[i]    = s.get('SFC',0)
         else:
             is_pump[i] = False
