@@ -159,7 +159,11 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             power_terms.append(0)
         dra_terms.append((m.DR[i]/1e6)*m.FLOW*24*1000*m.Rate_DRA)
 
-    m.Obj = pyo.Objective(expr=sum(power_terms) + sum(dra_terms), sense=pyo.minimize)(expr=sum(power_terms) + sum(dra_terms), sense=pyo.minimize)
+        # Objective: minimize power + DRA costs
+    m.Obj = pyo.Objective(
+        expr=sum(power_terms) + sum(dra_terms),
+        sense=pyo.minimize
+    ) + sum(dra_terms), sense=pyo.minimize)(expr=sum(power_terms) + sum(dra_terms), sense=pyo.minimize)
 
     results = SolverManagerFactory('neos').solve(m, solver='couenne', tee=False)
     m.solutions.load_from(results)
