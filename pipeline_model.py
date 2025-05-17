@@ -52,8 +52,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             Acoef[i], Bcoef[i], Ccoef[i] = stn['A'], stn['B'], stn['C']
             Pcoef[i], Qcoef[i] = stn['P'], stn['Q']
             Rcoef[i], Scoef[i], Tcoef[i] = stn['R'], stn['S'], stn['T']
-            minRPM_map[i] = stn.get('MinRPM', 0)  # map front-end MinRPM
-            maxRPM_map[i] = stn.get('DOL', 0)      # map front-end DOL
+            minRPM_map[i] = stn.get('MinRPM', 0)
+            maxRPM_map[i] = stn.get('DOL', 0)
             isGrid_map[i]      = 1 if stn.get('power_source', 'Diesel') == 'Grid' else 0
             ElecRt_map[i]      = stn.get('power_rate', 0)
             SFC_map[i]         = stn.get('SFC', 0)
@@ -96,18 +96,25 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
 
     m.NOP = pyo.Var(m.Seg, domain=pyo.NonNegativeIntegers,
                     bounds=lambda m,i: (0, m.maxP[i]) if i in m.PSEGS else (0,0))
-    m.Nu  = pyo.Var(m.Seg, domain=pyo.NonNegativeIntegers,
-                    bounds=lambda m,i: (int((m.minRPM[i]+9)//10), int(m.maxRPM[i]//10))
-                    if i in m.PSEGS else (0,0))
+    m.Nu = pyo.Var(
+        m.Seg,
+        domain=pyo.NonNegativeIntegers,
+        bounds=lambda m,i: (
+            int((pyo.value(m.minRPM[i]) + 9)//10),
+            int((pyo.value(m.maxRPM[i]))//10)
+        ) if i in m.PSEGS else (0,0),
+        initialize=lambda m,i: (
+            int((pyo.value(m.minRPM[i]) + 9)//10) if i in m.PSEGS else 0
+        )
+    )
     m.N   = pyo.Expression(m.Seg, rule=lambda m,i: 10*m.Nu[i])
-    m.DRu = pyo.Var(m.Seg, domain=pyo.NonNegativeIntegers, bounds=(0,4), initialize=4)
+    m.DRu = pyo.Var(m.Seg, domain=pyo.NonNegativeIntegers, bounds=(0,4), initialize=0)
     m.DR  = pyo.Expression(m.Seg, rule=lambda m,i: 10*m.DRu[i])
 
     # Build constraints and objective
     power_terms = []
     dra_terms   = []
     for i in m.Seg:
-        # pure Python inner dia and velocity
         dia = pyo.value(m.Dout[i]) - 2*pyo.value(m.t[i])
         if dia <= 0:
             raise ZeroDivisionError(f"Zero inner dia seg {i}")
@@ -121,7 +128,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             m.add_component(f"bal_{i}", pyo.Constraint(
                 expr=m.RH[i] + PH*m.NOP[i] >= SH + HL_const*(1-m.DR[i]/100)
             ))
-            MAOP_val = (2*pyo.value(m.t[i])*(pyo.value(m.SMYS[i])*0.070307)*pyo.value(m.DF[i])/pyo.value(m.Dout[i]))*10000/pyo.value(m.rho)
+            MAOP_val = (
+                2 * pyo.value(m.t[i]) * (pyo.value(m.SMYS[i])*0.070307) * pyo.value(m.DF[i])
+                / pyo.value(m.Dout[i])
+            ) * 10000/pyo.value(m.rho)
             m.add_component(f"maop_{i}", pyo.Constraint(
                 expr=m.RH[i] + PH*m.NOP[i] <= MAOP_val
             ))
@@ -135,7 +145,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             m.add_component(f"bal_{i}", pyo.Constraint(
                 expr=m.RH[i] >= SH + HL_const*(1-m.DR[i]/100)
             ))
-            MAOP_val = (2*pyo.value(m.t[i])*(pyo.value(m.SMYS[i])*0.070307)*pyo.value(m.DF[i])/pyo.value(m.Dout[i]))*10000/pyo.value(m.rho)
+            MAOP_val = (
+                2 * pyo.value(m.t[i]) * (pyo.value(m.SMYS[i])*0.070307) * pyo.value(m.DF[i])
+                / pyo.value(m.Dout[i])
+            ) * 10000/pyo.value(m.rho)
             m.add_component(f"maop_{i}", pyo.Constraint(
                 expr=m.RH[i] <= MAOP_val
             ))
