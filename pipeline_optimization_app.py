@@ -71,15 +71,15 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD)
 
 # ---------------------
-# Sidebar: global inputs + dynamic station builder
+# Sidebar: global inputs + dynamic station builder + terminal inputs
 # ---------------------
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW = st.number_input("Flow rate (m³/hr)", value=2000.0, step=10.0)
-        KV = st.number_input("Viscosity (cSt)", value=10.0, step=0.1)
-        rho = st.number_input("Density (kg/m³)", value=880.0, step=10.0)
-        RateDRA = st.number_input("DRA Rate (INR/L)", value=500.0, step=0.1)
+        FLOW      = st.number_input("Flow rate (m³/hr)", value=2000.0, step=10.0)
+        KV        = st.number_input("Viscosity (cSt)", value=10.0,    step=0.1)
+        rho       = st.number_input("Density (kg/m³)", value=880.0,   step=10.0)
+        RateDRA   = st.number_input("DRA Rate (INR/L)", value=500.0,  step=0.1)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
 
     # Buttons to add/remove stations
@@ -114,57 +114,48 @@ with st.sidebar:
     # Render each station’s inputs
     for idx, stn in enumerate(st.session_state.stations, start=1):
         with st.expander(f"Station {idx}: {stn['name']}", expanded=True):
-            stn['name'] = st.text_input("Name",     value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], key=f"elev{idx}")
-            stn['D']   = st.number_input(
-                "Outer Diameter (m)",
-                value=stn['D'],
-                step=0.00001,
-                format="%.5f",
-                key=f"D{idx}"
-            )
-            stn['t']   = st.number_input(
-                "Wall Thickness (m)",
-                value=stn['t'],
-                step=0.00001,
-                format="%.5f",
-                key=f"t{idx}"
-            )
-            stn['SMYS']= st.number_input("SMYS (psi)", value=stn['SMYS'], key=f"SMYS{idx}")
-            stn['rough'] = st.number_input(
-                "Pipe Roughness (m)",
-                value=stn['rough'],
-                step=0.00001,
-                format="%.5f",
-                key=f"rough{idx}"
-            )
-            stn['L']    = st.number_input("Length to next (km)", value=stn['L'], key=f"L{idx}")
+            stn['name']  = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+            stn['elev']  = st.number_input("Elevation (m)", value=stn['elev'], key=f"elev{idx}")
+            stn['D']     = st.number_input("Outer Diameter (m)", value=stn['D'], step=0.00001, format="%.5f", key=f"D{idx}")
+            stn['t']     = st.number_input("Wall Thickness (m)", value=stn['t'], step=0.00001, format="%.5f", key=f"t{idx}")
+            stn['SMYS']  = st.number_input("SMYS (psi)", value=stn['SMYS'], key=f"SMYS{idx}")
+            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], step=0.00001, format="%.5f", key=f"rough{idx}")
+            stn['L']     = st.number_input("Length to next (km)", value=stn['L'], key=f"L{idx}")
             stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
             if stn['is_pump']:
                 stn['power_type'] = st.selectbox("Power Source", ["Grid","Diesel"],
-                                                 index=(0 if stn['power_type']=="Grid" else 1),
-                                                 key=f"ptype{idx}")
+                    index=(0 if stn['power_type']=="Grid" else 1), key=f"ptype{idx}")
                 if stn['power_type']=="Grid":
-                    stn['rate'] = st.number_input("Electricity Rate (INR/kWh)",
-                                                  value=stn['rate'], key=f"rate{idx}")
+                    stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn['rate'], key=f"rate{idx}")
                 else:
-                    stn['sfc'] = st.number_input("SFC (gm/bhp-hr)",
-                                                 value=stn['sfc'], key=f"sfc{idx}")
+                    stn['sfc']  = st.number_input("SFC (gm/bhp-hr)", value=stn['sfc'], key=f"sfc{idx}")
                 stn['max_pumps'] = st.number_input("Available Pumps", min_value=1,
-                                                   value=stn['max_pumps'], step=1, key=f"mpumps{idx}")
-                stn['MinRPM'] = st.number_input("Min RPM",      value=stn['MinRPM'], key=f"minrpm{idx}")
-                stn['DOL']    = st.number_input("Rated RPM",    value=stn['DOL'],    key=f"dol{idx}")
-                stn['max_dr'] = st.number_input("Max Drag Reduction (%)",
-                                                value=stn['max_dr'], key=f"mdr{idx}")
-                st.file_uploader("Pump Head Curve (img)", type=["png","jpg","jpeg"], key=f"headimg{idx}")
-                st.file_uploader("Efficiency Curve (img)", type=["png","jpg","jpeg"], key=f"effimg{idx}")
+                    value=stn['max_pumps'], step=1, key=f"mpumps{idx}")
+                stn['MinRPM']    = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                stn['DOL']       = st.number_input("Rated RPM", value=stn['DOL'],    key=f"dol{idx}")
+                stn['max_dr']    = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr{idx}")
+                st.file_uploader("Pump Head Curve (img)",     type=["png","jpg","jpeg"], key=f"headimg{idx}")
+                st.file_uploader("Efficiency Curve (img)",    type=["png","jpg","jpeg"], key=f"effimg{idx}")
 
-run = st.button("🚀 Run Optimization")
+    # ——— HERE: Terminal Station inputs ———
+    st.markdown("---")
+    st.subheader("🏁 Terminal Station")
+    terminal_name   = st.text_input("Terminal Station Name", value="Terminal")
+    terminal_elev   = st.number_input("Terminal Elevation (m)", value=0.0, step=0.00001, format="%.5f")
+    residual_head   = st.number_input("Required Residual Head (m)", value=50.0, step=0.1)
+
+    run = st.button("🚀 Run Optimization")
+
+# ———————————————————————————————————————————————————————————————————————————————————
 
 if run:
     with st.spinner("Solving pipeline optimization..."):
-        stations_data = st.session_state.stations
-        terminal_data = {"name":"Terminal","elev":0.0}
+        stations_data  = st.session_state.stations
+        terminal_data  = {
+            "name":        terminal_name,
+            "elev":        terminal_elev,
+            "min_residual": residual_head
+        }
         res = solve_pipeline(stations_data, terminal_data, FLOW, KV, rho, RateDRA, Price_HSD)
 
     # KPI Cards
