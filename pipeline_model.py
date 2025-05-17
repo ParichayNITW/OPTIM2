@@ -173,8 +173,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
                pyo.value(m.Rp[i])*eqf**2 + pyo.value(m.Sp[i])*eqf +
                pyo.value(m.Tp[i]))/100
         out[f"efficiency_{key}"]    = float(eff*100)
-        out[f"power_cost_{key}"]    = float(power_costs[i-1])
-        out[f"dra_cost_{key}"]      = float(dra_costs[i-1])
+        out[f"power_cost_{key}"]    = float(pyo.value(power_costs[i-1]))
+        out[f"dra_cost_{key}"]      = float(pyo.value(dra_costs[i-1]))
         out[f"residual_head_{key}"] = float(pyo.value(m.RH[i]))
     tkey = terminal['name'].lower()
     out[f"residual_head_{tkey}"] = float(pyo.value(m.RH[P+1]))
