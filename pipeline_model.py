@@ -113,49 +113,59 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
     dra_costs = []
 
     for i in m.Seg:
-        # hydraulics
-        dia = m.Dout[i] - 2*m.t[i]
-        v   = m.FLOW/(3.414*dia**2/4)/3600
-        Re  = v*dia/(m.KV*1e-6)
-        ff  = 0.25/(log10((m.eps[i]/dia/3.7)+(5.74/(Re**0.9)))**2)
-        SH  = m.RH[i+1] + (m.z[i+1]-m.z[i])
-        HL  = ff*(m.L[i]*1000/dia)*(v**2/(2*9.81))*(1-m.DR[i]/100)
+        # Compute inner diameter at Python-level
+        dia_val = pyo.value(m.Dout[i]) - 2*pyo.value(m.t[i])
+        if dia_val <= 0:
+            raise ZeroDivisionError(f"Inner diameter <=0 for segment {i}: computed {dia_val}")
+        # Flow velocity (m/s) constant term
+        area_factor = 3.414 * dia_val**2 / 4
+        v_j = pyo.value(m.FLOW) / (area_factor * 3600)
+        # Reynolds number (constant)
+        Re_j = v_j * dia_val / (pyo.value(m.KV) * 1e-6)
+        # Friction factor (constant)
+        ff_j = 0.25/(log10((pyo.value(m.eps[i])/dia_val/3.7)+(5.74/(Re_j**0.9)))**2)
+        # Static head term
+        SH = m.RH[i+1] + (m.z[i+1] - m.z[i])
+        # Constant head loss term (to be scaled by drag reduction)
+        const_HL = ff_j * (pyo.value(m.L[i])*1000/dia_val) * (v_j**2/(2*9.81))
         if i in m.PSEGS:
-            # pump head
+            # Pump developed head (expression)
             PH = (m.A[i]*m.FLOW**2 + m.B[i]*m.FLOW + m.C[i]) * (m.N[i]/m.maxRPM[i])**2
-            # head constraint
+            # Head balance constraint
             m.add_component(f"bal_{i}", pyo.Constraint(
-                expr=m.RH[i] + PH*m.NOP[i] >= SH + HL
+                expr=m.RH[i] + PH*m.NOP[i] >= SH + const_HL*(1 - m.DR[i]/100)
             ))
-            # MAOP
-            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i])*10000/m.rho
+            # MAOP constraint
+            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i]) * 10000/m.rho
             m.add_component(f"maop_{i}", pyo.Constraint(
                 expr=m.RH[i] + PH*m.NOP[i] <= MAOP
             ))
-            # efficiency
-            eqF = m.FLOW*m.maxRPM[i]/m.N[i] if pyo.value(m.N[i])>0 else 0
-            eff = (m.Pcoef[i]*eqF**4 + m.Qcoef[i]*eqF**3 +
-                   m.Rcoef[i]*eqF**2 + m.Scoef[i]*eqF + m.Tcoef[i])/100
-            # power cost
-            base = (m.rho*m.FLOW*9.81*PH*m.NOP[i])/(3600*1000*eff*0.95)
-            ec = base*24*m.ElecRt[i]
-            dc = base*24*(m.SFC[i]*1.34102/1000/820)*1000*m.Price_HSD
-            pwr_costs.append(m.isGrid[i]*ec + (1-m.isGrid[i])*dc)
-            # dra cost
+            # Pump efficiency (expression)
+            eq_flow = m.FLOW*m.maxRPM[i]/m.N[i]
+            eff = (m.Pcoef[i]*eq_flow**4 + m.Qcoef[i]*eq_flow**3 +
+                   m.Rcoef[i]*eq_flow**2 + m.Scoef[i]*eq_flow + m.Tcoef[i]) / 100
+            # Power cost expression
+            base_cost = (m.rho*m.FLOW*9.81*PH*m.NOP[i])/(3600*1000*eff*0.95)
+            elec_cost = base_cost * 24 * m.ElecRt[i]
+            diesel_cost = base_cost * 24 * (m.SFC[i]*1.34102/1000/820)*1000 * m.Price_HSD
+            pwr_costs.append(m.isGrid[i]*elec_cost + (1-m.isGrid[i])*diesel_cost)
+            # Drag reduction cost
             dra_costs.append((m.DR[i]/1e6)*m.FLOW*24*1000*m.Rate_DRA)
         else:
-            # no-pump segment
+            # No-pump segment: only head loss
             m.add_component(f"bal_{i}", pyo.Constraint(
-                expr=m.RH[i] >= SH + HL
+                expr=m.RH[i] >= SH + const_HL*(1 - m.DR[i]/100)
             ))
-            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i])*10000/m.rho
+            # MAOP for no-pump
+            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i]) * 10000/m.rho
             m.add_component(f"maop_{i}", pyo.Constraint(
                 expr=m.RH[i] <= MAOP
             ))
             pwr_costs.append(0)
             dra_costs.append((m.DR[i]/1e6)*m.FLOW*24*1000*m.Rate_DRA)
 
-    m.Obj = pyo.Objective(expr=sum(pwr_costs)+sum(dra_costs), sense=pyo.minimize)
+    # Objective
+    m.Obj = pyo.Objective(expr=sum(pwr_costs) + sum(dra_costs), sense=pyo.minimize)(expr=sum(pwr_costs)+sum(dra_costs), sense=pyo.minimize)
 
     results = SolverManagerFactory('neos').solve(m, solver='couenne', tee=False)
     m.solutions.load_from(results)
