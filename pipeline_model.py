@@ -55,7 +55,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
             Acoef[i],Bcoef[i],Ccoef[i] = stn['A'],stn['B'],stn['C']
             Pcoef[i],Qcoef[i] = stn['P'],stn['Q']
             Rcoef[i],Scoef[i],Tcoef[i] = stn['R'],stn['S'],stn['T']
-            min_rpm[i],max_rpm[i]     = stn['min_rpm'], stn['max_rpm']
+            min_rpm[i] = stn.get('min_rpm', 0)
+            max_rpm[i] = stn.get('max_rpm', 0)
         else:
             has_pump[i] = False
 
