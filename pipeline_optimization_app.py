@@ -5,12 +5,13 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
-from pipeline_model import solve_pipeline
+import pyomo.environ as pyo
+from pyomo.opt import SolverManagerFactory
 
 if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
 else:
-    st.error("🛑  NEOS_EMAIL not found in secrets. Please add it.")
+    st.error("🛑 NEOS_EMAIL not found in secrets. Please add it.")
 
 # ---------------------
 # Page configuration
@@ -37,14 +38,12 @@ st.markdown(
         color: var(--text-primary-color) !important;
         text-align: center;
       }
-      /* Center label & value */
       .stMetric .metric-value,
       .stMetric .metric-label {
-        display: block !important;
-        width: 100% !important;
-        text-align: center !important;
+        display: block;
+        width: 100%;
+        text-align: center;
       }
-      /* Theme-adaptive text helper */
       .color-adapt {
         color: var(--text-primary-color) !important;
       }
@@ -54,40 +53,128 @@ st.markdown(
         color: var(--text-primary-color) !important;
         margin-top: 1rem;
       }
-      /* … rest of your styles … */
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # ---------------------
-# Title (logo removed)
+# Title
 # ---------------------
-st.markdown(
-    "<h1 class='color-adapt'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>",
-    unsafe_allow_html=True
-)
+st.markdown("<h1 class='color-adapt'>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
 
 # ---------------------
-# Sidebar Inputs
+# Solver wrapper
+# ---------------------
+def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
+    import pipeline_model
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD)
+
+# ---------------------
+# Sidebar: global inputs + dynamic station builder + terminal
 # ---------------------
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
-    with st.expander("Adjust Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)",      value=2000.0, step=10.0)
-        KV        = st.number_input("Viscosity (cSt)",        value=10.0,    step=0.1)
-        rho       = st.number_input("Density (kg/m³)",        value=880.0,  step=10.0)
-        SFC_J     = st.number_input("SFC Jamnagar (gm/bhp/hr)", value=150.0, step=1.0)
-        SFC_R     = st.number_input("SFC Rajkot (gm/bhp/hr)",   value=150.0, step=1.0)
-        SFC_S     = st.number_input("SFC Surendranagar (gm/bhp/hr)", value=150.0, step=1.0)
-        RateDRA   = st.number_input("DRA Rate (INR/L)",        value=500.0,    step=0.1)
-        Price_HSD = st.number_input("HSD Rate (INR/L)",        value=70.0,   step=0.5)
-    # Terminal Station inputs
-    st.subheader("Terminal Station")
-    terminal_name = st.text_input("Terminal station name", value="Terminal")
-    terminal_elevation = st.number_input("Terminal elevation (m)", value=80.0)
-    required_residual_head = st.number_input("Required residual head at delivery point (m)", value=50.0)
-    run = st.button("🚀 Run Optimization")
+    with st.expander("Global Fluid & Cost Parameters", expanded=True):
+        FLOW      = st.number_input("Flow rate (m³/hr)", value=2000.0, step=10.0)
+        KV        = st.number_input("Viscosity (cSt)", value=10.0,    step=0.1)
+        rho       = st.number_input("Density (kg/m³)", value=880.0,   step=10.0)
+        RateDRA   = st.number_input("DRA Rate (INR/L)", value=500.0,  step=0.1)
+        Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
+
+    # Buttons to add/remove stations
+    add_col, rem_col = st.columns(2)
+    add_btn = add_col.button("➕ Add Station")
+    rem_btn = rem_col.button("🗑️ Remove Station")
+    if 'stations' not in st.session_state:
+        st.session_state.stations = [{
+            'name': 'Station 1', 'elev': 0.0,
+            'D': 0.71120, 't': 0.00714, 'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'is_pump': True, 'power_type': 'Grid', 'rate': 9.0,
+            'sfc': 150.0, 'max_pumps': 3, 'MinRPM': 1200.0, 'DOL': 1500.0,
+            'max_dr': 40.0,
+            'A': -2e-6, 'B': -0.0015, 'C': 179.14,
+            'P': -4.161e-14, 'Q': 6.574e-10, 'R': -8.737e-06, 'S': 0.04924, 'T': -0.001754
+        }]
+    if add_btn:
+        n = len(st.session_state.stations) + 1
+        st.session_state.stations.append({
+            'name': f'Station {n}', 'elev': 0.0,
+            'D': 0.71120, 't': 0.00714, 'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'is_pump': True, 'power_type': 'Diesel', 'rate': 9.0,
+            'sfc': 150.0, 'max_pumps': 2, 'MinRPM': 2750.0, 'DOL': 3437.0,
+            'max_dr': 40.0,
+            'A': -1e-5, 'B': 0.00135, 'C': 270.08,
+            'P': -4.07e-13, 'Q': 3.4657e-09, 'R': -1.9273e-05, 'S': 0.067033, 'T': -0.15043
+        })
+    if rem_btn and len(st.session_state.stations) > 1:
+        st.session_state.stations.pop()
+
+    # Render each station’s inputs
+    for idx, stn in enumerate(st.session_state.stations, start=1):
+        with st.expander(f"Station {idx}: {stn['name']}", expanded=True):
+            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], key=f"elev{idx}")
+            stn['D'] = st.number_input(
+                "Outer Diameter (m)",
+                value=stn['D'],
+                step=0.00001,
+                format="%.5f",
+                key=f"D{idx}"
+            )
+            stn['t'] = st.number_input(
+                "Wall Thickness (m)",
+                value=stn['t'],
+                step=0.00001,
+                format="%.5f",
+                key=f"t{idx}"
+            )
+            stn['SMYS']  = st.number_input("SMYS (psi)", value=stn['SMYS'], key=f"SMYS{idx}")
+            stn['rough'] = st.number_input(
+                "Pipe Roughness (m)",
+                value=stn['rough'],
+                step=0.00001,
+                format="%.5f",
+                key=f"rough{idx}"
+            )
+            stn['L']       = st.number_input("Length to next (km)", value=stn['L'], key=f"L{idx}")
+            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
+            if stn['is_pump']:
+                stn['power_type'] = st.selectbox(
+                    "Power Source", ["Grid","Diesel"],
+                    index=(0 if stn['power_type']=="Grid" else 1),
+                    key=f"ptype{idx}"
+                )
+                if stn['power_type']=="Grid":
+                    stn['rate'] = st.number_input(
+                        "Electricity Rate (INR/kWh)",
+                        value=stn['rate'], key=f"rate{idx}"
+                    )
+                else:
+                    stn['sfc'] = st.number_input(
+                        "SFC (gm/bhp-hr)",
+                        value=stn['sfc'], key=f"sfc{idx}"
+                    )
+                stn['max_pumps'] = st.number_input(
+                    "Available Pumps", min_value=1,
+                    value=stn['max_pumps'], step=1, key=f"mpumps{idx}"
+                )
+                stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                stn['DOL']    = st.number_input("Rated RPM", value=stn['DOL'],    key=f"dol{idx}")
+                stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr{idx}")
+                st.file_uploader("Pump Head Curve (img)", type=["png","jpg","jpeg"], key=f"headimg{idx}")
+                st.file_uploader("Efficiency Curve (img)", type=["png","jpg","jpeg"], key=f"effimg{idx}")
+
+    # ---------------------
+    # Terminal Station Inputs
+    # ---------------------
+    st.markdown("---")
+    st.subheader("🏁 Terminal Station")
+    terminal_name = st.text_input("Terminal Name", value="Terminal")
+    terminal_elev = st.number_input("Terminal Elevation (m)", value=0.0, step=0.00001, format="%.5f")
+    required_residual = st.number_input("Required Residual Head (m)", value=50.0, step=0.1)
+
+run = st.button("🚀 Run Optimization")
 
 if run:
     with st.spinner("Solving pipeline optimization..."):
