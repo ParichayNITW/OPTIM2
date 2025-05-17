@@ -116,10 +116,28 @@ with st.sidebar:
         with st.expander(f"Station {idx}: {stn['name']}", expanded=True):
             stn['name'] = st.text_input("Name",     value=stn['name'], key=f"name{idx}")
             stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], key=f"elev{idx}")
-            stn['D']    = st.number_input("Outer Diameter (m)", value=stn['D'], key=f"D{idx}")
-            stn['t']    = st.number_input("Wall Thickness (m)", value=stn['t'], key=f"t{idx}")
+            stn['D']   = st.number_input(
+                "Outer Diameter (m)",
+                value=stn['D'],
+                step=0.00001,
+                format="%.5f",
+                key=f"D{idx}"
+            )
+            stn['t']   = st.number_input(
+                "Wall Thickness (m)",
+                value=stn['t'],
+                step=0.00001,
+                format="%.5f",
+                key=f"t{idx}"
+            )
             stn['SMYS']= st.number_input("SMYS (psi)", value=stn['SMYS'], key=f"SMYS{idx}")
-            stn['rough']= st.number_input("Pipe Roughness (m)", value=stn['rough'], key=f"rough{idx}")
+            stn['rough'] = st.number_input(
+                "Pipe Roughness (m)",
+                value=stn['rough'],
+                step=0.00001,
+                format="%.5f",
+                key=f"rough{idx}"
+            )
             stn['L']    = st.number_input("Length to next (km)", value=stn['L'], key=f"L{idx}")
             stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
             if stn['is_pump']:
