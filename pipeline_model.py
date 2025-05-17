@@ -48,7 +48,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
         roughness[i] = stn['rough']
         elevation[i] = stn['elev']
         SMYS[i]      = stn['SMYS']
-        DF[i]        = stn['DF']
+        DF[i]        = stn.get('DF', 0.72)  # default design factor
         if stn.get('is_pump', False):
             has_pump[i]      = True
             max_pumps[i]     = stn['max_pumps']
