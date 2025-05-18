@@ -47,13 +47,14 @@ for i in range(num_stations):
 
         if is_pump:
             stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"], key=f"pwr_{i}")
-            stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=9.0, key=f"rate_{i}")
+            if stn['power_type'] == "Grid":
+                stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=9.0, key=f"rate_{i}")
+            else:
+                stn['SFC'] = st.number_input("SFC (gm/bhp/hr)", value=210.0, key=f"sfc_{i}")
             stn['max_pumps'] = st.number_input("Available Pumps", value=3, step=1, key=f"maxp_{i}")
             stn['MinRPM'] = st.number_input("Min RPM", value=1200.0, key=f"minrpm_{i}")
             stn['DOL'] = st.number_input("Rated RPM", value=1500.0, key=f"dol_{i}")
-            stn['DR'] = st.number_input("Max Drag Reduction (%)", value=40.0, key=f"dr_{i}")
-
-            # Pump curves
+            stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=40.0, key=f"dr_{i}")
             stn['A'] = st.number_input("Head Curve A", value=0.0, key=f"A_{i}")
             stn['B'] = st.number_input("Head Curve B", value=0.0, key=f"B_{i}")
             stn['C'] = st.number_input("Head Curve C", value=0.0, key=f"C_{i}")
@@ -62,10 +63,10 @@ for i in range(num_stations):
             stn['R'] = st.number_input("Eff Curve R", value=0.0, key=f"R_{i}")
             stn['S'] = st.number_input("Eff Curve S", value=0.0, key=f"S_{i}")
             stn['T'] = st.number_input("Eff Curve T", value=0.0, key=f"T_{i}")
-            if stn['power_type'] == "Diesel":
-                stn['SFC'] = st.number_input("SFC (gm/bhp/hr)", value=210.0, key=f"sfc_{i}")
 
-        stn['RH'] = st.number_input("Initial RH (m)", value=50.0, key=f"rh_{i}") if i == 0 else 50
+        if i == 0:
+            stn['min_residual'] = st.number_input("Initial Residual Head (m)", value=50.0, key=f"initRH_{i}")
+
         stations.append(stn)
 
 with st.expander("Terminal Station"):
@@ -91,13 +92,14 @@ if st.button("🚀 Run Optimization"):
             st.subheader("Summary Results")
             st.metric("Total Cost (INR/day)", f"₹{results['total_cost']:,.2f}")
 
-            data = []
-            cols = ['Station', 'No. of Pumps', 'Speed (RPM)', 'Efficiency (%)',
-                    'Power Cost (INR)', 'DRA Cost (INR)', 'Drag Reduction (%)',
-                    'Head Loss (m)', 'Residual Head (m)', 'Velocity (m/s)', 'Reynolds No.']
+            summary_data = []
+            cols = ["Station", "No. of Pumps", "Speed (RPM)", "Efficiency (%)",
+                    "Power Cost (INR)", "DRA Cost (INR)", "Drag Reduction (%)",
+                    "Head Loss (m)", "Residual Head (m)", "Velocity (m/s)", "Reynolds No."]
+
             for stn in stations:
                 key = stn['name'].strip().lower()
-                row = [
+                summary_data.append([
                     stn['name'],
                     results.get(f'num_pumps_{key}', 0),
                     results.get(f'speed_{key}', 0),
@@ -108,18 +110,17 @@ if st.button("🚀 Run Optimization"):
                     results.get(f'head_loss_{key}', 0),
                     results.get(f'residual_head_{key}', 0),
                     results.get(f'velocity_{key}', 0),
-                    results.get(f'reynolds_number_{key}', 0),
-                ]
-                data.append(row)
+                    results.get(f'reynolds_{key}', 0)
+                ])
 
-            key = terminal['name'].strip().lower()
-            data.append([
+            term_key = terminal['name'].strip().lower()
+            summary_data.append([
                 terminal['name'], '-', '-', '-', '-', '-', '-', '-',
-                results.get(f'residual_head_{key}', 0), '-', '-'
+                results.get(f'residual_head_{term_key}', 0), '-', '-'
             ])
 
-            df = pd.DataFrame(data, columns=cols)
-            st.dataframe(df, use_container_width=True)
+            df_summary = pd.DataFrame(summary_data, columns=cols)
+            st.dataframe(df_summary, use_container_width=True)
 
         except Exception as e:
             st.error(f"❌ Optimization failed: {e}")
