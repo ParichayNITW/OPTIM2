@@ -207,7 +207,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     SH = {}; SDHR = {}; TDH = {}; EFFP = {}
     for i in range(1, N+1):
         # Static head (elevation difference + downstream residual head)
-        SH[i] = model.RH[i+1] + model.z[i+1] - model.z[i]
+        SH[i] = model.RH[i+1] + (pyo.value(model.z[i+1]) - pyo.value(model.z[i]))
         # Frictional head loss (m)
         DR_frac = 0.0
         if inj_source.get(i) is not None:
