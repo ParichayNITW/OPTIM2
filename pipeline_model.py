@@ -3,6 +3,7 @@ import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 from math import log10, pi
+from math import pi
 
 # Ensure NEOS email is set (replace with your email in deployment)
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
