@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from math import pi
 
 from io import BytesIO
 from pyomo.opt import SolverManagerFactory
