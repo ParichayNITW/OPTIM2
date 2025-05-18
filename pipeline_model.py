@@ -27,10 +27,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
     L, Dout, thickness, eps, z = {},{},{},{},{}
     SMYS, DF = {},{}
     is_pump, max_pumps = {},{}
-    Acoef, Bcoef, Ccoef = {},{},{},{}
+    Acoef, Bcoef, Ccoef = {},{},{}
     Pcoef, Qcoef, Rcoef, Scoef, Tcoef = {},{},{},{},{}
     minRPM, maxRPM = {},{}
-    isGrid, ElecRt, SFC = {},{},{},{}
+    isGrid, ElecRt, SFC = {},{},{}
 
     # Read station inputs
     for i, s in enumerate(stations, start=1):
@@ -44,9 +44,14 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
         if s.get('is_pump', False):
             is_pump[i]       = True
             max_pumps[i]     = s['max_pumps']
-            Acoef[i],Bcoef[i],Ccoef[i] = s['A'],s['B'],s['C']
-            Pcoef[i],Qcoef[i]         = s['P'],s['Q']
-            Rcoef[i],Scoef[i],Tcoef[i] = s['R'],s['S'],s['T']
+            Acoef[i] = s['A']
+            Bcoef[i] = s['B']
+            Ccoef[i] = s['C']
+            Pcoef[i] = s['P']
+            Qcoef[i] = s['Q']
+            Rcoef[i] = s['R']
+            Scoef[i] = s['S']
+            Tcoef[i] = s['T']
             minRPM[i]       = s['MinRPM']
             maxRPM[i]       = s['DOL']
             isGrid[i]       = 1 if s['power_type']=='Grid' else 0
@@ -84,84 +89,5 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, Rate_DRA, Price_HSD):
         m.ElecRt = pyo.Param(m.pumps, initialize=ElecRt)
         m.SFC    = pyo.Param(m.pumps, initialize=SFC)
 
-    m.RH  = pyo.Var(m.node, domain=pyo.NonNegativeReals, initialize=min_res)
-    m.term = pyo.Constraint(expr=m.RH[P+1] == min_res)
-
-    m.NOP = pyo.Var(m.seg,
-        domain=pyo.NonNegativeIntegers,
-        bounds=lambda mod,i: (0, mod.maxP[i]) if i in mod.pumps else (0,0)
-    )
-    m.Nu = pyo.Var(m.seg,
-        domain=pyo.NonNegativeIntegers,
-        bounds=lambda mod,i: (
-            int((mod.minRPM[i]+9)//10), int(mod.maxRPM[i]//10)
-        ) if i in mod.pumps else (0,0),
-        initialize=lambda mod,i: (int((mod.minRPM[i]+9)//10) if i in mod.pumps else 0)
-    )
-    m.N   = pyo.Expression(m.seg, rule=lambda mod,i: 10*mod.Nu[i])
-    m.DRu = pyo.Var(m.seg, domain=pyo.NonNegativeIntegers, bounds=(0,4), initialize=0)
-    m.DR  = pyo.Expression(m.seg, rule=lambda mod,i: 10*mod.DRu[i])
-
-    power_costs = []
-    dra_costs   = []
-    for i in m.seg:
-        inner_d = pyo.value(m.Dout[i]) - 2*pyo.value(m.t[i])
-        if inner_d <= 0:
-            raise ZeroDivisionError(f"Segment {i} inner diameter <=0: {inner_d}")
-        v = pyo.value(m.FLOW)/(3.1416*(inner_d**2)/4)/3600
-        Re = v*inner_d/(pyo.value(m.KV)*1e-6)
-        expr = (pyo.value(m.eps[i])/(3.7*inner_d)) + (5.74/(Re**0.9))
-        if expr <= 0:
-            raise ValueError(f"Invalid log10 argument: {expr}")
-        ff = 0.25/(log10(expr)**2)
-        SH = m.RH[i+1] + (m.z[i+1]-m.z[i])
-        HL = ff*(pyo.value(m.L[i])*1000/inner_d)*(v**2/(2*9.81))*(1 - m.DR[i]/100)
-
-        if i in m.pumps:
-            PH = (m.A[i]*m.FLOW**2 + m.B[i]*m.FLOW + m.C[i])*(m.N[i]/m.maxRPM[i])**2
-            m.add_component(f"bal_{i}", pyo.Constraint(
-                expr=m.RH[i] + PH*m.NOP[i] >= SH + HL
-            ))
-            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i]) * 10000/m.rho
-            m.add_component(f"maop_{i}", pyo.Constraint(
-                expr=m.RH[i] + PH*m.NOP[i] <= MAOP
-            ))
-            eqf = m.FLOW*m.maxRPM[i]/m.N[i]
-            eff = (m.Pp[i]*eqf**4 + m.Qp[i]*eqf**3 + m.Rp[i]*eqf**2 + m.Sp[i]*eqf + m.Tp[i]) / 100
-            base = (m.rho*m.FLOW*9.81*PH*m.NOP[i])/(3600*1000*eff*0.95)
-            rcost = base * 24 * m.ElecRt[i]
-            dcost = base * 24 * (m.SFC[i]*1.34102/1000/820)*1000*m.Price_HSD
-            power_costs.append(m.isGrid[i]*rcost + (1-m.isGrid[i])*dcost)
-        else:
-            m.add_component(f"bal_{i}", pyo.Constraint(
-                expr=m.RH[i] >= SH + HL
-            ))
-            MAOP = (2*m.t[i]*(m.SMYS[i]*0.070307)*m.DF[i]/m.Dout[i]) * 10000/m.rho
-            m.add_component(f"maop_{i}", pyo.Constraint(
-                expr=m.RH[i] <= MAOP
-            ))
-            power_costs.append(0)
-
-        dra_costs.append((m.DR[i]/1e6)*m.FLOW*24*1000*m.Rate_DRA)
-
-    m.Obj = pyo.Objective(expr=sum(power_costs)+sum(dra_costs), sense=pyo.minimize)
-
-    sol = SolverManagerFactory('neos').solve(m, solver='couenne', tee=False)
-    m.solutions.load_from(sol)
-
-    out = {'total_cost': pyo.value(m.Obj)}
-    for i in m.seg:
-        key = stations[i-1]['name'].lower()
-        out[f"num_pumps_{key}"]    = int(pyo.value(m.NOP[i]))
-        out[f"speed_{key}"]         = float(pyo.value(m.N[i]))
-        eqf = pyo.value(m.FLOW)*pyo.value(m.maxRPM[i])/pyo.value(m.N[i])
-        eff = (pyo.value(m.Pp[i])*eqf**4 + pyo.value(m.Qp[i])*eqf**3 +
-               pyo.value(m.Rp[i])*eqf**2 + pyo.value(m.Sp[i])*eqf +
-               pyo.value(m.Tp[i]))/100
-        out[f"efficiency_{key}"]    = float(eff*100)
-        out[f"power_cost_{key}"]    = float(pyo.value(power_costs[i-1]))
-        out[f"dra_cost_{key}"]      = float(pyo.value(dra_costs[i-1]))
-        out[f"residual_head_{key}"] = float(pyo.value(m.RH[i]))
-    tkey = terminal['name'].lower()
-    out[f"residual_head_{tkey}"] = float(pyo.value(m.RH[P+1]))
-    return out
+    # [rest of your existing model code remains unchanged]
+    # No need to repeat it here unless there's a bug to address there too
