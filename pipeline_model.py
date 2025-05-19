@@ -246,7 +246,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost = (model.DR[i]/100.0) * (FLOW*1000.0*24.0/1e6) * RateDRA
+        dra_cost = (model.DR[i]/4) * (FLOW*1000.0*24.0/1e6) * RateDRA
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
@@ -279,7 +279,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
             power_cost = 0.0
 
         if i in pump_indices:
-            dra_cost = (float(pyo.value(model.DR[i]))/100.0)*(FLOW*1000.0*24.0/1e6)*RateDRA
+            dra_cost = (float(pyo.value(model.DR[i]))/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
             drag_red = float(pyo.value(model.DR[i]))
         else:
             dra_cost = 0.0; drag_red = 0.0
