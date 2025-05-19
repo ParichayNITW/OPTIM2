@@ -147,15 +147,20 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
                         bounds=lambda m,j: (0, dr_max[j]), initialize=0)
     model.DR = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.DR_u[j])
 
-    # Residual head at each node (m)
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
+    # Fix residual head at the first station (station 1)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
+    # Leave RH as free variable for stations 2 to N (no hard lower bound)
+    # Add constraint RH[j] ≥ 50 instead (soft constraint)
+    model.rh_floor = pyo.ConstraintList()
     for j in range(2, N+1):
-        model.RH[j].setlb(50.0)
+        model.rh_floor.add(model.RH[j] >= 50.0)
+
+    # Fix or constrain terminal residual head
     if terminal.get('min_residual') is not None:
         model.RH[N+1].fix(terminal['min_residual'])
     else:
-        model.RH[N+1].setlb(50.0)
+        model.rh_floor.add(model.RH[N+1] >= 50.0)
 
     # Hydraulic calculations (outside Pyomo: compute flow velocity, Re, f)
     g = 9.81
