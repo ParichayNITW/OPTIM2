@@ -27,6 +27,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     min_rpm, dol_rpm, max_pumps = {}, {}, {}
     sfc, rate = {}, {}
     max_dr = {}
+    dra_stations = []
     pump_stations = []
 
     for i, stn in enumerate(stations, start=1):
@@ -38,6 +39,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         SMYS[i] = stn.get('SMYS', 52000)
         DF[i] = stn.get('DF', 0.72)
 
+        if stn.get('max_dr', 0) > 0:
+            dra_stations.append(i)
+            max_dr[i] = stn['max_dr']
+
         if stn.get('is_pump', False):
             pump_stations.append(i)
             A[i], B[i], C[i] = stn['A'], stn['B'], stn['C']
@@ -47,7 +52,6 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
             max_pumps[i] = stn['max_pumps']
             sfc[i] = stn.get('SFC', 0)
             rate[i] = stn.get('rate', 0)
-            max_dr[i] = stn['max_dr']
 
     elev[N+1] = terminal['elev']
 
@@ -57,6 +61,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     model.z = pyo.Param(model.Nodes, initialize=elev)
 
     model.pump_stations = pyo.Set(initialize=pump_stations)
+    model.dra_stations = pyo.Set(initialize=dra_stations)
+
     model.A = pyo.Param(model.pump_stations, initialize=A)
     model.B = pyo.Param(model.pump_stations, initialize=B)
     model.C = pyo.Param(model.pump_stations, initialize=C)
@@ -72,8 +78,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     model.Nu = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers, bounds=lambda m,j: (int(min_rpm[j]/10), int(dol_rpm[j]/10)), initialize=lambda m,j: int((min_rpm[j] + dol_rpm[j]) / 20))
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10 * m.Nu[j])
 
-    model.DRu = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers, bounds=lambda m,j: (0, int(max_dr[j]/10)), initialize=0)
-    model.DR = pyo.Expression(model.pump_stations, rule=lambda m,j: 10 * m.DRu[j])
+    model.DRu = pyo.Var(model.dra_stations, domain=pyo.NonNegativeIntegers, bounds=lambda m,j: (0, int(max_dr[j]/10)), initialize=0)
+    model.DR = pyo.Expression(model.dra_stations, rule=lambda m,j: 10 * m.DRu[j])
 
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, bounds=lambda m,j: (50.0, None))
     model.RH[1].fix(stations[0]['min_residual'])
@@ -95,7 +101,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
 
     TDH, EFF = {}, {}
     for i in model.I:
-        dh = f[i] * (length[i]*1000/d_inner[i]) * (v[i]**2/(2*g))
+        dra_frac = model.DR[i] / 100 if i in dra_stations else 0
+        dh = f[i] * (length[i]*1000/d_inner[i]) * (v[i]**2/(2*g)) * (1 - dra_frac)
         static = model.z[i+1] - model.z[i]
         SDHR = model.RH[i+1] + static + dh
 
@@ -107,17 +114,15 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         else:
             model.constraints.add(model.RH[i] >= SDHR)
 
-    # Objective
     cost_expr = 0
     for i in pump_stations:
         power_kw = (rho * FLOW * g * TDH[i] * model.NOP[i]) / (3600 * 1000 * EFF[i] * 0.95)
-        dra_cost = (model.DR[i] / 100) * (FLOW * 24 * 1000 / 1e6) * RateDRA
-        if sfc[i] > 0:
-            fuel_kwh = (sfc[i]*1.34102) / 820
-            fuel_cost = power_kw * 24 * fuel_kwh * Price_HSD
-        else:
-            fuel_cost = power_kw * 24 * rate[i]
-        cost_expr += fuel_cost + dra_cost
+        fuel_kwh = (sfc[i]*1.34102) / 820 if sfc[i] > 0 else 0
+        fuel_cost = power_kw * 24 * fuel_kwh * Price_HSD if sfc[i] > 0 else power_kw * 24 * rate[i]
+        cost_expr += fuel_cost
+
+    for i in dra_stations:
+        cost_expr += (model.DR[i] / 100) * (FLOW * 24 * 1000 / 1e6) * RateDRA
 
     model.obj = pyo.Objective(expr=cost_expr, sense=pyo.minimize)
 
@@ -133,6 +138,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
             out[f"num_pumps_{key}"] = pyo.value(model.NOP[i])
             out[f"speed_{key}"] = pyo.value(model.N[i])
             out[f"efficiency_{key}"] = pyo.value(EFF[i]) * 100
+        if i in dra_stations:
             out[f"drag_reduction_{key}"] = pyo.value(model.DR[i])
 
     term_key = terminal['name'].strip().lower().replace(" ", "_")
