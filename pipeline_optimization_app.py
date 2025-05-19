@@ -25,7 +25,7 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-st.markdown("<h1>Pipeline Optimization App</h1>", unsafe_allow_html=True)
+st.markdown("<h1>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
 
 # Solver call
 def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
