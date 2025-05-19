@@ -3,7 +3,7 @@ import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 from math import log10, pi
 
-# Ensure NEOS email is set (replace with your email in deployment)
+# Ensure NEOS email is set
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
 def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
@@ -88,7 +88,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     model.constraints = pyo.ConstraintList()
 
     g = 9.81
-    v, Re, f = {}, {}, {}
+    v, Re, f, dh_loss, SDHR = {}, {}, {}, {}, {}
     flow_m3s = FLOW / 3600
     for i in model.I:
         A_flow = pi * (d_inner[i] ** 2) / 4
@@ -103,26 +103,32 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     for i in model.I:
         dra_frac = model.DR[i] / 100 if i in dra_stations else 0
         dh = f[i] * (length[i]*1000/d_inner[i]) * (v[i]**2/(2*g)) * (1 - dra_frac)
+        dh_loss[i] = dh
         static = model.z[i+1] - model.z[i]
-        SDHR = model.RH[i+1] + static + dh
+        SDHR[i] = model.RH[i+1] + static + dh
 
         if i in pump_stations:
             TDH[i] = (model.A[i]*FLOW**2 + model.B[i]*FLOW + model.C[i]) * (model.N[i]/model.DOL[i])**2
             eq_flow = FLOW * model.DOL[i]/model.N[i]
             EFF[i] = (model.P[i]*eq_flow**4 + model.Q[i]*eq_flow**3 + model.R[i]*eq_flow**2 + model.S[i]*eq_flow + model.T[i])/100
-            model.constraints.add(model.RH[i] + TDH[i]*model.NOP[i] >= SDHR)
+            model.constraints.add(model.RH[i] + TDH[i]*model.NOP[i] >= SDHR[i])
         else:
-            model.constraints.add(model.RH[i] >= SDHR)
+            model.constraints.add(model.RH[i] >= SDHR[i])
 
     cost_expr = 0
     for i in pump_stations:
         power_kw = (rho * FLOW * g * TDH[i] * model.NOP[i]) / (3600 * 1000 * EFF[i] * 0.95)
-        fuel_kwh = (sfc[i]*1.34102) / 820 if sfc[i] > 0 else 0
-        fuel_cost = power_kw * 24 * fuel_kwh * Price_HSD if sfc[i] > 0 else power_kw * 24 * rate[i]
-        cost_expr += fuel_cost
+        dra_cost = (model.DR[i] / 100) * (FLOW * 24 * 1000 / 1e6) * RateDRA if i in dra_stations else 0
+        if sfc[i] > 0:
+            fuel_kwh = (sfc[i]*1.34102) / 820
+            fuel_cost = power_kw * 24 * fuel_kwh * Price_HSD
+        else:
+            fuel_cost = power_kw * 24 * rate[i]
+        cost_expr += fuel_cost + dra_cost
 
     for i in dra_stations:
-        cost_expr += (model.DR[i] / 100) * (FLOW * 24 * 1000 / 1e6) * RateDRA
+        if i not in pump_stations:
+            cost_expr += (model.DR[i] / 100) * (FLOW * 24 * 1000 / 1e6) * RateDRA
 
     model.obj = pyo.Objective(expr=cost_expr, sense=pyo.minimize)
 
@@ -134,6 +140,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     for i, stn in enumerate(stations, start=1):
         key = stn['name'].strip().lower().replace(" ", "_")
         out[f"residual_head_{key}"] = pyo.value(model.RH[i])
+        out[f"head_loss_{key}"] = dh_loss[i]
+        out[f"velocity_{key}"] = v[i]
+        out[f"reynolds_{key}"] = Re[i]
+        out[f"sdh_{key}"] = pyo.value(SDHR[i])
         if i in pump_stations:
             out[f"num_pumps_{key}"] = pyo.value(model.NOP[i])
             out[f"speed_{key}"] = pyo.value(model.N[i])
