@@ -251,7 +251,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # Solve with Couenne via NEOS
-    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
+    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
     model.solutions.load_from(results)
 
     # Extract results
