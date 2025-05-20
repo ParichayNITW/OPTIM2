@@ -80,13 +80,13 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         # Station-specific viscosity & density
         stn['KV'] = st.number_input(
             "Viscosity (cSt)",
-            value=default_stations[idx].get('KV', 10.0),
+            value=stn.get('KV', 10.0),
             step=0.1,
             key=f"kv_{idx}"
         )
         stn['rho'] = st.number_input(
             "Density (kg/m³)",
-            value=default_stations[idx].get('rho', 850.0),
+            value=stn.get('rho', 850.0),
             step=1.0,
             key=f"rho_{idx}"
         )
