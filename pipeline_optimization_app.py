@@ -49,7 +49,7 @@ with st.sidebar:
     if add_c.button("➕ Add Station"): st.session_state.stations.append({
         'name':'Station', 'elev':0.0,'D':0.711,'t':0.007,'SMYS':52000,'rough':4e-5,'L':50.0,
         'min_residual':50.0,'is_pump':False,'power_type':'Grid','rate':9.0,'sfc':150.0,
-        'max_pumps':0,'MinRPM':1200,'DOL':1500,'max_dr':0
+        'max_pumps':1,'MinRPM':1200,'DOL':1500,'max_dr':0
     })
     if rem_c.button("🗑️ Remove Station") and len(st.session_state.stations)>1:
         st.session_state.stations.pop()
@@ -89,7 +89,13 @@ for i, stn in enumerate(st.session_state.stations,1):
             else:
                 stn['sfc']=st.number_input("SFC (gm/bhp·hr)", stn.get('sfc',150), key=f"sfc{i}")
                 stn['rate']=0
-            stn['max_pumps']=st.number_input("Max Pumps",0,stn.get('max_pumps',0),step=1,key=f"mpumps{i}")
+            stn['max_pumps'] = st.number_input(
+                "Maximum Pumps Available",
+                min_value=1,
+                value=stn.get('max_pumps', 1),
+                step=1,
+                key=f"mpumps{i}"
+            )
             stn['MinRPM']=st.number_input("Min RPM", stn.get('MinRPM',1200), key=f"minrpm{i}")
             stn['DOL']=st.number_input("DOL RPM", stn.get('DOL',1500), key=f"dol{i}")
             stn['max_dr']=st.number_input("Max DRA (%)", stn.get('max_dr',0), key=f"mdr{i}")
