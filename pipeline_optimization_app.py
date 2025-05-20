@@ -271,7 +271,7 @@ if run:
             kv = stn.get('KV', 10.0)
             for dra in range(0, int(stn['max_dr'])+1, 10):
                 v_vals = np.linspace(0, FLOW, 101)/3600.0 / (pi*(d_inner_i**2)/4)
-                Re_vals = v_vals * d_inner_i / (KV*1e-6) if kv>0 else np.zeros_like(v_vals)
+                Re_vals = v_vals * d_inner_i / (kv*1e-6) if kv>0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
@@ -296,7 +296,7 @@ if run:
             # System curve for 0% DRA (for simplicity)
             d_inner_i = stn['D'] - 2*stn['t']
             v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-            Re_vals = v_vals * d_inner_i / (KV*1e-6) if kv>0 else np.zeros_like(v_vals)
+            Re_vals = v_vals * d_inner_i / (kv*1e-6) if kv>0 else np.zeros_like(v_vals)
             f_vals = np.where(Re_vals>0,
                               0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
             DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81))
