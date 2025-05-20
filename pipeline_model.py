@@ -8,7 +8,7 @@ from math import pi
 # Ensure NEOS email is set (replace with your email in deployment)
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
-def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
+def solve_pipeline(stations, terminal, FLOW, rho, RateDRA, Price_HSD):
     """
     Build and solve the pipeline optimization model using Pyomo.
     :param stations: list of station dicts (with geometry, pump data, peaks, etc.)
@@ -24,8 +24,6 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
 
     # Set global parameters
     model.FLOW = pyo.Param(initialize=FLOW)           # flow rate (m^3/hr)
-    model.KV = pyo.Param(initialize=KV)               # kinematic viscosity (cSt)
-    model.rho = pyo.Param(initialize=rho)             # fluid density (kg/m^3)
     model.Rate_DRA = pyo.Param(initialize=RateDRA)    # DRA cost (INR/L)
     model.Price_HSD = pyo.Param(initialize=Price_HSD) # diesel cost (INR/L)
 
@@ -42,6 +40,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     pump_indices = []; diesel_pumps = []; electric_pumps = []
     inj_source = {}    # tracks last pump upstream
     max_dr = {}
+    kv_dict  = {}
+    rho_dict = {}
     last_pump_idx = None
 
     # Process station inputs
@@ -49,6 +49,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     default_e = 0.00004
     default_smys = 52000
     default_df = 0.72
+    default_kv  = 10.0   
+    default_rho = 850.0   
 
     for i, stn in enumerate(stations, start=1):
         # Geometry of segment i→i+1
@@ -68,6 +70,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         smys[i] = stn.get('SMYS', default_smys)
         design_factor[i] = stn.get('DF', default_df)
         elev[i] = stn.get('elev', 0.0)
+        kv_dict[i]  = stn.get('KV',  default_kv)
+        rho_dict[i] = stn.get('rho', default_rho)
 
         # Check if this station has a pump
         has_pump = stn.get('is_pump', False)
@@ -107,6 +111,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     model.SMYS = pyo.Param(model.I, initialize=smys)
     model.DF = pyo.Param(model.I, initialize=design_factor)
     model.z = pyo.Param(model.Nodes, initialize=elev)        # elevations (m)
+    model.KV  = pyo.Param(model.I, initialize=kv_dict)
+    model.rho = pyo.Param(model.I, initialize=rho_dict)
 
     model.pump_stations = pyo.Set(initialize=pump_indices)
     if pump_indices:
@@ -167,8 +173,8 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     for i in range(1, N+1):
         area = pi * (d_inner[i]**2) / 4.0
         v[i] = flow_m3s / area if area>0 else 0.0
-        if model.KV > 0:
-            Re[i] = v[i]*d_inner[i]/(float(model.KV)*1e-6)
+        if model.KV[i] > 0:
+            Re[i] = v[i]*d_inner[i]/(float(model.KV[i])*1e-6)
         else:
             Re[i] = 0.0
         if Re[i] > 0:
@@ -251,7 +257,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
 
         # Pressure (MAOP) limit in head units
         D_out = d_inner[i] + 2*thickness[i]
-        MAOP_head = (2*thickness[i]*(smys[i]*0.070307)*design_factor[i]/D_out)*10000.0/rho
+        MAOP_head = (2*thickness[i]*(smys[i]*0.070307)*design_factor[i]/D_out)*10000.0/model.rho[i]
         if i in pump_indices:
             model.pressure_limit.add(model.RH[i] + TDH[i]*model.NOP[i] <= MAOP_head)
         else:
@@ -279,7 +285,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     total_cost = 0
     for i in pump_indices:
         # Pumping power (kW)
-        power_kW = (rho * FLOW * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
+        power_kW = (model.rho[i] * FLOW * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
         if i in electric_pumps:
             power_cost = power_kW * 24.0 * elec_cost.get(i,0.0)
         else:
@@ -306,7 +312,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
 
         # Costs
         if i in pump_indices and num_pumps>0:
-            power_kW = (rho * FLOW * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
+            power_kW = (model.rho[i] * FLOW * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
             if i in electric_pumps:
                 rate = elec_cost.get(i,0.0)
                 power_cost = power_kW * 24.0 * rate
