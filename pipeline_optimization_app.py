@@ -1,5 +1,3 @@
-# pipeline_app.py
-
 import os
 import streamlit as st
 import pandas as pd
@@ -18,7 +16,7 @@ else:
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
-# Custom CSS
+# CSS
 st.markdown("""
 <style>
 .section-title {
@@ -30,13 +28,12 @@ st.markdown("""
 
 st.markdown("<h1>Mixed Integer Nonlinear Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
 
+# Solver function
 def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD)
 
-#
-# Sidebar: Inputs
-#
+# --- Sidebar Inputs --------------------------------------------------------
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
 
@@ -62,7 +59,7 @@ with st.sidebar:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
-# Initialize station list
+# Initialize station list if missing
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -82,8 +79,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho',850.0), step=1.0, key=f"rho{idx}")
         if idx == 1:
             stn['min_residual'] = st.number_input(
-                "Residual Head at Station (m)",
-                value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}"
+                "Residual Head at Station (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}"
             )
         stn['D']     = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{idx}")
         stn['t']     = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=1e-4, key=f"t{idx}")
@@ -93,11 +89,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
 
         if stn['is_pump']:
-            stn['power_type'] = st.selectbox(
-                "Power Source", ["Grid","Diesel"],
-                index=0 if stn['power_type']=="Grid" else 1,
-                key=f"ptype{idx}"
-            )
+            stn['power_type'] = st.selectbox("Power Source", ["Grid","Diesel"], index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
             if stn['power_type']=="Grid":
                 stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
                 stn['sfc'] = 0.0
@@ -111,16 +103,16 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['max_dr']    = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr{idx}")
 
             st.markdown("**Enter Pump Performance Data:**")
-            df_h = pd.DataFrame({"Flow (m³/hr)":[0.0],"Head (m)":[0.0]})
+            df_h = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
             df_h = st.data_editor(df_h, num_rows="dynamic", key=f"head{idx}")
             st.session_state[f"head_{idx}"] = df_h
 
-            df_e = pd.DataFrame({"Flow (m³/hr)":[0.0],"Efficiency (%)":[0.0]})
+            df_e = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
             df_e = st.data_editor(df_e, num_rows="dynamic", key=f"eff{idx}")
             st.session_state[f"eff_{idx}"] = df_e
 
         st.markdown("**Intermediate Elevation Peaks (to next station):**")
-        pk_df = pd.DataFrame({"Location (km)":[stn['L']/2.0], "Elevation (m)":[stn['elev']+100.0]})
+        pk_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
         pk_df = st.data_editor(pk_df, num_rows="dynamic", key=f"peak{idx}")
         st.session_state[f"peak_{idx}"] = pk_df
 
@@ -131,20 +123,14 @@ terminal_name = st.text_input("Name", value="Terminal")
 terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1)
 terminal_head = st.number_input("Required Residual Head (m)", value=50.0, step=1.0)
 
-# Run button
+# Run optimization button
 run = st.button("🚀 Run Optimization")
 
-# Solve and store results
 if run:
     with st.spinner("Solving optimization..."):
-        stations_data = st.session_state.stations
-        term_data = {
-            "name": terminal_name,
-            "elev": terminal_elev,
-            "min_residual": terminal_head
-        }
+        stations_data = st.session_state['stations']
+        term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
 
-        # Attach pump curves & peaks
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state[f"head_{idx}"]
@@ -153,7 +139,7 @@ if run:
                     st.error("Each pump needs ≥3 head & ≥5 eff points.")
                     st.stop()
                 Qh, Hh = dfh.iloc[:,0].values, dfh.iloc[:,1].values
-                c2,c1,c0 = np.polyfit(Qh, Hh, 2)
+                c2, c1, c0 = np.polyfit(Qh, Hh, 2)
                 stn['A'], stn['B'], stn['C'] = c2, c1, c0
                 Qe, Ee = dfe.iloc[:,0].values, dfe.iloc[:,1].values
                 coeff_e = np.polyfit(Qe, Ee, 4)
@@ -162,24 +148,23 @@ if run:
             pk_df = st.session_state[f"peak_{idx}"]
             peaks = []
             for _, r in pk_df.iterrows():
-                loc = float(r[0]); elev_pk = float(r[1])
+                loc, elev_pk = float(r[0]), float(r[1])
                 if loc < 0 or loc > stn['L'] or elev_pk < stn['elev']:
                     st.error("Invalid peak location or elevation.")
                     st.stop()
-                peaks.append({'loc':loc,'elev':elev_pk})
+                peaks.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks
 
         res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
         st.session_state['res'] = res
         st.session_state['stations_data'] = stations_data
 
-# Sidebar: view selector (always visible)
+# Sidebar: view selector
 view = st.sidebar.radio("Show results for:", [
     "Summary", "Cost Breakdown", "Performance",
-    "System Curves", "Pump-System Interaction", "Cost Landscape"
+    "System Curves", "Pump-System Interaction", "Cost Landscape", "Nonconvex Visuals"
 ])
 
-# If we've got results, render
 if 'res' in st.session_state:
     res = st.session_state['res']
     stations_data = st.session_state['stations_data']
@@ -188,24 +173,19 @@ if 'res' in st.session_state:
     with st.sidebar:
         st.markdown("---")
         st.markdown("**Download Scenario**")
-        df_glob = pd.DataFrame([{
-            "FLOW":FLOW, "RateDRA":RateDRA, "Price_HSD":Price_HSD,
-            "Terminal": terminal_name, "Term_Elev": terminal_elev,
-            "Term_Head": terminal_head
-        }])
+        df_glob = pd.DataFrame([{"FLOW":FLOW, "RateDRA":RateDRA, "Price_HSD":Price_HSD,
+                                 "Terminal":terminal_name, "Term_Elev":terminal_elev,
+                                 "Term_Head":terminal_head}])
         df_sta = pd.DataFrame(stations_data)
         bio = BytesIO()
-        with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        with pd.ExcelWriter(bio) as writer:
             df_glob.to_excel(writer, sheet_name="Global", index=False)
             df_sta.to_excel(writer, sheet_name="Stations", index=False)
-        st.download_button("📥 Download .xlsx", bio.getvalue(),
-            file_name="scenario.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        st.download_button("📥 Download Stations CSV",
-            df_sta.to_csv(index=False).encode(),
-            file_name="stations.csv", mime="text/csv"
-        )
+        st.download_button("📥 Download .xlsx", bio.getvalue(), file_name="scenario.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("📥 Download Stations CSV", df_sta.to_csv(index=False).encode(), file_name="stations.csv", mime="text/csv")
+
+    # rest of rendering remains unchanged...
+
 
     # Summary
     if view == "Summary":
