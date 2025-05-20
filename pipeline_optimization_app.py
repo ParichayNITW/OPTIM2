@@ -170,19 +170,34 @@ if 'res' in st.session_state:
     stations_data = st.session_state['stations_data']
 
     # Scenario download
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("**Download Scenario**")
-        df_glob = pd.DataFrame([{"FLOW":FLOW, "RateDRA":RateDRA, "Price_HSD":Price_HSD,
-                                 "Terminal":terminal_name, "Term_Elev":terminal_elev,
-                                 "Term_Head":terminal_head}])
-        df_sta = pd.DataFrame(stations_data)
-        bio = BytesIO()
-        with pd.ExcelWriter(bio) as writer:
-            df_glob.to_excel(writer, sheet_name="Global", index=False)
-            df_sta.to_excel(writer, sheet_name="Stations", index=False)
-        st.download_button("📥 Download .xlsx", bio.getvalue(), file_name="scenario.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.download_button("📥 Download Stations CSV", df_sta.to_csv(index=False).encode(), file_name="stations.csv", mime="text/csv")
+# Scenario download
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("**Download Scenario**")
+    # Global parameters CSV
+    df_glob = pd.DataFrame([{
+        "FLOW": FLOW,
+        "RateDRA": RateDRA,
+        "Price_HSD": Price_HSD,
+        "Terminal": terminal_name,
+        "Term_Elev": terminal_elev,
+        "Term_Head": terminal_head
+    }])
+    st.download_button(
+        "📥 Download Scenario CSV",
+        df_glob.to_csv(index=False).encode(),
+        file_name="scenario.csv",
+        mime="text/csv"
+    )
+    # Stations CSV
+    df_sta = pd.DataFrame(stations_data)
+    st.download_button(
+        "📥 Download Stations CSV",
+        df_sta.to_csv(index=False).encode(),
+        file_name="stations.csv",
+        mime="text/csv"
+    )
+
 
     # rest of rendering remains unchanged...
 
