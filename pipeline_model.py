@@ -320,7 +320,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         else:
             dra_cost = 0.0; drag_red = 0.0
 
-        head_loss = float(pyo.value(SDHR[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
+        head_loss = float(pyo.value(SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
         res_head = float(pyo.value(model.RH[i]))
         velocity = v[i]; reynolds = Re[i]
 
@@ -334,7 +334,7 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         result[f"residual_head_{name}"] = res_head
         result[f"velocity_{name}"] = velocity
         result[f"reynolds_{name}"] = reynolds
-        result[f"sdh_{name}"] = float(pyo.value(SDHR[i]))
+        result[f"sdh_{name}"] = float(pyo.value(SDH[i]))
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
             result[f"coef_B_{name}"] = float(pyo.value(model.B[i]))
