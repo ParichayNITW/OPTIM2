@@ -8,7 +8,7 @@ from math import pi
 # Ensure NEOS email is set (replace with your email in deployment)
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
-def solve_pipeline(stations, terminal, FLOW, rho, RateDRA, Price_HSD):
+def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     """
     Build and solve the pipeline optimization model using Pyomo.
     :param stations: list of station dicts (with geometry, pump data, peaks, etc.)
