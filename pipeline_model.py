@@ -129,6 +129,10 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=nop_bounds, initialize=1)
 
+    model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals,
+                        bounds=nop_bounds, initialize=0)
+
+
     # Discretize pump speed in units of 10 RPM
     speed_min = {}; speed_max = {}
     for j in pump_indices:
