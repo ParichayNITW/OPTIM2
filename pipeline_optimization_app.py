@@ -79,7 +79,13 @@ for i, stn in enumerate(st.session_state.stations,1):
         stn['D']=st.number_input("Outer D (m)", stn.get('D',0.7),format="%.3f",step=0.001, key=f"D{i}")
         stn['t']=st.number_input("t (m)", stn.get('t',0.007),format="%.4f",step=1e-4, key=f"t{i}")
         stn['rough']=st.number_input("Rough (m)", stn.get('rough',4e-5),format="%.5f",step=1e-5, key=f"rough{i}")
-        stn['L']=st.number_input("Length to next (km)", stn.get('L',50),step=1, key=f"L{i}")
+                stn['L'] = st.number_input(
+            "Length to next (km)",
+            value=float(stn.get('L', 50.0)),
+            min_value=0.0,
+            step=1.0,
+            key=f"L{i}"
+        )
         stn['is_pump']=st.checkbox("Pump?", stn.get('is_pump',False), key=f"pump{i}")
         if stn['is_pump']:
             stn['power_type']=st.selectbox("Power",["Grid","Diesel"], key=f"ptype{i}")
