@@ -186,7 +186,7 @@ if run:
     names = [s['name'] for s in stations_data] + [terminal_name]
     rows = ["Power+Fuel Cost", "DRA Cost", "No. Pumps", "Pump Speed (rpm)",
             "Pump Eff (%)", "Reynolds", "Head Loss (m)", "Vel (m/s)",
-            "Residual Head (m)", "SDHR (m)", "DRA (%)"]
+            "Residual Head (m)", "SDH (m)", "DRA (%)"]
     summary = {"Process": rows}
     for nm in names:
         key = nm.lower().replace(' ','_')
@@ -252,7 +252,7 @@ if run:
             key = stn['name'].lower().replace(' ','_')
             d_inner_i = stn['D'] - 2*stn['t']
             rough = stn['rough']; L_seg = stn['L']; elev_i = stn['elev']
-            # Generate SDHR vs flow for 0%,10%,...,max DR
+            # Generate SDH vs flow for 0%,10%,...,max DR
             curves = []
             for dra in range(0, int(stn['max_dr'])+1, 10):
                 v_vals = np.linspace(0, FLOW, 101)/3600.0 / (pi*(d_inner_i**2)/4)
@@ -260,10 +260,10 @@ if run:
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
-                SDHR_vals = elev_i + DH
-                curves.append(pd.DataFrame({"Flow": np.linspace(0, FLOW, 101), "SDHR": SDHR_vals, "DR": dra}))
+                SDH_vals = elev_i + DH
+                curves.append(pd.DataFrame({"Flow": np.linspace(0, FLOW, 101), "SDH": SDH_vals, "DR": dra}))
             df_sys = pd.concat(curves)
-            fig_sys = px.line(df_sys, x="Flow", y="SDHR", color="DR", title=f"System Head ({stn['name']})")
+            fig_sys = px.line(df_sys, x="Flow", y="SDH", color="DR", title=f"System Head ({stn['name']})")
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True)
 
