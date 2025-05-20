@@ -379,47 +379,85 @@ if run:
 
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
+
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
-            key = stn['name'].lower().replace(' ','_')
-            # Plot pump curves at different RPMs against system curve (DRA steps)
 
-            # station-specific viscosity
-            kv = stn.get('KV', 10.0)
+            key = stn['name'].lower().replace(' ', '_')
+            A = stn['A']; B = stn['B']; C = stn['C']
+            P = stn['P']; Q = stn['Q']; R = stn['R']; S = stn['S']; T = stn['T']
+            num_pumps = res[f"num_pumps_{key}"]
+            min_rpm   = res[f"min_rpm_{key}"]
+            dol       = res[f"dol_{key}"]
+
+            # station-specific viscosity & roughness
+            kv    = stn.get('KV', 10.0)
+            rough = stn['rough']
+
+            # common flow array
             flows = np.linspace(0, FLOW*1.5, 200)
 
-
-            # System curves at DRA steps of 5%
+            # Inner diameter
             d_inner_i = stn['D'] - 2*stn['t']
-            for dra in np.arange(0, stn['max_dr']+1, 5):
-                v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-                Re_vals = v_vals * d_inner_i / (kv*1e-6) if kv>0 else np.zeros_like(flows)
-                f_vals = np.where(Re_vals>0,
-                                  0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-                DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100)
-                Hsys = stn['elev'] + DH
-                fig_int.add_trace(go.Scatter(x=flows, y=Hsys, mode='lines', name=f'{dra}% DRA'))
 
-            # Pressure vs Pipeline Length
-            # build cumulative station positions
-            lengths = [s['L'] for s in stations_data]
-            cum = [0]
-            for L in lengths: cum.append(cum[-1]+L)
+            # --- Pump vs System Combined (fig_int) ---
+            fig_int = go.Figure()
+
+            # 1) System head curves at 0–max_dr in 5% steps
+            for dra in np.arange(0, int(stn['max_dr'])+1, 5):
+                v_vals  = flows/3600.0 / (pi*(d_inner_i**2)/4)
+                Re_vals = v_vals * d_inner_i / (kv*1e-6) if kv>0 else np.zeros_like(flows)
+                f_vals  = np.where(
+                    Re_vals>0,
+                    0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2),
+                    0.0
+                )
+                DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1 - dra/100.0)
+                Hsys = stn['elev'] + DH
+                fig_int.add_trace(go.Scatter(
+                    x=flows, y=Hsys, mode='lines',
+                    name=f"System ({dra}% DRA)"
+                ))
+
+            # 2) Pump head curves at 100 rpm increments
+            for rpm in np.arange(min_rpm, dol+1, 100):
+                Hpump = (A*flows**2 + B*flows + C) * (rpm/dol)**2
+                fig_int.add_trace(go.Scatter(
+                    x=flows, y=Hpump, mode='lines',
+                    name=f"Pump {rpm} rpm"
+                ))
+
+            fig_int.update_layout(
+                title=f"{stn['name']}: System & Pump Interaction",
+                xaxis_title="Flow (m³/hr)",
+                yaxis_title="Head (m)"
+            )
+            st.plotly_chart(fig_int, use_container_width=True)
+
+            # --- Pressure vs Pipeline Length (fig_pl) ---
+            # build cumulative distances
+            cum_dist = [0]
+            for s in stations_data:
+                cum_dist.append(cum_dist[-1] + s['L'])
             fig_pl = go.Figure()
-            for i in range(len(stations_data)):
-                x0, x1 = cum[i], cum[i+1]
-                key_i   = stations_data[i]['name'].lower().replace(' ','_')
-                key_j   = stations_data[i+1]['name'].lower().replace(' ','_') if i+1<len(cum) else None
-                y0 = res[f"sdh_{key_i}"]
-                y1 = res[f"residual_head_{key_j}"]
-                fig_pl.add_trace(go.Scatter(x=[x0,x1], y=[y0,y1], mode='lines+markers',
-                name=f"{stations_data[i]['name']}→{stations_data[i+1]['name']}"))
-                # vertical jump at station i+1 if pump
-                if i+1 <= len(stations_data) and res.get(f"num_pumps_{key_j}",0)>0:
-                    y2 = res[f"sdh_{key_j}"]
-                    fig_pl.add_trace(go.Scatter(x=[x1,x1], y=[y1,y2], mode='lines',
-                                                line=dict(dash='dash'), showlegend=False))
+            for seg in range(len(stations_data)):
+                x0, x1 = cum_dist[seg], cum_dist[seg+1]
+                k0 = stations_data[seg]['name'].lower().replace(' ','_')
+                y0 = res[f"sdh_{k0}"]
+                y1 = res[f"residual_head_{k0}"]
+                fig_pl.add_trace(go.Scatter(
+                    x=[x0, x1], y=[y0, y1], mode='lines+markers',
+                    name=f"{stations_data[seg]['name']}→{stations_data[seg+1]['name'] if seg+1<len(stations_data) else 'Terminal'}"
+                ))
+                # vertical jump if pump at next node
+                if seg+1 < len(stations_data) and res.get(f"num_pumps_{stations_data[seg+1]['name'].lower().replace(' ','_')}",0)>0:
+                    k1 = stations_data[seg+1]['name'].lower().replace(' ','_')
+                    y2 = res[f"sdh_{k1}"]
+                    fig_pl.add_trace(go.Scatter(
+                        x=[x1, x1], y=[y1, y2],
+                        mode='lines', line=dict(dash='dash'), showlegend=False
+                    ))
             fig_pl.update_layout(
                 title="Pressure vs Pipeline Length",
                 xaxis_title="Distance (km)",
@@ -427,38 +465,32 @@ if run:
             )
             st.plotly_chart(fig_pl, use_container_width=True)
 
-            # 3D Cost vs Speed vs DRA
+            # --- 3D Cost vs Speed vs DRA (fig3d) ---
             from plotly import graph_objects as go3d
-            num = res[f"num_pumps_{key}"]
-            speeds = np.arange(stn["MinRPM"], stn["DOL"]+1, 100)
-            drs    = np.arange(0, stn["max_dr"]+1, 5)
+            speeds = np.arange(min_rpm, dol+1, 100)
+            drs    = np.arange(0, int(stn['max_dr'])+1, 5)
             Z = np.zeros((len(drs), len(speeds)))
             for ii, dra in enumerate(drs):
                 for jj, rpm in enumerate(speeds):
-                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/stn["DOL"])**2
-                    flow_eq = FLOW * stn["DOL"] / rpm
-                    η = (P*flow_eq**4 + Q*flow_eq**3 + R*flow_eq**2 + S*flow_eq + T)/100.0
-                    power = (stn["rho"]*FLOW*9.81*H*num)/(3600*1000*η*0.95)
-                    cost = power*24* (stn["rate"] if stn["power_type"]=="Grid" else (stn["sfc"]*1.34102/820*Price_HSD))
+                    # head & eff
+                    H    = (A*FLOW**2 + B*FLOW + C)*(rpm/dol)**2
+                    feq  = FLOW * dol / rpm
+                    η    = (P*feq**4 + Q*feq**3 + R*feq**2 + S*feq + T)/100.0
+                    pwr  = (stn['rho']*FLOW*9.81*H*num_pumps)/(3600*1000*η*0.95)
+                    fuel = (stn['rate'] if stn['power_type']=="Grid"
+                            else (stn['sfc']*1.34102/820 * Price_HSD))
                     dra_cost = (dra/4)*(FLOW*1000*24/1e6)*RateDRA
-                    Z[ii,jj] = cost + dra_cost
-            surf = go3d.Surface(x=speeds, y=drs, z=Z, colorscale="Viridis")
-            fig3 = go3d.Figure(data=[surf])
-            fig3.update_layout(
-                title=f"{stn['name']}: Cost vs Speed vs DRA",
-                scene=dict(xaxis_title="RPM", yaxis_title="DRA (%)", zaxis_title="Cost (INR/day)")
-            )
-            st.plotly_chart(fig3, use_container_width=True)
+                    Z[ii, jj] = pwr*24*fuel + dra_cost
 
-            
-            # Pump head curves at some sample RPMs
-            A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
-            N_min = res.get(f"min_rpm_{key}", 0)
-            N_max = res.get(f"dol_{key}", 0)
-            fig_int = go.Figure()
-            fig_int.add_trace(go.Scatter(x=flows, y=Hsys, mode='lines', name='System (0% DRA)'))
-            for rpm in np.arange(N_min, N_max+1, 100):
-                Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
-                fig_int.add_trace(go.Scatter(x=flows, y=Hpump, mode='lines', name=f'Pump {rpm} rpm'))
-            fig_int.update_layout(title=f"Interaction ({stn['name']})", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
-            st.plotly_chart(fig_int, use_container_width=True)
+            surf = go3d.Surface(x=speeds, y=drs, z=Z)
+            fig3d = go3d.Figure(data=[surf])
+            fig3d.update_layout(
+                title=f"{stn['name']}: Cost vs RPM vs DRA",
+                scene=dict(
+                    xaxis_title="RPM",
+                    yaxis_title="DRA (%)",
+                    zaxis_title="Cost (INR/day)"
+                )
+            )
+            st.plotly_chart(fig3d, use_container_width=True)
+
