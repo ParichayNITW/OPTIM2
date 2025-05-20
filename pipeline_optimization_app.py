@@ -494,3 +494,62 @@ if run:
             )
             st.plotly_chart(fig3d, use_container_width=True)
 
+
+
+
+tab6 = st.tabs([])  # add a placeholder if needed
+# better: redefine your tabs to include the new one:
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
+    "🔄 Pump-System", "🌄 Cost Landscape"
+])
+
+with tab6:
+    st.markdown("<div class='section-title'>Cost Landscape (RPM vs DRA)</div>", unsafe_allow_html=True)
+    for stn in stations_data:
+        if not stn.get("is_pump"): 
+            continue
+
+        key     = stn["name"].lower().replace(" ","_")
+        A,B,C   = stn["A"], stn["B"], stn["C"]
+        P,Q,R,S,T = stn["P"],stn["Q"],stn["R"],stn["S"],stn["T"]
+        num     = res[f"num_pumps_{key}"]
+        dol     = res[f"dol_{key}"]
+        min_rpm = res[f"min_rpm_{key}"]
+        rho     = stn["rho"]
+        rate    = stn["rate"] if stn["power_type"]=="Grid" else (stn["sfc"]*1.34102/820 * Price_HSD)
+        max_dr  = stn["max_dr"]
+
+        # Define grids
+        rpms = np.arange(min_rpm, dol+1, 100)
+        drs  = np.arange(0, max_dr+1, 5)
+        Z    = np.zeros((len(drs), len(rpms)))
+
+        for i, dra in enumerate(drs):
+            for j, rpm in enumerate(rpms):
+                # head at this rpm
+                H    = (A*FLOW**2 + B*FLOW + C)*(rpm/dol)**2
+                # eq flow for efficiency
+                feq  = FLOW * dol / rpm
+                η    = (P*feq**4 + Q*feq**3 + R*feq**2 + S*feq + T)/100.0
+                # power (kW)
+                pwr  = (rho * FLOW * 9.81 * H * num)/(3600*1000*η*0.95)
+                # daily energy or fuel cost
+                e_cost = pwr * 24 * rate
+                # DRA cost
+                dra_cost = (dra/4)*(FLOW*1000*24/1e6)*RateDRA
+                Z[i,j] = e_cost + dra_cost
+
+        # Plot 3D surface
+        from plotly import graph_objects as go3d
+        surf = go3d.Surface(x=rpms, y=drs, z=Z)
+        fig = go3d.Figure(data=[surf])
+        fig.update_layout(
+            title=f"{stn['name']}: Cost vs RPM vs DRA",
+            scene=dict(
+                xaxis_title="RPM",
+                yaxis_title="DRA (%)",
+                zaxis_title="Cost (INR/day)"
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True)
