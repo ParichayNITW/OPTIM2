@@ -267,6 +267,8 @@ if run:
             rough = stn['rough']; L_seg = stn['L']; elev_i = stn['elev']
             # Generate SDH vs flow for 0%,10%,...,max DR
             curves = []
+
+            kv = stn.get('KV', 10.0)
             for dra in range(0, int(stn['max_dr'])+1, 10):
                 v_vals = np.linspace(0, FLOW, 101)/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (KV*1e-6) if KV>0 else np.zeros_like(v_vals)
@@ -287,6 +289,9 @@ if run:
                 continue
             key = stn['name'].lower().replace(' ','_')
             # Plot pump curves at different RPMs against system curve (DRA steps)
+
+            # station-specific viscosity
+            kv = stn.get('KV', 10.0)
             flows = np.linspace(0, FLOW*1.5, 200)
             # System curve for 0% DRA (for simplicity)
             d_inner_i = stn['D'] - 2*stn['t']
