@@ -217,7 +217,9 @@ if run:
             res.get(f"drag_reduction_{key}",0.0)
         ]
     df_sum = pd.DataFrame(summary)
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves", "🔄 Pump-System"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
+    "🔄 Pump-System", "🌄 Cost Landscape"])
+    
     with tab1:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         st.dataframe(df_sum, use_container_width=True)
@@ -493,16 +495,6 @@ if run:
                 )
             )
             st.plotly_chart(fig3d, use_container_width=True)
-
-
-
-
-tab6 = st.tabs([])  # add a placeholder if needed
-# better: redefine your tabs to include the new one:
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
-    "🔄 Pump-System", "🌄 Cost Landscape"
-])
 
 with tab6:
     st.markdown("<div class='section-title'>Cost Landscape (RPM vs DRA)</div>", unsafe_allow_html=True)
