@@ -28,7 +28,7 @@ st.markdown("""
 st.markdown("<h1>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
 
 # Solver call
-def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
+def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD)
 
@@ -37,8 +37,6 @@ with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
-        KV        = st.number_input("Viscosity (cSt)", value=10.0, step=0.1)
-        rho       = st.number_input("Density (kg/m³)", value=850.0, step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
 
@@ -78,6 +76,21 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}", expanded=True):
         stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
         stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+        
+        # Station-specific viscosity & density
+        stn['KV'] = st.number_input(
+            "Viscosity (cSt)",
+            value=default_stations[idx].get('KV', 10.0),
+            step=0.1,
+            key=f"kv_{idx}"
+        )
+        stn['rho'] = st.number_input(
+            "Density (kg/m³)",
+            value=default_stations[idx].get('rho', 850.0),
+            step=1.0,
+            key=f"rho_{idx}"
+        )
+
         if idx == 1:
             stn['min_residual'] = st.number_input("Residual Head at Station (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{idx}")
@@ -166,7 +179,7 @@ if run:
             stn['peaks'] = peaks_list
 
         # Solve via Pyomo backend
-        res = solve_pipeline(stations_data, term_data, FLOW, KV, rho, RateDRA, Price_HSD)
+        res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
 
     # Display results
     total_cost = res.get('total_cost', 0.0)
