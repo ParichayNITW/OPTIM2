@@ -177,27 +177,63 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
         else:
             f[i] = 0.0
 
-    # Calculate required head and pump performance
-    SH = {}; SDHR = {}; TDH = {}; EFFP = {}
+    # --- begin revised SDH calculation (with peaks) ---
+
+    # per‐segment pump head & efficiency placeholders
+    TDH = {}      # total dynamic head per pump
+    EFFP = {}     # pump efficiency
+
+    # a Pyomo Var to hold “the required SDH” for each segment i
+    model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
+
+    # we’ll collect the >= constraints into a ConstraintList
+    model.sdh_constraint = pyo.ConstraintList()
+
     for i in range(1, N+1):
-        # Static head (to next node): residual at downstream + elevation gain
-        SH[i] = model.RH[i+1] + (model.z[i+1] - model.z[i])
-        # Frictional head loss (with DRA if any)
+        # 1) frictional loss to the next node (i → i+1)
         DR_frac = 0
         if inj_source.get(i) in pump_indices:
             DR_frac = model.DR[inj_source[i]]/100.0
-        DH_loss = f[i]*((length[i]*1000.0)/d_inner[i])*((v[i]**2)/(2*g))*(1-DR_frac)
-        SDHR[i] = SH[i] + DH_loss
 
+        DH_next = f[i] * ( (length[i]*1000.0) / d_inner[i] ) * (v[i]**2 / (2*g)) * (1 - DR_frac)
+
+        # Option A: water must clear the next station
+        expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
+        model.sdh_constraint.add(model.SDH[i] >= expr_next)
+
+        # Option B: water must clear each intermediate peak by ≥50 m
+        for peak in stations[i-1].get('peaks', []):
+            L_peak = peak['loc'] * 1000.0    # metres from station i
+            elev_k = peak['elev']           # absolute elevation of the peak
+
+            DR_frac_peak = 0
+            if inj_source.get(i) in pump_indices:
+                DR_frac_peak = model.DR[inj_source[i]]/100.0
+
+            DH_peak = f[i] * ( (L_peak) / d_inner[i] ) * (v[i]**2 / (2*g)) * (1 - DR_frac_peak)
+
+            expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
+            model.sdh_constraint.add(model.SDH[i] >= expr_peak)
+
+        # now compute the actual pump head & efficiency (unchanged)
         if i in pump_indices:
-            # Pump head (per pump) at current speed N (affinity law applied)
-            TDH[i] = (model.A[i]*model.FLOW**2 + model.B[i]*model.FLOW + model.C[i])*((model.N[i]/model.DOL[i])**2)
-            # Pump efficiency at design equivalent flow
+            TDH[i] = (model.A[i]*model.FLOW**2 +
+                      model.B[i]*model.FLOW +
+                      model.C[i]) * ((model.N[i]/model.DOL[i])**2)
+
             flow_eq = model.FLOW * model.DOL[i]/model.N[i]
-            EFFP[i] = (model.Pcoef[i]*flow_eq**4 + model.Qcoef[i]*flow_eq**3 +
-                       model.Rcoef[i]*flow_eq**2 + model.Scoef[i]*flow_eq + model.Tcoef[i]) / 100.0
+            EFFP[i] = (
+                model.Pcoef[i]*flow_eq**4 +
+                model.Qcoef[i]*flow_eq**3 +
+                model.Rcoef[i]*flow_eq**2 +
+                model.Scoef[i]*flow_eq   +
+                model.Tcoef[i]
+            ) / 100.0
         else:
-            TDH[i] = 0.0; EFFP[i] = 1.0
+            TDH[i] = 0.0
+            EFFP[i] = 1.0
+
+    # --- end revised SDH calculation ---
 
     # Constraints
     model.head_balance = pyo.ConstraintList()
@@ -206,9 +242,9 @@ def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
     for i in range(1, N+1):
         # Head balance: residual_in + (pump head if any) ≥ required head (static+friction)
         if i in pump_indices:
-            model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] >= SDHR[i])
+            model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] >= model.SDH[i])
         else:
-            model.head_balance.add(model.RH[i] >= SDHR[i])
+            model.head_balance.add(model.RH[i] >= model.SDH[i])
 
         # Pressure (MAOP) limit in head units
         D_out = d_inner[i] + 2*thickness[i]
