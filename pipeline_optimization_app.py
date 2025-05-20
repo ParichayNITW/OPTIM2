@@ -228,13 +228,13 @@ if run:
     "🌀 System Curves", "🔄 Pump-System", "🌄 Cost Landscape"
     ])
 
-    if view == "Summary":
+if view == "Summary":
     with tab1:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         st.dataframe(df_sum, use_container_width=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
 
-    elif view == "Cost Breakdown":
+elif view == "Cost Breakdown":
     with tab2:
         st.markdown("<div class='section-title'>Cost Breakdown</div>", unsafe_allow_html=True)
         df_cost = pd.DataFrame({
@@ -249,7 +249,7 @@ if run:
         fig_cost.update_layout(yaxis_title="Cost (INR)")
         st.plotly_chart(fig_cost, use_container_width=True)
 
-    elif view == "Performance":
+elif view == "Performance":
     with tab3:
         # Add two more sub-tabs under Performance
         perf_tab, head_tab, pump_curve_tab, eff_curve_tab, pwr_speed_tab, pwr_flow_tab = st.tabs([
@@ -367,7 +367,7 @@ if run:
                 st.plotly_chart(fig, use_container_width=True)
 
 
-    elif view == "System Curves":
+elif view == "System Curves":
     with tab4:
         st.markdown("<div class='section-title'>System Head Curves</div>", unsafe_allow_html=True)
         for i, stn in enumerate(stations_data, start=1):
@@ -392,10 +392,9 @@ if run:
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True)
 
-    elif view == "Pump-System Interaction":
+elif view == "Pump-System Interaction":
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
-
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
@@ -511,12 +510,11 @@ if run:
             st.plotly_chart(fig3d, use_container_width=True)
 
 elif view == "Cost Landscape":
-with tab6:
-    st.markdown("<div class='section-title'>Cost Landscape (RPM vs DRA)</div>", unsafe_allow_html=True)
-    for stn in stations_data:
-        if not stn.get("is_pump"): 
-            continue
-
+    with tab6:
+        st.markdown("<div class='section-title'>Cost Landscape (RPM vs DRA)</div>", unsafe_allow_html=True)
+        for stn in stations_data:
+            if not stn.get("is_pump"): 
+                continue
         key     = stn["name"].lower().replace(" ","_")
         A,B,C   = stn["A"], stn["B"], stn["C"]
         P,Q,R,S,T = stn["P"],stn["Q"],stn["R"],stn["S"],stn["T"]
