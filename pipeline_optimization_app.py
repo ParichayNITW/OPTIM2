@@ -30,7 +30,7 @@ st.markdown("<h1>Mixed Integer Non Linear Convex Optimization of Pipeline Operat
 # Solver call
 def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD)
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD)
 
 # Sidebar inputs
 with st.sidebar:
