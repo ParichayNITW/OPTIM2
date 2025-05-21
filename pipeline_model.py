@@ -7,7 +7,7 @@ from math import log10, pi
 # Ensure NEOS email is set (replace with your email in deployment)
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
-def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
+def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD, fix_dict=None):
     """
     Build and solve the pipeline optimization model using Pyomo.
     :param stations: list of station dicts (with geometry, pump data, peaks, etc.)
@@ -79,8 +79,8 @@ def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
 
     elev[N+1] = terminal.get('elev', 0.0)
 
-    model.L = pyo.Param(model.I, initialize=length)
-    model.d = pyo.Param(model.I, initialize=d_inner)
+    L = pyo.Param(I, initialize=length)
+    d = pyo.Param(model.I, initialize=d_inner)
     model.e = pyo.Param(model.I, initialize=roughness)
     model.SMYS = pyo.Param(model.I, initialize=smys)
     model.DF = pyo.Param(model.I, initialize=design_factor)
@@ -122,7 +122,18 @@ def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     model.DR_u = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=lambda m,j: (0, dr_max[j]), initialize=0)
     model.DR = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.DR_u[j])
+    
+    # ===== FIXED VARIABLE SUPPORT FOR LOCAL FEASIBLE 3D SAMPLING =====
+    if fix_dict:
+        for idx, fixed in fix_dict.items():
+            if "speed" in fixed:
+                model.N[idx].fix(fixed["speed"])
+            if "nop" in fixed:
+                model.NOP[idx].fix(fixed["nop"])
+            if "dra" in fixed:
+                model.DR[idx].fix(fixed["dra"])
 
+   
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
 
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
