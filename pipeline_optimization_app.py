@@ -260,7 +260,7 @@ st.ca
         "💰 Costs", 
         "⚙️ Performance", 
         "🌀 System Curves", 
-        "🔄 Pump-System"
+        "🔄 Pump-System",
         "🎢 3D Objective Surface"
     ])
     with tab1:
