@@ -26,7 +26,13 @@ def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD, fix_dict=None):
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
     model.Nodes = pyo.RangeSet(1, N+1)
-
+    model.L = pyo.Param(model.I, initialize=length)
+    model.d = pyo.Param(model.I, initialize=d_inner)
+    model.e = pyo.Param(model.I, initialize=roughness)
+    model.SMYS = pyo.Param(model.I, initialize=smys)
+    model.DF = pyo.Param(model.I, initialize=design_factor)
+    model.z = pyo.Param(model.Nodes, initialize=elev)
+    
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     kv = {}; rho = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
@@ -78,13 +84,6 @@ def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD, fix_dict=None):
         inj_source[i] = last_pump_idx
 
     elev[N+1] = terminal.get('elev', 0.0)
-
-    model.L = pyo.Param(model.I, initialize=length)
-    model.d = pyo.Param(model.I, initialize=d_inner)
-    model.e = pyo.Param(model.I, initialize=roughness)
-    model.SMYS = pyo.Param(model.I, initialize=smys)
-    model.DF = pyo.Param(model.I, initialize=design_factor)
-    model.z = pyo.Param(model.Nodes, initialize=elev)
 
     model.pump_stations = pyo.Set(initialize=pump_indices)
     if pump_indices:
