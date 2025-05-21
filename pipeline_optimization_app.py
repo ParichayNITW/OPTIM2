@@ -14,7 +14,7 @@ def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 users = {
-    "parichay_das": hash_pwd("mechanical")
+    "parichay_das": hash_pwd("heteroscedasticity")
 }
 
 def check_login():
