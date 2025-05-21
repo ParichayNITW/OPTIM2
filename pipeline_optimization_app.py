@@ -386,10 +386,10 @@ if run:
             st.plotly_chart(fig_sys, use_container_width=True)
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
-    st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
-    for i, stn in enumerate(stations_data, start=1):
-        if not stn.get('is_pump', False):
-            continue
+        st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
+        for i, stn in enumerate(stations_data, start=1):
+            if not stn.get('is_pump', False):
+                continue
         key = stn['name'].lower().replace(' ','_')
         flows = np.linspace(0, FLOW*1.5, 200)
         d_inner_i = stn['D'] - 2*stn['t']
