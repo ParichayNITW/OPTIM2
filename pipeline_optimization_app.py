@@ -6,8 +6,44 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from math import pi
-
 from io import BytesIO
+import hashlib
+
+# ---- USER AUTH ----
+# Example: user credentials dictionary (username: hashed_password)
+def hash_pwd(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
+
+users = {
+    "admin": hash_pwd("your_password_here"),
+    "user": hash_pwd("another_password")
+}
+
+def check_login():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.title("🔒 Pipeline Optimization Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if username in users and hash_pwd(password) == users[username]:
+                st.session_state.authenticated = True
+                st.success("Login successful!")
+                st.experimental_rerun()
+            else:
+                st.error("Invalid username or password.")
+        st.stop()  # Prevent the rest of the app from loading
+
+    # Add a logout button
+    with st.sidebar:
+        if st.button("Logout"):
+            st.session_state.authenticated = False
+            st.experimental_rerun()
+check_login()
+
+
 
 if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
