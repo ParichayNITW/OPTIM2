@@ -195,46 +195,51 @@ if run:
         res = solve_pipeline(stations_data, term_data, RateDRA, Price_HSD)
 
     # Results Table with "Sl." and 2 decimal places
-    names = [s['name'] for s in stations_data] + [terminal_name]
-    rows = ["Power+Fuel Cost", "DRA Cost", "No. Pumps", "Pump Speed (rpm)",
-            "Pump Eff (%)", "Reynolds", "Head Loss (m)", "Vel (m/s)",
-            "Residual Head (m)", "SDH (m)", "DRA (%)"]
-    summary = {"Sl.": list(range(1, len(names)+1)), "Process": rows}
-    for i, nm in enumerate(names):
-        key = nm.lower().replace(' ','_')
-        vals = [
-            res.get(f"power_cost_{key}",0.0),
-            res.get(f"dra_cost_{key}",0.0),
-            int(res.get(f"num_pumps_{key}",0)),
-            res.get(f"speed_{key}",0.0),
-            res.get(f"efficiency_{key}",0.0),
-            res.get(f"reynolds_{key}",0.0),
-            res.get(f"head_loss_{key}",0.0),
-            res.get(f"velocity_{key}",0.0),
-            res.get(f"residual_head_{key}",0.0),
-            res.get(f"sdh_{key}",0.0),
-            res.get(f"drag_reduction_{key}",0.0)
-        ]
-        vals_fmt = [
-            f"{vals[0]:.2f}",
-            f"{vals[1]:.2f}",
-            vals[2],                    # No. Pumps (int)
-            vals[3],                    # Pump Speed (int/float)
-            f"{vals[4]:.2f}",
-            f"{vals[5]:.2f}",
-            f"{vals[6]:.2f}",
-            f"{vals[7]:.2f}",
-            f"{vals[8]:.2f}",
-            f"{vals[9]:.2f}",
-            f"{vals[10]:.2f}"
-        ]
-        summary.setdefault(nm, []).extend(vals_fmt)
+# ----- Results Table with "Sl." and 2 decimal places formatting -----
+names = [s['name'] for s in stations_data] + [terminal_name]
+rows = ["Power+Fuel Cost", "DRA Cost", "No. Pumps", "Pump Speed (rpm)",
+        "Pump Eff (%)", "Reynolds", "Head Loss (m)", "Vel (m/s)",
+        "Residual Head (m)", "SDH (m)", "DRA (%)"]
 
-    df_sum = pd.DataFrame(summary, index=rows)
-    df_sum.insert(0, "Sl.", range(1, df_sum.shape[0]+1))
-    df_sum = df_sum.reset_index().rename(columns={'index': 'Process'})
-    df_sum = df_sum[["Sl.", "Process"] + names]
-    st.session_state.df_sum = df_sum
+summary = {nm: [] for nm in names}
+
+for nm in names:
+    key = nm.lower().replace(' ','_')
+    vals = [
+        res.get(f"power_cost_{key}",0.0),
+        res.get(f"dra_cost_{key}",0.0),
+        int(res.get(f"num_pumps_{key}",0)),
+        res.get(f"speed_{key}",0.0),
+        res.get(f"efficiency_{key}",0.0),
+        res.get(f"reynolds_{key}",0.0),
+        res.get(f"head_loss_{key}",0.0),
+        res.get(f"velocity_{key}",0.0),
+        res.get(f"residual_head_{key}",0.0),
+        res.get(f"sdh_{key}",0.0),
+        res.get(f"drag_reduction_{key}",0.0)
+    ]
+    vals_fmt = [
+        f"{vals[0]:.2f}",
+        f"{vals[1]:.2f}",
+        vals[2],                # No. Pumps
+        vals[3],                # Pump Speed
+        f"{vals[4]:.2f}",
+        f"{vals[5]:.2f}",
+        f"{vals[6]:.2f}",
+        f"{vals[7]:.2f}",
+        f"{vals[8]:.2f}",
+        f"{vals[9]:.2f}",
+        f"{vals[10]:.2f}"
+    ]
+    summary[nm] = vals_fmt
+
+# Create DataFrame: Each row = metric, columns = stations
+df_sum = pd.DataFrame(summary, index=rows)
+df_sum.insert(0, "Sl.", range(1, len(rows)+1))
+df_sum = df_sum.reset_index().rename(columns={'index': 'Process'})
+df_sum = df_sum[["Sl.", "Process"] + names]
+st.session_state.df_sum = df_sum
+
 
     # Tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
