@@ -8,8 +8,7 @@ from io import BytesIO
 import hashlib
 import time
 
-import numpy as np
-import plotly.graph_objects as go
+
 from scipy.interpolate import griddata
 import time
 
