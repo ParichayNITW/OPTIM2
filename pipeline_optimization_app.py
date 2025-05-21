@@ -241,7 +241,7 @@ df_sum = df_sum[["Sl.", "Process"] + names]
 st.session_state.df_sum = df_sum
 
 
-    # Tabs
+# Tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 Summary", 
         "💰 Costs", 
