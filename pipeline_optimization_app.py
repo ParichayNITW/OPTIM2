@@ -8,6 +8,134 @@ from io import BytesIO
 import hashlib
 import time
 
+import numpy as np
+import plotly.graph_objects as go
+from scipy.interpolate import griddata
+import time
+
+def foolproof_3d_cost_surface(stations_data, term_data, FLOW, RateDRA, Price_HSD, res, solver_func, stn_index=0):
+    stn = stations_data[stn_index]
+    key = stn['name'].strip().lower().replace(' ','_')
+    i = stn_index + 1  # Pyomo index (1-based)
+
+    st.markdown(f"<div class='section-title'>Feasible 3D Cost Surface: <b>{stn['name']}</b></div>", unsafe_allow_html=True)
+
+    # Get optimizer values (always used)
+    opt_speed = int(res.get(f"speed_{key}", stn.get('MinRPM', 800)))
+    opt_nop = int(res.get(f"num_pumps_{key}", 1))
+    opt_dra = int(res.get(f"drag_reduction_{key}", 0))
+    opt_cost = float(res.get(f"power_cost_{key}", 0)) + float(res.get(f"dra_cost_{key}", 0))
+
+    N_min = int(stn.get('MinRPM', 800))
+    N_max = int(stn.get('DOL', 3600))
+    max_nop = int(stn.get('max_pumps', 2))
+    max_dr = int(stn.get('max_dr', 40))
+
+    # Use full possible ranges, always including optimizer values
+    speed_range = np.unique(np.concatenate([np.arange(N_min, N_max+1, 100), [opt_speed]]))
+    nop_range = np.unique(np.concatenate([np.arange(1, max_nop+1, 1), [opt_nop]]))
+    dra_range = np.unique(np.concatenate([np.arange(0, max_dr+1, 10), [opt_dra]]))
+
+    st.info("⏳ Calculating cost surface grid (may take up to 1 minute)...")
+    t0 = time.time()
+    surface_points = []
+    surface_costs = []
+    for rpm in speed_range:
+        for nop in nop_range:
+            for dra in dra_range:
+                fix_dict = {i: {"speed": int(rpm), "nop": int(nop), "dra": int(dra)}}
+                try:
+                    fres = solver_func(
+                        stations_data, term_data, FLOW, RateDRA, Price_HSD, fix_dict=fix_dict
+                    )
+                    total_cost = fres.get("total_cost", np.nan)
+                except Exception:
+                    total_cost = np.nan
+                surface_points.append((rpm, nop, dra))
+                surface_costs.append(total_cost)
+    duration = time.time() - t0
+
+    points = np.array(surface_points)
+    costs = np.array(surface_costs)
+    mask = np.isfinite(costs)
+    points = points[mask]
+    costs = costs[mask]
+
+    # Guarantee inclusion of the optimizer minimum as a point
+    already_in = np.any(
+        (points[:,0] == opt_speed) & (points[:,1] == opt_nop) & (points[:,2] == opt_dra)
+    ) if len(points) else False
+    if not already_in:
+        points = np.append(points, [[opt_speed, opt_nop, opt_dra]], axis=0)
+        costs = np.append(costs, [opt_cost])
+
+    st.success(f"Finished in {duration:.1f} seconds. Grid size: {len(surface_points)}, Valid: {len(points)}")
+
+    # Plot optimizer minimum if no other point is feasible
+    if len(points) < 5:
+        st.warning("⚠️ Very few feasible points found. Showing optimizer and available points only.")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter3d(
+            x=points[:,0], y=points[:,1], z=costs,
+            mode='markers+text',
+            marker=dict(size=8, color='red', symbol='diamond'),
+            name="Feasible Points",
+            text=[f"Cost: ₹{z:,.0f}" for z in costs],
+            textposition='top center'
+        ))
+        fig.update_layout(
+            title=f"Feasible Points: {stn['name']}",
+            scene=dict(
+                xaxis_title="Speed (rpm)",
+                yaxis_title="No. of Pumps",
+                zaxis_title="Total Cost (INR/day)"
+            ),
+            margin=dict(l=0, r=0, b=0, t=40)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        dra_slices = np.unique(points[:,2])
+        for dra_val in dra_slices:
+            m = (points[:,2] == dra_val)
+            x = points[m,0]
+            y = points[m,1]
+            z = costs[m]
+            if len(x) < 3 or len(np.unique(x)) < 2 or len(np.unique(y)) < 2:
+                continue
+            xi, yi = np.meshgrid(np.unique(x), np.unique(y))
+            zi = griddata((x, y), z, (xi, yi), method='linear')
+            fig = go.Figure()
+            fig.add_trace(go.Surface(
+                x=xi, y=yi, z=zi,
+                name=f"DRA={dra_val}%",
+                showscale=True,
+                colorbar=dict(title="Total Cost"),
+                opacity=0.8,
+                hovertemplate="Speed: %{x}<br>NoP: %{y}<br>Cost: %{z}<br>DRA: "+str(dra_val)+"%"
+            ))
+            # Add the optimizer minimum marker
+            fig.add_trace(go.Scatter3d(
+                x=[opt_speed], y=[opt_nop], z=[opt_cost],
+                mode='markers+text',
+                marker=dict(size=10, color='red', symbol='diamond'),
+                name="Optimizer Minimum",
+                text=[f"Optimized<br>Cost: ₹{opt_cost:,.0f}"],
+                textposition='top center'
+            ))
+            fig.update_layout(
+                title=f"Feasible 3D Cost Surface: {stn['name']} (DRA={dra_val}%)",
+                scene=dict(
+                    xaxis_title="Speed (rpm)",
+                    yaxis_title="No. of Pumps",
+                    zaxis_title="Total Cost (INR/day)"
+                ),
+                margin=dict(l=0, r=0, b=0, t=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    st.info("Note: The optimizer minimum is always included. If few points are feasible, only the optimizer is shown.")
+
+
+
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
 # ---- USER AUTH ----
@@ -446,88 +574,9 @@ if st.button("🚀 Run Optimization"):
 
     # === Tab 5: 3D Cost Surface (One station at a time, with optimizer marker) ===
     with tab5:
-        st.markdown("<div class='section-title'>Feasible 3D Cost Surface (Originating Station)</div>", unsafe_allow_html=True)
-        # Only for the first station (originating station)
-        stn = stations_data[0]
-        key = stn['name'].strip().lower().replace(' ','_')
-        i = 1  # 1-based index for first station
-
-        opt_speed = int(res.get(f"speed_{key}", 0))
-        opt_nop = int(res.get(f"num_pumps_{key}", 0))
-        opt_dra = int(res.get(f"drag_reduction_{key}", 0))
-        opt_cost = res.get(f"power_cost_{key}", 0) + res.get(f"dra_cost_{key}", 0)
-        N_min = int(res.get(f"min_rpm_{key}", 0))
-        N_max = int(res.get(f"dol_{key}", 0))
-        max_nop = int(stn.get('max_pumps', 2))
-        max_dr = int(stn.get('max_dr', 40))
-
-        # Define a small grid around optimizer
-        speed_range = np.arange(max(N_min, opt_speed-200), min(N_max, opt_speed+200)+1, 100)
-        nop_range = np.arange(max(1, opt_nop-1), min(max_nop, opt_nop+1)+1, 1)
-        dra_range = np.arange(max(0, opt_dra-10), min(max_dr, opt_dra+10)+1, 10)
-    
-        surface_points = []
-        surface_costs = []
-        st.info("⏳ Generating local feasible cost surface for the origin station (may take up to 1 minute)...")
-        t0 = time.time()
-        for rpm in speed_range:
-            for nop in nop_range:
-                for dra in dra_range:
-                    fix_dict = {1: {"speed": rpm, "nop": nop, "dra": dra}}
-                    try:
-                        fres = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD, fix_dict=fix_dict)
-                        total_cost = fres["total_cost"]
-                    except Exception as e:
-                        total_cost = np.nan
-                    surface_points.append((rpm, nop, dra))
-                    surface_costs.append(total_cost)
-        st.success(f"Finished in {time.time()-t0:.1f} seconds.")
-    
-        # Prepare the data for plotting
-        points = np.array(surface_points)
-        costs = np.array(surface_costs)
-        mask = np.isfinite(costs)
-        points = points[mask]
-        costs = costs[mask]
-
-        # For each DRA slice, plot surface
-        for dra_val in np.unique(points[:,2]):
-            m = (points[:,2]==dra_val)
-            x = points[m,0]
-            y = points[m,1]
-            z = costs[m]
-            from scipy.interpolate import griddata
-            xi, yi = np.meshgrid(np.unique(x), np.unique(y))
-            zi = griddata((x, y), z, (xi, yi), method='linear')
-            fig = go.Figure()
-            fig.add_trace(go.Surface(
-                x=xi, y=yi, z=zi,
-                name=f"DRA={dra_val}%",
-                showscale=True,
-                colorbar=dict(title="Total Cost"),
-                opacity=0.9,
-                hovertemplate="Speed: %{x}<br>NoP: %{y}<br>Cost: %{z}<br>DRA: "+str(dra_val)+"%"
-            ))
-            # Optimizer marker
-            fig.add_trace(go.Scatter3d(
-                x=[opt_speed], y=[opt_nop], z=[opt_cost],
-                mode='markers+text',
-                marker=dict(size=10, color='red', symbol='diamond'),
-                name="Optimizer Minimum",
-                text=[f"Optimized<br>Cost: ₹{opt_cost:,.0f}"],
-                textposition='top center'
-            ))
-            fig.update_layout(
-                title=f"Feasible 3D Cost Surface: {stn['name']} (DRA={dra_val}%)",
-                scene=dict(
-                    xaxis_title="Speed (rpm)",
-                    yaxis_title="No. of Pumps",
-                    zaxis_title="Total Cost (INR/day)"
-                ),
-                margin=dict(l=0, r=0, b=0, t=40)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        st.info("Note: Only the first (origin) station is shown for feasible cost envelope. The optimizer marker is always at the minimum.")
+        foolproof_3d_cost_surface(
+            stations_data, term_data, FLOW, RateDRA, Price_HSD, res, solve_pipeline, stn_index=0
+        )
 
 
 
