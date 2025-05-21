@@ -319,3 +319,33 @@ def solve_pipeline(stations, terminal, RateDRA, Price_HSD):
     result['total_cost'] = float(pyo.value(model.Obj))
 
     return result
+
+    def evaluate_objective_for_grid(stations, terminal, RateDRA, Price_HSD, var1_name, var2_name, var1_vals, var2_vals):
+    """
+    Evaluates the model's objective value for a grid of two variables (var1, var2) for the FIRST PUMP STATION.
+    Returns a 2D numpy array of results.
+    """
+    import numpy as np
+    from copy import deepcopy
+    results = np.zeros((len(var1_vals), len(var2_vals)))
+    for i, v1 in enumerate(var1_vals):
+        for j, v2 in enumerate(var2_vals):
+            stns = deepcopy(stations)
+            # Find the first pump station
+            pump_idx = next((idx for idx, s in enumerate(stns) if s.get('is_pump', False)), 0)
+            stns[pump_idx][var1_name] = v1
+            stns[pump_idx][var2_name] = v2
+            try:
+                res = solve_pipeline(stns, terminal, RateDRA, Price_HSD)
+                # Sum power_cost and dra_cost for that station
+                key = stns[pump_idx]['name'].strip().lower().replace(' ', '_')
+                total_cost = (
+                    res.get(f"power_cost_{key}", 0.0)
+                    + res.get(f"dra_cost_{key}", 0.0)
+                )
+                results[i, j] = total_cost
+            except Exception:
+                results[i, j] = float('nan')
+    return results
+    
+
