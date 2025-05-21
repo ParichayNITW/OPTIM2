@@ -79,8 +79,8 @@ def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD, fix_dict=None):
 
     elev[N+1] = terminal.get('elev', 0.0)
 
-    L = pyo.Param(I, initialize=length)
-    d = pyo.Param(model.I, initialize=d_inner)
+    model.L = pyo.Param(model.I, initialize=length)
+    model.d = pyo.Param(model.I, initialize=d_inner)
     model.e = pyo.Param(model.I, initialize=roughness)
     model.SMYS = pyo.Param(model.I, initialize=smys)
     model.DF = pyo.Param(model.I, initialize=design_factor)
