@@ -15,8 +15,8 @@ def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 users = {
-    "admin": hash_pwd("your_password_here"),
-    "user": hash_pwd("another_password")
+    "admin": hash_pwd("heteroscedasticity"),
+    "user": hash_pwd("parichay_das")
 }
 
 def check_login():
