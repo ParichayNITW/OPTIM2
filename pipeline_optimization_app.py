@@ -9,14 +9,14 @@ from math import pi
 from io import BytesIO
 import hashlib
 
+
 # ---- USER AUTH ----
-# Example: user credentials dictionary (username: hashed_password)
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
+# Only this username and password are allowed
 users = {
-    "admin": hash_pwd("heteroscedasticity"),
-    "user": hash_pwd("parichay_das")
+    "parichay_das": hash_pwd("heteroscedasticity")
 }
 
 def check_login():
@@ -36,11 +36,13 @@ def check_login():
                 st.error("Invalid username or password.")
         st.stop()  # Prevent the rest of the app from loading
 
-    # Add a logout button
+    # Add a logout button in sidebar
     with st.sidebar:
         if st.button("Logout"):
             st.session_state.authenticated = False
             st.experimental_rerun()
+
+# Call this before everything else!
 check_login()
 
 
@@ -60,7 +62,7 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-st.markdown("<h1>Mixed Integer Non Linear Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
+st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
 
 # Solver call
 def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
