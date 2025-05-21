@@ -9,6 +9,7 @@ from math import pi
 from io import BytesIO
 import hashlib
 
+st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
 # ---- USER AUTH ----
 def hash_pwd(pwd):
@@ -51,8 +52,6 @@ if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
-
-st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
 st.markdown("""
 <style>
