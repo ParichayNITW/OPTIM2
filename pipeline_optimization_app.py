@@ -255,12 +255,13 @@ st.ca
 
     
 # Tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📋 Summary", 
         "💰 Costs", 
         "⚙️ Performance", 
         "🌀 System Curves", 
         "🔄 Pump-System"
+        "🎢 3D Objective Surface"
     ])
     with tab1:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
@@ -352,7 +353,7 @@ st.ca
             st.plotly_chart(fig_sys, use_container_width=True)
 
     with tab5:
-        st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
@@ -379,6 +380,67 @@ st.ca
                     fig_int.add_trace(go.Scatter(x=flows, y=Hpump, mode='lines', name=f'{n_pump} Pump(s) {rpm} rpm'))
             fig_int.update_layout(title=f"Interaction ({stn['name']})", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
             st.plotly_chart(fig_int, use_container_width=True)
+
+import numpy as np
+import plotly.graph_objects as go
+
+with tab6:
+    st.markdown("## 🎢 3D Objective Function Surface (Non-Convexity Visualization)")
+    stations_data = st.session_state.stations
+    terminal_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+
+    # Find first pump station
+    pump_indices = [i for i, s in enumerate(stations_data) if s.get('is_pump', False)]
+    if pump_indices:
+        pump_idx = pump_indices[0]
+        st.info(f"Visualizing at: {stations_data[pump_idx]['name']}")
+    else:
+        st.warning("No pump station found, using Station 1 for demo.")
+        pump_idx = 0
+
+    # Choose range for Pump Speed (DOL) and DRA (%) - centered around user value
+    default_speed = stations_data[pump_idx].get('DOL', 1500)
+    default_dr = stations_data[pump_idx].get('max_dr', 20)
+    speed_min, speed_max = int(default_speed * 0.7), int(default_speed * 1.3)
+    dra_min, dra_max = max(0, int(default_dr - 15)), min(100, int(default_dr + 15))
+
+    speed_range = st.slider("Pump Speed (rpm)", min_value=500, max_value=4000, value=(speed_min, speed_max), step=50)
+    dra_range = st.slider("DRA (%)", min_value=0, max_value=100, value=(dra_min, dra_max), step=1)
+
+    pump_speeds = np.linspace(speed_range[0], speed_range[1], 28)
+    dra_percents = np.linspace(dra_range[0], dra_range[1], 28)
+
+    # Calculate surface
+    from pipeline_model import evaluate_objective_for_grid
+    with st.spinner("Evaluating objective surface (this may take up to a minute)..."):
+        Z = evaluate_objective_for_grid(
+            stations_data, terminal_data, RateDRA, Price_HSD,
+            var1_name="DOL", var2_name="max_dr",
+            var1_vals=pump_speeds, var2_vals=dra_percents
+        )
+    X, Y = np.meshgrid(pump_speeds, dra_percents, indexing='ij')
+
+    fig = go.Figure(
+        data=[go.Surface(x=X, y=Y, z=Z, colorscale='Viridis', showscale=True, opacity=0.95)],
+    )
+    fig.update_layout(
+        title=f"3D Surface: Station Cost vs Pump Speed and DRA (%) at {stations_data[pump_idx]['name']}",
+        scene=dict(
+            xaxis_title='Pump Speed (rpm)',
+            yaxis_title='DRA (%)',
+            zaxis_title='Station Cost (INR/day)',
+        ),
+        autosize=True,
+        width=900,
+        height=700,
+        margin=dict(l=0, r=0, b=0, t=60),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        "Notice the valleys and peaks: this surface reveals the non-convex (wavy) nature of the optimization function."
+    )
+
 
 # End of file
 
