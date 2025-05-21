@@ -12,53 +12,64 @@ import base64
 from scipy.interpolate import griddata
 import plotly.colors as pc
 
-# --- ELEGANT LIGHT THEME CSS ---
+# --- HD WHITE PROFESSIONAL THEME CSS ---
 st.set_page_config(page_title="Pipeline Optimization", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
 html, body, .main, .block-container, .stApp {
-    background: #F5F6FA !important;
-    color: #212529 !important;
+    background: #FFFFFF !important;
+    color: #222222 !important;
 }
 .stDataFrame, .stTable {
     background: #FFFFFF !important;
-    color: #212529 !important;
-    border-radius: 8px;
+    color: #222222 !important;
+    border-radius: 6px;
+    border: 1px solid #E0E0E0;
+    font-size: 16px;
+}
+thead tr {
+    background: #F2F8FD !important;
+    color: #1565C0 !important;
+    font-weight: 700 !important;
+    font-size: 16px;
 }
 .section-title {
-    font-size:1.4rem; font-weight:700; margin-top:1.1rem; color: #1976D2;
-    background: #E3F2FD; border-radius:8px; padding:7px 16px;
-    border-left: 4px solid #1976D2;
-    box-shadow: 0 2px 6px rgba(30,100,200,0.09);
+    font-size:1.5rem; font-weight:700; margin-top:1.1rem; color: #1565C0;
+    background: #F2F8FD; border-radius:7px; padding:8px 18px;
+    border-left: 5px solid #1565C0;
+    margin-bottom:10px;
     letter-spacing: 0.2px;
 }
 .stTabs [data-baseweb="tab"] {
-    background-color: #FFFFFF !important;
-    color: #1976D2 !important;
+    background-color: #FFF !important;
+    color: #1565C0 !important;
+    font-weight:600;
+    border-bottom: 2px solid #E0E0E0 !important;
+    margin-right: 2px;
+    font-size: 17px !important;
 }
 .stTabs [aria-selected="true"] {
-    background-color: #E3F2FD !important;
-    color: #1976D2 !important;
-    font-weight: bold;
-    border-radius: 7px 7px 0 0 !important;
-    border-bottom: 2.5px solid #1976D2 !important;
+    border-bottom: 3.5px solid #1565C0 !important;
+    background-color: #F2F8FD !important;
+    color: #1565C0 !important;
 }
 .stButton > button {
-    border-radius: 7px;
-    background-color: #1976D2 !important;
-    color: #FFFFFF !important;
+    border-radius: 6px;
+    background-color: #1565C0 !important;
+    color: #FFF !important;
     font-weight:600;
     border: none;
-    padding: 9px 28px;
+    padding: 10px 28px;
     margin-top: 12px;
-    box-shadow: 0 2px 4px rgba(30,100,200,0.13);
+    font-size: 16px;
+    box-shadow: 0 2px 6px rgba(21,101,192,0.09);
     transition: background 0.2s;
 }
 .stButton > button:hover {
-    background-color: #0D47A1 !important;
+    background-color: #003c8f !important;
 }
 .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-    color: #1976D2 !important;
+    color: #1565C0 !important;
     font-weight: 700 !important;
     margin-bottom: 0.25em;
 }
