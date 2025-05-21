@@ -12,49 +12,55 @@ import base64
 from scipy.interpolate import griddata
 import plotly.colors as pc
 
-# --- Modern Professional Dark Theme CSS ---
+# --- ELEGANT LIGHT THEME CSS ---
 st.set_page_config(page_title="Pipeline Optimization", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
 html, body, .main, .block-container, .stApp {
-    background: #10131A !important;
-    color: #F1F1F1 !important;
+    background: #F5F6FA !important;
+    color: #212529 !important;
 }
 .stDataFrame, .stTable {
-    background: #151822 !important;
-    color: #F1F1F1 !important;
-    border-radius: 10px;
+    background: #FFFFFF !important;
+    color: #212529 !important;
+    border-radius: 8px;
 }
 .section-title {
-    font-size:1.45rem; font-weight:700; margin-top:1.3rem; color: #1FB6FF;
-    background: rgba(34,50,75,0.95); border-radius:9px; padding:8px 16px;
-    letter-spacing:0.4px;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+    font-size:1.4rem; font-weight:700; margin-top:1.1rem; color: #1976D2;
+    background: #E3F2FD; border-radius:8px; padding:7px 16px;
+    border-left: 4px solid #1976D2;
+    box-shadow: 0 2px 6px rgba(30,100,200,0.09);
+    letter-spacing: 0.2px;
 }
 .stTabs [data-baseweb="tab"] {
-    background-color: #181C25 !important;
-    color: #C5E4FF !important;
+    background-color: #FFFFFF !important;
+    color: #1976D2 !important;
 }
 .stTabs [aria-selected="true"] {
-    background-color: #1FB6FF !important;
-    color: #10131A !important;
+    background-color: #E3F2FD !important;
+    color: #1976D2 !important;
     font-weight: bold;
-    border-radius: 6px 6px 0 0 !important;
+    border-radius: 7px 7px 0 0 !important;
+    border-bottom: 2.5px solid #1976D2 !important;
 }
 .stButton > button {
-    border-radius: 8px;
-    background-color: #1FB6FF !important;
-    color: #10131A !important;
+    border-radius: 7px;
+    background-color: #1976D2 !important;
+    color: #FFFFFF !important;
     font-weight:600;
     border: none;
-    padding: 10px 28px;
+    padding: 9px 28px;
     margin-top: 12px;
-    box-shadow: 0 2px 4px rgba(30,160,255,0.16);
+    box-shadow: 0 2px 4px rgba(30,100,200,0.13);
+    transition: background 0.2s;
+}
+.stButton > button:hover {
+    background-color: #0D47A1 !important;
 }
 .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-    color: #1FB6FF !important;
+    color: #1976D2 !important;
     font-weight: 700 !important;
-    margin-bottom: 0.2em;
+    margin-bottom: 0.25em;
 }
 footer {visibility: hidden;}
 </style>
@@ -348,7 +354,7 @@ if res is not None:
         pie_labels = ['Power/Fuel Cost', 'DRA Cost']
         pie_vals = [total_power, total_dra]
         fig_pie = go.Figure(data=[go.Pie(labels=pie_labels, values=pie_vals, hole=.5)])
-        fig_pie.update_layout(title="Cost Breakdown (All Stations)", template="plotly_dark")
+        fig_pie.update_layout(title="Cost Breakdown (All Stations)", template="plotly_white")
         st.plotly_chart(fig_pie, use_container_width=True)
 
     # === Tab 3 (Performance) ===
@@ -367,7 +373,7 @@ if res is not None:
                 "Head Loss": [res.get(f"head_loss_{s['name'].strip().lower().replace(' ','_')}",0) for s in stations_data]
             })
             fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
-            fig_h.update_layout(yaxis_title="Head Loss (m)", template="plotly_dark")
+            fig_h.update_layout(yaxis_title="Head Loss (m)", template="plotly_white")
             st.plotly_chart(fig_h, use_container_width=True)
         # Velocity & Reynolds
         with head_tab:
@@ -398,7 +404,7 @@ if res is not None:
                         x=flows, y=H, mode='lines', name=f"{rpm} rpm",
                         line=dict(width=3, color=pump_colors[j % len(pump_colors)])
                     ))
-                fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)", template="plotly_dark")
+                fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)", template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
         # Pump Efficiency Curve (at multiple RPMs, no extrapolation)
         with eff_tab:
@@ -421,7 +427,7 @@ if res is not None:
                         x=flows, y=eff, mode='lines', name=f"{rpm} rpm",
                         line=dict(width=3, color=pump_colors[j % len(pump_colors)])
                     ))
-                fig.update_layout(title=f"Efficiency vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Efficiency (%)", template="plotly_dark")
+                fig.update_layout(title=f"Efficiency vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Efficiency (%)", template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
         # Pressure drop vs Pipeline Length
         with press_tab:
@@ -474,7 +480,7 @@ if res is not None:
                     ticktext=x_labels,
                     tickangle=0
                 ),
-                template="plotly_dark"
+                template="plotly_white"
             )
             st.plotly_chart(fig_p, use_container_width=True)
         # Power vs Speed, Power vs Flow
@@ -500,7 +506,7 @@ if res is not None:
                     power.append(pwr)
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
-                fig_pwr.update_layout(title=f"Power vs Speed: {stn['name']}", xaxis_title="Speed (rpm)", yaxis_title="Power (kW)", template="plotly_dark")
+                fig_pwr.update_layout(title=f"Power vs Speed: {stn['name']}", xaxis_title="Speed (rpm)", yaxis_title="Power (kW)", template="plotly_white")
                 st.plotly_chart(fig_pwr, use_container_width=True)
                 flows_user = st.session_state[f"eff_data_{i}"].iloc[:,0].values
                 flows = np.linspace(flows_user.min(), flows_user.max(), 100)
@@ -513,7 +519,7 @@ if res is not None:
                     power2.append(pwr)
                 fig_pwr2 = go.Figure()
                 fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
-                fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)", template="plotly_dark")
+                fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)", template="plotly_white")
                 st.plotly_chart(fig_pwr2, use_container_width=True)
         # Cost Function Non-Convexity
         with convex_tab:
@@ -543,7 +549,7 @@ if res is not None:
                 fig_cost_speed = go.Figure()
                 fig_cost_speed.add_trace(go.Scatter(x=speeds, y=cost_vs_speed, mode='lines+markers', name="Total Cost"))
                 fig_cost_speed.update_layout(title=f"Total Cost vs Speed (NOP={opt_nop}, DRA={opt_dra}%) for {stn['name']}",
-                                            xaxis_title="Speed (rpm)", yaxis_title="Total Cost (INR/day)", template="plotly_dark")
+                                            xaxis_title="Speed (rpm)", yaxis_title="Total Cost (INR/day)", template="plotly_white")
                 st.plotly_chart(fig_cost_speed, use_container_width=True)
                 # --- Cost vs DRA ---
                 dras = np.arange(0, max_dr+1, 5)
@@ -559,7 +565,7 @@ if res is not None:
                 fig_cost_dra = go.Figure()
                 fig_cost_dra.add_trace(go.Scatter(x=dras, y=cost_vs_dra, mode='lines+markers', name="Total Cost"))
                 fig_cost_dra.update_layout(title=f"Total Cost vs DRA (Speed={opt_speed}, NOP={opt_nop}) for {stn['name']}",
-                                            xaxis_title="DRA (%)", yaxis_title="Total Cost (INR/day)", template="plotly_dark")
+                                            xaxis_title="DRA (%)", yaxis_title="Total Cost (INR/day)", template="plotly_white")
                 st.plotly_chart(fig_cost_dra, use_container_width=True)
                 # --- Cost vs No. of Pumps ---
                 nops = np.arange(1, max_nop+1)
@@ -575,7 +581,7 @@ if res is not None:
                 fig_cost_nop = go.Figure()
                 fig_cost_nop.add_trace(go.Scatter(x=nops, y=cost_vs_nop, mode='lines+markers', name="Total Cost"))
                 fig_cost_nop.update_layout(title=f"Total Cost vs No. of Pumps (Speed={opt_speed}, DRA={opt_dra}) for {stn['name']}",
-                                            xaxis_title="Number of Pumps", yaxis_title="Total Cost (INR/day)", template="plotly_dark")
+                                            xaxis_title="Number of Pumps", yaxis_title="Total Cost (INR/day)", template="plotly_white")
                 st.plotly_chart(fig_cost_nop, use_container_width=True)
 
     # === Tab 4: Pump System Interaction Curves ===
@@ -617,7 +623,7 @@ if res is not None:
                     name=f"Pump ({rpm} rpm, {opt_nop} NOP)",
                     line=dict(width=3, color=pump_colors[j % len(pump_colors)])
                 ))
-            fig.update_layout(title=f"System vs Pump Curves: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)", template="plotly_dark")
+            fig.update_layout(title=f"System vs Pump Curves: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)", template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
 
     # === Tab 5: 3D Cost Surface (One station at a time, with optimizer marker) ===
@@ -687,7 +693,7 @@ if res is not None:
                         zaxis_title="Total Cost (INR/day)"
                     ),
                     margin=dict(l=0, r=0, b=0, t=40),
-                    template="plotly_dark"
+                    template="plotly_white"
                 )
                 st.plotly_chart(fig, use_container_width=True)
             else:
@@ -726,7 +732,7 @@ if res is not None:
                             zaxis_title="Total Cost (INR/day)"
                         ),
                         margin=dict(l=0, r=0, b=0, t=40),
-                        template="plotly_dark"
+                        template="plotly_white"
                     )
                     st.plotly_chart(fig, use_container_width=True)
             st.info("Note: The optimizer minimum is always included. If few points are feasible, only the optimizer is shown.")
