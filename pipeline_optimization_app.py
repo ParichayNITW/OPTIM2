@@ -422,38 +422,38 @@ if run:
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True)
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
-with tab5:
-    st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
-    for i, stn in enumerate(stations_data, start=1):
-        if not stn.get('is_pump', False):
-            continue
-        key = stn['name'].strip().lower().replace(' ','_')
+    with tab5:
+        st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
+        for i, stn in enumerate(stations_data, start=1):
+            if not stn.get('is_pump', False):
+                continue
+            key = stn['name'].strip().lower().replace(' ','_')
 
-        # Get optimized values from results
-        opt_speed = res.get(f"speed_{key}", 0)
-        opt_nop = res.get(f"num_pumps_{key}", 0)
-        opt_dra = res.get(f"drag_reduction_{key}", 0)
-        opt_cost = res.get(f"power_cost_{key}", 0) + res.get(f"dra_cost_{key}", 0)
+            # Get optimized values from results
+            opt_speed = res.get(f"speed_{key}", 0)
+            opt_nop = res.get(f"num_pumps_{key}", 0)
+            opt_dra = res.get(f"drag_reduction_{key}", 0)
+            opt_cost = res.get(f"power_cost_{key}", 0) + res.get(f"dra_cost_{key}", 0)
 
-        # Grid setup (coarse for speed, otherwise very slow)
-        N_min = int(res.get(f"min_rpm_{key}", 0))
-        N_max = int(res.get(f"dol_{key}", 0))
-        max_nop = int(stn.get('max_pumps', 2))
-        dra_slices = list(range(0, int(stn.get('max_dr', 40))+1, 10)) if stn.get('max_dr', 0) >= 10 else [0, int(stn.get('max_dr', 0))]
+            # Grid setup (coarse for speed, otherwise very slow)
+            N_min = int(res.get(f"min_rpm_{key}", 0))
+            N_max = int(res.get(f"dol_{key}", 0))
+            max_nop = int(stn.get('max_pumps', 2))
+            dra_slices = list(range(0, int(stn.get('max_dr', 40))+1, 10)) if stn.get('max_dr', 0) >= 10 else [0, int(stn.get('max_dr', 0))]
 
-        # Needed for backend-accurate cost calculation
-        FLOW = FLOW
-        rho = stn.get('rho', 850.0)
-        RateDRA = RateDRA
-        Price_HSD = Price_HSD
-        P = stn.get('P', 0); Q = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-        A = res.get(f"coef_A_{key}", 0); B = res.get(f"coef_B_{key}", 0); C = res.get(f"coef_C_{key}", 0)
-        N_ref = int(res.get(f"dol_{key}", 0))
+            # Needed for backend-accurate cost calculation
+            FLOW = FLOW
+            rho = stn.get('rho', 850.0)
+            RateDRA = RateDRA
+            Price_HSD = Price_HSD
+            P = stn.get('P', 0); Q = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
+            A = res.get(f"coef_A_{key}", 0); B = res.get(f"coef_B_{key}", 0); C = res.get(f"coef_C_{key}", 0)
+            N_ref = int(res.get(f"dol_{key}", 0))
 
-        rpm_range = np.arange(N_min, N_max+1, 100)
-        nop_range = np.arange(1, max_nop+1, 1)
+            rpm_range = np.arange(N_min, N_max+1, 100)
+            nop_range = np.arange(1, max_nop+1, 1)
 
-        surfaces = []
+            surfaces = []
 
         for dra in dra_slices:
             Z = np.zeros((len(nop_range), len(rpm_range)))
