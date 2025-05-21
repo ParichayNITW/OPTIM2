@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from math import pi
 from io import BytesIO
 import hashlib
+import time
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
