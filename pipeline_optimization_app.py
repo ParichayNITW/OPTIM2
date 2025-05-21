@@ -12,17 +12,17 @@ import base64
 from scipy.interpolate import griddata
 import plotly.colors as pc
 
-# --- HD WHITE PROFESSIONAL THEME CSS ---
+# ------------------------- HD WHITE THEME ---------------------------
 st.set_page_config(page_title="Pipeline Optimization", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
 html, body, .main, .block-container, .stApp {
-    background: #FFFFFF !important;
-    color: #222222 !important;
+    background: #FFF !important;
+    color: #222 !important;
 }
 .stDataFrame, .stTable {
-    background: #FFFFFF !important;
-    color: #222222 !important;
+    background: #FFF !important;
+    color: #222 !important;
     border-radius: 6px;
     border: 1px solid #E0E0E0;
     font-size: 16px;
@@ -39,6 +39,10 @@ thead tr {
     border-left: 5px solid #1565C0;
     margin-bottom:10px;
     letter-spacing: 0.2px;
+    text-align: left;
+}
+#logout-button {
+    position: absolute; left: 25px; top: 20px; z-index:10000;
 }
 .stTabs [data-baseweb="tab"] {
     background-color: #FFF !important;
@@ -53,7 +57,7 @@ thead tr {
     background-color: #F2F8FD !important;
     color: #1565C0 !important;
 }
-.stButton > button {
+.stButton > button, .station-btn {
     border-radius: 6px;
     background-color: #1565C0 !important;
     color: #FFF !important;
@@ -64,8 +68,9 @@ thead tr {
     font-size: 16px;
     box-shadow: 0 2px 6px rgba(21,101,192,0.09);
     transition: background 0.2s;
+    margin-right:10px;
 }
-.stButton > button:hover {
+.stButton > button:hover, .station-btn:hover {
     background-color: #003c8f !important;
 }
 .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
@@ -76,6 +81,22 @@ thead tr {
 footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
+
+# ---------- LOGOUT BUTTON (TOP-LEFT, OUTSIDE SIDEBAR) ----------
+def logout_button():
+    st.markdown("""
+    <form action="" method="post" style="margin-bottom:0">
+        <button id="logout-button" class="station-btn" name="logout_btn" type="submit" style="margin-bottom:0">Log out</button>
+    </form>
+    """, unsafe_allow_html=True)
+    if st.session_state.get("logout_btn") or st.session_state.get("logout"):
+        st.session_state.authenticated = False
+        st.session_state["logout"] = False
+        st.rerun()
+    if "logout" not in st.session_state:
+        st.session_state["logout"] = False
+    if st.session_state.get("logout_btn"):
+        st.session_state["logout"] = True
 
 # ---- USER AUTH ----
 def hash_pwd(pwd):
@@ -89,7 +110,9 @@ def check_login():
     if not st.session_state.authenticated:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        st.title("🔒 Pipeline Optimization Login")
+        logout_button()
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align:center;color:#1565C0;font-size:2.1rem;margin-bottom:12px;'>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h2>", unsafe_allow_html=True)
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login"):
@@ -100,10 +123,8 @@ def check_login():
             else:
                 st.error("Invalid username or password.")
         st.stop()
-    with st.sidebar:
-        if st.button("Logout"):
-            st.session_state.authenticated = False
-            st.rerun()
+    else:
+        logout_button()
 check_login()
 
 if 'NEOS_EMAIL' in st.secrets:
@@ -111,21 +132,26 @@ if 'NEOS_EMAIL' in st.secrets:
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align:center;color:#1565C0;font-size:2.1rem;margin-bottom:0;'>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h2>", unsafe_allow_html=True)
 
 def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD, fix_dict=None):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD, fix_dict=fix_dict)
 
+# ------------- STATION CONTROLS (Add/Remove) -------------
 with st.sidebar:
-    st.title("🔧 Pipeline Inputs")
+    st.title("Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
     st.subheader("Stations")
-    add_col, rem_col = st.columns(2)
-    if add_col.button("➕ Add Station"):
+    c1, c2 = st.columns(2)
+    with c1:
+        add_btn = st.button("➕ Add Station", key="add_station", use_container_width=True)
+    with c2:
+        rem_btn = st.button("🗑️ Remove Station", key="remove_station", use_container_width=True)
+    if add_btn:
         n = len(st.session_state.get('stations',[])) + 1
         default = {
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -137,7 +163,7 @@ with st.sidebar:
             'max_dr': 0.0
         }
         st.session_state.stations.append(default)
-    if rem_col.button("🗑️ Remove Station"):
+    if rem_btn:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
@@ -153,7 +179,7 @@ if 'stations' not in st.session_state:
         'max_dr': 0.0
     })
 
-# Station inputs (dynamic)
+# Station input UI (unchanged, same as before, not repeated here for brevity)
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}", expanded=True):
         stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
@@ -195,7 +221,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
         st.session_state[f"peak_data_{idx}"] = peak_df
 
-# Terminal inputs
+# --- Terminal Station
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal")
