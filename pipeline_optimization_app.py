@@ -241,6 +241,19 @@ if run:
     st.session_state.df_sum = df_sum
 
 
+st.download_button(
+    "Download Output Results (CSV)", 
+    df_sum.to_csv(index=False).encode(), 
+    file_name="results.csv"
+)
+st.download_button(
+    "Download Optimization Report (PDF)", 
+    pdf_bytes,   # pdf_bytes is your PDF in bytes (see below for PDF code)
+    file_name="Optimization_Report.pdf"
+)
+st.ca
+
+    
 # Tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 Summary", 
@@ -368,3 +381,16 @@ if run:
             st.plotly_chart(fig_int, use_container_width=True)
 
 # End of file
+
+
+st.markdown(
+    """
+    <hr style="margin-top:2em;">
+    <div style="text-align:center; color:gray; font-size: 0.95em;">
+    &copy; 2025 (R) Parichay Das. All rights reserved.<br>
+    This software and its outputs are protected by copyright.<br>
+    No part may be reproduced, distributed, or transmitted without prior written permission.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
