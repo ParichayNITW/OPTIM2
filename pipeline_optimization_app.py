@@ -223,7 +223,7 @@ if run:
             res.get(f"drag_reduction_{key}",0.0)
         ]
     df_sum = pd.DataFrame(summary)
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📋 Summary", "💰 Costs", "⚙️ Performance",
     "🌀 System Curves", "🔄 Pump-System", "🌄 Cost Landscape"
     ])
