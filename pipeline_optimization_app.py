@@ -31,7 +31,7 @@ def check_login():
             if username in users and hash_pwd(password) == users[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Invalid username or password.")
         st.stop()  # Prevent the rest of the app from loading
@@ -40,7 +40,7 @@ def check_login():
     with st.sidebar:
         if st.button("Logout"):
             st.session_state.authenticated = False
-            st.experimental_rerun()
+            st.rerun()
 
 # Call this before everything else!
 check_login()
