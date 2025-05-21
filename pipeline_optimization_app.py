@@ -31,12 +31,11 @@ st.markdown("""
 st.markdown("# Pipeline Optimization Dashboard")
 
 # Solver wrapper with caching
-@st.cache_data
 def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD)
 
-# Sidebar for global and station controls
+# Sidebar for inputs and view selection
 with st.sidebar:
     st.title("🔧 Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
@@ -57,14 +56,13 @@ with st.sidebar:
         })
     if rem_col.button("🗑️ Remove Station") and len(st.session_state.stations) > 1:
         st.session_state.stations.pop()
-
     view = st.radio("Select View:", [
         "Summary", "Cost Breakdown", "Performance",
         "System Curves", "Pump-System Interaction",
         "Cost Landscape", "Nonconvex Visuals"
     ])
 
-# Initialize default station if needed
+# Initialize station list
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
         'name': 'Station 1', 'elev': 0.0,
@@ -90,9 +88,7 @@ for i, stn in enumerate(st.session_state.stations, start=1):
         stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=1e-5, key=f"rough{i}")
         stn['L']     = st.number_input("Length to next (km)", value=stn['L'], min_value=0.0, step=1.0, key=f"L{i}")
         stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{i}")
-        # Prepare storage for DataFrames
-        head_df = None
-        eff_df  = None
+        head_df = eff_df = None
         if stn['is_pump']:
             stn['power_type'] = st.selectbox("Power Source", ["Grid","Diesel"], index=0 if stn['power_type']=='Grid' else 1, key=f"ptype{i}")
             if stn['power_type']=='Grid':
@@ -105,12 +101,9 @@ for i, stn in enumerate(st.session_state.stations, start=1):
             stn['MinRPM']    = st.number_input("Min RPM", value=int(stn['MinRPM']), step=100, key=f"minrpm{i}")
             stn['DOL']       = st.number_input("Rated RPM (DOL)", value=int(stn['DOL']), step=100, key=f"dol{i}")
             stn['max_dr']    = st.number_input("Max Drag Reduction (%)", value=int(stn['max_dr']), step=5, key=f"mdr{i}")
-            # Editor widgets for pump curves
             head_df = st.data_editor(pd.DataFrame({"Flow": [0.0], "Head": [0.0]}), num_rows='dynamic', key=f"head{i}")
             eff_df  = st.data_editor(pd.DataFrame({"Flow": [0.0], "Eff": [0.0]}),  num_rows='dynamic', key=f"eff{i}")
-        # Editor widget for peaks
         peak_df = st.data_editor(pd.DataFrame({"Location": [stn['L']/2], "Elevation": [stn['elev']+100]}), num_rows='dynamic', key=f"peak{i}")
-        # Store DataFrames for solve step
         if head_df is not None:
             st.session_state[f"head_data_{i}"] = head_df
             st.session_state[f"eff_data_{i}"]  = eff_df
@@ -129,13 +122,13 @@ if st.button("🚀 Run Optimization"):
         stations_data = st.session_state.stations
         for i, stn in enumerate(stations_data, start=1):
             if stn['is_pump']:
-                dfh = st.session_state.get(f"head_data_{i}")
-                dfe = st.session_state.get(f"eff_data_{i}")
+                dfh = st.session_state[f"head_data_{i}"]
+                dfe = st.session_state[f"eff_data_{i}"]
                 Qh, Hh = dfh.values.T
                 stn['A'], stn['B'], stn['C'] = np.polyfit(Qh, Hh, 2)
                 Qe, Ee = dfe.values.T
                 stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = np.polyfit(Qe, Ee, 4)
-            pks = st.session_state.get(f"peak_data_{i}")
+            pks = st.session_state[f"peak_data_{i}"]
             stn['peaks'] = [{'loc':row[0],'elev':row[1]} for row in pks.values]
         term_data = {'name': term_name, 'elev': term_elev, 'min_residual': term_min}
         res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
@@ -146,13 +139,21 @@ if st.button("🚀 Run Optimization"):
 if 'res' in st.session_state:
     res = st.session_state['res']
     sta = st.session_state['stations_data']
-    # Create tabs beforehand
+    # show top metrics
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Total Cost (INR)", f"₹{res['total_cost']:,.2f}")
+    total_pumps = sum(int(res[f"num_pumps_{s['name'].lower().replace(' ','_')}"]) for s in sta)
+    c2.metric("Total Pumps", total_pumps)
+    avg_speed = np.mean([res[f"speed_{s['name'].lower().replace(' ','_')}"] for s in sta])
+    c3.metric("Avg Speed (rpm)", f"{avg_speed:.1f}")
+    avg_eff = np.mean([res[f"efficiency_{s['name'].lower().replace(' ','_')}"] for s in sta])
+    c4.metric("Avg Efficiency (%)", f"{avg_eff:.1f}")
+    # create tabs
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📋 Summary", "💰 Cost Breakdown", "⚙️ Performance", 
         "🌀 System Curves", "🔄 Pump-System Interaction", 
         "🌄 Cost Landscape", "🔍 Nonconvex Visuals"
     ])
-    
     if view == "Summary":
         with tab1:
             st.markdown("<div class='section-title'>Summary</div>", unsafe_allow_html=True)
@@ -170,7 +171,6 @@ if 'res' in st.session_state:
                     res[f"drag_reduction_{k}"]
                 ]
             st.dataframe(pd.DataFrame(data), use_container_width=True)
-    
     elif view == "Cost Breakdown":
         with tab2:
             st.markdown("<div class='section-title'>Cost Breakdown</div>", unsafe_allow_html=True)
@@ -182,52 +182,312 @@ if 'res' in st.session_state:
             fig = px.bar(dfc.melt(id_vars="Station", value_vars=["Power+Fuel","DRA"], var_name="Type", value_name="INR/day"), x="Station", y="INR/day", color="Type")
             st.plotly_chart(fig, use_container_width=True)
 
-    # Performance
-    elif view == "Performance":
-        with tab3:
-            ptabs = st.tabs(["HeadLoss","Vel&Re","H-Q","Eff","Power-RPM","Power-Flow"])
-            # implement each sub-tab similarly...
-            st.write("Performance charts here")
+elif view == "Performance":
+    with tab3:
+        # Add two more sub-tabs under Performance
+        perf_tab, head_tab, pump_curve_tab, eff_curve_tab, pwr_speed_tab, pwr_flow_tab = st.tabs([
+         "Head Loss", "Velocity & Re",
+         "Pump Characteristic Curve", "Pump Efficiency Curve",
+         "Power vs Speed", "Power vs Flow"
+        ])
+        with perf_tab:
+            st.markdown("<div class='section-title'>Head Loss per Segment</div>", unsafe_allow_html=True)
+            df_hloss = pd.DataFrame({
+                "Station": [s['name'] for s in stations_data],
+                "Head Loss": [res.get(f"head_loss_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
+            })
+            fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
+            fig_h.update_layout(yaxis_title="Head Loss (m)")
+            st.plotly_chart(fig_h, use_container_width=True)
+        with head_tab:
+            st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
+            df_vel = pd.DataFrame({
+                "Station": [s['name'] for s in stations_data],
+                "Velocity (m/s)": [res.get(f"velocity_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
+                "Reynolds": [res.get(f"reynolds_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
+            })
+            st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds":"{:.0f}"}))
 
-    # System Curves
-    elif view == "System Curves":
-        with tab4:
-            st.write("System curves here")
+        with pump_curve_tab:
+            st.markdown("<div class='section-title'>Pump Characteristic Curves (Head vs Flow)</div>", unsafe_allow_html=True)
+            for stn in stations_data:
+                if not stn.get("is_pump"): continue
+                key  = stn["name"].lower().replace(" ","_")
+                A,B,C = stn["A"], stn["B"], stn["C"]
+                DOL = res[f"dol_{key}"]
+                flows = np.linspace(0, FLOW*1.2, 100)
+                fig = go.Figure()
+                # sweep rpm in 100-rpm steps
+                for rpm in np.arange(stn["MinRPM"], DOL+1, 100):
+                    Hcurve = (A*flows**2 + B*flows + C) * (rpm/DOL)**2
+                    fig.add_trace(go.Scatter(x=flows, y=Hcurve, mode="lines", name=f"{rpm} rpm"))
+                fig.update_layout(
+                    title=f"{stn['name']}: Head vs Flow",
+                    xaxis_title="Flow (m³/hr)",
+                    yaxis_title="Head (m)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-    # Pump-System Interaction
-    elif view == "Pump-System Interaction":
-        with tab5:
-            st.write("Pump-System interaction here")
+        with eff_curve_tab:
+            st.markdown("<div class='section-title'>Pump Efficiency Curves (η vs Flow)</div>", unsafe_allow_html=True)
+            for stn in stations_data:
+                if not stn.get("is_pump"): continue
+                key = stn["name"].lower().replace(" ","_")
+                P,Q,R,S,T = stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"]
+                DOL = res[f"dol_{key}"]
+                flows = np.linspace(0, FLOW*1.2, 100)
+                fig = go.Figure()
+                for rpm in np.arange(stn["MinRPM"], DOL+1, 100):
+                    flow_eq = FLOW * DOL / rpm
+                    η = (P*flow_eq**4 + Q*flow_eq**3 + R*flow_eq**2 + S*flow_eq + T)/100.0
+                    fig.add_trace(go.Scatter(x=flows, y=[η]*len(flows), mode="lines", name=f"{rpm} rpm"))
+                fig.update_layout(
+                    title=f"{stn['name']}: Efficiency vs Flow",
+                    xaxis_title="Flow (m³/hr)",
+                    yaxis_title="Efficiency (%)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-    # Cost Landscape
-    elif view == "Cost Landscape":
-        with tab6:
-            st.write("3D cost landscape here")
+        with pwr_speed_tab:
+            st.markdown("<div class='section-title'>Power (kW) vs Pump Speed</div>", unsafe_allow_html=True)
+            for stn in stations_data:
+                if not stn.get("is_pump"): continue
+                key = stn["name"].lower().replace(" ","_")
+                num = res[f"num_pumps_{key}"]
+                A,B,C = stn["A"], stn["B"], stn["C"]
+                P,Q,R,S,T = stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"]
+                DOL = res[f"dol_{key}"]
+                rates = []
+                rpms  = np.arange(stn["MinRPM"], DOL+1, 100)
+                for rpm in rpms:
+                    # head & eff at this rpm
+                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/DOL)**2
+                    flow_eq = FLOW * DOL / rpm
+                    η = (P*flow_eq**4 + Q*flow_eq**3 + R*flow_eq**2 + S*flow_eq + T)/100.0
+                    power = (stn["rho"] * FLOW * 9.81 * H * num)/(3600*1000*η*0.95)
+                    rates.append(power)
+                fig = go.Figure(go.Scatter(x=rpms, y=rates, mode="lines+markers"))
+                fig.update_layout(
+                    title=f"{stn['name']}: Power vs Speed",
+                    xaxis_title="RPM",
+                    yaxis_title="Power (kW)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-    # Nonconvex Visuals
-    elif view == "Nonconvex Visuals":
-        with tab7:
-            first = sta[0]
-            max_dr = int(first.get('max_dr',0))
-            opt_dr = int(res[f"drag_reduction_{first['name'].lower().replace(' ','_')}"])
-            dr = st.slider("Drag Reduction (%)", 0, max_dr, opt_dr)
-            pumps = list(range(1, first['max_pumps']+1))
-            rpms  = list(range(first['MinRPM'], first['DOL']+1, 100))
-            Z = np.zeros((len(pumps), len(rpms)))
-            for i,npumps in enumerate(pumps):
-                for j,rpm in enumerate(rpms):
-                    stn = dict(first)
-                    stn.update({'is_pump':True, 'max_pumps':npumps, 'MinRPM':rpm, 'DOL':rpm, 'max_dr':dr})
-                    out = solve_pipeline([stn]+sta[1:],
-                                         {'name':term_name,'elev':term_elev,'min_residual':term_min},
-                                         FLOW,RateDRA,Price_HSD)
-                    Z[i,j] = out['total_cost']
-            fig = go3d.Figure(data=[go3d.Surface(x=rpms, y=pumps, z=Z)])
-            fig.update_layout(scene=dict(xaxis_title="RPM", yaxis_title="#Pumps", zaxis_title="Cost"))
-            st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Fill inputs and click 🚀 Run Optimization to display results.")
+        with pwr_flow_tab:
+            st.markdown("<div class='section-title'>Power (kW) vs Flow</div>", unsafe_allow_html=True)
+            for stn in stations_data:
+                if not stn.get("is_pump"): continue
+                key = stn["name"].lower().replace(" ","_")
+                num = res[f"num_pumps_{key}"]
+                speed = res[f"speed_{key}"]
+                A,B,C = stn["A"], stn["B"], stn["C"]
+                P,Q,R,S,T = stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"]
+                flows = np.linspace(0, FLOW*1.2, 100)
+                powers = []
+                for q in flows:
+                    H = (A*q**2 + B*q + C)*(speed/res[f"dol_{key}"])**2
+                    flow_eq = q * res[f"dol_{key}"] / speed
+                    η = (P*flow_eq**4 + Q*flow_eq**3 + R*flow_eq**2 + S*flow_eq + T)/100.0
+                    power = (stn["rho"] * q * 9.81 * H * num)/(3600*1000*η*0.95)
+                    powers.append(power)
+                fig = go.Figure(go.Scatter(x=flows, y=powers, mode="lines"))
+                fig.update_layout(
+                    title=f"{stn['name']}: Power vs Flow",
+                    xaxis_title="Flow (m³/hr)",
+                    yaxis_title="Power (kW)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-# Footer
-st.markdown("---")
-st.caption("© 2025 Parichay Das. All rights reserved.")
+
+elif view == "System Curves":
+    with tab4:
+        st.markdown("<div class='section-title'>System Head Curves</div>", unsafe_allow_html=True)
+        for i, stn in enumerate(stations_data, start=1):
+            if not stn.get('is_pump', False): 
+                continue
+            key = stn['name'].lower().replace(' ','_')
+            d_inner_i = stn['D'] - 2*stn['t']
+            rough = stn['rough']; L_seg = stn['L']; elev_i = stn['elev']
+            # Generate SDH vs flow for 0%,10%,...,max DR
+            curves = []
+            kv = stn.get('KV', 10.0)
+            for dra in range(0, int(stn['max_dr'])+1, 5):
+                v_vals = np.linspace(0, FLOW, 101)/3600.0 / (pi*(d_inner_i**2)/4)
+                Re_vals = v_vals * d_inner_i / (kv*1e-6) if kv>0 else np.zeros_like(v_vals)
+                f_vals = np.where(Re_vals>0,
+                                  0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+                SDH_vals = elev_i + DH
+                curves.append(pd.DataFrame({"Flow": np.linspace(0, FLOW, 101), "SDH": SDH_vals, "DR": dra}))
+            df_sys = pd.concat(curves)
+            fig_sys = px.line(df_sys, x="Flow", y="SDH", color="DR", title=f"System Head ({stn['name']})")
+            fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
+            st.plotly_chart(fig_sys, use_container_width=True)
+
+elif view == "Pump-System Interaction":
+    with tab5:
+        st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
+        for i, stn in enumerate(stations_data, start=1):
+            if not stn.get('is_pump', False):
+                continue
+
+            key = stn['name'].lower().replace(' ', '_')
+            A = stn['A']; B = stn['B']; C = stn['C']
+            P = stn['P']; Q = stn['Q']; R = stn['R']; S = stn['S']; T = stn['T']
+            num_pumps = res[f"num_pumps_{key}"]
+            min_rpm   = res[f"min_rpm_{key}"]
+            dol       = res[f"dol_{key}"]
+
+            # station-specific viscosity & roughness
+            kv    = stn.get('KV', 10.0)
+            rough = stn['rough']
+
+            # common flow array
+            flows = np.linspace(0, FLOW*1.5, 200)
+
+            # Inner diameter
+            d_inner_i = stn['D'] - 2*stn['t']
+
+            # --- Pump vs System Combined (fig_int) ---
+            fig_int = go.Figure()
+
+            # 1) System head curves at 0–max_dr in 5% steps
+            for dra in np.arange(0, int(stn['max_dr'])+1, 5):
+                v_vals  = flows/3600.0 / (pi*(d_inner_i**2)/4)
+                Re_vals = v_vals * d_inner_i / (kv*1e-6) if kv>0 else np.zeros_like(flows)
+                f_vals  = np.where(
+                    Re_vals>0,
+                    0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2),
+                    0.0
+                )
+                DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1 - dra/100.0)
+                Hsys = stn['elev'] + DH
+                fig_int.add_trace(go.Scatter(
+                    x=flows, y=Hsys, mode='lines',
+                    name=f"System ({dra}% DRA)"
+                ))
+
+            # 2) Pump head curves at 100 rpm increments
+            for rpm in np.arange(min_rpm, dol+1, 100):
+                Hpump = (A*flows**2 + B*flows + C) * (rpm/dol)**2
+                fig_int.add_trace(go.Scatter(
+                    x=flows, y=Hpump, mode='lines',
+                    name=f"Pump {rpm} rpm"
+                ))
+
+            fig_int.update_layout(
+                title=f"{stn['name']}: System & Pump Interaction",
+                xaxis_title="Flow (m³/hr)",
+                yaxis_title="Head (m)"
+            )
+            st.plotly_chart(fig_int, use_container_width=True)
+
+            # --- Pressure vs Pipeline Length (fig_pl) ---
+            # build cumulative distances
+            cum_dist = [0]
+            for s in stations_data:
+                cum_dist.append(cum_dist[-1] + s['L'])
+            fig_pl = go.Figure()
+            for seg in range(len(stations_data)):
+                x0, x1 = cum_dist[seg], cum_dist[seg+1]
+                k0 = stations_data[seg]['name'].lower().replace(' ','_')
+                y0 = res[f"sdh_{k0}"]
+                y1 = res[f"residual_head_{k0}"]
+                fig_pl.add_trace(go.Scatter(
+                    x=[x0, x1], y=[y0, y1], mode='lines+markers',
+                    name=f"{stations_data[seg]['name']}→{stations_data[seg+1]['name'] if seg+1<len(stations_data) else 'Terminal'}"
+                ))
+                # vertical jump if pump at next node
+                if seg+1 < len(stations_data) and res.get(f"num_pumps_{stations_data[seg+1]['name'].lower().replace(' ','_')}",0)>0:
+                    k1 = stations_data[seg+1]['name'].lower().replace(' ','_')
+                    y2 = res[f"sdh_{k1}"]
+                    fig_pl.add_trace(go.Scatter(
+                        x=[x1, x1], y=[y1, y2],
+                        mode='lines', line=dict(dash='dash'), showlegend=False
+                    ))
+            fig_pl.update_layout(
+                title="Pressure vs Pipeline Length",
+                xaxis_title="Distance (km)",
+                yaxis_title="Head (m)"
+            )
+            st.plotly_chart(fig_pl, use_container_width=True)
+
+            # --- 3D Cost vs Speed vs DRA (fig3d) ---
+            from plotly import graph_objects as go3d
+            speeds = np.arange(min_rpm, dol+1, 100)
+            drs    = np.arange(0, int(stn['max_dr'])+1, 5)
+            Z = np.zeros((len(drs), len(speeds)))
+            for ii, dra in enumerate(drs):
+                for jj, rpm in enumerate(speeds):
+                    # head & eff
+                    H    = (A*FLOW**2 + B*FLOW + C)*(rpm/dol)**2
+                    feq  = FLOW * dol / rpm
+                    η    = (P*feq**4 + Q*feq**3 + R*feq**2 + S*feq + T)/100.0
+                    pwr  = (stn['rho']*FLOW*9.81*H*num_pumps)/(3600*1000*η*0.95)
+                    fuel = (stn['rate'] if stn['power_type']=="Grid"
+                            else (stn['sfc']*1.34102/820 * Price_HSD))
+                    dra_cost = (dra/4)*(FLOW*1000*24/1e6)*RateDRA
+                    Z[ii, jj] = pwr*24*fuel + dra_cost
+
+            surf = go3d.Surface(x=speeds, y=drs, z=Z)
+            fig3d = go3d.Figure(data=[surf])
+            fig3d.update_layout(
+                title=f"{stn['name']}: Cost vs RPM vs DRA",
+                scene=dict(
+                    xaxis_title="RPM",
+                    yaxis_title="DRA (%)",
+                    zaxis_title="Cost (INR/day)"
+                )
+            )
+            st.plotly_chart(fig3d, use_container_width=True)
+
+elif view == "Cost Landscape":
+    with tab6:
+        st.markdown("<div class='section-title'>Cost Landscape (RPM vs DRA)</div>", unsafe_allow_html=True)
+        for stn in stations_data:
+            if not stn.get("is_pump"): 
+                continue
+        key     = stn["name"].lower().replace(" ","_")
+        A,B,C   = stn["A"], stn["B"], stn["C"]
+        P,Q,R,S,T = stn["P"],stn["Q"],stn["R"],stn["S"],stn["T"]
+        num     = res[f"num_pumps_{key}"]
+        dol     = res[f"dol_{key}"]
+        min_rpm = res[f"min_rpm_{key}"]
+        rho     = stn["rho"]
+        rate    = stn["rate"] if stn["power_type"]=="Grid" else (stn["sfc"]*1.34102/820 * Price_HSD)
+        max_dr  = stn["max_dr"]
+
+        # Define grids
+        rpms = np.arange(min_rpm, dol+1, 100)
+        drs  = np.arange(0, max_dr+1, 5)
+        Z    = np.zeros((len(drs), len(rpms)))
+
+        for i, dra in enumerate(drs):
+            for j, rpm in enumerate(rpms):
+                # head at this rpm
+                H    = (A*FLOW**2 + B*FLOW + C)*(rpm/dol)**2
+                # eq flow for efficiency
+                feq  = FLOW * dol / rpm
+                η    = (P*feq**4 + Q*feq**3 + R*feq**2 + S*feq + T)/100.0
+                # power (kW)
+                pwr  = (rho * FLOW * 9.81 * H * num)/(3600*1000*η*0.95)
+                # daily energy or fuel cost
+                e_cost = pwr * 24 * rate
+                # DRA cost
+                dra_cost = (dra/4)*(FLOW*1000*24/1e6)*RateDRA
+                Z[i,j] = e_cost + dra_cost
+
+        # Plot 3D surface
+        from plotly import graph_objects as go3d
+        surf = go3d.Surface(x=rpms, y=drs, z=Z)
+        fig = go3d.Figure(data=[surf])
+        fig.update_layout(
+            title=f"{stn['name']}: Cost vs RPM vs DRA",
+            scene=dict(
+                xaxis_title="RPM",
+                yaxis_title="DRA (%)",
+                zaxis_title="Cost (INR/day)"
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True)
