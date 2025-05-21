@@ -7,16 +7,16 @@ import plotly.graph_objects as go
 from plotly import graph_objects as go3d
 from math import pi
 
-# NEOS email
+# Configure NEOS email for solver
 if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-# Page config
+# Page setup
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
-# CSS
+# Custom CSS for section titles
 st.markdown("""
 <style>
 .section-title {
@@ -28,22 +28,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("# Mixed Integer Nonlinear Pipeline Optimization")
+st.markdown("# Pipeline Optimization Dashboard")
 
-# Solver wrapper
-@st.cache_data
+# Cached solver call
 def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD)
 
 # Sidebar inputs
 with st.sidebar:
-    st.title("🔧 Pipeline Inputs")
+    st.title("🔧 Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
-    st.subheader("Stations")
+    st.subheader("Stations Configuration")
     add_col, rem_col = st.columns(2)
     if add_col.button("➕ Add Station"):
         idx = len(st.session_state.stations) + 1
@@ -58,12 +57,12 @@ with st.sidebar:
         st.session_state.stations.pop()
 
     view = st.radio(
-        "Show results for:",
+        "Select View:",
         ["Summary", "Cost Breakdown", "Performance", "System Curves",
          "Pump-System Interaction", "Cost Landscape", "Nonconvex Visuals"]
     )
 
-# Initialize stations in session
+# Initialize default stations
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -73,9 +72,9 @@ if 'stations' not in st.session_state:
         'max_pumps': 1, 'MinRPM': 1200, 'DOL': 1500, 'max_dr': 0
     }]
 
-# Station inputs
+# Station input forms
 for i, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {i}"):
+    with st.expander(f"Station {i}", expanded=True):
         stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{i}")
         stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{i}")
         stn['KV']   = st.number_input("Viscosity (cSt)", value=stn.get('KV',10.0), step=0.1, key=f"kv{i}")
@@ -91,9 +90,10 @@ for i, stn in enumerate(st.session_state.stations, start=1):
         stn['L']     = st.number_input("Length to next (km)", value=stn['L'], min_value=0.0, step=1.0, key=f"L{i}")
         stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{i}")
         if stn['is_pump']:
-            stn['power_type'] = st.selectbox("Power Source", ["Grid","Diesel"],
-                                            index=0 if stn['power_type']=='Grid' else 1,
-                                            key=f"ptype{i}")
+            stn['power_type'] = st.selectbox(
+                "Power Source", ["Grid","Diesel"],
+                index=0 if stn['power_type']=='Grid' else 1, key=f"ptype{i}"
+            )
             if stn['power_type']=='Grid':
                 stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn['rate'], key=f"rate{i}")
                 stn['sfc']  = 0.0
@@ -101,46 +101,45 @@ for i, stn in enumerate(st.session_state.stations, start=1):
                 stn['sfc']  = st.number_input("SFC (gm/bhp·hr)", value=stn['sfc'], key=f"sfc{i}")
                 stn['rate'] = 0.0
             stn['max_pumps'] = st.number_input(
-                "Maximum Pumps Available", min_value=1, value=int(stn['max_pumps']), step=1,
-                key=f"mpumps{i}"
+                "Maximum Pumps Available", min_value=1, value=int(stn['max_pumps']), step=1, key=f"mpumps{i}"
             )
             stn['MinRPM'] = st.number_input("Min RPM", value=int(stn['MinRPM']), step=100, key=f"minrpm{i}")
             stn['DOL']    = st.number_input("Rated RPM (DOL)", value=int(stn['DOL']), step=100, key=f"dol{i}")
             stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=int(stn['max_dr']), step=5, key=f"mdr{i}")
-            dfh = st.data_editor(pd.DataFrame({"Flow": [0.0], "Head": [0.0]}), num_rows='dynamic', key=f"head{i}")
-            st.session_state[f"head{i}"] = dfh
-            dfe = st.data_editor(pd.DataFrame({"Flow": [0.0], "Eff": [0.0]}), num_rows='dynamic', key=f"eff{i}")
-            st.session_state[f"eff{i}"] = dfe
-        peaks_df = st.data_editor(
+            # Pump performance
+            _ = st.data_editor(pd.DataFrame({"Flow": [0.0], "Head": [0.0]}), num_rows='dynamic', key=f"head{i}")
+            _ = st.data_editor(pd.DataFrame({"Flow": [0.0], "Eff": [0.0]}),  num_rows='dynamic', key=f"eff{i}")
+        # Peaks
+        _ = st.data_editor(
             pd.DataFrame({"Location": [stn['L']/2], "Elevation": [stn['elev']+100]}),
             num_rows='dynamic', key=f"peak{i}"
         )
-        st.session_state[f"peak{i}"] = peaks_df
 
-# Terminal
+# Terminal inputs
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 term_name = st.text_input("Name", "Terminal")
 term_elev = st.number_input("Elevation (m)", value=0.0)
 term_min  = st.number_input("Required Residual Head (m)", value=50.0)
 
-# Run
+# Run optimization
 if st.button("🚀 Run Optimization"):
     with st.spinner("Solving..."):
         stations_data = st.session_state.stations
-        term_data = {'name': term_name, 'elev': term_elev, 'min_residual': term_min}
         for i, stn in enumerate(stations_data, start=1):
             if stn['is_pump']:
                 Qh, Hh = st.session_state[f"head{i}"].values.T
                 stn['A'], stn['B'], stn['C'] = np.polyfit(Qh, Hh, 2)
                 Qe, Ee = st.session_state[f"eff{i}"].values.T
                 stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = np.polyfit(Qe, Ee, 4)
-            stn['peaks'] = [ {'loc':r[0], 'elev':r[1]} for _, r in st.session_state[f"peak{i}"].iterrows() ]
+            peaks_df = st.session_state[f"peak{i}"]
+            stn['peaks'] = [ {'loc': row[0], 'elev': row[1]} for row in peaks_df.values ]
+        term_data = {'name': term_name, 'elev': term_elev, 'min_residual': term_min}
         res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
         st.session_state['res'] = res
         st.session_state['stations_data'] = stations_data
 
-# Results
+# Display results
 if 'res' in st.session_state:
     res = st.session_state['res']
     sta = st.session_state['stations_data']
