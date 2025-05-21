@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly import graph_objects as go3d
 from math import pi
 
-# Configure NEOS email for solver
+# Configure NEOS email
 if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
 else:
@@ -16,7 +16,7 @@ else:
 # Page setup
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
-# Custom CSS for section titles
+# CSS for headers
 st.markdown("""
 <style>
 .section-title {
@@ -30,12 +30,13 @@ st.markdown("""
 
 st.markdown("# Pipeline Optimization Dashboard")
 
-# Cached solver call
+# Solver wrapper with caching
+@st.cache_data
 def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD)
 
-# Sidebar inputs
+# Sidebar for global and station controls
 with st.sidebar:
     st.title("🔧 Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
@@ -47,29 +48,31 @@ with st.sidebar:
     if add_col.button("➕ Add Station"):
         idx = len(st.session_state.stations) + 1
         st.session_state.stations.append({
-            'name': f'Station {idx}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-            'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1200, 'DOL': 1500, 'max_dr': 0
+            'name': f'Station {idx}', 'elev': 0.0,
+            'D': 0.711, 't': 0.007, 'SMYS': 52000.0,
+            'rough': 0.00004, 'L': 50.0, 'min_residual': 50.0,
+            'is_pump': False, 'power_type': 'Grid', 'rate': 9.0,
+            'sfc': 150.0, 'max_pumps': 1, 'MinRPM': 1200,
+            'DOL': 1500, 'max_dr': 0
         })
     if rem_col.button("🗑️ Remove Station") and len(st.session_state.stations) > 1:
         st.session_state.stations.pop()
 
-    view = st.radio(
-        "Select View:",
-        ["Summary", "Cost Breakdown", "Performance", "System Curves",
-         "Pump-System Interaction", "Cost Landscape", "Nonconvex Visuals"]
-    )
+    view = st.radio("Select View:", [
+        "Summary", "Cost Breakdown", "Performance",
+        "System Curves", "Pump-System Interaction",
+        "Cost Landscape", "Nonconvex Visuals"
+    ])
 
-# Initialize default stations
+# Initialize default station if needed
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
-        'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-        'min_residual': 50.0, 'is_pump': False,
-        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-        'max_pumps': 1, 'MinRPM': 1200, 'DOL': 1500, 'max_dr': 0
+        'name': 'Station 1', 'elev': 0.0,
+        'D': 0.711, 't': 0.007, 'SMYS': 52000.0,
+        'rough': 0.00004, 'L': 50.0, 'min_residual': 50.0,
+        'is_pump': False, 'power_type': 'Grid', 'rate': 9.0,
+        'sfc': 150.0, 'max_pumps': 1, 'MinRPM': 1200,
+        'DOL': 1500, 'max_dr': 0
     }]
 
 # Station input forms
@@ -80,42 +83,40 @@ for i, stn in enumerate(st.session_state.stations, start=1):
         stn['KV']   = st.number_input("Viscosity (cSt)", value=stn.get('KV',10.0), step=0.1, key=f"kv{i}")
         stn['rho']  = st.number_input("Density (kg/m³)", value=stn.get('rho',850.0), step=1.0, key=f"rho{i}")
         if i == 1:
-            stn['min_residual'] = st.number_input(
-                "Required Residual Head (m)", value=stn['min_residual'], step=0.1, key=f"res{i}"
-            )
+            stn['min_residual'] = st.number_input("Required Residual Head (m)", value=stn['min_residual'], step=0.1, key=f"res{i}")
         stn['D']     = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{i}")
         stn['t']     = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=1e-4, key=f"t{i}")
         stn['SMYS']  = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{i}")
         stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=1e-5, key=f"rough{i}")
         stn['L']     = st.number_input("Length to next (km)", value=stn['L'], min_value=0.0, step=1.0, key=f"L{i}")
         stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{i}")
+        # Prepare storage for DataFrames
+        head_df = None
+        eff_df  = None
         if stn['is_pump']:
-            stn['power_type'] = st.selectbox(
-                "Power Source", ["Grid","Diesel"],
-                index=0 if stn['power_type']=='Grid' else 1, key=f"ptype{i}"
-            )
+            stn['power_type'] = st.selectbox("Power Source", ["Grid","Diesel"], index=0 if stn['power_type']=='Grid' else 1, key=f"ptype{i}")
             if stn['power_type']=='Grid':
                 stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn['rate'], key=f"rate{i}")
                 stn['sfc']  = 0.0
             else:
                 stn['sfc']  = st.number_input("SFC (gm/bhp·hr)", value=stn['sfc'], key=f"sfc{i}")
                 stn['rate'] = 0.0
-            stn['max_pumps'] = st.number_input(
-                "Maximum Pumps Available", min_value=1, value=int(stn['max_pumps']), step=1, key=f"mpumps{i}"
-            )
-            stn['MinRPM'] = st.number_input("Min RPM", value=int(stn['MinRPM']), step=100, key=f"minrpm{i}")
-            stn['DOL']    = st.number_input("Rated RPM (DOL)", value=int(stn['DOL']), step=100, key=f"dol{i}")
-            stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=int(stn['max_dr']), step=5, key=f"mdr{i}")
-            # Pump performance
-            _ = st.data_editor(pd.DataFrame({"Flow": [0.0], "Head": [0.0]}), num_rows='dynamic', key=f"head{i}")
-            _ = st.data_editor(pd.DataFrame({"Flow": [0.0], "Eff": [0.0]}),  num_rows='dynamic', key=f"eff{i}")
-        # Peaks
-        _ = st.data_editor(
-            pd.DataFrame({"Location": [stn['L']/2], "Elevation": [stn['elev']+100]}),
-            num_rows='dynamic', key=f"peak{i}"
-        )
+            stn['max_pumps'] = st.number_input("Maximum Pumps Available", min_value=1, value=int(stn['max_pumps']), step=1, key=f"mpumps{i}")
+            stn['MinRPM']    = st.number_input("Min RPM", value=int(stn['MinRPM']), step=100, key=f"minrpm{i}")
+            stn['DOL']       = st.number_input("Rated RPM (DOL)", value=int(stn['DOL']), step=100, key=f"dol{i}")
+            stn['max_dr']    = st.number_input("Max Drag Reduction (%)", value=int(stn['max_dr']), step=5, key=f"mdr{i}")
+            # Editor widgets for pump curves
+            head_df = st.data_editor(pd.DataFrame({"Flow": [0.0], "Head": [0.0]}), num_rows='dynamic', key=f"head{i}")
+            eff_df  = st.data_editor(pd.DataFrame({"Flow": [0.0], "Eff": [0.0]}),  num_rows='dynamic', key=f"eff{i}")
+        # Editor widget for peaks
+        peak_df = st.data_editor(pd.DataFrame({"Location": [stn['L']/2], "Elevation": [stn['elev']+100]}), num_rows='dynamic', key=f"peak{i}")
+        # Store DataFrames for solve step
+        if head_df is not None:
+            st.session_state[f"head_data_{i}"] = head_df
+            st.session_state[f"eff_data_{i}"]  = eff_df
+        st.session_state[f"peak_data_{i}"] = peak_df
 
-# Terminal inputs
+# Terminal station inputs
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 term_name = st.text_input("Name", "Terminal")
@@ -128,12 +129,14 @@ if st.button("🚀 Run Optimization"):
         stations_data = st.session_state.stations
         for i, stn in enumerate(stations_data, start=1):
             if stn['is_pump']:
-                Qh, Hh = st.session_state[f"head{i}"].values.T
+                dfh = st.session_state.get(f"head_data_{i}")
+                dfe = st.session_state.get(f"eff_data_{i}")
+                Qh, Hh = dfh.values.T
                 stn['A'], stn['B'], stn['C'] = np.polyfit(Qh, Hh, 2)
-                Qe, Ee = st.session_state[f"eff{i}"].values.T
+                Qe, Ee = dfe.values.T
                 stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = np.polyfit(Qe, Ee, 4)
-            peaks_df = st.session_state[f"peak{i}"]
-            stn['peaks'] = [ {'loc': row[0], 'elev': row[1]} for row in peaks_df.values ]
+            pks = st.session_state.get(f"peak_data_{i}")
+            stn['peaks'] = [{'loc':row[0],'elev':row[1]} for row in pks.values]
         term_data = {'name': term_name, 'elev': term_elev, 'min_residual': term_min}
         res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
         st.session_state['res'] = res
@@ -143,15 +146,13 @@ if st.button("🚀 Run Optimization"):
 if 'res' in st.session_state:
     res = st.session_state['res']
     sta = st.session_state['stations_data']
-
-    # create tabs
+    # Create tabs beforehand
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "📋 Summary", "💰 Cost Breakdown", "⚙️ Performance",
-        "🌀 System Curves", "🔄 Pump-System", "🌄 Cost Landscape",
-        "🔍 Nonconvex Visuals"
+        "📋 Summary", "💰 Cost Breakdown", "⚙️ Performance", 
+        "🌀 System Curves", "🔄 Pump-System Interaction", 
+        "🌄 Cost Landscape", "🔍 Nonconvex Visuals"
     ])
-
-    # Summary
+    
     if view == "Summary":
         with tab1:
             st.markdown("<div class='section-title'>Summary</div>", unsafe_allow_html=True)
@@ -159,28 +160,26 @@ if 'res' in st.session_state:
             rows = ["Cost+Fuel","DRA","No.Pumps","Speed","Eff%","Re","HeadLoss","Vel","ResHead","SDH","DRA%"]
             data = {"Process": rows}
             for nm in names:
-                k=nm.lower().replace(' ', '_')
+                k = nm.lower().replace(' ', '_')
                 data[nm] = [
                     res[f"power_cost_{k}"], res[f"dra_cost_{k}"],
-                    res[f"num_pumps_{k}"],  res[f"speed_{k}"],
+                    res[f"num_pumps_{k}"], res[f"speed_{k}"],
                     res[f"efficiency_{k}"], res[f"reynolds_{k}"],
-                    res[f"head_loss_{k}"],   res[f"velocity_{k}"],
+                    res[f"head_loss_{k}"], res[f"velocity_{k}"],
                     res[f"residual_head_{k}"], res[f"sdh_{k}"],
                     res[f"drag_reduction_{k}"]
                 ]
             st.dataframe(pd.DataFrame(data), use_container_width=True)
-
-    # Cost Breakdown
+    
     elif view == "Cost Breakdown":
         with tab2:
             st.markdown("<div class='section-title'>Cost Breakdown</div>", unsafe_allow_html=True)
             dfc = pd.DataFrame({
                 "Station": [s['name'] for s in sta],
-                "Power+Fuel": [res[f"power_cost_{s['name'].lower().replace(' ','_')}"] for s in sta],
-                "DRA": [res[f"dra_cost_{s['name'].lower().replace(' ','_')}"] for s in sta]
+                "Power+Fuel": [res[f"power_cost_{s['name'].lower().replace(' ','_')}" ] for s in sta],
+                "DRA": [res[f"dra_cost_{s['name'].lower().replace(' ','_')}" ] for s in sta]
             })
-            fig = px.bar(dfc.melt(id_vars="Station", value_vars=["Power+Fuel","DRA"], var_name="Type", value_name="INR/day"),
-                         x="Station", y="INR/day", color="Type")
+            fig = px.bar(dfc.melt(id_vars="Station", value_vars=["Power+Fuel","DRA"], var_name="Type", value_name="INR/day"), x="Station", y="INR/day", color="Type")
             st.plotly_chart(fig, use_container_width=True)
 
     # Performance
