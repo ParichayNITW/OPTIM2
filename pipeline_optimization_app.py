@@ -7,8 +7,8 @@ from math import pi
 from io import BytesIO
 import hashlib
 import time
-
-
+from fpdf import FPDF
+import base64
 from scipy.interpolate import griddata
 import time
 
@@ -137,6 +137,33 @@ def foolproof_3d_cost_surface(stations_data, term_data, FLOW, RateDRA, Price_HSD
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
+st.markdown("""
+<style>
+body, .main, .block-container, .stApp {
+    background: linear-gradient(135deg, #f5f7fa, #c3cfe2 70%);
+}
+.section-title {
+    font-size:1.3rem; font-weight:700; margin-top:1rem; color: #003366;
+    letter-spacing:0.5px;
+    background: rgba(230,240,255,0.8); border-radius:7px; padding:4px 12px;
+}
+.stButton > button {
+    border-radius: 8px;
+    background-color: #007bff !important;
+    color: white !important;
+    font-weight:600;
+    border: none;
+    padding: 8px 20px;
+    margin-top: 10px;
+}
+.stDataFrame, .stTable { background: #f0f8ff !important; }
+.stMarkdown h1 { color: #222A35; }
+footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+
+
 # ---- USER AUTH ----
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
@@ -233,7 +260,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"KV{idx}")
         stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
         if idx == 1:
-            stn['min_residual'] = st.number_input("Residual Head at Station (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            stn['min_residual'] = st.number_input("Available suction pressure (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{idx}")
         stn['t'] = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=0.0001, key=f"t{idx}")
         stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
@@ -273,7 +300,7 @@ st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal")
 terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1)
-terminal_head = st.number_input("Required Residual Head (m)", value=50.0, step=1.0)
+terminal_head = st.number_input("Minimum Required Residual Head (m)", value=50.0, step=1.0)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Summary", 
@@ -335,12 +362,11 @@ if st.button("🚀 Run Optimization"):
                 "Optimized Speed (rpm)": res.get(f"speed_{key}", 0),
                 "Drag Reduction (%)": res.get(f"drag_reduction_{key}", 0),
                 "Eff. (%)": round(res.get(f"efficiency_{key}", 0),2),
-                "Residual Head (m)": round(res.get(f"residual_head_{key}", 0),2),
+                "Available suction pressure (m)" if i==1 else "Residual Head (m)": round(res.get(f"residual_head_{key}", 0),2),
                 "Head Loss (m)": round(res.get(f"head_loss_{key}", 0),2),
                 "Power Cost (₹/day)": round(res.get(f"power_cost_{key}",0),2),
                 "DRA Cost (₹/day)": round(res.get(f"dra_cost_{key}",0),2)
-            })
-        # Terminal
+        })
         key_t = terminal_name.strip().lower().replace(' ','_')
         summary_rows.append({
             "Station": terminal_name,
@@ -349,7 +375,7 @@ if st.button("🚀 Run Optimization"):
             "Optimized Speed (rpm)": 0,
             "Drag Reduction (%)": 0,
             "Eff. (%)": 0,
-            "Residual Head (m)": round(res.get(f"residual_head_{key_t}",0),2),
+            "Minimum Required Residual Head (m)": round(res.get(f"residual_head_{key_t}",0),2),
             "Head Loss (m)": 0,
             "Power Cost (₹/day)": 0,
             "DRA Cost (₹/day)": 0
@@ -358,6 +384,55 @@ if st.button("🚀 Run Optimization"):
         st.dataframe(summary_df, use_container_width=True)
         st.success(f"**Total Operating Cost: ₹{res.get('total_cost',0):,.2f} / day**")
 
+        def generate_pdf_report(res, summary_df, cost_df, fig_images):
+            pdf = FPDF(orientation='L', unit='mm', format='A4')
+            pdf.add_page()
+            pdf.set_font('Arial', 'B', 16)
+            pdf.cell(0, 10, "Pipeline Optimization Executive Report", ln=True, align='C')
+        
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 10, "Summary Table", ln=True)
+            pdf.set_font('Arial', '', 10)
+            for i, row in summary_df.iterrows():
+                pdf.cell(0, 8, ', '.join([f"{col}: {row[col]}" for col in summary_df.columns]), ln=True)
+            pdf.ln(5)
+        
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 10, "Cost Breakdown Table", ln=True)
+            pdf.set_font('Arial', '', 10)
+            for i, row in cost_df.iterrows():
+                pdf.cell(0, 8, ', '.join([f"{col}: {row[col]}" for col in cost_df.columns]), ln=True)
+            pdf.ln(5)
+        
+            # Add plot images (as PNG bytes)
+            for title, img_bytes in fig_images:
+                pdf.set_font('Arial', 'B', 12)
+                pdf.cell(0, 10, title, ln=True)
+                pdf.image(img_bytes, w=180)
+                pdf.ln(5)
+        
+            return pdf.output(dest='S').encode('latin1')
+        
+        def get_img_bytes(fig):
+            img_bytes = BytesIO()
+            fig.write_image(img_bytes, format='png')
+            img_bytes.seek(0)
+            return img_bytes
+        
+        if st.button("Generate Optimization report"):
+            fig_images = []
+            fig_images.append(("Pressure Drop vs Pipeline Length", get_img_bytes(fig_p)))
+            # Add more: e.g. fig_images.append(("Cost Pie Chart", get_img_bytes(fig_pie)))
+            pdf_bytes = generate_pdf_report(res, summary_df, cost_df, fig_images)
+            st.session_state['pdf_report'] = pdf_bytes
+            st.success("Report generated! Click below to download.")
+        
+        if 'pdf_report' in st.session_state:
+            b64 = base64.b64encode(st.session_state['pdf_report']).decode()
+            href = f'<a href="data:application/pdf;base64,{b64}" download="Optimization_Report.pdf">Download Optimization report.pdf</a>'
+            st.markdown(href, unsafe_allow_html=True)
+
+   
     # === Tab 2: Detailed Costs by Type ===
     with tab2:
         st.markdown("<div class='section-title'>Cost Breakdown by Station</div>", unsafe_allow_html=True)
@@ -458,43 +533,55 @@ if st.button("🚀 Run Optimization"):
         # Pressure drop vs Pipeline Length
         with press_tab:
             st.markdown("<div class='section-title'>Pressure drop vs Pipeline Length</div>", unsafe_allow_html=True)
-            lengths = [0]
-            sdh = []
-            rh = []
-            names_p = []
+            chainages = [0.0]
+            x_labels = [stations_data[0]['name']]
+            y_sdh = []
+            y_rh = []
+            name_pairs = []
+
+            # Build station and peak labels
             for i, stn in enumerate(stations_data, start=1):
-                names_p.append(stn['name'])
-                l = stn.get('L', 0)
-                lengths.append(lengths[-1] + l)
                 key = stn['name'].strip().lower().replace(' ','_')
-                sdh.append(res.get(f"sdh_{key}",0.0))
-                rh.append(res.get(f"residual_head_{key}",0.0))
+                l = stn.get('L', 0)
+                # Peaks
+                peaks = stn.get('peaks', [])
+                for pk in peaks:
+                    pk_chainage = chainages[-1] + pk['loc']
+                    chainages.append(pk_chainage)
+                    x_labels.append(f"Peak-{i}")
+                # Next station
+                chainages.append(chainages[-1] + l)
+                x_labels.append(stn['name'])
+                y_sdh.append(res.get(f"sdh_{key}",0.0))
+                y_rh.append(res.get(f"residual_head_{key}",0.0))
             # Terminal
-            names_p.append(terminal_name)
-            sdh.append(0.0)
-            rh.append(res.get(f"residual_head_{terminal_name.strip().lower().replace(' ','_')}",0.0))
-            x_vals = np.array(lengths)
+            x_labels.append(terminal_name)
+            chainages.append(chainages[-1])
+            y_rh.append(res.get(f"residual_head_{terminal_name.strip().lower().replace(' ','_')}",0.0))
+
             fig_p = go.Figure()
-            # Draw segment lines (SDH upstream -> RH downstream)
-            for i in range(len(stations_data)):
+            for i in range(len(y_sdh)):
                 fig_p.add_trace(go.Scatter(
-                    x=[x_vals[i], x_vals[i+1]], y=[sdh[i], rh[i+1]],
-                    mode='lines+markers', name=f"{names_p[i]}→{names_p[i+1]} (drop)", line=dict(color="blue")
+                    x=[chainages[i], chainages[i+1]], y=[y_sdh[i], y_rh[i+1]],
+                    mode='lines+markers', name=f"{x_labels[i]}→{x_labels[i+1]} (drop)",
+                    line=dict(color="blue", width=3)
                 ))
-            # Draw vertical jump for each pump station
-            for i in range(len(stations_data)):
-                key = stations_data[i]['name'].strip().lower().replace(' ','_')
                 if stations_data[i].get('is_pump', False):
-                    # Vertical line: RH up to SDH at same station
                     fig_p.add_trace(go.Scatter(
-                        x=[x_vals[i], x_vals[i]],
-                        y=[rh[i], sdh[i]],
+                        x=[chainages[i], chainages[i]],
+                        y=[y_rh[i], y_sdh[i]],
                         mode='lines+markers',
-                        line=dict(color='red', dash='dot', width=3),
-                        name=f"{names_p[i]}: Pump jump"
+                        line=dict(color='red', width=4),
+                        name=f"{x_labels[i]}: Pump jump"
                     ))
-            fig_p.update_layout(title="Pressure drop vs Pipeline Length", xaxis_title="Cumulative Length (km)", yaxis_title="Pressure (mcl)")
+            fig_p.update_layout(
+                title="Pressure drop vs Pipeline Length",
+                xaxis_title="Chainage (km)",
+                yaxis_title="Pressure (mcl)",
+                xaxis=dict(tickvals=chainages, ticktext=x_labels, tickangle=45)
+            )
             st.plotly_chart(fig_p, use_container_width=True)
+
 
         # Power vs Speed, Power vs Flow
         with power_tab:
@@ -567,7 +654,7 @@ if st.button("🚀 Run Optimization"):
                 flows_user = st.session_state[f"head_data_{i}"].iloc[:,0].values
                 flows = np.linspace(flows_user.min(), flows_user.max(), 200)
                 Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 * opt_nop
-                fig.add_trace(go.Scatter(x=flows, y=Hpump, mode='lines', line=dict(dash='dot'), name=f"Pump ({rpm} rpm, {opt_nop} NOP)"))
+                fig.add_trace(go.Scatter(x=flows, y=Hpump, mode='lines', line=dict(width=5, dash='solid'), name=f"Pump ({rpm} rpm, {opt_nop} NOP)"))
             fig.update_layout(title=f"System vs Pump Curves: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
             st.plotly_chart(fig, use_container_width=True)
 
@@ -577,5 +664,12 @@ if st.button("🚀 Run Optimization"):
             stations_data, term_data, FLOW, RateDRA, Price_HSD, res, solve_pipeline, stn_index=0
         )
 
+st.markdown("""
+<br><br>
+<hr>
+<div style='text-align:center; color:gray; font-size:15px;'>
+    &copy; 2025 Developed by <b>Parichay Das</b>. All rights reserved.
+</div>
+""", unsafe_allow_html=True)
 
 
