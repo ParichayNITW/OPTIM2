@@ -422,54 +422,97 @@ if run:
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True)
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
-    with tab5:
-        st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
-        for i, stn in enumerate(stations_data, start=1):
-            if not stn.get('is_pump', False):
-                continue
-            key = stn['name'].lower().replace(' ','_')
-            flows = np.linspace(0, FLOW*1.5, 200)
-            d_inner_i = stn['D'] - 2*stn['t']
-            rough = stn['rough']
-            # System curve for 0% DRA
-            v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-            Re_vals = v_vals * d_inner_i / (KV*1e-6) if KV>0 else np.zeros_like(v_vals)
-            f_vals = np.where(Re_vals>0,
-                              0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-            DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81))
-            Hsys = stn['elev'] + DH
-            A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
-            N_min = int(res.get(f"min_rpm_{key}", 0))
-            N_max = int(res.get(f"dol_{key}", 0))
-            fig_int = go.Figure()
-            fig_int.add_trace(go.Scatter(x=flows, y=Hsys, mode='lines', name='System (0% DRA)'))
-            for rpm in np.arange(N_min, N_max+1, 100):
-                Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
-                fig_int.add_trace(go.Scatter(x=flows, y=Hpump, mode='lines', name=f'Pump {rpm} rpm'))
-            fig_int.update_layout(title=f"Interaction ({stn['name']})", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
-            st.plotly_chart(fig_int, use_container_width=True)
-            # 3D Total Cost vs Pump Speed & DRA
-            st.markdown(f"**3D Total Cost vs Pump Speed & DRA for {stn['name']}**")
-            rpm_range = np.arange(N_min, N_max+1, 100)
-            dra_range = np.arange(0, int(stn.get('max_dr', 40))+1, 5)
-            X, Y = np.meshgrid(rpm_range, dra_range)
-            Z = np.zeros_like(X, dtype=float)
-            for i_r, rpm in enumerate(rpm_range):
-                for i_d, dra in enumerate(dra_range):
-                    # Simplified estimation: use head, eff from curve
+with tab5:
+    st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
+    for i, stn in enumerate(stations_data, start=1):
+        if not stn.get('is_pump', False):
+            continue
+        key = stn['name'].strip().lower().replace(' ','_')
+
+        # Get optimized values from results
+        opt_speed = res.get(f"speed_{key}", 0)
+        opt_nop = res.get(f"num_pumps_{key}", 0)
+        opt_dra = res.get(f"drag_reduction_{key}", 0)
+        opt_cost = res.get(f"power_cost_{key}", 0) + res.get(f"dra_cost_{key}", 0)
+
+        # Grid setup (coarse for speed, otherwise very slow)
+        N_min = int(res.get(f"min_rpm_{key}", 0))
+        N_max = int(res.get(f"dol_{key}", 0))
+        max_nop = int(stn.get('max_pumps', 2))
+        dra_slices = list(range(0, int(stn.get('max_dr', 40))+1, 10)) if stn.get('max_dr', 0) >= 10 else [0, int(stn.get('max_dr', 0))]
+
+        # Needed for backend-accurate cost calculation
+        FLOW = FLOW
+        rho = stn.get('rho', 850.0)
+        RateDRA = RateDRA
+        Price_HSD = Price_HSD
+        P = stn.get('P', 0); Q = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
+        A = res.get(f"coef_A_{key}", 0); B = res.get(f"coef_B_{key}", 0); C = res.get(f"coef_C_{key}", 0)
+        N_ref = int(res.get(f"dol_{key}", 0))
+
+        rpm_range = np.arange(N_min, N_max+1, 100)
+        nop_range = np.arange(1, max_nop+1, 1)
+
+        surfaces = []
+
+        for dra in dra_slices:
+            Z = np.zeros((len(nop_range), len(rpm_range)))
+            for ix, nop in enumerate(nop_range):
+                for iy, rpm in enumerate(rpm_range):
+                    # Get per-point cost using the backend formulas (same as in your model)
                     flow = FLOW
-                    H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
-                    P = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
-                    eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
+                    # Calculate head at this speed
+                    H = (A*flow**2 + B*flow + C)*(rpm/N_ref)**2 if N_ref>0 else 0
+                    eff = (P*flow**4 + Q*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
                     # Power (kW)
-                    pwr = (rho * flow * 9.81 * H)/(3600.0*eff*0.95)
+                    if nop>0 and rpm>0 and eff>0:
+                        pwr = (rho * flow * 9.81 * H * nop)/(3600.0*1000.0*eff*0.95)
+                    else:
+                        pwr = 0
                     # DRA cost
                     dra_cost = (dra/4)*(flow*1000.0*24.0/1e6)*RateDRA
-                    # Power cost (grid)
+                    # Power cost (assume grid for now; you can extend for diesel)
                     power_cost = pwr*24*stn.get('rate', 0)
-                    Z[i_d, i_r] = power_cost + dra_cost
-            fig3d = go.Figure(data=[go.Surface(x=X, y=Y, z=Z)])
-            fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
-                xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
-            st.plotly_chart(fig3d, use_container_width=True)
+                    Z[ix,iy] = power_cost + dra_cost
+            # Add surface
+            surfaces.append(go.Surface(
+                x=rpm_range, y=nop_range, z=Z,
+                name=f"DRA {dra}%",
+                showscale=False,
+                opacity=0.7,
+                hovertemplate="Speed: %{x} rpm<br>NoP: %{y}<br>Cost: %{z:.0f}<br>DRA: "+str(dra)+"%"
+            ))
+
+        # Marker for optimized point
+        # Find which DRA slice matches the optimizer (or nearest if not on grid)
+        nearest_dra = min(dra_slices, key=lambda x: abs(x-opt_dra))
+        marker_color = "red"
+
+        marker_trace = go.Scatter3d(
+            x=[opt_speed],
+            y=[opt_nop],
+            z=[opt_cost],
+            mode='markers+text',
+            marker=dict(size=10, color=marker_color, symbol='diamond'),
+            name=f"Optimized Solution (Cost: {opt_cost:,.0f})",
+            text=[f"Optimized<br>Cost: ₹{opt_cost:,.0f}"],
+            textposition='top center'
+        )
+
+        fig3d = go.Figure(data=surfaces + [marker_trace])
+        fig3d.update_layout(
+            title=f"Total Cost vs Speed vs No. of Pumps ({stn['name']}) for DRA%",
+            scene=dict(
+                xaxis_title="Speed (rpm)",
+                yaxis_title="No. of Pumps",
+                zaxis_title="Total Cost (INR/day)"
+            ),
+            margin=dict(l=0, r=0, b=0, t=40),
+            legend_title="DRA% Slices"
+        )
+        st.plotly_chart(fig3d, use_container_width=True)
+
+        st.info(f"**Optimized cost for {stn['name']} (marked in red): ₹{opt_cost:,.2f} per day**\n"
+                f"Speed: {opt_speed:.0f} rpm, No. of Pumps: {opt_nop}, DRA: {opt_dra:.1f}%")
+
