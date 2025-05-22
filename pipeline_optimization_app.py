@@ -512,67 +512,48 @@ if run:
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
             # 2D Plot
-            st.markdown("<div class='section-title'>3D Objective Function Landscape at Station-1</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Total Cost vs Pump Speed (Station-1)</div>", unsafe_allow_html=True)
             stn1 = stations_data[0]
             if stn1.get('is_pump', False):
                 key1 = stn1['name'].lower().replace(' ','_')
                 N_min1 = int(res.get(f"min_rpm_{key1}", 1000))
                 N_max1 = int(res.get(f"dol_{key1}", 1500))
-                rpm_range = np.arange(N_min1, N_max1+1, 25)
-                dra_range = np.arange(0, int(stn1.get('max_dr', 40))+1, 2)
-                R, D = np.meshgrid(rpm_range, dra_range)
-                Z = np.zeros_like(R, dtype=float)
-                # Get coefficients
-                A = res.get(f"coef_A_{key1}",0); B = res.get(f"coef_B_{key1}",0); C = res.get(f"coef_C_{key1}",0)
-                P = stn1.get('P',0); Qc = stn1.get('Q',0); Rcoef = stn1.get('R',0); S = stn1.get('S',0); T = stn1.get('T',0)
+                rpm_range = np.arange(N_min1, N_max1+1, 10)
                 FLOW = st.session_state.get('FLOW', 1000.0)
                 if 'FLOW' not in st.session_state:
                     FLOW = 1000.0
                 rho = stn1['rho']
                 rate = stn1.get('rate', 10.0)
+                # Use DRA at optimal or at 0%, as you wish:
+                dra = 0  # Or use res, or a user input
                 RateDRA = st.session_state.get('RateDRA', 500.0)
                 if 'RateDRA' not in st.session_state:
                     RateDRA = 500.0
-                for i in range(R.shape[0]):
-                    for j in range(R.shape[1]):
-                        rpm = R[i, j]
-                        dra = D[i, j]
-                        H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max1)**2
-                        eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
-                        eff = max(0.01, eff/100)
-                        # Power (kW)
-                        pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
-                        power_cost = pwr*24*rate
-                        dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
-                        Z[i, j] = power_cost + dra_cost
-                # 3D surface plot
-                fig3d = go.Figure(data=[go.Surface(z=Z, x=rpm_range, y=dra_range, colorscale='Viridis')])
-                fig3d.update_layout(
-                    title=f"3D Objective Function Landscape at {stn1['name']}",
-                    scene = dict(
-                        xaxis_title='Pump Speed (rpm)',
-                        yaxis_title='DRA (%)',
-                        zaxis_title='Total Cost (INR/day)'
-                    ),
-                    autosize=True,
-                    margin=dict(l=30, r=30, b=30, t=50)
-                )
-                st.plotly_chart(fig3d, use_container_width=True)
-                # Optionally, add a contour plot as well:
-                fig2d = go.Figure(data=
-                    go.Contour(
-                        z=Z,
-                        x=rpm_range, y=dra_range,
-                        colorscale='Viridis',
-                        colorbar=dict(title='Total Cost (INR/day)')
-                    )
-                )
-                fig2d.update_layout(
-                    title=f"Contour of Objective at {stn1['name']}",
+                A = res.get(f"coef_A_{key1}",0); B = res.get(f"coef_B_{key1}",0); C = res.get(f"coef_C_{key1}",0)
+                P = stn1.get('P',0); Qc = stn1.get('Q',0); Rcoef = stn1.get('R',0); S = stn1.get('S',0); T = stn1.get('T',0)
+                cost_vals = []
+                for rpm in rpm_range:
+                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max1)**2
+                    eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
+                    eff = max(0.01, eff/100)
+                    # Power (kW)
+                    pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
+                    power_cost = pwr*24*rate
+                    dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
+                    cost_vals.append(power_cost + dra_cost)
+                fig_cost = go.Figure()
+                fig_cost.add_trace(go.Scatter(
+                    x=rpm_range,
+                    y=cost_vals,
+                    mode='lines+markers',
+                    name='Total Cost'
+                ))
+                fig_cost.update_layout(
+                    title=f"Total Cost vs Pump Speed at {stn1['name']}",
                     xaxis_title="Pump Speed (rpm)",
-                    yaxis_title="DRA (%)"
+                    yaxis_title="Total Cost (INR/day)"
                 )
-                st.plotly_chart(fig2d, use_container_width=True)
+                st.plotly_chart(fig_cost, use_container_width=True, key="cost_vs_speed")
             else:
                 st.warning("Station-1 is not set as a pump.")
 
