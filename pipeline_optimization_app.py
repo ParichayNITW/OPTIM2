@@ -10,6 +10,8 @@ from io import BytesIO
 import hashlib
 from plotly.colors import qualitative
 
+palette = [c for c in qualitative.Plotly if not c.lower() in ['#ffeb3b', '#ffd700', 'yellow', 'rgb(255, 221, 51)']]
+
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
 # ---- USER AUTH ----
@@ -449,7 +451,10 @@ if run:
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
-        palette = qualitative.Plotly  # Plotly built-in color palette
+        # Remove any yellows from the palette
+        raw_palette = qualitative.Plotly
+        # Remove any known yellows (hex codes, color names)
+        palette = [c for c in raw_palette if c.lower() not in ['#ffeb3b', '#ffd700', 'yellow', 'rgb(255, 221, 51)']]
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
@@ -463,7 +468,7 @@ if run:
             flows = np.linspace(0, FLOW*1.5, 200)
             fig_int = go.Figure()
     
-            # Plot system curves for DRA (use solid lines, color by DRA)
+            # Plot system curves for DRA (use solid lines, color by DRA, no yellow)
             for idx, dra in enumerate(range(0, max_dr+1, 5)):
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
@@ -478,18 +483,18 @@ if run:
                     line=dict(color=color, width=2)
                 ))
     
-            # Pump curves (series, various speeds; also solid lines with distinct colors)
-            pump_color_base = palette[len(range(0, max_dr+1, 5))]
+            # Pump curves (series, various speeds; solid lines, use palette, skip yellow)
+            pump_palette = palette[::-1]  # Use a different cycle or just cycle again
             A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
-            pump_colors = palette[len(range(0, max_dr+1, 5)):]  # Use next colors for pumps
             for pumps_in_series in range(1, num_pumps+1):
                 for ridx, rpm in enumerate(range(N_min, N_max+1, 100)):
                     Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 * pumps_in_series
+                    color = pump_palette[ridx % len(pump_palette)]
                     fig_int.add_trace(
                         go.Scatter(
                             x=flows, y=Hpump, mode='lines',
                             name=f'Pump {pumps_in_series}x @ {rpm}rpm',
-                            line=dict(color=pump_colors[ridx % len(pump_colors)], width=2)
+                            line=dict(color=color, width=2)
                         )
                     )
             fig_int.update_layout(
@@ -498,6 +503,7 @@ if run:
                 legend_title_text="Curve"
             )
             st.plotly_chart(fig_int, use_container_width=True)
+
     
             # Optional: Download as PNG or PDF
             png_bytes = fig_int.to_image(format="png")
