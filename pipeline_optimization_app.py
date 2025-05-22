@@ -563,7 +563,7 @@ if run:
                     ),
                     margin=dict(l=30, r=30, b=30, t=50)
                 )
-                st.plotly_chart(fig_surface, use_container_width=True, key=f"3d_surface_cost_speed_nump_{key}")
+                st.plotly_chart(fig_surface, use_container_width=True, key=f"3d_surface_cost_speed_nump_{key}_{idx}")
 
             
             # 3D Plot (Cost vs Pump Speed vs DRA)
