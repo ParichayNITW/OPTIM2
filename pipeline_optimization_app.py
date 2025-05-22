@@ -10,6 +10,7 @@ import hashlib
 import uuid
 from plotly.colors import qualitative
 
+st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 # ---- USER AUTH ----
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
