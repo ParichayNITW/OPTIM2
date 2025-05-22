@@ -64,7 +64,7 @@ st.markdown("""
 st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
 
 # Solver call
-def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
+def solve_pipeline(stations, terminal, FLOW, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD)
 
@@ -73,8 +73,6 @@ with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
-        KV        = st.number_input("Viscosity (cSt)", value=10.0, step=0.1)
-        rho       = st.number_input("Density (kg/m³)", value=850.0, step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
 
@@ -111,13 +109,15 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}", expanded=True):
         stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
         stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+        stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
+        stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
         if idx == 1:
-            stn['min_residual'] = st.number_input("Residual Head at Station (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{idx}")
         stn['t'] = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=0.0001, key=f"t{idx}")
         stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
         stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
-        stn['L'] = st.number_input("Length to next (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+        stn['L'] = st.number_input("Length to next station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
         stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
         if stn['is_pump']:
             stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
@@ -152,7 +152,7 @@ st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal")
 terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1)
-terminal_head = st.number_input("Required Residual Head (m)", value=50.0, step=1.0)
+terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.0)
 
 run = st.button("🚀 Run Optimization")
 if run:
@@ -191,7 +191,7 @@ if run:
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
 
-        res = solve_pipeline(stations_data, term_data, FLOW, KV, rho, RateDRA, Price_HSD)
+        res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
 
     total_cost = res.get('total_cost', 0.0)
     total_pumps = sum(int(res.get(f"num_pumps_{s['name'].lower().replace(' ','_')}",0)) for s in stations_data)
@@ -255,6 +255,10 @@ if run:
                           title="Daily Cost by Station")
         fig_cost.update_layout(yaxis_title="Cost (INR)")
         st.plotly_chart(fig_cost, use_container_width=True)
+        df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
+        fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown (Pie)")
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
     # === Tab 3 (Performance) ===
     with tab3:
         perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
@@ -305,7 +309,12 @@ if run:
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ','_')
-                flows = np.linspace(0.01, FLOW*1.5, 200)
+                Qe = st.session_state.get(f"eff_data_{i}")
+                if Qe is not None and len(Qe) > 0:
+                    flow_min, flow_max = np.min(Qe['Flow (m³/hr)']), np.max(Qe['Flow (m³/hr)'])
+                    flows = np.linspace(flow_min, flow_max, 200)
+                else:
+                    flows = np.linspace(0.01, FLOW*1.5, 200)
                 P = stn.get('P',0); Q = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
