@@ -505,7 +505,7 @@ if run:
                 xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)",
                 legend_title_text="Curve"
             )
-            st.plotly_chart(fig_int, use_container_width=True, key=f"interaction_{i}_{key}")
+            st.plotly_chart(fig_int, use_container_width=True)
     
             # Optional: Download as PNG or PDF
             png_bytes = fig_int.to_image(format="png")
