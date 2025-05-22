@@ -512,7 +512,7 @@ if run:
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
             # 2D Plot
-            st.markdown("<div class='section-title'>Total Cost vs Pump Speed (Station-1)</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Total Cost vs Pump Speed for Different DRA% (Station-1)</div>", unsafe_allow_html=True)
             stn1 = stations_data[0]
             if stn1.get('is_pump', False):
                 key1 = stn1['name'].lower().replace(' ','_')
@@ -524,39 +524,40 @@ if run:
                     FLOW = 1000.0
                 rho = stn1['rho']
                 rate = stn1.get('rate', 10.0)
-                # Use DRA at optimal or at 0%, as you wish:
-                dra = 0  # Or use res, or a user input
                 RateDRA = st.session_state.get('RateDRA', 500.0)
                 if 'RateDRA' not in st.session_state:
                     RateDRA = 500.0
+                max_dr = int(stn1.get('max_dr', 40))
+                dra_percents = list(range(0, max_dr+1, 5))
                 A = res.get(f"coef_A_{key1}",0); B = res.get(f"coef_B_{key1}",0); C = res.get(f"coef_C_{key1}",0)
                 P = stn1.get('P',0); Qc = stn1.get('Q',0); Rcoef = stn1.get('R',0); S = stn1.get('S',0); T = stn1.get('T',0)
-                cost_vals = []
-                for rpm in rpm_range:
-                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max1)**2
-                    eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
-                    eff = max(0.01, eff/100)
-                    # Power (kW)
-                    pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
-                    power_cost = pwr*24*rate
-                    dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
-                    cost_vals.append(power_cost + dra_cost)
-                fig_cost = go.Figure()
-                fig_cost.add_trace(go.Scatter(
-                    x=rpm_range,
-                    y=cost_vals,
-                    mode='lines+markers',
-                    name='Total Cost'
-                ))
-                fig_cost.update_layout(
-                    title=f"Total Cost vs Pump Speed at {stn1['name']}",
+                fig = go.Figure()
+                for dra in dra_percents:
+                    cost_vals = []
+                    for rpm in rpm_range:
+                        H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max1)**2
+                        eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
+                        eff = max(0.01, eff/100)
+                        # Power (kW)
+                        pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
+                        power_cost = pwr*24*rate
+                        dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
+                        cost_vals.append(power_cost + dra_cost)
+                    fig.add_trace(go.Scatter(
+                        x=rpm_range,
+                        y=cost_vals,
+                        mode='lines+markers',
+                        name=f'DRA {dra}%',
+                    ))
+                fig.update_layout(
+                    title=f"Total Cost vs Pump Speed for Different DRA% at {stn1['name']}",
                     xaxis_title="Pump Speed (rpm)",
-                    yaxis_title="Total Cost (INR/day)"
+                    yaxis_title="Total Cost (INR/day)",
+                    legend_title="DRA%"
                 )
-                st.plotly_chart(fig_cost, use_container_width=True, key="cost_vs_speed")
+                st.plotly_chart(fig, use_container_width=True, key="cost_vs_speed_multi_dra")
             else:
                 st.warning("Station-1 is not set as a pump.")
-
             
             # 3D Total Cost vs Pump Speed & DRA
             st.markdown(f"**3D Total Cost vs Pump Speed & DRA for {stn['name']}**")
