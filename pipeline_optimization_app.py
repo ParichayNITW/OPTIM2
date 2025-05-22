@@ -512,8 +512,7 @@ if run:
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
             # 2D Plot
-            st.markdown("<div class='section-title'>Objective Function Landscape at Station-1</div>", unsafe_allow_html=True)
-            # -- Ensure station-1 is a pump --
+            st.markdown("<div class='section-title'>3D Objective Function Landscape at Station-1</div>", unsafe_allow_html=True)
             stn1 = stations_data[0]
             if stn1.get('is_pump', False):
                 key1 = stn1['name'].lower().replace(' ','_')
@@ -546,30 +545,34 @@ if run:
                         power_cost = pwr*24*rate
                         dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
                         Z[i, j] = power_cost + dra_cost
-                # Plot contour
-                fig = go.Figure(data=
+                # 3D surface plot
+                fig3d = go.Figure(data=[go.Surface(z=Z, x=rpm_range, y=dra_range, colorscale='Viridis')])
+                fig3d.update_layout(
+                    title=f"3D Objective Function Landscape at {stn1['name']}",
+                    scene = dict(
+                        xaxis_title='Pump Speed (rpm)',
+                        yaxis_title='DRA (%)',
+                        zaxis_title='Total Cost (INR/day)'
+                    ),
+                    autosize=True,
+                    margin=dict(l=30, r=30, b=30, t=50)
+                )
+                st.plotly_chart(fig3d, use_container_width=True)
+                # Optionally, add a contour plot as well:
+                fig2d = go.Figure(data=
                     go.Contour(
                         z=Z,
                         x=rpm_range, y=dra_range,
                         colorscale='Viridis',
-                        colorbar=dict(title='Total Cost (INR/day)'),
-                        contours=dict(
-                            start=float(np.nanmin(Z)),
-                            end=float(np.nanmax(Z)),
-                            size=(float(np.nanmax(Z)) - float(np.nanmin(Z)))/15
-                        ),
+                        colorbar=dict(title='Total Cost (INR/day)')
                     )
                 )
-                fig.update_layout(
-                    title=f"Total Cost vs Pump Speed & DRA at {stn1['name']}",
+                fig2d.update_layout(
+                    title=f"Contour of Objective at {stn1['name']}",
                     xaxis_title="Pump Speed (rpm)",
                     yaxis_title="DRA (%)"
                 )
-                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}")
-                st.markdown(
-                    "<small>If you see multiple ridges, valleys, or peaks, the objective function is non-convex.</small>",
-                    unsafe_allow_html=True
-                )
+                st.plotly_chart(fig2d, use_container_width=True)
             else:
                 st.warning("Station-1 is not set as a pump.")
 
