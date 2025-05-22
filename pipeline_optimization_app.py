@@ -9,21 +9,16 @@ from math import pi
 from io import BytesIO
 import hashlib
 
-st.set_page_config(page_title="Pipeline Optimization", layout="wide")
+from pipeline_model import solve_pipeline
 
-# ---- USER AUTH ----
+st.set_page_config(page_title="Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations", layout="wide")
+
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
-
-# Only this username and password are allowed
-users = {
-    "parichay_das": hash_pwd("heteroscedasticity")
-}
-
+users = {"parichay_das": hash_pwd("heteroscedasticity")}
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
     if not st.session_state.authenticated:
         st.title("🔒 Pipeline Optimization Login")
         username = st.text_input("Username")
@@ -35,18 +30,12 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-        st.stop()  # Prevent the rest of the app from loading
-
-    # Add a logout button in sidebar
+        st.stop()
     with st.sidebar:
         if st.button("Logout"):
             st.session_state.authenticated = False
             st.rerun()
-
-# Call this before everything else!
 check_login()
-
-
 
 if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
@@ -54,27 +43,36 @@ else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
 st.markdown("""
-<style>
-.section-title {
-  font-size:1.2rem; font-weight:600; margin-top:1rem;
-  color: var(--text-primary-color);
-}
-</style>
+    <style>
+    .app-title-justify {
+      text-align: justify;
+      width: 100%;
+      font-size: 2.1rem;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      margin-bottom: 12px;
+    }
+    .copyright {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      width: 100vw;
+      color: #555;
+      background: #f0f0f0cc;
+      text-align: center;
+      font-size: 1.1em;
+      font-style: italic;
+      padding: 3px 0 3px 0;
+      z-index: 1000;
+    }
+    </style>
 """, unsafe_allow_html=True)
-st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
-
-# Solver call
-def solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD):
-    import pipeline_model
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV, rho, RateDRA, Price_HSD)
+st.markdown('<div class="app-title-justify">Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</div>', unsafe_allow_html=True)
 
 # Sidebar inputs
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
-    with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
-        KV        = st.number_input("Viscosity (cSt)", value=10.0, step=0.1)
-        rho       = st.number_input("Density (kg/m³)", value=850.0, step=10.0)
+    with st.expander("Global Cost Parameters", expanded=True):
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
 
@@ -85,10 +83,9 @@ with st.sidebar:
         default = {
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
             'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-            'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'min_residual': 50.0, 'is_pump': False, 'power_type': 'Grid',
+            'rate': 9.0, 'sfc': 150.0, 'max_pumps': 1, 'MinRPM': 1000.0,
+            'DOL': 1500.0, 'max_dr': 0.0, 'rho': 850.0, 'kv': 10.0, 'FLOW': 1000.0
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station"):
@@ -99,29 +96,29 @@ if 'stations' not in st.session_state:
     st.session_state.stations = []
     st.session_state.stations.append({
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-        'min_residual': 50.0, 'is_pump': False,
-        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-        'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-        'max_dr': 0.0
+        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0, 'min_residual': 50.0,
+        'is_pump': False, 'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+        'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0, 'max_dr': 0.0,
+        'rho': 850.0, 'kv': 10.0, 'FLOW': 1000.0
     })
 
-# Station inputs (dynamic)
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}", expanded=True):
         stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
         stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+        stn['FLOW'] = st.number_input("Flow rate (m³/hr)", value=stn.get('FLOW',1000.0), step=10.0, key=f"flow{idx}")
+        stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho',850.0), step=10.0, key=f"rho{idx}")
+        stn['kv']  = st.number_input("Viscosity (cSt)", value=stn.get('kv',10.0), step=0.1, key=f"kv{idx}")
         if idx == 1:
-            stn['min_residual'] = st.number_input("Residual Head at Station (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            stn['min_residual'] = st.number_input("Available suction head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{idx}")
         stn['t'] = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=0.0001, key=f"t{idx}")
         stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
         stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
-        stn['L'] = st.number_input("Length to next (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+        stn['L'] = st.number_input("Length to next station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
         stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
         if stn['is_pump']:
-            stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                            index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+            stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"], index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
             if stn['power_type']=="Grid":
                 stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
                 stn['sfc'] = 0.0
@@ -147,14 +144,14 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
         st.session_state[f"peak_data_{idx}"] = peak_df
 
-# Terminal inputs
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal")
 terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1)
-terminal_head = st.number_input("Required Residual Head (m)", value=50.0, step=1.0)
+terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.0)
 
 run = st.button("🚀 Run Optimization")
+
 if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
@@ -191,7 +188,7 @@ if run:
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
 
-        res = solve_pipeline(stations_data, term_data, FLOW, KV, rho, RateDRA, Price_HSD)
+        res = solve_pipeline(stations_data, term_data, RateDRA, Price_HSD)
 
     total_cost = res.get('total_cost', 0.0)
     total_pumps = sum(int(res.get(f"num_pumps_{s['name'].lower().replace(' ','_')}",0)) for s in stations_data)
