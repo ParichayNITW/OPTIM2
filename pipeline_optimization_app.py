@@ -598,7 +598,7 @@ if run:
             fig3d = go.Figure(data=[go.Surface(x=X, y=Y, z=Z)])
             fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                 xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
-            st.plotly_chart(fig3d, use_container_width=True, key=f"interaction_{i}_{key}")
+            st.plotly_chart(fig3d, use_container_width=True)
 
 st.markdown(
     """
