@@ -447,7 +447,7 @@ if run:
             df_sys = pd.concat(curves)
             fig_sys = px.line(df_sys, x="Flow", y="SDH", color="DRA", title=f"System Head ({stn['name']}) at various % DRA")
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
-            st.plotly_chart(fig_sys, use_container_width=True, key=f"interaction_{i}_{key}")
+            st.plotly_chart(fig_sys, use_container_width=True)
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
