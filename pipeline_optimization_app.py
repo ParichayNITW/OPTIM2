@@ -495,7 +495,7 @@ if run:
                         go.Scatter(
                             x=flows, y=Hpump, mode='lines',
                             name=f'Pump {pumps_in_series}x @ {rpm}rpm',
-                            line=dict(color=color, width=2, dash='dash')
+                            line=dict(color=color, width=2)
                         )
                     )
                     pump_curve_idx += 1
