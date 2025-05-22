@@ -251,15 +251,11 @@ if run:
             "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
             "DRA":       [res.get(f"dra_cost_{s['name'].lower().replace(' ','_')}",0)    for s in stations_data]
         })
-        fig_cost = px.bar(df_cost.melt(id_vars="Station", value_vars=["Power+Fuel","DRA"],
-                                       var_name="Type", value_name="INR/day"),
-                          x="Station", y="INR/day", color="Type",
-                          title="Daily Cost by Station")
-        fig_cost.update_layout(yaxis_title="Cost (INR)")
-        st.plotly_chart(fig_cost, use_container_width=True)
         df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
+        # Only pie chart, no bar chart
         fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown (Pie)")
         st.plotly_chart(fig_pie, use_container_width=True)
+        st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
     
     # === Tab 3 (Performance) ===
     with tab3:
@@ -434,31 +430,63 @@ if run:
             st.plotly_chart(fig_sys, use_container_width=True)
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
-        st.markdown("<div class='section-title'>Pump vs System Interaction & 3D Cost Analysis</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
             key = stn['name'].lower().replace(' ','_')
-            flows = np.linspace(0, FLOW*1.5, 200)
             d_inner_i = stn['D'] - 2*stn['t']
             rough = stn['rough']
-            # System curve for 0% DRA
-            v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-            Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
-            f_vals = np.where(Re_vals>0,
-                              0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-            DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81))
-            Hsys = stn['elev'] + DH
-            A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
+            max_dr = int(stn.get('max_dr', 40))
             N_min = int(res.get(f"min_rpm_{key}", 0))
             N_max = int(res.get(f"dol_{key}", 0))
+            num_pumps = max(1, int(res.get(f"num_pumps_{key}", 1)))  # Use result, fallback to 1
+    
+            # Plot all system curves for DRA 0 to max, in 5% steps
+            flows = np.linspace(0, FLOW*1.5, 200)
+            system_curves = []
+            for dra in range(0, max_dr+1, 5):
+                v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
+                Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
+                f_vals = np.where(Re_vals>0,
+                                  0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+                Hsys = stn['elev'] + DH
+                system_curves.append((dra, flows.copy(), Hsys.copy()))
+    
+            # Get pump coefficients
+            A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
+    
             fig_int = go.Figure()
-            fig_int.add_trace(go.Scatter(x=flows, y=Hsys, mode='lines', name='System (0% DRA)'))
-            for rpm in np.arange(N_min, N_max+1, 100):
-                Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
-                fig_int.add_trace(go.Scatter(x=flows, y=Hpump, mode='lines', name=f'Pump {rpm} rpm'))
-            fig_int.update_layout(title=f"Interaction ({stn['name']})", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
+    
+            # Plot system curves (one color, different line dash)
+            for dra, flw, Hsys in system_curves:
+                fig_int.add_trace(go.Scatter(x=flw, y=Hsys, mode='lines', name=f'System {dra}% DRA', line=dict(dash='dot')))
+    
+            # Plot pump curves for 1, 2, ..., num_pumps (in series)
+            for pumps_in_series in range(1, num_pumps+1):
+                for rpm in range(N_min, N_max+1, 100):
+                    Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 * pumps_in_series  # Series: head adds
+                    fig_int.add_trace(
+                        go.Scatter(
+                            x=flows, y=Hpump,
+                            mode='lines',
+                            name=f'Pump {pumps_in_series}x @ {rpm}rpm',
+                            line=dict(dash='solid' if pumps_in_series==1 else 'dash')
+                        )
+                    )
+    
+            fig_int.update_layout(
+                title=f"Interaction ({stn['name']})",
+                xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)",
+                legend_title_text="Curve"
+            )
             st.plotly_chart(fig_int, use_container_width=True)
+    
+            # Optional: Download as PNG or PDF
+            png_bytes = fig_int.to_image(format="png")
+            st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
+            
             # 3D Total Cost vs Pump Speed & DRA
             st.markdown(f"**3D Total Cost vs Pump Speed & DRA for {stn['name']}**")
             rpm_range = np.arange(N_min, N_max+1, 100)
@@ -484,3 +512,12 @@ if run:
             fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                 xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
             st.plotly_chart(fig3d, use_container_width=True)
+
+st.markdown(
+    """
+    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+    &copy; 2025 Developed by Parichay Das. All rights reserved.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
