@@ -511,55 +511,64 @@ if run:
             png_bytes = fig_int.to_image(format="png")
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
-            # 2D Plot
-            st.markdown("<div class='section-title'>Total Cost vs Pump Speed for Different DRA% (Station-1)</div>", unsafe_allow_html=True)
-            stn1 = stations_data[0]
-            if stn1.get('is_pump', False):
-                key1 = stn1['name'].lower().replace(' ','_')
-                N_min1 = int(res.get(f"min_rpm_{key1}", 1000))
-                N_max1 = int(res.get(f"dol_{key1}", 1500))
-                rpm_range = np.arange(N_min1, N_max1+1, 10)
+            # 3D Plot (Cost vs Pump Speed vs Pump Eff)
+            st.markdown("<div class='section-title'>3D Plot: Total Cost vs Pump Efficiency vs Pump Speed (All Pump Stations)</div>", unsafe_allow_html=True)
+            for idx, stn in enumerate(stations_data):
+                if not stn.get('is_pump', False):
+                    continue
+                key = stn['name'].lower().replace(' ','_')
+                N_min = int(res.get(f"min_rpm_{key}", 1000))
+                N_max = int(res.get(f"dol_{key}", 1500))
+                rpm_range = np.arange(N_min, N_max+1, 10)
                 FLOW = st.session_state.get('FLOW', 1000.0)
                 if 'FLOW' not in st.session_state:
                     FLOW = 1000.0
-                rho = stn1['rho']
-                rate = stn1.get('rate', 10.0)
+                rho = stn['rho']
+                rate = stn.get('rate', 10.0)
+                # You may use optimal or fixed DRA% (set as 0 here)
+                dra = 0
                 RateDRA = st.session_state.get('RateDRA', 500.0)
                 if 'RateDRA' not in st.session_state:
                     RateDRA = 500.0
-                max_dr = int(stn1.get('max_dr', 40))
-                dra_percents = list(range(0, max_dr+1, 5))
-                A = res.get(f"coef_A_{key1}",0); B = res.get(f"coef_B_{key1}",0); C = res.get(f"coef_C_{key1}",0)
-                P = stn1.get('P',0); Qc = stn1.get('Q',0); Rcoef = stn1.get('R',0); S = stn1.get('S',0); T = stn1.get('T',0)
-                fig = go.Figure()
-                for dra in dra_percents:
-                    cost_vals = []
-                    for rpm in rpm_range:
-                        H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max1)**2
-                        eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
-                        eff = max(0.01, eff/100)
-                        # Power (kW)
-                        pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
-                        power_cost = pwr*24*rate
-                        dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
-                        cost_vals.append(power_cost + dra_cost)
-                    fig.add_trace(go.Scatter(
+                A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
+                P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+                eff_vals = []
+                cost_vals = []
+                for rpm in rpm_range:
+                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max)**2
+                    eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
+                    eff = max(0.01, eff/100)
+                    # Power (kW)
+                    pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
+                    power_cost = pwr*24*rate
+                    dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
+                    cost_vals.append(power_cost + dra_cost)
+                    eff_vals.append(eff*100)  # As percent
+                # 3D plot
+                fig3d = go.Figure(data=[
+                    go.Scatter3d(
                         x=rpm_range,
-                        y=cost_vals,
+                        y=eff_vals,
+                        z=cost_vals,
                         mode='lines+markers',
-                        name=f'DRA {dra}%',
-                    ))
-                fig.update_layout(
-                    title=f"Total Cost vs Pump Speed for Different DRA% at {stn1['name']}",
-                    xaxis_title="Pump Speed (rpm)",
-                    yaxis_title="Total Cost (INR/day)",
-                    legend_title="DRA%"
+                        marker=dict(size=4),
+                        line=dict(width=4),
+                        name=f"{stn['name']}"
+                    )
+                ])
+                fig3d.update_layout(
+                    title=f"Total Cost vs Pump Efficiency vs Pump Speed at {stn['name']}",
+                    scene = dict(
+                        xaxis_title='Pump Speed (rpm)',
+                        yaxis_title='Pump Efficiency (%)',
+                        zaxis_title='Total Cost (INR/day)'
+                    ),
+                    margin=dict(l=30, r=30, b=30, t=50)
                 )
-                st.plotly_chart(fig, use_container_width=True, key="cost_vs_speed_multi_dra")
-            else:
-                st.warning("Station-1 is not set as a pump.")
+                st.plotly_chart(fig3d, use_container_width=True, key=f"3d_cost_eff_speed_{key}")
+
             
-            # 3D Total Cost vs Pump Speed & DRA
+            # 3D Plot (Cost vs Pump Speed vs DRA)
             st.markdown(f"**3D Total Cost vs Pump Speed & DRA for {stn['name']}**")
             rpm_range = np.arange(N_min, N_max+1, 100)
             dra_range = np.arange(0, int(stn.get('max_dr', 40))+1, 5)
