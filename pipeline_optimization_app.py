@@ -422,7 +422,7 @@ if run:
                 fig_pwr2 = go.Figure()
                 fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
                 fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
-                st.plotly_chart(fig_pwr2, use_container_width=True, key=f"interaction_{i}_{key}")
+                st.plotly_chart(fig_pwr2, use_container_width=True)
 
     # === Tab 4 (System Curves at various DRA) ===
     with tab4:
