@@ -550,57 +550,51 @@ if run:
                 margin=dict(l=30, r=30, b=30, t=50)
             )
             st.plotly_chart(fig_surface, use_container_width=True, key=f"cost_surface_{i}_{key}_{uuid.uuid4().hex[:6]}")
-
+    
             # 3D Plot (Pump Efficiency vs Pump Speed vs DRA)
-            st.markdown("<div class='section-title'>3D Surface: Pump Efficiency vs DRA% vs Pump Speed (All Pump Stations)</div>", unsafe_allow_html=True)
-            for i, stn in enumerate(stations_data, start=1):
-                if not stn.get('is_pump', False):
-                    continue
-                key = stn['name'].lower().replace(' ','_')
-                N_min = int(res.get(f"min_rpm_{key}", 1000))
-                N_max = int(res.get(f"dol_{key}", 1500))
-                max_dr = int(stn.get('max_dr', 40))
-                rpm_range = np.arange(N_min, N_max+1, 20)
-                dra_range = np.arange(0, max_dr+1, 5)
-                # Meshgrid: X = %DR, Y = Pump Speed
-                X, Y = np.meshgrid(dra_range, rpm_range)
-                Z = np.zeros_like(X, dtype=float)
-                P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
-                FLOW = st.session_state.get('FLOW', 1000.0)
-                N_base = int(res.get(f"dol_{key}", 1500))
-                for i_r, rpm in enumerate(rpm_range):
-                    for i_d, dra in enumerate(dra_range):
-                        # If you want to adjust flow based on DRA, you can add that logic here
-                        flow = FLOW
-                        Q_adj = flow * N_base/rpm  # Flow at this speed (if you scale)
-                        eff = (P*Q_adj**4 + Qc*Q_adj**3 + Rcoef*Q_adj**2 + S*Q_adj + T)
-                        Z[i_r, i_d] = eff
-                fig_eff = go.Figure(data=[
-                    go.Surface(
-                        x=X, y=Y, z=Z,
-                        colorbar=dict(title="Efficiency (%)"),
-                        colorscale="Viridis"
-                    )
-                ])
-                fig_eff.update_layout(
-                    title=f"Pump Efficiency vs DRA% vs Pump Speed at {stn['name']}",
-                    scene = dict(
-                        xaxis_title='DRA (%)',
-                        yaxis_title='Pump Speed (rpm)',
-                        zaxis_title='Pump Efficiency (%)'
-                    ),
-                    margin=dict(l=30, r=30, b=30, t=50)
+            st.markdown("<div class='section-title'>3D Surface: Pump Efficiency vs DRA% vs Pump Speed</div>", unsafe_allow_html=True)
+            N_min_eff = int(res.get(f"min_rpm_{key}", 1000))
+            N_max_eff = int(res.get(f"dol_{key}", 1500))
+            max_dr_eff = int(stn.get('max_dr', 40))
+            rpm_range_eff = np.arange(N_min_eff, N_max_eff+1, 20)
+            dra_range_eff = np.arange(0, max_dr_eff+1, 5)
+            X_eff, Y_eff = np.meshgrid(dra_range_eff, rpm_range_eff)
+            Z_eff = np.zeros_like(X_eff, dtype=float)
+            P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+            N_base = int(res.get(f"dol_{key}", 1500))
+            for i_r, rpm in enumerate(rpm_range_eff):
+                for i_d, dra in enumerate(dra_range_eff):
+                    # If you want to adjust flow based on DRA, you can add that logic here
+                    flow = FLOW
+                    Q_adj = flow * N_base/rpm  # Flow at this speed (if you scale)
+                    eff = (P*Q_adj**4 + Qc*Q_adj**3 + Rcoef*Q_adj**2 + S*Q_adj + T)
+                    Z_eff[i_r, i_d] = eff
+            fig_eff = go.Figure(data=[
+                go.Surface(
+                    x=X_eff, y=Y_eff, z=Z_eff,
+                    colorbar=dict(title="Efficiency (%)"),
+                    colorscale="Viridis"
                 )
-                st.plotly_chart(fig_eff, use_container_width=True, key=f"eff_surface_{i}_{key}_{uuid.uuid4().hex[:6]}")
-            
+            ])
+            fig_eff.update_layout(
+                title=f"Pump Efficiency vs DRA% vs Pump Speed at {stn['name']}",
+                scene = dict(
+                    xaxis_title='DRA (%)',
+                    yaxis_title='Pump Speed (rpm)',
+                    zaxis_title='Pump Efficiency (%)'
+                ),
+                margin=dict(l=30, r=30, b=30, t=50)
+            )
+            st.plotly_chart(fig_eff, use_container_width=True, key=f"eff_surface_{i}_{key}_{uuid.uuid4().hex[:6]}")
+    
             # 3D Plot (Cost vs Pump Speed vs DRA)
             st.markdown(f"**3D Total Cost vs Pump Speed & DRA for {stn['name']}**")
-            rpm_range = np.arange(N_min, N_max+1, 100)
-            dra_range = np.arange(0, int(stn.get('max_dr', 40))+1, 5)
-            X, Y = np.meshgrid(rpm_range, dra_range)
-            Z = np.zeros_like(X, dtype=float)
-            for i_r, rpm in enumerate(rpm_range):
-                for i_d, dra in enumerate(dra_range):
+            rpm_range_cost = np.arange(N_min, N_max+1, 100)
+            dra_range_cost = np.arange(0, int(stn.get('max_dr', 40))+1, 5)
+            X_cost, Y_cost = np.meshgrid(rpm_range_cost, dra_range_cost)
+            Z_cost = np.zeros_like(X_cost, dtype=float)
+            for i_r, rpm in enumerate(rpm_range_cost):
+                for i_d, dra in enumerate(dra_range_cost):
                     # Simplified estimation: use head, eff from curve
                     flow = FLOW
                     H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
@@ -613,11 +607,12 @@ if run:
                     dra_cost = (dra/4)*(flow*1000.0*24.0/1e6)*RateDRA
                     # Power cost (grid)
                     power_cost = pwr*24*stn.get('rate', 0)
-                    Z[i_d, i_r] = power_cost + dra_cost
-            fig3d = go.Figure(data=[go.Surface(x=X, y=Y, z=Z)])
+                    Z_cost[i_d, i_r] = power_cost + dra_cost
+            fig3d = go.Figure(data=[go.Surface(x=X_cost, y=Y_cost, z=Z_cost)])
             fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                 xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
             st.plotly_chart(fig3d, use_container_width=True, key=f"cost3d_{i}_{key}_{uuid.uuid4().hex[:6]}")
+
 
 st.markdown(
     """
