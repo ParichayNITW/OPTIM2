@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from math import pi
 from io import BytesIO
 import hashlib
+from plotly.colors import qualitative
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
@@ -327,42 +328,59 @@ if run:
         # Pressure vs Pipeline Length
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
-            # Prepare cumulative lengths and pressure (SDH, RH)
+            # Prepare cumulative lengths and heads
             lengths = [0]
-            sdh = []
-            rh = []
             names_p = []
-            for i, stn in enumerate(stations_data, start=1):
-                names_p.append(stn['name'])
+            for stn in stations_data:
                 l = stn.get('L', 0)
                 lengths.append(lengths[-1] + l)
-                key = stn['name'].lower().replace(' ','_')
-                sdh.append(res.get(f"sdh_{key}",0.0))
-                rh.append(res.get(f"residual_head_{key}",0.0))
-            # Terminal
+                names_p.append(stn['name'])
             names_p.append(terminal_name)
-            sdh.append(0.0)  # Or None, as SDH at terminal is not used
-            rh.append(res.get(f"residual_head_{terminal_name.lower().replace(' ','_')}",0.0))
+            n_stn = len(stations_data)
+            # Collect all needed values
+            available_suction_head = res.get(f"residual_head_{stations_data[0]['name'].lower().replace(' ','_')}", 0.0)
+            sdh = [res.get(f"sdh_{s['name'].lower().replace(' ','_')}", 0.0) for s in stations_data]
+            rh = [res.get(f"residual_head_{s['name'].lower().replace(' ','_')}", 0.0) for s in stations_data]
+            rh.append(res.get(f"residual_head_{terminal_name.lower().replace(' ','_')}", 0.0))
+        
+            # Build points for custom curve: list of (x, y)
+            x_pts = []
+            y_pts = []
+            # 1st: vertical from Available Suction Head at Station-1 (at 0) to SDH of Station-1 (at 0)
+            x_pts.extend([lengths[0], lengths[0]])
+            y_pts.extend([available_suction_head, sdh[0]])
+            # Now for each station (except last)
+            for i in range(n_stn - 1):
+                # Sloped line from SDH[i] (at lengths[i]) to RH[i+1] (at lengths[i+1])
+                x_pts.extend([lengths[i], lengths[i+1]])
+                y_pts.extend([sdh[i], rh[i+1]])
+                # Vertical line from RH[i+1] (at lengths[i+1]) to SDH[i+1] (at lengths[i+1])
+                x_pts.extend([lengths[i+1], lengths[i+1]])
+                y_pts.extend([rh[i+1], sdh[i+1]])
+            # Final: from last SDH to terminal RH (NO vertical at terminal, so just a sloped line)
+            x_pts.extend([lengths[-2], lengths[-1]])
+            y_pts.extend([sdh[-1], rh[-1]])
+        
             # Plot
-            x_vals = np.array(lengths)
             fig_p = go.Figure()
-            # SDH and RH at stations
-            fig_p.add_trace(go.Scatter(x=x_vals[:-1], y=sdh, mode='markers+lines+text', name="SDH", text=names_p, textposition='top center'))
-            fig_p.add_trace(go.Scatter(x=x_vals, y=rh, mode='markers+lines+text', name="RH", text=names_p, textposition='bottom center'))
-            # Show vertical jump for each pump station
-            for i in range(1, len(x_vals)-1):
-                key = stations_data[i-1]['name'].lower().replace(' ','_')
-                if stations_data[i-1].get('is_pump', False):
-                    # Vertical line at pump station
-                    fig_p.add_trace(go.Scatter(
-                        x=[x_vals[i], x_vals[i]],
-                        y=[rh[i], sdh[i]],
-                        mode='lines',
-                        line=dict(dash='dot', color='red'),
-                        name=f"Pump Jump @ {names_p[i]}"
-                    ))
-            fig_p.update_layout(title="Pressure vs Pipeline Length", xaxis_title="Cumulative Length (km)", yaxis_title="Pressure (mcl)")
+            fig_p.add_trace(go.Scatter(
+                x=x_pts, y=y_pts, mode='lines+markers',
+                name="Pressure Profile", line=dict(width=3)
+            ))
+        
+            # Annotate station names at corresponding x positions
+            for idx, name in enumerate(names_p):
+                y_annot = rh[idx] if idx < len(rh) else rh[-1]
+                fig_p.add_annotation(x=lengths[idx], y=y_annot, text=name, showarrow=True, yshift=12)
+        
+            fig_p.update_layout(
+                title="Pressure vs Pipeline Length",
+                xaxis_title="Cumulative Length (km)",
+                yaxis_title="Pressure Head (mcl)",
+                showlegend=False
+            )
             st.plotly_chart(fig_p, use_container_width=True)
+            
         # Power vs Speed, Power vs Flow
         with power_tab:
             st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
@@ -431,6 +449,7 @@ if run:
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
+        palette = qualitative.Plotly  # Plotly built-in color palette
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
@@ -440,42 +459,39 @@ if run:
             max_dr = int(stn.get('max_dr', 40))
             N_min = int(res.get(f"min_rpm_{key}", 0))
             N_max = int(res.get(f"dol_{key}", 0))
-            num_pumps = max(1, int(res.get(f"num_pumps_{key}", 1)))  # Use result, fallback to 1
-    
-            # Plot all system curves for DRA 0 to max, in 5% steps
+            num_pumps = max(1, int(res.get(f"num_pumps_{key}", 1)))
             flows = np.linspace(0, FLOW*1.5, 200)
-            system_curves = []
-            for dra in range(0, max_dr+1, 5):
+            fig_int = go.Figure()
+    
+            # Plot system curves for DRA (use solid lines, color by DRA)
+            for idx, dra in enumerate(range(0, max_dr+1, 5)):
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                 Hsys = stn['elev'] + DH
-                system_curves.append((dra, flows.copy(), Hsys.copy()))
+                color = palette[idx % len(palette)]
+                fig_int.add_trace(go.Scatter(
+                    x=flows, y=Hsys, mode='lines',
+                    name=f'System {dra}% DRA',
+                    line=dict(color=color, width=2)
+                ))
     
-            # Get pump coefficients
+            # Pump curves (series, various speeds; also solid lines with distinct colors)
+            pump_color_base = palette[len(range(0, max_dr+1, 5))]
             A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
-    
-            fig_int = go.Figure()
-    
-            # Plot system curves (one color, different line dash)
-            for dra, flw, Hsys in system_curves:
-                fig_int.add_trace(go.Scatter(x=flw, y=Hsys, mode='lines', name=f'System {dra}% DRA', line=dict(dash='dot')))
-    
-            # Plot pump curves for 1, 2, ..., num_pumps (in series)
+            pump_colors = palette[len(range(0, max_dr+1, 5)):]  # Use next colors for pumps
             for pumps_in_series in range(1, num_pumps+1):
-                for rpm in range(N_min, N_max+1, 100):
-                    Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 * pumps_in_series  # Series: head adds
+                for ridx, rpm in enumerate(range(N_min, N_max+1, 100)):
+                    Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 * pumps_in_series
                     fig_int.add_trace(
                         go.Scatter(
-                            x=flows, y=Hpump,
-                            mode='lines',
+                            x=flows, y=Hpump, mode='lines',
                             name=f'Pump {pumps_in_series}x @ {rpm}rpm',
-                            line=dict(dash='solid' if pumps_in_series==1 else 'dash')
+                            line=dict(color=pump_colors[ridx % len(pump_colors)], width=2)
                         )
                     )
-    
             fig_int.update_layout(
                 title=f"Interaction ({stn['name']})",
                 xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)",
