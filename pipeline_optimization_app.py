@@ -244,7 +244,7 @@ if run:
     # === Tab 1 ===
     with tab1:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-        st.dataframe(df_sum, use_container_width=True)
+        st.dataframe(df_sum, use_container_width=True, key=f"interaction_{i}_{key}")
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
     # === Tab 2 ===
     with tab2:
@@ -257,7 +257,7 @@ if run:
         df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
         # Only pie chart, no bar chart
         fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown (Pie)")
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, use_container_width=True, key=f"interaction_{i}_{key}")
         st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
     
     # === Tab 3 (Performance) ===
@@ -276,7 +276,7 @@ if run:
             })
             fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
             fig_h.update_layout(yaxis_title="Head Loss (m)")
-            st.plotly_chart(fig_h, use_container_width=True)
+            st.plotly_chart(fig_h, use_container_width=True, key=f"interaction_{i}_{key}")
         # Velocity & Reynolds
         with head_tab:
             st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
@@ -302,7 +302,7 @@ if run:
                     H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
                     fig.add_trace(go.Scatter(x=flows, y=H, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}")
         # Pump Efficiency Curve (at multiple RPMs)
         with eff_tab:
             st.markdown("<div class='section-title'>Pump Efficiency Curves (Eff vs Flow at various Speeds)</div>", unsafe_allow_html=True)
@@ -326,7 +326,7 @@ if run:
                     eff = (P*Q_adj**4 + Q*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
                     fig.add_trace(go.Scatter(x=flows, y=eff, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Efficiency vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Efficiency (%)")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}")
         # Pressure vs Pipeline Length
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
@@ -381,7 +381,7 @@ if run:
                 yaxis_title="Pressure Head (mcl)",
                 showlegend=False
             )
-            st.plotly_chart(fig_p, use_container_width=True)
+            st.plotly_chart(fig_p, use_container_width=True, key=f"interaction_{i}_{key}")
             
         # Power vs Speed, Power vs Flow
         with power_tab:
@@ -409,7 +409,7 @@ if run:
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
                 fig_pwr.update_layout(title=f"Power vs Speed: {stn['name']}", xaxis_title="Speed (rpm)", yaxis_title="Power (kW)")
-                st.plotly_chart(fig_pwr, use_container_width=True)
+                st.plotly_chart(fig_pwr, use_container_width=True, key=f"interaction_{i}_{key}")
                 # Power vs Flow
                 flows = np.linspace(0.01, FLOW*1.5, 100)
                 power2 = []
@@ -422,7 +422,7 @@ if run:
                 fig_pwr2 = go.Figure()
                 fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
                 fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
-                st.plotly_chart(fig_pwr2, use_container_width=True)
+                st.plotly_chart(fig_pwr2, use_container_width=True, key=f"interaction_{i}_{key}")
 
     # === Tab 4 (System Curves at various DRA) ===
     with tab4:
@@ -447,7 +447,7 @@ if run:
             df_sys = pd.concat(curves)
             fig_sys = px.line(df_sys, x="Flow", y="SDH", color="DRA", title=f"System Head ({stn['name']}) at various % DRA")
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
-            st.plotly_chart(fig_sys, use_container_width=True)
+            st.plotly_chart(fig_sys, use_container_width=True, key=f"interaction_{i}_{key}")
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
@@ -565,7 +565,7 @@ if run:
                     xaxis_title="Pump Speed (rpm)",
                     yaxis_title="DRA (%)"
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}")
                 st.markdown(
                     "<small>If you see multiple ridges, valleys, or peaks, the objective function is non-convex.</small>",
                     unsafe_allow_html=True
@@ -598,7 +598,7 @@ if run:
             fig3d = go.Figure(data=[go.Surface(x=X, y=Y, z=Z)])
             fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                 xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
-            st.plotly_chart(fig3d, use_container_width=True)
+            st.plotly_chart(fig3d, use_container_width=True, key=f"interaction_{i}_{key}")
 
 st.markdown(
     """
