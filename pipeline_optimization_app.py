@@ -511,8 +511,8 @@ if run:
             png_bytes = fig_int.to_image(format="png")
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
-            # 3D Plot (Cost vs Pump Speed vs Pump Eff)
-            st.markdown("<div class='section-title'>3D Surface: Total Cost vs Pump Speed vs No. of Pumps (All Pump Stations)</div>", unsafe_allow_html=True)
+            # 3D Plot (Cost vs Pump Speed vs NOP vs Pump Eff)
+            st.markdown("<div class='section-title'>3D Surface: Total Cost vs Pump Speed vs No. of Pumps (Color=Pump Efficiency)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data):
                 if not stn.get('is_pump', False):
                     continue
@@ -533,7 +533,7 @@ if run:
                 P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
                 num_pumps_list = list(range(1, max_pumps+1))
                 rpm_range = np.arange(N_min, N_max+1, 20)
-                # Build Z, Y, X matrices
+                # Build X, Y, Z, efficiency matrices
                 X, Y = np.meshgrid(num_pumps_list, rpm_range)  # X: no. of pumps, Y: speed
                 Z = np.zeros_like(X, dtype=float)
                 eff_vals = np.zeros_like(X, dtype=float)
@@ -555,7 +555,7 @@ if run:
                     )
                 ])
                 fig_surface.update_layout(
-                    title=f"Total Cost vs Pump Speed vs No. of Pumps at {stn['name']}",
+                    title=f"Total Cost vs Pump Speed vs No. of Pumps at {stn['name']} (Color=Pump Efficiency)",
                     scene = dict(
                         xaxis_title='No. of Pumps',
                         yaxis_title='Pump Speed (rpm)',
@@ -563,7 +563,8 @@ if run:
                     ),
                     margin=dict(l=30, r=30, b=30, t=50)
                 )
-                st.plotly_chart(fig_surface, use_container_width=True, key=f"3d_surface_cost_speed_nump_{key}")
+                st.plotly_chart(fig_surface, use_container_width=True, key=f"4d_surface_cost_speed_nump_{key}")
+
 
 
             
