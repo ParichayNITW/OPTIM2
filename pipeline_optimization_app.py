@@ -244,7 +244,7 @@ if run:
     # === Tab 1 ===
     with tab1:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-        st.dataframe(df_sum, use_container_width=True, key=f"interaction_{i}_{key}")
+        st.dataframe(df_sum, use_container_width=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
     # === Tab 2 ===
     with tab2:
