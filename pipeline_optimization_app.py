@@ -381,7 +381,7 @@ if run:
                 yaxis_title="Pressure Head (mcl)",
                 showlegend=False
             )
-            st.plotly_chart(fig_p, use_container_width=True, key=f"interaction_{i}_{key}")
+            st.plotly_chart(fig_p, use_container_width=True)
             
         # Power vs Speed, Power vs Flow
         with power_tab:
