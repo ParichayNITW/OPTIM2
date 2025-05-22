@@ -257,7 +257,7 @@ if run:
         df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
         # Only pie chart, no bar chart
         fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown (Pie)")
-        st.plotly_chart(fig_pie, use_container_width=True, key=f"interaction_{i}_{key}")
+        st.plotly_chart(fig_pie, use_container_width=True)
         st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
     
     # === Tab 3 (Performance) ===
