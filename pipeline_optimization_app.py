@@ -2,15 +2,13 @@ import os
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 from math import pi
-from io import BytesIO
-import hashlib
 import uuid
-from plotly.colors import qualitative
+
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
+
 # ---- USER AUTH ----
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
@@ -61,7 +59,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD)
 
-# =============== Sidebar Inputs (Global) ===================
+# ================= SIDEBAR: Global Inputs ==================
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
@@ -69,9 +67,7 @@ with st.sidebar:
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
 
-# =================== Professional Station-by-Station UI ===================
-
-# ----------- Setup and State ----------- #
+# ================== App State: Stations ====================
 if "stations" not in st.session_state:
     st.session_state.stations = [{
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -81,92 +77,103 @@ if "stations" not in st.session_state:
         'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
         'max_dr': 0.0, 'rho': 850.0, 'KV': 10.0
     }]
-if "station_idx" not in st.session_state:
-    st.session_state.station_idx = 0
+if "open_station_idx" not in st.session_state:
+    st.session_state.open_station_idx = 0
 
 stations = st.session_state.stations
-idx = st.session_state.station_idx
 
-# -------------- Sidebar Station Navigation ------------- #
-station_names = [f"{i+1}. {s['name']}" for i, s in enumerate(stations)]
-selected = st.sidebar.radio("Select Station", station_names, index=idx)
-st.session_state.station_idx = station_names.index(selected)
-idx = st.session_state.station_idx
+# ================ PIPELINE MAP (PLOTLY) ================
+station_names = [s['name'] for s in stations] + ['Terminal']
+x = list(range(len(station_names)))
+y = [0]*len(station_names)
 
-# ----------- Professional Card Color Palette ----------- #
-color_palette = ["#3b82f6", "#22c55e", "#f59e42", "#ef4444", "#a855f7"]  # Blue, Green, Orange, Red, Purple
-station_color = color_palette[idx % len(color_palette)]
+fig = go.Figure()
+# Draw lines between nodes
+fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line=dict(width=6, color="#bbb"), showlegend=False, hoverinfo="skip"))
+# Draw nodes
+node_colors = ["#3b82f6", "#22c55e", "#f59e42", "#ef4444", "#a855f7", "#0e7490", "#be185d", "#b91c1c", "#64748b"]
+colors = [node_colors[i % len(node_colors)] for i in range(len(station_names))]
+fig.add_trace(go.Scatter(
+    x=x, y=y, mode='markers+text',
+    marker=dict(size=38, color=colors),
+    text=[f"{i+1}" for i in range(len(station_names)-1)] + ['T'],
+    textposition="bottom center",
+    hovertext=station_names,
+    hoverinfo="text",
+    showlegend=False
+))
+fig.update_layout(
+    height=110,
+    margin=dict(l=0, r=0, t=18, b=0),
+    xaxis=dict(showticklabels=False, zeroline=False, showgrid=False, range=[-0.6, len(x)-0.4]),
+    yaxis=dict(showticklabels=False, zeroline=False, showgrid=False, range=[-1, 1]),
+    plot_bgcolor="rgba(0,0,0,0)"
+)
+# Display pipeline map
+st.markdown("### Pipeline Map")
+st.plotly_chart(fig, use_container_width=True)
 
-# ------------------- Main Card UI --------------------- #
-st.markdown(f"""
-<div style="
-    background-color: {station_color}12; 
-    border-left: 6px solid {station_color};
-    border-radius: 12px;
-    padding: 2em 2em 1em 2em;
-    margin-top: 1em; margin-bottom: 2em;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.07);
-">
-    <h2 style='color:{station_color};margin-top:0'>{stations[idx]['name']} (Station {idx+1})</h2>
-""", unsafe_allow_html=True)
-
-# ------ Input fields for the selected station ------ #
-stn = stations[idx]
-stn['name'] = st.text_input("Station Name", value=stn['name'], key=f"name_{idx}")
-stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev_{idx}")
-stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho_{idx}")
-stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv_{idx}")
-if idx == 0:
-    stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual', 50.0), step=0.1, key=f"res_{idx}")
-stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D_{idx}")
-stn['t'] = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=0.0001, key=f"t_{idx}")
-stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS_{idx}")
-stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough_{idx}")
-stn['L'] = st.number_input("Length to next station (km)", value=stn['L'], step=1.0, key=f"L_{idx}")
-stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump_{idx}")
-
-if stn['is_pump']:
-    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                     index=0 if stn['power_type']=="Grid" else 1, key=f"ptype_{idx}")
-    if stn['power_type']=="Grid":
-        stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate_{idx}")
-        stn['sfc'] = 0.0
-    else:
-        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc_{idx}")
-        stn['rate'] = 0.0
-    stn['max_pumps'] = st.number_input("Max Pumps Available", min_value=1, value=stn['max_pumps'], step=1, key=f"mpumps_{idx}")
-    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm_{idx}")
-    stn['DOL'] = st.number_input("Rated RPM (DOL)", value=stn['DOL'], key=f"dol_{idx}")
-    stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr_{idx}")
-    st.markdown("**Enter Pump Performance Data:**")
-    st.write("Flow vs Head data (m³/hr, m)")
-    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head_{idx}")
-    st.write("Flow vs Efficiency data (m³/hr, %)")
-    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff_{idx}")
-    st.session_state[f"head_data_{idx}"] = df_head
-    st.session_state[f"eff_data_{idx}"] = df_eff
-
-st.markdown("**Intermediate Elevation Peaks (to next station):**")
-default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak_{idx}")
-st.session_state[f"peak_data_{idx}"] = peak_df
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-# ----------- Navigation Buttons ----------- #
-nav_cols = st.columns([1,1,2,1,1])
-with nav_cols[1]:
-    if st.button("← Previous", disabled=idx==0):
-        st.session_state.station_idx = max(0, idx-1)
-        st.experimental_rerun()
-with nav_cols[3]:
-    if st.button("Next →", disabled=idx==len(stations)-1):
-        st.session_state.station_idx = min(len(stations)-1, idx+1)
+# BUTTONS for node selection (below map)
+map_cols = st.columns(len(station_names))
+for i, name in enumerate(station_names):
+    button_color = colors[i]
+    label = f"{name}"
+    if map_cols[i].button(label, key=f"mapbtn_{i}"):
+        if i < len(stations):
+            st.session_state.open_station_idx = i
+        else:
+            st.session_state.open_station_idx = len(stations)-1
         st.experimental_rerun()
 
-# ------------ Add/Remove Station --------------- #
+# ==================== STATION CARDS (Accordion Style) ====================
+st.markdown("### Station Inputs")
+for idx, stn in enumerate(stations):
+    with st.expander(f"{stn['name']} (Station {idx+1})", expanded=(idx==st.session_state.open_station_idx)):
+        st.markdown(
+            f"<div style='border-left: 6px solid {colors[idx]};padding-left:12px;'>"
+            f"<b style='font-size:1.2em;color:{colors[idx]};'>{stn['name']} (Station {idx+1})</b></div>",
+            unsafe_allow_html=True
+        )
+        stn['name'] = st.text_input("Station Name", value=stn['name'], key=f"name_{idx}")
+        stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev_{idx}")
+        stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho_{idx}")
+        stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv_{idx}")
+        if idx == 0:
+            stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual', 50.0), step=0.1, key=f"res_{idx}")
+        stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D_{idx}")
+        stn['t'] = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=0.0001, key=f"t_{idx}")
+        stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS_{idx}")
+        stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough_{idx}")
+        stn['L'] = st.number_input("Length to next station (km)", value=stn['L'], step=1.0, key=f"L_{idx}")
+        stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump_{idx}")
+
+        if stn['is_pump']:
+            stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                             index=0 if stn['power_type']=="Grid" else 1, key=f"ptype_{idx}")
+            if stn['power_type']=="Grid":
+                stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate_{idx}")
+                stn['sfc'] = 0.0
+            else:
+                stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc_{idx}")
+                stn['rate'] = 0.0
+            stn['max_pumps'] = st.number_input("Max Pumps Available", min_value=1, value=stn['max_pumps'], step=1, key=f"mpumps_{idx}")
+            stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm_{idx}")
+            stn['DOL'] = st.number_input("Rated RPM (DOL)", value=stn['DOL'], key=f"dol_{idx}")
+            stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr_{idx}")
+            st.markdown("**Enter Pump Performance Data:**")
+            df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+            df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head_{idx}")
+            df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+            df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff_{idx}")
+            st.session_state[f"head_data_{idx}"] = df_head
+            st.session_state[f"eff_data_{idx}"] = df_eff
+
+        st.markdown("**Intermediate Elevation Peaks (to next station):**")
+        default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+        peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak_{idx}")
+        st.session_state[f"peak_data_{idx}"] = peak_df
+
+# ------------ Add/Remove Station Buttons -------------------
 st.markdown("---")
 add, rem = st.columns(2)
 with add:
@@ -179,15 +186,15 @@ with add:
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
             'max_dr': 0.0, 'rho': 850.0, 'KV': 10.0
         })
-        st.session_state.station_idx = len(st.session_state.stations) - 1
+        st.session_state.open_station_idx = len(st.session_state.stations) - 1
         st.experimental_rerun()
 with rem:
     if st.button("🗑️ Remove Station", disabled=len(stations)<=1):
-        st.session_state.stations.pop(idx)
-        st.session_state.station_idx = max(0, idx-1)
+        st.session_state.stations.pop(st.session_state.open_station_idx)
+        st.session_state.open_station_idx = max(0, st.session_state.open_station_idx-1)
         st.experimental_rerun()
 
-# ------------ Optional: Station Summary Table -------------- #
+# ------------ Optional: Station Summary Table --------------
 if st.checkbox("Show Station Summary Table"):
     df = pd.DataFrame(st.session_state.stations)
     st.dataframe(df, use_container_width=True)
@@ -205,7 +212,6 @@ if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-        # Attach pump curve and peaks to stations
         for idx, stn in enumerate(stations_data):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -238,7 +244,6 @@ if run:
             stn['peaks'] = peaks_list
         per_station_KV = [stn['KV'] for stn in stations_data]
         per_station_rho = [stn['rho'] for stn in stations_data]
-
         res = solve_pipeline(stations_data, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD)
 
     # === Post-Optimization Metrics ===
