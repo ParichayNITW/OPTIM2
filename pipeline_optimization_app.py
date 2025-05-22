@@ -277,7 +277,7 @@ if run:
             })
             fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
             fig_h.update_layout(yaxis_title="Head Loss (m)")
-            st.plotly_chart(fig_h, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"perf_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
         # Velocity & Reynolds
         with head_tab:
             st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
@@ -303,7 +303,7 @@ if run:
                     H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
                     fig.add_trace(go.Scatter(x=flows, y=H, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
-                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(fig, use_container_width=True, key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
         # Pump Efficiency Curve (at multiple RPMs)
         with eff_tab:
             st.markdown("<div class='section-title'>Pump Efficiency Curves (Eff vs Flow at various Speeds)</div>", unsafe_allow_html=True)
@@ -327,7 +327,7 @@ if run:
                     eff = (P*Q_adj**4 + Q*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
                     fig.add_trace(go.Scatter(x=flows, y=eff, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Efficiency vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Efficiency (%)")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"eff_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
         # Pressure vs Pipeline Length
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
@@ -448,7 +448,7 @@ if run:
             df_sys = pd.concat(curves)
             fig_sys = px.line(df_sys, x="Flow", y="SDH", color="DRA", title=f"System Head ({stn['name']}) at various % DRA")
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
-            st.plotly_chart(fig_sys, use_container_width=True)
+            st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
@@ -549,7 +549,7 @@ if run:
                 ),
                 margin=dict(l=30, r=30, b=30, t=50)
             )
-            st.plotly_chart(fig_surface, use_container_width=True, key=f"3d_surface_cost_speed_nump_{key}_{i}_{uuid.uuid4().hex[:6]}")
+            st.plotly_chart(fig_surface, use_container_width=True, key=f"cost_surface_{i}_{key}_{uuid.uuid4().hex[:6]}")
 
             # 3D Plot (Pump Efficiency vs Pump Speed vs DRA)
             st.markdown("<div class='section-title'>3D Surface: Pump Efficiency vs DRA% vs Pump Speed (All Pump Stations)</div>", unsafe_allow_html=True)
@@ -591,7 +591,7 @@ if run:
                     ),
                     margin=dict(l=30, r=30, b=30, t=50)
                 )
-                st.plotly_chart(fig_eff, use_container_width=True, key=f"3d_eff_dra_speed_{key}_{i}_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(fig_eff, use_container_width=True, key=f"eff_surface_{i}_{key}_{uuid.uuid4().hex[:6]}")
             
             # 3D Plot (Cost vs Pump Speed vs DRA)
             st.markdown(f"**3D Total Cost vs Pump Speed & DRA for {stn['name']}**")
@@ -617,7 +617,7 @@ if run:
             fig3d = go.Figure(data=[go.Surface(x=X, y=Y, z=Z)])
             fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                 xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
-            st.plotly_chart(fig3d, use_container_width=True)
+            st.plotly_chart(fig3d, use_container_width=True, key=f"cost3d_{i}_{key}_{uuid.uuid4().hex[:6]}")
 
 st.markdown(
     """
