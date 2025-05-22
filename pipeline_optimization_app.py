@@ -510,33 +510,33 @@ if run:
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
             # 2D Plot
-            st.markdown("<div class='section-title'>Objective Function Landscape (Non-Convexity Visualization)</div>", unsafe_allow_html=True)
-            # Choose a pump station (e.g. first one)
-            pump_stations = [i for i, s in enumerate(stations_data) if s.get('is_pump', False)]
-            if pump_stations:
-                idx = pump_stations[0]  # You can make this user-selectable
-                stn = stations_data[idx]
-                key = stn['name'].lower().replace(' ','_')
-                # Range for pump speed (RPM)
-                N_min = int(res.get(f"min_rpm_{key}", 1000))
-                N_max = int(res.get(f"dol_{key}", 1500))
-                rpm_range = np.arange(N_min, N_max+1, 25)
-                dra_range = np.arange(0, int(stn.get('max_dr', 40))+1, 2)
-                # Meshgrid
+            st.markdown("<div class='section-title'>Objective Function Landscape at Station-1</div>", unsafe_allow_html=True)
+            # -- Ensure station-1 is a pump --
+            stn1 = stations_data[0]
+            if stn1.get('is_pump', False):
+                key1 = stn1['name'].lower().replace(' ','_')
+                N_min1 = int(res.get(f"min_rpm_{key1}", 1000))
+                N_max1 = int(res.get(f"dol_{key1}", 1500))
+                rpm_range = np.arange(N_min1, N_max1+1, 25)
+                dra_range = np.arange(0, int(stn1.get('max_dr', 40))+1, 2)
                 R, D = np.meshgrid(rpm_range, dra_range)
                 Z = np.zeros_like(R, dtype=float)
                 # Get coefficients
-                A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
-                P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
-                FLOW = res.get('FLOW', 1000)  # or from input
-                rho = stn['rho']
-                rate = stn.get('rate', 10.0)
-                RateDRA = res.get('RateDRA', 500)
+                A = res.get(f"coef_A_{key1}",0); B = res.get(f"coef_B_{key1}",0); C = res.get(f"coef_C_{key1}",0)
+                P = stn1.get('P',0); Qc = stn1.get('Q',0); Rcoef = stn1.get('R',0); S = stn1.get('S',0); T = stn1.get('T',0)
+                FLOW = st.session_state.get('FLOW', 1000.0)
+                if 'FLOW' not in st.session_state:
+                    FLOW = 1000.0
+                rho = stn1['rho']
+                rate = stn1.get('rate', 10.0)
+                RateDRA = st.session_state.get('RateDRA', 500.0)
+                if 'RateDRA' not in st.session_state:
+                    RateDRA = 500.0
                 for i in range(R.shape[0]):
                     for j in range(R.shape[1]):
-                        rpm = R[i,j]
-                        dra = D[i,j]
-                        H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max)**2
+                        rpm = R[i, j]
+                        dra = D[i, j]
+                        H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max1)**2
                         eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
                         eff = max(0.01, eff/100)
                         # Power (kW)
@@ -544,26 +544,32 @@ if run:
                         power_cost = pwr*24*rate
                         dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
                         Z[i, j] = power_cost + dra_cost
-                # Plot as contour + heatmap
+                # Plot contour
                 fig = go.Figure(data=
                     go.Contour(
                         z=Z,
                         x=rpm_range, y=dra_range,
                         colorscale='Viridis',
+                        colorbar=dict(title='Total Cost (INR/day)'),
                         contours=dict(
-                            start=np.nanmin(Z),
-                            end=np.nanmax(Z),
-                            size=(np.nanmax(Z)-np.nanmin(Z))/15
+                            start=float(np.nanmin(Z)),
+                            end=float(np.nanmax(Z)),
+                            size=(float(np.nanmax(Z)) - float(np.nanmin(Z)))/15
                         ),
-                        colorbar=dict(title='Total Cost (INR/day)')
                     )
                 )
                 fig.update_layout(
-                    title=f"Total Cost vs Pump Speed & DRA at {stn['name']}",
+                    title=f"Total Cost vs Pump Speed & DRA at {stn1['name']}",
                     xaxis_title="Pump Speed (rpm)",
                     yaxis_title="DRA (%)"
                 )
                 st.plotly_chart(fig, use_container_width=True)
+                st.markdown(
+                    "<small>If you see multiple ridges, valleys, or peaks, the objective function is non-convex.</small>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.warning("Station-1 is not set as a pump.")
 
             
             # 3D Total Cost vs Pump Speed & DRA
