@@ -276,7 +276,7 @@ if run:
             })
             fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
             fig_h.update_layout(yaxis_title="Head Loss (m)")
-            st.plotly_chart(fig_h, use_container_width=True, key=f"interaction_{i}_{key}")
+            st.plotly_chart(fig_h, use_container_width=True)
         # Velocity & Reynolds
         with head_tab:
             st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
