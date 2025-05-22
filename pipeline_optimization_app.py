@@ -190,8 +190,10 @@ if run:
                         st.stop()
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
+        per_station_KV = [stn['KV'] for stn in stations_data]
+        per_station_rho = [stn['rho'] for stn in stations_data]
 
-        res = solve_pipeline(stations_data, term_data, FLOW, RateDRA, Price_HSD)
+        res = solve_pipeline(stations_data, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD)
 
     total_cost = res.get('total_cost', 0.0)
     total_pumps = sum(int(res.get(f"num_pumps_{s['name'].lower().replace(' ','_')}",0)) for s in stations_data)
