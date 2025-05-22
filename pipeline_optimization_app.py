@@ -9,8 +9,8 @@ from math import pi
 from io import BytesIO
 import hashlib
 from plotly.colors import qualitative
-
-palette = [c for c in qualitative.Plotly if not c.lower() in ['#ffeb3b', '#ffd700', 'yellow', 'rgb(255, 221, 51)']]
+# Remove yellow from palette as before
+palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
@@ -451,10 +451,7 @@ if run:
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
-        # Remove any yellows from the palette
-        raw_palette = qualitative.Plotly
-        # Remove any known yellows (hex codes, color names)
-        palette = [c for c in raw_palette if c.lower() not in ['#ffeb3b', '#ffd700', 'yellow', 'rgb(255, 221, 51)']]
+        palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
         for i, stn in enumerate(stations_data, start=1):
             if not stn.get('is_pump', False):
                 continue
@@ -467,43 +464,48 @@ if run:
             num_pumps = max(1, int(res.get(f"num_pumps_{key}", 1)))
             flows = np.linspace(0, FLOW*1.5, 200)
             fig_int = go.Figure()
+            
+            dra_list = list(range(0, max_dr+1, 5))
+            n_curves = max(len(dra_list), num_pumps * len(range(N_min, N_max+1, 100)))
+            # If more curves than colors, repeat palette
+            colors = (palette * ((n_curves // len(palette)) + 1))[:n_curves]
     
-            # Plot system curves for DRA (use solid lines, color by DRA, no yellow)
-            for idx, dra in enumerate(range(0, max_dr+1, 5)):
+            # --- Plot System Curves ---
+            for idx, dra in enumerate(dra_list):
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                 Hsys = stn['elev'] + DH
-                color = palette[idx % len(palette)]
                 fig_int.add_trace(go.Scatter(
                     x=flows, y=Hsys, mode='lines',
                     name=f'System {dra}% DRA',
-                    line=dict(color=color, width=2)
+                    line=dict(color=colors[idx], width=2)
                 ))
-    
-            # Pump curves (series, various speeds; solid lines, use palette, skip yellow)
-            pump_palette = palette[::-1]  # Use a different cycle or just cycle again
+            
+            # --- Plot Pump Curves using the SAME colors ---
             A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
+            pump_curve_idx = 0
             for pumps_in_series in range(1, num_pumps+1):
-                for ridx, rpm in enumerate(range(N_min, N_max+1, 100)):
+                for rpm in range(N_min, N_max+1, 100):
                     Hpump = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 * pumps_in_series
-                    color = pump_palette[ridx % len(pump_palette)]
+                    color = colors[pump_curve_idx % len(colors)]
                     fig_int.add_trace(
                         go.Scatter(
                             x=flows, y=Hpump, mode='lines',
                             name=f'Pump {pumps_in_series}x @ {rpm}rpm',
-                            line=dict(color=color, width=2)
+                            line=dict(color=color, width=2, dash='dash')
                         )
                     )
+                    pump_curve_idx += 1
+            
             fig_int.update_layout(
                 title=f"Interaction ({stn['name']})",
                 xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)",
                 legend_title_text="Curve"
             )
             st.plotly_chart(fig_int, use_container_width=True)
-
     
             # Optional: Download as PNG or PDF
             png_bytes = fig_int.to_image(format="png")
