@@ -470,3 +470,8 @@ if run:
             fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                 xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
             st.plotly_chart(fig3d, use_container_width=True)
+st.markdown("""
+<div class="copyright">
+      &copy; © 2025 Parichay Das. All rights reserved. No part of this application, code, or results may be reproduced or used in any form without explicit prior written permission.
+</div>
+""", unsafe_allow_html=True)
