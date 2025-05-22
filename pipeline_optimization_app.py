@@ -512,14 +512,14 @@ if run:
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
 
             # 3D Plot (Cost vs Pump Speed vs Pump Eff)
-            st.markdown("<div class='section-title'>3D Plot: Total Cost vs Pump Efficiency vs Pump Speed (All Pump Stations)</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>3D Plot: Total Cost vs Pump Efficiency vs No. of Pumps (All Pump Stations)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data):
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ','_')
                 N_min = int(res.get(f"min_rpm_{key}", 1000))
                 N_max = int(res.get(f"dol_{key}", 1500))
-                rpm_range = np.arange(N_min, N_max+1, 10)
+                max_pumps = int(stn.get('max_pumps', 4))
                 FLOW = st.session_state.get('FLOW', 1000.0)
                 if 'FLOW' not in st.session_state:
                     FLOW = 1000.0
@@ -530,16 +530,19 @@ if run:
                 RateDRA = st.session_state.get('RateDRA', 500.0)
                 if 'RateDRA' not in st.session_state:
                     RateDRA = 500.0
+                # Use DOL (max speed) as a representative speed, or you can sweep all if desired
+                speed_for_plot = N_max
                 A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
                 P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+                num_pumps_list = list(range(1, max_pumps+1))
                 eff_vals = []
                 cost_vals = []
-                for rpm in rpm_range:
-                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max)**2
+                for n_pumps in num_pumps_list:
+                    H = (A*FLOW**2 + B*FLOW + C)*(speed_for_plot/N_max)**2
                     eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
                     eff = max(0.01, eff/100)
                     # Power (kW)
-                    pwr = (rho * FLOW * 9.81 * H)/(3600.0*eff*0.95)
+                    pwr = (rho * FLOW * 9.81 * H * n_pumps)/(3600.0*eff*0.95)
                     power_cost = pwr*24*rate
                     dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
                     cost_vals.append(power_cost + dra_cost)
@@ -547,7 +550,7 @@ if run:
                 # 3D plot
                 fig3d = go.Figure(data=[
                     go.Scatter3d(
-                        x=rpm_range,
+                        x=num_pumps_list,
                         y=eff_vals,
                         z=cost_vals,
                         mode='lines+markers',
@@ -557,15 +560,15 @@ if run:
                     )
                 ])
                 fig3d.update_layout(
-                    title=f"Total Cost vs Pump Efficiency vs Pump Speed at {stn['name']}",
+                    title=f"Total Cost vs Pump Efficiency vs No. of Pumps at {stn['name']}",
                     scene = dict(
-                        xaxis_title='Pump Speed (rpm)',
+                        xaxis_title='No. of Pumps',
                         yaxis_title='Pump Efficiency (%)',
                         zaxis_title='Total Cost (INR/day)'
                     ),
                     margin=dict(l=30, r=30, b=30, t=50)
                 )
-                st.plotly_chart(fig3d, use_container_width=True, key=f"3d_cost_eff_speed_{key}")
+                st.plotly_chart(fig3d, use_container_width=True, key=f"3d_cost_eff_nump_{key}")
 
             
             # 3D Plot (Cost vs Pump Speed vs DRA)
