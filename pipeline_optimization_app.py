@@ -388,7 +388,7 @@ if run:
                     H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
                     eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
-                    pwr = (rho * flow * 9.81 * H)/(3600.0*eff*0.95)
+                    pwr = (stn['rho'] * flow * 9.81 * H)/(3600.0*eff*0.95)
                     power.append(pwr)
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
@@ -401,7 +401,7 @@ if run:
                     H = (A*q**2 + B*q + C)
                     eff = (P*q**4 + Qc*q**3 + R*q**2 + S*q + T)
                     eff = max(0.01, eff/100)
-                    pwr = (rho * q * 9.81 * H)/(3600.0*eff*0.95)
+                    pwr = (stn['rho'] * q * 9.81 * H)/(3600.0*eff*0.95)
                     power2.append(pwr)
                 fig_pwr2 = go.Figure()
                 fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
@@ -422,7 +422,7 @@ if run:
             for dra in range(0, max_dr+1, 5):
                 flows = np.linspace(0, FLOW, 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-                Re_vals = v_vals * d_inner_i / (KV*1e-6) if KV>0 else np.zeros_like(v_vals)
+                Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
@@ -444,7 +444,7 @@ if run:
             rough = stn['rough']
             # System curve for 0% DRA
             v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-            Re_vals = v_vals * d_inner_i / (KV*1e-6) if KV>0 else np.zeros_like(v_vals)
+            Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
             f_vals = np.where(Re_vals>0,
                               0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
             DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81))
@@ -474,7 +474,7 @@ if run:
                     eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
                     # Power (kW)
-                    pwr = (rho * flow * 9.81 * H)/(3600.0*eff*0.95)
+                    pwr = (stn['rho'] * flow * 9.81 * H)/(3600.0*eff*0.95)
                     # DRA cost
                     dra_cost = (dra/4)*(flow*1000.0*24.0/1e6)*RateDRA
                     # Power cost (grid)
