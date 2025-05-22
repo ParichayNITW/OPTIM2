@@ -453,19 +453,19 @@ if run:
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
     
-    st.markdown("---")
-    st.markdown("## Non-Convexity Visualization (Parameter Sweep)")
+        st.markdown("---")
+        st.markdown("## Non-Convexity Visualization (Parameter Sweep)")
     
-    stations_data = st.session_state.stations
-    try:
-        term_data = {
+            stations_data = st.session_state.stations
+            try:
+            term_data = {
             "name": terminal_name,
             "elev": terminal_elev,
             "min_residual": terminal_head
         }
-    except Exception:
-        # Fallback if using session_state or other variable names
-        term_data = {
+            except Exception:
+            # Fallback if using session_state or other variable names
+            term_data = {
             "name": st.session_state.get("terminal_name", "Terminal"),
             "elev": st.session_state.get("terminal_elev", 0.0),
             "min_residual": st.session_state.get("terminal_head", 50.0)
