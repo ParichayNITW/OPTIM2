@@ -464,14 +464,12 @@ if run:
             num_pumps = max(1, int(res.get(f"num_pumps_{key}", 1)))
             flows = np.linspace(0, FLOW*1.5, 200)
             fig_int = go.Figure()
-            
             dra_list = list(range(0, max_dr+1, 5))
             n_curves = max(len(dra_list), num_pumps * len(range(N_min, N_max+1, 100)))
-            # If more curves than colors, repeat palette
             colors = (palette * ((n_curves // len(palette)) + 1))[:n_curves]
     
             # --- Plot System Curves ---
-            for idx, dra in enumerate(dra_list):
+            for idx_dra, dra in enumerate(dra_list):
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
@@ -481,9 +479,9 @@ if run:
                 fig_int.add_trace(go.Scatter(
                     x=flows, y=Hsys, mode='lines',
                     name=f'System {dra}% DRA',
-                    line=dict(color=colors[idx], width=2)
+                    line=dict(color=colors[idx_dra], width=2)
                 ))
-            
+    
             # --- Plot Pump Curves using the SAME colors ---
             A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
             pump_curve_idx = 0
@@ -499,71 +497,58 @@ if run:
                         )
                     )
                     pump_curve_idx += 1
-            
+    
             fig_int.update_layout(
                 title=f"Interaction ({stn['name']})",
                 xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)",
                 legend_title_text="Curve"
             )
-            st.plotly_chart(fig_int, use_container_width=True)
+            st.plotly_chart(fig_int, use_container_width=True, key=f"interaction_{i}_{key}")
     
-            # Optional: Download as PNG or PDF
+            # Download PNG
             png_bytes = fig_int.to_image(format="png")
-            st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")                
-
-            # 3D Plot (Cost vs Pump Speed vs NOP)
-            st.markdown("<div class='section-title'>3D Surface: Total Cost vs Pump Speed vs No. of Pumps (All Pump Stations)</div>", unsafe_allow_html=True)
-            for idx, stn in enumerate(stations_data):
-                if not stn.get('is_pump', False):
-                    continue
-                key = stn['name'].lower().replace(' ','_')
-                N_min = int(res.get(f"min_rpm_{key}", 1000))
-                N_max = int(res.get(f"dol_{key}", 1500))
-                max_pumps = int(stn.get('max_pumps', 4))
-                FLOW = st.session_state.get('FLOW', 1000.0)
-                if 'FLOW' not in st.session_state:
-                    FLOW = 1000.0
-                rho = stn['rho']
-                rate = stn.get('rate', 10.0)
-                dra = 0
-                RateDRA = st.session_state.get('RateDRA', 500.0)
-                if 'RateDRA' not in st.session_state:
-                    RateDRA = 500.0
-                A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
-                P = stn.get('P',0); Qc = stn.get('Q',0); Rcoef = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
-                num_pumps_list = list(range(1, max_pumps+1))
-                rpm_range = np.arange(N_min, N_max+1, 20)
-                # Build Z, Y, X matrices
-                X, Y = np.meshgrid(num_pumps_list, rpm_range)  # X: no. of pumps, Y: speed
-                Z = np.zeros_like(X, dtype=float)
-                eff_vals = np.zeros_like(X, dtype=float)
-                for i, n_pumps in enumerate(num_pumps_list):
-                    for j, rpm in enumerate(rpm_range):
-                        H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max)**2
-                        eff = (P*FLOW**4 + Qc*FLOW**3 + Rcoef*FLOW**2 + S*FLOW + T)
-                        eff = max(0.01, eff/100)
-                        pwr = (rho * FLOW * 9.81 * H * n_pumps)/(3600.0*eff*0.95)
-                        power_cost = pwr*24*rate
-                        dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
-                        Z[j,i] = power_cost + dra_cost
-                        eff_vals[j,i] = eff * 100  # As percent
-                fig_surface = go.Figure(data=[
-                    go.Surface(
-                        x=X, y=Y, z=Z, surfacecolor=eff_vals,
-                        colorbar=dict(title="Efficiency (%)"),
-                        colorscale="Viridis"
-                    )
-                ])
-                fig_surface.update_layout(
-                    title=f"Total Cost vs Pump Speed vs No. of Pumps at {stn['name']}",
-                    scene = dict(
-                        xaxis_title='No. of Pumps',
-                        yaxis_title='Pump Speed (rpm)',
-                        zaxis_title='Total Cost (INR/day)'
-                    ),
-                    margin=dict(l=30, r=30, b=30, t=50)
+            st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")
+    
+            # ---- 3D Plot (Cost vs Pump Speed vs No. of Pumps, Efficiency as color) ----
+            st.markdown("<div class='section-title'>3D Surface: Total Cost vs Pump Speed vs No. of Pumps (Efficiency as Color)</div>", unsafe_allow_html=True)
+            N_min3d = int(res.get(f"min_rpm_{key}", 1000))
+            N_max3d = int(res.get(f"dol_{key}", 1500))
+            max_pumps = int(stn.get('max_pumps', 4))
+            rpm_range = np.arange(N_min3d, N_max3d+1, 20)
+            num_pumps_list = list(range(1, max_pumps+1))
+            X, Y = np.meshgrid(num_pumps_list, rpm_range)
+            Z = np.zeros_like(X, dtype=float)
+            eff_vals = np.zeros_like(X, dtype=float)
+            for i_p, n_pumps in enumerate(num_pumps_list):
+                for j_r, rpm in enumerate(rpm_range):
+                    H = (A*FLOW**2 + B*FLOW + C)*(rpm/N_max3d)**2
+                    P_ = stn.get('P',0); Qc_ = stn.get('Q',0); R_ = stn.get('R',0); S_ = stn.get('S',0); T_ = stn.get('T',0)
+                    eff = (P_*FLOW**4 + Qc_*FLOW**3 + R_*FLOW**2 + S_*FLOW + T_)
+                    eff = max(0.01, eff/100)
+                    pwr = (stn['rho'] * FLOW * 9.81 * H * n_pumps)/(3600.0*eff*0.95)
+                    power_cost = pwr*24*stn.get('rate', 0)
+                    dra = 0
+                    dra_cost = (dra/4)*(FLOW*1000.0*24.0/1e6)*RateDRA
+                    Z[j_r, i_p] = power_cost + dra_cost
+                    eff_vals[j_r, i_p] = eff*100  # As percent
+            # Use uuid to guarantee key uniqueness
+            fig_surface = go.Figure(data=[
+                go.Surface(
+                    x=X, y=Y, z=Z, surfacecolor=eff_vals,
+                    colorbar=dict(title="Efficiency (%)"),
+                    colorscale="Viridis"
                 )
-                st.plotly_chart(fig_surface, use_container_width=True, key=f"3d_surface_cost_speed_nump_{key}_{idx}")
+            ])
+            fig_surface.update_layout(
+                title=f"Total Cost vs Pump Speed vs No. of Pumps at {stn['name']}",
+                scene = dict(
+                    xaxis_title='No. of Pumps',
+                    yaxis_title='Pump Speed (rpm)',
+                    zaxis_title='Total Cost (INR/day)'
+                ),
+                margin=dict(l=30, r=30, b=30, t=50)
+            )
+            st.plotly_chart(fig_surface, use_container_width=True, key=f"3d_surface_cost_speed_nump_{key}_{i}_{uuid.uuid4().hex[:6]}")
 
             
             # 3D Plot (Cost vs Pump Speed vs DRA)
