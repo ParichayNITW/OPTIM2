@@ -409,7 +409,7 @@ if run:
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
                 fig_pwr.update_layout(title=f"Power vs Speed: {stn['name']}", xaxis_title="Speed (rpm)", yaxis_title="Power (kW)")
-                st.plotly_chart(fig_pwr, use_container_width=True, key=f"interaction_{i}_{key}")
+                st.plotly_chart(fig_pwr, use_container_width=True)
                 # Power vs Flow
                 flows = np.linspace(0.01, FLOW*1.5, 100)
                 power2 = []
