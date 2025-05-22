@@ -303,7 +303,7 @@ if run:
                     H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
                     fig.add_trace(go.Scatter(x=flows, y=H, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
-                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}_{uuid.uuid4().hex[:6]}"
+                st.plotly_chart(fig, use_container_width=True, key=f"interaction_{i}_{key}_{uuid.uuid4().hex[:6]}")
         # Pump Efficiency Curve (at multiple RPMs)
         with eff_tab:
             st.markdown("<div class='section-title'>Pump Efficiency Curves (Eff vs Flow at various Speeds)</div>", unsafe_allow_html=True)
