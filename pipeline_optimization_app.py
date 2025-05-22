@@ -92,7 +92,7 @@ with st.sidebar:
     if rem_col.button("🗑️ Remove Station"):
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
-
+ 
 if 'stations' not in st.session_state:
     st.session_state.stations = []
     st.session_state.stations.append({
