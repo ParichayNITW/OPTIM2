@@ -452,96 +452,6 @@ if run:
     
     # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
-    
-        st.markdown("---")
-        st.markdown("## Non-Convexity Visualization (Parameter Sweep)")
-    
-            stations_data = st.session_state.stations
-            try:
-            term_data = {
-            "name": terminal_name,
-            "elev": terminal_elev,
-            "min_residual": terminal_head
-        }
-            except Exception:
-            # Fallback if using session_state or other variable names
-            term_data = {
-            "name": st.session_state.get("terminal_name", "Terminal"),
-            "elev": st.session_state.get("terminal_elev", 0.0),
-            "min_residual": st.session_state.get("terminal_head", 50.0)
-        }
-    
-    per_station_KV = [stn['KV'] for stn in stations_data]
-    per_station_rho = [stn['rho'] for stn in stations_data]
-    
-    # --------- 1. Pump Speed vs Total Cost -----------
-    pump_idx = None
-    for i, stn in enumerate(stations_data):
-        if stn.get("is_pump", False):
-            pump_idx = i
-            break
-    
-    if pump_idx is not None:
-        st.markdown(f"### Pump Speed vs Total Cost ({stations_data[pump_idx]['name']})")
-        min_rpm = int(stations_data[pump_idx]['MinRPM'])
-        max_rpm = int(stations_data[pump_idx]['DOL'])
-        speeds = np.linspace(min_rpm, max_rpm, 20)
-        total_costs = []
-        for rpm in speeds:
-            # Deep copy and fix this pump's speed (if backend supports)
-            stn_copy = [dict(s) for s in stations_data]
-            stn_copy[pump_idx]['fixed_speed'] = rpm
-            res = solve_pipeline(
-                stn_copy, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD
-            )
-            total_costs.append(res.get('total_cost', np.nan))
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(
-            x=speeds, y=total_costs, mode="lines+markers",
-            marker=dict(color="#1f77b4"), name="Total Cost"
-        ))
-        fig1.update_layout(
-            title="Pump Speed vs Total Cost",
-            xaxis_title="Pump Speed (rpm)",
-            yaxis_title="Total Cost (INR/day)"
-        )
-        st.plotly_chart(fig1, use_container_width=True)
-    else:
-        st.warning("No pumping station found to plot Pump Speed vs Total Cost.")
-    
-    # --------- 2. DRA % vs Total Cost -----------
-    st.markdown("### DRA (%) vs Total Cost (First Pump Station)")
-    max_dra = 40
-    dra_range = np.linspace(0, max_dra, 20)
-    dra_costs = []
-    for dra_pct in dra_range:
-        stn_copy = [dict(s) for s in stations_data]
-        for stn in stn_copy:
-            if stn.get("is_pump", False):
-                stn["max_dr"] = dra_pct
-        res = solve_pipeline(
-            stn_copy, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD
-        )
-        dra_costs.append(res.get('total_cost', np.nan))
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(
-        x=dra_range, y=dra_costs, mode="lines+markers",
-        marker=dict(color="#d62728"), name="Total Cost"
-    ))
-    fig2.update_layout(
-        title="DRA (%) vs Total Cost",
-        xaxis_title="DRA Injection (%)",
-        yaxis_title="Total Cost (INR/day)"
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-
-
-
-
-
-
-
-        
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
         palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
         for i, stn in enumerate(stations_data, start=1):
@@ -600,15 +510,7 @@ if run:
             # Download PNG
             png_bytes = fig_int.to_image(format="png")
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")
-
-
-             st.markdown("## Non-Convexity Visualization")
-
-
-
-
-
-            
+    
             # ========== SHOW 3D PLOTS ONLY FOR STATION-1 ==========
             if i == 1:
                 # ---- 3D Plot (Cost vs Pump Speed vs No. of Pumps, Efficiency as color) ----
