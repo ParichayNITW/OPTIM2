@@ -450,7 +450,6 @@ if run:
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
     
-    # === Tab 5 (Pump-System Interaction, 3D Total Cost plot) ===
     with tab5:
         st.markdown("<div class='section-title'>Pump vs System Interaction</div>", unsafe_allow_html=True)
         palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
@@ -610,6 +609,71 @@ if run:
                 fig3d.update_layout(title="Total Cost vs Speed & DRA", scene=dict(
                     xaxis_title="Speed (rpm)", yaxis_title="DRA (%)", zaxis_title="Total Cost (INR/day)"))
                 st.plotly_chart(fig3d, use_container_width=True, key=f"cost3d_{i}_{key}_{uuid.uuid4().hex[:6]}")
+    
+        # =================== NON-CONVEXITY PLOTS (NEW SECTION) ====================
+        # Only run after a successful optimization (i.e., after clicking 'Run Optimization')
+        if run:
+            st.markdown("---")
+            st.markdown("## Non-Convexity Visualization (Parameter Sweep)")
+    
+            pump_idx = None
+            for i, stn in enumerate(stations_data):
+                if stn.get("is_pump", False):
+                    pump_idx = i
+                    break
+    
+            if pump_idx is not None:
+                st.markdown(f"### Pump Speed vs Total Cost ({stations_data[pump_idx]['name']})")
+                min_rpm = int(stations_data[pump_idx]['MinRPM'])
+                max_rpm = int(stations_data[pump_idx]['DOL'])
+                speeds = np.linspace(min_rpm, max_rpm, 25)
+                total_costs = []
+                for rpm in speeds:
+                    stn_copy = [dict(s) for s in stations_data]
+                    stn_copy[pump_idx]['fixed_speed'] = rpm  # If your backend supports this!
+                    res_sweep = solve_pipeline(
+                        stn_copy, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD
+                    )
+                    total_costs.append(res_sweep.get('total_cost', np.nan))
+                fig1 = go.Figure()
+                fig1.add_trace(go.Scatter(
+                    x=speeds, y=total_costs, mode="lines+markers",
+                    marker=dict(color="#1f77b4"), name="Total Cost"
+                ))
+                fig1.update_layout(
+                    title="Pump Speed vs Total Cost",
+                    xaxis_title="Pump Speed (rpm)",
+                    yaxis_title="Total Cost (INR/day)"
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.warning("No pumping station found to plot Pump Speed vs Total Cost.")
+    
+            st.markdown("### DRA (%) vs Total Cost (First Pump Station)")
+            max_dra = 40
+            dra_range = np.linspace(0, max_dra, 25)
+            dra_costs = []
+            for dra_pct in dra_range:
+                stn_copy = [dict(s) for s in stations_data]
+                for stn in stn_copy:
+                    if stn.get("is_pump", False):
+                        stn["max_dr"] = dra_pct
+                res_sweep = solve_pipeline(
+                    stn_copy, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD
+                )
+                dra_costs.append(res_sweep.get('total_cost', np.nan))
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                x=dra_range, y=dra_costs, mode="lines+markers",
+                marker=dict(color="#d62728"), name="Total Cost"
+            ))
+            fig2.update_layout(
+                title="DRA (%) vs Total Cost",
+                xaxis_title="DRA Injection (%)",
+                yaxis_title="Total Cost (INR/day)"
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
 
 st.markdown(
     """
