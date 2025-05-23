@@ -204,15 +204,13 @@ if run:
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["FLOW"] = FLOW
         st.session_state["RateDRA"] = RateDRA
-        # Save a hash of all inputs as a "fingerprint"
-        inputs_fingerprint = hashlib.md5(json.dumps({
+        st.session_state["last_input_fingerprint"] = hashlib.md5(json.dumps({
             "stations": stations_data,
             "terminal": term_data,
             "FLOW": FLOW,
             "RateDRA": RateDRA,
             "Price_HSD": Price_HSD
         }, sort_keys=True, default=str).encode()).hexdigest()
-        st.session_state["last_input_fingerprint"] = inputs_fingerprint
 
     total_cost = res.get('total_cost', 0.0)
     total_pumps = sum(int(res.get(f"num_pumps_{s['name'].lower().replace(' ','_')}",0)) for s in stations_data)
@@ -526,24 +524,24 @@ if run:
             st.download_button(f"Download {stn['name']} Interaction Chart (PNG)", png_bytes, file_name=f"interaction_{key}.png", mime="image/png")
 
     with tab6:
-        import hashlib, json
-        current_fingerprint = hashlib.md5(json.dumps({
-            "stations": st.session_state.stations,
-            "terminal": {
-                "name": terminal_name,
-                "elev": terminal_elev,
-                "min_residual": terminal_head
-            },
-            "FLOW": FLOW,
-            "RateDRA": RateDRA,
-            "Price_HSD": Price_HSD
-        }, sort_keys=True, default=str).encode()).hexdigest()
-        
+    import hashlib, json
+    current_fingerprint = hashlib.md5(json.dumps({
+        "stations": st.session_state.stations,
+        "terminal": {
+            "name": terminal_name,
+            "elev": terminal_elev,
+            "min_residual": terminal_head
+        },
+        "FLOW": FLOW,
+        "RateDRA": RateDRA,
+        "Price_HSD": Price_HSD
+    }, sort_keys=True, default=str).encode()).hexdigest()
+    
+    if "last_res" in st.session_state:
         if st.session_state.get("last_input_fingerprint") != current_fingerprint:
             st.warning("Inputs have changed since last optimization. Plots show results for previous run. Click 'Run Optimization' to update.")
-
-        st.markdown("<div class='section-title'>Universal 3D Analysis</div>", unsafe_allow_html=True)
-        st.info("Select any combination of 3 axes and one color-dimension for 3D visualization. If X and Y form a rectangular grid, you'll see a true 3D surface; otherwise, a 3D scatter. Data is generated for the first pump station. Optimization must be run first.")
+    else:
+        st.warning("Please run optimization at least once to enable 3D analysis.")
     
         # ----------------------- SESSION STATE HANDLING -----------------------
         if ("last_res" not in st.session_state or
