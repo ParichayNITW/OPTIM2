@@ -714,4 +714,11 @@ with tab6:
     if last_fingerprint == current_fingerprint and st.session_state.get("show_3d_anyway"):
         st.session_state["show_3d_anyway"] = False
 
-
+st.markdown(
+    """
+    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+    &copy; 2025 Developed by Parichay Das. All rights reserved.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
