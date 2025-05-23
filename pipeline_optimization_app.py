@@ -234,14 +234,13 @@ if run:
         ]
     df_sum = pd.DataFrame(summary)
 
-    # TABS
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📋 Summary", 
         "💰 Costs", 
         "⚙️ Performance", 
         "🌀 System Curves", 
-        "🔄 Pump-System"
-        "🧊 3D Analysis"
+        "🔄 Pump-System",
+        "🧊 3D Analysis"      
     ])
     # === Tab 1 ===
     with tab1:
