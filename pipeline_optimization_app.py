@@ -552,7 +552,117 @@ if run:
                     margin=dict(l=30, r=30, b=30, t=50)
                 )
                 st.plotly_chart(fig_surface, use_container_width=True, key=f"cost_surface_{i}_{key}_{uuid.uuid4().hex[:6]}")
-    
+       
+            # =================== ADVANCED 3D VISUALIZATIONS ====================
+        
+            # 1. 3D Plot: Pump Speed vs Pump Efficiency vs Pump Flow (TDH as color)
+            st.markdown("### 3D Plot 1: Pump Flow vs Pump Efficiency vs Pump Speed (TDH as Color)")
+            pump_idx = next((i for i, s in enumerate(stations_data) if s.get('is_pump', False)), None)
+            if pump_idx is not None:
+                stn = stations_data[pump_idx]
+                key = stn['name'].lower().replace(' ', '_')
+                N_min = int(res.get(f"min_rpm_{key}", 1000))
+                N_max = int(res.get(f"dol_{key}", 1500))
+                flow_min, flow_max = 0.01, FLOW*1.5
+                rpm_range = np.linspace(N_min, N_max, 16)
+                flow_range = np.linspace(flow_min, flow_max, 30)
+        
+                # Get pump poly coefficients
+                A = res.get(f"coef_A_{key}", 0); B = res.get(f"coef_B_{key}", 0); C = res.get(f"coef_C_{key}", 0)
+                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
+                N_base = int(res.get(f"dol_{key}", 1500))
+        
+                # Prepare meshgrid for flow and speed
+                Q, N = np.meshgrid(flow_range, rpm_range)
+                # Calculate Efficiency at each point
+                Q_adj = Q * N_base / N
+                Eff = (P * Q_adj ** 4 + Qc * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
+                # Calculate TDH at each point
+                TDH = (A * Q ** 2 + B * Q + C) * (N / N_base) ** 2
+        
+                # Plot: X=Flow, Y=Efficiency, Z=Speed, Color=TDH
+                import plotly.graph_objects as go
+                fig = go.Figure(data=[go.Surface(
+                    x=Q, y=Eff, z=N, surfacecolor=TDH,
+                    colorscale='Viridis', colorbar=dict(title='TDH (m)')
+                )])
+                fig.update_layout(
+                    scene=dict(
+                        xaxis_title='Pump Flow (m³/hr)',
+                        yaxis_title='Efficiency (%)',
+                        zaxis_title='Pump Speed (rpm)'
+                    ),
+                    title="Pump Flow vs Efficiency vs Speed (Color: TDH)",
+                    height=700,
+                    margin=dict(l=30, r=30, b=30, t=50)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No pump station available for 3D Flow-Speed-Efficiency-TDH plot.")
+        
+            # 2. 3D Plot: %DRA vs Number of Pumps vs Total Cost (Color: Pump Speed)
+            st.markdown("### 3D Plot 2: No. of Pumps vs Total Cost vs %DRA (Pump Speed as Color)")
+            if pump_idx is not None:
+                stn = stations_data[pump_idx]
+                key = stn['name'].lower().replace(' ', '_')
+                max_pumps = int(stn.get('max_pumps', 4))
+                max_dra = int(stn.get('max_dr', 40))
+                N_min = int(res.get(f"min_rpm_{key}", 1000))
+                N_max = int(res.get(f"dol_{key}", 1500))
+                num_pumps_list = np.arange(1, max_pumps + 1)
+                dra_range = np.linspace(0, max_dra, 10)
+                speed_range = np.linspace(N_min, N_max, 5)
+        
+                # For simplicity, create a 3D grid: (No. Pumps, %DRA, Speed), plot Total Cost (Y), color = Speed
+                # We'll show one surface per speed value
+                surfaces = []
+                fig2 = go.Figure()
+                for speed in speed_range:
+                    Y = []
+                    X = []
+                    Z = []
+                    C = []
+                    for n_pump in num_pumps_list:
+                        for dra in dra_range:
+                            stn_copy = [dict(s) for s in stations_data]
+                            stn_copy[pump_idx]['max_dr'] = dra
+                            stn_copy[pump_idx]['fixed_speed'] = speed
+                            stn_copy[pump_idx]['max_pumps'] = n_pump
+                            res_sweep = solve_pipeline(
+                                stn_copy, {
+                                    "name": terminal_name,
+                                    "elev": terminal_elev,
+                                    "min_residual": terminal_head
+                                }, FLOW,
+                                [s['KV'] for s in stn_copy], [s['rho'] for s in stn_copy],
+                                RateDRA, Price_HSD
+                            )
+                            total_cost = res_sweep.get('total_cost', np.nan)
+                            X.append(n_pump)
+                            Z.append(dra)
+                            Y.append(total_cost)
+                            C.append(speed)
+                    # Each speed slice: scatter3d (to visualize all slices together)
+                    fig2.add_trace(go.Scatter3d(
+                        x=X, y=Y, z=Z, mode='markers',
+                        marker=dict(size=6, color=C, colorscale='Viridis', colorbar=dict(title="Pump Speed (rpm)")),
+                        name=f"Speed {int(speed)} rpm"
+                    ))
+        
+                fig2.update_layout(
+                    scene=dict(
+                        xaxis_title='No. of Pumps',
+                        yaxis_title='Total Cost (INR/day)',
+                        zaxis_title='%DRA'
+                    ),
+                    title="No. of Pumps vs Total Cost vs %DRA (Color: Pump Speed)",
+                    height=700,
+                    margin=dict(l=30, r=30, b=30, t=50)
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.warning("No pump station available for 3D DRA-Pumps-Cost-Speed plot.")
+             
                 # 3D Plot (Pump Efficiency vs Pump Speed vs DRA)
                 st.markdown("<div class='section-title'>3D Surface: Pump Efficiency vs DRA% vs Pump Speed (Station-1 Only)</div>", unsafe_allow_html=True)
                 N_min = int(res.get(f"min_rpm_{key}", 1000))
