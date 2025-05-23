@@ -198,6 +198,13 @@ if run:
         per_station_rho = [stn['rho'] for stn in stations_data]
 
         res = solve_pipeline(stations_data, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD)
+        # Store results for Tab 6
+        import copy
+        st.session_state["last_res"] = copy.deepcopy(res)
+        st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
+        st.session_state["last_term_data"] = copy.deepcopy(term_data)
+        st.session_state["FLOW"] = FLOW
+        st.session_state["RateDRA"] = RateDRA
 
     total_cost = res.get('total_cost', 0.0)
     total_pumps = sum(int(res.get(f"num_pumps_{s['name'].lower().replace(' ','_')}",0)) for s in stations_data)
