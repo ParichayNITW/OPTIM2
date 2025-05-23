@@ -521,15 +521,35 @@ with tab6:
     y_var = col2.selectbox("Y Axis", var_keys, index=var_keys.index("Pump Speed"))
     z_var = col3.selectbox("Z Axis", var_keys, index=var_keys.index("TDH"))
     c_var = col4.selectbox("Color",  var_keys, index=var_keys.index("Pump Efficiency"))
+
+    def get_input_fingerprint():
+        import hashlib, json
+        return hashlib.md5(json.dumps({
+            "stations": st.session_state.stations,
+            "terminal": {
+                "name": terminal_name,
+                "elev": terminal_elev,
+                "min_residual": terminal_head
+            },
+            "FLOW": FLOW,
+            "RateDRA": RateDRA,
+            "Price_HSD": Price_HSD
+        }, sort_keys=True, default=str).encode()).hexdigest()
+
     current_fingerprint = get_input_fingerprint()
-    warning_shown = False
+    last_fingerprint = st.session_state.get("last_input_fingerprint")
+    show_anyway = st.session_state.get("show_3d_anyway", False)
+
+    # UX logic
     if "last_res" not in st.session_state:
         st.warning("Please run optimization at least once to enable 3D analysis.")
-        warning_shown = True
-    elif st.session_state.get("last_input_fingerprint") != current_fingerprint:
-        st.warning("Inputs have changed since last optimization. Plots show results for previous run. Click 'Run Optimization' to update.")
-        warning_shown = False
-    if "last_res" in st.session_state and not warning_shown:
+    elif last_fingerprint != current_fingerprint and not show_anyway:
+        st.warning("Inputs have changed since last optimization. Plots show results for previous run.")
+        if st.button("Show last 3D plot anyway (from previous optimization run)"):
+            st.session_state["show_3d_anyway"] = True
+        st.stop()
+    else:
+        # If fingerprint matches, or user forced show_anyway
         last_res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         pump_idx = next((i for i, s in enumerate(stations_data) if s.get('is_pump', False)), None)
@@ -675,3 +695,7 @@ with tab6:
                     margin=dict(l=30, r=30, b=30, t=80)
                 )
                 st.plotly_chart(fig, use_container_width=True)
+        # Reset 'show_anyway' if inputs are now in sync (user ran optimization again)
+        if last_fingerprint == current_fingerprint and st.session_state.get("show_3d_anyway"):
+            st.session_state["show_3d_anyway"] = False
+
