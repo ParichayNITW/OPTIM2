@@ -574,156 +574,125 @@ with tab6:
     max_dr = int(stn.get('max_dr', 40))
     flow_min, flow_max = 0.01, st.session_state.get('FLOW', 1000.0)*1.5
 
-    # Grid for each variable
     grid_sizes = {
-        "No. of Pumps": np.arange(1, max_pumps+1),
-        "%DR": np.linspace(0, max_dr, 10),
+        "No. of Pumps": np.arange(1, max(max_pumps+1, 3)),  # At least 2
+        "%DR": np.linspace(0, max(max_dr, 1), 14),
         "Flow": np.linspace(flow_min, flow_max, 18),
         "Pump Speed": np.linspace(N_min, N_max, 18),
     }
-    # Fallback for others
     grid_defaults = {
         "TDH": [1], "Residual Head": [1], "Pump Efficiency": [1], "Power Cost": [1], "DRA Cost": [1]
     }
-    # Define grid axes
+
     X_vals = grid_sizes.get(x_var, grid_defaults.get(x_var, [1]))
     Y_vals = grid_sizes.get(y_var, grid_defaults.get(y_var, [1]))
 
-    # Get optimum point from last_res
-    optimum = {
-        "Flow": float(st.session_state.get('FLOW', 1000.0)),
-        "Pump Speed": float(last_res.get(f"speed_{key}", N_max)),
-        "%DR": float(last_res.get(f"drag_reduction_{key}", 0.0)),
-        "No. of Pumps": int(last_res.get(f"num_pumps_{key}", stn.get('max_pumps', 1))),
-    }
+    # If less than 2 unique values, don't plot surface!
+    if len(np.unique(X_vals)) < 2 or len(np.unique(Y_vals)) < 2 or x_var == y_var:
+        st.warning("Cannot plot surface for this combination of axes. Please select different axes with at least two unique values each.")
+    else:
+        Xg, Yg = np.meshgrid(X_vals, Y_vals, indexing='ij')
+        Zg = np.zeros_like(Xg)
+        Cg = np.zeros_like(Xg)
 
-    # Center grid around optimum, if possible
-    def center_grid(vals, opt_val, pad_frac=0.15):
-        # vals: array, opt_val: float or int
-        if len(vals) == 1: return vals
-        minv, maxv = np.min(vals), np.max(vals)
-        span = maxv - minv
-        lo = max(minv, opt_val - span*pad_frac)
-        hi = min(maxv, opt_val + span*pad_frac)
-        new_vals = np.linspace(lo, hi, len(vals))
-        return new_vals
+        # Get optimum point from last_res
+        optimum = {
+            "Flow": float(st.session_state.get('FLOW', 1000.0)),
+            "Pump Speed": float(last_res.get(f"speed_{key}", N_max)),
+            "%DR": float(last_res.get(f"drag_reduction_{key}", 0.0)),
+            "No. of Pumps": int(last_res.get(f"num_pumps_{key}", stn.get('max_pumps', 1))),
+        }
 
-    X_vals = center_grid(X_vals, optimum.get(x_var, X_vals[len(X_vals)//2]))
-    Y_vals = center_grid(Y_vals, optimum.get(y_var, Y_vals[len(Y_vals)//2]))
+        for i in range(Xg.shape[0]):
+            for j in range(Xg.shape[1]):
+                param = optimum.copy()
+                param[x_var] = float(Xg[i, j])
+                param[y_var] = float(Yg[i, j])
+                N_base = N_max
+                Q_adj = param["Flow"] * N_base / param["Pump Speed"] if param["Pump Speed"] > 0 else 0
+                A = last_res.get(f"coef_A_{key}", 0); B = last_res.get(f"coef_B_{key}", 0); Cc = last_res.get(f"coef_C_{key}", 0)
+                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
+                TDH = (A * param["Flow"] ** 2 + B * param["Flow"] + Cc) * (param["Pump Speed"] / N_base) ** 2
+                Eff = (P * Q_adj ** 4 + Qc * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
+                eff_pct = max(1e-2, Eff/100)
+                pwr = (stn['rho'] * param["Flow"] * 9.81 * TDH * param["No. of Pumps"]) / (3600.0 * eff_pct * 0.95)
+                power_cost = pwr * 24 * stn.get('rate', 9.0)
+                dra_cost = (param["%DR"] / 4) * (param["Flow"] * 1000.0 * 24.0 / 1e6) * st.session_state.get('RateDRA', 500.0)
+                residual_head = TDH - (param["Flow"]/200.0)
+                computed_vars = {
+                    "TDH": TDH,
+                    "Residual Head": residual_head,
+                    "No. of Pumps": param["No. of Pumps"],
+                    "%DR": param["%DR"],
+                    "Flow": param["Flow"],
+                    "Pump Speed": param["Pump Speed"],
+                    "Pump Efficiency": Eff,
+                    "Power Cost": power_cost,
+                    "DRA Cost": dra_cost
+                }
+                Zg[i, j] = computed_vars[z_var]
+                Cg[i, j] = computed_vars[c_var]
 
-    Xg, Yg = np.meshgrid(X_vals, Y_vals, indexing='ij')
-    Zg = np.zeros_like(Xg)
-    Cg = np.zeros_like(Xg)
+        # 3D Surface Plot
+        plot_title = f"{variable_options[x_var]} vs {variable_options[y_var]} vs {variable_options[z_var]} (Color: {variable_options[c_var]})"
+        fig = go.Figure()
 
-    for i in range(Xg.shape[0]):
-        for j in range(Xg.shape[1]):
-            # Assign all parameters based on current mesh point or optimum/defaults
-            param = {
-                "No. of Pumps": optimum["No. of Pumps"],
-                "%DR": optimum["%DR"],
-                "Flow": optimum["Flow"],
-                "Pump Speed": optimum["Pump Speed"],
-            }
-            param[x_var] = float(Xg[i, j])
-            param[y_var] = float(Yg[i, j])
-            # Ensure other params set to optimum
-            for k in ["No. of Pumps", "%DR", "Flow", "Pump Speed"]:
-                if k not in param:
-                    param[k] = optimum.get(k, grid_sizes[k][0] if k in grid_sizes else 1)
-            # Calculate
-            N_base = N_max
-            Q_adj = param["Flow"] * N_base / param["Pump Speed"] if param["Pump Speed"] > 0 else 0
-            A = last_res.get(f"coef_A_{key}", 0); B = last_res.get(f"coef_B_{key}", 0); Cc = last_res.get(f"coef_C_{key}", 0)
-            P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-            TDH = (A * param["Flow"] ** 2 + B * param["Flow"] + Cc) * (param["Pump Speed"] / N_base) ** 2
-            Eff = (P * Q_adj ** 4 + Qc * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
-            eff_pct = max(1e-2, Eff/100)
-            pwr = (stn['rho'] * param["Flow"] * 9.81 * TDH * param["No. of Pumps"]) / (3600.0 * eff_pct * 0.95)
-            power_cost = pwr * 24 * stn.get('rate', 9.0)
-            dra_cost = (param["%DR"] / 4) * (param["Flow"] * 1000.0 * 24.0 / 1e6) * st.session_state.get('RateDRA', 500.0)
-            residual_head = TDH - (param["Flow"]/200.0)
-            computed_vars = {
-                "TDH": TDH,
-                "Residual Head": residual_head,
-                "No. of Pumps": param["No. of Pumps"],
-                "%DR": param["%DR"],
-                "Flow": param["Flow"],
-                "Pump Speed": param["Pump Speed"],
-                "Pump Efficiency": Eff,
-                "Power Cost": power_cost,
-                "DRA Cost": dra_cost
-            }
-            Zg[i, j] = computed_vars[z_var]
-            Cg[i, j] = computed_vars[c_var]
+        fig.add_trace(go.Surface(
+            x=Xg, y=Yg, z=Zg, surfacecolor=Cg,
+            colorscale='Viridis', colorbar=dict(title=variable_options[c_var]),
+            opacity=0.9,
+            showscale=True,
+            name="Surface"
+        ))
 
-    # Plotting
-    plot_title = f"{variable_options[x_var]} vs {variable_options[y_var]} vs {variable_options[z_var]} (Color: {variable_options[c_var]})"
-    fig = go.Figure()
+        # Mark the optimum
+        opt_x = optimum[x_var]
+        opt_y = optimum[y_var]
+        # Compute Z for optimum for marker
+        param = optimum.copy()
+        A = last_res.get(f"coef_A_{key}", 0); B = last_res.get(f"coef_B_{key}", 0); Cc = last_res.get(f"coef_C_{key}", 0)
+        P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
+        N_base = N_max
+        Q_adj = param["Flow"] * N_base / param["Pump Speed"] if param["Pump Speed"] > 0 else 0
+        TDH = (A * param["Flow"] ** 2 + B * param["Flow"] + Cc) * (param["Pump Speed"] / N_base) ** 2
+        Eff = (P * Q_adj ** 4 + Qc * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
+        eff_pct = max(1e-2, Eff/100)
+        pwr = (stn['rho'] * param["Flow"] * 9.81 * TDH * param["No. of Pumps"]) / (3600.0 * eff_pct * 0.95)
+        power_cost = pwr * 24 * stn.get('rate', 9.0)
+        dra_cost = (param["%DR"] / 4) * (param["Flow"] * 1000.0 * 24.0 / 1e6) * st.session_state.get('RateDRA', 500.0)
+        residual_head = TDH - (param["Flow"]/200.0)
+        computed_vars = {
+            "TDH": TDH,
+            "Residual Head": residual_head,
+            "No. of Pumps": param["No. of Pumps"],
+            "%DR": param["%DR"],
+            "Flow": param["Flow"],
+            "Pump Speed": param["Pump Speed"],
+            "Pump Efficiency": Eff,
+            "Power Cost": power_cost,
+            "DRA Cost": dra_cost
+        }
+        opt_z = computed_vars[z_var]
 
-    # 3D surface
-    fig.add_trace(go.Surface(
-        x=Xg, y=Yg, z=Zg, surfacecolor=Cg,
-        colorscale='Viridis', colorbar=dict(title=variable_options[c_var]),
-        opacity=0.90,
-        showscale=True,
-        name="Surface"
-    ))
+        fig.add_trace(go.Scatter3d(
+            x=[opt_x], y=[opt_y], z=[opt_z],
+            mode='markers',
+            marker=dict(size=10, color='red', symbol='diamond'),
+            name='Optimum Point'
+        ))
 
-    # Optimum point
-    opt_x = optimum[x_var]
-    opt_y = optimum[y_var]
-    # Compute Z and C for optimum for marker
-    param = {
-        "No. of Pumps": optimum["No. of Pumps"],
-        "%DR": optimum["%DR"],
-        "Flow": optimum["Flow"],
-        "Pump Speed": optimum["Pump Speed"],
-    }
-    A = last_res.get(f"coef_A_{key}", 0); B = last_res.get(f"coef_B_{key}", 0); Cc = last_res.get(f"coef_C_{key}", 0)
-    P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-    N_base = N_max
-    Q_adj = param["Flow"] * N_base / param["Pump Speed"] if param["Pump Speed"] > 0 else 0
-    TDH = (A * param["Flow"] ** 2 + B * param["Flow"] + Cc) * (param["Pump Speed"] / N_base) ** 2
-    Eff = (P * Q_adj ** 4 + Qc * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
-    eff_pct = max(1e-2, Eff/100)
-    pwr = (stn['rho'] * param["Flow"] * 9.81 * TDH * param["No. of Pumps"]) / (3600.0 * eff_pct * 0.95)
-    power_cost = pwr * 24 * stn.get('rate', 9.0)
-    dra_cost = (param["%DR"] / 4) * (param["Flow"] * 1000.0 * 24.0 / 1e6) * st.session_state.get('RateDRA', 500.0)
-    residual_head = TDH - (param["Flow"]/200.0)
-    computed_vars = {
-        "TDH": TDH,
-        "Residual Head": residual_head,
-        "No. of Pumps": param["No. of Pumps"],
-        "%DR": param["%DR"],
-        "Flow": param["Flow"],
-        "Pump Speed": param["Pump Speed"],
-        "Pump Efficiency": Eff,
-        "Power Cost": power_cost,
-        "DRA Cost": dra_cost
-    }
-    opt_z = computed_vars[z_var]
+        fig.update_layout(
+            scene=dict(
+                xaxis_title=variable_options[x_var],
+                yaxis_title=variable_options[y_var],
+                zaxis_title=variable_options[z_var]
+            ),
+            title=plot_title,
+            height=750,
+            margin=dict(l=30, r=30, b=30, t=80)
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    fig.add_trace(go.Scatter3d(
-        x=[opt_x], y=[opt_y], z=[opt_z],
-        mode='markers',
-        marker=dict(size=10, color='red', symbol='diamond'),
-        name='Optimum Point'
-    ))
-
-    fig.update_layout(
-        scene=dict(
-            xaxis_title=variable_options[x_var],
-            yaxis_title=variable_options[y_var],
-            zaxis_title=variable_options[z_var]
-        ),
-        title=plot_title,
-        height=750,
-        margin=dict(l=30, r=30, b=30, t=80)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    if last_fingerprint == current_fingerprint and st.session_state.get("show_3d_anyway"):
-        st.session_state["show_3d_anyway"] = False
 
 
 
