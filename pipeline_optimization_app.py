@@ -513,61 +513,18 @@ with tab5:
 with tab6:
     import plotly.graph_objects as go
 
-    variable_options = {
-        "TDH":        "Total Dynamic Head (m)",
-        "Residual Head": "Residual Head (m)",
-        "No. of Pumps": "No. of Pumps",
-        "%DR":        "DRA (%)",
-        "Flow":       "Flow (m³/hr)",
-        "Pump Speed": "Pump Speed (rpm)",
-        "Pump Efficiency": "Pump Efficiency (%)",
-        "Power Cost": "Power Cost (INR/day)",
-        "DRA Cost":   "DRA Cost (INR/day)",
-    }
-    var_keys = list(variable_options.keys())
-    col1, col2, col3, col4 = st.columns(4)
-    x_var = col1.selectbox("X Axis", var_keys, index=var_keys.index("Flow"))
-    y_var = col2.selectbox("Y Axis", var_keys, index=var_keys.index("Pump Speed"))
-    z_var = col3.selectbox("Z Axis", var_keys, index=var_keys.index("TDH"))
-    c_var = col4.selectbox("Color",  var_keys, index=var_keys.index("Pump Efficiency"))
-
-    def get_input_fingerprint():
-        import hashlib, json
-        return hashlib.md5(json.dumps({
-            "stations": st.session_state.stations,
-            "terminal": {
-                "name": st.session_state.get("terminal_name", "Terminal"),
-                "elev": st.session_state.get("terminal_elev", 0.0),
-                "min_residual": st.session_state.get("terminal_head", 50.0)
-            },
-            "FLOW": st.session_state.get("FLOW", 1000.0),
-            "RateDRA": st.session_state.get("RateDRA", 500.0),
-            "Price_HSD": st.session_state.get("Price_HSD", 70.0)
-        }, sort_keys=True, default=str).encode()).hexdigest()
-
-    current_fingerprint = get_input_fingerprint()
-    last_fingerprint = st.session_state.get("last_input_fingerprint")
-    show_anyway = st.session_state.get("show_3d_anyway", False)
-
+    # --- Retrieve last result and station data ---
     if "last_res" not in st.session_state:
-        st.warning("Please run optimization at least once to enable 3D analysis.")
-        st.stop()
-    elif last_fingerprint != current_fingerprint and not show_anyway:
-        st.warning("Inputs have changed since last optimization. Plots show results for previous run.")
-        if st.button("Show last 3D plot anyway (from previous optimization run)"):
-            st.session_state["show_3d_anyway"] = True
-            st.experimental_rerun()
+        st.info("Please run optimization to enable 3D surfaces.")
         st.stop()
 
-    # Always plot last results at this point
     last_res = st.session_state["last_res"]
     stations_data = st.session_state["last_stations_data"]
-    pump_idx = next((i for i, s in enumerate(stations_data) if s.get('is_pump', False)), None)
-    if pump_idx is None:
-        st.warning("No pump station found. 3D plots require at least one pumping station.")
+    pump_stations = [s for s in stations_data if s.get('is_pump', False)]
+    if not pump_stations:
+        st.warning("No pump stations found. Add at least one for 3D analysis.")
         st.stop()
-
-    stn = stations_data[pump_idx]
+    stn = pump_stations[0]   # Only for Station-1 as per your past instruction
     key = stn['name'].lower().replace(' ', '_')
     N_min = int(last_res.get(f"min_rpm_{key}", 1000))
     N_max = int(last_res.get(f"dol_{key}", 1500))
@@ -575,113 +532,100 @@ with tab6:
     max_dr = int(stn.get('max_dr', 40))
     flow_min, flow_max = 0.01, st.session_state.get('FLOW', 1000.0)*1.5
 
-    grid_sizes = {
-        "No. of Pumps": np.arange(1, max_pumps+1),
-        "%DR": np.linspace(0, max_dr, 8),
-        "Flow": np.linspace(flow_min, flow_max, 16),
-        "Pump Speed": np.linspace(N_min, N_max, 16),
-    }
-    grid_defaults = {
-        "TDH": [1], "Residual Head": [1], "Pump Efficiency": [1], "Power Cost": [1], "DRA Cost": [1]
-    }
-    X_vals = grid_sizes.get(x_var, grid_defaults.get(x_var, [1]))
-    Y_vals = grid_sizes.get(y_var, grid_defaults.get(y_var, [1]))
+    # -------- PUMP PERFORMANCE SURFACE --------
+    st.subheader("🚩 Pump Performance Surfaces")
+    st.caption("**Head vs Flow vs Pump Speed**")
+    flows = np.linspace(flow_min, flow_max, 20)
+    speeds = np.linspace(N_min, N_max, 20)
+    Flows, Speeds = np.meshgrid(flows, speeds, indexing='ij')
+    A = last_res.get(f"coef_A_{key}", 0)
+    B = last_res.get(f"coef_B_{key}", 0)
+    Cc = last_res.get(f"coef_C_{key}", 0)
+    DOL = N_max
+    Head = (A*Flows**2 + B*Flows + Cc)*(Speeds/DOL)**2
 
-    is_surface = (len(X_vals) > 1 and len(Y_vals) > 1 and x_var != y_var)
+    fig = go.Figure(data=[go.Surface(
+        x=Flows, y=Speeds, z=Head,
+        colorscale='Viridis', colorbar=dict(title="Head (m)")
+    )])
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title=dict(text="X: Flow (m³/hr)", font=dict(size=16))),
+            yaxis=dict(title=dict(text="Y: Pump Speed (rpm)", font=dict(size=16))),
+            zaxis=dict(title=dict(text="Z: Head (m)", font=dict(size=16))),
+        ),
+        title="Head Surface: Head vs Flow vs Pump Speed",
+        height=600, margin=dict(l=20, r=20, b=20, t=60)
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    Z_axis_list, C_list, X_list, Y_list = [], [], [], []
+    # -------- SYSTEM INTERACTION SURFACE --------
+    st.subheader("🔁 System Interaction Surfaces")
+    st.caption("**System Head vs Flow vs DRA (%)**")
+    dra_vals = np.linspace(0, max_dr, 15)
+    flows = np.linspace(flow_min, flow_max, 20)
+    Flows, DRAs = np.meshgrid(flows, dra_vals, indexing='ij')
+    d_inner = stn['D'] - 2*stn['t']
+    rough = stn['rough']
+    L_seg = stn['L']
+    v_vals = Flows/3600.0 / (pi*(d_inner**2)/4)
+    Re_vals = np.where(stn['KV']>0, v_vals * d_inner / (stn['KV']*1e-6), 0)
+    f_vals = np.where(Re_vals>0,
+                      0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+    DH = f_vals * ((L_seg*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-DRAs/100.0)
+    SysHead = stn['elev'] + DH
 
-    for xi in X_vals:
-        for yi in Y_vals:
-            param = {
-                "No. of Pumps": int(xi if x_var == "No. of Pumps" else (yi if y_var == "No. of Pumps" else stn.get('max_pumps', 1))),
-                "%DR": float(xi if x_var == "%DR" else (yi if y_var == "%DR" else 0)),
-                "Flow": float(xi if x_var == "Flow" else (yi if y_var == "Flow" else st.session_state.get('FLOW', 1000.0))),
-                "Pump Speed": float(xi if x_var == "Pump Speed" else (yi if y_var == "Pump Speed" else N_max))
-            }
-            for k in ["No. of Pumps", "%DR", "Flow", "Pump Speed"]:
-                if k not in param:
-                    param[k] = grid_sizes[k][0] if len(grid_sizes[k]) > 0 else 1
-            N_base = N_max
-            Q_adj = param["Flow"] * N_base / param["Pump Speed"] if param["Pump Speed"] > 0 else 0
-            A = last_res.get(f"coef_A_{key}", 0); B = last_res.get(f"coef_B_{key}", 0); Cc = last_res.get(f"coef_C_{key}", 0)
-            P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-            TDH = (A * param["Flow"] ** 2 + B * param["Flow"] + Cc) * (param["Pump Speed"] / N_base) ** 2
-            Eff = (P * Q_adj ** 4 + Qc * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
-            eff_pct = max(1e-2, Eff/100)
-            pwr = (stn['rho'] * param["Flow"] * 9.81 * TDH * param["No. of Pumps"]) / (3600.0 * eff_pct * 0.95)
-            power_cost = pwr * 24 * stn.get('rate', 9.0)
-            dra_cost = (param["%DR"] / 4) * (param["Flow"] * 1000.0 * 24.0 / 1e6) * st.session_state.get('RateDRA', 500.0)
-            residual_head = TDH - (param["Flow"]/200.0)
-            computed_vars = {
-                "TDH": TDH,
-                "Residual Head": residual_head,
-                "No. of Pumps": param["No. of Pumps"],
-                "%DR": param["%DR"],
-                "Flow": param["Flow"],
-                "Pump Speed": param["Pump Speed"],
-                "Pump Efficiency": Eff,
-                "Power Cost": power_cost,
-                "DRA Cost": dra_cost
-            }
-            X_list.append(param[x_var])
-            Y_list.append(param[y_var])
-            Z_axis_list.append(computed_vars[z_var])
-            C_list.append(computed_vars[c_var])
+    fig2 = go.Figure(data=[go.Surface(
+        x=Flows, y=DRAs, z=SysHead,
+        colorscale='Viridis', colorbar=dict(title="System Head (m)")
+    )])
+    fig2.update_layout(
+        scene=dict(
+            xaxis=dict(title=dict(text="X: Flow (m³/hr)", font=dict(size=16))),
+            yaxis=dict(title=dict(text="Y: DRA (%)", font=dict(size=16))),
+            zaxis=dict(title=dict(text="Z: System Head (m)", font=dict(size=16))),
+        ),
+        title="System Curve Surface: System Head vs Flow vs DRA",
+        height=600, margin=dict(l=20, r=20, b=20, t=60)
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
-    plot_title = f"{variable_options[x_var]} vs {variable_options[y_var]} vs {variable_options[z_var]} (Color: {variable_options[c_var]})"
+    # -------- COST SURFACE --------
+    st.subheader("💰 Cost Surfaces")
+    st.caption("**Power Cost vs Pump Speed vs No. of Pumps**")
+    speeds = np.linspace(N_min, N_max, 12)
+    nops = np.arange(1, max_pumps+1)
+    Speeds, NOPs = np.meshgrid(speeds, nops, indexing='ij')
+    flow = st.session_state.get("FLOW", 1000.0)
+    TDH = (A*flow**2 + B*flow + Cc)*(Speeds/DOL)**2
+    P = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+    Q_adj = flow * DOL / Speeds
+    Eff = (P*Q_adj**4 + Qc*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
+    eff_pct = np.maximum(1e-2, Eff/100)
+    power = (stn['rho'] * flow * 9.81 * TDH * NOPs)/(3600.0*eff_pct*0.95)
+    cost = power * 24 * stn.get('rate', 9.0)
 
-    # Plotting
-    if is_surface and len(X_vals)*len(Y_vals) == len(Z_axis_list):
-        Xg, Yg = np.meshgrid(X_vals, Y_vals, indexing='ij')
-        Zg = np.array(Z_axis_list).reshape(len(X_vals), len(Y_vals))
-        Cg = np.array(C_list).reshape(len(X_vals), len(Y_vals))
-        fig = go.Figure(data=[go.Surface(
-            x=Xg, y=Yg, z=Zg, surfacecolor=Cg,
-            colorscale='Viridis', colorbar=dict(title=variable_options[c_var])
-        )])
-        fig.update_layout(
-            scene=dict(
-                xaxis=dict(title=dict(text=f"X: {variable_options[x_var]}", font=dict(size=18))),
-                yaxis=dict(title=dict(text=f"Y: {variable_options[y_var]}", font=dict(size=18))),
-                zaxis=dict(title=dict(text=f"Z: {variable_options[z_var]}", font=dict(size=18))),
-            ),
-            title=plot_title,
-            height=700,
-            margin=dict(l=30, r=30, b=30, t=80)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        fig = go.Figure(data=[go.Scatter3d(
-            x=X_list, y=Y_list, z=Z_axis_list,
-            mode='markers',
-            marker=dict(
-                size=4,
-                color=C_list,
-                colorscale='Viridis',
-                colorbar=dict(title=variable_options[c_var]),
-                line=dict(width=0.5, color='DarkSlateGrey')
-            ),
-            text=[f"{c_var}: {v:.1f}" for v in C_list],
-            name='3D Data'
-        )])
-        fig.update_layout(
-            scene=dict(
-                xaxis=dict(title=dict(text=f"X: {variable_options[x_var]}", font=dict(size=18))),
-                yaxis=dict(title=dict(text=f"Y: {variable_options[y_var]}", font=dict(size=18))),
-                zaxis=dict(title=dict(text=f"Z: {variable_options[z_var]}", font=dict(size=18))),
-            ),
-            title=plot_title,
-            height=700,
-            margin=dict(l=30, r=30, b=30, t=80)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    fig3 = go.Figure(data=[go.Surface(
+        x=Speeds, y=NOPs, z=cost,
+        colorscale='Viridis', colorbar=dict(title="Power Cost (INR/day)")
+    )])
+    fig3.update_layout(
+        scene=dict(
+            xaxis=dict(title=dict(text="X: Pump Speed (rpm)", font=dict(size=16))),
+            yaxis=dict(title=dict(text="Y: No. of Pumps", font=dict(size=16))),
+            zaxis=dict(title=dict(text="Z: Power Cost (INR/day)", font=dict(size=16))),
+        ),
+        title="Power Cost Surface: Cost vs Speed vs No. of Pumps",
+        height=600, margin=dict(l=20, r=20, b=20, t=60)
+    )
+    st.plotly_chart(fig3, use_container_width=True)
 
-    if last_fingerprint == current_fingerprint and st.session_state.get("show_3d_anyway"):
-        st.session_state["show_3d_anyway"] = False
+    # ---- Add more grouped plots as desired ----
 
-
-
+    st.info(
+        "All 3D plots are grouped by their function for quick and intuitive analysis. "
+        "If you need more surfaces or grouped insights (such as DRA Cost, Pump Efficiency, etc.), let me know!"
+    )
 
 
 
