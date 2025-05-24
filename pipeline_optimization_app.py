@@ -121,9 +121,14 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
         stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
         if idx == 1:
-            stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
-        stn['D'] = st.number_input("Outer Diameter (m)", value=stn['D'], format="%.3f", step=0.001, key=f"D{idx}")
-        stn['t'] = st.number_input("Wall Thickness (m)", value=stn['t'], format="%.4f", step=0.0001, key=f"t{idx}")
+        stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+        # For display, convert from meters (internal) to inches
+        D_in = st.number_input("Outer Diameter (in)", value=stn['D']/0.0254, format="%.3f", step=0.01, key=f"D{idx}")
+        t_in = st.number_input("Wall Thickness (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+        
+        # Internally, always store in meters
+        stn['D'] = D_in * 0.0254
+        stn['t'] = t_in * 0.0254
         stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
         stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
         stn['L'] = st.number_input("Length to next station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
