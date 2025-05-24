@@ -536,7 +536,7 @@ with tab6:
     FLOW = st.session_state.get("FLOW", 1000.0)
     RateDRA = st.session_state.get("RateDRA", 500.0)
     Price_HSD = st.session_state.get("Price_HSD", 70.0)
-    key = stations_data[0]['name'].lower().replace(' ', '_')  # Focusing on Station 1
+    key = stations_data[0]['name'].lower().replace(' ', '_')
 
     speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
     dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
@@ -547,7 +547,6 @@ with tab6:
     delta_dra = 10
     delta_nop = 1
     delta_flow = 150
-
     N = 9
     stn = stations_data[0]
     N_min = int(stn.get('MinRPM', 1000))
@@ -574,15 +573,14 @@ with tab6:
             "Total Cost vs NOP vs DRA": {"x": nop_range, "y": dra_range, "z": "TotalCost"},
         }
     }
-
     col1, col2 = st.columns(2)
     group = col1.selectbox("Plot Group", list(groups.keys()))
     plot_opt = col2.selectbox("Plot Type", list(groups[group].keys()))
     conf = groups[group][plot_opt]
-
     Xv, Yv = np.meshgrid(conf['x'], conf['y'], indexing='ij')
     Z = np.zeros_like(Xv, dtype=float)
 
+    # --- Pump coefficients ---
     A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
     P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
     S = stn.get('S', 0); T = stn.get('T', 0)
@@ -654,29 +652,9 @@ with tab6:
     fig = go.Figure(data=[go.Surface(
         x=conf['x'], y=conf['y'], z=Z.T, colorscale='Viridis', colorbar=dict(title=zlab)
     )])
-    # Mark optimum
-    if plot_opt == "Head vs Flow vs Speed":
-        opt_z = get_head(flow_opt, speed_opt); opt_x, opt_y = flow_opt, speed_opt
-    elif plot_opt == "Efficiency vs Flow vs Speed":
-        opt_z = get_eff(flow_opt, speed_opt); opt_x, opt_y = flow_opt, speed_opt
-    elif plot_opt == "System Head vs Flow vs DRA":
-        opt_z = get_system_head(flow_opt, dra_opt); opt_x, opt_y = flow_opt, dra_opt
-    elif plot_opt == "Power Cost vs Speed vs DRA":
-        opt_z = get_power_cost(flow_opt, speed_opt, dra_opt, nopt_opt); opt_x, opt_y = speed_opt, dra_opt
-    elif plot_opt == "Power Cost vs Flow vs Speed":
-        opt_z = get_power_cost(flow_opt, speed_opt, dra_opt, nopt_opt); opt_x, opt_y = flow_opt, speed_opt
-    elif plot_opt == "Total Cost vs NOP vs DRA":
-        opt_z = get_total_cost(flow_opt, speed_opt, dra_opt, nopt_opt); opt_x, opt_y = nopt_opt, dra_opt
-    else:
-        opt_z, opt_x, opt_y = 0, 0, 0
-    fig.add_trace(go.Scatter3d(
-        x=[opt_x], y=[opt_y], z=[opt_z],
-        mode='markers+text',
-        marker=dict(size=7, color='red', symbol='diamond'),
-        text=["Optimum"],
-        textposition="top center",
-        name="Optimum"
-    ))
+
+    # No diamond/Optimum marker is added here.
+
     fig.update_layout(
         scene=dict(
             xaxis_title=xlab,
@@ -687,11 +665,13 @@ with tab6:
         height=750,
         margin=dict(l=30, r=30, b=30, t=80)
     )
+
     st.plotly_chart(fig, use_container_width=True)
     st.markdown(
-        "<div style='text-align:center;margin-top:10px;'>Surface centered at the optimum point (marked in red). Only a small region (+/- delta) is shown for clarity and hydraulic relevance.</div>",
+        "<div class='centered-caption'>Surface shown for a small region (+/- delta) from the optimum point for clarity and hydraulic relevance.</div>",
         unsafe_allow_html=True
     )
+
 
 st.markdown(
     """
