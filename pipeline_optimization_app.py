@@ -552,9 +552,7 @@ with tab6:
     stn = stations_data[pump_idx]
     key = stn['name'].lower().replace(' ', '_')
 
-    # Get optimized values for the chosen variables (default to center)
     def get_opt_val(var_key):
-        # Map variable name to result key
         map_to_res = {
             "TDH": f"tdh_{key}",
             "Residual Head": f"residual_head_{key}",
@@ -567,7 +565,7 @@ with tab6:
             "DRA Cost": f"dra_cost_{key}",
         }
         val = last_res.get(map_to_res.get(var_key, ""), None)
-        # Handle fallback for some variables if missing
+        # Sensible defaults if missing
         if val is None:
             if var_key == "No. of Pumps":
                 return stn.get("max_pumps", 1)
@@ -581,8 +579,9 @@ with tab6:
                 return 1
         return val
 
-    # Center the grid around the optimum point for each parameter
-    opt_vals = {v: get_opt_val(v) for v in [x_var, y_var, z_var, c_var]}
+    # Instead of iterating all, just use axes selected
+    axes_list = [x_var, y_var, z_var, c_var]
+    opt_vals = {v: get_opt_val(v) for v in axes_list}
     N_min = int(last_res.get(f"min_rpm_{key}", 1000))
     N_max = int(last_res.get(f"dol_{key}", 1500))
     max_pumps = int(stn.get('max_pumps', 4))
@@ -604,23 +603,21 @@ with tab6:
             hi = min(N_max, opt_val+150)
             return np.linspace(lo, hi, 14)
         else:
-            # All others single value
             return np.array([opt_val])
 
     X_vals = get_range(x_var, opt_vals[x_var])
     Y_vals = get_range(y_var, opt_vals[y_var])
     is_surface = (len(X_vals) > 1 and len(Y_vals) > 1 and x_var != y_var)
 
-    # --- Compute all required values for the grid ---
     Z_axis_list, C_list, X_list, Y_list = [], [], [], []
 
     for xi in X_vals:
         for yi in Y_vals:
             param = {
-                "No. of Pumps": int(round(opt_vals["No. of Pumps"])),
-                "%DR": float(opt_vals["%DR"]),
-                "Flow": float(opt_vals["Flow"]),
-                "Pump Speed": float(opt_vals["Pump Speed"])
+                "No. of Pumps": int(round(opt_vals.get("No. of Pumps", stn.get('max_pumps', 1)))),
+                "%DR": float(opt_vals.get("%DR", 0)),
+                "Flow": float(opt_vals.get("Flow", st.session_state.get('FLOW', 1000.0))),
+                "Pump Speed": float(opt_vals.get("Pump Speed", stn.get("DOL", 1500.0)))
             }
             param[x_var] = xi
             param[y_var] = yi
@@ -651,15 +648,15 @@ with tab6:
             Z_axis_list.append(computed_vars[z_var])
             C_list.append(computed_vars[c_var])
 
-    # Optimum point for red diamond
+    # Optimum marker
     opt_x = opt_vals[x_var]
     opt_y = opt_vals[y_var]
     N_base = N_max
     param_opt = {
-        "No. of Pumps": int(round(opt_vals["No. of Pumps"])),
-        "%DR": float(opt_vals["%DR"]),
-        "Flow": float(opt_vals["Flow"]),
-        "Pump Speed": float(opt_vals["Pump Speed"])
+        "No. of Pumps": int(round(opt_vals.get("No. of Pumps", stn.get('max_pumps', 1)))),
+        "%DR": float(opt_vals.get("%DR", 0)),
+        "Flow": float(opt_vals.get("Flow", st.session_state.get('FLOW', 1000.0))),
+        "Pump Speed": float(opt_vals.get("Pump Speed", stn.get("DOL", 1500.0)))
     }
     Q_adj_opt = param_opt["Flow"] * N_base / param_opt["Pump Speed"] if param_opt["Pump Speed"] > 0 else 0
     A = last_res.get(f"coef_A_{key}", 0); B = last_res.get(f"coef_B_{key}", 0); Cc = last_res.get(f"coef_C_{key}", 0)
@@ -695,7 +692,6 @@ with tab6:
             x=Xg, y=Yg, z=Zg, surfacecolor=Cg,
             colorscale='Viridis', colorbar=dict(title=variable_options[c_var])
         )])
-        # Mark optimum point with a red diamond
         fig.add_trace(go.Scatter3d(
             x=[opt_x], y=[opt_y], z=[opt_z],
             mode='markers',
@@ -728,7 +724,6 @@ with tab6:
             text=[f"{c_var}: {v:.1f}" for v in C_list],
             name='3D Data'
         )])
-        # Optimum marker
         fig.add_trace(go.Scatter3d(
             x=[opt_x], y=[opt_y], z=[opt_z],
             mode='markers',
@@ -748,9 +743,9 @@ with tab6:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Clear override if in sync again
     if last_fingerprint == current_fingerprint and st.session_state.get("show_3d_anyway"):
         st.session_state["show_3d_anyway"] = False
+
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
