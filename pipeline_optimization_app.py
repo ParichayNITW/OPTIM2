@@ -512,131 +512,206 @@ with tab5:
 
 
 # --------------- Tab 6: 3D Plots -----------------
-with tab6:
-    st.subheader("3D Sensitivity Surfaces Around Optimum")
+import numpy as np
+import plotly.graph_objects as go
+import streamlit as st
 
-    if "last_res" not in st.session_state:
-        st.warning("Please run optimization first.")
-        st.stop()
-    res = st.session_state["last_res"]
-    stations_data = st.session_state["last_stations_data"]
+# Get optimum values from Pyomo solution
+last_res = st.session_state["last_res"]
+stations_data = st.session_state["last_stations_data"]
+pump_idx = next((i for i, s in enumerate(stations_data) if s.get('is_pump', False)), None)
+if pump_idx is None:
+    st.warning("No pump station found. 3D plots require at least one pumping station.")
+    st.stop()
+stn = stations_data[pump_idx]
+key = stn['name'].lower().replace(' ', '_')
+N_min = int(last_res.get(f"min_rpm_{key}", 1000))
+N_max = int(last_res.get(f"dol_{key}", 1500))
+opt_speed = last_res.get(f"speed_{key}", N_max)
+opt_dra = last_res.get(f"drag_reduction_{key}", 0)
+opt_flow = st.session_state.get('FLOW', 1000.0)
+opt_cost = last_res.get(f"power_cost_{key}", 0) + last_res.get(f"dra_cost_{key}", 0)
+opt_eff = last_res.get(f"efficiency_{key}", 0)
+opt_head = (last_res.get(f"coef_A_{key}", 0)*opt_flow**2 +
+            last_res.get(f"coef_B_{key}", 0)*opt_flow +
+            last_res.get(f"coef_C_{key}", 0))*(opt_speed/N_max)**2
+opt_syshead = stn['elev']  # Or compute as per your hydraulics
 
-    # Identify first pump station
-    pump_idx = next((i for i, s in enumerate(stations_data) if s.get('is_pump', False)), None)
-    if pump_idx is None:
-        st.info("No pump station found for 3D sensitivity.")
-        st.stop()
-    stn = stations_data[pump_idx]
-    key = stn['name'].lower().replace(' ', '_')
-    rho = stn['rho']
-    rate = stn.get('rate', 9.0)
-    dra_rate = st.session_state.get("RateDRA", 500.0)
-    DOL = float(res.get(f"dol_{key}", stn.get('DOL', 1500)))
-    FLOW = st.session_state.get("FLOW", 1000.0)
-    max_dra = stn.get("max_dr", 40)
+# Set parameter ranges
+flow_min, flow_max = 0.1*opt_flow, 1.6*opt_flow
+flows = np.linspace(flow_min, flow_max, 32)
+speeds = np.linspace(N_min, N_max, 32)
+dras = np.linspace(0, stn.get('max_dr', 40), 32)
 
-    # Extract optimum values from result
-    opt_flow = float(FLOW)
-    opt_dra = float(res.get(f"drag_reduction_{key}", 0.0))
-    opt_speed = float(res.get(f"speed_{key}", DOL))
-    opt_nop = int(res.get(f"num_pumps_{key}", 1))
-    opt_tdh = float(res.get(f"coef_A_{key}",0)*opt_flow**2 +
-                    res.get(f"coef_B_{key}",0)*opt_flow +
-                    res.get(f"coef_C_{key}",0))
-    opt_eff = float(res.get(f"efficiency_{key}", 0.0))
-    opt_power_cost = float(res.get(f"power_cost_{key}", 0.0))
-    opt_dra_cost = float(res.get(f"dra_cost_{key}", 0.0))
-
-    # Coeffs for pump model
-    A = res.get(f"coef_A_{key}", 0)
-    B = res.get(f"coef_B_{key}", 0)
-    C = res.get(f"coef_C_{key}", 0)
-    P = stn.get('P', 0); Q = stn.get('Q', 0); R = stn.get('R', 0)
-    S = stn.get('S', 0); T = stn.get('T', 0)
-
-    # Helper to compute cost and performance (all other vars fixed at optimum)
-    def compute_cost(flow, dra, speed=None, nop=None):
-        if speed is None: speed = opt_speed
-        if nop is None: nop = opt_nop
-        # Head at this point
-        TDH = (A * flow ** 2 + B * flow + C) * ((speed / DOL) ** 2)
-        Q_adj = flow * DOL / speed if speed > 0 else flow
-        Eff = (P * Q_adj ** 4 + Q * Q_adj ** 3 + R * Q_adj ** 2 + S * Q_adj + T)
-        eff_pct = max(Eff / 100, 1e-2)
-        power = (rho * flow * 9.81 * TDH * nop) / (3600.0 * eff_pct * 0.95)
-        power_cost = power * 24 * rate
-        dra_cost = (dra / 4) * (flow * 1000.0 * 24.0 / 1e6) * dra_rate
-        total_cost = power_cost + dra_cost
-        return total_cost, TDH, Eff
-
-    # Zoomed windows
-    flow_grid = np.linspace(opt_flow * 0.9, opt_flow * 1.1, 22)
-    dra_grid = np.linspace(max(0, opt_dra - 5), min(max_dra, opt_dra + 5), 22)
-    speed_grid = np.linspace(opt_speed * 0.95, opt_speed * 1.05, 22)
-
-    # All groups: (X, Y, Z, axes labels, optimum values)
-    groups = [
+# ----- GROUP & PLOT DEFINITION -----
+group_options = {
+    "Pump Performance Surface Plots": [
         {
-            "name": "Total Cost Surface (Flow vs DRA)",
-            "x": flow_grid, "y": dra_grid, "z_fun": lambda f, d: compute_cost(f, d)[0],
-            "xlab": "X: Flow (m³/hr)", "ylab": "Y: DRA (%)", "zlab": "Z: Total Cost (INR/day)",
-            "opt_x": opt_flow, "opt_y": opt_dra, "opt_z": opt_power_cost + opt_dra_cost
+            "label": "Head vs Flow & Pump Speed",
+            "x": flows, "x_label": "Flow (m³/hr)",
+            "y": speeds, "y_label": "Pump Speed (rpm)",
+            "z_func": lambda x, y: (last_res.get(f"coef_A_{key}", 0)*x**2 +
+                                    last_res.get(f"coef_B_{key}", 0)*x +
+                                    last_res.get(f"coef_C_{key}", 0))*(y/N_max)**2,
+            "z_label": "Pump Head (m)",
+            "opt_point": (opt_flow, opt_speed, opt_head)
         },
         {
-            "name": "Total Cost Surface (Flow vs Pump Speed)",
-            "x": flow_grid, "y": speed_grid, "z_fun": lambda f, s: compute_cost(f, opt_dra, speed=s)[0],
-            "xlab": "X: Flow (m³/hr)", "ylab": "Y: Pump Speed (rpm)", "zlab": "Z: Total Cost (INR/day)",
-            "opt_x": opt_flow, "opt_y": opt_speed, "opt_z": opt_power_cost + opt_dra_cost
+            "label": "Efficiency vs Flow & Pump Speed",
+            "x": flows, "x_label": "Flow (m³/hr)",
+            "y": speeds, "y_label": "Pump Speed (rpm)",
+            "z_func": lambda x, y: (
+                stn.get('P', 0)*(x*N_max/y)**4 +
+                stn.get('Q', 0)*(x*N_max/y)**3 +
+                stn.get('R', 0)*(x*N_max/y)**2 +
+                stn.get('S', 0)*(x*N_max/y) +
+                stn.get('T', 0)
+            ),
+            "z_label": "Pump Efficiency (%)",
+            "opt_point": (opt_flow, opt_speed, opt_eff)
+        },
+    ],
+    "System Interaction Surface Plots": [
+        {
+            "label": "System Head vs Flow & DRA",
+            "x": flows, "x_label": "Flow (m³/hr)",
+            "y": dras, "y_label": "DRA (%)",
+            "z_func": lambda x, y: (
+                stn['elev'] +  # Static
+                0.25/(np.log10(stn['rough']/(stn['D']-2*stn['t'])/3.7 + 5.74/(
+                    (x/3600/(np.pi*((stn['D']-2*stn['t'])**2)/4)/(stn['KV']*1e-6))**0.9))**2) *
+                ((stn['L']*1000.0)/(stn['D']-2*stn['t'])) *
+                ((x/3600/(np.pi*((stn['D']-2*stn['t'])**2)/4))**2/(2*9.81)) * (1-y/100)
+            ),
+            "z_label": "System Head (m)",
+            "opt_point": (opt_flow, opt_dra, opt_syshead)
         },
         {
-            "name": "Total Cost Surface (DRA vs Pump Speed)",
-            "x": dra_grid, "y": speed_grid, "z_fun": lambda d, s: compute_cost(opt_flow, d, speed=s)[0],
-            "xlab": "X: DRA (%)", "ylab": "Y: Pump Speed (rpm)", "zlab": "Z: Total Cost (INR/day)",
-            "opt_x": opt_dra, "opt_y": opt_speed, "opt_z": opt_power_cost + opt_dra_cost
+            "label": "System Head vs Flow & Pump Speed",
+            "x": flows, "x_label": "Flow (m³/hr)",
+            "y": speeds, "y_label": "Pump Speed (rpm)",
+            "z_func": lambda x, y: (
+                stn['elev'] +  # Static
+                0.25/(np.log10(stn['rough']/(stn['D']-2*stn['t'])/3.7 + 5.74/(
+                    (x/3600/(np.pi*((stn['D']-2*stn['t'])**2)/4)/(stn['KV']*1e-6))**0.9))**2) *
+                ((stn['L']*1000.0)/(stn['D']-2*stn['t'])) *
+                ((x/3600/(np.pi*((stn['D']-2*stn['t'])**2)/4))**2/(2*9.81)) * (1-opt_dra/100)
+            ),
+            "z_label": "System Head (m)",
+            "opt_point": (opt_flow, opt_speed, opt_syshead)
+        },
+    ],
+    "Cost Surface Plots": [
+        {
+            "label": "Total Cost vs Flow & DRA",
+            "x": flows, "x_label": "Flow (m³/hr)",
+            "y": dras, "y_label": "DRA (%)",
+            "z_func": lambda x, y: (
+                # Power cost + DRA cost, using approx same as in Pyomo extraction
+                (
+                    (stn['rho'] * x * 9.81 *
+                    ((last_res.get(f"coef_A_{key}", 0)*x**2 +
+                    last_res.get(f"coef_B_{key}", 0)*x +
+                    last_res.get(f"coef_C_{key}", 0))*(opt_speed/N_max)**2)) /
+                    (3600.0 * max(1e-2, (stn.get('P',0)*(x*N_max/opt_speed)**4 +
+                                         stn.get('Q',0)*(x*N_max/opt_speed)**3 +
+                                         stn.get('R',0)*(x*N_max/opt_speed)**2 +
+                                         stn.get('S',0)*(x*N_max/opt_speed) +
+                                         stn.get('T',0))/100) * 0.95)
+                ) * 24 * stn.get('rate',9.0)
+                +
+                (y/4)*(x*1000*24/1e6)*st.session_state.get('RateDRA',500.0)
+            ),
+            "z_label": "Total Cost (INR/day)",
+            "opt_point": (opt_flow, opt_dra, opt_cost)
         },
         {
-            "name": "Pump Efficiency Surface (Flow vs Pump Speed)",
-            "x": flow_grid, "y": speed_grid, "z_fun": lambda f, s: compute_cost(f, opt_dra, speed=s)[2],
-            "xlab": "X: Flow (m³/hr)", "ylab": "Y: Pump Speed (rpm)", "zlab": "Z: Efficiency (%)",
-            "opt_x": opt_flow, "opt_y": opt_speed, "opt_z": opt_eff
+            "label": "Total Cost vs Flow & Pump Speed",
+            "x": flows, "x_label": "Flow (m³/hr)",
+            "y": speeds, "y_label": "Pump Speed (rpm)",
+            "z_func": lambda x, y: (
+                (
+                    (stn['rho'] * x * 9.81 *
+                    ((last_res.get(f"coef_A_{key}", 0)*x**2 +
+                    last_res.get(f"coef_B_{key}", 0)*x +
+                    last_res.get(f"coef_C_{key}", 0))*(y/N_max)**2)) /
+                    (3600.0 * max(1e-2, (stn.get('P',0)*(x*N_max/y)**4 +
+                                         stn.get('Q',0)*(x*N_max/y)**3 +
+                                         stn.get('R',0)*(x*N_max/y)**2 +
+                                         stn.get('S',0)*(x*N_max/y) +
+                                         stn.get('T',0))/100) * 0.95)
+                ) * 24 * stn.get('rate',9.0)
+                +
+                (opt_dra/4)*(x*1000*24/1e6)*st.session_state.get('RateDRA',500.0)
+            ),
+            "z_label": "Total Cost (INR/day)",
+            "opt_point": (opt_flow, opt_speed, opt_cost)
+        },
+        {
+            "label": "Total Cost vs DRA & Pump Speed",
+            "x": dras, "x_label": "DRA (%)",
+            "y": speeds, "y_label": "Pump Speed (rpm)",
+            "z_func": lambda x, y: (
+                (
+                    (stn['rho'] * opt_flow * 9.81 *
+                    ((last_res.get(f"coef_A_{key}", 0)*opt_flow**2 +
+                    last_res.get(f"coef_B_{key}", 0)*opt_flow +
+                    last_res.get(f"coef_C_{key}", 0))*(y/N_max)**2)) /
+                    (3600.0 * max(1e-2, (stn.get('P',0)*(opt_flow*N_max/y)**4 +
+                                         stn.get('Q',0)*(opt_flow*N_max/y)**3 +
+                                         stn.get('R',0)*(opt_flow*N_max/y)**2 +
+                                         stn.get('S',0)*(opt_flow*N_max/y) +
+                                         stn.get('T',0))/100) * 0.95)
+                ) * 24 * stn.get('rate',9.0)
+                +
+                (x/4)*(opt_flow*1000*24/1e6)*st.session_state.get('RateDRA',500.0)
+            ),
+            "z_label": "Total Cost (INR/day)",
+            "opt_point": (opt_dra, opt_speed, opt_cost)
         },
     ]
+}
 
-    # Render each group as a separate 3D plot
-    for g in groups:
-        X, Y = np.meshgrid(g["x"], g["y"], indexing="ij")
-        Z = np.empty_like(X)
-        for i in range(X.shape[0]):
-            for j in range(X.shape[1]):
-                try:
-                    Z[i, j] = g["z_fun"](X[i, j], Y[i, j])
-                except Exception:
-                    Z[i, j] = np.nan
-        fig = go.Figure([
-            go.Surface(
-                x=X, y=Y, z=Z,
-                colorscale='Viridis',
-                colorbar=dict(title=g["zlab"]),
-                showscale=True
-            ),
-            go.Scatter3d(
-                x=[g["opt_x"]], y=[g["opt_y"]], z=[g["opt_z"]],
-                mode='markers+text',
-                marker=dict(size=10, color='red', symbol='diamond'),
-                text=['Optimum'], textposition='top center',
-                name='Optimum'
-            )
-        ])
-        fig.update_layout(
-            title=f"{g['name']}",
-            scene=dict(
-                xaxis_title=g["xlab"],
-                yaxis_title=g["ylab"],
-                zaxis_title=g["zlab"]
-            ),
-            height=650, margin=dict(l=20, r=20, t=60, b=20)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+# ----- UI -----
+group_sel = st.selectbox("Select 3D Plot Group", list(group_options.keys()))
+plots_sel = st.selectbox("Select 3D Plot", [g['label'] for g in group_options[group_sel]])
+plot_cfg = next(g for g in group_options[group_sel] if g['label'] == plots_sel)
+
+# ----- Generate Surface -----
+X, Y = np.meshgrid(plot_cfg["x"], plot_cfg["y"], indexing='ij')
+Z = plot_cfg["z_func"](X, Y)
+
+# ----- Plot -----
+fig = go.Figure(data=[go.Surface(
+    x=X, y=Y, z=Z,
+    colorscale='Viridis',
+    colorbar=dict(title=plot_cfg['z_label'])
+)])
+
+# Optimum Point Marker
+opt_x, opt_y, opt_z = plot_cfg["opt_point"]
+fig.add_trace(go.Scatter3d(
+    x=[opt_x], y=[opt_y], z=[opt_z],
+    mode="markers+text",
+    marker=dict(color="red", size=8, symbol="diamond"),
+    text=["Optimum"],
+    textposition="top center",
+    name="Optimum"
+))
+
+fig.update_layout(
+    scene=dict(
+        xaxis_title=f"X: {plot_cfg['x_label']}",
+        yaxis_title=f"Y: {plot_cfg['y_label']}",
+        zaxis_title=f"Z: {plot_cfg['z_label']}"
+    ),
+    title=f"{plots_sel}",
+    height=750,
+    margin=dict(l=30, r=30, b=30, t=80)
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
 
 
 st.markdown(
