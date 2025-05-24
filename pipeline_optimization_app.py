@@ -406,7 +406,7 @@ with tab3:
                     H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
                     eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
-                    pwr = (stn['rho'] * flow * 9.81 * H)/(3600.0*eff*0.95)
+                    pwr = (stn['rho'] * flow * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power.append(pwr)
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
@@ -418,7 +418,7 @@ with tab3:
                     H = (A*q**2 + B*q + C)
                     eff = (P*q**4 + Qc*q**3 + R*q**2 + S*q + T)
                     eff = max(0.01, eff/100)
-                    pwr = (stn['rho'] * q * 9.81 * H)/(3600.0*eff*0.95)
+                    pwr = (stn['rho'] * q * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power2.append(pwr)
                 fig_pwr2 = go.Figure()
                 fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
@@ -590,14 +590,14 @@ with tab6:
                 "x": ("Flow (m³/hr)", flow_range),
                 "y": ("Pump Speed (rpm)", speed_range),
                 "z": ("Power Cost (INR/day)", lambda X, Y: (
-                    (rho*X*9.81*((A*X**2+B*X+Cc)*(Y/DOL)**2))/(3600*0.95*(np.maximum(0.01, (P*(X*DOL/Y)**4+Qc*(X*DOL/Y)**3+R*(X*DOL/Y)**2+S*(X*DOL/Y)+T)/100)))*24*rate
+                    (rho*X*9.81*((A*X**2+B*X+Cc)*(Y/DOL)**2))/(3600*0.95*1000*(np.maximum(0.01, (P*(X*DOL/Y)**4+Qc*(X*DOL/Y)**3+R*(X*DOL/Y)**2+S*(X*DOL/Y)+T)/100)))*24*rate
                 )),
             },
             "Total Cost vs Flow vs DRA": {
                 "x": ("Flow (m³/hr)", flow_range),
                 "y": ("DRA (%)", dra_range),
                 "z": ("Total Cost (INR/day)", lambda X, Y: (
-                    (rho*X*9.81*((A*X**2+B*X+Cc)*(N_opt/DOL)**2))/(3600*0.95*(np.maximum(0.01, (P*(X*DOL/N_opt)**4+Qc*(X*DOL/N_opt)**3+R*(X*DOL/N_opt)**2+S*(X*DOL/N_opt)+T)/100)))*24*rate +
+                    (rho*X*9.81*((A*X**2+B*X+Cc)*(N_opt/DOL)**2))/(3600*0.95*1000*(np.maximum(0.01, (P*(X*DOL/N_opt)**4+Qc*(X*DOL/N_opt)**3+R*(X*DOL/N_opt)**2+S*(X*DOL/N_opt)+T)/100)))*24*rate +
                     (Y/4)*(X*1000*24/1e6)*RateDRA
                 )),
             },
