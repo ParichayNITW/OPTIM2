@@ -623,8 +623,7 @@ with tab6:
     # ---- Add more grouped plots as desired ----
 
     st.info(
-        "All 3D plots are grouped by their function for quick and intuitive analysis. "
-        "If you need more surfaces or grouped insights (such as DRA Cost, Pump Efficiency, etc.), let me know!"
+        "All 3D plots are grouped by their function.
     )
 
 
