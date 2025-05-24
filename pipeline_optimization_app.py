@@ -57,8 +57,10 @@ else:
 
 st.markdown("""
 <style>
-.section-title { font-size:1.2rem; font-weight:600; margin-top:1rem; color: var(--text-primary-color);}
-.summary-table td, .summary-table th {text-align: left !important;}
+.section-title {
+  font-size:1.2rem; font-weight:600; margin-top:1rem;
+  color: var(--text-primary-color);
+}
 </style>
 """, unsafe_allow_html=True)
 st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
@@ -104,6 +106,8 @@ with st.sidebar:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
+# ===== STATION INPUTS START =====
+
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -115,53 +119,67 @@ if 'stations' not in st.session_state:
     }]
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {idx}", expanded=True):
-        stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-        stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
-        stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
-        stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
-        if idx == 1:
-            stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
-        # For display, convert from meters (internal) to inches
-        D_in = st.number_input("Outer Diameter (in)", value=stn['D']/0.0254, format="%.3f", step=0.01, key=f"D{idx}")
-        t_in = st.number_input("Wall Thickness (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
-        
-        # Internally, always store in meters
-        stn['D'] = D_in * 0.0254
-        stn['t'] = t_in * 0.0254
-        stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
-        stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
-        stn['L'] = st.number_input("Length to next station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-        stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-        if stn['is_pump']:
-            stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                            index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-            if stn['power_type']=="Grid":
-                stn['rate'] = st.number_input("Electricity Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                stn['sfc'] = 0.0
+    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
+        # Three columns for quick side-by-side data entry
+        col1, col2, col3 = st.columns([1.5,1,1])
+        with col1:
+            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
+            stn['L'] = st.number_input("Length to next (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+            if idx == 1:
+                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+        with col2:
+            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
+            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+            stn['D'] = D_in * 0.0254
+            stn['t'] = t_in * 0.0254
+            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
+            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
+        with col3:
+            stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
+            stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
+            stn['max_pumps'] = st.number_input("Max Pumps", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+
+        # Tabs for advanced per-station inputs (minimal scroll)
+        tabs = st.tabs(["Pump", "Peaks"])
+        with tabs[0]:  # Pump tab
+            if stn['is_pump']:
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr{idx}")
+                with pcol2:
+                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                with pcol3:
+                    if stn['power_type']=="Grid":
+                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                        stn['sfc'] = 0.0
+                    else:
+                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                        stn['rate'] = 0.0
+                st.markdown("**Pump Curve Data:**")
+                st.write("Flow vs Head data (m³/hr, m)")
+                df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                st.write("Flow vs Efficiency data (m³/hr, %)")
+                df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                st.session_state[f"head_data_{idx}"] = df_head
+                st.session_state[f"eff_data_{idx}"] = df_eff
             else:
-                stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                stn['rate'] = 0.0
-            stn['max_pumps'] = st.number_input("Max Pumps Available", min_value=1, value=stn['max_pumps'], step=1, key=f"mpumps{idx}")
-            stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-            stn['DOL'] = st.number_input("Rated RPM (DOL)", value=stn['DOL'], key=f"dol{idx}")
-            stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=stn['max_dr'], key=f"mdr{idx}")
-            st.markdown("**Enter Pump Performance Data:**")
-            st.write("Flow vs Head data (m³/hr, m)")
-            df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-            df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-            st.write("Flow vs Efficiency data (m³/hr, %)")
-            df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-            df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-            st.session_state[f"head_data_{idx}"] = df_head
-            st.session_state[f"eff_data_{idx}"] = df_eff
+                st.info("Not a pumping station. No pump data required.")
+        with tabs[1]:  # Peaks tab
+            st.markdown("Intermediate Elevation Peaks (to next station):")
+            default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+            peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
+            st.session_state[f"peak_data_{idx}"] = peak_df
 
-        st.markdown("**Intermediate Elevation Peaks (to next station):**")
-        default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-        peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
-        st.session_state[f"peak_data_{idx}"] = peak_df
+# ===== STATION INPUTS END =====
 
-# Terminal
+# --------- Terminal Station Inputs ---------
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal", key="terminal_name")
