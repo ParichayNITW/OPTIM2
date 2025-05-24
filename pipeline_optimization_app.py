@@ -118,94 +118,41 @@ if 'stations' not in st.session_state:
         'max_dr': 0.0
     }]
 
-# ====== BULK STATION TABLE-BASED EDITOR (REPLACES THE INPUT LOOP) ======
+# ====== BULK STATION TABLE EDITING SECTION ======
+station_cols = [
+    "Name", "Elevation (m)", "Length to Next (km)",
+    "OD (in)", "Wall Thk (in)", "SMYS (psi)", "Roughness (m)",
+    "Density (kg/m³)", "Viscosity (cSt)", "Max Pumps",
+    "Available Suction Head (m)", "Max Drag Reduction (%)", "Is Pump"
+]
 
-# Unit toggle for diameter/thickness (applies to whole table)
-unit_options = {
-    "mm": 1.0,
-    "inches": 25.4
-}
-st.markdown("### 🚏 Pipeline Stations (Bulk Table Input)")
-col1, col2 = st.columns([2, 1])
-with col1:
-    station_unit = st.radio(
-        "Diameter/Thickness Units:", list(unit_options.keys()), horizontal=True, index=1
-    )
-with col2:
-    st.info("All diameters and wall thickness values below are in selected units.", icon="ℹ️")
+# 1. Initialize stations if missing
+if 'stations' not in st.session_state or not st.session_state['stations']:
+    st.session_state['stations'] = [dict(zip(station_cols, [
+        "Station 1", 0.0, 50.0, 28.0, 0.28, 52000, 0.00004, 850, 10.0, 1, 50.0, 0, False
+    ]))]
 
-# Default if not in session state (populate with sample data)
-if "station_table" not in st.session_state:
-    st.session_state.station_table = pd.DataFrame({
-        "Name": ["Station 1", "Station 2"],
-        "Elevation (m)": [0.0, 20.0],
-        "Diameter": [28.0, 28.0],         # in selected units
-        "Wall Thickness": [0.375, 0.375], # in selected units
-        "Length to Next (km)": [50.0, 40.0],
-        "Density (kg/m³)": [850.0, 850.0],
-        "Viscosity (cSt)": [10.0, 10.0],
-        "Is Pump?": [True, False],
-        "Power Source": ["Grid", ""],
-        "Rate (INR/kWh)": [9.0, 0.0],
-        "SFC (gm/bhp·hr)": [0.0, 0.0],
-        "Max Pumps": [2, 0],
-        "Min RPM": [1000, 0],
-        "DOL RPM": [1500, 0],
-        "Max DRA (%)": [30, 0]
-    })
+# 2. Load as DataFrame for table editing
+df = pd.DataFrame(st.session_state['stations'])
+df = df[station_cols]  # Ensures correct column order
 
-# Editable table for ALL stations (user can add/remove rows)
-df_stn = st.data_editor(
-    st.session_state.station_table,
+# 3. User can edit table
+st.markdown("### 🏭 Bulk Station Editor (click to edit cells; add/delete rows as needed)")
+edited = st.data_editor(
+    df, 
     num_rows="dynamic",
     column_config={
-        "Diameter": st.column_config.NumberColumn(f"Diameter ({station_unit})", step=0.1, min_value=1),
-        "Wall Thickness": st.column_config.NumberColumn(f"Wall Thickness ({station_unit})", step=0.01, min_value=0.01),
-        "Is Pump?": st.column_config.CheckboxColumn("Is Pump?"),
-        "Power Source": st.column_config.SelectboxColumn("Power Source", options=["Grid", "Diesel"], required=False),
+        "Is Pump": st.column_config.CheckboxColumn("Is Pump"),
+        "OD (in)": st.column_config.NumberColumn("OD (in)", min_value=2.0, max_value=64.0, step=0.01),
+        "Wall Thk (in)": st.column_config.NumberColumn("Wall Thk (in)", min_value=0.05, max_value=2.0, step=0.001),
+        "Max Pumps": st.column_config.NumberColumn("Max Pumps", min_value=1, max_value=20, step=1),
     },
-    use_container_width=True,
-    hide_index=True
+    use_container_width=True
 )
 
-# Convert diameter/thickness to meters for all calculations
-d_conv = unit_options[station_unit] / 1000.0 # to meters
-df_stn["D"] = df_stn["Diameter"] * d_conv
-df_stn["t"] = df_stn["Wall Thickness"] * d_conv
+# 4. Sync edited table back to session_state
+st.session_state['stations'] = edited.to_dict(orient='records')
 
-# Make session_state.stations as a list of dicts as before for backend compatibility
-st.session_state.stations = []
-for i, row in df_stn.iterrows():
-    st.session_state.stations.append({
-        'name': row["Name"],
-        'elev': row["Elevation (m)"],
-        'D': row["D"],
-        't': row["t"],
-        'SMYS': 52000.0,  # Add/modify as required
-        'rough': 0.00004, # Add/modify as required
-        'L': row["Length to Next (km)"],
-        'rho': row["Density (kg/m³)"],
-        'KV': row["Viscosity (cSt)"],
-        'is_pump': bool(row["Is Pump?"]),
-        'power_type': row["Power Source"] or "Grid",
-        'rate': row["Rate (INR/kWh)"],
-        'sfc': row["SFC (gm/bhp·hr)"],
-        'max_pumps': int(row["Max Pumps"]),
-        'MinRPM': int(row["Min RPM"]),
-        'DOL': int(row["DOL RPM"]),
-        'max_dr': float(row["Max DRA (%)"])
-    })
-
-# Show converted table for verification (optional)
-st.markdown("##### ⬇️ Converted for Calculations (SI Units)")
-show_cols = ["Name", "Elevation (m)", "D", "t", "Length to Next (km)", "Density (kg/m³)", "Viscosity (cSt)", "is_pump", "power_type", "rate", "sfc", "max_pumps", "MinRPM", "DOL", "max_dr"]
-df_show = pd.DataFrame(st.session_state.stations)[show_cols]
-df_show.rename(columns={"D":"OD (m)", "t":"Wall Thk (m)", "is_pump":"Is Pump?", "power_type":"Power Source"}, inplace=True)
-st.dataframe(df_show, use_container_width=True)
-
-st.session_state.station_table = df_stn.copy()  # Persist edits
-
-# (Continue with rest of your code...)
 
 
 # ===== STATION INPUTS END =====
