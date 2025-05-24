@@ -245,15 +245,6 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🧊 3D Analysis and Surface Plots"      
 ])
 
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
 # ---- Tab 1 ----
 with tab1:
     if "last_res" not in st.session_state:
