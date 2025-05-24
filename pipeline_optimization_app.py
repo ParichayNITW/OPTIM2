@@ -121,7 +121,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
         stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
         if idx == 1:
-        stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         # For display, convert from meters (internal) to inches
         D_in = st.number_input("Outer Diameter (in)", value=stn['D']/0.0254, format="%.3f", step=0.01, key=f"D{idx}")
         t_in = st.number_input("Wall Thickness (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
