@@ -118,42 +118,65 @@ if 'stations' not in st.session_state:
         'max_dr': 0.0
     }]
 
-# ====== BULK STATION TABLE EDITING SECTION ======
-station_cols = [
-    "Name", "Elevation (m)", "Length to Next (km)",
-    "OD (in)", "Wall Thk (in)", "SMYS (psi)", "Roughness (m)",
-    "Density (kg/m³)", "Viscosity (cSt)", "Max Pumps",
-    "Available Suction Head (m)", "Max Drag Reduction (%)", "Is Pump"
-]
+for idx, stn in enumerate(st.session_state.stations, start=1):
+    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
+        # Three columns for quick side-by-side data entry
+        col1, col2, col3 = st.columns([1.5,1,1])
+        with col1:
+            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
+            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
+            if idx == 1:
+                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+        with col2:
+            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
+            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+            stn['D'] = D_in * 0.0254
+            stn['t'] = t_in * 0.0254
+            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
+            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
+        with col3:
+            stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
+            stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
-# 1. Initialize stations if missing
-if 'stations' not in st.session_state or not st.session_state['stations']:
-    st.session_state['stations'] = [dict(zip(station_cols, [
-        "Station 1", 0.0, 50.0, 28.0, 0.28, 52000, 0.00004, 850, 10.0, 1, 50.0, 0, False
-    ]))]
-
-# 2. Load as DataFrame for table editing
-df = pd.DataFrame(st.session_state['stations'])
-df = df[station_cols]  # Ensures correct column order
-
-# 3. User can edit table
-st.markdown("### 🏭 Bulk Station Editor (click to edit cells; add/delete rows as needed)")
-edited = st.data_editor(
-    df, 
-    num_rows="dynamic",
-    column_config={
-        "Is Pump": st.column_config.CheckboxColumn("Is Pump"),
-        "OD (in)": st.column_config.NumberColumn("OD (in)", min_value=2.0, max_value=64.0, step=0.01),
-        "Wall Thk (in)": st.column_config.NumberColumn("Wall Thk (in)", min_value=0.05, max_value=2.0, step=0.001),
-        "Max Pumps": st.column_config.NumberColumn("Max Pumps", min_value=1, max_value=20, step=1),
-    },
-    use_container_width=True
-)
-
-# 4. Sync edited table back to session_state
-st.session_state['stations'] = edited.to_dict(orient='records')
-
-
+        # Tabs for advanced per-station inputs (minimal scroll)
+        tabs = st.tabs(["Pump", "Peaks"])
+        with tabs[0]:  # Pump tab
+            if stn['is_pump']:
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    
+                with pcol2:
+                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                with pcol3:
+                    if stn['power_type']=="Grid":
+                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                        stn['sfc'] = 0.0
+                    else:
+                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                        stn['rate'] = 0.0
+                st.markdown("**Pump Curve Data:**")
+                st.write("Flow vs Head data (m³/hr, m)")
+                df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                st.write("Flow vs Efficiency data (m³/hr, %)")
+                df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                st.session_state[f"head_data_{idx}"] = df_head
+                st.session_state[f"eff_data_{idx}"] = df_eff
+            else:
+                st.info("Not a pumping station. No pump data required.")
+        with tabs[1]:  # Peaks tab
+            st.markdown("Intermediate Elevation Peaks (to next station):")
+            default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+            peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
+            st.session_state[f"peak_data_{idx}"] = peak_df
 
 # ===== STATION INPUTS END =====
 
