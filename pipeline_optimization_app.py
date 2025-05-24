@@ -623,7 +623,7 @@ with tab6:
     # ---- Add more grouped plots as desired ----
 
     st.info(
-        "All 3D plots are grouped by their function.
+        "All 3D plots are grouped by their function."
     )
 
 
