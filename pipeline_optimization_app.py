@@ -140,7 +140,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with col3:
             stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
             stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
-            stn['max_pumps'] = st.number_input("Max Pumps", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
         # Tabs for advanced per-station inputs (minimal scroll)
         tabs = st.tabs(["Pump", "Peaks"])
