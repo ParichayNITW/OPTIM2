@@ -178,15 +178,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[f"peak_data_{idx}"] = peak_df
 
-
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
 # ===== STATION INPUTS END =====
 
 # --------- Terminal Station Inputs ---------
@@ -253,6 +244,15 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🔄 Pump-System",
     "🧊 3D Analysis and Surface Plots"      
 ])
+
+st.markdown(
+    """
+    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+    &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # ---- Tab 1 ----
 with tab1:
