@@ -513,136 +513,210 @@ with tab5:
 
 # --------------- Tab 6: 3D Plots -----------------
 with tab6:
-    # ---- Session State Key Checks (avoids KeyError) ----
-    if "last_res" not in st.session_state or not st.session_state["last_res"]:
-        st.warning("No optimization results found. Please run the optimization first.")
+    # --- Check state ---
+    if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
+        st.info("Please run optimization at least once to enable 3D analysis.")
         st.stop()
-    if "last_stations_data" not in st.session_state or not st.session_state["last_stations_data"]:
-        st.warning("No station data found. Please run the optimization first.")
-        st.stop()
-    res = st.session_state["last_res"]
+    last_res = st.session_state["last_res"]
     stations_data = st.session_state["last_stations_data"]
     FLOW = st.session_state.get("FLOW", 1000.0)
     RateDRA = st.session_state.get("RateDRA", 500.0)
-    # Identify first pump station
-    pump_idx = next((i for i, s in enumerate(stations_data) if s.get('is_pump', False)), None)
-    if pump_idx is None:
-        st.warning("No pump station found. 3D plots require at least one pumping station.")
-        st.stop()
-    stn = stations_data[pump_idx]
-    key = stn['name'].lower().replace(' ', '_')
-    # Optimum values from last solution
-    N_opt = res.get(f"speed_{key}", stn.get('DOL', 1500))
-    Q_opt = FLOW
-    NOP_opt = res.get(f"num_pumps_{key}", stn.get('max_pumps', 1))
-    DRA_opt = res.get(f"drag_reduction_{key}", 0.0)
-    DOL = stn.get('DOL', 1500)
-    MinRPM = stn.get('MinRPM', 1000)
+    Price_HSD = st.session_state.get("Price_HSD", 70.0)
+    key = stations_data[0]['name'].lower().replace(' ', '_')  # Focusing on Station 1 as example
+
+    # --- Extract optimum point ---
+    speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
+    dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
+    nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
+    flow_opt = FLOW
+
+    # --- Define delta ranges ---
+    delta_speed = 150
+    delta_dra = 10
+    delta_nop = 1
+    delta_flow = 150
+
+    # Define grid (clipping to physical limits)
+    N = 9
+    stn = stations_data[0]
+    N_min = int(stn.get('MinRPM', 1000))
+    N_max = int(stn.get('DOL', 1500))
+    DRA_max = int(stn.get('max_dr', 40))
     max_pumps = int(stn.get('max_pumps', 4))
-    max_dr = int(stn.get('max_dr', 40))
-    rho = stn.get('rho', 850.0)
-    rate = stn.get('rate', 9.0)
-    # Coefficients
-    A = res.get(f"coef_A_{key}", 0)
-    B = res.get(f"coef_B_{key}", 0)
-    Cc = res.get(f"coef_C_{key}", 0)
-    P = stn.get('P', 0)
-    Qc = stn.get('Q', 0)
-    R = stn.get('R', 0)
-    S = stn.get('S', 0)
-    T = stn.get('T', 0)
-    # Define surface parameter ranges centered around optimum
-    def grid_around(val, delta=0.2, steps=20, vmin=None, vmax=None, integer=False):
-        vmin = vmin if vmin is not None else max(0, val*(1-delta))
-        vmax = vmax if vmax is not None else val*(1+delta)
-        arr = np.linspace(vmin, vmax, steps)
-        return np.unique(arr.astype(int) if integer else arr)
-    # Parameter ranges
-    flow_range = grid_around(Q_opt, 0.2, 20, vmin=FLOW*0.5, vmax=FLOW*1.5)
-    speed_range = grid_around(N_opt, 0.15, 20, vmin=MinRPM, vmax=DOL)
-    nop_range = grid_around(NOP_opt, 0.5, 5, vmin=1, vmax=max_pumps, integer=True)
-    dra_range = grid_around(DRA_opt, 0.5, 8, vmin=0, vmax=max_dr)
-    # --- Plot GROUPS and their plots ---
-    plot_groups = {
+
+    speed_range = np.linspace(
+        max(N_min, speed_opt - delta_speed),
+        min(N_max, speed_opt + delta_speed),
+        N
+    )
+    dra_range = np.linspace(
+        max(0, dra_opt - delta_dra),
+        min(DRA_max, dra_opt + delta_dra),
+        N
+    )
+    nop_range = np.arange(
+        max(1, nopt_opt - delta_nop),
+        min(max_pumps, nopt_opt + delta_nop)+1
+    )
+    flow_range = np.linspace(
+        max(0.01, flow_opt - delta_flow),
+        flow_opt + delta_flow,
+        N
+    )
+
+    # --- Plot groups and options ---
+    groups = {
         "Pump Performance Surface Plots": {
-            "Head vs Flow vs Pump Speed": {
-                "x": ("Flow (m³/hr)", flow_range),
-                "y": ("Pump Speed (rpm)", speed_range),
-                "z": ("Head (m)", lambda X, Y: (A*X**2 + B*X + Cc)*(Y/DOL)**2),
-            },
-            "Efficiency vs Flow vs Pump Speed": {
-                "x": ("Flow (m³/hr)", flow_range),
-                "y": ("Pump Speed (rpm)", speed_range),
-                "z": ("Efficiency (%)", lambda X, Y: (
-                    P*(X*DOL/Y)**4 + Qc*(X*DOL/Y)**3 + R*(X*DOL/Y)**2 + S*(X*DOL/Y) + T
-                )),
-            },
+            "Head vs Flow vs Speed": {"x": flow_range, "y": speed_range, "z": "Head"},
+            "Efficiency vs Flow vs Speed": {"x": flow_range, "y": speed_range, "z": "Efficiency"},
         },
         "System Interaction Surface Plots": {
-            "System Head vs Flow vs DRA": {
-                "x": ("Flow (m³/hr)", flow_range),
-                "y": ("DRA (%)", dra_range),
-                "z": ("System Head (m)", lambda X, Y: stn['elev'] + 0.25/(np.log10(stn['rough']/(stn['D']-2*stn['t'])/3.7 + 5.74/((X/3600/(np.pi*(stn['D']-2*stn['t'])**2/4)*stn['D']-2*stn['t']/stn.get('KV', 10.0)*1e-6)**0.9))**2) * ((stn['L']*1000)/(stn['D']-2*stn['t'])) * ((X/3600/(np.pi*(stn['D']-2*stn['t'])**2/4))**2/(2*9.81))*(1-Y/100)),
-            },
+            "System Head vs Flow vs DRA": {"x": flow_range, "y": dra_range, "z": "SystemHead"},
         },
         "Cost Surface Plots": {
-            "Power Cost vs Flow vs Pump Speed": {
-                "x": ("Flow (m³/hr)", flow_range),
-                "y": ("Pump Speed (rpm)", speed_range),
-                "z": ("Power Cost (INR/day)", lambda X, Y: (
-                    (rho*X*9.81*((A*X**2+B*X+Cc)*(Y/DOL)**2))/(3600*0.95*1000*(np.maximum(0.01, (P*(X*DOL/Y)**4+Qc*(X*DOL/Y)**3+R*(X*DOL/Y)**2+S*(X*DOL/Y)+T)/100)))*24*rate
-                )),
-            },
-            "Total Cost vs Flow vs DRA": {
-                "x": ("Flow (m³/hr)", flow_range),
-                "y": ("DRA (%)", dra_range),
-                "z": ("Total Cost (INR/day)", lambda X, Y: (
-                    (rho*X*9.81*((A*X**2+B*X+Cc)*(N_opt/DOL)**2))/(3600*0.95*1000*(np.maximum(0.01, (P*(X*DOL/N_opt)**4+Qc*(X*DOL/N_opt)**3+R*(X*DOL/N_opt)**2+S*(X*DOL/N_opt)+T)/100)))*24*rate +
-                    (Y/4)*(X*1000*24/1e6)*RateDRA
-                )),
-            },
+            "Power Cost vs Speed vs DRA": {"x": speed_range, "y": dra_range, "z": "PowerCost"},
+            "Power Cost vs Flow vs Speed": {"x": flow_range, "y": speed_range, "z": "PowerCost"},
+            "Total Cost vs NOP vs DRA": {"x": nop_range, "y": dra_range, "z": "TotalCost"},
         }
     }
-    # User selection for group and plot
-    group = st.selectbox("Select 3D Plot Group", list(plot_groups.keys()))
-    plot_name = st.selectbox("Select Plot", list(plot_groups[group].keys()))
-    plot_def = plot_groups[group][plot_name]
-    # --- Create meshgrid for X, Y
-    X_label, X_vals = plot_def["x"]
-    Y_label, Y_vals = plot_def["y"]
-    Z_label, Z_fn = plot_def["z"]
-    X, Y = np.meshgrid(X_vals, Y_vals, indexing='ij')
-    Z = Z_fn(X, Y)
-    # --- Optimum marker
-    opt_x, opt_y = {
-        "Flow (m³/hr)": Q_opt,
-        "Pump Speed (rpm)": N_opt,
-        "DRA (%)": DRA_opt,
-    }.get(X_label, X_vals[len(X_vals)//2]), {
-        "Flow (m³/hr)": Q_opt,
-        "Pump Speed (rpm)": N_opt,
-        "DRA (%)": DRA_opt,
-    }.get(Y_label, Y_vals[len(Y_vals)//2])
-    # Plot surface
-    fig = go.Figure(data=[
-        go.Surface(x=X, y=Y, z=Z, colorscale='Viridis', colorbar=dict(title=Z_label)),
-        go.Scatter3d(
-            x=[opt_x], y=[opt_y], z=[Z_fn(np.array([[opt_x]]), np.array([[opt_y]]))[0,0]],
-            mode='markers+text', marker=dict(color='red', size=6),
-            text=["Optimum"], textposition="top right", name="Optimum Point"
-        )
-    ])
+
+    # --- User selection ---
+    col1, col2 = st.columns(2)
+    group = col1.selectbox("Plot Group", list(groups.keys()))
+    plot_opt = col2.selectbox("Plot Type", list(groups[group].keys()))
+    conf = groups[group][plot_opt]
+
+    # --- Prepare grids ---
+    Xv, Yv = np.meshgrid(conf['x'], conf['y'], indexing='ij')
+    Z = np.zeros_like(Xv, dtype=float)
+
+    # --- Retrieve pump coefficients ---
+    A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
+    P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
+    S = stn.get('S', 0); T = stn.get('T', 0)
+    DOL = float(stn.get('DOL', N_max))
+    rho = stn.get('rho', 850.0)
+    rate = stn.get('rate', 9.0)
+    g = 9.81
+
+    # --- Calculation helper functions ---
+    def get_head(q, n):
+        return (A*q**2 + B*q + Cc)*(n/DOL)**2
+    def get_eff(q, n):
+        q_adj = q * DOL/n if n > 0 else q
+        return (P*q_adj**4 + Qc*q_adj**3 + R*q_adj**2 + S*q_adj + T)
+    def get_power_cost(q, n, d, npump=1):
+        h = get_head(q, n)
+        eff = max(get_eff(q, n)/100, 0.01)
+        pwr = (rho*q*g*h*npump)/(3600.0*eff*0.95*1000)
+        return pwr*24*rate
+    def get_system_head(q, d):
+        d_inner = stn['D'] - 2*stn['t']
+        rough = stn['rough']
+        L_seg = stn['L']
+        v = q/3600.0/(np.pi*(d_inner**2)/4)
+        Re = v*d_inner/(stn['KV']*1e-6) if stn['KV'] > 0 else 0
+        if Re > 0:
+            f = 0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re**0.9))**2)
+        else:
+            f = 0.0
+        DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
+        return stn['elev'] + DH
+    def get_total_cost(q, n, d, npump):
+        pcost = get_power_cost(q, n, d, npump)
+        dracost = (d/4)*(q*1000.0*24.0/1e6)*RateDRA
+        return pcost + dracost
+
+    # --- Calculate surface ---
+    for i in range(Xv.shape[0]):
+        for j in range(Xv.shape[1]):
+            if plot_opt == "Head vs Flow vs Speed":
+                Z[i,j] = get_head(Xv[i,j], Yv[i,j])
+            elif plot_opt == "Efficiency vs Flow vs Speed":
+                Z[i,j] = get_eff(Xv[i,j], Yv[i,j])
+            elif plot_opt == "System Head vs Flow vs DRA":
+                Z[i,j] = get_system_head(Xv[i,j], Yv[i,j])
+            elif plot_opt == "Power Cost vs Speed vs DRA":
+                Z[i,j] = get_power_cost(flow_opt, Xv[i,j], Yv[i,j], nopt_opt)
+            elif plot_opt == "Power Cost vs Flow vs Speed":
+                Z[i,j] = get_power_cost(Xv[i,j], Yv[i,j], dra_opt, nopt_opt)
+            elif plot_opt == "Total Cost vs NOP vs DRA":
+                # For this plot, x axis is NOP, y is DRA, n is NOP
+                Z[i,j] = get_total_cost(flow_opt, speed_opt, Yv[i,j], int(Xv[i,j]))
+
+    # --- Axis Labels ---
+    axis_labels = {
+        "Flow": "X: Flow (m³/hr)",
+        "Speed": "Y: Pump Speed (rpm)",
+        "Head": "Z: Head (m)",
+        "Efficiency": "Z: Efficiency (%)",
+        "SystemHead": "Z: System Head (m)",
+        "PowerCost": "Z: Power Cost (INR/day)",
+        "DRA": "Y: DRA (%)",
+        "NOP": "X: No. of Pumps",
+        "TotalCost": "Z: Total Cost (INR/day)",
+    }
+    label_map = {
+        "Head vs Flow vs Speed": ["Flow", "Speed", "Head"],
+        "Efficiency vs Flow vs Speed": ["Flow", "Speed", "Efficiency"],
+        "System Head vs Flow vs DRA": ["Flow", "DRA", "SystemHead"],
+        "Power Cost vs Speed vs DRA": ["Speed", "DRA", "PowerCost"],
+        "Power Cost vs Flow vs Speed": ["Flow", "Speed", "PowerCost"],
+        "Total Cost vs NOP vs DRA": ["NOP", "DRA", "TotalCost"]
+    }
+    xlab, ylab, zlab = [axis_labels[l] for l in label_map[plot_opt]]
+
+    # --- Plot the 3D Surface ---
+    fig = go.Figure(data=[go.Surface(
+        x=conf['x'], y=conf['y'], z=Z.T, colorscale='Viridis', colorbar=dict(title=zlab)
+    )])
+
+    # --- Mark the optimum point ---
+    # Compute optimum Z value for this plot type:
+    if plot_opt == "Head vs Flow vs Speed":
+        opt_z = get_head(flow_opt, speed_opt)
+        opt_x, opt_y = flow_opt, speed_opt
+    elif plot_opt == "Efficiency vs Flow vs Speed":
+        opt_z = get_eff(flow_opt, speed_opt)
+        opt_x, opt_y = flow_opt, speed_opt
+    elif plot_opt == "System Head vs Flow vs DRA":
+        opt_z = get_system_head(flow_opt, dra_opt)
+        opt_x, opt_y = flow_opt, dra_opt
+    elif plot_opt == "Power Cost vs Speed vs DRA":
+        opt_z = get_power_cost(flow_opt, speed_opt, dra_opt, nopt_opt)
+        opt_x, opt_y = speed_opt, dra_opt
+    elif plot_opt == "Power Cost vs Flow vs Speed":
+        opt_z = get_power_cost(flow_opt, speed_opt, dra_opt, nopt_opt)
+        opt_x, opt_y = flow_opt, speed_opt
+    elif plot_opt == "Total Cost vs NOP vs DRA":
+        opt_z = get_total_cost(flow_opt, speed_opt, dra_opt, nopt_opt)
+        opt_x, opt_y = nopt_opt, dra_opt
+    else:
+        opt_z, opt_x, opt_y = 0, 0, 0
+
+    fig.add_trace(go.Scatter3d(
+        x=[opt_x], y=[opt_y], z=[opt_z],
+        mode='markers+text',
+        marker=dict(size=7, color='red', symbol='diamond'),
+        text=["Optimum"],
+        textposition="top center",
+        name="Optimum"
+    ))
+
     fig.update_layout(
-        title=f"3D Surface: {Z_label} vs {X_label} vs {Y_label}",
         scene=dict(
-            xaxis_title=f"X: {X_label}",
-            yaxis_title=f"Y: {Y_label}",
-            zaxis_title=f"Z: {Z_label}",
+            xaxis_title=xlab,
+            yaxis_title=ylab,
+            zaxis_title=zlab
         ),
-        height=800,
-        margin=dict(l=30, r=30, b=30, t=80),
+        title=f"{plot_opt} (centered at optimum)",
+        height=750,
+        margin=dict(l=30, r=30, b=30, t=80)
     )
+
     st.plotly_chart(fig, use_container_width=True)
+    st.caption("Surface centered at the optimum point (marked in red). Only a small region (+/- delta) is shown for clarity and hydraulic relevance.")
+
 
 
 
