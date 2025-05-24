@@ -6,21 +6,17 @@ import plotly.express as px
 import plotly.graph_objects as go
 from math import pi
 import hashlib
-import uuid
-import json
-from plotly.colors import qualitative
 
-palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
+# --- CONFIG ---
+palette = [c for c in px.colors.qualitative.Plotly if 'yellow' not in c.lower()]
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
-users = {
-    "parichay_das": hash_pwd("heteroscedasticity")
-}
-
+# --- DUMMY AUTH ---
+users = {"parichay_das": hash_pwd("heteroscedasticity")}
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -35,14 +31,7 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optimizer v1.1.1. Developed by Parichay Das. All rights reserved.
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.markdown("<div style='text-align:center;color:gray;margin-top:2em;font-size:0.9em;'>&copy; 2025 Pipeline Optimizer v1.1.1. Developed by Parichay Das.</div>", unsafe_allow_html=True)
         st.stop()
     with st.sidebar:
         if st.button("Logout"):
@@ -50,22 +39,34 @@ def check_login():
             st.rerun()
 check_login()
 
-if 'NEOS_EMAIL' in st.secrets:
-    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
-else:
-    st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
+# --- FAKE DATA for DEMO (Replace with your backend integration!) ---
+if "last_res" not in st.session_state:
+    st.session_state["last_res"] = {
+        "power_cost_haldia": 267499.25,
+        "dra_cost_haldia": 1000,
+        "num_pumps_haldia": 2,
+        "speed_haldia": 1480,
+        "efficiency_haldia": 82.52,
+        "reynolds_haldia": 1.13e5,
+        "head_loss_haldia": 10.88,
+        "velocity_haldia": 2.34,
+        "residual_head_haldia": 54.12,
+        "sdh_haldia": 64.5,
+        "drag_reduction_haldia": 12.0,
+        "total_cost": 267499.25 + 1000
+    }
+    st.session_state["last_stations_data"] = [{
+        "name": "Haldia",
+        "A": -2e-4, "B": 0.6, "C": 42, "P": -1e-11, "Q": 3e-8, "R": -3e-5, "S": 0.11, "T": 65,
+        "DOL": 1500, "MinRPM": 1200, "max_dr": 40, "max_pumps": 4, "D": 0.7, "t": 0.008, "rough": 0.000045,
+        "L": 100, "KV": 3.2, "elev": 10, "rho": 870, "rate": 9.0
+    }]
+    st.session_state["last_term_data"] = {"name": "Barauni", "elev": 6.0}
+    st.session_state["FLOW"] = 1350.0
+    st.session_state["RateDRA"] = 340.0
+    st.session_state["Price_HSD"] = 87.0
 
-st.markdown("""
-<style>
-.section-title { font-size:1.2rem; font-weight:600; margin-top:1rem; color: var(--text-primary-color);}
-.summary-table td, .summary-table th {text-align: left !important;}
-</style>
-""", unsafe_allow_html=True)
-st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
-
-# ... [sidebar and input setup code here, unchanged for brevity, see previous code] ...
-
-# ---------- TABS -----------
+# --- TABS ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
@@ -75,88 +76,108 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🧊 3D Analysis and Surface Plots"
 ])
 
-# ---- Tab 1 ----
+# ------- TAB 1: Summary -------
 with tab1:
-    if "last_res" not in st.session_state:
-        st.info("Please run optimization.")
-    else:
-        res = st.session_state["last_res"]
-        stations_data = st.session_state["last_stations_data"]
-        terminal_name = st.session_state["last_term_data"]["name"]
-        names = [s['name'] for s in stations_data] + [terminal_name]
-        params = [
-            "Power+Fuel Cost", "DRA Cost", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
-            "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "DRA (%)"
+    res = st.session_state["last_res"]
+    stations_data = st.session_state["last_stations_data"]
+    terminal_name = st.session_state["last_term_data"]["name"]
+    names = [s['name'] for s in stations_data] + [terminal_name]
+    params = [
+        "Power+Fuel Cost", "DRA Cost", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
+        "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "DRA (%)"
+    ]
+    summary = {"Parameters": params}
+    for nm in names:
+        key = nm.lower().replace(' ','_')
+        summary[nm] = [
+            res.get(f"power_cost_{key}",0.0),
+            res.get(f"dra_cost_{key}",0.0),
+            int(res.get(f"num_pumps_{key}",0)),
+            res.get(f"speed_{key}",0.0),
+            res.get(f"efficiency_{key}",0.0),
+            res.get(f"reynolds_{key}",0.0),
+            res.get(f"head_loss_{key}",0.0),
+            res.get(f"velocity_{key}",0.0),
+            res.get(f"residual_head_{key}",0.0),
+            res.get(f"sdh_{key}",0.0),
+            res.get(f"drag_reduction_{key}",0.0)
         ]
-        summary = {"Parameters": params}
-        for nm in names:
-            key = nm.lower().replace(' ','_')
-            summary[nm] = [
-                res.get(f"power_cost_{key}",0.0),
-                res.get(f"dra_cost_{key}",0.0),
-                int(res.get(f"num_pumps_{key}",0)),
-                res.get(f"speed_{key}",0.0),
-                res.get(f"efficiency_{key}",0.0),
-                res.get(f"reynolds_{key}",0.0),
-                res.get(f"head_loss_{key}",0.0),
-                res.get(f"velocity_{key}",0.0),
-                res.get(f"residual_head_{key}",0.0),
-                res.get(f"sdh_{key}",0.0),
-                res.get(f"drag_reduction_{key}",0.0)
-            ]
-        df_sum = pd.DataFrame(summary)
-        # Remove index column, format decimals, left align all
-        fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
-        fmt["No. of Pumps"] = "{:.0f}"
-        fmt["Pump Speed (rpm)"] = "{:.0f}"
-        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-        styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-        st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-        # Show summary below the table
-        st.markdown(
-            f"""<br>
-            <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {res.get('total_cost', 0):,.2f} INR/day<br>
-            <b>No. of operating Pumps:</b> {int(res.get('num_pumps_'+names[0].lower().replace(' ','_'),0))}<br>
-            <b>Average Pump Efficiency:</b> {res.get('efficiency_'+names[0].lower().replace(' ','_'),0.0):.2f} %<br>
-            <b>Average Pump Speed:</b> {res.get('speed_'+names[0].lower().replace(' ','_'),0.0):.0f} rpm</div>
-            """,
-            unsafe_allow_html=True
-        )
+    df_sum = pd.DataFrame(summary)
+    # Formatting, align left, two decimals except pumps/speed
+    fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
+    fmt["No. of Pumps"] = "{:.0f}"; fmt["Pump Speed (rpm)"] = "{:.0f}"
+    st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+    styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+    st.markdown(
+        f"""<br>
+        <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {res.get('total_cost', 0):,.2f} INR/day<br>
+        <b>No. of operating Pumps:</b> {int(res.get('num_pumps_haldia',0))}<br>
+        <b>Average Pump Efficiency:</b> {res.get('efficiency_haldia',0.0):.2f} %<br>
+        <b>Average Pump Speed:</b> {res.get('speed_haldia',0.0):.0f} rpm</div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# ---- Tab 2 ----
+# ------- TAB 2: Cost Breakdown -------
 with tab2:
-    if "last_res" not in st.session_state:
-        st.info("Please run optimization.")
-    else:
-        res = st.session_state["last_res"]
-        stations_data = st.session_state["last_stations_data"]
-        df_cost = pd.DataFrame({
-            "Station": [s['name'] for s in stations_data],
-            "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
-            "DRA":       [res.get(f"dra_cost_{s['name'].lower().replace(' ','_')}",0)    for s in stations_data]
-        })
-        df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
-        fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown")
-        st.markdown("<div class='section-title'>Cost Breakdown</div>", unsafe_allow_html=True)
-        st.plotly_chart(fig_pie, use_container_width=True)
-        st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
+    res = st.session_state["last_res"]
+    stations_data = st.session_state["last_stations_data"]
+    df_cost = pd.DataFrame({
+        "Station": [s['name'] for s in stations_data],
+        "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
+        "DRA":       [res.get(f"dra_cost_{s['name'].lower().replace(' ','_')}",0)    for s in stations_data]
+    })
+    df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
+    fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown")
+    st.markdown("<div class='section-title'>Cost Breakdown</div>", unsafe_allow_html=True)
+    st.plotly_chart(fig_pie, use_container_width=True)
+    st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
 
-# ---- Tab 3, 4, 5 ---- [Keep as per your provided latest code; only small tweaks]
-# ... [Tab 3-5 code not repeated for brevity, see your last working version] ...
+# ------- TAB 3: Performance (Demo, customize as needed) -------
+with tab3:
+    st.header("Performance")
+    # Example: Power vs Flow
+    flows = np.linspace(100, 2000, 20)
+    power = np.maximum(700 + (flows-800)*0.5, 0)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=flows, y=power, mode='lines+markers', name='Power'))
+    fig.update_layout(title="Power vs Flow: Haldia", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
+    st.plotly_chart(fig, use_container_width=True)
 
-# --------------- Tab 6: 3D Plots -----------------
+# ------- TAB 4: System Curves (Demo) -------
+with tab4:
+    st.header("System Curves")
+    # Example system curve
+    flows = np.linspace(100, 2000, 20)
+    system_head = 50 + 0.01*(flows-100)**2
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=flows, y=system_head, mode='lines+markers', name='System Head'))
+    fig.update_layout(title="System Head vs Flow", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
+    st.plotly_chart(fig, use_container_width=True)
+
+# ------- TAB 5: Pump-System Interaction (Demo) -------
+with tab5:
+    st.header("Pump-System Interaction")
+    # Dummy example
+    flows = np.linspace(100, 2000, 20)
+    pump_head = 90 - 0.02*(flows-900)
+    system_head = 50 + 0.01*(flows-100)**2
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=flows, y=pump_head, mode='lines', name='Pump Head'))
+    fig.add_trace(go.Scatter(x=flows, y=system_head, mode='lines', name='System Head'))
+    fig.update_layout(title="Pump & System Head vs Flow", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
+    st.plotly_chart(fig, use_container_width=True)
+
+# ------- TAB 6: 3D Analysis and Surface Plots -------
 with tab6:
-    if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
-        st.info("Please run optimization at least once to enable 3D analysis.")
-        st.stop()
     last_res = st.session_state["last_res"]
     stations_data = st.session_state["last_stations_data"]
-    FLOW = st.session_state.get("FLOW", 1000.0)
-    RateDRA = st.session_state.get("RateDRA", 500.0)
-    Price_HSD = st.session_state.get("Price_HSD", 70.0)
-    key = stations_data[0]['name'].lower().replace(' ', '_')  # Focusing on Station 1
-
+    FLOW = st.session_state["FLOW"]
+    RateDRA = st.session_state["RateDRA"]
+    Price_HSD = st.session_state["Price_HSD"]
+    key = stations_data[0]['name'].lower().replace(' ', '_')
     speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
     dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
     nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
@@ -286,37 +307,22 @@ with tab6:
         opt_z = get_power_cost(flow_opt, speed_opt, dra_opt, nopt_opt); opt_x, opt_y = flow_opt, speed_opt
     elif plot_opt == "Total Cost vs NOP vs DRA":
         opt_z = get_total_cost(flow_opt, speed_opt, dra_opt, nopt_opt); opt_x, opt_y = nopt_opt, dra_opt
-    else:
-        opt_z, opt_x, opt_y = 0, 0, 0
     fig.add_trace(go.Scatter3d(
-        x=[opt_x], y=[opt_y], z=[opt_z],
-        mode='markers+text',
-        marker=dict(size=7, color='red', symbol='diamond'),
-        text=["Optimum"],
-        textposition="top center",
-        name="Optimum"
+        x=[opt_x], y=[opt_y], z=[opt_z], mode="markers+text", marker=dict(size=8, color='red'),
+        text=["Optimum"], textposition="top center", name="Optimum"
     ))
     fig.update_layout(
         scene=dict(
             xaxis_title=xlab,
             yaxis_title=ylab,
-            zaxis_title=zlab
+            zaxis_title=zlab,
         ),
-        title=f"{plot_opt}",
-        height=750,
-        margin=dict(l=30, r=30, b=30, t=80)
+        title=f"<b>{plot_opt}</b>",
+        margin=dict(l=0, r=0, t=60, b=20),
+        height=650
     )
     st.plotly_chart(fig, use_container_width=True)
     st.markdown(
-        "<div style='text-align:center;margin-top:10px;'>Surface centered at the optimum point (marked in red). Only a small region (+/- delta) is shown for clarity and hydraulic relevance.</div>",
+        "<div style='text-align:center;font-size:1.0em;margin-top:10px;'>Surface shown for a small region (+/- delta) from the optimum point (marked in red) for clarity and hydraulic relevance.</div>",
         unsafe_allow_html=True
     )
-
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optimizer v1.1.1. Developed by Parichay Das. All rights reserved.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
