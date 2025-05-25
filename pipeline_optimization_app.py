@@ -10,17 +10,59 @@ import uuid
 import json
 from plotly.colors import qualitative
 
+# ==== THEME & BRANDING ====
+OPTIMA_COLOR = "#224B8B"
+ACCENT_COLOR = "#1BA672"
+LIGHT_BG = "#f7fafd"
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
-st.set_page_config(page_title="Pipeline Optimization", layout="wide")
+st.set_page_config(page_title="Pipeline Optima", layout="wide")
 
-def hash_pwd(pwd):
-    return hashlib.sha256(pwd.encode()).hexdigest()
+st.markdown(f"""
+<style>
+body {{ background-color: {LIGHT_BG}; }}
+[data-testid="stSidebar"] > div:first-child {{
+    background: linear-gradient(135deg, {OPTIMA_COLOR} 80%, #fff 100%);
+}}
+h1, .app-title {{
+    color: {OPTIMA_COLOR}; font-weight: bold; margin-bottom: 0.1em;
+}}
+.section-title {{
+    font-size:1.2rem; font-weight:600; margin-top:1rem; color: {OPTIMA_COLOR};
+}}
+.card {{
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px 0 #ddd;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 1.0rem;
+    border: 1.5px solid #e2e7f0;
+}}
+.stButton button, .stDownloadButton button {{
+    border-radius: 6px !important;
+    min-width: 130px;
+    font-weight: 600;
+}}
+.footer {{
+    text-align: center; color: gray; margin-top: 2em; font-size: 0.92em;
+}}
+.centered-caption {{
+    text-align:center;font-size:0.95em;margin-top:12px;color:#7c8292;
+}}
+</style>
+""", unsafe_allow_html=True)
 
-users = {
-    "parichay_das": hash_pwd("heteroscedasticity")
-}
+# ==== LOGO AND TITLE ====
+st.markdown(
+    f'<div style="display:flex; align-items:center; gap:12px">'
+    f'<img src="https://img.icons8.com/color/96/pipeline.png" height="54" style="margin-bottom:-8px;" />'
+    f'<span class="app-title" style="font-size:2.0rem;">Pipeline Optima</span></div>',
+    unsafe_allow_html=True
+)
 
+# ==== LOGIN ====
+def hash_pwd(pwd): return hashlib.sha256(pwd.encode()).hexdigest()
+users = {"parichay_das": hash_pwd("heteroscedasticity")}
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -35,14 +77,7 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.markdown('<div class="footer">&copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.</div>', unsafe_allow_html=True)
         st.stop()
     with st.sidebar:
         if st.button("Logout"):
@@ -55,59 +90,53 @@ if 'NEOS_EMAIL' in st.secrets:
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-st.markdown("""
-<style>
-.section-title {
-  font-size:1.2rem; font-weight:600; margin-top:1rem;
-  color: var(--text-primary-color);
-}
-</style>
-""", unsafe_allow_html=True)
-st.markdown("<h1>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</h1>", unsafe_allow_html=True)
+# ==== CASE MANAGEMENT ====
+def save_case():
+    to_save = {
+        "stations": st.session_state.get("stations", []),
+        "terminal_name": st.session_state.get("terminal_name", "Terminal"),
+        "terminal_elev": st.session_state.get("terminal_elev", 0.0),
+        "terminal_head": st.session_state.get("terminal_head", 50.0),
+        "FLOW": st.session_state.get("FLOW", 1000.0),
+        "RateDRA": st.session_state.get("RateDRA", 500.0),
+        "Price_HSD": st.session_state.get("Price_HSD", 70.0),
+    }
+    return json.dumps(to_save, indent=2)
 
-def get_input_fingerprint():
-    return hashlib.md5(json.dumps({
-        "stations": st.session_state.get('stations', []),
-        "terminal": {
-            "name": st.session_state.get('terminal_name', 'Terminal'),
-            "elev": st.session_state.get('terminal_elev', 0.0),
-            "min_residual": st.session_state.get('terminal_head', 50.0),
-        },
-        "FLOW": st.session_state.get('FLOW', 1000.0),
-        "RateDRA": st.session_state.get('RateDRA', 500.0),
-        "Price_HSD": st.session_state.get('Price_HSD', 70.0)
-    }, sort_keys=True, default=str).encode()).hexdigest()
+def load_case(file):
+    to_load = json.load(file)
+    st.session_state["stations"] = to_load["stations"]
+    st.session_state["terminal_name"] = to_load["terminal_name"]
+    st.session_state["terminal_elev"] = to_load["terminal_elev"]
+    st.session_state["terminal_head"] = to_load["terminal_head"]
+    st.session_state["FLOW"] = to_load["FLOW"]
+    st.session_state["RateDRA"] = to_load["RateDRA"]
+    st.session_state["Price_HSD"] = to_load["Price_HSD"]
+    st.success("Case loaded! All data is restored.")
 
-# ----- SIDEBAR -----
+# ==== SIDEBAR ====
 with st.sidebar:
+    st.markdown("### Case Management")
+    colx, coly = st.columns(2)
+    with colx:
+        st.download_button("💾 Save Case", save_case(), file_name="pipeline_case.json", mime="application/json", key="savecase")
+    with coly:
+        case_file = st.file_uploader("Load Case", type=["json"], key="loadcase")
+        if case_file:
+            load_case(case_file)
+    st.divider()
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
-        RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
-        Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
+        FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
+        RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
+        Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
         st.session_state["FLOW"] = FLOW
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
+    st.divider()
+    st.markdown('<div class="footer">&copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.</div>', unsafe_allow_html=True)
 
-    st.subheader("Stations")
-    add_col, rem_col = st.columns(2)
-    if add_col.button("➕ Add Station"):
-        n = len(st.session_state.get('stations',[])) + 1
-        default = {
-            'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-            'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0
-        }
-        st.session_state.stations.append(default)
-    if rem_col.button("🗑️ Remove Station"):
-        if st.session_state.get('stations'):
-            st.session_state.stations.pop()
-
-# ===== STATION INPUTS START =====
-
+# ==== INIT ====
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -115,77 +144,110 @@ if 'stations' not in st.session_state:
         'min_residual': 50.0, 'is_pump': False,
         'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
         'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-        'max_dr': 0.0
+        'max_dr': 0.0, 'rho': 850.0, 'KV': 10.0
     }]
 
-for idx, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
-        # Three columns for quick side-by-side data entry
-        col1, col2, col3 = st.columns([1.5,1,1])
-        with col1:
-            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
-            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
-            if idx == 1:
-                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
-        with col2:
-            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
-            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
-            stn['D'] = D_in * 0.0254
-            stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
-            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
-        with col3:
-            stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
-            stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
-            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+# ==== STATION INPUTS ====
+input_mode = st.radio("Station Input Mode", ["Form", "Bulk Table"], horizontal=True, index=0)
+if input_mode == "Bulk Table":
+    st.markdown('<div class="card"><span class="section-title">Bulk Station Entry</span>', unsafe_allow_html=True)
+    df = pd.DataFrame(st.session_state["stations"])
+    use_inch = st.toggle("Diameter/Thickness in inches", value=True)
+    if use_inch:
+        df["D"] = df["D"] / 0.0254
+        df["t"] = df["t"] / 0.0254
+    edited = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    if use_inch:
+        edited["D"] = edited["D"] * 0.0254
+        edited["t"] = edited["t"] * 0.0254
+    st.session_state["stations"] = edited.to_dict("records")
+    st.markdown('</div>', unsafe_allow_html=True)
+else:
+    for idx, stn in enumerate(st.session_state.stations, start=1):
+        with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            col1, col2, col3 = st.columns([1.5,1,1])
+            with col1:
+                stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+                stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+                stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
+                stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+                stn['max_dr'] = st.number_input("Max Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
+                if idx == 1:
+                    stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            with col2:
+                D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
+                t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+                stn['D'] = D_in * 0.0254
+                stn['t'] = t_in * 0.0254
+                stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
+                stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
+            with col3:
+                stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
+                stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
+            tabs = st.tabs(["Pump", "Peaks"])
+            with tabs[0]:  # Pump tab
+                if stn['is_pump']:
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    with pcol1:
+                        stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                        index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    with pcol2:
+                        stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                        stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                    with pcol3:
+                        if stn['power_type']=="Grid":
+                            stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                            stn['sfc'] = 0.0
+                        else:
+                            stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                            stn['rate'] = 0.0
+                    stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+                    st.markdown("**Pump Curve Data:**")
+                    st.write("Flow vs Head data (m³/hr, m)")
+                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                    st.write("Flow vs Efficiency data (m³/hr, %)")
+                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                    st.session_state[f"head_data_{idx}"] = df_head
+                    st.session_state[f"eff_data_{idx}"] = df_eff
+                else:
+                    st.info("Not a pumping station. No pump data required.")
+            with tabs[1]:
+                st.markdown("Intermediate Elevation Peaks (to next station):")
+                default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+                peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
+                st.session_state[f"peak_data_{idx}"] = peak_df
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # Tabs for advanced per-station inputs (minimal scroll)
-        tabs = st.tabs(["Pump", "Peaks"])
-        with tabs[0]:  # Pump tab
-            if stn['is_pump']:
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                    
-                with pcol2:
-                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                with pcol3:
-                    if stn['power_type']=="Grid":
-                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                        stn['sfc'] = 0.0
-                    else:
-                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                        stn['rate'] = 0.0
-                st.markdown("**Pump Curve Data:**")
-                st.write("Flow vs Head data (m³/hr, m)")
-                df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.write("Flow vs Efficiency data (m³/hr, %)")
-                df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[f"head_data_{idx}"] = df_head
-                st.session_state[f"eff_data_{idx}"] = df_eff
-            else:
-                st.info("Not a pumping station. No pump data required.")
-        with tabs[1]:  # Peaks tab
-            st.markdown("Intermediate Elevation Peaks (to next station):")
-            default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-            peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
-            st.session_state[f"peak_data_{idx}"] = peak_df
-
-# ===== STATION INPUTS END =====
+# Station Add/Remove Buttons
+add_col, rem_col = st.columns(2)
+if add_col.button("➕ Add Station"):
+    n = len(st.session_state.get('stations',[])) + 1
+    default = {
+        'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+        'min_residual': 50.0, 'is_pump': False,
+        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+        'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
+        'max_dr': 0.0, 'rho': 850.0, 'KV': 10.0
+    }
+    st.session_state.stations.append(default)
+if rem_col.button("🗑️ Remove Station"):
+    if st.session_state.get('stations'):
+        st.session_state.stations.pop()
 
 # --------- Terminal Station Inputs ---------
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
-terminal_name = st.text_input("Name", value="Terminal", key="terminal_name")
-terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1, key="terminal_elev")
-terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.0, key="terminal_head")
+terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name", "Terminal"), key="terminal_name")
+terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev", 0.0), step=0.1, key="terminal_elev")
+terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head", 50.0), step=1.0, key="terminal_head")
+
+# At this point, add the rest of your tabs, solver, report generation, and all remaining features.
+st.markdown('<div class="footer">&copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.</div>', unsafe_allow_html=True)
+
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD):
     import pipeline_model
