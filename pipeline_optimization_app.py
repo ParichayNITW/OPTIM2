@@ -9,8 +9,27 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
+import glob
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
+
+def load_dra_curves():
+    csv_files = glob.glob("*cst.csv")
+    dra_data = []
+    for file in csv_files:
+        vis = float(file.split()[0])  # '10' from '10 cst.csv'
+        df = pd.read_csv(file)
+        df["Viscosity"] = vis
+        dra_data.append(df)
+    if dra_data:
+        dra_curves_df = pd.concat(dra_data, ignore_index=True)
+        return dra_curves_df
+    else:
+        return None
+
+DRA_CURVE_DF = load_dra_curves()
+
+
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
 
