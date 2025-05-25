@@ -75,7 +75,28 @@ def _ppm_from_df(df, target_dr):
         return np.interp(target_dr, x, y)
 
 
-st.set_page_config(page_title="Pipeline Optimization", layout="wide")
+st.set_page_config(page_title="Pipeline Optima", layout="wide")
+
+# App Name at Top
+st.markdown(
+    """
+    <div style='
+        text-align: center;
+        font-size: 2.3rem;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        color: #005ca6;
+        margin-bottom: 0.1em;
+        margin-top: 0.2em;
+        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
+        '>
+        Pipeline Optima
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+st.markdown("<hr style='margin-top:0; margin-bottom:1.5em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
+
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
