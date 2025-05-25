@@ -339,9 +339,18 @@ with tab1:
         
         for nm in names:
             key = nm.lower().replace(' ','_')
+            # DRA cost: Only for stations, not terminal
+            if key in station_ppm:
+                dra_cost = (
+                    station_ppm[key]
+                    * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
+                    * st.session_state["RateDRA"]
+                )
+            else:
+                dra_cost = 0.0
             summary[nm] = [
                 res.get(f"power_cost_{key}",0.0),
-                res.get(f"dra_cost_{key}",0.0),
+                dra_cost,
                 int(res.get(f"num_pumps_{key}",0)),
                 res.get(f"speed_{key}",0.0),
                 res.get(f"efficiency_{key}",0.0),
@@ -352,6 +361,7 @@ with tab1:
                 res.get(f"sdh_{key}",0.0),
                 res.get(f"drag_reduction_{key}",0.0)
             ]
+
         df_sum = pd.DataFrame(summary)
         # Remove index column, format decimals, left align all
         fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
@@ -387,7 +397,12 @@ with tab2:
         df_cost = pd.DataFrame({
             "Station": [s['name'] for s in stations_data],
             "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
-            "DRA":       [res.get(f"dra_cost_{s['name'].lower().replace(' ','_')}",0)    for s in stations_data]
+            "DRA": [
+                station_ppm.get(s['name'].lower().replace(' ','_'), 0.0)
+                * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
+                * st.session_state["RateDRA"]
+                for s in stations_data
+            ]
         })
         df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
         fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown")
