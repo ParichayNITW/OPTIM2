@@ -299,13 +299,14 @@ if run:
         st.session_state["last_input_fingerprint"] = get_input_fingerprint()
 
 # ---------- TABS -----------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
     "⚙️ Performance", 
     "🌀 System Curves", 
     "🔄 Pump-System",
-    "🧊 3D Analysis and Surface Plots"      
+    "🧪 DRA Curves",                   
+    "🧊 3D Analysis and Surface Plots" 
 ])
 
 # ---- Tab 1 ----
@@ -318,7 +319,7 @@ with tab1:
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
         params = [
-            "Power+Fuel Cost", "DRA Cost", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
+            "Power+Fuel Cost", "DRA Cost", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
             "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "DRA (%)"
         ]
         summary = {"Parameters": params}
@@ -351,6 +352,7 @@ with tab1:
             summary[nm] = [
                 res.get(f"power_cost_{key}",0.0),
                 dra_cost,
+                station_ppm.get(key, 0.0),
                 int(res.get(f"num_pumps_{key}",0)),
                 res.get(f"speed_{key}",0.0),
                 res.get(f"efficiency_{key}",0.0),
@@ -648,8 +650,77 @@ with tab5:
             st.plotly_chart(fig_int, use_container_width=True, key=f"interaction_{i}_{key}_{uuid.uuid4().hex[:6]}")
 
 
-# --------------- Tab 6: 3D Plots -----------------
+
+# ---- Tab 6: DRA Curves ----
 with tab6:
+    if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
+        st.info("Please run optimization first to analyze DRA curves.")
+        st.stop()
+    res = st.session_state["last_res"]
+    stations_data = st.session_state["last_stations_data"]
+
+    st.markdown("<div class='section-title'>DRA Curve (PPM vs %Drag Reduction) for Each Station</div>", unsafe_allow_html=True)
+
+    for idx, stn in enumerate(stations_data, start=1):
+        key = stn['name'].lower().replace(' ', '_')
+        dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+        if dr_opt > 0:
+            viscosity = stn['KV']
+            cst_list = sorted(DRA_CURVE_DATA.keys())
+            # Use interpolation logic as in get_ppm_for_dr
+            if viscosity <= cst_list[0]:
+                df_curve = DRA_CURVE_DATA[cst_list[0]]
+                curve_label = f"{cst_list[0]} cSt curve"
+                percent_dr = df_curve['%Drag Reduction'].values
+                ppm_vals = df_curve['PPM'].values
+            elif viscosity >= cst_list[-1]:
+                df_curve = DRA_CURVE_DATA[cst_list[-1]]
+                curve_label = f"{cst_list[-1]} cSt curve"
+                percent_dr = df_curve['%Drag Reduction'].values
+                ppm_vals = df_curve['PPM'].values
+            else:
+                lower = max([c for c in cst_list if c <= viscosity])
+                upper = min([c for c in cst_list if c >= viscosity])
+                df_lower = DRA_CURVE_DATA[lower]
+                df_upper = DRA_CURVE_DATA[upper]
+                percent_dr = np.linspace(
+                    min(df_lower['%Drag Reduction'].min(), df_upper['%Drag Reduction'].min()),
+                    max(df_lower['%Drag Reduction'].max(), df_upper['%Drag Reduction'].max()),
+                    50
+                )
+                ppm_lower = np.interp(percent_dr, df_lower['%Drag Reduction'], df_lower['PPM'])
+                ppm_upper = np.interp(percent_dr, df_upper['%Drag Reduction'], df_upper['PPM'])
+                ppm_vals = np.interp(viscosity, [lower, upper], np.vstack([ppm_lower, ppm_upper]))
+                curve_label = f"Interpolated for {viscosity:.2f} cSt"
+            # Optimum point
+            opt_ppm = get_ppm_for_dr(viscosity, dr_opt)
+            # Plot
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=percent_dr,
+                y=ppm_vals,
+                mode='lines+markers',
+                name=curve_label
+            ))
+            fig.add_trace(go.Scatter(
+                x=[dr_opt], y=[opt_ppm],
+                mode='markers',
+                marker=dict(size=12, color='red', symbol='diamond'),
+                name="Optimized Point"
+            ))
+            fig.update_layout(
+                title=f"DRA Curve for {stn['name']} (Viscosity: {viscosity:.2f} cSt)",
+                xaxis_title="% Drag Reduction",
+                yaxis_title="PPM",
+                legend=dict(orientation="h", y=-0.2)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
+
+
+# --------------- Tab 7: 3D Plots -----------------
+with tab7:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization at least once to enable 3D analysis.")
         st.stop()
