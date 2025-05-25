@@ -915,15 +915,14 @@ with tab7:
     # Spacer if needed
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
     
-    # Footer—shows ONLY on this tab
-    st.markdown(
-        """
-        <div style='text-align: center; color: gray; font-size: 0.95em; margin-bottom: 0.5em;'>
-            &copy; <span style='color:#AAA;'>Surface plot shows parameter variability of the originating pump station for clarity and hydraulic relevance.</span>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+st.markdown(
+    """
+    <div style='text-align: center; color: gray; font-size: 0.95em; margin-bottom: 0.5em;'>
+        <span style='color:#AAA;'>Surface plot shows parameter variability of the originating pump station for clarity and hydraulic relevance.</span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 st.markdown(
     """
