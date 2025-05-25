@@ -76,55 +76,49 @@ def _ppm_from_df(df, target_dr):
 
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
 
-# Custom header and divider styling
+# Move everything down a touch for clarity (optional)
+st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
+
+# Pipeline Optima header – using Streamlit's default font and same style as section headers
 st.markdown(
     """
-    <style>
-    .pipeline-header {
-        text-align: center;
-        font-size: 2.8rem;
-        font-weight: 800;
-        letter-spacing: 1.5px;
-        color: #232733;
-        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
-        margin-bottom: 0.15em;
-        margin-top: 0.1em;
-        line-height: 1.08;
-    }
-    .main-title-divider {
-        height: 3px;
-        background: #e1e5ec;
-        border: none;
-        margin-left: auto;
-        margin-right: auto;
-        width: 92%;
-        margin-bottom: 0.7em;
-        margin-top: 0.1em;
-    }
-    .main-header {
-        text-align: justify;
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #232733;
-        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
-        margin-bottom: 0.3em;
-        margin-top: 0.1em;
-        line-height: 1.11;
-        letter-spacing: 0.01em;
-    }
-    /* Remove padding at the top of the page */
-    .block-container {
-        padding-top: 1.1rem;
-    }
-    </style>
-    <div class='pipeline-header'>Pipeline Optima</div>
-    <hr class='main-title-divider'>
-    <div class='main-header'>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</div>
+    <h1 style='
+        text-align:center;
+        font-size:2.6rem;
+        font-weight:700;
+        color:#232733;
+        margin-bottom:0.15em;
+        margin-top:0.01em;
+        letter-spacing:0.5px;
+        font-family: inherit;
+    '>
+        Pipeline Optima
+    </h1>
     """,
     unsafe_allow_html=True
 )
 
-st.markdown("<hr style='margin-top:0; margin-bottom:1.5em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
+# Subtitle as "section header" style (matches e.g., Terminal Station)
+st.markdown(
+    """
+    <div style='
+        text-align:center;
+        font-size:1.85rem;
+        font-weight:700;
+        color:#232733;
+        margin-bottom:0.1em;
+        margin-top:0.05em;
+        font-family: inherit;
+    '>
+        Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# Clean horizontal line (like Streamlit default)
+st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
+
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
