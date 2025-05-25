@@ -692,7 +692,7 @@ with tab6:
 
     st.plotly_chart(fig, use_container_width=True)
     st.markdown(
-        "<div class='centered-caption'>Surface shown for a small region (+/- delta) from the optimum point for clarity and hydraulic relevance.</div>",
+        "<div style='text-align: center>Surface shown for a small region (+/- delta) from the optimum point for clarity and hydraulic relevance.</div>",
         unsafe_allow_html=True
     )
 
