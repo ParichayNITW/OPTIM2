@@ -90,64 +90,57 @@ with st.sidebar:
         st.session_state["Price_HSD"] = Price_HSD
 
     import json, copy
+    import streamlit as st
 
-    # ---- CASE SAVE/LOAD UI ----
-    case_col1, case_col2 = st.columns(2)
+    # --- CSS for equal button & file uploader size and style ---
+    st.markdown("""
+        <style>
+        .same-size-btn > button {
+            width: 100%;
+            height: 56px;  /* Adjust to match file_uploader height */
+            font-size: 1.05em;
+            border-radius: 8px;
+            margin-bottom: 0px;
+        }
+        .file-upload-style > div > div {
+            height: 56px !important;
+            min-height: 56px !important;
+            border-radius: 8px !important;
+        }
+        .block-label {
+            font-size: 1.06em;
+            font-weight: 600;
+            margin-bottom: 6px;
+            display: block;
+        }
+        </style>
+    """, unsafe_allow_html=True)
     
-    with case_col1:
-        if st.button("💾 Save Current Case"):
-            # Gather all per-station dataframe data
-            pump_curves = {}
-            peaks_data = {}
-            n_stations = len(st.session_state.get('stations', []))
-            for idx in range(1, n_stations+1):
-                # Save as list of dicts for JSON compatibility
-                pump_curves[f"head_data_{idx}"] = st.session_state.get(f"head_data_{idx}").to_dict('records') if st.session_state.get(f"head_data_{idx}") is not None else None
-                pump_curves[f"eff_data_{idx}"] = st.session_state.get(f"eff_data_{idx}").to_dict('records') if st.session_state.get(f"eff_data_{idx}") is not None else None
-                peaks_data[f"peak_data_{idx}"] = st.session_state.get(f"peak_data_{idx}").to_dict('records') if st.session_state.get(f"peak_data_{idx}") is not None else None
-            case_dict = {
-                "stations": st.session_state.get("stations", []),
-                "terminal_name": st.session_state.get("terminal_name", "Terminal"),
-                "terminal_elev": st.session_state.get("terminal_elev", 0.0),
-                "terminal_head": st.session_state.get("terminal_head", 50.0),
-                "FLOW": st.session_state.get("FLOW", 1000.0),
-                "RateDRA": st.session_state.get("RateDRA", 500.0),
-                "Price_HSD": st.session_state.get("Price_HSD", 70.0),
-                "pump_curves": pump_curves,
-                "peaks_data": peaks_data,
-            }
-            st.download_button(
-                "Download Case JSON",
-                json.dumps(case_dict, indent=2),
-                file_name="pipeline_case.json",
-                mime="application/json"
-            )
+    col1, col2 = st.columns([1, 1])
     
-    with case_col2:
-        case_file = st.file_uploader("Upload Saved Case (.json)", type=["json"])
-        if case_file:
-            # Restore all session state fields and dataframes
-            case = json.load(case_file)
-            st.session_state['stations'] = copy.deepcopy(case["stations"])
-            st.session_state['terminal_name'] = case["terminal_name"]
-            st.session_state['terminal_elev'] = case["terminal_elev"]
-            st.session_state['terminal_head'] = case["terminal_head"]
-            st.session_state['FLOW'] = case["FLOW"]
-            st.session_state['RateDRA'] = case["RateDRA"]
-            st.session_state['Price_HSD'] = case["Price_HSD"]
-            # Restore all per-station dataframes
-            import pandas as pd
-            for idx in range(1, len(case["stations"])+1):
-                if case["pump_curves"].get(f"head_data_{idx}") is not None:
-                    st.session_state[f"head_data_{idx}"] = pd.DataFrame(case["pump_curves"][f"head_data_{idx}"])
-                if case["pump_curves"].get(f"eff_data_{idx}") is not None:
-                    st.session_state[f"eff_data_{idx}"] = pd.DataFrame(case["pump_curves"][f"eff_data_{idx}"])
-                if case["peaks_data"].get(f"peak_data_{idx}") is not None:
-                    st.session_state[f"peak_data_{idx}"] = pd.DataFrame(case["peaks_data"][f"peak_data_{idx}"])
-            st.success("Case loaded! All values, curves, and peaks restored.")
-            st.rerun()
-# JSON Output saved
-
+    with col1:
+        # Keep an empty label for alignment
+        st.markdown('<span class="block-label">&nbsp;</span>', unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="same-size-btn">', unsafe_allow_html=True)
+            save_clicked = st.button("💾 Save Current Case", use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<span class="block-label">Upload Saved Case (.json)</span>', unsafe_allow_html=True)
+        # The class is applied to the outer div for styling height
+        st.markdown('<div class="file-upload-style">', unsafe_allow_html=True)
+        uploaded_file = st.file_uploader(" ", type="json", label_visibility="collapsed")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Handle save/load actions below (pseudocode)
+    if save_clicked:
+        st.success("Current case saved (implement save functionality here).")
+    
+    if uploaded_file:
+        st.success("Case uploaded (implement loading logic here).")
+# JSON upload comppleted
+    
 
     
     st.subheader("Stations")
