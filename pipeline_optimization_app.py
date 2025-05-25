@@ -730,9 +730,19 @@ with tab6:
             f = 0.0
         DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
         return stn['elev'] + DH
+        
+    # Compute ppm_value for selected stn
+    dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
+    dr_max = stn.get('max_dr', 0.0)
+    viscosity = stn.get('KV', 10.0)
+    dr_use = min(dr_opt, dr_max)
+    ppm_value = get_ppm_for_dr(viscosity, dr_use)
+
     def get_total_cost(q, n, d, npump):
+        # For each (q, n, d), interpolate PPM at current d
+        local_ppm = get_ppm_for_dr(stn.get('KV', 10.0), d)
         pcost = get_power_cost(q, n, d, npump)
-        dracost = ppm_value*(q*1000.0*24.0/1e6)*RateDRA
+        dracost = local_ppm * (q * 1000.0 * 24.0 / 1e6) * RateDRA
         return pcost + dracost
 
     for i in range(Xv.shape[0]):
