@@ -870,17 +870,20 @@ with tab7:
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.markdown(
-        "<div style='text-align: center'>The surface plot shows variability of the parameters for clarity and hydraulic relevance.</div>",
-        unsafe_allow_html=True
-    )
+    
+# ---- Ensure a spacer is present before the footer ----
+st.markdown(
+    "<div style='height:40px'></div>",  # Add vertical space
+    unsafe_allow_html=True
+)
 
-
+# ---- Footer ----
 st.markdown(
     """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+    <div style='text-align: center; color: gray; margin-top: 3em; margin-bottom: 0.5em; font-size: 0.95em; padding-bottom: 1em;'>
     &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
     </div>
     """,
     unsafe_allow_html=True
 )
+
