@@ -74,46 +74,47 @@ def _ppm_from_df(df, target_dr):
     else:
         return np.interp(target_dr, x, y)
 
+st.set_page_config(page_title="Pipeline Optima", layout="wide")
+
+# Optional: Small top margin for clarity
+st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
+
+# Main App Name – larger font
 st.markdown(
     """
-    <div style='
-        text-align: center;
-        font-size: 2.8rem;
-        font-weight: 700;
-        letter-spacing: 1.2px;
-        color: #222A35;
-        margin-bottom: 0.2em;
-        margin-top: 1.5em;
-        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
-        '>
+    <h1 style='
+        text-align:center;
+        font-size:3.2rem;
+        font-weight:700;
+        color:#232733;
+        margin-bottom:0.25em;
+        margin-top:0.01em;
+        letter-spacing:0.5px;
+        font-family: inherit;
+    '>
         Pipeline Optima
-    </div>
+    </h1>
     """,
     unsafe_allow_html=True
 )
 
-# Subtitle in SINGLE LINE, maximum size, no wrap
+# Subtitle – a bit smaller, but also larger than before
 st.markdown(
     """
     <div style='
-        text-align: center;
-        font-size: 2.0rem;
-        font-weight: 700;
-        letter-spacing: 0.2px;
-        color: #222A35;
-        margin-bottom: 1.5em;
-        margin-top: 0.1em;
-        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
-        max-width: 95vw;
-        overflow-x: auto;
-        white-space: nowrap;
-        '>
+        text-align:center;
+        font-size:2.25rem;
+        font-weight:700;
+        color:#232733;
+        margin-bottom:0.15em;
+        margin-top:0.02em;
+        font-family: inherit;
+    '>
         Mixed Integer Non-Linear Non-Convex Pipeline Optimization
     </div>
     """,
     unsafe_allow_html=True
 )
-
 
 # Clean horizontal line (like Streamlit default)
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
