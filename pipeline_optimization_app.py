@@ -110,7 +110,7 @@ st.markdown(
         margin-top:0.05em;
         font-family: inherit;
     '>
-        Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations
+        Mixed Integer Non-Linear Non-Convex Pipeline Optimization
     </div>
     """,
     unsafe_allow_html=True
