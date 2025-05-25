@@ -76,18 +76,18 @@ def _ppm_from_df(df, target_dr):
 
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
 
-# Move everything down a touch for clarity (optional)
-st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
+# Optional: Small top margin for clarity
+st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 
-# Pipeline Optima header – using Streamlit's default font and same style as section headers
+# Main App Name – larger font
 st.markdown(
     """
     <h1 style='
         text-align:center;
-        font-size:2.6rem;
+        font-size:3.2rem;
         font-weight:700;
         color:#232733;
-        margin-bottom:0.15em;
+        margin-bottom:0.25em;
         margin-top:0.01em;
         letter-spacing:0.5px;
         font-family: inherit;
@@ -98,16 +98,16 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Subtitle as "section header" style (matches e.g., Terminal Station)
+# Subtitle – a bit smaller, but also larger than before
 st.markdown(
     """
     <div style='
         text-align:center;
-        font-size:1.85rem;
+        font-size:2.25rem;
         font-weight:700;
         color:#232733;
-        margin-bottom:0.1em;
-        margin-top:0.05em;
+        margin-bottom:0.15em;
+        margin-top:0.02em;
         font-family: inherit;
     '>
         Mixed Integer Non-Linear Non-Convex Pipeline Optimization
