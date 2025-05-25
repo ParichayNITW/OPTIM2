@@ -76,40 +76,54 @@ def _ppm_from_df(df, target_dr):
 
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
 
-# Centered, Professional App Name at the Top
+# Custom header and divider styling
 st.markdown(
     """
     <style>
-        .pipeline-title {
-            text-align: center;
-            font-size: 2.2rem;
-            font-weight: 800;
-            letter-spacing: 1.2px;
-            color: #1A222C; /* Use a dark shade, not blue */
-            margin-bottom: 0.2em;
-            margin-top: 0.2em;
-            font-family: "Segoe UI", "Roboto", Arial, sans-serif;
-        }
-        .main-title-hr {
-            margin-top: 0.1em;
-            margin-bottom: 1em;
-            border: 1.5px solid #e1e5ec;
-        }
-        .main-header {
-            text-align: justify !important;
-            font-size: 2rem !important;
-            font-weight: 700 !important;
-            color: #2B2D3A !important;
-            margin-bottom: 0.8em !important;
-            margin-top: 0.1em !important;
-            font-family: "Segoe UI", "Roboto", Arial, sans-serif !important;
-        }
+    .pipeline-header {
+        text-align: center;
+        font-size: 2.8rem;
+        font-weight: 800;
+        letter-spacing: 1.5px;
+        color: #232733;
+        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
+        margin-bottom: 0.15em;
+        margin-top: 0.1em;
+        line-height: 1.08;
+    }
+    .main-title-divider {
+        height: 3px;
+        background: #e1e5ec;
+        border: none;
+        margin-left: auto;
+        margin-right: auto;
+        width: 92%;
+        margin-bottom: 0.7em;
+        margin-top: 0.1em;
+    }
+    .main-header {
+        text-align: justify;
+        font-size: 2.1rem;
+        font-weight: 800;
+        color: #232733;
+        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
+        margin-bottom: 0.3em;
+        margin-top: 0.1em;
+        line-height: 1.11;
+        letter-spacing: 0.01em;
+    }
+    /* Remove padding at the top of the page */
+    .block-container {
+        padding-top: 1.1rem;
+    }
     </style>
-    <div class='pipeline-title'>Pipeline Optima</div>
-    <hr class='main-title-hr'>
+    <div class='pipeline-header'>Pipeline Optima</div>
+    <hr class='main-title-divider'>
+    <div class='main-header'>Mixed Integer Non-Linear Non-Convex Optimization of Pipeline Operations</div>
     """,
     unsafe_allow_html=True
 )
+
 st.markdown("<hr style='margin-top:0; margin-bottom:1.5em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
