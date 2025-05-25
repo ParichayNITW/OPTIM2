@@ -13,22 +13,66 @@ import glob
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
-def load_dra_curves():
-    csv_files = glob.glob("*cst.csv")
-    dra_data = []
-    for file in csv_files:
-        vis = float(file.split()[0])  # '10' from '10 cst.csv'
-        df = pd.read_csv(file)
-        df["Viscosity"] = vis
-        dra_data.append(df)
-    if dra_data:
-        dra_curves_df = pd.concat(dra_data, ignore_index=True)
-        return dra_curves_df
+DRA_CSV_FILES = {
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv"
+}
+
+DRA_CURVE_DATA = {}
+
+for cst, fname in DRA_CSV_FILES.items():
+    # The file path should be relative to your app
+    if os.path.exists(fname):
+        df = pd.read_csv(fname)
+        # Assumes columns: 'PPM', '%Drag Reduction'
+        DRA_CURVE_DATA[cst] = df
     else:
-        return None
+        DRA_CURVE_DATA[cst] = None  # Mark missing
 
-DRA_CURVE_DF = load_dra_curves()
+def get_ppm_for_dr(viscosity, target_dr, dra_curve_data=DRA_CURVE_DATA):
+    """
+    Interpolate/extrapolate the required PPM for a given viscosity (cst) and Drag Reduction (%) using DRA curves.
+    - viscosity: float, actual viscosity entered by user for the station
+    - target_dr: float, required drag reduction (after min() logic)
+    - dra_curve_data: dict mapping cst -> DataFrame
+    """
+    cst_list = sorted(dra_curve_data.keys())
+    viscosity = float(viscosity)
+    # Bound the viscosity if outside provided range
+    if viscosity <= cst_list[0]:
+        df = dra_curve_data[cst_list[0]]
+        return _ppm_from_df(df, target_dr)
+    elif viscosity >= cst_list[-1]:
+        df = dra_curve_data[cst_list[-1]]
+        return _ppm_from_df(df, target_dr)
+    else:
+        # Interpolate between the two nearest curves
+        lower = max([c for c in cst_list if c <= viscosity])
+        upper = min([c for c in cst_list if c >= viscosity])
+        df_lower = dra_curve_data[lower]
+        df_upper = dra_curve_data[upper]
+        ppm_lower = _ppm_from_df(df_lower, target_dr)
+        ppm_upper = _ppm_from_df(df_upper, target_dr)
+        # Linear interpolation on viscosity
+        ppm_interp = np.interp(viscosity, [lower, upper], [ppm_lower, ppm_upper])
+        return ppm_interp
 
+def _ppm_from_df(df, target_dr):
+    """Given a DRA curve DataFrame, interpolate to get the PPM needed for target_dr."""
+    x = df['%Drag Reduction'].values
+    y = df['PPM'].values
+    # If target_dr above or below curve, extrapolate; else, interpolate
+    if target_dr <= x[0]:
+        return y[0]
+    elif target_dr >= x[-1]:
+        return y[-1]
+    else:
+        return np.interp(target_dr, x, y)
 
 
 st.set_page_config(page_title="Pipeline Optimization", layout="wide")
@@ -278,6 +322,21 @@ with tab1:
             "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "DRA (%)"
         ]
         summary = {"Parameters": params}
+        
+        # === STEP 3: Calculate capped Drag Reduction and PPM for each station ===
+        station_dr_capped = {}
+        station_ppm = {}
+        for idx, stn in enumerate(stations_data, start=1):
+            key = stn['name'].lower().replace(' ', '_')
+            dr_opt = res.get(f"drag_reduction_{key}", 0.0)       # Output from optimization
+            dr_max = stn.get('max_dr', 0.0)                      # User input (max achievable)
+            viscosity = stn.get('KV', 10.0)                      # User input (station viscosity)
+            dr_use = min(dr_opt, dr_max)                         # Take lower of the two
+            station_dr_capped[key] = dr_use
+            ppm = get_ppm_for_dr(viscosity, dr_use)
+            station_ppm[key] = ppm
+
+        
         for nm in names:
             key = nm.lower().replace(' ','_')
             summary[nm] = [
