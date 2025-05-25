@@ -284,9 +284,14 @@ with tab1:
         st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
         # Show summary below the table
+        total_cost = res.get('total_cost', 0)
+        if isinstance(total_cost, str):
+            # Remove any commas in string, convert to float (in case backend inserted commas)
+            total_cost = float(total_cost.replace(',', ''))
+        
         st.markdown(
             f"""<br>
-            <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {res.get('total_cost', 0):,.2f} INR/day<br>
+            <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
             <b>No. of operating Pumps:</b> {int(res.get('num_pumps_'+names[0].lower().replace(' ','_'),0))}<br>
             <b>Average Pump Efficiency:</b> {res.get('efficiency_'+names[0].lower().replace(' ','_'),0.0):.2f} %<br>
             <b>Average Pump Speed:</b> {res.get('speed_'+names[0].lower().replace(' ','_'),0.0):.0f} rpm</div>
