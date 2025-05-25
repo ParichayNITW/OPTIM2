@@ -84,7 +84,7 @@ st.markdown(
     """
     <h1 style='
         text-align:center;
-        font-size:3.2rem;
+        font-size:3.4rem;
         font-weight:700;
         color:#232733;
         margin-bottom:0.25em;
@@ -103,7 +103,7 @@ st.markdown(
     """
     <div style='
         text-align:center;
-        font-size:2.25rem;
+        font-size:2.05rem;
         font-weight:700;
         color:#232733;
         margin-bottom:0.15em;
