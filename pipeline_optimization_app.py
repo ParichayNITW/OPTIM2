@@ -717,7 +717,7 @@ with tab6:
         return stn['elev'] + DH
     def get_total_cost(q, n, d, npump):
         pcost = get_power_cost(q, n, d, npump)
-        dracost = (d/4)*(q*1000.0*24.0/1e6)*RateDRA
+        dracost = ppm_value*(q*1000.0*24.0/1e6)*RateDRA
         return pcost + dracost
 
     for i in range(Xv.shape[0]):
