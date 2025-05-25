@@ -74,9 +74,7 @@ def _ppm_from_df(df, target_dr):
     else:
         return np.interp(target_dr, x, y)
 
-
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
-
 # App Name at Top
 st.markdown(
     """
@@ -96,8 +94,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 st.markdown("<hr style='margin-top:0; margin-bottom:1.5em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
-
-
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
