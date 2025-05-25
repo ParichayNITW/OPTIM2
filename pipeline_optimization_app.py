@@ -161,7 +161,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     else:
                         stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
                         stn['rate'] = 0.0
-                st.markdown("**Pump Curve Data:**")
+                st.markdown("**Pump Data at DOL:**")
                 st.write("Flow vs Head data (m³/hr, m)")
                 df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                 df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
