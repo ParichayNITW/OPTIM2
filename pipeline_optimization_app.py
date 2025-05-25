@@ -872,6 +872,8 @@ with tab7:
     st.plotly_chart(fig, use_container_width=True)
     
 # ---- Ensure a spacer is present before the footer ----
+
+
 st.markdown(
     "<div style='height:40px'></div>",  # Add vertical space
     unsafe_allow_html=True
