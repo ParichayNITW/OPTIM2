@@ -75,21 +75,38 @@ def _ppm_from_df(df, target_dr):
         return np.interp(target_dr, x, y)
 
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
-# App Name at Top
+
+# Centered, Professional App Name at the Top
 st.markdown(
     """
-    <div style='
-        text-align: center;
-        font-size: 2.3rem;
-        font-weight: 700;
-        letter-spacing: 1.5px;
-        color: #005ca6;
-        margin-bottom: 0.1em;
-        margin-top: 0.2em;
-        font-family: "Segoe UI", "Roboto", Arial, sans-serif;
-        '>
-        Pipeline Optima
-    </div>
+    <style>
+        .pipeline-title {
+            text-align: center;
+            font-size: 2.2rem;
+            font-weight: 800;
+            letter-spacing: 1.2px;
+            color: #1A222C; /* Use a dark shade, not blue */
+            margin-bottom: 0.2em;
+            margin-top: 0.2em;
+            font-family: "Segoe UI", "Roboto", Arial, sans-serif;
+        }
+        .main-title-hr {
+            margin-top: 0.1em;
+            margin-bottom: 1em;
+            border: 1.5px solid #e1e5ec;
+        }
+        .main-header {
+            text-align: justify !important;
+            font-size: 2rem !important;
+            font-weight: 700 !important;
+            color: #2B2D3A !important;
+            margin-bottom: 0.8em !important;
+            margin-top: 0.1em !important;
+            font-family: "Segoe UI", "Roboto", Arial, sans-serif !important;
+        }
+    </style>
+    <div class='pipeline-title'>Pipeline Optima</div>
+    <hr class='main-title-hr'>
     """,
     unsafe_allow_html=True
 )
