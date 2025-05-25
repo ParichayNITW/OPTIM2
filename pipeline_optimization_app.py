@@ -89,7 +89,6 @@ with st.sidebar:
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
 
-    
     st.subheader("Stations")
     add_col, rem_col = st.columns(2)
     if add_col.button("➕ Add Station"):
@@ -106,8 +105,6 @@ with st.sidebar:
     if rem_col.button("🗑️ Remove Station"):
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
-
-
 
 # ===== STATION INPUTS START =====
 
@@ -143,7 +140,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with col3:
             stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
             stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
-            # --- REMOVED: stn['max_pumps'] = st.number_input("Max Pumps available", ...)
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
         # Tabs for advanced per-station inputs (minimal scroll)
         tabs = st.tabs(["Pump", "Peaks"])
@@ -153,6 +150,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 with pcol1:
                     stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
                                                     index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    
                 with pcol2:
                     stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
                     stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
@@ -163,9 +161,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     else:
                         stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
                         stn['rate'] = 0.0
-                # ---- MAX PUMPS HERE ----
-                stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
-
                 st.markdown("**Pump Curve Data:**")
                 st.write("Flow vs Head data (m³/hr, m)")
                 df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
@@ -182,7 +177,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
             peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[f"peak_data_{idx}"] = peak_df
-
 
 # ===== STATION INPUTS END =====
 
@@ -698,7 +692,7 @@ with tab6:
 
     st.plotly_chart(fig, use_container_width=True)
     st.markdown(
-        "<div style='text-align: center'>Surface shown for a small region (+/- delta) from the optimum point for clarity and hydraulic relevance.</div>",
+        "<div class='centered-caption'>Surface shown for a small region (+/- delta) from the optimum point for clarity and hydraulic relevance.</div>",
         unsafe_allow_html=True
     )
 
