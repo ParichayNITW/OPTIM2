@@ -97,7 +97,7 @@ st.markdown(
     """
     <div style='
         text-align: center;
-        font-size: 2.1rem;
+        font-size: 2.0rem;
         font-weight: 700;
         letter-spacing: 0.2px;
         color: #222A35;
