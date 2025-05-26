@@ -153,18 +153,6 @@ def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        # Centered logo at the top of login
-        st.markdown(
-            """
-            <div style='text-align: center; margin-bottom: 1.2em;'>
-                <img src="logo.png" width="160" style="border-radius: 12px;">
-            </div>
-            """, unsafe_allow_html=True
-        )
-        st.markdown(
-            "<div style='text-align: center; font-size:2.0rem; font-weight: 700; color: #25282e; margin-bottom: 0.5em;'>Pipeline Optima</div>",
-            unsafe_allow_html=True
-        )
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
