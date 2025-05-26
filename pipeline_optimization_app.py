@@ -10,6 +10,8 @@ import uuid
 import json
 from plotly.colors import qualitative
 import glob
+from io import BytesIO
+from fpdf import FPDF
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
@@ -340,15 +342,96 @@ if run:
         st.session_state["last_input_fingerprint"] = get_input_fingerprint()
 
 # ---------- TABS -----------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📝 Executive Summary",
     "📋 Summary", 
     "💰 Costs", 
     "⚙️ Performance", 
     "🌀 System Curves", 
     "🔄 Pump-System",
-    "🧪 DRA Curves",                   
-    "🧊 3D Analysis and Surface Plots" 
+    "🧊 3D Analysis and Surface Plots"      
 ])
+# ---- Tab 0 ----
+with tab0:
+    st.markdown(
+        "<div style='font-size:1.6em; font-weight:700; text-align:center; margin-bottom:0.4em;'>Executive Summary</div>",
+        unsafe_allow_html=True,
+    )
+    if "last_res" not in st.session_state:
+        st.info("Please run the optimization to generate the Executive Summary.")
+        st.stop()
+
+    res = st.session_state["last_res"]
+    stations_data = st.session_state["last_stations_data"]
+    terminal_data = st.session_state["last_term_data"]
+    FLOW = st.session_state.get("FLOW", 1000.0)
+    RateDRA = st.session_state.get("RateDRA", 500.0)
+    Price_HSD = st.session_state.get("Price_HSD", 70.0)
+
+    # Summarize key results
+    total_cost = res.get('total_cost', 0)
+    n_operating_pumps = int(res.get('num_pumps_' + stations_data[0]['name'].lower().replace(' ', '_'), 0))
+    avg_efficiency = res.get('efficiency_' + stations_data[0]['name'].lower().replace(' ', '_'), 0.0)
+    avg_speed = res.get('speed_' + stations_data[0]['name'].lower().replace(' ', '_'), 0.0)
+
+    st.markdown(f"""
+    <div style='font-size:1.1em;'>
+        <b>Project:</b> Pipeline Optima<br>
+        <b>Optimized Flow Rate:</b> {FLOW:,.2f} m³/hr<br>
+        <b>Total Optimized Cost:</b> {total_cost:,.2f} INR/day<br>
+        <b>Number of Operating Pumps:</b> {n_operating_pumps}<br>
+        <b>Average Pump Efficiency:</b> {avg_efficiency:.2f} %<br>
+        <b>Average Pump Speed:</b> {avg_speed:.0f} rpm<br>
+        <b>DRA Cost per Day:</b> {RateDRA:,.2f} INR/L<br>
+        <b>Diesel Price:</b> {Price_HSD:,.2f} INR/L<br>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Key performance chart: Station-wise Cost Bar
+    st.markdown("<b>Station-wise Cost Breakdown:</b>", unsafe_allow_html=True)
+    df_cost = pd.DataFrame({
+        "Station": [s['name'] for s in stations_data],
+        "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
+        "DRA": [res.get(f"dra_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
+    })
+    df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
+    fig_bar = px.bar(df_cost, x="Station", y="Total", title="Station-wise Total Cost")
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    # You may add more summary plots as needed!
+
+    # PDF Download Button
+    st.markdown("### Download Executive Summary as PDF")
+    if st.button("📄 Download PDF Report"):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "Pipeline Optima: Executive Summary", ln=1, align="C")
+        pdf.set_font("Arial", "", 12)
+        pdf.ln(5)
+        pdf.cell(0, 10, f"Optimized Flow Rate: {FLOW:,.2f} m³/hr", ln=1)
+        pdf.cell(0, 10, f"Total Optimized Cost: {total_cost:,.2f} INR/day", ln=1)
+        pdf.cell(0, 10, f"Number of Operating Pumps: {n_operating_pumps}", ln=1)
+        pdf.cell(0, 10, f"Average Pump Efficiency: {avg_efficiency:.2f} %", ln=1)
+        pdf.cell(0, 10, f"Average Pump Speed: {avg_speed:.0f} rpm", ln=1)
+        pdf.cell(0, 10, f"DRA Cost per Day: {RateDRA:,.2f} INR/L", ln=1)
+        pdf.cell(0, 10, f"Diesel Price: {Price_HSD:,.2f} INR/L", ln=1)
+        pdf.ln(5)
+        pdf.set_font("Arial", "B", 13)
+        pdf.cell(0, 10, "Station-wise Total Cost", ln=1)
+        pdf.set_font("Arial", "", 11)
+        for idx, row in df_cost.iterrows():
+            pdf.cell(0, 8, f"{row['Station']}: {row['Total']:,.2f} INR/day", ln=1)
+        # Output as downloadable PDF
+        pdf_output = BytesIO()
+        pdf.output(pdf_output)
+        st.download_button(
+            label="Download PDF",
+            data=pdf_output.getvalue(),
+            file_name="Pipeline_Executive_Summary.pdf",
+            mime="application/pdf"
+        )
+
 
 # ---- Tab 1 ----
 with tab1:
