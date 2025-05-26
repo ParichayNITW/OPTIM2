@@ -76,9 +76,30 @@ def _ppm_from_df(df, target_dr):
     else:
         return np.interp(target_dr, x, y)
 
-st.set_page_config(page_title="Pipeline Optima", layout="wide")
+st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
-# Optional: Small top margin for clarity
+# --- Load Case ---
+uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
+if uploaded_case is not None:
+    loaded_data = json.load(uploaded_case)
+    st.session_state['stations'] = loaded_data.get('stations', [])
+    st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
+    st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
+    st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
+    st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+    st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+    st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+    # Restore per-station dataframes for pump curves
+    for i in range(len(st.session_state['stations'])):
+        head_dict = loaded_data.get(f"head_data_{i+1}", None)
+        if head_dict:
+            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
+        eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
+        if eff_dict:
+            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
+    st.success("Case loaded! All station and curve data restored.")
+
+# Small top margin for clarity
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 
 # Main App Name – larger font
@@ -94,7 +115,7 @@ st.markdown(
         letter-spacing:0.5px;
         font-family: inherit;
     '>
-        Pipeline Optima
+        Pipeline Optima™
     </h1>
     """,
     unsafe_allow_html=True
@@ -145,7 +166,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
+            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
             </div>
             """,
             unsafe_allow_html=True
@@ -296,6 +317,39 @@ terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD):
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD)
+
+# --------- Save Case ---------
+def get_full_case_dict():
+    # Collect all necessary state
+    return {
+        "stations": st.session_state.get('stations', []),
+        "terminal": {
+            "name": st.session_state.get('terminal_name', 'Terminal'),
+            "elev": st.session_state.get('terminal_elev', 0.0),
+            "min_residual": st.session_state.get('terminal_head', 50.0)
+        },
+        "FLOW": st.session_state.get('FLOW', 1000.0),
+        "RateDRA": st.session_state.get('RateDRA', 500.0),
+        "Price_HSD": st.session_state.get('Price_HSD', 70.0),
+        # Optionally add curves:
+        **{
+            f"head_data_{i+1}": st.session_state.get(f"head_data_{i+1}").to_dict() if st.session_state.get(f"head_data_{i+1}") is not None else None
+            for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"eff_data_{i+1}": st.session_state.get(f"eff_data_{i+1}").to_dict() if st.session_state.get(f"eff_data_{i+1}") is not None else None
+            for i in range(len(st.session_state.get('stations', [])))
+        }
+    }
+
+case_data = get_full_case_dict()
+st.sidebar.download_button(
+    label="💾 Save Case",
+    data=json.dumps(case_data, indent=2),
+    file_name="pipeline_case.json",
+    mime="application/json"
+)
+
 
 run = st.button("🚀 Run Optimization")
 if run:
@@ -929,7 +983,7 @@ with tab7:
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
+    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
     </div>
     """,
     unsafe_allow_html=True
