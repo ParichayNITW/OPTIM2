@@ -165,7 +165,7 @@ def check_login():
             "<div style='text-align: center; font-size:2.0rem; font-weight: 700; color: #25282e; margin-bottom: 0.5em;'>Pipeline Optima</div>",
             unsafe_allow_html=True
         )
-        st.title("🔒 Pipeline Optimization Login")
+        st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login"):
@@ -178,7 +178,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das. All rights reserved.
+            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
             </div>
             """,
             unsafe_allow_html=True
