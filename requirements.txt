@@ -7,3 +7,4 @@ fpdf2>=2.7.0
 kaleido>=0.2.1
 scipy
 streamlit-agraph
+fpdf
