@@ -342,12 +342,13 @@ if run:
         st.session_state["last_input_fingerprint"] = get_input_fingerprint()
 
 # ---------- TABS -----------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
     "⚙️ Performance", 
     "🌀 System Curves", 
     "🔄 Pump-System",
+    "📉 DRA Curves",
     "🧊 3D Analysis and Surface Plots"      
 ])
 
