@@ -4,7 +4,7 @@ import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 from math import log10, pi
 
-# NEOS email (Non Convex)
+# NEOS email (solving Non Convex optimization)
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD):
