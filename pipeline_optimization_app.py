@@ -28,8 +28,10 @@ DRA_CSV_FILES = {
 DRA_CURVE_DATA = {}
 
 for cst, fname in DRA_CSV_FILES.items():
+    # The file path should be relative to your app
     if os.path.exists(fname):
         df = pd.read_csv(fname)
+        # Assumes columns: 'PPM', '%Drag Reduction'
         DRA_CURVE_DATA[cst] = df
     else:
         DRA_CURVE_DATA[cst] = None  # Mark missing
@@ -43,7 +45,7 @@ def get_ppm_for_dr(viscosity, target_dr, dra_curve_data=DRA_CURVE_DATA):
     """
     cst_list = sorted(dra_curve_data.keys())
     viscosity = float(viscosity)
-    # Bound the viscosity for all if outside provided range
+    # Bound the viscosity if outside provided range
     if viscosity <= cst_list[0]:
         df = dra_curve_data[cst_list[0]]
         return _ppm_from_df(df, target_dr)
@@ -76,7 +78,7 @@ def _ppm_from_df(df, target_dr):
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
-# Load Case
+# --- Load Case ---
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
 if uploaded_case is not None:
     loaded_data = json.load(uploaded_case)
@@ -97,9 +99,10 @@ if uploaded_case is not None:
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
     st.success("Case loaded! All station and curve data restored.")
 
-
+# Small top margin for clarity
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 
+# Main App Name – larger font
 st.markdown(
     """
     <h1 style='
@@ -118,7 +121,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
+# Subtitle – a bit smaller, but also larger than before
 st.markdown(
     """
     <div style='
@@ -136,7 +139,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
+# Clean horizontal line (like Streamlit default)
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
 def hash_pwd(pwd):
@@ -169,7 +172,6 @@ def check_login():
             unsafe_allow_html=True
         )
         st.stop()
-
     with st.sidebar:
         if st.button("Logout"):
             st.session_state.authenticated = False
@@ -203,7 +205,7 @@ def get_input_fingerprint():
         "Price_HSD": st.session_state.get('Price_HSD', 70.0)
     }, sort_keys=True, default=str).encode()).hexdigest()
 
-# Sidebar Inputs
+# ----- SIDEBAR -----
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
@@ -231,7 +233,7 @@ with st.sidebar:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
-# Station Inputs
+# ===== STATION INPUTS START =====
 
 if 'stations' not in st.session_state:
     st.session_state.stations = [{
@@ -245,7 +247,7 @@ if 'stations' not in st.session_state:
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
-        
+        # Three columns for quick side-by-side data entry
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
             stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
@@ -267,7 +269,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
-        # Tabs
+        # Tabs for advanced per-station inputs (minimal scroll)
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:  # Pump tab
             if stn['is_pump']:
@@ -303,8 +305,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[f"peak_data_{idx}"] = peak_df
 
+# ===== STATION INPUTS END =====
 
-# Terminal Station Inputs
+# --------- Terminal Station Inputs ---------
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal", key="terminal_name")
@@ -315,7 +318,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     import pipeline_model
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD)
 
-# Save Case
+# --------- Save Case ---------
 def get_full_case_dict():
     # Collect all necessary state
     return {
@@ -392,7 +395,7 @@ if run:
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["last_input_fingerprint"] = get_input_fingerprint()
 
-# Tabs for output
+# ---------- TABS -----------
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
@@ -403,7 +406,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🧊 3D Analysis and Surface Plots"      
 ])
 
-# Tab 1
+# ---- Tab 1 ----
 with tab1:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -418,7 +421,7 @@ with tab1:
         ]
         summary = {"Parameters": params}
         
-        # Calculate capped Drag Reduction and PPM for each station
+        # === STEP 3: Calculate capped Drag Reduction and PPM for each station ===
         station_dr_capped = {}
         station_ppm = {}
         for idx, stn in enumerate(stations_data, start=1):
@@ -459,7 +462,7 @@ with tab1:
             ]
 
         df_sum = pd.DataFrame(summary)
-        
+        # Remove index column, format decimals, left align all
         fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
         fmt["No. of Pumps"] = "{:.0f}"
         fmt["Pump Speed (rpm)"] = "{:.0f}"
@@ -467,7 +470,7 @@ with tab1:
         styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-        # Summary below the table
+        # Show summary below the table
         total_cost = res.get('total_cost', 0)
         if isinstance(total_cost, str):
             # Remove any commas in string, convert to float (in case backend inserted commas)
@@ -483,7 +486,7 @@ with tab1:
             unsafe_allow_html=True
         )
 
-# Tab 2
+# ---- Tab 2 ----
 with tab2:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -507,7 +510,7 @@ with tab2:
         st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
 
 
-# Tab 3
+# ---- Tab 3 ----
 with tab3:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -529,7 +532,7 @@ with tab3:
             fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
             fig_h.update_layout(yaxis_title="Head Loss (m)")
             st.plotly_chart(fig_h, use_container_width=True, key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
-        # Velocity & Reynolds No.
+        # Velocity & Reynolds
         with head_tab:
             st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
             df_vel = pd.DataFrame({
@@ -538,7 +541,7 @@ with tab3:
                 "Reynolds": [res.get(f"reynolds_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
             })
             st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds":"{:.0f}"}))
-        # Pump Characteristic Curves (at multiple RPMs).
+        # Pump Characteristic Curve (at multiple RPMs)
         with char_tab:
             st.markdown("<div class='section-title'>Pump Characteristic Curves (Head vs Flow at various Speeds)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -555,7 +558,7 @@ with tab3:
                     fig.add_trace(go.Scatter(x=flows, y=H, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
                 st.plotly_chart(fig, use_container_width=True, key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
-        # Pump Efficiency Curves (at multiple RPMs) using Buckingham Pi Model
+        # Pump Efficiency Curve (at multiple RPMs)
         with eff_tab:
             st.markdown("<div class='section-title'>Pump Efficiency Curves (Eff vs Flow at various Speeds)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -658,7 +661,7 @@ with tab3:
                 fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
-# Tab 4
+# ---- Tab 4 ----
 with tab4:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -687,7 +690,7 @@ with tab4:
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
 
-# Tab 5
+# ---- Tab 5 ----
 with tab5:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -745,7 +748,7 @@ with tab5:
 
 
 
-# Tab 6: DRA Curves
+# ---- Tab 6: DRA Curves ----
 with tab6:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization first to analyze DRA curves.")
@@ -813,7 +816,7 @@ with tab6:
             st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
 
 
-# Tab 7: 3D Plots
+# --------------- Tab 7: 3D Plots -----------------
 with tab7:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization at least once to enable 3D analysis.")
@@ -867,7 +870,7 @@ with tab7:
     Xv, Yv = np.meshgrid(conf['x'], conf['y'], indexing='ij')
     Z = np.zeros_like(Xv, dtype=float)
 
-    # Pump coefficients
+    # --- Pump coefficients ---
     A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
     P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
     S = stn.get('S', 0); T = stn.get('T', 0)
@@ -896,7 +899,7 @@ with tab7:
         DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
         return stn['elev'] + DH
         
-    # Compute ppm_value for selected station
+    # Compute ppm_value for selected stn
     dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
     dr_max = stn.get('max_dr', 0.0)
     viscosity = stn.get('KV', 10.0)
@@ -950,7 +953,8 @@ with tab7:
         x=conf['x'], y=conf['y'], z=Z.T, colorscale='Viridis', colorbar=dict(title=zlab)
     )])
 
-    
+    # No diamond/Optimum marker is added here.
+
     fig.update_layout(
         scene=dict(
             xaxis_title=xlab,
@@ -964,6 +968,7 @@ with tab7:
 
     st.plotly_chart(fig, use_container_width=True)
     
+    # Spacer if needed
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
     
     st.markdown(
