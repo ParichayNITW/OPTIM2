@@ -717,7 +717,7 @@ with tabs[7]:
             pdf.add_page()
             pdf.set_font("Arial", 'B', 16)
             pdf.set_text_color(33, 39, 51)
-            pdf.cell(0, 10, "Pipeline Optima™ Optimization Report", ln=True, align="C")
+            pdf.cell(0, 10, "Pipeline Optima Optimization Report", ln=True, align="C")
             pdf.set_font("Arial", '', 12)
             pdf.ln(4)
             pdf.cell(0, 10, "This report summarizes the complete optimization results, all user inputs, cost breakdown, performance, and visualization.", ln=True, align="C")
