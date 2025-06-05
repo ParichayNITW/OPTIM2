@@ -166,18 +166,20 @@ with st.sidebar:
 
 # LINEFILL ENTRY
 with st.sidebar:
-    st.markdown("#### Linefill Mapping (Viscosity & Density per segment)")
-    num_segs = len(st.session_state.stations)
-    if len(st.session_state.linefill_df) != num_segs:
-        st.session_state.linefill_df = pd.DataFrame({
-            "Segment": list(range(1, num_segs+1)),
-            "Viscosity (cSt)": [10.0]*num_segs,
-            "Density (kg/m³)": [850.0]*num_segs
+    st.markdown("#### Stepwise Linefill Segments")
+    if "linefill_segments" not in st.session_state:
+        st.session_state["linefill_segments"] = pd.DataFrame({
+            "Start (km)": [0.0],
+            "End (km)": [50.0],
+            "Viscosity (cSt)": [5.0],
+            "Density (kg/m³)": [850.0]
         })
-    st.session_state.linefill_df = st.data_editor(
-        st.session_state.linefill_df, 
-        num_rows="dynamic", key="linefill_editor"
+    linefill_segments = st.data_editor(
+        st.session_state["linefill_segments"], 
+        num_rows="dynamic", key="linefill_segments_editor"
     )
+    st.session_state["linefill_segments"] = linefill_segments
+
 
 # STATION INPUTS
 for idx, stn in enumerate(st.session_state.stations, start=1):
