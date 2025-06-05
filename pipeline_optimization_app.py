@@ -465,15 +465,35 @@ with tab1:
         total_cost = res.get('total_cost', 0)
         if isinstance(total_cost, str):
             total_cost = float(total_cost.replace(',', ''))
+        
+        # --- Calculate total and average values for all running pumps ---
+        total_pumps = 0
+        effs = []
+        speeds = []
+        
+        for stn in stations_data:
+            key = stn['name'].lower().replace(' ','_')
+            npump = int(res.get(f"num_pumps_{key}", 0))
+            if npump > 0:
+                total_pumps += npump
+                eff = float(res.get(f"efficiency_{key}", 0.0))
+                speed = float(res.get(f"speed_{key}", 0.0))
+                for _ in range(npump):
+                    effs.append(eff)
+                    speeds.append(speed)
+        avg_eff = sum(effs)/len(effs) if effs else 0.0
+        avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
+        
         st.markdown(
             f"""<br>
             <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
-            <b>No. of operating Pumps:</b> {int(res.get('num_pumps_'+names[0].lower().replace(' ','_'),0))}<br>
-            <b>Average Pump Efficiency:</b> {res.get('efficiency_'+names[0].lower().replace(' ','_'),0.0):.2f} %<br>
-            <b>Average Pump Speed:</b> {res.get('speed_'+names[0].lower().replace(' ','_'),0.0):.0f} rpm</div>
+            <b>No. of operating Pumps:</b> {total_pumps}<br>
+            <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
+            <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
             """,
             unsafe_allow_html=True
         )
+
 
 # ---- Tab 2: Cost Breakdown ----
 with tab2:
