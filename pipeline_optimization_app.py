@@ -235,9 +235,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 # TERMINAL INPUTS
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
-st.session_state.terminal_name = st.text_input("Name", value=st.session_state.terminal_name, key="terminal_name")
-st.session_state.terminal_elev = st.number_input("Elevation (m)", value=st.session_state.terminal_elev, step=0.1, key="terminal_elev")
-st.session_state.terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.terminal_head, step=1.0, key="terminal_head")
+terminal_name = st.text_input("Name", value="Terminal", key="terminal_name")
+terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1, key="terminal_elev")
+terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.0, key="terminal_head")
+
 
 # SAVE CASE
 def get_full_case_dict():
