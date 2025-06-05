@@ -963,7 +963,7 @@ with tab7:
         """,
         unsafe_allow_html=True
     )
-
+"""
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
@@ -972,3 +972,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+"""
