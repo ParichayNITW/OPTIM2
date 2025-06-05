@@ -1,5 +1,6 @@
 import os
 import streamlit as st
+st.set_page_config(page_title="Pipeline Optima™", layout="wide")   # <-- TOP!
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -9,8 +10,11 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
+import glob
+from io import BytesIO
 from fpdf import FPDF
 import tempfile
+
 
 # ------------------------- USER LOGIN -----------------------------
 def hash_pwd(pwd):
