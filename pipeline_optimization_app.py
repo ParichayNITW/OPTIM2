@@ -12,9 +12,9 @@ from plotly.colors import qualitative
 from fpdf import FPDF
 import tempfile
 
-st.set_page_config(page_title="Pipeline Optima", layout="wide")  # <--- THIS MUST BE HERE
-
-# Now, your login and all other Streamlit UI/logic
+# ----------- PAGE CONFIG -------------
+st.set_page_config(page_title="Pipeline Optima™", layout="wide")
+palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
 
 # ------------- USER LOGIN -------------
@@ -46,9 +46,6 @@ def check_login():
             st.rerun()
 check_login()
 
-# ----------- PAGE CONFIG -------------
-st.set_page_config(page_title="Pipeline Optima™", layout="wide")
-palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
 # ----------- DRA CURVES -------------
 DRA_CSV_FILES = {10: "10 cst.csv", 15: "15 cst.csv", 20: "20 cst.csv", 25: "25 cst.csv", 30: "30 cst.csv", 35: "35 cst.csv", 40: "40 cst.csv"}
