@@ -106,7 +106,7 @@ def get_ppm_for_dr(viscosity, target_dr, dra_curve_data=DRA_CURVE_DATA):
 
 # ----------- PAGE TITLE -------------
 st.markdown(
-    "<h1 style='text-align:center;font-size:3.4rem;font-weight:700;color:#232733;margin-bottom:0.25em;margin-top:0.01em;letter-spacing:0.5px;font-family: inherit;'>Pipeline Optima™</h1>",
+    "<h1 style='text-align:center;font-size:3.4rem;font-weight:700;color:#232733;margin-bottom:0.25em;margin-top:0.01em;letter-spacing:0.5px;font-family: inherit;'>Pipeline Optima</h1>",
     unsafe_allow_html=True
 )
 st.markdown(
