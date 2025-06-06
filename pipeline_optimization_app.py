@@ -770,8 +770,8 @@ with tabs[7]:
     if "last_res" not in st.session_state:
         st.info("Please run optimization before generating the report.")
         st.stop()
-    if st.button("Generate & Download ALL-INCLUSIVE Optimization Report (PDF)", type="primary"):
-        with st.spinner("Building exhaustive PDF report..."):
+    if st.button("Generate Optimization Report", type="primary"):
+        with st.spinner("Building report..."):
             pdf = FPDF(orientation='L', unit='mm', format='A4')
             pdf.set_auto_page_break(auto=True, margin=10)
             
@@ -779,7 +779,7 @@ with tabs[7]:
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.set_text_color(33, 39, 51)
-            pdf.cell(0, 14, "Pipeline Optima™ Optimization Report", ln=True, align="C")
+            pdf.cell(0, 14, "Pipeline Optima Optimization Report", ln=True, align="C")
             pdf.ln(6)
             pdf.set_font("Arial", '', 12)
             pdf.cell(0, 10, "All visualizations generated as per the latest optimization run.", ln=True, align="C")
@@ -950,11 +950,11 @@ with tabs[7]:
             pdf_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             pdf.output(pdf_file.name)
             pdf_file.seek(0)
-            st.success("PDF report generated! Download below:")
+            st.success("Optimization report generated! Download below:")
             st.download_button(
-                "Download Full Report (PDF)",
+                "Download Optimization Report",
                 pdf_file.read(),
-                file_name="Pipeline_Optima_Full_Optimization_Report.pdf",
+                file_name="Pipeline_Optima_Optimization_Report.pdf",
                 mime="application/pdf"
             )
 
