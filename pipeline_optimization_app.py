@@ -79,7 +79,6 @@ def _ppm_from_df(df, target_dr):
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
 # --- Load Case ---
-uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
 if uploaded_case is not None:
     loaded_data = json.load(uploaded_case)
     st.session_state['stations'] = loaded_data.get('stations', [])
@@ -89,7 +88,8 @@ if uploaded_case is not None:
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
-    # Restore per-station dataframes for pump curves
+
+    # Restore per-station data
     for i in range(len(st.session_state['stations'])):
         head_dict = loaded_data.get(f"head_data_{i+1}", None)
         if head_dict:
@@ -97,7 +97,12 @@ if uploaded_case is not None:
         eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
         if eff_dict:
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
+        peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
+        if peak_dict:
+            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
+
     st.success("Case loaded! All station and curve data restored.")
+
 
 # Small top margin for clarity
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
@@ -334,7 +339,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
 # --------- Save Case ---------
 def get_full_case_dict():
-    # Collect all necessary state
+    station_count = len(st.session_state.get('stations', []))
     return {
         "stations": st.session_state.get('stations', []),
         "terminal": {
@@ -345,16 +350,23 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        # Optionally add curves:
         **{
-            f"head_data_{i+1}": st.session_state.get(f"head_data_{i+1}").to_dict() if st.session_state.get(f"head_data_{i+1}") is not None else None
-            for i in range(len(st.session_state.get('stations', [])))
+            f"head_data_{i+1}": st.session_state.get(f"head_data_{i+1}").to_dict()
+            if f"head_data_{i+1}" in st.session_state else None
+            for i in range(station_count)
         },
         **{
-            f"eff_data_{i+1}": st.session_state.get(f"eff_data_{i+1}").to_dict() if st.session_state.get(f"eff_data_{i+1}") is not None else None
-            for i in range(len(st.session_state.get('stations', [])))
+            f"eff_data_{i+1}": st.session_state.get(f"eff_data_{i+1}").to_dict()
+            if f"eff_data_{i+1}" in st.session_state else None
+            for i in range(station_count)
+        },
+        **{
+            f"peak_data_{i+1}": st.session_state.get(f"peak_data_{i+1}").to_dict()
+            if f"peak_data_{i+1}" in st.session_state else None
+            for i in range(station_count)
         }
     }
+
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
