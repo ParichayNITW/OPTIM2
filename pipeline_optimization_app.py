@@ -46,6 +46,26 @@ def check_login():
             st.rerun()
 check_login()
 
+
+if 'stations' not in st.session_state:
+    st.session_state['stations'] = [{
+        'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+        'min_residual': 50.0, 'is_pump': False,
+        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+        'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
+        'max_dr': 0.0
+    }]
+
+if 'linefill_df' not in st.session_state:
+    st.session_state['linefill_df'] = pd.DataFrame({
+        "From (km)": [0.0],
+        "To (km)":   [50.0],
+        "Viscosity (cSt)": [10.0],
+        "Density (kg/m³)": [850.0]
+    })
+
+
 # ----------- DRA CURVES -------------
 DRA_CSV_FILES = {10: "10 cst.csv", 15: "15 cst.csv", 20: "20 cst.csv", 25: "25 cst.csv", 30: "30 cst.csv", 35: "35 cst.csv", 40: "40 cst.csv"}
 DRA_CURVE_DATA = {}
