@@ -290,8 +290,12 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         stn['rate'] = 0.0
                 st.markdown("**Pump Data at DOL:**")
                 st.write("Flow vs Head data (m³/hr, m)")
+            if f"head_data_{idx}" in st.session_state and isinstance(st.session_state[f"head_data_{idx}"], pd.DataFrame):
+                df_head = st.session_state[f"head_data_{idx}"]
+            else:
                 df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+            df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+            st.session_state[f"head_data_{idx}"] = df_head
                 st.write("Flow vs Efficiency data (m³/hr, %)")
                 df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                 df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
