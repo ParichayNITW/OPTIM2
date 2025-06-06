@@ -718,98 +718,218 @@ with tabs[6]:
     st.session_state["fig_3d"] = fig
 
 # ===== TAB 8: PDF REPORT GENERATION =====
+import tempfile
+import plotly.io as pio
+from fpdf import FPDF
+
+def plot_to_pdf(fig, pdf, desc="Figure", w=265, h=110):
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        fig.update_layout(
+            margin=dict(l=30, r=30, b=60, t=60),
+            autosize=True,
+            width=950, height=420,
+        )
+        pio.write_image(fig, tmp.name, width=950, height=420, engine="kaleido")
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 11)
+        pdf.set_text_color(33,39,51)
+        pdf.cell(0, 8, desc, ln=True)
+        pdf.image(tmp.name, x=None, y=None, w=w, h=h)
+        pdf.ln(2)
+
 with tabs[7]:
     st.markdown("<div class='section-title'>Optimization Report Generator</div>", unsafe_allow_html=True)
     if "last_res" not in st.session_state:
         st.info("Please run optimization before generating the report.")
         st.stop()
-    if st.button("Generate & Download Optimization Report (PDF)", type="primary"):
-        # --------- PDF GENERATION --------------
-        with st.spinner("Building PDF Report..."):
+    if st.button("Generate & Download ALL-INCLUSIVE Optimization Report (PDF)", type="primary"):
+        with st.spinner("Building exhaustive PDF report..."):
             pdf = FPDF(orientation='L', unit='mm', format='A4')
+            pdf.set_auto_page_break(auto=True, margin=10)
+            
+            # PAGE 1: COVER + INPUTS
             pdf.add_page()
-            pdf.set_font("Arial", 'B', 16)
+            pdf.set_font("Arial", 'B', 18)
             pdf.set_text_color(33, 39, 51)
-            pdf.cell(0, 10, "Pipeline Optima Optimization Report", ln=True, align="C")
+            pdf.cell(0, 14, "Pipeline Optima™ Optimization Report", ln=True, align="C")
+            pdf.ln(6)
             pdf.set_font("Arial", '', 12)
-            pdf.ln(4)
-            pdf.cell(0, 10, "This report summarizes the complete optimization results, all user inputs, cost breakdown, performance, and visualization.", ln=True, align="C")
+            pdf.cell(0, 10, "All visualizations generated as per the latest optimization run.", ln=True, align="C")
             pdf.ln(10)
-            # --- Inputs Table
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 8, "Input Parameters", ln=True)
-            pdf.set_font("Arial", '', 10)
-            inputs = [
-                f"Flow Rate: {st.session_state.get('FLOW', 0):.2f} m³/hr",
-                f"DRA Cost: {st.session_state.get('RateDRA', 0):.2f} INR/L",
-                f"Diesel Price: {st.session_state.get('Price_HSD', 0):.2f} INR/L",
-                f"Terminal: {st.session_state.get('terminal_name','Terminal')} | Elev: {st.session_state.get('terminal_elev',0)} | Head: {st.session_state.get('terminal_head',0)}"
-            ]
-            for inp in inputs:
-                pdf.cell(0, 7, inp, ln=True)
+            pdf.set_font("Arial", '', 11)
+            pdf.set_text_color(60,60,60)
+            pdf.cell(0, 8, f"Flow Rate: {st.session_state.get('FLOW', 0):.2f} m³/hr", ln=True)
+            pdf.cell(0, 8, f"DRA Cost: {st.session_state.get('RateDRA', 0):.2f} INR/L", ln=True)
+            pdf.cell(0, 8, f"Diesel Price: {st.session_state.get('Price_HSD', 0):.2f} INR/L", ln=True)
+            pdf.cell(0, 8, f"Terminal: {st.session_state.get('terminal_name','Terminal')} | Elev: {st.session_state.get('terminal_elev',0)} | Head: {st.session_state.get('terminal_head',0)}", ln=True)
+            pdf.ln(6)
+            # Linefill Table
+            pdf.set_font("Arial", 'B', 11)
+            pdf.set_text_color(33,39,51)
+            pdf.cell(0, 7, "Linefill (Viscosity & Density by Length Range):", ln=True)
+            pdf.set_font("Arial", '', 9)
+            linefill_df = st.session_state['linefill_df']
+            for i, row in linefill_df.iterrows():
+                pdf.cell(0, 6, f"{row['From (km)']:.2f}–{row['To (km)']:.2f} km: KV={row['Viscosity (cSt)']} | Rho={row['Density (kg/m³)']}", ln=True)
             pdf.ln(4)
-            pdf.cell(0, 7, "Linefill (Viscosity & Density):", ln=True)
-            intervals_df = st.session_state['intervals_df']
-            pdf.set_font("Arial", '', 9)
-            for i, row in intervals_df.iterrows():
-                pdf.cell(0, 6, f"Start={row['Start (km)']} End={row['End (km)']} | KV={row['Viscosity (cSt)']} | Rho={row['Density (kg/m³)']}", ln=True)
-            pdf.ln(5)
-            # --- Summary Table
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 8, "Optimization Summary Table", ln=True)
-            pdf.set_font("Arial", '', 9)
+            
+            # PAGE 2: SUMMARY TABLE (fit to page, small font)
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 13)
+            pdf.set_text_color(33,39,51)
+            pdf.cell(0, 10, "Optimization Summary Table", ln=True, align="C")
             df_sum = st.session_state["df_sum"]
+            pdf.set_font("Arial", '', 7)
+            colw = max(32, int((pdf.w - 30) / len(df_sum.columns)))
             pdf.set_fill_color(220, 230, 241)
-            pdf.cell(38, 8, "Parameter", 1, 0, 'C', 1)
-            for col in df_sum.columns[1:]:
-                pdf.cell(38, 8, str(col), 1, 0, 'C', 1)
+            for col in df_sum.columns:
+                pdf.cell(colw, 7, str(col), 1, 0, 'C', 1)
             pdf.ln()
             for idx, row in df_sum.iterrows():
                 pdf.set_fill_color(245, 245, 245)
-                pdf.cell(38, 8, str(row["Parameters"]), 1, 0, 'C', 1)
-                for col in df_sum.columns[1:]:
+                for col in df_sum.columns:
                     val = row[col]
                     fmt = "{:.2f}" if isinstance(val, float) else "{}"
-                    pdf.cell(38, 8, fmt.format(val), 1, 0, 'C', 1)
+                    pdf.cell(colw, 7, fmt.format(val), 1, 0, 'C', 1)
                 pdf.ln()
-            pdf.ln(6)
-            # --- Pie/Bar/3D Plots
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 8, "Key Visualizations", ln=True)
             pdf.ln(4)
-            import plotly.io as pio
-            figs_to_save = [
-                ("Cost Breakdown", st.session_state.get("fig_pie")),
-                ("Head Loss", st.session_state.get("fig_h")),
-                ("3D Analysis", st.session_state.get("fig_3d"))
-            ]
-            for desc, fig in figs_to_save:
-                if fig:
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                        pio.write_image(fig, tmp.name, width=850, height=420, scale=2)
-                        pdf.image(tmp.name, w=250)
-                        pdf.ln(2)
-            # --- Final Writeup
-            pdf.set_font("Arial", 'B', 11)
-            pdf.cell(0, 8, "Summary Writeup", ln=True)
-            pdf.set_font("Arial", '', 10)
-            pdf.multi_cell(0, 8, 
-                "This report was automatically generated by Pipeline Optima. "
-                "All results, summary tables, and engineering curves reflect the "
-                "current project input and optimized operation. Use this document "
-                "for technical discussions, management reviews, or project documentation."
-            )
-            # --- PDF Download
+
+            # -------- GATHER ALL PLOTS FROM ALL TABS --------
+            # Tab 2: Cost
+            fig_pie = st.session_state.get("fig_pie")
+            if fig_pie: plot_to_pdf(fig_pie, pdf, desc="Station-wise Cost Breakdown")
+            # Tab 3: Performance
+            fig_h = st.session_state.get("fig_h")
+            if fig_h: plot_to_pdf(fig_h, pdf, desc="Head Loss per Station")
+            # Tab 4: System Curves (all variants per station, per DRA)
+            for k in [k for k in st.session_state.keys() if k.startswith("fig_sys_")]:
+                plot_to_pdf(st.session_state[k], pdf, desc="System Curve")
+            # Tab 5: Pump-System Interaction (all RPM/DRA/No. of Pumps)
+            for k in [k for k in st.session_state.keys() if k.startswith("fig_int_")]:
+                plot_to_pdf(st.session_state[k], pdf, desc="Pump-System Interaction")
+            # Tab 6: DRA Curves for all stations and all DRA points
+            for k in [k for k in st.session_state.keys() if k.startswith("fig_dra_")]:
+                plot_to_pdf(st.session_state[k], pdf, desc="DRA Curve")
+            # Tab 7: ALL 3D Surface Analysis plot variants (generate all!)
+            if "last_res" in st.session_state and "last_stations_data" in st.session_state:
+                last_res = st.session_state["last_res"]
+                stations_data = st.session_state["last_stations_data"]
+                FLOW = st.session_state.get("FLOW", 1000.0)
+                RateDRA = st.session_state.get("RateDRA", 500.0)
+                Price_HSD = st.session_state.get("Price_HSD", 70.0)
+                stn = stations_data[0]
+                speed_opt = float(last_res.get(f"speed_{stn['name'].lower().replace(' ', '_')}", 1500.0))
+                dra_opt = float(last_res.get(f"drag_reduction_{stn['name'].lower().replace(' ', '_')}", 0.0))
+                nopt_opt = int(last_res.get(f"num_pumps_{stn['name'].lower().replace(' ', '_')}", 1))
+                flow_opt = FLOW
+                delta_speed = 150
+                delta_dra = 10
+                delta_nop = 1
+                delta_flow = 150
+                N = 9
+                N_min = int(stn.get('MinRPM', 1000))
+                N_max = int(stn.get('DOL', 1500))
+                DRA_max = int(stn.get('max_dr', 40))
+                max_pumps = int(stn.get('max_pumps', 4))
+                speed_range = np.linspace(max(N_min, speed_opt - delta_speed), min(N_max, speed_opt + delta_speed), N)
+                dra_range = np.linspace(max(0, dra_opt - delta_dra), min(DRA_max, dra_opt + delta_dra), N)
+                nop_range = np.arange(max(1, nopt_opt - delta_nop), min(max_pumps, nopt_opt + delta_nop)+1)
+                flow_range = np.linspace(max(0.01, flow_opt - delta_flow), flow_opt + delta_flow, N)
+                groups = {
+                    "Head vs Flow vs Speed": {"x": flow_range, "y": speed_range, "z": "Head"},
+                    "Efficiency vs Flow vs Speed": {"x": flow_range, "y": speed_range, "z": "Efficiency"},
+                    "System Head vs Flow vs DRA": {"x": flow_range, "y": dra_range, "z": "SystemHead"},
+                    "Power Cost vs Speed vs DRA": {"x": speed_range, "y": dra_range, "z": "PowerCost"},
+                    "Power Cost vs Flow vs Speed": {"x": flow_range, "y": speed_range, "z": "PowerCost"},
+                    "Total Cost vs NOP vs DRA": {"x": nop_range, "y": dra_range, "z": "TotalCost"},
+                }
+                # Utility functions (reuse from your tab code)
+                A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
+                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
+                S = stn.get('S', 0); T = stn.get('T', 0)
+                DOL = float(stn.get('DOL', N_max))
+                rho = stn.get('rho', 850.0)
+                rate = stn.get('rate', 9.0)
+                g = 9.81
+                def get_head(q, n): return (A*q**2 + B*q + Cc)*(n/DOL)**2
+                def get_eff(q, n): q_adj = q * DOL/n if n > 0 else q; return (P*q_adj**4 + Qc*q_adj**3 + R*q_adj**2 + S*q_adj + T)
+                def get_power_cost(q, n, d, npump=1):
+                    h = get_head(q, n)
+                    eff = max(get_eff(q, n)/100, 0.01)
+                    pwr = (rho*q*g*h*npump)/(3600.0*eff*0.95*1000)
+                    return pwr*24*rate
+                def get_system_head(q, d):
+                    d_inner = stn['D'] - 2*stn['t']
+                    rough = stn['rough']
+                    L_seg = stn['L']
+                    v = q/3600.0/(np.pi*(d_inner**2)/4)
+                    Re = v*d_inner/(stn.get('KV',10.0)*1e-6) if stn.get('KV',10.0) > 0 else 0
+                    if Re > 0:
+                        f = 0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re**0.9))**2)
+                    else:
+                        f = 0.0
+                    DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
+                    return stn['elev'] + DH
+                def get_total_cost(q, n, d, npump):
+                    local_ppm = get_ppm_for_dr(stn.get('KV', 10.0), d)
+                    pcost = get_power_cost(q, n, d, npump)
+                    dracost = local_ppm * (q * 1000.0 * 24.0 / 1e6) * RateDRA
+                    return pcost + dracost
+                axis_labels = {
+                    "Head vs Flow vs Speed": ["Flow (m³/hr)", "Pump Speed (rpm)", "Head (m)"],
+                    "Efficiency vs Flow vs Speed": ["Flow (m³/hr)", "Pump Speed (rpm)", "Efficiency (%)"],
+                    "System Head vs Flow vs DRA": ["Flow (m³/hr)", "DRA (%)", "System Head (m)"],
+                    "Power Cost vs Speed vs DRA": ["Pump Speed (rpm)", "DRA (%)", "Power Cost (INR/day)"],
+                    "Power Cost vs Flow vs Speed": ["Flow (m³/hr)", "Pump Speed (rpm)", "Power Cost (INR/day)"],
+                    "Total Cost vs NOP vs DRA": ["No. of Pumps", "DRA (%)", "Total Cost (INR/day)"]
+                }
+                for plot_name, conf in groups.items():
+                    Xv, Yv = np.meshgrid(conf['x'], conf['y'], indexing='ij')
+                    Z = np.zeros_like(Xv, dtype=float)
+                    for i in range(Xv.shape[0]):
+                        for j in range(Xv.shape[1]):
+                            if plot_name == "Head vs Flow vs Speed":
+                                Z[i,j] = get_head(Xv[i,j], Yv[i,j])
+                            elif plot_name == "Efficiency vs Flow vs Speed":
+                                Z[i,j] = get_eff(Xv[i,j], Yv[i,j])
+                            elif plot_name == "System Head vs Flow vs DRA":
+                                Z[i,j] = get_system_head(Xv[i,j], Yv[i,j])
+                            elif plot_name == "Power Cost vs Speed vs DRA":
+                                Z[i,j] = get_power_cost(flow_opt, Xv[i,j], Yv[i,j], nopt_opt)
+                            elif plot_name == "Power Cost vs Flow vs Speed":
+                                Z[i,j] = get_power_cost(Xv[i,j], Yv[i,j], dra_opt, nopt_opt)
+                            elif plot_name == "Total Cost vs NOP vs DRA":
+                                Z[i,j] = get_total_cost(flow_opt, speed_opt, Yv[i,j], int(Xv[i,j]))
+                    xlab, ylab, zlab = axis_labels[plot_name]
+                    import plotly.graph_objects as go
+                    fig = go.Figure(data=[go.Surface(
+                        x=conf['x'], y=conf['y'], z=Z.T, colorscale='Viridis', colorbar=dict(title=zlab)
+                    )])
+                    fig.update_layout(
+                        scene=dict(
+                            xaxis_title=xlab,
+                            yaxis_title=ylab,
+                            zaxis_title=zlab
+                        ),
+                        title=f"{plot_name}",
+                        height=750,
+                        width=950,
+                        margin=dict(l=30, r=30, b=30, t=80)
+                    )
+                    plot_to_pdf(fig, pdf, desc=f"3D: {plot_name}")
+
+            # ========== FINISH AND DOWNLOAD ===========
             pdf_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             pdf.output(pdf_file.name)
             pdf_file.seek(0)
             st.success("PDF report generated! Download below:")
             st.download_button(
-                "Download Report (PDF)",
+                "Download Full Report (PDF)",
                 pdf_file.read(),
-                file_name="Pipeline_Optima_Optimization_Report.pdf",
+                file_name="Pipeline_Optima_Full_Optimization_Report.pdf",
                 mime="application/pdf"
             )
+
 
 st.markdown(
     "<div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>&copy; 2025 Pipeline Optima v1.3. Developed by Parichay Das. All rights reserved.</div>",
