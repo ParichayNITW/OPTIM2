@@ -296,18 +296,28 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                 df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
                 st.session_state[f"head_data_{idx}"] = df_head
+                
                 st.write("Flow vs Efficiency data (m³/hr, %)")
-                df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                if f"eff_data_{idx}" in st.session_state and isinstance(st.session_state[f"eff_data_{idx}"], pd.DataFrame):
+                    df_eff = st.session_state[f"eff_data_{idx}"]
+                else:
+                if f"eff_data_{idx}" in st.session_state and isinstance(st.session_state[f"eff_data_{idx}"], pd.DataFrame):
+                    df_eff = st.session_state[f"eff_data_{idx}"]
+                else:
+                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                 df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[f"head_data_{idx}"] = df_head
+                st.session_state[f"eff_data_{idx}"] = df_eff
                 st.session_state[f"eff_data_{idx}"] = df_eff
             else:
                 st.info("Not a pumping station. No pump data required.")
         with tabs[1]:  # Peaks tab
             st.markdown("Intermediate Elevation Peaks (to next station):")
-            default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-            peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
-            st.session_state[f"peak_data_{idx}"] = peak_df
+                if f"peak_data_{idx}" in st.session_state and isinstance(st.session_state[f"peak_data_{idx}"], pd.DataFrame):
+                    peak_df = st.session_state[f"peak_data_{idx}"]
+                else:
+                    peak_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+                peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
+                st.session_state[f"peak_data_{idx}"] = peak_df
 
 # ===== STATION INPUTS END =====
 
