@@ -11,11 +11,11 @@ import json
 from plotly.colors import qualitative
 from fpdf import FPDF
 import tempfile
+import plotly.io as pio
 
 # ----------- PAGE CONFIG -------------
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
-
 
 # ------------- USER LOGIN -------------
 def hash_pwd(pwd):
@@ -45,7 +45,6 @@ def check_login():
             st.session_state.authenticated = False
             st.rerun()
 check_login()
-
 
 # ----------- DRA CURVES -------------
 DRA_CSV_FILES = {10: "10 cst.csv", 15: "15 cst.csv", 20: "20 cst.csv", 25: "25 cst.csv", 30: "30 cst.csv", 35: "35 cst.csv", 40: "40 cst.csv"}
@@ -114,7 +113,6 @@ if uploaded_case is not None:
         st.session_state['linefill_df'] = pd.DataFrame(loaded_data['linefill_df'])
     st.success("Case loaded!")
 
-
 # ----------- PAGE TITLE -------------
 st.markdown(
     "<h1 style='text-align:center;font-size:3.4rem;font-weight:700;color:#232733;margin-bottom:0.25em;margin-top:0.01em;letter-spacing:0.5px;font-family: inherit;'>Pipeline Optima™</h1>",
@@ -167,15 +165,15 @@ if 'stations' not in st.session_state:
 # -------- LENGTH-WISE VISCOSITY & DENSITY INPUT --------
 with st.sidebar:
     st.markdown("#### Linefill: Enter intervals for viscosity & density")
-    if 'intervals_df' not in st.session_state:
-        st.session_state['intervals_df'] = pd.DataFrame({
-            "Start (km)": [0.0],
-            "End (km)":   [50.0],
+    if 'linefill_df' not in st.session_state:
+        st.session_state['linefill_df'] = pd.DataFrame({
+            "From (km)": [0.0],
+            "To (km)":   [50.0],
             "Viscosity (cSt)": [10.0],
             "Density (kg/m³)": [850.0]
         })
-    st.session_state['intervals_df'] = st.data_editor(
-        st.session_state['intervals_df'], num_rows="dynamic", key="intervals_editor"
+    st.session_state['linefill_df'] = st.data_editor(
+        st.session_state['linefill_df'], num_rows="dynamic", key="linefill_editor"
     )
 
 # ----------- STATION INPUTS -------------
@@ -254,7 +252,6 @@ def get_full_case_dict():
         station_copy['eff_data']  = eff_df.to_dict(orient='list')  if eff_df is not None  else None
         station_copy['peak_data'] = peak_df.to_dict(orient='list') if peak_df is not None else None
         stations_full.append(station_copy)
-    # Return everything needed
     return {
         "stations": stations_full,
         "terminal": {
@@ -267,7 +264,7 @@ def get_full_case_dict():
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "linefill_df": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient='list')
     }
-
+st.sidebar.download_button("💾 Save Case", data=json.dumps(get_full_case_dict()), file_name="pipeline_optima_case.json")
 
 # ------------- OPTIMIZATION -------------
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD):
@@ -310,7 +307,7 @@ if run:
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
         # ------ MAP LENGTH-WISE INTERVALS TO SEGMENTS ------
-        intervals_df = st.session_state['intervals_df']
+        linefill_df = st.session_state['linefill_df']
         seg_starts = []
         seg_lengths = []
         curr_km = 0.0
@@ -323,13 +320,13 @@ if run:
         rho_per_segment = []
         for start_km, end_km in zip(seg_starts, seg_ends):
             midpoint = (start_km + end_km) / 2.0
-            mask = (intervals_df["Start (km)"] <= midpoint) & (intervals_df["End (km)"] > midpoint)
+            mask = (linefill_df["From (km)"] <= midpoint) & (linefill_df["To (km)"] > midpoint)
             if mask.any():
-                idx = intervals_df[mask].index[-1]
+                idx = linefill_df[mask].index[-1]
             else:
                 idx = 0
-            KV_per_segment.append(intervals_df.loc[idx, "Viscosity (cSt)"])
-            rho_per_segment.append(intervals_df.loc[idx, "Density (kg/m³)"])
+            KV_per_segment.append(linefill_df.loc[idx, "Viscosity (cSt)"])
+            rho_per_segment.append(linefill_df.loc[idx, "Density (kg/m³)"])
         res = solve_pipeline(
             stations_data, term_data, st.session_state["FLOW"],
             KV_per_segment, rho_per_segment,
@@ -339,6 +336,7 @@ if run:
         st.session_state["last_res"] = copy.deepcopy(res)
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
+
 
 # ------------- TABS -------------
 tabs = st.tabs([
