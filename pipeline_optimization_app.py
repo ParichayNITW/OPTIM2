@@ -12,6 +12,11 @@ from plotly.colors import qualitative
 from fpdf import FPDF
 import tempfile
 
+st.set_page_config(page_title="Pipeline Optima", layout="wide")  # <--- THIS MUST BE HERE
+
+# Now, your login and all other Streamlit UI/logic
+
+
 # ------------- USER LOGIN -------------
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
