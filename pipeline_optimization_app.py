@@ -84,35 +84,6 @@ def get_ppm_for_dr(viscosity, target_dr, dra_curve_data=DRA_CURVE_DATA):
         ppm_interp = np.interp(viscosity, [lower, upper], [ppm_lower, ppm_upper])
         return ppm_interp
 
-# ----------- LOAD/RESTORE CASE -------------
-uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
-if uploaded_case is not None:
-    loaded_data = json.load(uploaded_case)
-    stations_full = loaded_data.get('stations', [])
-    st.session_state['stations'] = []
-    # Restore all stations and their pump/peak data
-    for idx, stn in enumerate(stations_full, start=1):
-        base_keys = [k for k in stn.keys() if k not in ['head_data', 'eff_data', 'peak_data']]
-        stn_base = {k: stn[k] for k in base_keys}
-        st.session_state['stations'].append(stn_base)
-        # Restore pump/peak DataFrames to session state
-        if stn.get('head_data') is not None:
-            st.session_state[f"head_data_{idx}"] = pd.DataFrame(stn['head_data'])
-        if stn.get('eff_data') is not None:
-            st.session_state[f"eff_data_{idx}"] = pd.DataFrame(stn['eff_data'])
-        if stn.get('peak_data') is not None:
-            st.session_state[f"peak_data_{idx}"] = pd.DataFrame(stn['peak_data'])
-    # Terminal and other parameters
-    st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
-    st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
-    st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
-    st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
-    st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
-    st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
-    if loaded_data.get('linefill_df') is not None:
-        st.session_state['linefill_df'] = pd.DataFrame(loaded_data['linefill_df'])
-    st.success("Case loaded!")
-
 # ----------- PAGE TITLE -------------
 st.markdown(
     "<h1 style='text-align:center;font-size:3.4rem;font-weight:700;color:#232733;margin-bottom:0.25em;margin-top:0.01em;letter-spacing:0.5px;font-family: inherit;'>Pipeline Optima™</h1>",
@@ -125,6 +96,7 @@ st.markdown(
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
 # ----------- GLOBAL PARAMETERS -------------
+# ----------- SIDEBAR: ALL INPUTS + SAVE/LOAD ---------
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
@@ -152,18 +124,6 @@ with st.sidebar:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
-if 'stations' not in st.session_state:
-    st.session_state.stations = [{
-        'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-        'min_residual': 50.0, 'is_pump': False,
-        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-        'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-        'max_dr': 0.0
-    }]
-
-# -------- LENGTH-WISE VISCOSITY & DENSITY INPUT --------
-with st.sidebar:
     st.markdown("#### Linefill: Enter intervals for viscosity & density")
     if 'linefill_df' not in st.session_state:
         st.session_state['linefill_df'] = pd.DataFrame({
@@ -175,6 +135,60 @@ with st.sidebar:
     st.session_state['linefill_df'] = st.data_editor(
         st.session_state['linefill_df'], num_rows="dynamic", key="linefill_editor"
     )
+
+    # ==== Save & Load controls immediately below linefill ====
+    def case_dict():
+        return {
+            "stations": [
+                dict(
+                    **stn,
+                    head_data=st.session_state.get(f"head_data_{i+1}", pd.DataFrame()).to_dict(orient='list') if stn.get('is_pump') else None,
+                    eff_data=st.session_state.get(f"eff_data_{i+1}", pd.DataFrame()).to_dict(orient='list') if stn.get('is_pump') else None,
+                    peak_data=st.session_state.get(f"peak_data_{i+1}", pd.DataFrame()).to_dict(orient='list')
+                ) for i, stn in enumerate(st.session_state.get('stations', []))
+            ],
+            "terminal": {
+                "name": st.session_state.get('terminal_name', 'Terminal'),
+                "elev": st.session_state.get('terminal_elev', 0.0),
+                "min_residual": st.session_state.get('terminal_head', 50.0)
+            },
+            "FLOW": st.session_state.get('FLOW', 1000.0),
+            "RateDRA": st.session_state.get('RateDRA', 500.0),
+            "Price_HSD": st.session_state.get('Price_HSD', 70.0),
+            "linefill_df": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient='list')
+        }
+
+    st.download_button(
+        "💾 Save Case", data=json.dumps(case_dict()), file_name="pipeline_optima_case.json",
+        help="Download all your current pipeline settings as a JSON file"
+    )
+
+    uploaded_case = st.file_uploader("🔁 Load Case", type="json", help="Restore all pipeline inputs from a previous save")
+    if uploaded_case is not None:
+        loaded_data = json.load(uploaded_case)
+        stations_full = loaded_data.get('stations', [])
+        st.session_state['stations'] = []
+        # Restore all stations and their pump/peak data
+        for idx, stn in enumerate(stations_full, start=1):
+            base_keys = [k for k in stn.keys() if k not in ['head_data', 'eff_data', 'peak_data']]
+            stn_base = {k: stn[k] for k in base_keys}
+            st.session_state['stations'].append(stn_base)
+            if stn.get('head_data') is not None:
+                st.session_state[f"head_data_{idx}"] = pd.DataFrame(stn['head_data'])
+            if stn.get('eff_data') is not None:
+                st.session_state[f"eff_data_{idx}"] = pd.DataFrame(stn['eff_data'])
+            if stn.get('peak_data') is not None:
+                st.session_state[f"peak_data_{idx}"] = pd.DataFrame(stn['peak_data'])
+        st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
+        st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
+        st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
+        st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+        st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+        st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+        if loaded_data.get('linefill_df') is not None:
+            st.session_state['linefill_df'] = pd.DataFrame(loaded_data['linefill_df'])
+        st.success("Case loaded!")
+
 
 # ----------- STATION INPUTS -------------
 for idx, stn in enumerate(st.session_state.stations, start=1):
@@ -237,34 +251,6 @@ st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal", key="terminal_name")
 terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.0, key="terminal_head")
-
-# ---------- SAVE CASE ----------
-def get_full_case_dict():
-    stations = st.session_state.get('stations', [])
-    stations_full = []
-    for idx, stn in enumerate(stations, start=1):
-        station_copy = dict(stn)  # Copy base station data
-        # Add pump head/eff/peak data if available
-        head_df = st.session_state.get(f"head_data_{idx}")
-        eff_df  = st.session_state.get(f"eff_data_{idx}")
-        peak_df = st.session_state.get(f"peak_data_{idx}")
-        station_copy['head_data'] = head_df.to_dict(orient='list') if head_df is not None else None
-        station_copy['eff_data']  = eff_df.to_dict(orient='list')  if eff_df is not None  else None
-        station_copy['peak_data'] = peak_df.to_dict(orient='list') if peak_df is not None else None
-        stations_full.append(station_copy)
-    return {
-        "stations": stations_full,
-        "terminal": {
-            "name": st.session_state.get('terminal_name', 'Terminal'),
-            "elev": st.session_state.get('terminal_elev', 0.0),
-            "min_residual": st.session_state.get('terminal_head', 50.0)
-        },
-        "FLOW": st.session_state.get('FLOW', 1000.0),
-        "RateDRA": st.session_state.get('RateDRA', 500.0),
-        "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        "linefill_df": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient='list')
-    }
-st.sidebar.download_button("💾 Save Case", data=json.dumps(get_full_case_dict()), file_name="pipeline_optima_case.json")
 
 # ------------- OPTIMIZATION -------------
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD):
