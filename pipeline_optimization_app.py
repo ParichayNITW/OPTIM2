@@ -9,12 +9,12 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
-import glob
-from io import BytesIO
-from fpdf import FPDF
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
+st.set_page_config(page_title="Pipeline Optima™", layout="wide")
+
+# -- DRA Curve Data Load (as in your original code, can be modified to fit your CSVs) --
 DRA_CSV_FILES = {
     10: "10 cst.csv",
     15: "15 cst.csv",
@@ -24,90 +24,135 @@ DRA_CSV_FILES = {
     35: "35 cst.csv",
     40: "40 cst.csv"
 }
-
 DRA_CURVE_DATA = {}
-
 for cst, fname in DRA_CSV_FILES.items():
-    # The file path should be relative to your app
     if os.path.exists(fname):
         df = pd.read_csv(fname)
-        # Assumes columns: 'PPM', '%Drag Reduction'
         DRA_CURVE_DATA[cst] = df
     else:
-        DRA_CURVE_DATA[cst] = None  # Mark missing
+        DRA_CURVE_DATA[cst] = None
 
-def get_ppm_for_dr(viscosity, target_dr, dra_curve_data=DRA_CURVE_DATA):
-    """
-    Interpolate/extrapolate the required PPM for a given viscosity (cst) and Drag Reduction (%) using DRA curves.
-    - viscosity: float, actual viscosity entered by user for the station
-    - target_dr: float, required drag reduction (after min() logic)
-    - dra_curve_data: dict mapping cst -> DataFrame
-    """
+def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
     cst_list = sorted(dra_curve_data.keys())
-    viscosity = float(viscosity)
-    # Bound the viscosity if outside provided range
-    if viscosity <= cst_list[0]:
+    visc = float(visc)
+    if visc <= cst_list[0]:
         df = dra_curve_data[cst_list[0]]
-        return _ppm_from_df(df, target_dr)
-    elif viscosity >= cst_list[-1]:
+        return _ppm_from_df(df, dr)
+    elif visc >= cst_list[-1]:
         df = dra_curve_data[cst_list[-1]]
-        return _ppm_from_df(df, target_dr)
+        return _ppm_from_df(df, dr)
     else:
-        # Interpolate between the two nearest curves
-        lower = max([c for c in cst_list if c <= viscosity])
-        upper = min([c for c in cst_list if c >= viscosity])
+        lower = max([c for c in cst_list if c <= visc])
+        upper = min([c for c in cst_list if c >= visc])
         df_lower = dra_curve_data[lower]
         df_upper = dra_curve_data[upper]
-        ppm_lower = _ppm_from_df(df_lower, target_dr)
-        ppm_upper = _ppm_from_df(df_upper, target_dr)
-        # Linear interpolation on viscosity
-        ppm_interp = np.interp(viscosity, [lower, upper], [ppm_lower, ppm_upper])
+        ppm_lower = _ppm_from_df(df_lower, dr)
+        ppm_upper = _ppm_from_df(df_upper, dr)
+        ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
         return ppm_interp
 
-def _ppm_from_df(df, target_dr):
-    """Given a DRA curve DataFrame, interpolate to get the PPM needed for target_dr."""
+def _ppm_from_df(df, dr):
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
-    # If target_dr above or below curve, extrapolate; else, interpolate
-    if target_dr <= x[0]:
+    if dr <= x[0]:
         return y[0]
-    elif target_dr >= x[-1]:
+    elif dr >= x[-1]:
         return y[-1]
     else:
-        return np.interp(target_dr, x, y)
+        return np.interp(dr, x, y)
 
-st.set_page_config(page_title="Pipeline Optima™", layout="wide")
+def hash_pwd(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
 
-# --- Load Case ---
-if uploaded_case is not None:
-    loaded_data = json.load(uploaded_case)
-    st.session_state['stations'] = loaded_data.get('stations', [])
-    st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
-    st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
-    st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
-    st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
-    st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
-    st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+users = {
+    "parichay_das": hash_pwd("heteroscedasticity")
+}
+def check_login():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if not st.session_state.authenticated:
+        st.title("🔒 User Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if username in users and hash_pwd(password) == users[username]:
+                st.session_state.authenticated = True
+                st.success("Login successful!")
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+        #st.markdown(
+            """
+            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
+            </div>
+            """,
+            unsafe_allow_html=True
+        #)
+        st.stop()
+    with st.sidebar:
+        if st.button("Logout"):
+            st.session_state.authenticated = False
+            st.rerun()
+check_login()
 
-    # Restore per-station data
-    for i in range(len(st.session_state['stations'])):
-        head_dict = loaded_data.get(f"head_data_{i+1}", None)
-        if head_dict:
-            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
-        eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
-        if eff_dict:
-            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
-        peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
-        if peak_dict:
-            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
+if 'NEOS_EMAIL' in st.secrets:
+    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
+else:
+    st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-    st.success("Case loaded! All station and curve data restored.")
+# ------ SIDEBAR: Global Inputs and Linefill --------
+with st.sidebar:
+    st.title("🔧 Pipeline Inputs")
+    with st.expander("Global Fluid & Cost Parameters", expanded=True):
+        FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
+        RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
+        Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
+        st.session_state["FLOW"] = FLOW
+        st.session_state["RateDRA"] = RateDRA
+        st.session_state["Price_HSD"] = Price_HSD
 
+    st.subheader("Linefill Profile (7:00 Hrs)")
+    if "linefill_df" not in st.session_state:
+        st.session_state["linefill_df"] = pd.DataFrame({
+            "Start (km)": [0.0],
+            "End (km)": [100.0],
+            "Viscosity (cSt)": [10.0],
+            "Density (kg/m³)": [850.0]
+        })
+    st.session_state["linefill_df"] = st.data_editor(
+        st.session_state["linefill_df"],
+        num_rows="dynamic", key="linefill_editor"
+    )
 
-# Small top margin for clarity
+    st.subheader("Stations")
+    add_col, rem_col = st.columns(2)
+    if "stations" not in st.session_state:
+        st.session_state["stations"] = [{
+            'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'min_residual': 50.0, 'is_pump': False,
+            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+            'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
+            'max_dr': 0.0
+        }]
+    if add_col.button("➕ Add Station"):
+        n = len(st.session_state.get('stations',[])) + 1
+        default = {
+            'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'min_residual': 50.0, 'is_pump': False,
+            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
+            'max_dr': 0.0
+        }
+        st.session_state.stations.append(default)
+    if rem_col.button("🗑️ Remove Station"):
+        if st.session_state.get('stations'):
+            st.session_state.stations.pop()
+
+# ----------- MAIN HEADER -----------
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
-
-# Main App Name – larger font
 st.markdown(
     """
     <h1 style='
@@ -125,8 +170,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
-# Subtitle – a bit smaller, but also larger than before
 st.markdown(
     """
     <div style='
@@ -143,116 +186,11 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
-# Clean horizontal line (like Streamlit default)
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
-def hash_pwd(pwd):
-    return hashlib.sha256(pwd.encode()).hexdigest()
-
-users = {
-    "parichay_das": hash_pwd("heteroscedasticity")
-}
-
-def check_login():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    if not st.session_state.authenticated:
-        st.title("🔒 User Login")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if username in users and hash_pwd(password) == users[username]:
-                st.session_state.authenticated = True
-                st.success("Login successful!")
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        st.stop()
-    with st.sidebar:
-        if st.button("Logout"):
-            st.session_state.authenticated = False
-            st.rerun()
-check_login()
-
-if 'NEOS_EMAIL' in st.secrets:
-    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
-else:
-    st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
-
-st.markdown("""
-<style>
-.section-title {
-  font-size:1.2rem; font-weight:600; margin-top:1rem;
-  color: var(--text-primary-color);
-}
-</style>
-""", unsafe_allow_html=True)
-
-def get_input_fingerprint():
-    return hashlib.md5(json.dumps({
-        "stations": st.session_state.get('stations', []),
-        "terminal": {
-            "name": st.session_state.get('terminal_name', 'Terminal'),
-            "elev": st.session_state.get('terminal_elev', 0.0),
-            "min_residual": st.session_state.get('terminal_head', 50.0),
-        },
-        "FLOW": st.session_state.get('FLOW', 1000.0),
-        "RateDRA": st.session_state.get('RateDRA', 500.0),
-        "Price_HSD": st.session_state.get('Price_HSD', 70.0)
-    }, sort_keys=True, default=str).encode()).hexdigest()
-
-# ----- SIDEBAR -----
-with st.sidebar:
-    st.title("🔧 Pipeline Inputs")
-    with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)", value=1000.0, step=10.0)
-        RateDRA   = st.number_input("DRA Cost (INR/L)", value=500.0, step=1.0)
-        Price_HSD = st.number_input("Diesel Price (INR/L)", value=70.0, step=0.5)
-        st.session_state["FLOW"] = FLOW
-        st.session_state["RateDRA"] = RateDRA
-        st.session_state["Price_HSD"] = Price_HSD
-
-    st.subheader("Stations")
-    add_col, rem_col = st.columns(2)
-    if add_col.button("➕ Add Station"):
-        n = len(st.session_state.get('stations',[])) + 1
-        default = {
-            'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-            'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0
-        }
-        st.session_state.stations.append(default)
-    if rem_col.button("🗑️ Remove Station"):
-        if st.session_state.get('stations'):
-            st.session_state.stations.pop()
-
-# ===== STATION INPUTS START =====
-
-if 'stations' not in st.session_state:
-    st.session_state.stations = [{
-        'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-        'min_residual': 50.0, 'is_pump': False,
-        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-        'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-        'max_dr': 0.0
-    }]
-
+# ----------- STATION CARD UI (No viscosity/density inputs anymore) -----------
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
-        # Three columns for quick side-by-side data entry
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
             stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
@@ -270,19 +208,15 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
             stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
         with col3:
-            stn['rho'] = st.number_input("Density (kg/m³)", value=stn.get('rho', 850.0), step=10.0, key=f"rho{idx}")
-            stn['KV'] = st.number_input("Viscosity (cSt)", value=stn.get('KV', 10.0), step=0.1, key=f"kv{idx}")
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
-        # Tabs for advanced per-station inputs (minimal scroll)
         tabs = st.tabs(["Pump", "Peaks"])
-        with tabs[0]:  # Pump tab
+        with tabs[0]:
             if stn['is_pump']:
                 pcol1, pcol2, pcol3 = st.columns(3)
                 with pcol1:
                     stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
                                                     index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                    
                 with pcol2:
                     stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
                     stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
@@ -295,51 +229,31 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         stn['rate'] = 0.0
                 st.markdown("**Pump Data at DOL:**")
                 st.write("Flow vs Head data (m³/hr, m)")
-                if f"head_data_{idx}" in st.session_state and isinstance(st.session_state[f"head_data_{idx}"], pd.DataFrame):
-                    df_head = st.session_state[f"head_data_{idx}"]
-                else:
-                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                 df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.session_state[f"head_data_{idx}"] = df_head
-                
                 st.write("Flow vs Efficiency data (m³/hr, %)")
-                if f"eff_data_{idx}" in st.session_state and isinstance(st.session_state[f"eff_data_{idx}"], pd.DataFrame):
-                    df_eff = st.session_state[f"eff_data_{idx}"]
-                else:
-                if f"eff_data_{idx}" in st.session_state and isinstance(st.session_state[f"eff_data_{idx}"], pd.DataFrame):
-                    df_eff = st.session_state[f"eff_data_{idx}"]
-                else:
-                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                 df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[f"eff_data_{idx}"] = df_eff
+                st.session_state[f"head_data_{idx}"] = df_head
                 st.session_state[f"eff_data_{idx}"] = df_eff
             else:
                 st.info("Not a pumping station. No pump data required.")
-        with tabs[1]:  # Peaks tab
+        with tabs[1]:
             st.markdown("Intermediate Elevation Peaks (to next station):")
-                if f"peak_data_{idx}" in st.session_state and isinstance(st.session_state[f"peak_data_{idx}"], pd.DataFrame):
-                    peak_df = st.session_state[f"peak_data_{idx}"]
-                else:
-                    peak_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-                peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
-                st.session_state[f"peak_data_{idx}"] = peak_df
+            default_peak = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+            peak_df = st.data_editor(default_peak, num_rows="dynamic", key=f"peak{idx}")
+            st.session_state[f"peak_data_{idx}"] = peak_df
 
-# ===== STATION INPUTS END =====
-
-# --------- Terminal Station Inputs ---------
+# ----------- TERMINAL -----------
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value="Terminal", key="terminal_name")
 terminal_elev = st.number_input("Elevation (m)", value=0.0, step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=50.0, step=1.0, key="terminal_head")
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD):
-    import pipeline_model
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD)
+# ----------- SAVE/LOAD CASE -----------
 
-# --------- Save Case ---------
 def get_full_case_dict():
-    station_count = len(st.session_state.get('stations', []))
     return {
         "stations": st.session_state.get('stations', []),
         "terminal": {
@@ -350,23 +264,47 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
+        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(),
         **{
-            f"head_data_{i+1}": st.session_state.get(f"head_data_{i+1}").to_dict()
-            if f"head_data_{i+1}" in st.session_state else None
-            for i in range(station_count)
+            f"head_data_{i+1}": st.session_state.get(f"head_data_{i+1}").to_dict() if st.session_state.get(f"head_data_{i+1}") is not None else None
+            for i in range(len(st.session_state.get('stations', [])))
         },
         **{
-            f"eff_data_{i+1}": st.session_state.get(f"eff_data_{i+1}").to_dict()
-            if f"eff_data_{i+1}" in st.session_state else None
-            for i in range(station_count)
+            f"eff_data_{i+1}": st.session_state.get(f"eff_data_{i+1}").to_dict() if st.session_state.get(f"eff_data_{i+1}") is not None else None
+            for i in range(len(st.session_state.get('stations', [])))
         },
         **{
-            f"peak_data_{i+1}": st.session_state.get(f"peak_data_{i+1}").to_dict()
-            if f"peak_data_{i+1}" in st.session_state else None
-            for i in range(station_count)
+            f"peak_data_{i+1}": st.session_state.get(f"peak_data_{i+1}").to_dict() if st.session_state.get(f"peak_data_{i+1}") is not None else None
+            for i in range(len(st.session_state.get('stations', [])))
         }
     }
 
+def restore_case_dict(loaded_data):
+    st.session_state['stations'] = loaded_data.get('stations', [])
+    st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
+    st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
+    st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
+    st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+    st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+    st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+    if "linefill" in loaded_data:
+        st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+    for i in range(len(st.session_state['stations'])):
+        head_dict = loaded_data.get(f"head_data_{i+1}", None)
+        if head_dict:
+            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
+        eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
+        if eff_dict:
+            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
+        peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
+        if peak_dict:
+            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
+    st.success("Case loaded! All data restored.")
+
+uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
+if uploaded_case is not None:
+    loaded_data = json.load(uploaded_case)
+    restore_case_dict(loaded_data)
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
@@ -376,12 +314,41 @@ st.sidebar.download_button(
     mime="application/json"
 )
 
+# ----------- RUN OPTIMIZATION -----------
+
+def map_linefill_to_segments(linefill_df, stations):
+    # For each segment, find which row of linefill it falls into (using start cumulative km)
+    cumlen = [0]
+    for stn in stations:
+        cumlen.append(cumlen[-1] + stn["L"])
+    viscs = []
+    dens = []
+    for i in range(len(stations)):
+        seg_start = cumlen[i]
+        seg_end = cumlen[i+1]
+        found = False
+        for _, row in linefill_df.iterrows():
+            if row["Start (km)"] <= seg_start < row["End (km)"]:
+                viscs.append(row["Viscosity (cSt)"])
+                dens.append(row["Density (kg/m³)"])
+                found = True
+                break
+        if not found:
+            # Default/fallback if segment not covered
+            viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
+            dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
+    return viscs, dens
+
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
+    import pipeline_model
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
 run = st.button("🚀 Run Optimization")
 if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+        # --- Validate all peaks, pump curves, and collect into stations
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -412,16 +379,18 @@ if run:
                         st.stop()
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
-        per_station_KV = [stn['KV'] for stn in stations_data]
-        per_station_rho = [stn['rho'] for stn in stations_data]
-        res = solve_pipeline(stations_data, term_data, FLOW, per_station_KV, per_station_rho, RateDRA, Price_HSD)
+        # --- Map linefill to all segments ---
+        linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        # --- Call backend
+        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
-        st.session_state["last_input_fingerprint"] = get_input_fingerprint()
+        st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
 
-# ---------- TABS -----------
+# ---- Result Tabs ----
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
@@ -432,7 +401,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🧊 3D Analysis and Surface Plots"      
 ])
 
-# ---- Tab 1 ----
+# ---- Tab 1: Summary ----
 with tab1:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -446,21 +415,20 @@ with tab1:
             "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "DRA (%)"
         ]
         summary = {"Parameters": params}
-        
-        # === STEP 3: Calculate capped Drag Reduction and PPM for each station ===
+        # --- DRA/PPM summary ---
         station_dr_capped = {}
         station_ppm = {}
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
-            dr_opt = res.get(f"drag_reduction_{key}", 0.0)       # Output from optimization
-            dr_max = stn.get('max_dr', 0.0)                      # User input (max achievable)
-            viscosity = stn.get('KV', 10.0)                      # User input (station viscosity)
-            dr_use = min(dr_opt, dr_max)                         # Take lower of the two
+            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+            dr_max = stn.get('max_dr', 0.0)
+            viscosity = kv_list[idx-1]
+            dr_use = min(dr_opt, dr_max)
             station_dr_capped[key] = dr_use
             ppm = get_ppm_for_dr(viscosity, dr_use)
             station_ppm[key] = ppm
-
-        
         for nm in names:
             key = nm.lower().replace(' ','_')
             # DRA cost: Only for stations, not terminal
@@ -486,9 +454,7 @@ with tab1:
                 res.get(f"sdh_{key}",0.0),
                 res.get(f"drag_reduction_{key}",0.0)
             ]
-
         df_sum = pd.DataFrame(summary)
-        # Remove index column, format decimals, left align all
         fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
         fmt["No. of Pumps"] = "{:.0f}"
         fmt["Pump Speed (rpm)"] = "{:.0f}"
@@ -496,37 +462,56 @@ with tab1:
         styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-        # Show summary below the table
         total_cost = res.get('total_cost', 0)
         if isinstance(total_cost, str):
-            # Remove any commas in string, convert to float (in case backend inserted commas)
             total_cost = float(total_cost.replace(',', ''))
+        
+        # --- Calculate total and average values for all running pumps ---
+        total_pumps = 0
+        effs = []
+        speeds = []
+        
+        for stn in stations_data:
+            key = stn['name'].lower().replace(' ','_')
+            npump = int(res.get(f"num_pumps_{key}", 0))
+            if npump > 0:
+                total_pumps += npump
+                eff = float(res.get(f"efficiency_{key}", 0.0))
+                speed = float(res.get(f"speed_{key}", 0.0))
+                for _ in range(npump):
+                    effs.append(eff)
+                    speeds.append(speed)
+        avg_eff = sum(effs)/len(effs) if effs else 0.0
+        avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
         
         st.markdown(
             f"""<br>
             <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
-            <b>No. of operating Pumps:</b> {int(res.get('num_pumps_'+names[0].lower().replace(' ','_'),0))}<br>
-            <b>Average Pump Efficiency:</b> {res.get('efficiency_'+names[0].lower().replace(' ','_'),0.0):.2f} %<br>
-            <b>Average Pump Speed:</b> {res.get('speed_'+names[0].lower().replace(' ','_'),0.0):.0f} rpm</div>
+            <b>No. of operating Pumps:</b> {total_pumps}<br>
+            <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
+            <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
             """,
             unsafe_allow_html=True
         )
 
-# ---- Tab 2 ----
+
+# ---- Tab 2: Cost Breakdown ----
 with tab2:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         df_cost = pd.DataFrame({
             "Station": [s['name'] for s in stations_data],
             "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
             "DRA": [
-                station_ppm.get(s['name'].lower().replace(' ','_'), 0.0)
+                get_ppm_for_dr(kv_list[i], min(res.get(f"drag_reduction_{s['name'].lower().replace(' ','_')}",0.0), s.get('max_dr',0.0)))
                 * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
                 * st.session_state["RateDRA"]
-                for s in stations_data
+                for i,s in enumerate(stations_data)
             ]
         })
         df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
@@ -535,8 +520,7 @@ with tab2:
         st.plotly_chart(fig_pie, use_container_width=True)
         st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
 
-
-# ---- Tab 3 ----
+# ---- Tab 3: Performance ----
 with tab3:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -548,7 +532,6 @@ with tab3:
             "Pump Characteristic Curve", "Pump Efficiency Curve",
             "Pressure vs Pipeline Length", "Power vs Speed/Flow"
         ])
-        # Head Loss
         with perf_tab:
             st.markdown("<div class='section-title'>Head Loss per Segment</div>", unsafe_allow_html=True)
             df_hloss = pd.DataFrame({
@@ -558,7 +541,6 @@ with tab3:
             fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
             fig_h.update_layout(yaxis_title="Head Loss (m)")
             st.plotly_chart(fig_h, use_container_width=True, key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
-        # Velocity & Reynolds
         with head_tab:
             st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
             df_vel = pd.DataFrame({
@@ -567,7 +549,6 @@ with tab3:
                 "Reynolds": [res.get(f"reynolds_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
             })
             st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds":"{:.0f}"}))
-        # Pump Characteristic Curve (at multiple RPMs)
         with char_tab:
             st.markdown("<div class='section-title'>Pump Characteristic Curves (Head vs Flow at various Speeds)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -584,7 +565,6 @@ with tab3:
                     fig.add_trace(go.Scatter(x=flows, y=H, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
                 st.plotly_chart(fig, use_container_width=True, key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
-        # Pump Efficiency Curve (at multiple RPMs)
         with eff_tab:
             st.markdown("<div class='section-title'>Pump Efficiency Curves (Eff vs Flow at various Speeds)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -598,17 +578,16 @@ with tab3:
                     flows = np.linspace(flow_min, flow_max, 200)
                 else:
                     flows = np.linspace(0.01, FLOW*1.5, 200)
-                P = stn.get('P',0); Q = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+                P = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, 100):
                     Q_adj = flows * N_max/rpm
-                    eff = (P*Q_adj**4 + Q*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
+                    eff = (P*Q_adj**4 + Qc*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
                     fig.add_trace(go.Scatter(x=flows, y=eff, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(title=f"Efficiency vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Efficiency (%)")
                 st.plotly_chart(fig, use_container_width=True, key=f"eff_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
-        # Pressure vs Pipeline Length
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
             lengths = [0]
@@ -650,7 +629,6 @@ with tab3:
                 showlegend=False
             )
             st.plotly_chart(fig_p, use_container_width=True)
-        # Power vs Speed, Power vs Flow
         with power_tab:
             st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -668,7 +646,7 @@ with tab3:
                     H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
                     eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
-                    pwr = (stn['rho'] * flow * 9.81 * H)/(3600.0*eff*0.95*1000)
+                    pwr = (stn.get("rho", 850) * flow * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power.append(pwr)
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
@@ -680,14 +658,14 @@ with tab3:
                     H = (A*q**2 + B*q + C)
                     eff = (P*q**4 + Qc*q**3 + R*q**2 + S*q + T)
                     eff = max(0.01, eff/100)
-                    pwr = (stn['rho'] * q * 9.81 * H)/(3600.0*eff*0.95*1000)
+                    pwr = (stn.get("rho", 850) * q * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power2.append(pwr)
                 fig_pwr2 = go.Figure()
                 fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
                 fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
-# ---- Tab 4 ----
+# ---- Tab 4: System Curves ----
 with tab4:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -705,7 +683,10 @@ with tab4:
             for dra in range(0, max_dr+1, 5):
                 flows = np.linspace(0, st.session_state.get("FLOW",1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-                Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
+                linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                visc = kv_list[i-1]
+                Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
@@ -716,7 +697,7 @@ with tab4:
             fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
             st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
 
-# ---- Tab 5 ----
+# ---- Tab 5: Pump-System Interaction ----
 with tab5:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -739,9 +720,13 @@ with tab5:
             dra_list = list(range(0, max_dr+1, 5))
             n_curves = max(len(dra_list), num_pumps * len(range(N_min, N_max+1, 100)))
             colors = (palette * ((n_curves // len(palette)) + 1))[:n_curves]
+            # Use mapped viscosity
+            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+            visc = kv_list[i-1]
             for idx_dra, dra in enumerate(dra_list):
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-                Re_vals = v_vals * d_inner_i / (stn['KV']*1e-6) if stn['KV']>0 else np.zeros_like(v_vals)
+                Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 DH = f_vals * ((stn['L']*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
@@ -772,8 +757,6 @@ with tab5:
             )
             st.plotly_chart(fig_int, use_container_width=True, key=f"interaction_{i}_{key}_{uuid.uuid4().hex[:6]}")
 
-
-
 # ---- Tab 6: DRA Curves ----
 with tab6:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
@@ -781,14 +764,14 @@ with tab6:
         st.stop()
     res = st.session_state["last_res"]
     stations_data = st.session_state["last_stations_data"]
-
+    linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+    kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
     st.markdown("<div class='section-title'>DRA Curve (PPM vs %Drag Reduction) for Each Station</div>", unsafe_allow_html=True)
-
     for idx, stn in enumerate(stations_data, start=1):
         key = stn['name'].lower().replace(' ', '_')
         dr_opt = res.get(f"drag_reduction_{key}", 0.0)
         if dr_opt > 0:
-            viscosity = stn['KV']
+            viscosity = kv_list[idx-1]
             cst_list = sorted(DRA_CURVE_DATA.keys())
             # Use interpolation logic as in get_ppm_for_dr
             if viscosity <= cst_list[0]:
@@ -841,8 +824,7 @@ with tab6:
         else:
             st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
 
-
-# --------------- Tab 7: 3D Plots -----------------
+# ---- Tab 7: 3D Analysis ----
 with tab7:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization at least once to enable 3D analysis.")
@@ -901,7 +883,9 @@ with tab7:
     P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
     S = stn.get('S', 0); T = stn.get('T', 0)
     DOL = float(stn.get('DOL', N_max))
-    rho = stn.get('rho', 850.0)
+    linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+    rho = rho_list[0]
     rate = stn.get('rate', 9.0)
     g = 9.81
 
@@ -916,8 +900,9 @@ with tab7:
         d_inner = stn['D'] - 2*stn['t']
         rough = stn['rough']
         L_seg = stn['L']
+        visc = kv_list[0]
         v = q/3600.0/(np.pi*(d_inner**2)/4)
-        Re = v*d_inner/(stn['KV']*1e-6) if stn['KV'] > 0 else 0
+        Re = v*d_inner/(visc*1e-6) if visc > 0 else 0
         if Re > 0:
             f = 0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re**0.9))**2)
         else:
@@ -925,16 +910,14 @@ with tab7:
         DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
         return stn['elev'] + DH
         
-    # Compute ppm_value for selected stn
     dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
     dr_max = stn.get('max_dr', 0.0)
-    viscosity = stn.get('KV', 10.0)
+    viscosity = kv_list[0]
     dr_use = min(dr_opt, dr_max)
     ppm_value = get_ppm_for_dr(viscosity, dr_use)
 
     def get_total_cost(q, n, d, npump):
-        # For each (q, n, d), interpolate PPM at current d
-        local_ppm = get_ppm_for_dr(stn.get('KV', 10.0), d)
+        local_ppm = get_ppm_for_dr(viscosity, d)
         pcost = get_power_cost(q, n, d, npump)
         dracost = local_ppm * (q * 1000.0 * 24.0 / 1e6) * RateDRA
         return pcost + dracost
@@ -979,8 +962,6 @@ with tab7:
         x=conf['x'], y=conf['y'], z=Z.T, colorscale='Viridis', colorbar=dict(title=zlab)
     )])
 
-    # No diamond/Optimum marker is added here.
-
     fig.update_layout(
         scene=dict(
             xaxis_title=xlab,
@@ -993,10 +974,7 @@ with tab7:
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    
-    # Spacer if needed
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-    
     st.markdown(
         """
         <div style='text-align: center; color: gray; font-size: 0.95em; margin-bottom: 0.5em;'>
@@ -1006,11 +984,11 @@ with tab7:
         unsafe_allow_html=True
     )
 
-st.markdown(
+#st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
     &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
     </div>
     """,
     unsafe_allow_html=True
-)
+#)
