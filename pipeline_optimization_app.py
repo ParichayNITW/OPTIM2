@@ -93,6 +93,50 @@ if 'NEOS_EMAIL' in st.secrets:
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
+
+# ------ CASE LOAD PATCH:--------
+
+import json
+import pandas as pd
+
+uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
+
+def restore_case_dict(loaded_data):
+    # Restore only if not already loaded this session (prevents double rerun)
+    if not st.session_state.get("case_loaded", False):
+        st.session_state['stations'] = loaded_data.get('stations', [])
+        st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
+        st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
+        st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
+        st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+        st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+        st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+        # Restore linefill DataFrame if present
+        if "linefill" in loaded_data:
+            st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+        # Restore all pump/eff/peak data
+        for i in range(len(st.session_state['stations'])):
+            head_dict = loaded_data.get(f"head_data_{i+1}", None)
+            if head_dict is not None:
+                st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
+            eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
+            if eff_dict is not None:
+                st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
+            peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
+            if peak_dict is not None:
+                st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
+        st.session_state["case_loaded"] = True  # Mark as loaded to prevent repeated reload
+        st.success("Case loaded! All data restored.")
+        st.experimental_rerun()  # FORCE rerun before any widgets use these keys
+
+if uploaded_case is not None:
+    loaded_data = json.load(uploaded_case)
+    restore_case_dict(loaded_data)
+    # DO NOT place any widgets or main code below this if-block!
+
+
+
+
 # ------ SIDEBAR: Global Inputs and Linefill --------
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
