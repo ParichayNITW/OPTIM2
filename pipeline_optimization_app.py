@@ -239,17 +239,15 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with tabs[0]:
             if stn['is_pump']:
                 key_head = f"head_data_{idx}"
-                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                    df_head = st.session_state[key_head]
-                else:
+                df_head = st.session_state.get(key_head)
+                if not isinstance(df_head, pd.DataFrame):
                     df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                 df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
                 st.session_state[key_head] = df_head
 
                 key_eff = f"eff_data_{idx}"
-                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                    df_eff = st.session_state[key_eff]
-                else:
+                df_eff = st.session_state.get(key_eff)
+                if not isinstance(df_eff, pd.DataFrame):
                     df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                 df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
                 st.session_state[key_eff] = df_eff
@@ -273,9 +271,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 
         with tabs[1]:
             key_peak = f"peak_data_{idx}"
-            if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
-                peak_df = st.session_state[key_peak]
-            else:
+            peak_df = st.session_state.get(key_peak)
+            if not isinstance(peak_df, pd.DataFrame):
                 peak_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
             peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[key_peak] = peak_df
@@ -330,7 +327,6 @@ st.sidebar.download_button(
     file_name="pipeline_case.json",
     mime="application/json"
 )
-
 
 # ----------- RUN OPTIMIZATION -----------
 
