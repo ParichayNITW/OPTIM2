@@ -14,7 +14,7 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
-# -- DRA Curve Data Load (as in your original code, can be modified to fit your CSVs) --
+# -- DRA Curve Data Load
 DRA_CSV_FILES = {
     10: "10 cst.csv",
     15: "15 cst.csv",
@@ -93,51 +93,7 @@ if 'NEOS_EMAIL' in st.secrets:
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-
-# ------ CASE LOAD PATCH:--------
-
-import json
-import pandas as pd
-
-uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
-
-def restore_case_dict(loaded_data):
-    # Restore only if not already loaded this session (prevents double rerun)
-    if not st.session_state.get("case_loaded", False):
-        st.session_state['stations'] = loaded_data.get('stations', [])
-        st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
-        st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
-        st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
-        st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
-        st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
-        st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
-        # Restore linefill DataFrame if present
-        if "linefill" in loaded_data:
-            st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-        # Restore all pump/eff/peak data
-        for i in range(len(st.session_state['stations'])):
-            head_dict = loaded_data.get(f"head_data_{i+1}", None)
-            if head_dict is not None:
-                st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
-            eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
-            if eff_dict is not None:
-                st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
-            peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
-            if peak_dict is not None:
-                st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
-        st.session_state["case_loaded"] = True  # Mark as loaded to prevent repeated reload
-        st.success("Case loaded! All data restored.")
-        st.experimental_rerun()  # FORCE rerun before any widgets use these keys
-
-if uploaded_case is not None:
-    loaded_data = json.load(uploaded_case)
-    restore_case_dict(loaded_data)
-    # DO NOT place any widgets or main code below this if-block!
-
-
-
-
-# ------ SIDEBAR: Global Inputs and Linefill --------
+# -------------- SIDEBAR INPUTS -------------------
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
@@ -224,7 +180,8 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
-# ----------- STATION CARD UI (Correct session_state logic for head/eff/peak) -----------
+# ----------- STATION CARD UI -----------
+
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
@@ -313,21 +270,63 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(),
+        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         **{
-            f"head_data_{i+1}": st.session_state.get(f"head_data_{i+1}").to_dict() if st.session_state.get(f"head_data_{i+1}") is not None else None
+            f"head_data_{i+1}": (
+                st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
+            )
             for i in range(len(st.session_state.get('stations', [])))
         },
         **{
-            f"eff_data_{i+1}": st.session_state.get(f"eff_data_{i+1}").to_dict() if st.session_state.get(f"eff_data_{i+1}") is not None else None
+            f"eff_data_{i+1}": (
+                st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
+            )
             for i in range(len(st.session_state.get('stations', [])))
         },
         **{
-            f"peak_data_{i+1}": st.session_state.get(f"peak_data_{i+1}").to_dict() if st.session_state.get(f"peak_data_{i+1}") is not None else None
+            f"peak_data_{i+1}": (
+                st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
+            )
             for i in range(len(st.session_state.get('stations', [])))
         }
     }
 
+def restore_case_dict(loaded_data):
+    # Only restore if not already loaded in this session
+    if not st.session_state.get("case_loaded", False):
+        st.session_state['stations'] = loaded_data.get('stations', [])
+        st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
+        st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
+        st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
+        st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+        st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+        st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+        # Restore linefill DataFrame
+        if "linefill" in loaded_data and loaded_data["linefill"]:
+            st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+        # Restore all pump/eff/peak data
+        for i in range(len(st.session_state['stations'])):
+            head_data = loaded_data.get(f"head_data_{i+1}", None)
+            eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
+            peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+            if head_data is not None:
+                st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
+            if eff_data is not None:
+                st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
+            if peak_data is not None:
+                st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+        st.session_state["case_loaded"] = True
+        st.success("Case loaded! All data restored.")
+        st.experimental_rerun()
+
+# ------- SINGLE FILE UPLOAD + SAVE (NO DUPLICATES!) -------
+uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
+if uploaded_case is not None:
+    loaded_data = json.load(uploaded_case)
+    restore_case_dict(loaded_data)
 case_data = get_full_case_dict()
 st.sidebar.download_button(
     label="💾 Save Case",
