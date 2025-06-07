@@ -287,34 +287,34 @@ def get_full_case_dict():
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json")
 
 def restore_case_dict(loaded_data):
-    # Set session state BEFORE any widgets using these keys are rendered
-    st.session_state['stations'] = loaded_data.get('stations', [])
-    st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
-    st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
-    st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
-    st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
-    st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
-    st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
-    # Restore linefill
-    if "linefill" in loaded_data:
-        st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    # Restore pump/peak data
-    for i in range(len(st.session_state['stations'])):
-        head_dict = loaded_data.get(f"head_data_{i+1}", None)
-        if head_dict is not None:
-            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
-        eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
-        if eff_dict is not None:
-            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
-        peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
-        if peak_dict is not None:
-            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
+    # Prevent reloading multiple times in a single session run
+    if not st.session_state.get("case_loaded", False):
+        st.session_state['stations'] = loaded_data.get('stations', [])
+        st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
+        st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
+        st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
+        st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+        st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+        st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+        if "linefill" in loaded_data:
+            st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+        for i in range(len(st.session_state['stations'])):
+            head_dict = loaded_data.get(f"head_data_{i+1}", None)
+            if head_dict is not None:
+                st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_dict)
+            eff_dict = loaded_data.get(f"eff_data_{i+1}", None)
+            if eff_dict is not None:
+                st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_dict)
+            peak_dict = loaded_data.get(f"peak_data_{i+1}", None)
+            if peak_dict is not None:
+                st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_dict)
+        st.session_state["case_loaded"] = True
+        st.experimental_rerun()  # UI widgets will load with new values after rerun
 
 if uploaded_case is not None:
     loaded_data = json.load(uploaded_case)
     restore_case_dict(loaded_data)
-    st.success("Case loaded! All data restored.")
-    st.experimental_rerun() 
+    # DO NOT PUT ANY WIDGETS OR CODE BELOW THIS IN THIS BLOCK! All widgets will reload after rerun.
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
@@ -323,6 +323,7 @@ st.sidebar.download_button(
     file_name="pipeline_case.json",
     mime="application/json"
 )
+
 
 # ----------- RUN OPTIMIZATION -----------
 
