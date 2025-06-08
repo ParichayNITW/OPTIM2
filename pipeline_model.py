@@ -47,7 +47,6 @@ def solve_pipeline(
     sfc = {}; elec_cost = {}
     pump_indices = []; diesel_pumps = []; electric_pumps = []
     max_dr = {}
-    segment_pump_map = {}
     peaks_dict = {}
     # Default pipe values
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
@@ -322,7 +321,7 @@ def solve_pipeline(
 
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
         res_head = float(pyo.value(model.RH[i]))
-        velocity = v[i]; reynolds = Re[i]
+        velocity = v[i]; reynolds = Re[i]; fric = f[i]
 
         result[f"num_pumps_{name}"] = num_pumps
         result[f"speed_{name}"] = speed_rpm
@@ -334,6 +333,7 @@ def solve_pipeline(
         result[f"residual_head_{name}"] = res_head
         result[f"velocity_{name}"] = velocity
         result[f"reynolds_{name}"] = reynolds
+        result[f"friction_{name}"] = fric
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i]))
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
@@ -354,6 +354,7 @@ def solve_pipeline(
         f"head_loss_{term}": 0.0,
         f"velocity_{term}": 0.0,
         f"reynolds_{term}": 0.0,
+        f"friction_{term}": 0.0,
         f"sdh_{term}": 0.0,
         f"residual_head_{term}": float(pyo.value(model.RH[N+1])),
     })
