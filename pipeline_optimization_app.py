@@ -120,11 +120,16 @@ uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="cas
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     loaded_data = json.load(uploaded_case)
     restore_case_dict(loaded_data)
-    st.session_state["should_rerun"] = True    # <-- SET FLAG INSTEAD
+    st.session_state["case_loaded"] = True         # Mark as loaded to prevent repeat
+    st.session_state["should_rerun"] = True        # Trigger rerun
+    st.experimental_rerun()
+    st.stop()  # Ensure no code after rerun in this pass
 
 if st.session_state.get("should_rerun", False):
-    st.session_state["should_rerun"] = False   # Reset the flag
+    st.session_state["should_rerun"] = False       # Reset the flag
     st.experimental_rerun()
+    st.stop()  # Ensure no code after rerun in this pass
+
 
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
