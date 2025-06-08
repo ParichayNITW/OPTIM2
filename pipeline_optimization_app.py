@@ -10,79 +10,112 @@ import uuid
 import json
 from plotly.colors import qualitative
 
+# ---- MODERN STYLING (AspenONE-like) ----
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
-# --- Custom Styles: World Class Look ---
 st.markdown("""
-    <style>
-    .red-btn {
-        background: linear-gradient(90deg, #d32f2f 30%, #c62828 100%);
-        color: white !important;
-        font-weight: 600;
-        border: none;
-        padding: 1.1em 3.3em;
-        border-radius: 16px;
-        font-size: 1.6em;
-        cursor: pointer;
-        margin: 1.5em 0 2.1em 0;
-        box-shadow: 0 4px 24px #d32f2f55;
-        transition: background 0.19s;
-    }
-    .red-btn:hover {
-        background: #b71c1c;
-        color: #fff;
-    }
-    .action-btn-row {
-        display: flex;
-        justify-content: flex-end;
-        margin-bottom: 1.7em;
-        gap: 1.2em;
-    }
-    .action-btn {
-        background: #3949ab;
-        color: white !important;
-        font-weight: 500;
-        border: none;
-        padding: 0.83em 1.8em;
-        border-radius: 10px;
-        font-size: 1.09em;
-        cursor: pointer;
-        box-shadow: 0 2px 12px #9995;
-        transition: background 0.16s;
-        outline: none;
-    }
-    .action-btn:hover {
-        background: #23277a;
-        color: #fff;
-    }
-    .section-title {
-        font-weight: 700;
-        color: #1e293b;
-        font-size: 1.5em;
-        letter-spacing: 0.2px;
-        margin-bottom: 0.7em;
-        margin-top: 0.2em;
-    }
-    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-        color: #d32f2f;
-        border-bottom: 2.5px solid #d32f2f;
-        font-weight: bold;
-        background: #ffeaea33;
-    }
-    </style>
+<style>
+html, body, [class*="css"]  {
+    font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
+    background: #f6f8fa;
+}
+h1, h2, h3, h4 {
+    color: #15426c;
+    font-weight: 700;
+    letter-spacing: .01em;
+}
+.section-title {
+    font-size: 1.45rem;
+    font-weight: bold;
+    color: #1e466e;
+    border-left: 5px solid #3498db40;
+    background: linear-gradient(90deg, #e3f2fd 0%, #f6f8fa 100%);
+    padding: 0.4em 0.8em;
+    margin-top: 1.2em;
+    margin-bottom: 0.6em;
+    border-radius: 12px;
+    box-shadow: 0 3px 18px -10px #3190e26e;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    background: #e3f2fd !important;
+    border-radius: 10px 10px 0 0 !important;
+    padding: 10px 16px 6px 16px !important;
+    margin-right: 3px !important;
+    font-weight: 600;
+    color: #14509e !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #1976d2 !important;
+    color: #fff !important;
+}
+.card {
+    background: rgba(255,255,255,0.92);
+    border-radius: 18px;
+    box-shadow: 0 4px 30px -14px #3190e277;
+    padding: 2rem 2.2rem 2.1rem 2.2rem;
+    margin-bottom: 2rem;
+}
+.blue-btn, .stButton>button {
+    background: linear-gradient(90deg, #1976d2 0%, #64b5f6 100%);
+    color: white;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    font-size: 1.15em;
+    padding: 0.7em 1.8em;
+    box-shadow: 0 2px 10px -6px #3190e288;
+    transition: box-shadow 0.2s, filter 0.2s;
+}
+.blue-btn:hover, .stButton>button:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 6px 18px -6px #3190e299;
+}
+.red-btn {
+    background: linear-gradient(90deg, #e53935 0%, #fb8c00 100%);
+    color: #fff;
+    font-weight: 700;
+    border: none;
+    border-radius: 12px;
+    font-size: 1.18em;
+    padding: 0.7em 1.9em;
+    margin-top: 1em;
+    margin-bottom: 1.4em;
+    box-shadow: 0 3px 18px -8px #e573736c;
+    transition: box-shadow 0.2s, filter 0.2s;
+}
+.red-btn:hover {
+    filter: brightness(1.1);
+    box-shadow: 0 9px 22px -9px #e573736c;
+}
+hr {
+    border: 0; border-top: 1.7px solid #b7c2ce2c; margin: 1.2em 0;
+}
+.stDataFrame, .stTable { background: none !important; }
+.stDataFrame thead tr th { background: #e3f2fd !important; color: #1c3049 !important;}
+.stDataFrame tbody tr td { background: #fff !important;}
+footer {visibility: hidden;}
+/* Custom card for sidebar header */
+.sbar-header {
+    background: linear-gradient(90deg, #1565c0 20%, #64b5f6 100%);
+    color: #fff !important;
+    border-radius: 18px;
+    box-shadow: 0 2px 8px -4px #1976d266;
+    padding: 1.1rem 1.3rem 0.9rem 1.3rem;
+    margin: 0.2em 0 1.7em 0;
+    font-size: 1.4em;
+    font-weight: bold;
+    letter-spacing: .07em;
+}
+</style>
 """, unsafe_allow_html=True)
-
-palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
 # --- DRA Curve Data ---
 DRA_CSV_FILES = {
-    10: "10 cst.csv",
-    15: "15 cst.csv",
-    20: "20 cst.csv",
-    25: "25 cst.csv",
-    30: "30 cst.csv",
-    35: "35 cst.csv",
-    40: "40 cst.csv"
+    10: "10 cst.csv", 15: "15 cst.csv", 20: "20 cst.csv",
+    25: "25 cst.csv", 30: "30 cst.csv", 35: "35 cst.csv", 40: "40 cst.csv"
 }
 DRA_CURVE_DATA = {}
 for cst, fname in DRA_CSV_FILES.items():
@@ -121,37 +154,40 @@ def _ppm_from_df(df, dr):
     else:
         return np.interp(dr, x, y)
 
-# --- User Login Logic ---
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 users = {"parichay_das": hash_pwd("heteroscedasticity")}
+
+# ---- LOGIN SYSTEM ----
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        st.title("🔒 User Login")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if username in users and hash_pwd(password) == users[username]:
-                st.session_state.authenticated = True
-                st.success("Login successful!")
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-        st.stop()
+        with st.sidebar:
+            st.markdown('<div class="sbar-header">🔒 Pipeline Optima™ Login</div>', unsafe_allow_html=True)
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            if st.button("Login", key="loginbtn", help="Login to access Pipeline Optima"):
+                if username in users and hash_pwd(password) == users[username]:
+                    st.session_state.authenticated = True
+                    st.success("Login successful!")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+            st.stop()
     with st.sidebar:
-        if st.button("Logout"):
+        if st.button("Logout", key="logoutbtn", help="Logout"):
             st.session_state.authenticated = False
             st.rerun()
 check_login()
 
+# --- NEOS EMAIL SECRET ---
 if 'NEOS_EMAIL' in st.secrets:
     os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-# ==== 1. EARLY LOAD/RESTORE BLOCK ====
+# ---- RESTORE/SAVE CASE ----
 def restore_case_dict(loaded_data):
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
@@ -187,10 +223,10 @@ if st.session_state.get("should_rerun", False):
     st.rerun()
     st.stop()
 
-# ==== 2. MAIN INPUT UI ====
+# ---- MAIN SIDEBAR INPUTS (CARDS) ----
 with st.sidebar:
-    st.title("🔧 Pipeline Inputs")
-    with st.expander("Global Fluid & Cost Parameters", expanded=True):
+    st.markdown('<div class="sbar-header">⚙️ Pipeline Configuration</div>', unsafe_allow_html=True)
+    with st.expander("🌊 Global Fluid & Cost Parameters", expanded=True):
         FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
@@ -198,20 +234,18 @@ with st.sidebar:
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
 
-    st.subheader("Linefill Profile (7:00 Hrs)")
+    st.subheader("🧪 Linefill Profile (7:00 Hrs)")
     if "linefill_df" not in st.session_state:
         st.session_state["linefill_df"] = pd.DataFrame({
-            "Start (km)": [0.0],
-            "End (km)": [100.0],
-            "Viscosity (cSt)": [10.0],
-            "Density (kg/m³)": [850.0]
+            "Start (km)": [0.0], "End (km)": [100.0],
+            "Viscosity (cSt)": [10.0], "Density (kg/m³)": [850.0]
         })
     st.session_state["linefill_df"] = st.data_editor(
         st.session_state["linefill_df"],
         num_rows="dynamic", key="linefill_editor"
     )
 
-    st.subheader("Stations")
+    st.subheader("🏭 Stations")
     add_col, rem_col = st.columns(2)
     if "stations" not in st.session_state:
         st.session_state["stations"] = [{
@@ -237,107 +271,124 @@ with st.sidebar:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
-st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
-st.markdown(
-    """
-    <h1 style='
-        text-align:center;
-        font-size:3.4rem;
-        font-weight:700;
-        color:#232733;
-        margin-bottom:0.25em;
-        margin-top:0.01em;
-        letter-spacing:0.5px;
-        font-family: inherit;
-    '>
-        Pipeline Optima™
-    </h1>
-    """,
-    unsafe_allow_html=True
-)
-st.markdown(
-    """
+# ---- APP HEADER (MODERN + LOGO PLACEHOLDER) ----
+st.markdown("""
+<div style='
+    background: linear-gradient(90deg, #1565c0 10%, #64b5f6 90%);
+    padding: 0.45em 0 0.6em 0;
+    margin-bottom: 1.5em;
+    border-radius: 18px;
+    box-shadow: 0 3px 20px -10px #1565c0bb;
+    display: flex;
+    align-items: center;
+'>
     <div style='
-        text-align:center;
-        font-size:2.05rem;
-        font-weight:700;
-        color:#232733;
-        margin-bottom:0.15em;
-        margin-top:0.02em;
-        font-family: inherit;
+        display: flex;
+        align-items: center;
+        padding-left: 2.2rem;
     '>
-        Mixed Integer Non-Linear Non-Convex Pipeline Optimization
+        <span style='
+            font-size:2.5em;
+            font-weight:900;
+            color:#fff;
+            letter-spacing:1.2px;
+            text-shadow:0 1.5px 5px #0d2c4d66;
+            font-family: Segoe UI,Roboto,sans-serif;
+        '>Pipeline Optima™</span>
+        <span style='
+            font-size:1.3em;
+            margin-left:1.5em;
+            color:#ffecb3;
+            font-weight:600;
+            letter-spacing:1px;
+            padding:0.1em 0.8em;
+            background: #1976d2;
+            border-radius: 12px;
+        '>AspenONE UI Style</span>
     </div>
-    """,
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown(
+    "<div class='section-title'>Advanced Mixed Integer Non-Linear Pipeline Optimization</div>", 
     unsafe_allow_html=True
 )
-st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
+st.markdown(
+    "<div style='color:#3c5374; font-size:1.25em; margin-bottom:1em;'>\
+    <b>Intuitive, Professional, and Built for Engineers</b><br>\
+    Optimize your pipeline network with accurate hydraulics, DRA, peak handling, and world-class reporting.</div>",
+    unsafe_allow_html=True
+)
 
-for idx, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
-        col1, col2, col3 = st.columns([1.5,1,1])
-        with col1:
-            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
-            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
-            if idx == 1:
-                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
-        with col2:
-            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
-            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
-            stn['D'] = D_in * 0.0254
-            stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
-            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
-        with col3:
-            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+# ---- MAIN INPUT CARD ----
+with st.container():
+    for idx, stn in enumerate(st.session_state.stations, start=1):
+        with st.expander(f"📍 Station {idx}: {stn['name']}", expanded=False):
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            col1, col2, col3 = st.columns([1.5,1,1])
+            with col1:
+                stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+                stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+                stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
+                stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+                stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
+                if idx == 1:
+                    stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            with col2:
+                D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
+                t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+                stn['D'] = D_in * 0.0254
+                stn['t'] = t_in * 0.0254
+                stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
+                stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
+            with col3:
+                stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
-        tabs = st.tabs(["Pump", "Peaks"])
-        with tabs[0]:
-            if stn['is_pump']:
-                key_head = f"head_data_{idx}"
-                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                    df_head = st.session_state[key_head]
-                else:
-                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.session_state[key_head] = df_head
-
-                key_eff = f"eff_data_{idx}"
-                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                    df_eff = st.session_state[key_eff]
-                else:
-                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[key_eff] = df_eff
-
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                with pcol2:
-                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                with pcol3:
-                    if stn['power_type']=="Grid":
-                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                        stn['sfc'] = 0.0
+            tabs = st.tabs(["Pump", "Peaks"])
+            with tabs[0]:
+                if stn['is_pump']:
+                    key_head = f"head_data_{idx}"
+                    if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                        df_head = st.session_state[key_head]
                     else:
-                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                        stn['rate'] = 0.0
-            else:
-                st.info("Not a pumping station. No pump data required.")
+                        df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                    st.session_state[key_head] = df_head
 
-        with tabs[1]:
-            key_peak = f"peak_data_{idx}"
-            if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
-                peak_df = st.session_state[key_peak]
-            else:
-                peak_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-            peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
-            st.session_state[key_peak] = peak_df
+                    key_eff = f"eff_data_{idx}"
+                    if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                        df_eff = st.session_state[key_eff]
+                    else:
+                        df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                    st.session_state[key_eff] = df_eff
+
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    with pcol1:
+                        stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                        index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    with pcol2:
+                        stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                        stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                    with pcol3:
+                        if stn['power_type']=="Grid":
+                            stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                            stn['sfc'] = 0.0
+                        else:
+                            stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                            stn['rate'] = 0.0
+                else:
+                    st.info("Not a pumping station. No pump data required.")
+
+            with tabs[1]:
+                key_peak = f"peak_data_{idx}"
+                if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
+                    peak_df = st.session_state[key_peak]
+                else:
+                    peak_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+                peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
+                st.session_state[key_peak] = peak_df
+            st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
@@ -345,6 +396,7 @@ terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name"
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
+# --- CASE SAVE ---
 def get_full_case_dict():
     return {
         "stations": st.session_state.get('stations', []),
@@ -388,6 +440,7 @@ st.sidebar.download_button(
     mime="application/json"
 )
 
+# --- UTILITY: Map linefill to segment ---
 def map_linefill_to_segments(linefill_df, stations):
     cumlen = [0]
     for stn in stations:
@@ -409,17 +462,15 @@ def map_linefill_to_segments(linefill_df, stations):
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
 
+# --- PIPELINE SOLVER ---
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
-# ---- Run Optimization Button (red) ----
-st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
-st.markdown("</div>", unsafe_allow_html=True)
-
+# --- RUN OPTIMIZATION (ATTRACTIVE BUTTON) ---
+run = st.button("🚀 Run Optimization", key="runbtn", help="Solve pipeline optimization problem", type="primary")
 if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
