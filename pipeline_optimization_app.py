@@ -119,12 +119,12 @@ if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     restore_case_dict(loaded_data)
     st.session_state["case_loaded"] = True
     st.session_state["should_rerun"] = True
-    st.experimental_rerun()
+    st.rerun()
     st.stop()
 
 if st.session_state.get("should_rerun", False):
     st.session_state["should_rerun"] = False
-    st.experimental_rerun()
+    st.rerun()
     st.stop()
 
 # ==== 2. MAIN INPUT UI ====
