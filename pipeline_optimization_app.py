@@ -10,7 +10,6 @@ import uuid
 import json
 from plotly.colors import qualitative
 
-# ----- DRA Curve Data Load -----
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
@@ -92,12 +91,8 @@ if 'NEOS_EMAIL' in st.secrets:
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-# ==== 1. EARLY LOAD/RESTORE BLOCK - CRITICAL! ====
+# ==== 1. EARLY LOAD/RESTORE BLOCK ====
 def restore_case_dict(loaded_data):
-    # FULLY RESET session state except authentication!
-    for k in list(st.session_state.keys()):
-        if k not in ('authenticated',): del st.session_state[k]
-    # Restore values
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
@@ -108,18 +103,22 @@ def restore_case_dict(loaded_data):
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
     for i in range(len(st.session_state['stations'])):
-        for typ in ['head', 'eff', 'peak']:
-            key = f"{typ}_data_{i+1}"
-            dat = loaded_data.get(key, None)
-            if dat is not None:
-                st.session_state[key] = pd.DataFrame(dat)
-    st.session_state['case_loaded'] = True
-    st.session_state['should_rerun'] = True
+        head_data = loaded_data.get(f"head_data_{i+1}", None)
+        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
+        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+        if head_data is not None:
+            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
+        if eff_data is not None:
+            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
+        if peak_data is not None:
+            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     loaded_data = json.load(uploaded_case)
     restore_case_dict(loaded_data)
+    st.session_state["case_loaded"] = True
+    st.session_state["should_rerun"] = True
     st.experimental_rerun()
     st.stop()
 
@@ -178,7 +177,6 @@ with st.sidebar:
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
-# ----------- MAIN HEADER -----------
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
     """
@@ -215,7 +213,6 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
-# ----------- STATION CARD UI -----------
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
@@ -282,14 +279,12 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[key_peak] = peak_df
 
-# ----------- TERMINAL -----------
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
-# ----------- SAVE CASE -----------
 def get_full_case_dict():
     return {
         "stations": st.session_state.get('stations', []),
@@ -333,7 +328,6 @@ st.sidebar.download_button(
     mime="application/json"
 )
 
-# ----------- OPTIMIZATION: Segment-wise viscosity/density always used -----------
 def map_linefill_to_segments(linefill_df, stations):
     cumlen = [0]
     for stn in stations:
@@ -357,6 +351,8 @@ def map_linefill_to_segments(linefill_df, stations):
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
     import pipeline_model
+    import importlib
+    importlib.reload(pipeline_model)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
 run = st.button("🚀 Run Optimization")
@@ -364,10 +360,7 @@ if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-        # Always use mapped linefill!
-        linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        # Update station data with pump/eff/peak values
+        # Validate all peaks, pump curves, and collect into stations
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -398,6 +391,10 @@ if run:
                         st.stop()
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
+        # Map linefill to all segments
+        linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        # Call backend
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
