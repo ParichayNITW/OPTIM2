@@ -10,6 +10,8 @@ import uuid
 import json
 from plotly.colors import qualitative
 
+st.set_page_config(page_title="Pipeline Optima™", layout="wide")
+
 # --- Custom Styles: World Class Look ---
 st.markdown("""
     <style>
@@ -71,7 +73,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
-st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
 # --- DRA Curve Data ---
 DRA_CSV_FILES = {
