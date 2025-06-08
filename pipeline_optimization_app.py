@@ -918,42 +918,94 @@ with tab7:
         rough = stn['rough']
         L_seg = stn['L']
         visc = kv_list[0]
-        v = q/3600.0/(pi*(d_inner**2)/4)
-        Re = v*d_inner/(visc*1e-6)
-        f = 0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re**0.9))**2) if Re > 0 else 0.0
-        DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100.0)
+        v = q/3600.0/(np.pi*(d_inner**2)/4)
+        Re = v*d_inner/(visc*1e-6) if visc > 0 else 0
+        if Re > 0:
+            f = 0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re**0.9))**2)
+        else:
+            f = 0.0
+        DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
         return stn['elev'] + DH
+        
+    dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
+    dr_max = stn.get('max_dr', 0.0)
+    viscosity = kv_list[0]
+    dr_use = min(dr_opt, dr_max)
+    ppm_value = get_ppm_for_dr(viscosity, dr_use)
+
+    def get_total_cost(q, n, d, npump):
+        local_ppm = get_ppm_for_dr(viscosity, d)
+        pcost = get_power_cost(q, n, d, npump)
+        dracost = local_ppm * (q * 1000.0 * 24.0 / 1e6) * RateDRA
+        return pcost + dracost
 
     for i in range(Xv.shape[0]):
         for j in range(Xv.shape[1]):
-            x = Xv[i,j]; y = Yv[i,j]
-            if plot_opt=="Head vs Flow vs Speed":
-                Z[i,j] = get_head(x, y)
-            elif plot_opt=="Efficiency vs Flow vs Speed":
-                Z[i,j] = get_eff(x, y)
-            elif plot_opt=="System Head vs Flow vs DRA":
-                Z[i,j] = get_system_head(x, y)
-            elif plot_opt=="Power Cost vs Speed vs DRA":
-                Z[i,j] = get_power_cost(flow_opt, x, y, nopt_opt)
-            elif plot_opt=="Power Cost vs Flow vs Speed":
-                Z[i,j] = get_power_cost(x, y, dra_opt, nopt_opt)
-            elif plot_opt=="Total Cost vs NOP vs DRA":
-                Z[i,j] = get_power_cost(flow_opt, speed_opt, y, int(x))
-            else:
-                Z[i,j] = 0.0
+            if plot_opt == "Head vs Flow vs Speed":
+                Z[i,j] = get_head(Xv[i,j], Yv[i,j])
+            elif plot_opt == "Efficiency vs Flow vs Speed":
+                Z[i,j] = get_eff(Xv[i,j], Yv[i,j])
+            elif plot_opt == "System Head vs Flow vs DRA":
+                Z[i,j] = get_system_head(Xv[i,j], Yv[i,j])
+            elif plot_opt == "Power Cost vs Speed vs DRA":
+                Z[i,j] = get_power_cost(flow_opt, Xv[i,j], Yv[i,j], nopt_opt)
+            elif plot_opt == "Power Cost vs Flow vs Speed":
+                Z[i,j] = get_power_cost(Xv[i,j], Yv[i,j], dra_opt, nopt_opt)
+            elif plot_opt == "Total Cost vs NOP vs DRA":
+                Z[i,j] = get_total_cost(flow_opt, speed_opt, Yv[i,j], int(Xv[i,j]))
 
-    import plotly.io as pio
-    fig3d = go.Figure(data=[go.Surface(z=Z, x=conf['x'], y=conf['y'])])
-    fig3d.update_layout(
-        title=plot_opt,
+    axis_labels = {
+        "Flow": "X: Flow (m³/hr)",
+        "Speed": "Y: Pump Speed (rpm)",
+        "Head": "Z: Head (m)",
+        "Efficiency": "Z: Efficiency (%)",
+        "SystemHead": "Z: System Head (m)",
+        "PowerCost": "Z: Power Cost (INR/day)",
+        "DRA": "Y: DRA (%)",
+        "NOP": "X: No. of Pumps",
+        "TotalCost": "Z: Total Cost (INR/day)",
+    }
+    label_map = {
+        "Head vs Flow vs Speed": ["Flow", "Speed", "Head"],
+        "Efficiency vs Flow vs Speed": ["Flow", "Speed", "Efficiency"],
+        "System Head vs Flow vs DRA": ["Flow", "DRA", "SystemHead"],
+        "Power Cost vs Speed vs DRA": ["Speed", "DRA", "PowerCost"],
+        "Power Cost vs Flow vs Speed": ["Flow", "Speed", "PowerCost"],
+        "Total Cost vs NOP vs DRA": ["NOP", "DRA", "TotalCost"]
+    }
+    xlab, ylab, zlab = [axis_labels[l] for l in label_map[plot_opt]]
+
+    fig = go.Figure(data=[go.Surface(
+        x=conf['x'], y=conf['y'], z=Z.T, colorscale='Viridis', colorbar=dict(title=zlab)
+    )])
+
+    fig.update_layout(
         scene=dict(
-            xaxis_title=conf['x'].name if hasattr(conf['x'],'name') else "X",
-            yaxis_title=conf['y'].name if hasattr(conf['y'],'name') else "Y",
-            zaxis_title=conf['z']
+            xaxis_title=xlab,
+            yaxis_title=ylab,
+            zaxis_title=zlab
         ),
-        autosize=True,
-        margin=dict(l=25, r=25, b=25, t=40)
+        title=f"{plot_opt}",
+        height=750,
+        margin=dict(l=30, r=30, b=30, t=80)
     )
-    st.plotly_chart(fig3d, use_container_width=True)
 
-st.markdown("<br><br><div style='text-align:right;font-size:1.1em;color:#999'>© Pipeline Optima™</div>", unsafe_allow_html=True)
+    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div style='text-align: center; color: gray; font-size: 0.95em; margin-bottom: 0.5em;'>
+            <span style='color:#AAA;'>Surface plot shows parameter variability of the originating pump station for clarity and hydraulic relevance.</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+#st.markdown(
+    """
+    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das. All rights reserved.
+    </div>
+    """,
+    unsafe_allow_html=True
+#)
