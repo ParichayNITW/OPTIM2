@@ -581,26 +581,32 @@ with tab3:
                 Qe = st.session_state.get(f"eff_data_{i}")
                 FLOW = st.session_state.get("FLOW", 1000.0)
                 if Qe is not None and len(Qe) > 1:
-                    flow_min, flow_max = float(np.min(Qe['Flow (m³/hr)'])), float(np.max(Qe['Flow (m³/hr)']))
-                    flows = np.linspace(flow_min, flow_max, 200)
-                    max_user_eff = float(np.max(Qe['Efficiency (%)']))   # THIS IS THE CAP
+                    flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
+                    eff_user = np.array(Qe['Efficiency (%)'], dtype=float)
+                    flow_min = float(np.min(flow_user))
+                    flow_max = float(np.max(flow_user))
+                    max_user_eff = float(np.max(eff_user))
                 else:
-                    flows = np.linspace(0.01, FLOW, 100)
-                    max_user_eff = 100  # fallback
-                
+                    flow_min, flow_max = 0.01, FLOW
+                    max_user_eff = 100
+                # Polynomial coefficients at DOL (user input speed)
                 P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
                 S = stn.get('S', 0); T = stn.get('T', 0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
-                step = max(100, int((N_max-N_min)/4))  # Plot at 5 speeds max
+                step = max(100, int((N_max-N_min)/4))  # 5 curves max
         
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    Q_adj = flows * N_max/rpm  # Affinity law
-                    eff = (P*Q_adj**4 + Qc*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
-                    # Clip to never exceed user max
+                    # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
+                    # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
+                    q_upper = flow_max * (rpm/N_max)
+                    q_lower = flow_min * (rpm/N_max)
+                    flows = np.linspace(q_lower, q_upper, 100)
+                    Q_equiv = flows * N_max / rpm  # This will be in user scale
+                    eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
+                    # Clip to user max efficiency
                     eff = np.clip(eff, 0, max_user_eff)
-                    # Plot only inside flow range
                     fig.add_trace(go.Scatter(x=flows, y=eff, mode='lines', name=f"{rpm} rpm"))
                 fig.update_layout(
                     title=f"Efficiency vs Flow: {stn['name']}",
@@ -608,6 +614,7 @@ with tab3:
                     yaxis_title="Efficiency (%)"
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
 
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
