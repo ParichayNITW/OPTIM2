@@ -579,22 +579,36 @@ with tab3:
                     continue
                 key = stn['name'].lower().replace(' ','_')
                 Qe = st.session_state.get(f"eff_data_{i}")
-                FLOW = st.session_state.get("FLOW",1000.0)
-                if Qe is not None and len(Qe) > 0:
-                    flow_min, flow_max = np.min(Qe['Flow (m³/hr)']), np.max(Qe['Flow (m³/hr)'])
+                FLOW = st.session_state.get("FLOW", 1000.0)
+                if Qe is not None and len(Qe) > 1:
+                    flow_min, flow_max = float(np.min(Qe['Flow (m³/hr)'])), float(np.max(Qe['Flow (m³/hr)']))
                     flows = np.linspace(flow_min, flow_max, 200)
+                    max_user_eff = float(np.max(Qe['Efficiency (%)']))   # THIS IS THE CAP
                 else:
-                    flows = np.linspace(0.01, FLOW*1.5, 200)
-                P = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+                    flows = np.linspace(0.01, FLOW, 100)
+                    max_user_eff = 100  # fallback
+                
+                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
+                S = stn.get('S', 0); T = stn.get('T', 0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
+                step = max(100, int((N_max-N_min)/4))  # Plot at 5 speeds max
+        
                 fig = go.Figure()
-                for rpm in range(N_min, N_max+1, 100):
-                    Q_adj = flows * N_max/rpm
+                for rpm in range(N_min, N_max+1, step):
+                    Q_adj = flows * N_max/rpm  # Affinity law
                     eff = (P*Q_adj**4 + Qc*Q_adj**3 + R*Q_adj**2 + S*Q_adj + T)
+                    # Clip to never exceed user max
+                    eff = np.clip(eff, 0, max_user_eff)
+                    # Plot only inside flow range
                     fig.add_trace(go.Scatter(x=flows, y=eff, mode='lines', name=f"{rpm} rpm"))
-                fig.update_layout(title=f"Efficiency vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Efficiency (%)")
-                st.plotly_chart(fig, use_container_width=True, key=f"eff_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                fig.update_layout(
+                    title=f"Efficiency vs Flow: {stn['name']}",
+                    xaxis_title="Flow (m³/hr)",
+                    yaxis_title="Efficiency (%)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
             lengths = [0]
