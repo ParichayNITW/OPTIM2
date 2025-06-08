@@ -10,10 +10,70 @@ import uuid
 import json
 from plotly.colors import qualitative
 
-palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
+# --- Custom Styles: World Class Look ---
+st.markdown("""
+    <style>
+    .red-btn {
+        background: linear-gradient(90deg, #d32f2f 30%, #c62828 100%);
+        color: white !important;
+        font-weight: 600;
+        border: none;
+        padding: 1.1em 3.3em;
+        border-radius: 16px;
+        font-size: 1.6em;
+        cursor: pointer;
+        margin: 1.5em 0 2.1em 0;
+        box-shadow: 0 4px 24px #d32f2f55;
+        transition: background 0.19s;
+    }
+    .red-btn:hover {
+        background: #b71c1c;
+        color: #fff;
+    }
+    .action-btn-row {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 1.7em;
+        gap: 1.2em;
+    }
+    .action-btn {
+        background: #3949ab;
+        color: white !important;
+        font-weight: 500;
+        border: none;
+        padding: 0.83em 1.8em;
+        border-radius: 10px;
+        font-size: 1.09em;
+        cursor: pointer;
+        box-shadow: 0 2px 12px #9995;
+        transition: background 0.16s;
+        outline: none;
+    }
+    .action-btn:hover {
+        background: #23277a;
+        color: #fff;
+    }
+    .section-title {
+        font-weight: 700;
+        color: #1e293b;
+        font-size: 1.5em;
+        letter-spacing: 0.2px;
+        margin-bottom: 0.7em;
+        margin-top: 0.2em;
+    }
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+        color: #d32f2f;
+        border-bottom: 2.5px solid #d32f2f;
+        font-weight: bold;
+        background: #ffeaea33;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
+palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
+# --- DRA Curve Data ---
 DRA_CSV_FILES = {
     10: "10 cst.csv",
     15: "15 cst.csv",
@@ -60,11 +120,10 @@ def _ppm_from_df(df, dr):
     else:
         return np.interp(dr, x, y)
 
+# --- User Login Logic ---
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
-
 users = {"parichay_das": hash_pwd("heteroscedasticity")}
-
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -355,7 +414,11 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     importlib.reload(pipeline_model)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
-run = st.button("🚀 Run Optimization")
+# ---- Run Optimization Button (red) ----
+st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
+st.markdown("</div>", unsafe_allow_html=True)
+
 if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
