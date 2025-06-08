@@ -10,7 +10,7 @@ import uuid
 import json
 from plotly.colors import qualitative
 
-st.set_page_config(page_title="Pipeline Optima™ : Intelligent Pipeline Network Optimization Suite", layout="wide")
+st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
 # --- Custom Styles: World Class Look ---
 st.markdown("""
@@ -250,7 +250,7 @@ st.markdown(
         letter-spacing:0.5px;
         font-family: inherit;
     '>
-        Pipeline Optima™
+        Pipeline Optima™: Intelligent Pipeline Network Optimization Suite
     </h1>
     """,
     unsafe_allow_html=True
