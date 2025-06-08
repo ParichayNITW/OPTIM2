@@ -93,8 +93,11 @@ else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
 # ==== 1. EARLY LOAD/RESTORE BLOCK - CRITICAL! ====
-
 def restore_case_dict(loaded_data):
+    # FULLY RESET session state except authentication!
+    for k in list(st.session_state.keys()):
+        if k not in ('authenticated',): del st.session_state[k]
+    # Restore values
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
@@ -104,32 +107,26 @@ def restore_case_dict(loaded_data):
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    # Restore all pump/eff/peak data
     for i in range(len(st.session_state['stations'])):
-        head_data = loaded_data.get(f"head_data_{i+1}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
-        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
-        if head_data is not None:
-            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
-        if eff_data is not None:
-            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
-        if peak_data is not None:
-            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+        for typ in ['head', 'eff', 'peak']:
+            key = f"{typ}_data_{i+1}"
+            dat = loaded_data.get(key, None)
+            if dat is not None:
+                st.session_state[key] = pd.DataFrame(dat)
+    st.session_state['case_loaded'] = True
+    st.session_state['should_rerun'] = True
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     loaded_data = json.load(uploaded_case)
     restore_case_dict(loaded_data)
-    st.session_state["case_loaded"] = True         # Mark as loaded to prevent repeat
-    st.session_state["should_rerun"] = True        # Trigger rerun
     st.experimental_rerun()
-    st.stop()  # Ensure no code after rerun in this pass
+    st.stop()
 
 if st.session_state.get("should_rerun", False):
-    st.session_state["should_rerun"] = False       # Reset the flag
+    st.session_state["should_rerun"] = False
     st.experimental_rerun()
-    st.stop()  # Ensure no code after rerun in this pass
-
+    st.stop()
 
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
@@ -244,15 +241,17 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with tabs[0]:
             if stn['is_pump']:
                 key_head = f"head_data_{idx}"
-                df_head = st.session_state.get(key_head)
-                if not isinstance(df_head, pd.DataFrame):
+                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                    df_head = st.session_state[key_head]
+                else:
                     df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                 df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
                 st.session_state[key_head] = df_head
 
                 key_eff = f"eff_data_{idx}"
-                df_eff = st.session_state.get(key_eff)
-                if not isinstance(df_eff, pd.DataFrame):
+                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                    df_eff = st.session_state[key_eff]
+                else:
                     df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                 df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
                 st.session_state[key_eff] = df_eff
@@ -276,8 +275,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 
         with tabs[1]:
             key_peak = f"peak_data_{idx}"
-            peak_df = st.session_state.get(key_peak)
-            if not isinstance(peak_df, pd.DataFrame):
+            if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
+                peak_df = st.session_state[key_peak]
+            else:
                 peak_df = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
             peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[key_peak] = peak_df
@@ -333,8 +333,7 @@ st.sidebar.download_button(
     mime="application/json"
 )
 
-# ----------- RUN OPTIMIZATION -----------
-
+# ----------- OPTIMIZATION: Segment-wise viscosity/density always used -----------
 def map_linefill_to_segments(linefill_df, stations):
     cumlen = [0]
     for stn in stations:
@@ -365,7 +364,10 @@ if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-        # Validate all peaks, pump curves, and collect into stations
+        # Always use mapped linefill!
+        linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        # Update station data with pump/eff/peak values
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -396,16 +398,13 @@ if run:
                         st.stop()
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
-        # Map linefill to all segments
-        linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        # Call backend
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+
 
 # ---- Result Tabs ----
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
