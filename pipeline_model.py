@@ -10,7 +10,17 @@ def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
 ):
     """
-    Full backend for Pipeline Optima™: DRA as a decision variable (steps of 0.5 ppm).
+    Build and solve the pipeline optimization model using Pyomo, using segment-wise
+    viscosity and density (from linefill) and DRA logic (till next running pump or 300 km).
+    :param stations: list of station dicts
+    :param terminal: dict with terminal info
+    :param FLOW: volumetric flow (m^3/hr)
+    :param KV_list: list of kinematic viscosity (cSt) per segment (from linefill)
+    :param rho_list: list of fluid density (kg/m^3) per segment (from linefill)
+    :param RateDRA: drag reducer cost (currency per L)
+    :param Price_HSD: diesel price (currency per L)
+    :param linefill_dict: (optional) full linefill DataFrame as dict (not used here, passed for interface)
+    :return: dict of results (pump speeds, counts, costs, etc.)
     """
     model = pyo.ConcreteModel()
 
@@ -18,7 +28,7 @@ def solve_pipeline(
     model.I = pyo.RangeSet(1, N)
     model.Nodes = pyo.RangeSet(1, N+1)    # nodes (stations 1..N, plus terminal N+1)
 
-    # Per-segment viscosity/density
+    # Take per-segment viscosity/density from linefill (not from stations)
     kv_dict = {i: float(KV_list[i-1]) for i in range(1, N+1)}
     rho_dict = {i: float(rho_list[i-1]) for i in range(1, N+1)}
     model.KV = pyo.Param(model.I, initialize=kv_dict)
@@ -29,7 +39,7 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # Geometry & station params
+    # Segment geometry and station params
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
     Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
@@ -38,10 +48,12 @@ def solve_pipeline(
     pump_indices = []; diesel_pumps = []; electric_pumps = []
     max_dr = {}
     peaks_dict = {}
+    # Default pipe values
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
 
+    # First: assign pump stations, get segment properties, and collect peaks
     for i, stn in enumerate(stations, start=1):
-        length[i] = stn.get('L', 0.0)
+        length[i] = stn.get('L', 0.0)  # km
         if 'D' in stn:
             D_out = stn['D']
             thickness[i] = stn.get('t', default_t)
@@ -78,6 +90,7 @@ def solve_pipeline(
                 elec_cost[i] = stn.get('rate', 0.0)
             max_dr[i] = stn.get('max_dr', 0.0)
 
+    # Terminal node elevation
     elev[N+1] = terminal.get('elev', 0.0)
 
     # Pyomo parameters
@@ -103,12 +116,12 @@ def solve_pipeline(
 
     # Decision variables
     def nop_bounds(m, j):
-        lb = 1 if j == 1 else 0
+        lb = 1 if j == 1 else 0          # ensure at least one pump at station 1
         ub = stations[j-1].get('max_pumps', 2)
         return (lb, ub)
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=nop_bounds, initialize=1)
-
+    # Pump speed in 10 RPM increments
     speed_min = {}; speed_max = {}
     for j in pump_indices:
         lo = max(1, (int(model.MinRPM[j]) + 9)//10) if model.MinRPM[j] else 1
@@ -119,20 +132,24 @@ def solve_pipeline(
                        initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
-    # ---- PATCH: DR as Decision Variable, steps of 0.5 ppm ----
-    dr_max = {j: int(max_dr.get(j, 40)) for j in pump_indices}
-    model.DR_raw = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
-                        bounds=lambda m,j: (0, dr_max[j]), initialize=0)
-    # Quantize to nearest 2% (for example) or use as continuous, as needed
-    # For 0.5 ppm steps: since PPM = DR/4, so DR steps of 2% ⇒ PPM steps of 0.5
-    model.DR = pyo.Expression(model.pump_stations, rule=lambda m,j: 2.0 * pyo.round(m.DR_raw[j]/2.0))
+    # ----------------- PATCHED DRA LOGIC (STEPS OF 0.5%) -----------------
+    dr_max = {j: int(round(max_dr.get(j, 40)*2)) for j in pump_indices}  # Max steps (for 0.5%)
+    model.DR_step = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
+                            bounds=lambda m,j: (0, dr_max[j]), initialize=0)
+    model.DR = pyo.Expression(model.pump_stations, rule=lambda m,j: 0.5 * m.DR_step[j])
+    # ---------------------------------------------------------------------
 
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
     for j in range(2, N+2):
         model.RH[j].setlb(50.0)
 
-    # Hydraulic calculations (constants)
+    # --- DRA Application Region Logic ---
+    # For each segment, figure out which station's DRA (if any) is active there and how far it extends
+    # Only up to next *actual* running pump station (after optimization), or 300 km, whichever is less.
+    # We'll do this logic after solving, using optimized results
+
+    # ---- Hydraulic calculations (per-segment, using linefill) ----
     g = 9.81
     flow_m3s = pyo.value(model.FLOW)/3600.0 if FLOW is not None else 0.0
     v = {}; Re = {}; f = {}
@@ -154,18 +171,15 @@ def solve_pipeline(
         else:
             f[i] = 0.0
 
-    # SDH and Peak Constraints
+    # --- SDH and Peak Constraints ---
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
     TDH = {}
     EFFP = {}
 
     for i in range(1, N+1):
-        # ---- USE DR Variable in Loss Calculations ----
-        if i in pump_indices:
-            DR_frac = model.DR[i] / 100.0
-        else:
-            DR_frac = 0.0
+        # Drag reduction: placeholder. Actual segment-wise DRA will be mapped after solve!
+        DR_frac = 0
 
         # Normal station-to-station
         DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
@@ -218,7 +232,7 @@ def solve_pipeline(
                 expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
             model.peak_limit.add(expr >= 50.0)
 
-    # Objective: Minimize total daily cost (24h power + DRA)
+    # ---- Objective: Minimize total daily cost (24h power + DRA) ----
     total_cost = 0
     for i in pump_indices:
         rho_i = rho_dict[i]
@@ -229,30 +243,35 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        # ---- PATCH: DRA cost as function of model.DR[i], rounded to 0.5 ppm steps ----
-        dra_ppm = model.DR[i] / 4.0   # 4% DR = 1 ppm (adjust this mapping if you have real curve)
-        dra_ppm = 0.5 * pyo.round(dra_ppm / 0.5)
-        dra_cost = dra_ppm * (FLOW * 1000.0 * 24.0 / 1e6) * RateDRA
+        # DRA cost placeholder. Actual DRA cost will be mapped post-solve
+        dra_cost = 0
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # Solve
+    # ---- Solve ----
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
     # ---- POST-PROCESS: DRA Segment Application ----
+    # Determine which stations have pumps *actually running*
     running_pumps = []
     for i in pump_indices:
         if int(pyo.value(model.NOP[i])) > 0:
             running_pumps.append(i)
+    # For each pump station, the DRA (if any) extends downstream up to:
+    #   - next running pump station, or 300 km, whichever is less
 
-    dra_map = [None]*(N+1)
+    dra_map = [None]*(N+1) # dra_map[i] = index of upstream station applying DRA for segment i
+
+    # Find for each segment which upstream station's DRA is active
     cumlen = [0]
     for stn in stations:
         cumlen.append(cumlen[-1] + stn["L"])
+
     for idx in range(1, N+1):
         dra_station = None
         for upidx in reversed(running_pumps):
+            # DRA at upidx applies if: idx is downstream of upidx, and within 300 km or before another running pump
             if idx <= upidx:
                 continue
             start_km = cumlen[upidx-1]
@@ -264,7 +283,7 @@ def solve_pipeline(
                 break
         dra_map[idx] = dra_station
 
-    # Extract results
+    # ---- Extract results ----
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -272,10 +291,10 @@ def solve_pipeline(
             num_pumps = int(pyo.value(model.NOP[i]))
             speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 else 0.0
             eff = float(pyo.value(EFFP[i])*100.0) if num_pumps > 0 else 0.0
-            drag_red = float(pyo.value(model.DR[i]))
         else:
-            num_pumps = 0; speed_rpm = 0.0; eff = 0.0; drag_red = 0.0
+            num_pumps = 0; speed_rpm = 0.0; eff = 0.0
 
+        # Costs
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
             power_kW = (rho_i * FLOW * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
@@ -289,12 +308,18 @@ def solve_pipeline(
         else:
             power_cost = 0.0
 
-        # PATCH: Use DR rounded to 2% (0.5 ppm) steps for cost and reporting
-        dra_ppm = round(drag_red / 4.0 * 2) / 2  # DR/4, rounded to nearest 0.5 ppm
+        # DRA: output the DR % for this station (optimization variable)
+        if i in pump_indices:
+            drag_red = float(pyo.value(model.DR[i]))
+        else:
+            drag_red = 0.0
+
+        # DRA cost for this station: calculated over all segments where its DRA applies
         dra_cost = 0.0
         for j in range(i, N+1):
             if dra_map[j] == i and drag_red > 0:
-                dra_cost += dra_ppm * (FLOW*1000.0*24.0/1e6) * RateDRA
+                # DRA is active in this segment
+                dra_cost += (drag_red/4) * (FLOW*1000.0*24.0/1e6) * RateDRA
 
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
         res_head = float(pyo.value(model.RH[i]))
@@ -306,7 +331,6 @@ def solve_pipeline(
         result[f"power_cost_{name}"] = power_cost
         result[f"dra_cost_{name}"] = dra_cost
         result[f"drag_reduction_{name}"] = drag_red
-        result[f"dra_ppm_{name}"] = dra_ppm
         result[f"head_loss_{name}"] = head_loss
         result[f"residual_head_{name}"] = res_head
         result[f"velocity_{name}"] = velocity
@@ -329,7 +353,6 @@ def solve_pipeline(
         f"power_cost_{term}": 0.0,
         f"dra_cost_{term}": 0.0,
         f"drag_reduction_{term}": 0.0,
-        f"dra_ppm_{term}": 0.0,
         f"head_loss_{term}": 0.0,
         f"velocity_{term}": 0.0,
         f"reynolds_{term}": 0.0,
