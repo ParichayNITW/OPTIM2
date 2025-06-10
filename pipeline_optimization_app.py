@@ -871,23 +871,36 @@ with tab6:
                 curve_label = f"{cst_list[0]} cSt curve"
                 percent_dr = df_curve['%Drag Reduction'].values
                 ppm_vals = df_curve['PPM'].values
-            elif viscosity >= cst_list[-1]:
-                df_curve = DRA_CURVE_DATA[cst_list[-1]]
-                curve_label = f"{cst_list[-1]} cSt curve"
-                percent_dr = df_curve['%Drag Reduction'].values
-                ppm_vals = df_curve['PPM'].values
             else:
                 lower = max([c for c in cst_list if c <= viscosity])
                 upper = min([c for c in cst_list if c >= viscosity])
                 df_lower = DRA_CURVE_DATA[lower]
                 df_upper = DRA_CURVE_DATA[upper]
+                
+                # Defensive checks to prevent crash if data is missing or malformed
+                if (
+                    df_lower is None or df_upper is None or
+                    '%Drag Reduction' not in df_lower or 'PPM' not in df_lower or
+                    '%Drag Reduction' not in df_upper or 'PPM' not in df_upper or
+                    df_lower['%Drag Reduction'].dropna().empty or df_lower['PPM'].dropna().empty or
+                    df_upper['%Drag Reduction'].dropna().empty or df_upper['PPM'].dropna().empty
+                ):
+                    st.warning(f"DRA data for {lower} or {upper} cSt is missing or malformed.")
+                    continue
+            
                 percent_dr = np.linspace(
                     min(df_lower['%Drag Reduction'].min(), df_upper['%Drag Reduction'].min()),
                     max(df_lower['%Drag Reduction'].max(), df_upper['%Drag Reduction'].max()),
                     50
                 )
-                ppm_lower = np.interp(percent_dr, df_lower['%Drag Reduction'], df_lower['PPM'])
-                ppm_upper = np.interp(percent_dr, df_upper['%Drag Reduction'], df_upper['PPM'])
+                # Always use np.array with float dtype for interpolation
+                xp_lower = np.array(df_lower['%Drag Reduction'], dtype=float)
+                yp_lower = np.array(df_lower['PPM'], dtype=float)
+                xp_upper = np.array(df_upper['%Drag Reduction'], dtype=float)
+                yp_upper = np.array(df_upper['PPM'], dtype=float)
+                
+                ppm_lower = np.interp(percent_dr, xp_lower, yp_lower)
+                ppm_upper = np.interp(percent_dr, xp_upper, yp_upper)
                 # Interpolate each percent_dr value for given viscosity
                 ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((viscosity - lower) / (upper - lower))
                 curve_label = f"Interpolated for {viscosity:.2f} cSt"
