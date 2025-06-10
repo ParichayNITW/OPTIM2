@@ -131,19 +131,15 @@ def solve_pipeline(
                        bounds=lambda m,j: (speed_min[j], speed_max[j]),
                        initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
-    dr_max = {j: int(max_dr.get(j, 40)//10) for j in pump_indices}
-    model.DR_u = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
-                        bounds=lambda m,j: (0, dr_max[j]), initialize=0)
-    model.DR = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.DR_u[j])
+
+    # PATCH: DRA variable per station (continuous)
+    model.DR = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
+                       bounds=lambda m,j: (0, max_dr[j]), initialize=0)
+
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
     for j in range(2, N+2):
         model.RH[j].setlb(50.0)
-
-    # --- DRA Application Region Logic ---
-    # For each segment, figure out which station's DRA (if any) is active there and how far it extends
-    # Only up to next *actual* running pump station (after optimization), or 300 km, whichever is less.
-    # We'll do this logic after solving, using optimized results
 
     # ---- Hydraulic calculations (per-segment, using linefill) ----
     g = 9.81
@@ -173,9 +169,15 @@ def solve_pipeline(
     TDH = {}
     EFFP = {}
 
+    # PATCH: Function to get DRA applied to each segment (nearest upstream running pump)
+    def seg_dra_var(i):
+        for j in reversed(pump_indices):
+            if j <= i:
+                return model.DR[j]
+        return 0.0  # No DRA if none upstream
+
     for i in range(1, N+1):
-        # Drag reduction: placeholder. Actual segment-wise DRA will be mapped after solve!
-        DR_frac = 0
+        DR_frac = seg_dra_var(i) / 100.0
 
         # Normal station-to-station
         DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
@@ -229,7 +231,7 @@ def solve_pipeline(
             model.peak_limit.add(expr >= 50.0)
 
     # ---- Objective: Minimize total daily cost (24h power + DRA) ----
-    # We need to do DRA cost segment-wise, only where DRA is active (after solve).
+    # PATCH: DRA cost is a real decision variable now, included in the objective!
 
     total_cost = 0
     for i in pump_indices:
@@ -241,8 +243,7 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        # DRA cost placeholder. Actual DRA cost will be mapped post-solve
-        dra_cost = 0
+        dra_cost = model.DR[i] * (FLOW*1000.0*24.0/1e6) * RateDRA
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
