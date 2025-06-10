@@ -886,7 +886,8 @@ with tab6:
                 )
                 ppm_lower = np.interp(percent_dr, df_lower['%Drag Reduction'], df_lower['PPM'])
                 ppm_upper = np.interp(percent_dr, df_upper['%Drag Reduction'], df_upper['PPM'])
-                ppm_vals = np.interp(viscosity, [lower, upper], np.vstack([ppm_lower, ppm_upper]))
+                # Interpolate each percent_dr value for given viscosity
+                ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((viscosity - lower) / (upper - lower))
                 curve_label = f"Interpolated for {viscosity:.2f} cSt"
             opt_ppm = get_ppm_for_dr(viscosity, dr_opt)
             fig = go.Figure()
