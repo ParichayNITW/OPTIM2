@@ -146,10 +146,16 @@ def solve_pipeline(
     EFFP = {}
 
     for i in range(1, N+1):
-        DR_frac = 0  # No DRA applied in Pyomo solver constraints
+        # Make DRA effective ONLY at pump stations
+        if i in pump_indices:
+            DR_frac = model.DR[i] / 100.0
+        else:
+            DR_frac = 0.0
+        # Normal station-to-station
         DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
+        # For all peaks
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
@@ -166,7 +172,6 @@ def solve_pipeline(
         else:
             TDH[i] = 0.0
             EFFP[i] = 1.0
-
     model.head_balance = pyo.ConstraintList()
     model.peak_limit = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
