@@ -95,12 +95,15 @@ for cst, fname in DRA_CSV_FILES.items():
 def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
     cst_list = sorted(dra_curve_data.keys())
     visc = float(visc)
+    # --- New: always round to nearest 0.5 ppm ---
+    def round_ppm(val, step=0.5):
+        return round(val / step) * step
     if visc <= cst_list[0]:
         df = dra_curve_data[cst_list[0]]
-        return _ppm_from_df(df, dr)
+        return round_ppm(_ppm_from_df(df, dr))
     elif visc >= cst_list[-1]:
         df = dra_curve_data[cst_list[-1]]
-        return _ppm_from_df(df, dr)
+        return round_ppm(_ppm_from_df(df, dr))
     else:
         lower = max([c for c in cst_list if c <= visc])
         upper = min([c for c in cst_list if c >= visc])
@@ -109,8 +112,7 @@ def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
         ppm_lower = _ppm_from_df(df_lower, dr)
         ppm_upper = _ppm_from_df(df_upper, dr)
         ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
-        return ppm_interp
-
+        return round_ppm(ppm_interp)
 def _ppm_from_df(df, dr):
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
