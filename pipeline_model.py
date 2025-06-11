@@ -176,6 +176,7 @@ def solve_pipeline(
     model.peak_limit = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
     result = {}
+    maop_dict = {}
     for i in range(1, N+1):
         kv = kv_dict[i]
         rho = rho_dict[i]
@@ -185,12 +186,9 @@ def solve_pipeline(
             model.head_balance.add(model.RH[i] >= model.SDH[i])
         D_out = d_inner[i] + 2 * thickness[i]
         MAOP_head = (2 * thickness[i] * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / rho_dict[i]
-        
+        maop_dict[i] = MAOP_head  # <-- new: save for later
         model.pressure_limit.add(model.SDH[i] <= MAOP_head)
-        
-        name = stations[i-1]['name'].strip().lower().replace(' ', '_')
-        result[f"maop_{name}"] = MAOP_head
-        
+              
         peaks = peaks_dict[i]
         for peak in peaks:
             loc_km = peak['loc']
@@ -290,7 +288,7 @@ def solve_pipeline(
         result[f"reynolds_{name}"] = reynolds
         result[f"friction_{name}"] = fric
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i]))
-        result[f"maop_{name}"] = MAOP_head 
+        result[f"maop_{name}"] = maop_dict[i]
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
             result[f"coef_B_{name}"] = float(pyo.value(model.B[i]))
