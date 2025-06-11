@@ -287,6 +287,7 @@ def solve_pipeline(
         result[f"reynolds_{name}"] = reynolds
         result[f"friction_{name}"] = fric
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i]))
+        result[f"maop_{name}"] = MAOP_head 
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
             result[f"coef_B_{name}"] = float(pyo.value(model.B[i]))
