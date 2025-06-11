@@ -491,7 +491,7 @@ with tab1:
         names = [s['name'] for s in stations_data] + [terminal_name]
         params = [
             "Power+Fuel Cost", "DRA Cost", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
-            "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "DRA (%)"
+            "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "DRA (%)"
         ]
         summary = {"Parameters": params}
         # DRA/PPM summary
@@ -530,6 +530,7 @@ with tab1:
                 res.get(f"velocity_{key}",0.0),
                 res.get(f"residual_head_{key}",0.0),
                 res.get(f"sdh_{key}",0.0),
+                res.get(f"maop_{key}",0.0),
                 res.get(f"drag_reduction_{key}",0.0)
             ]
         df_sum = pd.DataFrame(summary)
