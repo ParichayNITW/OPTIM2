@@ -175,6 +175,7 @@ def solve_pipeline(
     model.head_balance = pyo.ConstraintList()
     model.peak_limit = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
+    result = {}
     for i in range(1, N+1):
         kv = kv_dict[i]
         rho = rho_dict[i]
