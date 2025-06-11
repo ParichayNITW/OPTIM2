@@ -182,12 +182,14 @@ def solve_pipeline(
             model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] >= model.SDH[i])
         else:
             model.head_balance.add(model.RH[i] >= model.SDH[i])
-        D_out = d_inner[i] + 2*thickness[i]
-        MAOP_head = (2*thickness[i]*(smys[i]*0.070307)*design_factor[i]/D_out)*10000.0/rho
-        if i in pump_indices:
-            model.pressure_limit.add(model.RH[i] + TDH[i]*model.NOP[i] <= MAOP_head)
-        else:
-            model.pressure_limit.add(model.RH[i] <= MAOP_head)
+        D_out = d_inner[i] + 2 * thickness[i]
+        MAOP_head = (2 * thickness[i] * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / rho_dict[i]
+        
+        model.pressure_limit.add(model.SDH[i] <= MAOP_head)
+        
+        name = stations[i-1]['name'].strip().lower().replace(' ', '_')
+        result[f"maop_{name}"] = MAOP_head
+        
         peaks = peaks_dict[i]
         for peak in peaks:
             loc_km = peak['loc']
