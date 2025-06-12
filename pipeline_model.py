@@ -233,7 +233,7 @@ def solve_pipeline(
             start_km = cumlen[upidx-1]
             seg_start = cumlen[idx-1]
             next_running = min([i for i in running_pumps if i > upidx], default=N+1)
-            limit_km = min(cumlen[next_running-1] if next_running <= N else cumlen[-1], start_km + 300)
+            limit_km = min(cumlen[next_running-1] if next_running <= N else cumlen[-1], start_km + 400)
             if seg_start < limit_km:
                 dra_station = upidx
                 break
