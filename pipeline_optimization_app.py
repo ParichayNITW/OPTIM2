@@ -277,6 +277,7 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
+# === Station/ Pump Groups UI ===
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
@@ -298,43 +299,64 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with col3:
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
-        tabs = st.tabs(["Pump", "Peaks"])
-        with tabs[0]:
-            if stn['is_pump']:
-                key_head = f"head_data_{idx}"
-                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                    df_head = st.session_state[key_head]
-                else:
-                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.session_state[key_head] = df_head
+        # --- Multi pump group section
+        if stn['is_pump']:
+            if 'pump_groups' not in stn or not isinstance(stn['pump_groups'], list):
+                stn['pump_groups'] = []
+            num_groups = st.number_input("No. of pump types (groups)", min_value=1, value=len(stn['pump_groups']) or 1, step=1, key=f"ngroups_{idx}")
+            # Resize pump_groups
+            while len(stn['pump_groups']) < num_groups:
+                stn['pump_groups'].append({
+                    'name': f'Pump Type {len(stn["pump_groups"])+1}',
+                    'max': 1,
+                    'A': 0.0, 'B': 0.0, 'C': 0.0, 'P': 0.0, 'Q': 0.0, 'R': 0.0, 'S': 0.0, 'T': 0.0,
+                    'MinRPM': 1000, 'DOL': 1500,
+                    'rate': 9.0, 'sfc': 0.0, 'max_dr': stn.get('max_dr',0.0)
+                })
+            while len(stn['pump_groups']) > num_groups:
+                stn['pump_groups'].pop()
 
-                key_eff = f"eff_data_{idx}"
-                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                    df_eff = st.session_state[key_eff]
-                else:
-                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[key_eff] = df_eff
+            for gidx, group in enumerate(stn['pump_groups']):
+                with st.container():
+                    st.markdown(f"**Pump Group {gidx+1}**")
+                    group['name'] = st.text_input("Group Name", value=group['name'], key=f"group_name_{idx}_{gidx}")
+                    group['max'] = st.number_input("Max No. of This Pump Type", min_value=0, value=group.get('max',1), step=1, key=f"group_max_{idx}_{gidx}")
+                    # Curve data
+                    df_head = st.session_state.get(f"head_data_{idx}_{gidx}")
+                    if df_head is None:
+                        df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head_{idx}_{gidx}")
+                    st.session_state[f"head_data_{idx}_{gidx}"] = df_head
 
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                with pcol2:
-                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                with pcol3:
-                    if stn['power_type']=="Grid":
-                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                        stn['sfc'] = 0.0
+                    df_eff = st.session_state.get(f"eff_data_{idx}_{gidx}")
+                    if df_eff is None:
+                        df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff_{idx}_{gidx}")
+                    st.session_state[f"eff_data_{idx}_{gidx}"] = df_eff
+
+                    # Fit curves and store coefficients
+                    if len(df_head) >= 3:
+                        Qh = df_head.iloc[:,0].values; Hh = df_head.iloc[:,1].values
+                        coeff = np.polyfit(Qh, Hh, 2)
+                        group['A'], group['B'], group['C'] = coeff[0], coeff[1], coeff[2]
+                    if len(df_eff) >= 5:
+                        Qe = df_eff.iloc[:,0].values; Ee = df_eff.iloc[:,1].values
+                        coeff_e = np.polyfit(Qe, Ee, 4)
+                        group['P'], group['Q'], group['R'], group['S'], group['T'] = coeff_e
+                    group['MinRPM'] = st.number_input("Min RPM", value=group['MinRPM'], key=f"group_minrpm_{idx}_{gidx}")
+                    group['DOL'] = st.number_input("Rated RPM", value=group['DOL'], key=f"group_dol_{idx}_{gidx}")
+                    power_src = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                            index=0 if group.get('sfc',0)==0 else 1, key=f"group_power_{idx}_{gidx}")
+                    if power_src == "Grid":
+                        group['rate'] = st.number_input("Elec Rate (INR/kWh)", value=group.get('rate',9.0), key=f"group_rate_{idx}_{gidx}")
+                        group['sfc'] = 0.0
                     else:
-                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                        stn['rate'] = 0.0
-            else:
-                st.info("Not a pumping station. No pump data required.")
+                        group['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=group.get('sfc',150.0), key=f"group_sfc_{idx}_{gidx}")
+                        group['rate'] = 0.0
 
-        with tabs[1]:
+        # -- Peaks Tab
+        tabs = st.tabs(["Peaks"])
+        with tabs[0]:
             key_peak = f"peak_data_{idx}"
             if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
                 peak_df = st.session_state[key_peak]
