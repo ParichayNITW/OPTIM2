@@ -223,6 +223,7 @@ with st.sidebar:
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
             'max_dr': 0.0
+            'pump_groups': []
         }]
     if add_col.button("➕ Add Station"):
         n = len(st.session_state.get('stations',[])) + 1
@@ -233,6 +234,7 @@ with st.sidebar:
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
             'max_dr': 0.0
+            'pump_groups': []
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station"):
