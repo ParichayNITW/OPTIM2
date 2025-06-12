@@ -222,7 +222,7 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'max_dr': 0.0,
             'pump_groups': []
         }]
     if add_col.button("➕ Add Station"):
@@ -233,7 +233,7 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'max_dr': 0.0,
             'pump_groups': []
         }
         st.session_state.stations.append(default)
