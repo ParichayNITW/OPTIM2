@@ -488,17 +488,25 @@ with tab1:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+
+        # Prepare names: stations + terminal
         names = [s['name'] for s in stations_data] + [terminal_name]
+        # Parameters/rows (with new ones)
         params = [
+            "Flow Rate (m³/hr)",
+            "SDH (kg/cm²)",
+            "RH (kg/cm²)",
+            "MAOP (kg/cm²)",
             "Power+Fuel Cost", "DRA Cost", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
             "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "DRA (%)"
         ]
         summary = {"Parameters": params}
-        # DRA/PPM summary
+
+        # Prepare DRA/PPM summary
         station_dr_capped = {}
         station_ppm = {}
-        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
             dr_opt = res.get(f"drag_reduction_{key}", 0.0)
@@ -506,41 +514,71 @@ with tab1:
             viscosity = kv_list[idx-1]
             dr_use = min(dr_opt, dr_max)
             station_dr_capped[key] = dr_use
-            ppm = get_ppm_for_dr(viscosity, dr_use)
-            station_ppm[key] = ppm
-        for nm in names:
-            key = nm.lower().replace(' ','_')
-            if key in station_ppm:
-                dra_cost = (
-                    station_ppm[key]
-                    * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
-                    * st.session_state["RateDRA"]
-                )
+            station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+        
+        flow_rate = st.session_state.get("FLOW", 1000.0)
+        
+        # Build per-station columns
+        for idx, nm in enumerate(names):
+            key = nm.lower().replace(' ', '_')
+            # Use rho_list for stations, last rho for terminal
+            if idx < len(rho_list):
+                density = rho_list[idx]
             else:
-                dra_cost = 0.0
+                density = rho_list[-1] if rho_list else 850  # fallback
+
+            # Gather head values
+            sdh_m = res.get(f"sdh_{key}", 0.0)
+            rh_m = res.get(f"residual_head_{key}", 0.0)
+            maop_m = res.get(f"maop_{key}", 0.0)
+
+            # Convert to kg/cm²
+            sdh_kgcm2 = sdh_m * density / 10000
+            rh_kgcm2 = rh_m * density / 10000
+            maop_kgcm2 = maop_m * density / 10000
+
+            # DRA cost
+            dra_cost = (
+                station_ppm.get(key, 0.0)
+                * (flow_rate * 1000.0 * 24.0 / 1e6)
+                * st.session_state.get("RateDRA", 500.0)
+            ) if key in station_ppm else 0.0
+
             summary[nm] = [
-                res.get(f"power_cost_{key}",0.0),
+                flow_rate,
+                sdh_kgcm2,
+                rh_kgcm2,
+                maop_kgcm2,
+                res.get(f"power_cost_{key}", 0.0),
                 dra_cost,
                 station_ppm.get(key, 0.0),
-                int(res.get(f"num_pumps_{key}",0)),
-                res.get(f"speed_{key}",0.0),
-                res.get(f"efficiency_{key}",0.0),
-                res.get(f"reynolds_{key}",0.0),
-                res.get(f"head_loss_{key}",0.0),
-                res.get(f"velocity_{key}",0.0),
-                res.get(f"residual_head_{key}",0.0),
-                res.get(f"sdh_{key}",0.0),
-                res.get(f"maop_{key}",0.0),
-                res.get(f"drag_reduction_{key}",0.0)
+                int(res.get(f"num_pumps_{key}", 0)),
+                res.get(f"speed_{key}", 0.0),
+                res.get(f"efficiency_{key}", 0.0),
+                res.get(f"reynolds_{key}", 0.0),
+                res.get(f"head_loss_{key}", 0.0),
+                res.get(f"velocity_{key}", 0.0),
+                rh_m,
+                sdh_m,
+                maop_m,
+                res.get(f"drag_reduction_{key}", 0.0)
             ]
         df_sum = pd.DataFrame(summary)
+        # Formatting
         fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
         fmt["No. of Pumps"] = "{:.0f}"
         fmt["Pump Speed (rpm)"] = "{:.0f}"
+        fmt["SDH (kg/cm²)"] = "{:.2f}"
+        fmt["RH (kg/cm²)"] = "{:.2f}"
+        fmt["MAOP (kg/cm²)"] = "{:.2f}"
+        fmt["Flow Rate (m³/hr)"] = "{:.2f}"
+
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+
+        # Cost summary
         total_cost = res.get('total_cost', 0)
         if isinstance(total_cost, str):
             total_cost = float(total_cost.replace(',', ''))
