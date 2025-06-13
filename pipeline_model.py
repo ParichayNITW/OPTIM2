@@ -2,91 +2,8 @@ import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 from math import log10, pi
-import itertools
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
-
-def generate_pump_combinations(pump_groups, is_origin):
-    ranges = [range(0, g['max']+1) for g in pump_groups]
-    combos = []
-    for counts in itertools.product(*ranges):
-        if is_origin and sum(counts) == 0:
-            continue
-        combos.append(list(counts))
-    return combos
-
-def expand_station_for_combo(station, combo):
-    # Deep copy and expand only active pump group for this combo
-    stn = station.copy()
-    stn = {k: v for k, v in stn.items() if k != 'pump_groups'}
-    group_keys = [
-        'A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T',
-        'MinRPM', 'DOL', 'rate', 'sfc', 'max_dr'
-    ]
-    count = 0
-    for idx, n in enumerate(combo):
-        if n > 0:
-            group = station['pump_groups'][idx]
-            for key in group_keys:
-                stn[key] = group.get(key, 0)
-            stn['max_pumps'] = n
-            stn['is_pump'] = True
-            count += n
-    if count == 0:
-        stn['is_pump'] = False
-        stn['max_pumps'] = 0
-    return stn
-
-def solve_pipeline_combined(
-    stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None, mldp_high_dict=None
-):
-    N = len(stations)
-    best_result = None
-    best_cost = float('inf')
-
-    station_combos = []
-    for idx, stn in enumerate(stations):
-        is_origin = (idx == 0)
-        pump_groups = stn.get('pump_groups', [])
-        combos = generate_pump_combinations(pump_groups, is_origin)
-        station_combos.append(combos)
-    all_network_combos = itertools.product(*station_combos)
-
-    for combo_set in all_network_combos:
-        active_stations = []
-        for stn, combo in zip(stations, combo_set):
-            active_stn = expand_station_for_combo(stn, combo)
-            active_stations.append(active_stn)
-        try:
-            res = solve_pipeline(
-                active_stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
-            )
-            if not res: continue
-            total_cost = res.get('total_cost', 1e20)
-            feasible = True
-            if mldp_high_dict:
-                for idx, stn in enumerate(active_stations, start=1):
-                    name = stn['name'].strip().lower().replace(' ', '_')
-                    sdh_key = f"sdh_{name}"
-                    dens = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-                    sdh_m = res.get(sdh_key, 0)
-                    sdh_kgcm2 = sdh_m * dens / 1e4
-                    mldp_val = mldp_high_dict.get(stn['name'], 1000)
-                    if sdh_kgcm2 > mldp_val:
-                        feasible = False
-                        break
-            if feasible and total_cost < best_cost:
-                best_result = res
-                best_cost = total_cost
-        except Exception as ex:
-            continue
-
-    if best_result is not None:
-        return best_result
-    else:
-        return {'feasible': False, 'reason': "No feasible pump combination in all stations"}
-
-# ------------- BEGINNING OF YOUR ORIGINAL FULL SOLVE_PIPELINE -------------
 
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
@@ -229,13 +146,16 @@ def solve_pipeline(
     EFFP = {}
 
     for i in range(1, N+1):
+        # Make DRA effective ONLY at pump stations
         if i in pump_indices:
             DR_frac = model.DR[i] / 100.0
         else:
             DR_frac = 0.0
+        # Normal station-to-station
         DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
+        # For all peaks
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
@@ -266,8 +186,9 @@ def solve_pipeline(
             model.head_balance.add(model.RH[i] >= model.SDH[i])
         D_out = d_inner[i] + 2 * thickness[i]
         MAOP_head = (2 * thickness[i] * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / rho_dict[i]
-        maop_dict[i] = MAOP_head
+        maop_dict[i] = MAOP_head  # <-- new: save for later
         model.pressure_limit.add(model.SDH[i] <= MAOP_head)
+              
         peaks = peaks_dict[i]
         for peak in peaks:
             loc_km = peak['loc']
@@ -289,7 +210,7 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost = 0
+        dra_cost = 0  # Not counted in solver objective (post-solve only)
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
@@ -392,5 +313,3 @@ def solve_pipeline(
     })
     result['total_cost'] = float(pyo.value(model.Obj))
     return result
-
-# ------------ END OF COMPLETE BACKEND FOR DEPLOYMENT ------------
