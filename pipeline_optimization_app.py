@@ -499,8 +499,8 @@ with tab1:
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
         params = [
-            "Power+Fuel Cost", "DRA Cost", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
-            "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "DRA (%)"
+            "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
+            "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
         ]
         summary = {"Parameters": params}
         # DRA/PPM summary
