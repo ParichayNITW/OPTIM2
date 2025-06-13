@@ -860,16 +860,35 @@ with tab6:
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         st.markdown("<div class='section-title'>DRA Curves (PPM vs % Drag Reduction) for Each Segment</div>", unsafe_allow_html=True)
-
         # Mainline DRA
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
             dr_opt = res.get(f"drag_reduction_{key}", 0.0)
             visc = kv_list[idx-1] if idx-1 < len(kv_list) else 10.0
-            # Dummy: show DRA vs PPM as linear (replace with real data as needed)
-            percent_dr = np.linspace(0, stn.get("max_dr", 40), 20)
-            ppm_vals = percent_dr * 2.5 + visc  # Dummy formula
-            opt_ppm = dr_opt * 2.5 + visc
+            cst_list = sorted(DRA_CURVE_DATA.keys())
+            # Curve interpolation:
+            if visc <= cst_list[0]:
+                df_curve = DRA_CURVE_DATA[cst_list[0]]
+                percent_dr = df_curve['%Drag Reduction'].values
+                ppm_vals = df_curve['PPM'].values
+            elif visc >= cst_list[-1]:
+                df_curve = DRA_CURVE_DATA[cst_list[-1]]
+                percent_dr = df_curve['%Drag Reduction'].values
+                ppm_vals = df_curve['PPM'].values
+            else:
+                lower = max([c for c in cst_list if c <= visc])
+                upper = min([c for c in cst_list if c >= visc])
+                df_lower = DRA_CURVE_DATA[lower]
+                df_upper = DRA_CURVE_DATA[upper]
+                percent_dr = np.linspace(
+                    min(df_lower['%Drag Reduction'].min(), df_upper['%Drag Reduction'].min()),
+                    max(df_lower['%Drag Reduction'].max(), df_upper['%Drag Reduction'].max()),
+                    50
+                )
+                ppm_lower = np.interp(percent_dr, df_lower['%Drag Reduction'], df_lower['PPM'])
+                ppm_upper = np.interp(percent_dr, df_upper['%Drag Reduction'], df_upper['PPM'])
+                ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((visc - lower) / (upper - lower))
+            opt_ppm = get_ppm_for_dr(visc, dr_opt)
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=percent_dr, y=ppm_vals, mode='lines+markers', name="DRA Curve"
@@ -892,9 +911,29 @@ with tab6:
                 from_node, to_node = loop_info.split("_")
                 dr_opt = res[k]
                 visc = res.get(f"loopline_{from_node}_{to_node}_viscosity", 10.0)
-                percent_dr = np.linspace(0, res.get(f"loopline_{from_node}_{to_node}_max_dr", 40), 20)
-                ppm_vals = percent_dr * 2.5 + visc  # Dummy
-                opt_ppm = dr_opt * 2.5 + visc
+                cst_list = sorted(DRA_CURVE_DATA.keys())
+                if visc <= cst_list[0]:
+                    df_curve = DRA_CURVE_DATA[cst_list[0]]
+                    percent_dr = df_curve['%Drag Reduction'].values
+                    ppm_vals = df_curve['PPM'].values
+                elif visc >= cst_list[-1]:
+                    df_curve = DRA_CURVE_DATA[cst_list[-1]]
+                    percent_dr = df_curve['%Drag Reduction'].values
+                    ppm_vals = df_curve['PPM'].values
+                else:
+                    lower = max([c for c in cst_list if c <= visc])
+                    upper = min([c for c in cst_list if c >= visc])
+                    df_lower = DRA_CURVE_DATA[lower]
+                    df_upper = DRA_CURVE_DATA[upper]
+                    percent_dr = np.linspace(
+                        min(df_lower['%Drag Reduction'].min(), df_upper['%Drag Reduction'].min()),
+                        max(df_lower['%Drag Reduction'].max(), df_upper['%Drag Reduction'].max()),
+                        50
+                    )
+                    ppm_lower = np.interp(percent_dr, df_lower['%Drag Reduction'], df_lower['PPM'])
+                    ppm_upper = np.interp(percent_dr, df_upper['%Drag Reduction'], df_upper['PPM'])
+                    ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((visc - lower) / (upper - lower))
+                opt_ppm = get_ppm_for_dr(visc, dr_opt)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=percent_dr, y=ppm_vals, mode='lines+markers', name="DRA Curve"
@@ -910,6 +949,7 @@ with tab6:
                     legend=dict(orientation="h", y=-0.2)
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
 
 # ========================== TAB 7: 3D ANALYSIS AND SURFACE PLOTS ==========================
 with tab7:
