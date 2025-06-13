@@ -476,17 +476,26 @@ if run:
         # Validate all peaks, pump curves, and collect into stations
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
-                if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
-                    st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
+                # ---- For pump grouping ----
+                if not stn.get('pump_groups'):
+                    st.error(f"Station {idx}: No pump group defined.")
                     st.stop()
-                Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
-                coeff = np.polyfit(Qh, Hh, 2)
-                stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
-                coeff_e = np.polyfit(Qe, Ee, 4)
-                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
+                for gidx, group in enumerate(stn['pump_groups']):
+                    dfh = st.session_state.get(f"head_data_{idx}_{gidx}")
+                    dfe = st.session_state.get(f"eff_data_{idx}_{gidx}")
+                    if dfh is None or len(dfh) < 3:
+                        st.error(f"Station {idx} Group {gidx+1}: At least 3 points for flow-head are required.")
+                        st.stop()
+                    if dfe is None or len(dfe) < 5:
+                        st.error(f"Station {idx} Group {gidx+1}: At least 5 points for flow-eff are required.")
+                        st.stop()
+                    # Fit curves and store coefficients for each pump group
+                    Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
+                    coeff = np.polyfit(Qh, Hh, 2)
+                    group['A'], group['B'], group['C'] = coeff[0], coeff[1], coeff[2]
+                    Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
+                    coeff_e = np.polyfit(Qe, Ee, 4)
+                    group['P'], group['Q'], group['R'], group['S'], group['T'] = coeff_e
             peaks_df = st.session_state.get(f"peak_data_{idx}")
             peaks_list = []
             if peaks_df is not None:
