@@ -424,5 +424,6 @@ def solve_pipeline(
             result[f"{key}_friction"] = f_val
             result[f"{key}_head_loss_m"] = hl_val
             result[f"{key}_drag_reduction_percent"] = pyo.value(model.DR_seg[seg['idx']])
+            result[f"{key}_power_cost"] = 0.0
     result['total_cost'] = float(pyo.value(model.Obj))
     return result
