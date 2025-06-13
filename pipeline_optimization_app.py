@@ -632,12 +632,19 @@ with tab2:
         main_cost = []
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
+            visc = kv_list[idx-1] if idx-1 < len(kv_list) else 10.0
+            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+            dr_max = stn.get('max_dr', 0.0)
+            dra_used = min(dr_opt, dr_max)
+            ppm = get_ppm_for_dr(visc, dra_used)
+            dra_cost = ppm * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6) * st.session_state["RateDRA"]
             main_cost.append({
                 "Segment": f"Mainline {idx}: {stn['name']}",
                 "Type": "Mainline",
                 "Power+Fuel": res.get(f"power_cost_{key}", 0.0),
-                "DRA": res.get(f"dra_cost_{key}", 0.0),
-                "Total": res.get(f"power_cost_{key}", 0.0) + res.get(f"dra_cost_{key}", 0.0)
+                "DRA": dra_cost,
+                "PPM Used": ppm,
+                "Total": res.get(f"power_cost_{key}", 0.0) + dra_cost
             })
         # Loopline
         loop_cost = []
@@ -646,14 +653,23 @@ with tab2:
                 loop_info = k.replace("loopline_", "").replace("_power_cost", "")
                 from_node, to_node = loop_info.split("_")
                 segkey = f"loopline_{from_node}_{to_node}"
+                visc = res.get(f"{segkey}_viscosity", 10.0)
+                dr_opt = res.get(f"{segkey}_drag_reduction_percent", 0.0)
+                max_dr = res.get(f"{segkey}_max_dr", 0.0)
+                dra_used = min(dr_opt, max_dr)
+                ppm = get_ppm_for_dr(visc, dra_used)
+                flow = res.get(f"{segkey}_flow_m3hr", 0.0)
+                dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * st.session_state["RateDRA"]
                 loop_cost.append({
                     "Segment": f"Loopline {from_node}-{to_node}",
                     "Type": "Loopline",
                     "Power+Fuel": res.get(f"{segkey}_power_cost", 0.0),
-                    "DRA": res.get(f"{segkey}_dra_cost", 0.0),
-                    "Total": res.get(f"{segkey}_power_cost", 0.0) + res.get(f"{segkey}_dra_cost", 0.0)
+                    "DRA": dra_cost,
+                    "PPM Used": ppm,
+                    "Total": res.get(f"{segkey}_power_cost", 0.0) + dra_cost
                 })
         df_cost = pd.DataFrame(main_cost + loop_cost)
+
         fig_pie = px.pie(df_cost, names='Segment', values='Total', title="Segment-wise Cost Breakdown", color='Type')
         st.markdown("<div class='section-title'>Cost Breakdown: Mainline & Loopline</div>", unsafe_allow_html=True)
         st.plotly_chart(fig_pie, use_container_width=True)
