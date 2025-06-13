@@ -154,26 +154,37 @@ else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
 # ==== 1. EARLY LOAD/RESTORE BLOCK ====
+import json
+
 def restore_case_dict(loaded_data):
-    st.session_state['stations'] = loaded_data.get('stations', [])
+    # Restore all stations and their full nested pump/peak/curve data
+    st.session_state['stations'] = []
+    for i, stn in enumerate(loaded_data.get('stations', []), start=1):
+        stn_copy = dict(stn)
+        # Pump groups: restore all curves
+        if stn_copy.get('pump_groups'):
+            for gidx, group in enumerate(stn_copy['pump_groups']):
+                hd = group.get("head_curve", None)
+                ed = group.get("eff_curve", None)
+                if hd is not None:
+                    st.session_state[f"head_data_{i}_{gidx}"] = pd.DataFrame(hd)
+                if ed is not None:
+                    st.session_state[f"eff_data_{i}_{gidx}"] = pd.DataFrame(ed)
+        # Peak data
+        pk = stn_copy.get("peaks_df", None)
+        if pk is not None:
+            st.session_state[f"peak_data_{i}"] = pd.DataFrame(pk)
+        st.session_state['stations'].append(stn_copy)
+
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
     st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
-    if "linefill" in loaded_data and loaded_data["linefill"]:
-        st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    for i in range(len(st.session_state['stations'])):
-        head_data = loaded_data.get(f"head_data_{i+1}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
-        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
-        if head_data is not None:
-            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
-        if eff_data is not None:
-            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
-        if peak_data is not None:
-            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+    lf = loaded_data.get("linefill", None)
+    if lf is not None:
+        st.session_state["linefill_df"] = pd.DataFrame(lf)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -188,7 +199,7 @@ if st.session_state.get("should_rerun", False):
     st.session_state["should_rerun"] = False
     st.rerun()
     st.stop()
-
+    
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
@@ -372,8 +383,32 @@ terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("ter
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
 def get_full_case_dict():
+    # Save ALL station/group/curve/peak data in full fidelity for export/restore
+    station_entries = []
+    for i, stn in enumerate(st.session_state.get('stations', []), start=1):
+        station_copy = dict(stn)
+        if stn.get('pump_groups'):
+            pump_groups = []
+            for gidx, group in enumerate(stn['pump_groups']):
+                group_copy = dict(group)
+                hd = st.session_state.get(f"head_data_{i}_{gidx}")
+                ed = st.session_state.get(f"eff_data_{i}_{gidx}")
+                group_copy["head_curve"] = (
+                    hd.to_dict(orient="records") if isinstance(hd, pd.DataFrame) else None
+                )
+                group_copy["eff_curve"] = (
+                    ed.to_dict(orient="records") if isinstance(ed, pd.DataFrame) else None
+                )
+                pump_groups.append(group_copy)
+            station_copy['pump_groups'] = pump_groups
+        pk = st.session_state.get(f"peak_data_{i}")
+        station_copy["peaks_df"] = (
+            pk.to_dict(orient="records") if isinstance(pk, pd.DataFrame) else None
+        )
+        station_entries.append(station_copy)
+
     return {
-        "stations": st.session_state.get('stations', []),
+        "stations": station_entries,
         "terminal": {
             "name": st.session_state.get('terminal_name', 'Terminal'),
             "elev": st.session_state.get('terminal_elev', 0.0),
@@ -382,28 +417,7 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
-        **{
-            f"head_data_{i+1}": (
-                st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
-            )
-            for i in range(len(st.session_state.get('stations', [])))
-        },
-        **{
-            f"eff_data_{i+1}": (
-                st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
-            )
-            for i in range(len(st.session_state.get('stations', [])))
-        },
-        **{
-            f"peak_data_{i+1}": (
-                st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
-            )
-            for i in range(len(st.session_state.get('stations', [])))
-        }
+        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records")
     }
 
 case_data = get_full_case_dict()
