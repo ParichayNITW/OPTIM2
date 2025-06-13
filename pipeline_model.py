@@ -345,71 +345,75 @@ def solve_pipeline(
     model.solutions.load_from(results)
 
     # --- Output Section ---
+   
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
         if i in pump_indices:
             num_pumps = int(pyo.value(model.NOP[i]))
             speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 else 0.0
-            eff = float(pyo.value(EFFP[i])*100.0) if num_pumps > 0 else 0.0
+            eff = float(pyo.value(EFFP[i]) * 100.0) if num_pumps > 0 else 0.0
         else:
-            num_pumps = 0; speed_rpm = 0.0; eff = 0.0
+            num_pumps = 0
+            speed_rpm = 0.0
+            eff = 0.0
+    
         result[f"num_pumps_{name}"] = num_pumps
         result[f"speed_{name}"] = speed_rpm
         result[f"efficiency_{name}"] = eff
         result[f"residual_head_{name}"] = float(pyo.value(model.RH[i]))
-
-    # Add these outputs for mainline (MANDATORY for frontend!)
-    seg = next(s for s in segments if s['type'] == 'main' and s['idx']==i)
-    q_val = pyo.value(model.Q[i])
-    v_val = v[i](q_val)
-    re_val = Re[i](q_val, kv_dict[i])
-    f_val = f[i](q_val, kv_dict[i], pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0)
-    hl_val = headloss_expr(model, i)
-    sdh_val = pyo.value(model.SDH[i])
-    maop_val = maop_dict[i]
-    result[f"flow_{name}"] = q_val
-    result[f"velocity_{name}"] = v_val
-    result[f"reynolds_{name}"] = re_val
-    result[f"friction_{name}"] = f_val
-    result[f"head_loss_{name}"] = hl_val
-    result[f"sdh_{name}"] = sdh_val
-    result[f"maop_{name}"] = maop_val
-    if i in pump_indices:
-        result[f"drag_reduction_{name}"] = float(pyo.value(model.DR_seg[i]))  # Mainline DRA (%)
-    # Power Cost Output
-    if i in pump_indices:
-        rho_i = rho_dict[i]
-        TDH_val = (Acoef[i]*FLOW**2 + Bcoef[i]*FLOW + Ccoef[i]) * ((pyo.value(model.N[i])/max_rpm[i])**2)
-        eff_val = float(pyo.value(EFFP[i]))
-        num_pumps = int(pyo.value(model.NOP[i]))
-        if i in electric_pumps:
-            power_kW = (rho_i * FLOW * 9.81 * TDH_val * num_pumps)/(3600.0*1000.0*eff_val*0.95)
-            power_cost = power_kW * 24.0 * elec_cost.get(i,0.0)
+    
+        # --- Stationwise hydraulic output ---
+        seg = next(s for s in segments if s['type'] == 'main' and s['idx'] == i)
+        q_val = pyo.value(model.Q[i])
+        v_val = v[i](q_val)
+        re_val = Re[i](q_val, kv_dict[i])
+        f_val = f[i](q_val, kv_dict[i], pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0)
+        hl_val = headloss_expr(model, i)
+        sdh_val = pyo.value(model.SDH[i])
+        maop_val = maop_dict[i]
+        result[f"flow_{name}"] = q_val
+        result[f"velocity_{name}"] = v_val
+        result[f"reynolds_{name}"] = re_val
+        result[f"friction_{name}"] = f_val
+        result[f"head_loss_{name}"] = hl_val
+        result[f"sdh_{name}"] = sdh_val
+        result[f"maop_{name}"] = maop_val
+    
+        if i in pump_indices:
+            result[f"drag_reduction_{name}"] = float(pyo.value(model.DR_seg[i]))  # Mainline DRA (%)
+            # Power Cost Output
+            rho_i = rho_dict[i]
+            TDH_val = (Acoef[i] * FLOW ** 2 + Bcoef[i] * FLOW + Ccoef[i]) * ((pyo.value(model.N[i]) / max_rpm[i]) ** 2)
+            eff_val = float(pyo.value(EFFP[i]))
+            num_pumps = int(pyo.value(model.NOP[i]))
+            if i in electric_pumps:
+                power_kW = (rho_i * FLOW * 9.81 * TDH_val * num_pumps) / (3600.0 * 1000.0 * eff_val * 0.95)
+                power_cost = power_kW * 24.0 * elec_cost.get(i, 0.0)
+            else:
+                fuel_per_kWh = (sfc.get(i, 0.0) * 1.34102) / 820.0
+                power_kW = (rho_i * FLOW * 9.81 * TDH_val * num_pumps) / (3600.0 * 1000.0 * eff_val * 0.95)
+                power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
+            result[f"power_cost_{name}"] = float(power_cost)
         else:
-            fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
-            power_kW = (rho_i * FLOW * 9.81 * TDH_val * num_pumps)/(3600.0*1000.0*eff_val*0.95)
-            power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        result[f"power_cost_{name}"] = float(power_cost)
-    else:
-        result[f"power_cost_{name}"] = 0.0
-
-    # Output peak pressures (for all peaks defined for the station)
-    peaks = stn.get('peaks', [])
-    for pidx, peak in enumerate(peaks, start=1):
-        L_peak = peak['loc'] * 1000.0
-        elev_k = peak['elev']
-        q = q_val
-        kv = kv_dict[i]
-        dr = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
-        f_i = f[i](q, kv, dr)
-        v_i = v[i](q)
-        DH_peak = f_i * (L_peak / seg['D']) * (v_i**2/(2*9.81))
-        static_h = elev_k - seg['start_elev']
-        peak_head = pyo.value(model.RH[i]) - static_h - DH_peak
-        result[f"peak_head_{name}_{pidx}"] = peak_head
-
-    # Output for looplines: include flows, velocities, head loss, DR, etc.
+            result[f"power_cost_{name}"] = 0.0
+    
+        # Output peak pressures (for all peaks defined for the station)
+        peaks = stn.get('peaks', [])
+        for pidx, peak in enumerate(peaks, start=1):
+            L_peak = peak['loc'] * 1000.0
+            elev_k = peak['elev']
+            q = q_val
+            kv = kv_dict[i]
+            dr = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
+            f_i = f[i](q, kv, dr)
+            v_i = v[i](q)
+            DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * 9.81))
+            static_h = elev_k - seg['start_elev']
+            peak_head = pyo.value(model.RH[i]) - static_h - DH_peak
+            result[f"peak_head_{name}_{pidx}"] = peak_head
+    
+    # ---- Output for looplines: include flows, velocities, head loss, DR, etc. ----
     for seg in segments:
         if seg['type'] == 'loop':
             key = f"loopline_{seg['from_node']}_{seg['to_node']}"
