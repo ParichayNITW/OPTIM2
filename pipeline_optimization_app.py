@@ -141,15 +141,6 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-                # --- Add footer here ---
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
         st.stop()
     with st.sidebar:
         if st.button("Logout"):
@@ -163,37 +154,26 @@ else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
 # ==== 1. EARLY LOAD/RESTORE BLOCK ====
-import json
-
 def restore_case_dict(loaded_data):
-    # Restore all stations and their full nested pump/peak/curve data
-    st.session_state['stations'] = []
-    for i, stn in enumerate(loaded_data.get('stations', []), start=1):
-        stn_copy = dict(stn)
-        # Pump groups: restore all curves
-        if stn_copy.get('pump_groups'):
-            for gidx, group in enumerate(stn_copy['pump_groups']):
-                hd = group.get("head_curve", None)
-                ed = group.get("eff_curve", None)
-                if hd is not None:
-                    st.session_state[f"head_data_{i}_{gidx}"] = pd.DataFrame(hd)
-                if ed is not None:
-                    st.session_state[f"eff_data_{i}_{gidx}"] = pd.DataFrame(ed)
-        # Peak data
-        pk = stn_copy.get("peaks_df", None)
-        if pk is not None:
-            st.session_state[f"peak_data_{i}"] = pd.DataFrame(pk)
-        st.session_state['stations'].append(stn_copy)
-
+    st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
     st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
-    lf = loaded_data.get("linefill", None)
-    if lf is not None:
-        st.session_state["linefill_df"] = pd.DataFrame(lf)
+    if "linefill" in loaded_data and loaded_data["linefill"]:
+        st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+    for i in range(len(st.session_state['stations'])):
+        head_data = loaded_data.get(f"head_data_{i+1}", None)
+        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
+        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+        if head_data is not None:
+            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
+        if eff_data is not None:
+            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
+        if peak_data is not None:
+            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -208,7 +188,7 @@ if st.session_state.get("should_rerun", False):
     st.session_state["should_rerun"] = False
     st.rerun()
     st.stop()
-    
+
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
@@ -242,8 +222,7 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-            'max_dr': 0.0,
-            'pump_groups': []
+            'max_dr': 0.0
         }]
     if add_col.button("➕ Add Station"):
         n = len(st.session_state.get('stations',[])) + 1
@@ -253,8 +232,7 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0,
-            'pump_groups': []
+            'max_dr': 0.0
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station"):
@@ -297,7 +275,6 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
-# === Station/ Pump Groups UI ===
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
@@ -319,64 +296,43 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with col3:
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
 
-        # --- Multi pump group section
-        if stn['is_pump']:
-            if 'pump_groups' not in stn or not isinstance(stn['pump_groups'], list):
-                stn['pump_groups'] = []
-            num_groups = st.number_input("No. of pump types (groups)", min_value=1, value=len(stn['pump_groups']) or 1, step=1, key=f"ngroups_{idx}")
-            # Resize pump_groups
-            while len(stn['pump_groups']) < num_groups:
-                stn['pump_groups'].append({
-                    'name': f'Pump Type {len(stn["pump_groups"])+1}',
-                    'max': 1,
-                    'A': 0.0, 'B': 0.0, 'C': 0.0, 'P': 0.0, 'Q': 0.0, 'R': 0.0, 'S': 0.0, 'T': 0.0,
-                    'MinRPM': 1000, 'DOL': 1500,
-                    'rate': 9.0, 'sfc': 0.0, 'max_dr': stn.get('max_dr',0.0)
-                })
-            while len(stn['pump_groups']) > num_groups:
-                stn['pump_groups'].pop()
-
-            for gidx, group in enumerate(stn['pump_groups']):
-                with st.container():
-                    st.markdown(f"**Pump Group {gidx+1}**")
-                    group['name'] = st.text_input("Group Name", value=group['name'], key=f"group_name_{idx}_{gidx}")
-                    group['max'] = st.number_input("Max No. of This Pump Type", min_value=0, value=group.get('max',1), step=1, key=f"group_max_{idx}_{gidx}")
-                    # Curve data
-                    df_head = st.session_state.get(f"head_data_{idx}_{gidx}")
-                    if df_head is None:
-                        df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head_{idx}_{gidx}")
-                    st.session_state[f"head_data_{idx}_{gidx}"] = df_head
-
-                    df_eff = st.session_state.get(f"eff_data_{idx}_{gidx}")
-                    if df_eff is None:
-                        df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff_{idx}_{gidx}")
-                    st.session_state[f"eff_data_{idx}_{gidx}"] = df_eff
-
-                    # Fit curves and store coefficients
-                    if len(df_head) >= 3:
-                        Qh = df_head.iloc[:,0].values; Hh = df_head.iloc[:,1].values
-                        coeff = np.polyfit(Qh, Hh, 2)
-                        group['A'], group['B'], group['C'] = coeff[0], coeff[1], coeff[2]
-                    if len(df_eff) >= 5:
-                        Qe = df_eff.iloc[:,0].values; Ee = df_eff.iloc[:,1].values
-                        coeff_e = np.polyfit(Qe, Ee, 4)
-                        group['P'], group['Q'], group['R'], group['S'], group['T'] = coeff_e
-                    group['MinRPM'] = st.number_input("Min RPM", value=group['MinRPM'], key=f"group_minrpm_{idx}_{gidx}")
-                    group['DOL'] = st.number_input("Rated RPM", value=group['DOL'], key=f"group_dol_{idx}_{gidx}")
-                    power_src = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                            index=0 if group.get('sfc',0)==0 else 1, key=f"group_power_{idx}_{gidx}")
-                    if power_src == "Grid":
-                        group['rate'] = st.number_input("Elec Rate (INR/kWh)", value=group.get('rate',9.0), key=f"group_rate_{idx}_{gidx}")
-                        group['sfc'] = 0.0
-                    else:
-                        group['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=group.get('sfc',150.0), key=f"group_sfc_{idx}_{gidx}")
-                        group['rate'] = 0.0
-
-        # -- Peaks Tab
-        tabs = st.tabs(["Peaks"])
+        tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
+            if stn['is_pump']:
+                key_head = f"head_data_{idx}"
+                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                    df_head = st.session_state[key_head]
+                else:
+                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                st.session_state[key_head] = df_head
+
+                key_eff = f"eff_data_{idx}"
+                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                    df_eff = st.session_state[key_eff]
+                else:
+                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                st.session_state[key_eff] = df_eff
+
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                with pcol2:
+                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                with pcol3:
+                    if stn['power_type']=="Grid":
+                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                        stn['sfc'] = 0.0
+                    else:
+                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                        stn['rate'] = 0.0
+            else:
+                st.info("Not a pumping station. No pump data required.")
+
+        with tabs[1]:
             key_peak = f"peak_data_{idx}"
             if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
                 peak_df = st.session_state[key_peak]
@@ -392,32 +348,8 @@ terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("ter
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
 def get_full_case_dict():
-    # Save ALL station/group/curve/peak data in full fidelity for export/restore
-    station_entries = []
-    for i, stn in enumerate(st.session_state.get('stations', []), start=1):
-        station_copy = dict(stn)
-        if stn.get('pump_groups'):
-            pump_groups = []
-            for gidx, group in enumerate(stn['pump_groups']):
-                group_copy = dict(group)
-                hd = st.session_state.get(f"head_data_{i}_{gidx}")
-                ed = st.session_state.get(f"eff_data_{i}_{gidx}")
-                group_copy["head_curve"] = (
-                    hd.to_dict(orient="records") if isinstance(hd, pd.DataFrame) else None
-                )
-                group_copy["eff_curve"] = (
-                    ed.to_dict(orient="records") if isinstance(ed, pd.DataFrame) else None
-                )
-                pump_groups.append(group_copy)
-            station_copy['pump_groups'] = pump_groups
-        pk = st.session_state.get(f"peak_data_{i}")
-        station_copy["peaks_df"] = (
-            pk.to_dict(orient="records") if isinstance(pk, pd.DataFrame) else None
-        )
-        station_entries.append(station_copy)
-
     return {
-        "stations": station_entries,
+        "stations": st.session_state.get('stations', []),
         "terminal": {
             "name": st.session_state.get('terminal_name', 'Terminal'),
             "elev": st.session_state.get('terminal_elev', 0.0),
@@ -426,7 +358,28 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records")
+        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
+        **{
+            f"head_data_{i+1}": (
+                st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
+            )
+            for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"eff_data_{i+1}": (
+                st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
+            )
+            for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"peak_data_{i+1}": (
+                st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
+            )
+            for i in range(len(st.session_state.get('stations', [])))
+        }
     }
 
 case_data = get_full_case_dict()
@@ -476,26 +429,17 @@ if run:
         # Validate all peaks, pump curves, and collect into stations
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
-                # ---- For pump grouping ----
-                if not stn.get('pump_groups'):
-                    st.error(f"Station {idx}: No pump group defined.")
+                dfh = st.session_state.get(f"head_data_{idx}")
+                dfe = st.session_state.get(f"eff_data_{idx}")
+                if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                    st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
                     st.stop()
-                for gidx, group in enumerate(stn['pump_groups']):
-                    dfh = st.session_state.get(f"head_data_{idx}_{gidx}")
-                    dfe = st.session_state.get(f"eff_data_{idx}_{gidx}")
-                    if dfh is None or len(dfh) < 3:
-                        st.error(f"Station {idx} Group {gidx+1}: At least 3 points for flow-head are required.")
-                        st.stop()
-                    if dfe is None or len(dfe) < 5:
-                        st.error(f"Station {idx} Group {gidx+1}: At least 5 points for flow-eff are required.")
-                        st.stop()
-                    # Fit curves and store coefficients for each pump group
-                    Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    group['A'], group['B'], group['C'] = coeff[0], coeff[1], coeff[2]
-                    Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    group['P'], group['Q'], group['R'], group['S'], group['T'] = coeff_e
+                Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
+                coeff = np.polyfit(Qh, Hh, 2)
+                stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
+                Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
+                coeff_e = np.polyfit(Qe, Ee, 4)
+                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
             peaks_df = st.session_state.get(f"peak_data_{idx}")
             peaks_list = []
             if peaks_df is not None:
@@ -544,25 +488,17 @@ with tab1:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
-        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-
-        # Prepare names: stations + terminal
         names = [s['name'] for s in stations_data] + [terminal_name]
-        # Parameters/rows (with new ones)
         params = [
-            "Flow Rate (m³/hr)",
-            "SDH (kg/cm²)",
-            "RH (kg/cm²)",
-            "MAOP (kg/cm²)",
             "Power+Fuel Cost", "DRA Cost", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
             "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "DRA (%)"
         ]
         summary = {"Parameters": params}
-
-        # Prepare DRA/PPM summary
+        # DRA/PPM summary
         station_dr_capped = {}
         station_ppm = {}
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
             dr_opt = res.get(f"drag_reduction_{key}", 0.0)
@@ -570,71 +506,41 @@ with tab1:
             viscosity = kv_list[idx-1]
             dr_use = min(dr_opt, dr_max)
             station_dr_capped[key] = dr_use
-            station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
-        
-        flow_rate = st.session_state.get("FLOW", 1000.0)
-        
-        # Build per-station columns
-        for idx, nm in enumerate(names):
-            key = nm.lower().replace(' ', '_')
-            # Use rho_list for stations, last rho for terminal
-            if idx < len(rho_list):
-                density = rho_list[idx]
+            ppm = get_ppm_for_dr(viscosity, dr_use)
+            station_ppm[key] = ppm
+        for nm in names:
+            key = nm.lower().replace(' ','_')
+            if key in station_ppm:
+                dra_cost = (
+                    station_ppm[key]
+                    * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
+                    * st.session_state["RateDRA"]
+                )
             else:
-                density = rho_list[-1] if rho_list else 850  # fallback
-
-            # Gather head values
-            sdh_m = res.get(f"sdh_{key}", 0.0)
-            rh_m = res.get(f"residual_head_{key}", 0.0)
-            maop_m = res.get(f"maop_{key}", 0.0)
-
-            # Convert to kg/cm²
-            sdh_kgcm2 = sdh_m * density / 10000
-            rh_kgcm2 = rh_m * density / 10000
-            maop_kgcm2 = maop_m * density / 10000
-
-            # DRA cost
-            dra_cost = (
-                station_ppm.get(key, 0.0)
-                * (flow_rate * 1000.0 * 24.0 / 1e6)
-                * st.session_state.get("RateDRA", 500.0)
-            ) if key in station_ppm else 0.0
-
+                dra_cost = 0.0
             summary[nm] = [
-                flow_rate,
-                sdh_kgcm2,
-                rh_kgcm2,
-                maop_kgcm2,
-                res.get(f"power_cost_{key}", 0.0),
+                res.get(f"power_cost_{key}",0.0),
                 dra_cost,
                 station_ppm.get(key, 0.0),
-                int(res.get(f"num_pumps_{key}", 0)),
-                res.get(f"speed_{key}", 0.0),
-                res.get(f"efficiency_{key}", 0.0),
-                res.get(f"reynolds_{key}", 0.0),
-                res.get(f"head_loss_{key}", 0.0),
-                res.get(f"velocity_{key}", 0.0),
-                rh_m,
-                sdh_m,
-                maop_m,
-                res.get(f"drag_reduction_{key}", 0.0)
+                int(res.get(f"num_pumps_{key}",0)),
+                res.get(f"speed_{key}",0.0),
+                res.get(f"efficiency_{key}",0.0),
+                res.get(f"reynolds_{key}",0.0),
+                res.get(f"head_loss_{key}",0.0),
+                res.get(f"velocity_{key}",0.0),
+                res.get(f"residual_head_{key}",0.0),
+                res.get(f"sdh_{key}",0.0),
+                res.get(f"maop_{key}",0.0),
+                res.get(f"drag_reduction_{key}",0.0)
             ]
         df_sum = pd.DataFrame(summary)
-        # Formatting
         fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
         fmt["No. of Pumps"] = "{:.0f}"
         fmt["Pump Speed (rpm)"] = "{:.0f}"
-        fmt["SDH (kg/cm²)"] = "{:.2f}"
-        fmt["RH (kg/cm²)"] = "{:.2f}"
-        fmt["MAOP (kg/cm²)"] = "{:.2f}"
-        fmt["Flow Rate (m³/hr)"] = "{:.2f}"
-
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-
-        # Cost summary
         total_cost = res.get('total_cost', 0)
         if isinstance(total_cost, str):
             total_cost = float(total_cost.replace(',', ''))
