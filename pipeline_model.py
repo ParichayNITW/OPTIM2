@@ -22,16 +22,28 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # ---- NEW: Segment-wise flow profile based on delivery/supply at each station ----
-    flow_profile = []
-    flow_at = float(FLOW)
+    # ----- NEW: Segment-wise and Pump-wise flow logic -----
+    segment_flows = []  # Flow in segment between station i and i+1
+    pump_flows = []     # Flow THROUGH pump at station i (or None if not a pump)
+
+    flow = float(FLOW)
     for stn in stations:
-        flow_profile.append(flow_at)
         delivery = float(stn.get('delivery', 0.0))
         supply = float(stn.get('supply', 0.0))
-        flow_at = flow_at - delivery + supply
-    flow_profile.append(flow_at)  # for the terminal node
+        has_pump = stn.get('is_pump', False)
+        if has_pump:
+            # Pumps "see" incoming flow minus delivery plus supply (delivery/supply occurs before pump)
+            pump_flow = flow - delivery + supply
+            pump_flows.append(pump_flow)
+            segment_flows.append(flow)
+            flow = pump_flow  # update downstream flow
+        else:
+            pump_flows.append(None)
+            segment_flows.append(flow)
+            flow = flow - delivery + supply  # update downstream flow for continuity node
+    segment_flows.append(flow)  # For terminal node
 
+    # Remaining parameter initialization
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
     Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
@@ -132,7 +144,7 @@ def solve_pipeline(
     g = 9.81
     v = {}; Re = {}; f = {}
     for i in range(1, N+1):
-        flow_m3s = float(flow_profile[i-1])/3600.0
+        flow_m3s = float(segment_flows[i-1])/3600.0  # <-- use segment flow for each segment!
         area = pi * (d_inner[i]**2) / 4.0
         v[i] = flow_m3s / area if area > 0 else 0.0
         kv = kv_dict[i]
@@ -156,25 +168,25 @@ def solve_pipeline(
     EFFP = {}
 
     for i in range(1, N+1):
-        # Make DRA effective ONLY at pump stations
+        # DRA only at pump stations
         if i in pump_indices:
             DR_frac = model.DR[i] / 100.0
         else:
             DR_frac = 0.0
-        # Normal station-to-station
         DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
-        # For all peaks
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
             DH_peak = f[i] * (L_peak / d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
+        # Pump equations: use pump_flows!
         if i in pump_indices:
-            TDH[i] = (model.A[i]*flow_profile[i-1]**2 + model.B[i]*flow_profile[i-1] + model.C[i]) * ((model.N[i]/model.DOL[i])**2)
-            flow_eq = flow_profile[i-1] * model.DOL[i]/model.N[i]
+            pump_flow_i = pump_flows[i-1]
+            TDH[i] = (model.A[i]*pump_flow_i**2 + model.B[i]*pump_flow_i + model.C[i]) * ((model.N[i]/model.DOL[i])**2)
+            flow_eq = pump_flow_i * model.DOL[i]/model.N[i]
             EFFP[i] = (
                 model.Pcoef[i]*flow_eq**4 + model.Qcoef[i]*flow_eq**3 + model.Rcoef[i]*flow_eq**2
                 + model.Scoef[i]*flow_eq + model.Tcoef[i]
@@ -198,7 +210,6 @@ def solve_pipeline(
         MAOP_head = (2 * thickness[i] * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / rho_dict[i]
         maop_dict[i] = MAOP_head
         model.pressure_limit.add(model.SDH[i] <= MAOP_head)
-
         peaks = peaks_dict[i]
         for peak in peaks:
             loc_km = peak['loc']
@@ -214,7 +225,8 @@ def solve_pipeline(
     total_cost = 0
     for i in pump_indices:
         rho_i = rho_dict[i]
-        power_kW = (rho_i * flow_profile[i-1] * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
+        pump_flow_i = pump_flows[i-1]
+        power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
         if i in electric_pumps:
             power_cost = power_kW * 24.0 * elec_cost.get(i,0.0)
         else:
@@ -224,7 +236,7 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
+    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
     running_pumps = []
@@ -261,7 +273,8 @@ def solve_pipeline(
 
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
-            power_kW = (rho_i * flow_profile[i-1] * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
+            pump_flow_i = pump_flows[i-1]
+            power_kW = (rho_i * pump_flow_i * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
             if i in electric_pumps:
                 rate = elec_cost.get(i,0.0)
                 power_cost = power_kW * 24.0 * rate
@@ -280,7 +293,7 @@ def solve_pipeline(
         dra_cost = 0.0
         for j in range(i, N+1):
             if dra_map[j] == i and drag_red > 0:
-                dra_cost += (drag_red/4) * (flow_profile[j-1]*1000.0*24.0/1e6) * RateDRA
+                dra_cost += (drag_red/4) * (segment_flows[j-1]*1000.0*24.0/1e6) * Rate_DRA
 
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
         res_head = float(pyo.value(model.RH[i]))
