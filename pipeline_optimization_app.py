@@ -1148,14 +1148,16 @@ with tab4:
 
 # ---- Tab 5: Pump-System Interaction ----
 import plotly.graph_objects as go
+import plotly.express as px
 import pandas as pd
 import numpy as np
 from math import pi
+from plotly.colors import sample_colorscale
 
 with tab5:
     st.markdown("<div class='section-title'>Pump-System Holistic Curves</div>", unsafe_allow_html=True)
 
-    # Select station
+    # ---- Station selection ----
     station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
     st_idx = st.selectbox("Select station", range(len(stations_data)), format_func=lambda i: station_options[i])
     stn = stations_data[st_idx]
@@ -1164,7 +1166,7 @@ with tab5:
     max_dr = int(stn.get('max_dr', 40))
     n_pumps = int(stn.get('max_pumps', 1))
 
-    # Max flow (from user data)
+    # ---- Max flow ----
     df_head = st.session_state.get(f"head_data_{st_idx+1}")
     if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
         user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
@@ -1173,7 +1175,7 @@ with tab5:
         max_flow = st.session_state.get("FLOW", 1000.0)
     flows = np.linspace(0, max_flow, 400)
 
-    # Downstream pump bypass (optional)
+    # ---- Downstream pump bypass ----
     downstream_pumps = [s for s in stations_data[st_idx+1:] if s.get('is_pump', False)]
     downstream_names = [f"{i+st_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
     bypassed = []
@@ -1194,14 +1196,14 @@ with tab5:
         term_elev = st.session_state["last_term_data"]["elev"]
         current_elev = term_elev
 
-    # Pipe, visc, rough
+    # ---- Pipe, visc, rough ----
     d_inner = stn['D'] - 2*stn['t']
     rough = stn['rough']
     linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
     kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
     visc = kv_list[st_idx]
 
-    # --- Pump RPM slider (continuous) ---
+    # ---- Pump RPM slider ----
     if is_pump:
         N_min = int(res.get(f"min_rpm_{key}", 1200))
         N_max = int(res.get(f"dol_{key}", 3000))
@@ -1209,15 +1211,17 @@ with tab5:
     else:
         rpm = None
 
-    # --- Modern color palettes for system & pump curves ---
-    system_colors = px.colors.sequential.Blues[::-1][:max_dr+1]
-    pump_colors = px.colors.sequential.Rainbow[:n_pumps]
+    # ---- Colors ----
+    system_colormap = 'Viridis'  # Modern, continuous, professional
+    pump_colors = ['#EA580C', '#2563EB', '#059669', '#0F172A', '#E11D48', '#10B981', '#64748B', "#FFAC1C"]
 
-    # --- Plotting ---
+    # ---- Plotting ----
     fig = go.Figure()
 
-    # --- All system curves: 0% to max% DRA ---
-    for dra in range(0, max_dr+1):
+    # --- All system curves (0% to max% DRA, step 1%) ---
+    system_dra_steps = list(range(0, max_dr+1))
+    for j, dra in enumerate(system_dra_steps):
+        color = sample_colorscale(system_colormap, dra/max_dr)[0]
         v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
         Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
         f_vals = np.where(Re_vals>0,
@@ -1228,24 +1232,25 @@ with tab5:
         fig.add_trace(go.Scatter(
             x=flows, y=SDH_vals,
             mode='lines',
-            line=dict(width=2.3, color=system_colors[dra % len(system_colors)]),
-            name=f"System DRA {dra}%",
-            showlegend=(dra % 10 == 0 or dra == max_dr),  # only show every 10% in legend
-            hovertemplate=f"DRA {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
+            line=dict(width=1.6, color=color, shape='spline'),
+            name=f"System DRA {dra}%" if (dra % 10 == 0 or dra == max_dr) else None,
+            showlegend=(dra % 10 == 0 or dra == max_dr),
+            hoverinfo="skip" if not (dra % 10 == 0 or dra == max_dr) else "x+y+name"
         ))
 
-    # --- All possible pump curves (1..N in series) at selected RPM ---
+    # --- All pump curves (1..N in series) at selected RPM ---
     if is_pump:
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
         for npump in range(1, n_pumps+1):
+            color = pump_colors[(npump-1)%len(pump_colors)]
             H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
             H_pump = np.clip(H_pump, 0, None)
             fig.add_trace(go.Scatter(
                 x=flows, y=H_pump,
                 mode='lines',
-                line=dict(width=3, color=pump_colors[(npump-1) % len(pump_colors)], dash='dash'),
+                line=dict(width=3.6, color=color, dash='dash'),
                 name=f"{npump} Pump{'s' if npump > 1 else ''} ({rpm} rpm)",
                 showlegend=True,
                 hovertemplate=f"Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
@@ -1255,20 +1260,19 @@ with tab5:
         title=f"Holistic System & Pump Curves — {stn['name']}",
         xaxis_title="Flow (m³/hr)",
         yaxis_title="Head (m)",
-        font=dict(size=18, family="Segoe UI"),
-        legend=dict(font=dict(size=14), title="Curves"),
-        height=560,
+        font=dict(size=20, family="Segoe UI"),
+        legend=dict(font=dict(size=16), title="Curves"),
+        height=620,
         margin=dict(l=10, r=10, t=70, b=40),
-        plot_bgcolor="#f7fbfc",
+        plot_bgcolor="#ffffff",  # white, modern
         showlegend=True,
         xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.10)'),
         yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.10)')
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- CSV Downloads in Expander ---
+    # ---- CSV Downloads ----
     with st.expander("📥 Download Curve Data"):
-        # System curves
         for dra in range(0, max_dr+1):
             v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
             Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
@@ -1283,7 +1287,6 @@ with tab5:
                 df_sys.to_csv(index=False).encode(),
                 file_name=f"system_curve_{stn['name']}_dra{dra}.csv"
             )
-        # Pump curves
         if is_pump:
             for npump in range(1, n_pumps+1):
                 H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
@@ -1294,6 +1297,7 @@ with tab5:
                     df_pump.to_csv(index=False).encode(),
                     file_name=f"pump_curve_{stn['name']}_{npump}pumps_{rpm}rpm.csv"
                 )
+
 
 # ---- Tab 6: DRA Curves ----
 with tab6:
