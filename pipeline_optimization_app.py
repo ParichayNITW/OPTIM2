@@ -1001,6 +1001,9 @@ with tab3:
         import plotly.graph_objects as go
         
         with power_tab:
+            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        
             st.markdown("<div class='section-title'>Power vs Flow (THEORETICAL PUMP CURVE, DOL Speed)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
