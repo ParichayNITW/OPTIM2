@@ -999,29 +999,16 @@ with tab3:
         
         # --- 6. Power vs Speed/Flow ---
         with power_tab:
-            st.markdown("<div class='section-title'>Power vs Speed</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Power vs Speed (Affinity Law)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
                     continue
-                key = stn['name'].lower().replace(' ','_')
-                A = res.get(f"coef_A_{key}", 0)
-                B = res.get(f"coef_B_{key}", 0)
-                C = res.get(f"coef_C_{key}", 0)
-                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-                N_min = int(res.get(f"min_rpm_{key}", 0))
-                N_max = int(res.get(f"dol_{key}", 0))
-                flow = st.session_state.get("FLOW", 1000.0)
-                speeds = np.arange(N_min, N_max+1, 100)
-                power = []
-                # Calculate power at constant flow as a cubic of speed (affinity law)
-                # Power at N = Power at Nmax * (N/Nmax)^3
-                # First, compute power at Nmax:
-                H_Nmax = (A*flow**2 + B*flow + C)
-                eff_Nmax = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
-                eff_Nmax = max(0.01, eff_Nmax/100)
-                power_Nmax = (stn.get("rho", 850) * flow * 9.81 * H_Nmax)/(3600.0*eff_Nmax*0.95*1000)
-                for rpm in speeds:
-                    power.append(power_Nmax * (rpm / N_max)**3 if N_max > 0 else 0)
+                N_min = int(stn.get('min_rpm', 1200))   # Default 1200 if not present
+                N_max = int(stn.get('dol', 3000))       # Default 3000 if not present
+                design_power = stn.get('rated_power', 1000)  # Default 1000 kW if not present
+                speeds = np.arange(N_min, N_max + 1, 100)
+                # Power vs Speed purely cubic
+                power = [design_power * (rpm / N_max)**3 for rpm in speeds]
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(
                     x=speeds,
@@ -1032,7 +1019,7 @@ with tab3:
                     line=dict(width=3)
                 ))
                 fig_pwr.update_layout(
-                    title=f"Power vs Speed: {stn['name']}",
+                    title=f"Power vs Speed (Affinity Law): {stn['name']}",
                     xaxis_title="Speed (rpm)",
                     yaxis_title="Power (kW)",
                     font=dict(size=16),
