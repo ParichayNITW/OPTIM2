@@ -704,7 +704,7 @@ with tab2:
         ))
         fig_grouped.update_layout(
             barmode='group',
-            title="Station Daily Cost: Power+Fuel vs. DRA (Grouped Bars)",
+            title="Station Daily Cost: Power+Fuel vs. DRA",
             xaxis_title="Station",
             yaxis_title="Cost (INR/day)",
             font=dict(size=16),
