@@ -525,7 +525,10 @@ if run:
         looplines = st.session_state.get("looplines", [])
         res = solve_pipeline(
             stations_data, term_data, FLOW, kv_list, rho_list,
-            RateDRA, Price_HSD, linefill_df.to_dict(), looplines, deliveries
+            RateDRA, Price_HSD,
+            linefill_dict=linefill_df.to_dict(),
+            looplines=looplines,
+            deliveries=deliveries
         )
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
