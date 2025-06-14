@@ -1012,20 +1012,14 @@ with tab3:
                 speeds = np.arange(N_min, N_max+1, 100)
                 power = []
                 for rpm in speeds:
-                    H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2 if N_max else 0
+                    H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
                     eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
                     pwr = (stn.get("rho", 850) * flow * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power.append(pwr)
                 fig_pwr = go.Figure()
-                fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed",
-                                             marker_color='#0288D1'))
-                fig_pwr.update_layout(
-                    title=f"Power vs Speed: {stn['name']}", 
-                    xaxis_title="Speed (rpm)", yaxis_title="Power (kW)",
-                    font=dict(size=15),
-                    height=400
-                )
+                fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
+                fig_pwr.update_layout(title=f"Power vs Speed: {stn['name']}", xaxis_title="Speed (rpm)", yaxis_title="Power (kW)")
                 st.plotly_chart(fig_pwr, use_container_width=True)
                 flows = np.linspace(0.01, flow*1.5, 100)
                 power2 = []
@@ -1036,14 +1030,8 @@ with tab3:
                     pwr = (stn.get("rho", 850) * q * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power2.append(pwr)
                 fig_pwr2 = go.Figure()
-                fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow",
-                                              marker_color='#D84315'))
-                fig_pwr2.update_layout(
-                    title=f"Power vs Flow: {stn['name']}", 
-                    xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)",
-                    font=dict(size=15),
-                    height=400
-                )
+                fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
+                fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
 # ---- Tab 4: System Curves ----
