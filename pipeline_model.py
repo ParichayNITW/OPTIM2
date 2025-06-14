@@ -12,6 +12,12 @@ def solve_pipeline(
     """
     PIPELINE OPTIMA™: Backend Solver (Loopline/Peaks/DRA/Deliveries)
     """
+    if deliveries is None:
+        deliveries = {}
+    elif isinstance(deliveries, list):
+        deliveries = {i+1: float(val) for i, val in enumerate(deliveries)}
+    deliveries.setdefault(len(stations)+1, 0.0)
+    
     model = pyo.ConcreteModel()
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
