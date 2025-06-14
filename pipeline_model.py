@@ -249,19 +249,12 @@ def solve_pipeline(
                     headloss_expr(model, idx) == hl0
                 )
 
-    # --- For each segment: calculate total static head (start to end, plus peaks) ---
-    # To be used in pressure and SDH constraints (add dynamic + static for each segment)
-    def static_head(seg):
-        sh = seg['end_elev'] - seg['start_elev']
-        # Include intermediate peaks for pressure checks
-        return sh
-    # --- For peaks, pressure at peaks must be >= 50 m at each point ---
+    # --- Peak Pressure Constraints (applies to all segments: mainline & loopline) ---
     model.peak_limit = pyo.ConstraintList()
     for seg in segments:
         idx = seg['idx']
         peaks = seg.get('peaks', [])
         for peak in peaks:
-            # Distance from segment start in m
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
             q = model.Q[idx]
@@ -272,6 +265,7 @@ def solve_pipeline(
             DH_peak = f_i * (L_peak / seg['D']) * (v_i**2/(2*g))
             static_h = elev_k - seg['start_elev']
             model.peak_limit.add(model.RH[seg['from_node']] - static_h - DH_peak >= 50.0)
+    # No separate loopline peak constraint block needed; above covers all.
 
     # ---- Residual Head and Static Discharge Head at Each Node ----
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
@@ -331,12 +325,16 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost = 0
+        # --- Mainline DRA cost (if DRA allowed on mainline)
+        if i in dra_segments:
+            dra_cost = (model.DR_seg[i]/4) * (FLOW*1000.0*24.0/1e6) * RateDRA
+        else:
+            dra_cost = 0
         total_cost += power_cost + dra_cost
-    # Add DRA cost for loopline segments
+    # --- Loopline DRA cost ---
     for seg in segments:
         if seg['type'] == 'loop':
-            dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * Rate_DRA
+            dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * RateDRA
             total_cost += dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
@@ -345,7 +343,6 @@ def solve_pipeline(
     model.solutions.load_from(results)
 
     # --- Output Section ---
-   
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -412,7 +409,7 @@ def solve_pipeline(
             static_h = elev_k - seg['start_elev']
             peak_head = pyo.value(model.RH[i]) - static_h - DH_peak
             result[f"peak_head_{name}_{pidx}"] = peak_head
-    
+
     # ---- Output for looplines: include flows, velocities, head loss, DR, etc. ----
     for seg in segments:
         if seg['type'] == 'loop':
@@ -429,5 +426,19 @@ def solve_pipeline(
             result[f"{key}_head_loss_m"] = hl_val
             result[f"{key}_drag_reduction_percent"] = pyo.value(model.DR_seg[seg['idx']])
             result[f"{key}_power_cost"] = 0.0
+            # --- Loopline peaks output (if any) ---
+            if seg.get('peaks'):
+                for pidx, peak in enumerate(seg['peaks'], start=1):
+                    L_peak = peak['loc'] * 1000.0
+                    elev_k = peak['elev']
+                    q = q_val
+                    kv = kv_dict.get(seg['from_node'], 1.1)
+                    dr = pyo.value(model.DR_seg[seg['idx']])
+                    f_i = f[seg['idx']](q, kv, dr)
+                    v_i = v[seg['idx']](q)
+                    DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * 9.81))
+                    static_h = elev_k - seg['start_elev']
+                    peak_head = pyo.value(model.RH[seg['from_node']]) - static_h - DH_peak
+                    result[f"{key}_peak_{pidx}"] = peak_head
     result['total_cost'] = float(pyo.value(model.Obj))
     return result
