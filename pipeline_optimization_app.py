@@ -1091,12 +1091,13 @@ with tab4:
         if not stn.get('is_pump', False):
             continue
         key = stn['name'].lower().replace(' ', '_')
+        # ---- Get Pump Curve Coefficients for this station ----
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
         N_min = int(res.get(f"min_rpm_{key}", 0))
         N_max = int(res.get(f"dol_{key}", 0))
-
+        # ---- Get System Curve Coefficients ----
         sys_A = res.get(f"coef_A_sys_{key}", None)
         sys_B = res.get(f"coef_B_sys_{key}", None)
         sys_C = res.get(f"coef_C_sys_{key}", None)
@@ -1104,12 +1105,17 @@ with tab4:
             sys_A = A
             sys_B = B
             sys_C = C
-
-        pump_flow = st.session_state.get("FLOW", 1000.0)
-        flows = np.linspace(0, 1.5 * pump_flow, 400)
+        # ---- Get max user-entered flow for this pump ----
+        df_head = st.session_state.get(f"head_data_{i}")
+        if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+            user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
+            max_flow = np.max(user_flows)
+        else:
+            max_flow = st.session_state.get("FLOW", 1000.0)
+        # ---- Limit flow range up to user-provided max ----
+        flows = np.linspace(0, max_flow, 400)
         # --- Compute System Head, CLIP negative heads to zero ---
         H_sys = np.clip(sys_A * flows**2 + sys_B * flows + sys_C, 0, None)
-
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=flows, y=H_sys,
@@ -1118,7 +1124,6 @@ with tab4:
             line=dict(width=4, color="#37474F", dash='solid'),
             hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
         ))
-
         color_seq = ['#1976D2', '#43A047', '#F9A825', '#E53935', '#8E24AA', '#00897B']
         step = max(100, int((N_max-N_min)/4))
         op_points = []
@@ -1185,8 +1190,6 @@ with tab4:
                 df_ops.to_csv(index=False).encode(),
                 file_name=f"operating_points_{stn['name']}.csv"
             )
-
-
 
 # ---- Tab 5: Pump-System Interaction ----
 with tab5:
