@@ -578,26 +578,16 @@ with tab1:
             ]
 
         df_sum = pd.DataFrame(summary)
-        fmt = {
-            "Segment Flow (m³/hr)": "{:.2f}",
-            "Pump Flow (m³/hr)": "{:.2f}",
-            "Power+Fuel Cost (INR/day)": "{:.2f}",
-            "DRA Cost (INR/day)": "{:.2f}",
-            "DRA PPM": "{:.2f}",
-            "No. of Pumps": "{:.0f}",
-            "Pump Speed (rpm)": "{:.0f}",
-            "Pump Eff (%)": "{:.2f}",
-            "Reynolds No.": "{:.0f}",
-            "Head Loss (m)": "{:.2f}",
-            "Vel (m/s)": "{:.2f}",
-            "Residual Head (m)": "{:.2f}",
-            "SDH (m)": "{:.2f}",
-            "MAOP (m)": "{:.2f}",
-            "Drag Reduction (%)": "{:.2f}"
-        }
+
+        # --- Rounding fix for display: ---
+        for col in df_sum.columns:
+            if col not in ["Parameters", "No. of Pumps"]:
+                df_sum[col] = pd.to_numeric(df_sum[col], errors='coerce').round(2)
+        if "No. of Pumps" in df_sum.columns:
+            df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
 
         st.markdown("<div class='section-title'>Optimization Results (Hydraulically Accurate)</div>", unsafe_allow_html=True)
-        st.dataframe(df_sum.style.format(fmt), use_container_width=True, hide_index=True)
+        st.dataframe(df_sum, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
 
         # KPI summaries as before
