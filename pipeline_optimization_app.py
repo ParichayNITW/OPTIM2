@@ -12,7 +12,7 @@ from plotly.colors import qualitative
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
-# --- Custom Styles ---
+# --- Custom Styles: World Class Look ---
 st.markdown("""
     <style>
     .red-btn {
@@ -74,56 +74,6 @@ st.markdown("""
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
-# --- DRA Curve Data ---
-DRA_CSV_FILES = {
-    10: "10 cst.csv",
-    15: "15 cst.csv",
-    20: "20 cst.csv",
-    25: "25 cst.csv",
-    30: "30 cst.csv",
-    35: "35 cst.csv",
-    40: "40 cst.csv"
-}
-DRA_CURVE_DATA = {}
-for cst, fname in DRA_CSV_FILES.items():
-    if os.path.exists(fname):
-        df = pd.read_csv(fname)
-        DRA_CURVE_DATA[cst] = df
-    else:
-        DRA_CURVE_DATA[cst] = None
-
-def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
-    cst_list = sorted(dra_curve_data.keys())
-    visc = float(visc)
-    # --- New: always round to nearest 0.5 ppm ---
-    def round_ppm(val, step=0.5):
-        return round(val / step) * step
-    if visc <= cst_list[0]:
-        df = dra_curve_data[cst_list[0]]
-        return round_ppm(_ppm_from_df(df, dr))
-    elif visc >= cst_list[-1]:
-        df = dra_curve_data[cst_list[-1]]
-        return round_ppm(_ppm_from_df(df, dr))
-    else:
-        lower = max([c for c in cst_list if c <= visc])
-        upper = min([c for c in cst_list if c >= visc])
-        df_lower = dra_curve_data[lower]
-        df_upper = dra_curve_data[upper]
-        ppm_lower = _ppm_from_df(df_lower, dr)
-        ppm_upper = _ppm_from_df(df_upper, dr)
-        ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
-        return round_ppm(ppm_interp)
-def _ppm_from_df(df, dr):
-    x = df['%Drag Reduction'].values
-    y = df['PPM'].values
-    if dr <= x[0]:
-        return y[0]
-    elif dr >= x[-1]:
-        return y[-1]
-    else:
-        return np.interp(dr, x, y)
-
-# --- User Login Logic ---
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 users = {"parichay_das": hash_pwd("heteroscedasticity")}
@@ -141,11 +91,10 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-                # --- Add footer here ---
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das.
             </div>
             """,
             unsafe_allow_html=True
@@ -231,7 +180,9 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'max_dr': 0.0,
+            'delivery': 0.0,
+            'supply': 0.0
         }]
     if add_col.button("➕ Add Station"):
         n = len(st.session_state.get('stations',[])) + 1
@@ -241,7 +192,9 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'max_dr': 0.0,
+            'delivery': 0.0,
+            'supply': 0.0
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station"):
@@ -304,6 +257,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.5f", step=0.00001, key=f"rough{idx}")
         with col3:
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
+            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
 
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
@@ -435,7 +390,6 @@ if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-        # Validate all peaks, pump curves, and collect into stations
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -466,10 +420,8 @@ if run:
                         st.stop()
                     peaks_list.append({'loc': loc, 'elev': elev_pk})
             stn['peaks'] = peaks_list
-        # Map linefill to all segments
         linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        # Call backend
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
