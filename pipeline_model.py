@@ -19,6 +19,7 @@ def solve_pipeline(
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
     model.Nodes = pyo.RangeSet(1, N+1)
+
     kv_dict = {i: float(KV_list[i-1]) for i in range(1, N+1)}
     rho_dict = {i: float(rho_list[i-1]) for i in range(1, N+1)}
     model.KV = pyo.Param(model.I, initialize=kv_dict)
@@ -112,12 +113,10 @@ def solve_pipeline(
                         initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
-    # --- DRAG REDUCTION SEGMENTS ---
     dra_segments = []
     for i, stn in enumerate(stations, start=1):
         if stn.get('max_dr', 0) > 0:
             dra_segments.append(i)
-    # looplines
     if looplines is None:
         looplines = []
     segments = []
@@ -152,7 +151,7 @@ def solve_pipeline(
             'type': 'loop',
             'from_node': from_node,
             'to_node': to_node,
-            'L': lp['end_km']-lp['start_km'],
+            'L': lp['L'],
             'D': lp['D'] - 2*lp['t'],
             'rough': lp['rough'],
             'SMYS': lp['SMYS'],
@@ -172,17 +171,15 @@ def solve_pipeline(
     segment_map = {seg['idx']: seg for seg in segments}
     model.Q = pyo.Var(model.segments, domain=pyo.NonNegativeReals, initialize=FLOW)
 
-    # Only define DRA var for active DRA segments
-    model.DR_seg = pyo.Var(dra_segments, domain=pyo.NonNegativeReals)
-    for segidx in dra_segments:
-        seg = segment_map[segidx] if segidx in segment_map else None
-        maxval = seg['max_dr'] if seg else max_dr.get(segidx, 0.0)
-        model.DR_seg[segidx].setub(maxval)
-        model.DR_seg[segidx].setlb(0.0)
-        if maxval <= 0:
-            model.DR_seg[segidx].fix(0.0)
+    model.DR_seg = pyo.Var(model.segments, domain=pyo.NonNegativeReals, initialize=0)
+    for seg in segments:
+        maxval = seg.get('max_dr', 0.0)
+        if maxval > 0:
+            model.DR_seg[seg['idx']].setub(maxval)
+            model.DR_seg[seg['idx']].setlb(0.0)
+        else:
+            model.DR_seg[seg['idx']].fix(0.0)
 
-    # Node continuity constraints (with delivery)
     def continuity_rule(m, node):
         if node == 1 or node == N+1:
             return pyo.Constraint.Skip
@@ -210,19 +207,11 @@ def solve_pipeline(
         fval = 0.25/(pyo.log10(arg+eps)**2) * (1-dr/100.0)
         return fval
 
-    def get_dra_value(model, idx):
-        try:
-            if hasattr(model, 'DR_seg') and idx in model.DR_seg.index_set():
-                return pyo.value(model.DR_seg[idx])
-        except Exception:
-            pass
-        return 0.0
-
     def headloss_expr(m, idx):
         seg = segment_map[idx]
         q = m.Q[idx]
         kv = kv_dict.get(seg['from_node'], 1.1)
-        dr = m.DR_seg[idx] if idx in dra_segments else 0.0
+        dr = m.DR_seg[idx]
         D = seg['D']
         rough = seg['rough']
         fseg = ffun(q, D, rough, kv, dr)
@@ -251,10 +240,10 @@ def solve_pipeline(
             elev_k = peak['elev']
             q = model.Q[idx]
             kv = kv_dict.get(seg['from_node'], 1.1)
-            dr_val = model.DR_seg[idx] if idx in dra_segments else 0.0
+            dr = model.DR_seg[idx]
             D = seg['D']
             rough = seg['rough']
-            f_i = ffun(q, D, rough, kv, dr_val)
+            f_i = ffun(q, D, rough, kv, dr)
             v_i = vfun(q, D)
             DH_peak = f_i * (L_peak / D) * (v_i**2/(2*g))
             static_h = elev_k - seg['start_elev']
@@ -276,9 +265,7 @@ def solve_pipeline(
             elev_k = peak['elev']
             D = seg['D']
             rough = seg['rough']
-            kv = kv_dict.get(i, 1.1)
-            dr_val = model.DR_seg[i] if i in dra_segments else 0.0
-            f_i = ffun(model.Q[i], D, rough, kv, dr_val)
+            f_i = ffun(model.Q[i], D, rough, kv_dict[i], model.DR_seg[i])
             v_i = vfun(model.Q[i], D)
             DH_peak = f_i * (L_peak / D) * (v_i**2/(2*g))
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
@@ -318,15 +305,14 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost = 0
         if i in dra_segments:
             dra_cost = (model.DR_seg[i]/4) * (FLOW*1000.0*24.0/1e6) * RateDRA
+        else:
+            dra_cost = 0
         total_cost += power_cost + dra_cost
     for seg in segments:
         if seg['type'] == 'loop':
-            dra_cost = 0
-            if seg['idx'] in dra_segments:
-                dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * RateDRA
+            dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * RateDRA if seg['idx'] in dra_segments else 0
             total_cost += dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
@@ -363,7 +349,7 @@ def solve_pipeline(
         q_val = pyo.value(model.Q[i])
         D = seg['D']
         kv = kv_dict[i]
-        dr = safe_value(model.DR_seg, i) if i in dra_segments else 0.0
+        dr = safe_value(model.DR_seg, i)
         v_val = vfun(q_val, D)
         re_val = Refun(q_val, D, kv)
         f_val = ffun(q_val, D, seg['rough'], kv, dr)
@@ -378,10 +364,7 @@ def solve_pipeline(
         result[f"sdh_{name}"] = sdh_val
         result[f"maop_{name}"] = maop_val
 
-        if i in dra_segments:
-            result[f"drag_reduction_{name}"] = dr
-        else:
-            result[f"drag_reduction_{name}"] = 0.0
+        result[f"drag_reduction_{name}"] = dr
 
         if i in pump_indices:
             rho_i = rho_dict[i]
@@ -404,7 +387,7 @@ def solve_pipeline(
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
             q = q_val
-            dr = safe_value(model.DR_seg, i) if i in dra_segments else 0.0
+            dr = safe_value(model.DR_seg, i)
             f_i = ffun(q, D, seg['rough'], kv, dr)
             v_i = vfun(q, D)
             DH_peak = f_i * (L_peak / D) * (v_i ** 2 / (2 * 9.81))
@@ -418,7 +401,7 @@ def solve_pipeline(
             q_val = pyo.value(model.Q[seg['idx']])
             D = seg['D']
             kv = kv_dict.get(seg['from_node'], 1.1)
-            dr = safe_value(model.DR_seg, seg['idx']) if seg['idx'] in dra_segments else 0.0
+            dr = safe_value(model.DR_seg, seg['idx'])
             v_val = vfun(q_val, D)
             re_val = Refun(q_val, D, kv)
             f_val = ffun(q_val, D, seg['rough'], kv, dr)
