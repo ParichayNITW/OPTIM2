@@ -224,7 +224,7 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
+    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
     model.solutions.load_from(results)
 
     running_pumps = []
