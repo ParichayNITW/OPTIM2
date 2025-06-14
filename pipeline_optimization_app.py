@@ -1153,7 +1153,7 @@ from math import pi
 from plotly.colors import sample_colorscale
 
 with tab5:
-    st.markdown("<div class='section-title'>Feasible Region — System & Pump Curves (Premium Visualization)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Optimization Envelope — Pump & System Curves</div>", unsafe_allow_html=True)
 
     # --- Station selection ---
     station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
@@ -1171,7 +1171,7 @@ with tab5:
         max_flow = np.max(user_flows)
     else:
         max_flow = st.session_state.get("FLOW", 1000.0)
-    flows = np.linspace(0, max_flow, 400)
+    flows = np.linspace(0, max_flow, 500)
 
     # --- Downstream pump bypass logic (as before) ---
     downstream_pumps = [s for s in stations_data[st_idx+1:] if s.get('is_pump', False)]
@@ -1205,19 +1205,19 @@ with tab5:
     if is_pump:
         N_min = int(res.get(f"min_rpm_{key}", 1200))
         N_max = int(res.get(f"dol_{key}", 3000))
-        rpm_steps = np.arange(N_min, N_max+1, 100)  # or 50 for finer
-        key_speeds = [N_min, int((N_min+N_max)/2), N_max]
+        rpm_steps = np.arange(N_min, N_max+1, 100)
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
 
     # --- Colors ---
     system_colormap = 'Viridis'
-    pump_colors = ['#EA580C', '#2563EB', '#059669', '#0F172A', '#E11D48', '#10B981', '#64748B', "#FFAC1C"]
+    pump_colors = ['#E57300', '#1769AA', '#43A047', '#AD1457', '#0097A7', '#A93226', '#E91E63', '#8E24AA']
 
-    # --- 1. Compute all system and pump curves ---
-    system_dra_steps = list(range(0, max_dr+1, 5))  # every 5% DRA
-    all_system_heads = []
+    fig = go.Figure()
+    # --- 1. Plot all system curves ---
+    system_dra_steps = list(range(0, max_dr+1, 5))
+    system_curves = []
     for dra in system_dra_steps:
         v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
         Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
@@ -1226,101 +1226,77 @@ with tab5:
         DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
         SDH_vals = max(0, current_elev) + DH
         SDH_vals = np.clip(SDH_vals, 0, None)
-        all_system_heads.append(SDH_vals)
-    system_min = np.min(np.array(all_system_heads), axis=0)
-    system_max = np.max(np.array(all_system_heads), axis=0)
+        system_curves.append((dra, SDH_vals))
+        fig.add_trace(go.Scatter(
+            x=flows, y=SDH_vals,
+            mode='lines',
+            line=dict(width=1.2, color=sample_colorscale(system_colormap, dra/max_dr)[0]),
+            name=f"System DRA {dra}%",
+            showlegend=(dra % 10 == 0 or dra == max_dr),
+            opacity=0.55 if not (dra % 10 == 0 or dra == max_dr) else 1,
+            hoverinfo="skip"
+        ))
 
-    # --- For each pump series, compute min and max envelope across all RPMs ---
+    # --- 2. Plot ALL pump curves for ALL RPMs and ALL series ---
+    pump_curves = []
     if is_pump:
-        pump_envelopes = []
         for npump in range(1, n_pumps+1):
-            all_heads = []
             for rpm in rpm_steps:
                 H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
                 H_pump = np.clip(H_pump, 0, None)
-                all_heads.append(H_pump)
-            pump_min = np.min(np.array(all_heads), axis=0)
-            pump_max = np.max(np.array(all_heads), axis=0)
-            pump_envelopes.append((pump_min, pump_max))
-
-    # --- 2. Plot system curves (thin, semi-transparent) ---
-    fig = go.Figure()
-    for j, dra in enumerate(system_dra_steps):
-        color = sample_colorscale(system_colormap, dra/max_dr)[0]
-        legend_bool = True if (dra % 10 == 0 or dra == max_dr) else False
-        fig.add_trace(go.Scatter(
-            x=flows, y=all_system_heads[j],
-            mode='lines',
-            line=dict(width=1.1, color=color, shape='spline', dash='solid'),
-            name=f"System DRA {dra}%" if legend_bool else None,
-            showlegend=legend_bool,
-            opacity=0.50 if not legend_bool else 1,
-            hoverinfo="skip" if not legend_bool else "x+y+name"
-        ))
-
-    # --- 3. Plot pump envelopes (shaded between min/max) ---
-    if is_pump:
-        for idx, (pump_min, pump_max) in enumerate(pump_envelopes):
-            color = pump_colors[idx % len(pump_colors)]
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([flows, flows[::-1]]),
-                y=np.concatenate([pump_min, pump_max[::-1]]),
-                fill='toself',
-                fillcolor=f'rgba{tuple(int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)) + (0.12,)}',
-                line=dict(color='rgba(0,0,0,0)'),
-                hoverinfo='skip',
-                showlegend=False,
-                name=None
-            ))
-            # Overlay the DOL, MinRPM, MidRPM as solid lines for reference
-            for rpm, lw, opacity in zip(key_speeds, [2.8, 1.8, 1.8], [1, 0.7, 0.7]):
-                H_pump = (idx+1) * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
-                H_pump = np.clip(H_pump, 0, None)
-                label = f"{idx+1} Pump{'s' if idx+1 > 1 else ''} ({rpm} rpm)" if rpm in [N_min, N_max] else None
+                pump_curves.append((npump, rpm, H_pump))
                 fig.add_trace(go.Scatter(
                     x=flows, y=H_pump,
                     mode='lines',
-                    line=dict(width=lw, color=color),
-                    opacity=opacity,
-                    name=label,
-                    showlegend=label is not None,
-                    hoverinfo="x+y+name" if label else "skip"
+                    line=dict(width=1.7, color=pump_colors[(npump-1)%len(pump_colors)]),
+                    name=f"{npump} Pump{'s' if npump > 1 else ''} ({rpm} rpm)",
+                    showlegend=True,
+                    opacity=0.82,
+                    hoverinfo="skip"
                 ))
 
-    # --- 4. Feasible Envelope Fill (intersection area) ---
-    if is_pump:
-        # Envelope region: where system curve is above any pump curve (i.e., max of min(pump) curves)
-        for idx, (pump_min, pump_max) in enumerate(pump_envelopes):
-            feasible = system_max >= pump_min
-            # Fill only where feasible
-            if np.any(feasible):
-                x_env = flows[feasible]
-                y_env = np.minimum(system_max[feasible], pump_max[feasible])
-                y_env2 = np.maximum(system_min[feasible], pump_min[feasible])
-                # Fill area
-                fig.add_trace(go.Scatter(
-                    x=np.concatenate([x_env, x_env[::-1]]),
-                    y=np.concatenate([y_env, y_env2[::-1]]),
-                    fill='toself',
-                    fillcolor="rgba(100,149,237,0.23)", # a light blue
-                    line=dict(color='rgba(0,0,0,0)'),
-                    hoverinfo='skip',
-                    name="Feasible Envelope" if idx==0 else None,
-                    showlegend=idx==0
-                ))
+    # --- 3. Optimization envelope: find all intersection points and fill polygon ---
+    # Collect all intersection points between every system and pump curve
+    intersection_x, intersection_y = [], []
+    for dra, SDH_vals in system_curves:
+        for npump, rpm, H_pump in pump_curves:
+            diff = H_pump - SDH_vals
+            sign_change = np.where(np.diff(np.sign(diff)))[0]
+            for k in sign_change:
+                x0, x1 = flows[k], flows[k+1]
+                y0, y1 = diff[k], diff[k+1]
+                q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
+                h_sys = np.interp(q_op, flows, SDH_vals)
+                intersection_x.append(q_op)
+                intersection_y.append(h_sys)
+    # Sort points by flow for a nice envelope
+    if len(intersection_x) > 3:
+        order = np.argsort(intersection_x)
+        envelope_x = np.array(intersection_x)[order]
+        envelope_y = np.array(intersection_y)[order]
+        # Fill the region
+        fig.add_trace(go.Scatter(
+            x=envelope_x, y=envelope_y,
+            mode='lines',
+            fill='toself',
+            fillcolor="rgba(254, 221, 38, 0.33)", # bright yellow translucent
+            line=dict(color='rgba(0,0,0,0.2)', width=0.8),
+            name="Optimization Envelope",
+            showlegend=True,
+            hoverinfo="skip"
+        ))
 
     fig.update_layout(
-        title=f"Feasible Region — System & Pump Curves: {stn['name']}",
+        title=f"Optimization Envelope — Pump & System Curves: {stn['name']}",
         xaxis_title="Flow (m³/hr)",
         yaxis_title="Head (m)",
-        font=dict(size=20, family="Segoe UI"),
-        legend=dict(font=dict(size=16)),
-        height=620,
+        font=dict(size=19, family="Segoe UI"),
+        legend=dict(font=dict(size=15)),
+        height=650,
         margin=dict(l=10, r=10, t=70, b=40),
-        plot_bgcolor="#ffffff",
-        showlegend=True,
-        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.10)'),
-        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.10)')
+        plot_bgcolor="#fcfcfc",
+        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.08)'),
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.08)')
     )
     st.plotly_chart(fig, use_container_width=True)
 
