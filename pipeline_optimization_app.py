@@ -161,7 +161,7 @@ if 'NEOS_EMAIL' in st.secrets:
 else:
     st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
 
-# ==== Restore/load/save functionality ====
+# ==== Restore/load/save functionality (now includes looplines) ====
 def restore_case_dict(loaded_data):
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
@@ -182,6 +182,7 @@ def restore_case_dict(loaded_data):
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
             st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+    st.session_state['looplines'] = loaded_data.get('looplines', [])
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -230,7 +231,7 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'max_dr': 0.0, 'demand': 0.0
         }]
     if add_col.button("➕ Add Station"):
         n = len(st.session_state.get('stations',[])) + 1
@@ -240,14 +241,52 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0
+            'max_dr': 0.0, 'demand': 0.0
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station"):
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
-# --- Page Header ---
+    st.subheader("Looplines")
+    loop_add_col, loop_rem_col = st.columns(2)
+    if "looplines" not in st.session_state:
+        st.session_state["looplines"] = []
+    if loop_add_col.button("➕ Add Loopline"):
+        n = len(st.session_state["looplines"]) + 1
+        default_loop = {
+            'name': f'Loopline {n}',
+            'from_station': 1,
+            'to_station': 2,
+            'L': 10.0,
+            'D': 0.355,
+            't': 0.006,
+            'rough': 0.00004,
+            'SMYS': 52000.0,
+            'max_dr': 0.0
+        }
+        st.session_state["looplines"].append(default_loop)
+    if loop_rem_col.button("🗑️ Remove Loopline"):
+        if st.session_state["looplines"]:
+            st.session_state["looplines"].pop()
+    for idx, lp in enumerate(st.session_state["looplines"], start=1):
+        with st.expander(f"Loopline {idx}: {lp['name']}", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                lp['name'] = st.text_input("Name", value=lp['name'], key=f"llname{idx}")
+                lp['from_station'] = st.number_input("From Station Index", min_value=1, max_value=len(st.session_state["stations"]), value=lp['from_station'], step=1, key=f"llfrom{idx}")
+                lp['to_station'] = st.number_input("To Station Index", min_value=1, max_value=len(st.session_state["stations"]), value=lp['to_station'], step=1, key=f"llto{idx}")
+                lp['L'] = st.number_input("Length (km)", value=lp['L'], step=1.0, key=f"llL{idx}")
+            with col2:
+                D_in = st.number_input("OD (in)", value=lp['D']/0.0254, format="%.2f", step=0.01, key=f"llD{idx}")
+                t_in = st.number_input("Wall Thk (in)", value=lp['t']/0.0254, format="%.3f", step=0.001, key=f"llt{idx}")
+                lp['D'] = D_in * 0.0254
+                lp['t'] = t_in * 0.0254
+                lp['rough'] = st.number_input("Pipe Roughness (m)", value=lp['rough'], format="%.5f", step=0.00001, key=f"llrough{idx}")
+                lp['SMYS'] = st.number_input("SMYS (psi)", value=lp['SMYS'], step=1000.0, key=f"llSMYS{idx}")
+                lp['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=lp.get('max_dr', 0.0), key=f"llmdr{idx}")
+
+# ----------- PAGE HEADER AND ALL INPUTS --------------
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
     """
@@ -373,6 +412,7 @@ def get_full_case_dict():
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
+        "looplines": st.session_state.get('looplines', []),
         **{
             f"head_data_{i+1}": (
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
@@ -425,15 +465,15 @@ def map_linefill_to_segments(linefill_df, stations):
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines):
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines)
 
 def m_to_kgcm2(head_m, density):
-    # kg/cm2 = metres × (density/10,000)
     return head_m * (density / 10000)
+
 
 # --- Optimization Run ---
 st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
