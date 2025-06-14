@@ -468,11 +468,11 @@ def map_linefill_to_segments(linefill_df, stations):
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines):
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines, deliveries=None):
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines)
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines, deliveries)
 
 def m_to_kgcm2(head_m, density):
     return head_m * (density / 10000)
