@@ -1153,7 +1153,10 @@ from math import pi
 from plotly.colors import sample_colorscale
 
 with tab5:
-    st.markdown("<div class='section-title'>Optimization Envelope — Pump & System Curves</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-title'>System & Pump Curves (All DRA, All RPM, All Series)</div>",
+        unsafe_allow_html=True
+    )
 
     # --- Station selection ---
     station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
@@ -1201,8 +1204,9 @@ with tab5:
     kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
     visc = kv_list[st_idx]
 
-    # --- Pump curves ---
+    # --- Pump curves: All series, all RPM ---
     pump_curves = []
+    pump_colormap = ["#1E88E5", "#00B8A9", "#F9A825", "#F44336", "#8E24AA", "#43A047", "#E57300", "#3949AB"]
     if is_pump:
         N_min = int(res.get(f"min_rpm_{key}", 1200))
         N_max = int(res.get(f"dol_{key}", 3000))
@@ -1211,15 +1215,26 @@ with tab5:
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
         for npump in range(1, n_pumps+1):
-            for rpm in rpm_steps:
+            color = pump_colormap[(npump-1) % len(pump_colormap)]
+            for idx, rpm in enumerate(rpm_steps):
                 H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
                 H_pump = np.clip(H_pump, 0, None)
-                pump_curves.append((f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)", H_pump))
+                label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
+                showlegend = (idx == 0)  # Only first RPM of each series shows in legend
+                fig = go.Figure() if (npump == 1 and idx == 0) else fig
+                fig.add_trace(go.Scatter(
+                    x=flows, y=H_pump,
+                    mode='lines',
+                    line=dict(width=2 if showlegend else 1.2, color=color, dash='solid'),
+                    name=label if showlegend else None,
+                    showlegend=showlegend,
+                    opacity=0.45 + 0.5*(idx == 0),  # 0.95 for first, 0.45 for rest
+                    hoverinfo="skip"
+                ))
 
-    # --- System curves ---
-    system_curves = []
+    # --- System curves: All DRA, Viridis colormap ---
     system_dra_steps = list(range(0, max_dr+1, 5))
-    for dra in system_dra_steps:
+    for idx, dra in enumerate(system_dra_steps):
         v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
         Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
         f_vals = np.where(Re_vals>0,
@@ -1227,66 +1242,34 @@ with tab5:
         DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
         SDH_vals = max(0, current_elev) + DH
         SDH_vals = np.clip(SDH_vals, 0, None)
-        system_curves.append((f"System DRA {dra}%", SDH_vals))
-
-    # --- Compute envelope: for each flow, the min system curve and max pump curve
-    min_sys = np.min([c[1] for c in system_curves], axis=0)
-    max_pump = np.max([c[1] for c in pump_curves], axis=0)
-    valid = min_sys > max_pump  # Only where system curve is above pump
-    envelope_x = flows[valid]
-    envelope_y1 = min_sys[valid]
-    envelope_y2 = max_pump[valid]
-
-    # --- Plot system curves ---
-    fig = go.Figure()
-    for idx, (label, y) in enumerate(system_curves):
+        label = f"System DRA {dra}%"
+        showlegend = (dra % 10 == 0 or dra == max_dr)
         fig.add_trace(go.Scatter(
-            x=flows, y=y,
+            x=flows, y=SDH_vals,
             mode='lines',
-            line=dict(width=1.3, color=sample_colorscale('Viridis', idx/(len(system_curves)-1))[0]),
-            name=label,
-            showlegend=(idx % 2 == 0 or idx == len(system_curves)-1),
-            opacity=0.5 if not (idx % 2 == 0 or idx == len(system_curves)-1) else 1,
-            hoverinfo="skip"
-        ))
-    # --- Plot pump curves ---
-    for idx, (label, y) in enumerate(pump_curves):
-        fig.add_trace(go.Scatter(
-            x=flows, y=y,
-            mode='lines',
-            line=dict(width=1.4, color='rgba(220,90,0,0.75)' if '1 Pump' in label else 'rgba(22,80,180,0.85)'),
-            name=label,
-            showlegend=True,
-            opacity=0.95,
-            hoverinfo="skip"
-        ))
-    # --- Fill envelope (the yellow region) ---
-    if len(envelope_x) > 2:
-        fig.add_trace(go.Scatter(
-            x=np.concatenate([envelope_x, envelope_x[::-1]]),
-            y=np.concatenate([envelope_y1, envelope_y2[::-1]]),
-            mode='lines',
-            fill='toself',
-            fillcolor="rgba(254, 221, 38, 0.38)",
-            line=dict(color='rgba(254,221,38,0.62)', width=2.2),
-            name="Optimization Envelope",
-            showlegend=True,
+            line=dict(width=2.1 if showlegend else 1.1, color=sample_colorscale("Viridis", idx/(len(system_dra_steps)-1))[0], dash='solid'),
+            name=label if showlegend else None,
+            showlegend=showlegend,
+            opacity=0.35 + 0.6*(showlegend),  # bolder for 0, 10, 20...max%
             hoverinfo="skip"
         ))
 
+    # --- Polish Layout ---
     fig.update_layout(
-        title=f"Optimization Envelope — Pump & System Curves: {stn['name']}",
+        title=f"System & Pump Curves: {stn['name']}",
         xaxis_title="Flow (m³/hr)",
         yaxis_title="Head (m)",
-        font=dict(size=19, family="Segoe UI"),
-        legend=dict(font=dict(size=15)),
-        height=650,
-        margin=dict(l=10, r=10, t=70, b=40),
-        plot_bgcolor="#fcfcfc",
-        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.08)'),
-        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.08)')
+        font=dict(size=22, family="Segoe UI"),
+        legend=dict(font=dict(size=15), itemsizing="constant"),
+        height=660,
+        margin=dict(l=15, r=15, t=80, b=40),
+        plot_bgcolor="#fafbfc",
+        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(160,180,220,0.10)'),
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(160,180,220,0.10)'),
+        hovermode="closest"
     )
     st.plotly_chart(fig, use_container_width=True)
+
 
 
 
