@@ -203,16 +203,20 @@ def solve_pipeline(
     # --- Velocity, Reynolds, Friction Factor for each segment (Pyomo safe) ---
     g = 9.81
 
-    def vfun(q, D):  # For Pyomo safety, all args explicit
+    def vfun(q, D):
         return (q/3600.0) / (pi * (D**2) / 4.0) if D > 0 else 0.0
     def Refun(q, D, kv):
         return vfun(q, D) * D / (kv * 1e-6) if kv > 0 else 0.0
+
+    # ----- FIXED FRICTION FACTOR: Robust for Pyomo -----
     def ffun(q, D, rough, kv, dr):
-        re = Refun(q, D, kv)
-        # Now, re may be Pyomo expression; use Pyomo logic everywhere
-        # Swamee-Jain only for re > 4000, else laminar
-        return pyo.conditional(re < 1e-5, 0.0, pyo.conditional(re < 4000, 64.0/re, 
-                0.25/(pyo.log10(rough/D/3.7 + 5.74/(re**0.9))**2) * (1-dr/100.0)))
+        eps = 1e-8
+        v = (q/3600.0) / (pi * (D**2) / 4.0 + eps)
+        Re = v * D / (kv * 1e-6 + eps)
+        arg = rough/D/3.7 + 5.74/(Re**0.9 + eps)
+        fval = 0.25/(pyo.log10(arg+eps)**2) * (1-dr/100.0)
+        return fval
+
     # ---- Head Loss Equations for Mainline and Looplines ----
     def headloss_expr(m, idx):
         seg = segment_map[idx]
