@@ -177,7 +177,8 @@ def solve_pipeline(
     segment_map = {seg['idx']: seg for seg in segments}
     model.Q = pyo.Var(model.segments, domain=pyo.NonNegativeReals, initialize=FLOW)
 
-    dra_segments = [seg['idx'] for seg in segments if seg['type']=='loop'] + [i for i in pump_indices]
+    dra_segments = [seg['idx'] for seg in segments if seg.get('max_dr', 0) > 0] \
+             + [i for i in pump_indices if max_dr.get(i, 0) > 0]
     model.DR_seg = pyo.Var(dra_segments, domain=pyo.NonNegativeReals)
     for segidx in dra_segments:
         seg = segment_map[segidx] if segidx in segment_map else None
