@@ -185,6 +185,8 @@ def solve_pipeline(
         maxval = seg['max_dr'] if seg else max_dr.get(segidx, 0.0)
         model.DR_seg[segidx].setub(maxval)
         model.DR_seg[segidx].setlb(0.0)
+        if maxval <= 0:
+            model.DR_seg[segidx].fix(0.0)
 
     # ---- Node Continuity Constraints (with delivery) ----
     def continuity_rule(m, node):
