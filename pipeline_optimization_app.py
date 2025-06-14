@@ -802,50 +802,117 @@ with tab2:
 
 
 # ---- Tab 3: Performance ----
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+
 with tab3:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
+        terminal = st.session_state["last_term_data"]
         perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
             "Head Loss", "Velocity & Re", 
             "Pump Characteristic Curve", "Pump Efficiency Curve",
             "Pressure vs Pipeline Length", "Power vs Speed/Flow"
         ])
+        
+        # --- 1. Head Loss ---
         with perf_tab:
             st.markdown("<div class='section-title'>Head Loss per Segment</div>", unsafe_allow_html=True)
             df_hloss = pd.DataFrame({
                 "Station": [s['name'] for s in stations_data],
-                "Head Loss": [res.get(f"head_loss_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
+                "Head Loss (m)": [res.get(f"head_loss_{s['name'].lower().replace(' ','_')}", 0) for s in stations_data]
             })
-            fig_h = go.Figure(go.Bar(x=df_hloss["Station"], y=df_hloss["Head Loss"]))
-            fig_h.update_layout(yaxis_title="Head Loss (m)")
+            fig_h = go.Figure(go.Bar(
+                x=df_hloss["Station"], y=df_hloss["Head Loss (m)"],
+                marker_color='#1976D2',
+                text=[f"{hl:.2f}" for hl in df_hloss["Head Loss (m)"]],
+                textposition="auto"
+            ))
+            fig_h.update_layout(
+                yaxis_title="Head Loss (m)",
+                xaxis_title="Station",
+                font=dict(size=16),
+                title="Head Loss per Segment",
+                height=400
+            )
             st.plotly_chart(fig_h, use_container_width=True, key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
+            st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), use_container_width=True, hide_index=True)
+        
+        # --- 2. Velocity & Reynolds ---
         with head_tab:
             st.markdown("<div class='section-title'>Velocity & Reynolds</div>", unsafe_allow_html=True)
             df_vel = pd.DataFrame({
                 "Station": [s['name'] for s in stations_data],
-                "Velocity (m/s)": [res.get(f"velocity_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
-                "Reynolds": [res.get(f"reynolds_{s['name'].lower().replace(' ','_')}",0) for s in stations_data]
+                "Velocity (m/s)": [res.get(f"velocity_{s['name'].lower().replace(' ','_')}", 0) for s in stations_data],
+                "Reynolds Number": [res.get(f"reynolds_{s['name'].lower().replace(' ','_')}", 0) for s in stations_data]
             })
-            st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds":"{:.0f}"}))
+            fig_v = go.Figure()
+            fig_v.add_trace(go.Bar(
+                x=df_vel["Station"],
+                y=df_vel["Velocity (m/s)"],
+                name="Velocity (m/s)",
+                marker_color="#00ACC1",
+                text=[f"{v:.2f}" for v in df_vel["Velocity (m/s)"]],
+                textposition="auto"
+            ))
+            fig_v.add_trace(go.Bar(
+                x=df_vel["Station"],
+                y=df_vel["Reynolds Number"],
+                name="Reynolds Number",
+                marker_color="#E65100",
+                text=[f"{r:.0f}" for r in df_vel["Reynolds Number"]],
+                textposition="outside",
+                yaxis="y2"
+            ))
+            fig_v.update_layout(
+                barmode='group',
+                yaxis=dict(title="Velocity (m/s)", side="left"),
+                yaxis2=dict(title="Reynolds Number", overlaying="y", side="right", showgrid=False),
+                font=dict(size=15),
+                title="Velocity and Reynolds Number per Station",
+                legend=dict(font=dict(size=14)),
+                height=420
+            )
+            st.plotly_chart(fig_v, use_container_width=True)
+            # Data table
+            st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), use_container_width=True, hide_index=True)
+        
+        # --- 3. Pump Characteristic Curve (Head vs Flow at various Speeds) ---
         with char_tab:
             st.markdown("<div class='section-title'>Pump Characteristic Curves (Head vs Flow at various Speeds)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ','_')
-                flows = np.linspace(0, st.session_state.get("FLOW",1000.0)*1.5, 200)
-                A = res.get(f"coef_A_{key}",0); B = res.get(f"coef_B_{key}",0); C = res.get(f"coef_C_{key}",0)
+                flows = np.linspace(0, st.session_state.get("FLOW", 1000.0)*1.5, 200)
+                A = res.get(f"coef_A_{key}",0)
+                B = res.get(f"coef_B_{key}",0)
+                C = res.get(f"coef_C_{key}",0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
+                step = max(100, int((N_max-N_min)/5))
                 fig = go.Figure()
-                for rpm in range(N_min, N_max+1, 100):
-                    H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2
-                    fig.add_trace(go.Scatter(x=flows, y=H, mode='lines', name=f"{rpm} rpm"))
-                fig.update_layout(title=f"Head vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Head (m)")
+                for rpm in range(N_min, N_max+1, step):
+                    H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 if N_max else np.zeros_like(flows)
+                    fig.add_trace(go.Scatter(
+                        x=flows, y=H, mode='lines', name=f"{rpm} rpm",
+                        hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
+                    ))
+                fig.update_layout(
+                    title=f"Head vs Flow: {stn['name']}",
+                    xaxis_title="Flow (m³/hr)",
+                    yaxis_title="Head (m)",
+                    font=dict(size=15),
+                    legend=dict(font=dict(size=13)),
+                    height=420
+                )
                 st.plotly_chart(fig, use_container_width=True, key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+        
+        # --- 4. Pump Efficiency Curve (Eff vs Flow at various Speeds) ---
         with eff_tab:
             st.markdown("<div class='section-title'>Pump Efficiency Curves (Eff vs Flow at various Speeds)</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -874,63 +941,63 @@ with tab3:
                 for rpm in range(N_min, N_max+1, step):
                     # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
                     # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
-                    q_upper = flow_max * (rpm/N_max)
-                    q_lower = flow_min * (rpm/N_max)
+                    q_upper = flow_max * (rpm/N_max) if N_max else flow_max
+                    q_lower = flow_min * (rpm/N_max) if N_max else flow_min
                     flows = np.linspace(q_lower, q_upper, 100)
-                    Q_equiv = flows * N_max / rpm  # This will be in user scale
+                    Q_equiv = flows * N_max / rpm if rpm else flows
                     eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
-                    # Clip to user max efficiency
                     eff = np.clip(eff, 0, max_user_eff)
-                    fig.add_trace(go.Scatter(x=flows, y=eff, mode='lines', name=f"{rpm} rpm"))
+                    fig.add_trace(go.Scatter(
+                        x=flows, y=eff, mode='lines', name=f"{rpm} rpm",
+                        hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %"
+                    ))
                 fig.update_layout(
                     title=f"Efficiency vs Flow: {stn['name']}",
                     xaxis_title="Flow (m³/hr)",
-                    yaxis_title="Efficiency (%)"
+                    yaxis_title="Efficiency (%)",
+                    font=dict(size=15),
+                    legend=dict(font=dict(size=13)),
+                    height=420
                 )
                 st.plotly_chart(fig, use_container_width=True)
-
-
+        
+        # --- 5. Pressure vs Pipeline Length ---
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
             lengths = [0]
-            names_p = []
             for stn in stations_data:
                 l = stn.get('L', 0)
                 lengths.append(lengths[-1] + l)
-                names_p.append(stn['name'])
-            terminal_name = st.session_state["last_term_data"]["name"]
-            names_p.append(terminal_name)
-            n_stn = len(stations_data)
-            available_suction_head = res.get(f"residual_head_{stations_data[0]['name'].lower().replace(' ','_')}", 0.0)
-            sdh = [res.get(f"sdh_{s['name'].lower().replace(' ','_')}", 0.0) for s in stations_data]
-            rh = [res.get(f"residual_head_{s['name'].lower().replace(' ','_')}", 0.0) for s in stations_data]
-            rh.append(res.get(f"residual_head_{terminal_name.lower().replace(' ','_')}", 0.0))
+            terminal_name = terminal["name"]
+            keys_p = [s['name'].lower().replace(' ','_') for s in stations_data] + [terminal_name.lower().replace(' ','_')]
+            rh = [res.get(f"residual_head_{k}", 0.0) for k in keys_p]
+            sdh = [res.get(f"sdh_{k}", 0.0) for k in keys_p[:-1]]
             x_pts = []
             y_pts = []
-            x_pts.extend([lengths[0], lengths[0]])
-            y_pts.extend([available_suction_head, sdh[0]])
-            for i in range(n_stn - 1):
-                x_pts.extend([lengths[i], lengths[i+1]])
-                y_pts.extend([sdh[i], rh[i+1]])
-                x_pts.extend([lengths[i+1], lengths[i+1]])
-                y_pts.extend([rh[i+1], sdh[i+1]])
-            x_pts.extend([lengths[-2], lengths[-1]])
-            y_pts.extend([sdh[-1], rh[-1]])
+            # Pressure profile points as per your logic
+            for i in range(len(stations_data)):
+                x_pts += [lengths[i], lengths[i+1]]
+                y_pts += [rh[i], sdh[i] if i < len(sdh) else rh[i]]
+                x_pts += [lengths[i+1], lengths[i+1]]
+                y_pts += [sdh[i] if i < len(sdh) else rh[i], rh[i+1]]
             fig_p = go.Figure()
             fig_p.add_trace(go.Scatter(
                 x=x_pts, y=y_pts, mode='lines+markers',
-                name="Pressure Profile", line=dict(width=3)
+                name="Pressure Profile", line=dict(width=3, color="#1976D2")
             ))
-            for idx, name in enumerate(names_p):
-                y_annot = rh[idx] if idx < len(rh) else rh[-1]
-                fig_p.add_annotation(x=lengths[idx], y=y_annot, text=name, showarrow=True, yshift=12)
+            for idx, name in enumerate(keys_p):
+                fig_p.add_annotation(x=lengths[idx], y=rh[idx], text=names[idx], showarrow=True, yshift=14)
             fig_p.update_layout(
                 title="Pressure vs Pipeline Length",
                 xaxis_title="Cumulative Length (km)",
                 yaxis_title="Pressure Head (mcl)",
-                showlegend=False
+                font=dict(size=15),
+                showlegend=False,
+                height=420
             )
             st.plotly_chart(fig_p, use_container_width=True)
+        
+        # --- 6. Power vs Speed/Flow ---
         with power_tab:
             st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
             for i, stn in enumerate(stations_data, start=1):
@@ -945,14 +1012,20 @@ with tab3:
                 speeds = np.arange(N_min, N_max+1, 100)
                 power = []
                 for rpm in speeds:
-                    H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2
+                    H = (A*flow**2 + B*flow + C)*(rpm/N_max)**2 if N_max else 0
                     eff = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
                     eff = max(0.01, eff/100)
                     pwr = (stn.get("rho", 850) * flow * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power.append(pwr)
                 fig_pwr = go.Figure()
-                fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed"))
-                fig_pwr.update_layout(title=f"Power vs Speed: {stn['name']}", xaxis_title="Speed (rpm)", yaxis_title="Power (kW)")
+                fig_pwr.add_trace(go.Scatter(x=speeds, y=power, mode='lines+markers', name="Power vs Speed",
+                                             marker_color='#0288D1'))
+                fig_pwr.update_layout(
+                    title=f"Power vs Speed: {stn['name']}", 
+                    xaxis_title="Speed (rpm)", yaxis_title="Power (kW)",
+                    font=dict(size=15),
+                    height=400
+                )
                 st.plotly_chart(fig_pwr, use_container_width=True)
                 flows = np.linspace(0.01, flow*1.5, 100)
                 power2 = []
@@ -963,8 +1036,14 @@ with tab3:
                     pwr = (stn.get("rho", 850) * q * 9.81 * H)/(3600.0*eff*0.95*1000)
                     power2.append(pwr)
                 fig_pwr2 = go.Figure()
-                fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow"))
-                fig_pwr2.update_layout(title=f"Power vs Flow: {stn['name']}", xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)")
+                fig_pwr2.add_trace(go.Scatter(x=flows, y=power2, mode='lines+markers', name="Power vs Flow",
+                                              marker_color='#D84315'))
+                fig_pwr2.update_layout(
+                    title=f"Power vs Flow: {stn['name']}", 
+                    xaxis_title="Flow (m³/hr)", yaxis_title="Power (kW)",
+                    font=dict(size=15),
+                    height=400
+                )
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
 # ---- Tab 4: System Curves ----
