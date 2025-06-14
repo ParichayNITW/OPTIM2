@@ -998,119 +998,80 @@ with tab3:
             st.plotly_chart(fig_p, use_container_width=True)
         
         # --- 6. Power vs Speed/Flow ---
-        import plotly.graph_objects as go
-        
         with power_tab:
-            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        
-            st.markdown("<div class='section-title'>Power vs Flow (THEORETICAL PUMP CURVE, DOL Speed)</div>", unsafe_allow_html=True)
-            for idx, stn in enumerate(stations_data, start=1):
+            st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow (Engineering Accurate)</div>", unsafe_allow_html=True)
+            # Fetch summary DataFrame for pump flows
+            df_summary = st.session_state.get("summary_table", None)
+            if df_summary is not None:
+                pump_flow_dict = dict(zip(df_summary.columns[1:], df_summary.loc[df_summary['Parameters'] == 'Pump Flow (m³/hr)'].values[0,1:]))
+            else:
+                # fallback: use optimized flow from results
+                pump_flow_dict = {}
+                for stn in stations_data:
+                    key = stn['name'].lower().replace(' ','_')
+                    pump_flow_dict[key] = res.get(f"pump_flow_{key}", st.session_state.get("FLOW",1000.0))
+            
+            for i, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
                     continue
-                key = stn['name'].lower().replace(' ', '_')
-                rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-        
-                # ---- Take Pump Flow from summary table! ----
-                pump_flow = res.get(f'flow_{key}', 0.0)
-                DOL = float(stn.get('DOL', 1500))
-        
-                # Coefficients for head & efficiency curve
-                A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
-                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-        
-                Q_min = 0
-                Q_max = 1.2 * pump_flow if pump_flow > 0 else st.session_state.get("FLOW", 1000.0) * 1.2
-                flows = np.linspace(Q_min, Q_max, 40)
-        
-                heads = A*flows**2 + B*flows + C
-                effs = P*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T
-                effs = np.clip(effs, 5, 100)  # Clamp efficiency to 5-100%
-        
-                powers = (rho * flows * 9.81 * heads) / (3600*1000*effs/100)
-                powers = np.where(flows > 0, powers, 0.0)
-        
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=flows, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
-                fig.update_layout(
-                    title=f"Power vs Flow (Pump Curve, DOL): {stn['name']}",
-                    xaxis_title="Pump Flow (m³/hr)",
+                key = stn['name'].lower().replace(' ','_')
+                # 1. Get constants and coefficients
+                A = res.get(f"coef_A_{key}", 0)
+                B = res.get(f"coef_B_{key}", 0)
+                C = res.get(f"coef_C_{key}", 0)
+                P4 = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
+                N_min = int(res.get(f"min_rpm_{key}", 0))
+                N_max = int(res.get(f"dol_{key}", 0))
+                rho = stn.get('rho', 850)
+                # --- 1. Power vs Speed (at constant, optimized flow) ---
+                pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW",1000.0))
+                # Head and eff at pump_flow, DOL
+                H = (A*pump_flow**2 + B*pump_flow + C)
+                eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
+                eff = max(0.01, eff/100)
+                P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
+                speeds = np.arange(N_min, N_max+1, 100)
+                power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
+                fig_pwr = go.Figure()
+                fig_pwr.add_trace(go.Scatter(
+                    x=speeds, y=power_curve, mode='lines+markers',
+                    name="Power vs Speed",
+                    marker_color="#1976D2",
+                    line=dict(width=3),
+                    hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW"
+                ))
+                fig_pwr.update_layout(
+                    title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
+                    xaxis_title="Speed (rpm)",
                     yaxis_title="Power (kW)",
+                    font=dict(size=16),
                     height=400
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig_pwr, use_container_width=True)
         
-            # -------------------- Power vs Speed --------------------
-            st.markdown("<div class='section-title'>Power vs Speed (THEORETICAL PUMP CURVE, Q = Pump Flow)</div>", unsafe_allow_html=True)
-            for idx, stn in enumerate(stations_data, start=1):
-                if not stn.get('is_pump', False):
-                    continue
-                key = stn['name'].lower().replace(' ', '_')
-                rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-        
-                # ---- Take Pump Flow from summary table! ----
-                pump_flow = res.get(f'flow_{key}', 0.0)
-                DOL = float(stn.get('DOL', 1500))
-                MinRPM = float(stn.get('MinRPM', 1000))
-        
-                # Coefficients for head & efficiency curve
-                A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
-                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-        
-                # Take head and efficiency at DOL for given pump flow
-                head_DOL = A*pump_flow**2 + B*pump_flow + C
-                eff_DOL = P*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T
-                eff_DOL = max(min(eff_DOL, 100), 5)  # Clamp 5-100%
-        
-                # Power at DOL (reference)
-                P_DOL = (rho * pump_flow * 9.81 * head_DOL) / (3600*1000*eff_DOL/100)
-        
-                rpm_vals = np.linspace(MinRPM, DOL, 40)
-                power_speed = P_DOL * (rpm_vals / DOL) ** 3
-        
-                fig2 = go.Figure()
-                fig2.add_trace(go.Scatter(x=rpm_vals, y=power_speed, mode='lines+markers', name=f'{stn["name"]}'))
-                fig2.update_layout(
-                    title=f"Power vs Speed (Pump Curve, Q={pump_flow:.1f} m³/hr): {stn['name']}",
-                    xaxis_title="Pump Speed (RPM)",
+                # --- 2. Power vs Flow (at DOL only) ---
+                flows = np.linspace(0.01, 1.2*pump_flow, 100)
+                H_flows = (A*flows**2 + B*flows + C)  # At DOL
+                eff_flows = (P4*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T)
+                eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
+                power_flows = (rho * flows * 9.81 * H_flows)/(3600.0*1000*eff_flows)
+                fig_pwr2 = go.Figure()
+                fig_pwr2.add_trace(go.Scatter(
+                    x=flows, y=power_flows, mode='lines+markers',
+                    name="Power vs Flow",
+                    marker_color="#D84315",
+                    line=dict(width=3),
+                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW"
+                ))
+                fig_pwr2.update_layout(
+                    title=f"Power vs Flow (at DOL: {N_max} rpm): {stn['name']}",
+                    xaxis_title="Flow (m³/hr)",
                     yaxis_title="Power (kW)",
+                    font=dict(size=16),
                     height=400
                 )
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig_pwr2, use_container_width=True)
 
-        # --- Power vs Speed (THEORETICAL) ---
-        with power_tab:
-            st.markdown("<div class='section-title'>Power vs Speed (THEORETICAL PUMP CURVE, fixed Flow)</div>", unsafe_allow_html=True)
-            for idx, stn in enumerate(stations_data, start=1):
-                if not stn.get('is_pump', False):
-                    continue
-                key = stn['name'].lower().replace(' ', '_')
-                rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-                # Take a reasonable flow for this curve (midpoint of fitted curve or design flow)
-                Q_rated = st.session_state.get("FLOW", 1000.0)  # You can also use flow at BEP
-                DOL = float(stn.get('DOL', 1500))
-                min_rpm = int(stn.get('MinRPM', 1000))
-                max_rpm = int(DOL)
-                rpms = np.linspace(min_rpm, max_rpm, 40)
-                # Get pump head and efficiency at DOL, for this Q_rated
-                A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
-                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-                head_DOL = (A*Q_rated**2 + B*Q_rated + C)
-                eff_DOL = (P*Q_rated**4 + Qc*Q_rated**3 + R*Q_rated**2 + S*Q_rated + T)
-                eff_DOL = max(eff_DOL, 5)  # Clamp minimum
-                power_DOL = (rho * Q_rated * 9.81 * head_DOL) / (3600*1000*eff_DOL/100)
-                # Use affinity law: Power ~ (N/N_rated)^3 at fixed flow
-                powers = power_DOL * (rpms/DOL)**3
-                powers = np.where(rpms > 0, powers, 0.0)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=rpms, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
-                fig.update_layout(
-                    title=f"Power vs Speed (Pump Curve, Q={Q_rated:.1f} m³/hr): {stn['name']}",
-                    xaxis_title="Pump Speed (RPM)",
-                    yaxis_title="Power (kW)",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
 
 
 # ---- Tab 4: System Curves ----
