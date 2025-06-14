@@ -998,7 +998,7 @@ with tab3:
             st.plotly_chart(fig_p, use_container_width=True)
         
         # --- 6. Power vs Speed/Flow ---
-        with power_tabs[1]:
+        with power_tab:
             st.markdown("<div class='section-title'>Power vs Flow (THEORETICAL PUMP CURVE, DOL Speed)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
