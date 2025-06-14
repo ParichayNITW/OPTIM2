@@ -619,32 +619,130 @@ with tab1:
             unsafe_allow_html=True
         )
 
-
-
 # ---- Tab 2: Cost Breakdown ----
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+
 with tab2:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
-        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+        terminal_name = st.session_state["last_term_data"]["name"]
+        names = [s['name'] for s in stations_data] + [terminal_name]
+        keys = [n.lower().replace(' ', '_') for n in names]
+
+        # Collect stationwise cost data
+        power_costs = [float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys]
+        dra_costs = [float(res.get(f"dra_cost_{k}", 0.0) or 0.0) for k in keys]
+        total_costs = [p + d for p, d in zip(power_costs, dra_costs)]
+
         df_cost = pd.DataFrame({
-            "Station": [s['name'] for s in stations_data],
-            "Power+Fuel": [res.get(f"power_cost_{s['name'].lower().replace(' ','_')}",0) for s in stations_data],
-            "DRA": [
-                get_ppm_for_dr(kv_list[i], min(res.get(f"drag_reduction_{s['name'].lower().replace(' ','_')}",0.0), s.get('max_dr',0.0)))
-                * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
-                * st.session_state["RateDRA"]
-                for i,s in enumerate(stations_data)
-            ]
+            "Station": names,
+            "Power+Fuel Cost (INR/day)": power_costs,
+            "DRA Cost (INR/day)": dra_costs,
+            "Total Cost (INR/day)": total_costs,
         })
-        df_cost['Total'] = df_cost['Power+Fuel'] + df_cost['DRA']
-        fig_pie = px.pie(df_cost, names='Station', values='Total', title="Station-wise Cost Breakdown")
-        st.markdown("<div class='section-title'>Cost Breakdown</div>", unsafe_allow_html=True)
+
+        # --- Stacked bar chart ---
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            x=df_cost["Station"],
+            y=df_cost["Power+Fuel Cost (INR/day)"],
+            name="Power+Fuel",
+            marker_color="#1976D2",
+            text=[f"{x:.2f}" for x in df_cost["Power+Fuel Cost (INR/day)"]],
+            textposition='auto'
+        ))
+        fig_bar.add_trace(go.Bar(
+            x=df_cost["Station"],
+            y=df_cost["DRA Cost (INR/day)"],
+            name="DRA",
+            marker_color="#FFA726",
+            text=[f"{x:.2f}" for x in df_cost["DRA Cost (INR/day)"]],
+            textposition='auto'
+        ))
+        fig_bar.update_layout(
+            barmode='stack',
+            title="Stationwise Daily Cost Breakdown",
+            xaxis_title="Station",
+            yaxis_title="Cost (INR/day)",
+            font=dict(size=16),
+            legend=dict(font=dict(size=14)),
+            height=420
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # --- Pie chart: Cost distribution by station ---
+        st.markdown("#### Cost Contribution by Station")
+        fig_pie = px.pie(
+            df_cost,
+            values="Total Cost (INR/day)",
+            names="Station",
+            color_discrete_sequence=px.colors.sequential.RdBu,
+            hole=0.38
+        )
+        fig_pie.update_traces(textinfo='label+percent', pull=[0.05]*len(df_cost))
+        fig_pie.update_layout(
+            font=dict(size=15),
+            height=350,
+            showlegend=False,
+            margin=dict(l=10, r=10, t=40, b=10)
+        )
         st.plotly_chart(fig_pie, use_container_width=True)
-        st.download_button("Download CSV", df_cost.to_csv(index=False).encode(), file_name="cost_breakdown.csv")
+
+        # --- Trend line: Total cost vs. chainage ---
+        st.markdown("#### Cost Accumulation Along Pipeline")
+        if "L" in stations_data[0]:
+            # Compute cumulative chainage for each station
+            chainage = [0]
+            for stn in stations_data:
+                chainage.append(chainage[-1] + stn.get("L", 0.0))
+            chainage = chainage[:len(names)]  # Match to station count
+            fig_line = go.Figure()
+            fig_line.add_trace(go.Scatter(
+                x=chainage,
+                y=total_costs,
+                mode="lines+markers+text",
+                text=[f"{tc:.2f}" for tc in total_costs],
+                textposition="top center",
+                name="Total Cost"
+            ))
+            fig_line.update_layout(
+                title="Total Cost vs. Distance",
+                xaxis_title="Cumulative Distance (km)",
+                yaxis_title="Cost (INR/day)",
+                font=dict(size=15),
+                height=360
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+
+        # --- Table: All cost heads, 2-decimal formatted ---
+        df_cost_fmt = df_cost.copy()
+        for c in df_cost_fmt.columns:
+            if c != "Station":
+                df_cost_fmt[c] = df_cost_fmt[c].apply(lambda x: f"{x:.2f}")
+        st.markdown("#### Tabular Cost Summary")
+        st.dataframe(df_cost_fmt, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "📥 Download Stationwise Cost (CSV)",
+            df_cost.to_csv(index=False).encode(),
+            file_name="stationwise_cost.csv"
+        )
+
+        # --- KPI highlights ---
+        st.markdown(
+            f"""<br>
+            <div style='font-size:1.1em;'><b>Total Operating Cost:</b> {sum(total_costs):,.2f} INR/day<br>
+            <b>Maximum Station Cost:</b> {max(total_costs):,.2f} INR/day ({df_cost.loc[df_cost['Total Cost (INR/day)'].idxmax(), 'Station']})<br>
+            <b>Minimum Station Cost:</b> {min(total_costs):,.2f} INR/day ({df_cost.loc[df_cost['Total Cost (INR/day)'].idxmin(), 'Station']})</div>
+            """,
+            unsafe_allow_html=True
+        )
+
 
 # ---- Tab 3: Performance ----
 with tab3:
