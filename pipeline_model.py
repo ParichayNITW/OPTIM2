@@ -112,12 +112,12 @@ def solve_pipeline(
                         initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
+    # --- DRAG REDUCTION SEGMENTS ---
     dra_segments = []
     for i, stn in enumerate(stations, start=1):
         if stn.get('max_dr', 0) > 0:
             dra_segments.append(i)
-
-    # ---- LOOPLINES ----
+    # looplines
     if looplines is None:
         looplines = []
     segments = []
@@ -140,25 +140,29 @@ def solve_pipeline(
         }
         segments.append(seg)
     for idx, lp in enumerate(looplines, start=1):
-        # Compute length from km
-        lp_L = lp.get('end_km', 0.0) - lp.get('start_km', 0.0)
-        from_node = idx+N  # (Choose a unique node id, if desired use: find_nearest_node)
-        to_node = from_node + 1
+        chainages = [0]
+        for stn in stations:
+            chainages.append(chainages[-1] + stn['L'])
+        def find_nearest_node(km):
+            return min(range(len(chainages)), key=lambda i: abs(chainages[i]-km)) + 1
+        from_node = find_nearest_node(lp['start_km'])
+        to_node   = find_nearest_node(lp['end_km'])
+        peaks = lp.get('peaks', [])
         seg = {
             'type': 'loop',
             'from_node': from_node,
             'to_node': to_node,
-            'L': lp_L,
+            'L': lp['L'],
             'D': lp['D'] - 2*lp['t'],
             'rough': lp['rough'],
             'SMYS': lp['SMYS'],
             't': lp['t'],
             'DF': default_df,
             'idx': N+idx,
-            'start_elev': lp.get('start_elev', elev.get(from_node, 0)),
-            'end_elev': lp.get('end_elev', elev.get(to_node, 0)),
+            'start_elev': lp.get('start_elev', elev[from_node]),
+            'end_elev': lp.get('end_elev', elev[to_node]),
             'max_dr': lp.get('max_dr', 0.0),
-            'peaks': lp.get('peaks', [])
+            'peaks': peaks
         }
         if seg.get('max_dr', 0) > 0:
             dra_segments.append(seg['idx'])
@@ -178,6 +182,7 @@ def solve_pipeline(
         if maxval <= 0:
             model.DR_seg[segidx].fix(0.0)
 
+    # Node continuity constraints (with delivery)
     def continuity_rule(m, node):
         if node == 1 or node == N+1:
             return pyo.Constraint.Skip
@@ -216,7 +221,6 @@ def solve_pipeline(
         vseg = vfun(q, D)
         return fseg * ((seg['L']*1000.0)/D) * (vseg**2/(2*g))
 
-    # Parallel headloss constraints (DO NOT use pyo.value() here)
     pairwise = {}
     model.parallel_headloss = pyo.ConstraintList()
     for seg in segments:
@@ -305,17 +309,16 @@ def solve_pipeline(
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
         if i in dra_segments:
-            dra_cost = (model.DR_seg[i]/4) * (FLOW*1000.0*24.0/1e6) * Rate_DRA
+            dra_cost = (model.DR_seg[i]/4) * (FLOW*1000.0*24.0/1e6) * RateDRA  # <--- FIXED HERE
         else:
             dra_cost = 0
         total_cost += power_cost + dra_cost
     for seg in segments:
         if seg['type'] == 'loop':
-            dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * Rate_DRA if seg['idx'] in dra_segments else 0
+            dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * RateDRA if seg['idx'] in dra_segments else 0  # <--- FIXED HERE
             total_cost += dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # ---- SOLVE ----
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
