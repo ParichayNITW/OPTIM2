@@ -500,77 +500,99 @@ with tab1:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
-        names = [s['name'] for s in stations_data] + [terminal_name]
-        params = [
-            "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)",
-            "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
-        ]
-        summary = {"Parameters": params}
-        # DRA/PPM summary
-        station_dr_capped = {}
-        station_ppm = {}
-        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-        for idx, stn in enumerate(stations_data, start=1):
-            key = stn['name'].lower().replace(' ', '_')
-            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-            dr_max = stn.get('max_dr', 0.0)
-            viscosity = kv_list[idx-1]
-            dr_use = min(dr_opt, dr_max)
-            station_dr_capped[key] = dr_use
-            ppm = get_ppm_for_dr(viscosity, dr_use)
-            station_ppm[key] = ppm
-        for nm in names:
-            key = nm.lower().replace(' ','_')
-            if key in station_ppm:
-                dra_cost = (
-                    station_ppm[key]
-                    * (st.session_state["FLOW"] * 1000.0 * 24.0 / 1e6)
-                    * st.session_state["RateDRA"]
-                )
+
+        # Recompute the segment and pump flows here for output
+        segment_flows = []
+        pump_flows = []
+        flow = st.session_state.get("FLOW", 1000.0)
+        for stn in stations_data:
+            delivery = float(stn.get('delivery', 0.0))
+            supply = float(stn.get('supply', 0.0))
+            is_pump = stn.get('is_pump', False)
+            if is_pump:
+                pump_flow = flow - delivery + supply
+                pump_flows.append(pump_flow)
+                segment_flows.append(flow)
+                flow = pump_flow
             else:
-                dra_cost = 0.0
-            summary[nm] = [
-                res.get(f"power_cost_{key}",0.0),
-                dra_cost,
-                station_ppm.get(key, 0.0),
-                int(res.get(f"num_pumps_{key}",0)),
-                res.get(f"speed_{key}",0.0),
-                res.get(f"efficiency_{key}",0.0),
-                res.get(f"reynolds_{key}",0.0),
-                res.get(f"head_loss_{key}",0.0),
-                res.get(f"velocity_{key}",0.0),
-                res.get(f"residual_head_{key}",0.0),
-                res.get(f"sdh_{key}",0.0),
-                res.get(f"maop_{key}",0.0),
-                res.get(f"drag_reduction_{key}",0.0)
-            ]
-        df_sum = pd.DataFrame(summary)
-        fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
-        fmt["No. of Pumps"] = "{:.0f}"
-        fmt["Pump Speed (rpm)"] = "{:.0f}"
-        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-        styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-        st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+                pump_flows.append(None)
+                segment_flows.append(flow)
+                flow = flow - delivery + supply
+        segment_flows.append(flow)  # For terminal
+
+        # Names for columns and key lookup
+        names = [s['name'] for s in stations_data] + [terminal_name]
+        keys = [n.lower().replace(' ', '_') for n in names]
+
+        # Collect all summary data
+        summary_rows = []
+        for idx, stn in enumerate(stations_data):
+            key = keys[idx]
+            # Extract data from results
+            summary_rows.append({
+                "Station": stn["name"],
+                "Segment Flow (m³/hr)": segment_flows[idx],
+                "Pump Flow (m³/hr)": pump_flows[idx] if pump_flows[idx] is not None else "",
+                "Velocity (m/s)": res.get(f"velocity_{key}", 0.0),
+                "Reynolds No.": res.get(f"reynolds_{key}", 0.0),
+                "Head Loss (m)": res.get(f"head_loss_{key}", 0.0),
+                "No. of Pumps": int(res.get(f"num_pumps_{key}",0)),
+                "Pump Speed (rpm)": res.get(f"speed_{key}", 0.0),
+                "Pump Eff (%)": res.get(f"efficiency_{key}", 0.0),
+                "Residual Head (m)": res.get(f"residual_head_{key}", 0.0),
+                "SDH (m)": res.get(f"sdh_{key}", 0.0),
+                "MAOP (m)": res.get(f"maop_{key}", 0.0),
+                "Power+Fuel Cost (INR/day)": res.get(f"power_cost_{key}",0.0),
+                "DRA Cost (INR/day)": res.get(f"dra_cost_{key}",0.0),
+                "Drag Reduction (%)": res.get(f"drag_reduction_{key}",0.0),
+            })
+        # Add terminal station
+        key = keys[-1]
+        summary_rows.append({
+            "Station": terminal_name,
+            "Segment Flow (m³/hr)": segment_flows[-1],
+            "Pump Flow (m³/hr)": "",
+            "Velocity (m/s)": res.get(f"velocity_{key}", 0.0),
+            "Reynolds No.": res.get(f"reynolds_{key}", 0.0),
+            "Head Loss (m)": res.get(f"head_loss_{key}", 0.0),
+            "No. of Pumps": int(res.get(f"num_pumps_{key}",0)),
+            "Pump Speed (rpm)": res.get(f"speed_{key}", 0.0),
+            "Pump Eff (%)": res.get(f"efficiency_{key}", 0.0),
+            "Residual Head (m)": res.get(f"residual_head_{key}", 0.0),
+            "SDH (m)": res.get(f"sdh_{key}", 0.0),
+            "MAOP (m)": res.get(f"maop_{key}", 0.0),
+            "Power+Fuel Cost (INR/day)": res.get(f"power_cost_{key}",0.0),
+            "DRA Cost (INR/day)": res.get(f"dra_cost_{key}",0.0),
+            "Drag Reduction (%)": res.get(f"drag_reduction_{key}",0.0),
+        })
+
+        df_sum = pd.DataFrame(summary_rows)
+        st.markdown("<div class='section-title'>Optimization Results (Hydraulically Accurate)</div>", unsafe_allow_html=True)
+        st.dataframe(df_sum.style.format({
+            "Segment Flow (m³/hr)": "{:.2f}",
+            "Pump Flow (m³/hr)": "{:.2f}",
+            "Velocity (m/s)": "{:.2f}",
+            "Reynolds No.": "{:.0f}",
+            "Head Loss (m)": "{:.2f}",
+            "Pump Speed (rpm)": "{:.0f}",
+            "Pump Eff (%)": "{:.2f}",
+            "Residual Head (m)": "{:.2f}",
+            "SDH (m)": "{:.2f}",
+            "MAOP (m)": "{:.2f}",
+            "Power+Fuel Cost (INR/day)": "{:.2f}",
+            "DRA Cost (INR/day)": "{:.2f}",
+            "Drag Reduction (%)": "{:.2f}",
+        }), use_container_width=True, hide_index=True)
+
+        st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results_hydraulics.csv")
+
+        # Optional: Highlight system-level KPIs as before
         total_cost = res.get('total_cost', 0)
         if isinstance(total_cost, str):
             total_cost = float(total_cost.replace(',', ''))
-        total_pumps = 0
-        effs = []
-        speeds = []
-        for stn in stations_data:
-            key = stn['name'].lower().replace(' ','_')
-            npump = int(res.get(f"num_pumps_{key}", 0))
-            if npump > 0:
-                total_pumps += npump
-                eff = float(res.get(f"efficiency_{key}", 0.0))
-                speed = float(res.get(f"speed_{key}", 0.0))
-                for _ in range(npump):
-                    effs.append(eff)
-                    speeds.append(speed)
-        avg_eff = sum(effs)/len(effs) if effs else 0.0
-        avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
+        total_pumps = df_sum["No. of Pumps"].sum()
+        avg_eff = df_sum.loc[df_sum["No. of Pumps"]>0, "Pump Eff (%)"].mean()
+        avg_speed = df_sum.loc[df_sum["No. of Pumps"]>0, "Pump Speed (rpm)"].mean()
         st.markdown(
             f"""<br>
             <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
@@ -580,6 +602,7 @@ with tab1:
             """,
             unsafe_allow_html=True
         )
+
 
 # ---- Tab 2: Cost Breakdown ----
 with tab2:
