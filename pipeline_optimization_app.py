@@ -888,7 +888,15 @@ with tab3:
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ','_')
-                flows = np.linspace(0, st.session_state.get("FLOW", 1000.0)*1.5, 200)
+                # Get user's Flow vs Head data for this pump
+                df_head = st.session_state.get(f"head_data_{i}")
+                if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                    flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
+                    max_flow = np.max(flow_user)
+                else:
+                    max_flow = st.session_state.get("FLOW", 1000.0)
+                # Now only plot up to user-provided max flow
+                flows = np.linspace(0, max_flow, 200)
                 A = res.get(f"coef_A_{key}",0)
                 B = res.get(f"coef_B_{key}",0)
                 C = res.get(f"coef_C_{key}",0)
@@ -898,8 +906,11 @@ with tab3:
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
                     H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 if N_max else np.zeros_like(flows)
+                    # Remove all negative heads: mask out values where H < 0
+                    flows_pos = flows[H >= 0]
+                    H_pos = H[H >= 0]
                     fig.add_trace(go.Scatter(
-                        x=flows, y=H, mode='lines', name=f"{rpm} rpm",
+                        x=flows_pos, y=H_pos, mode='lines', name=f"{rpm} rpm",
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
                     ))
                 fig.update_layout(
@@ -911,6 +922,7 @@ with tab3:
                     height=420
                 )
                 st.plotly_chart(fig, use_container_width=True, key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+
         
         # --- 4. Pump Efficiency Curve (Eff vs Flow at various Speeds) ---
         with eff_tab:
