@@ -522,6 +522,7 @@ if run:
         # === NEW: Prepare deliveries array for backend ===
         deliveries = [float(stn.get('demand', 0.0)) for stn in stations_data]
         # === Update your call to solve_pipeline ===
+        looplines = st.session_state.get("looplines", [])
         res = solve_pipeline(
             stations_data, term_data, FLOW, kv_list, rho_list,
             RateDRA, Price_HSD, linefill_df.to_dict(), looplines, deliveries
