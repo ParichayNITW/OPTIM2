@@ -253,39 +253,42 @@ with st.sidebar:
     if "looplines" not in st.session_state:
         st.session_state["looplines"] = []
     if loop_add_col.button("➕ Add Loopline"):
-        n = len(st.session_state["looplines"]) + 1
-        default_loop = {
-            'name': f'Loopline {n}',
-            'from_station': 1,
-            'to_station': 2,
-            'L': 10.0,
-            'D': 0.355,
-            't': 0.006,
-            'rough': 0.00004,
-            'SMYS': 52000.0,
-            'max_dr': 0.0
-        }
-        st.session_state["looplines"].append(default_loop)
+        st.session_state["looplines"].append({
+            "start_km": 0.0,
+            "end_km": 50.0,
+            "D": 0.355,
+            "t": 0.007,
+            "rough": 0.00004,
+            "SMYS": 52000.0,
+            "max_dr": 0.0,
+            "peaks": []
+        })
     if loop_rem_col.button("🗑️ Remove Loopline"):
         if st.session_state["looplines"]:
             st.session_state["looplines"].pop()
-    for idx, lp in enumerate(st.session_state["looplines"], start=1):
-        with st.expander(f"Loopline {idx}: {lp['name']}", expanded=False):
+    for idx, ll in enumerate(st.session_state["looplines"], start=1):
+        with st.expander(f"Loopline {idx} (km {ll['start_km']} → {ll['end_km']})", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
-                lp['name'] = st.text_input("Name", value=lp['name'], key=f"llname{idx}")
-                lp['from_station'] = st.number_input("From Station Index", min_value=1, max_value=len(st.session_state["stations"]), value=lp['from_station'], step=1, key=f"llfrom{idx}")
-                lp['to_station'] = st.number_input("To Station Index", min_value=1, max_value=len(st.session_state["stations"]), value=lp['to_station'], step=1, key=f"llto{idx}")
-                lp['L'] = st.number_input("Length (km)", value=lp['L'], step=1.0, key=f"llL{idx}")
+                ll['start_km'] = st.number_input("Start Chainage (km)", value=ll['start_km'], step=0.1, key=f"llstart{idx}")
+                ll['end_km']   = st.number_input("End Chainage (km)", value=ll['end_km'], step=0.1, key=f"llend{idx}")
+                ll['D']        = st.number_input("OD (mm)", value=ll['D']*1000, format="%.1f", step=1.0, key=f"llD{idx}") / 1000.0
+                ll['t']        = st.number_input("Wall Thk (mm)", value=ll['t']*1000, format="%.2f", step=0.1, key=f"llt{idx}") / 1000.0
             with col2:
-                D_in = st.number_input("OD (in)", value=lp['D']/0.0254, format="%.2f", step=0.01, key=f"llD{idx}")
-                t_in = st.number_input("Wall Thk (in)", value=lp['t']/0.0254, format="%.3f", step=0.001, key=f"llt{idx}")
-                lp['D'] = D_in * 0.0254
-                lp['t'] = t_in * 0.0254
-                lp['rough'] = st.number_input("Pipe Roughness (m)", value=lp['rough'], format="%.5f", step=0.00001, key=f"llrough{idx}")
-                lp['SMYS'] = st.number_input("SMYS (psi)", value=lp['SMYS'], step=1000.0, key=f"llSMYS{idx}")
-                lp['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=lp.get('max_dr', 0.0), key=f"llmdr{idx}")
-
+                ll['rough']    = st.number_input("Pipe Roughness (m)", value=ll['rough'], format="%.5f", step=0.00001, key=f"llrough{idx}")
+                ll['SMYS']     = st.number_input("SMYS (psi)", value=ll['SMYS'], step=1000.0, key=f"llSMYS{idx}")
+                ll['max_dr']   = st.number_input("Max Drag Reduction (%)", value=ll.get('max_dr',0.0), key=f"llmdr{idx}")
+            # Peaks (intermediate elevations) for this loopline
+            key_peak = f"ll_peak_data_{idx}"
+            if key_peak in st.session_state and isinstance(st.session_state[key_peak], pd.DataFrame):
+                peak_df = st.session_state[key_peak]
+            else:
+                # Default: one peak at mid-length
+                peak_df = pd.DataFrame({"Location (km)": [(ll['end_km']+ll['start_km'])/2.0], "Elevation (m)": [0.0]})
+            peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"llpeak{idx}")
+            st.session_state[key_peak] = peak_df
+            ll['peaks'] = peak_df.to_dict(orient="records")
+            
 # ----------- PAGE HEADER AND ALL INPUTS --------------
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
