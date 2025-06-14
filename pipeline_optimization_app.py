@@ -567,7 +567,7 @@ with tab1:
         })
 
         df_sum = pd.DataFrame(summary_rows)
-        st.markdown("<div class='section-title'>Optimization Results (Hydraulically Accurate)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         st.dataframe(df_sum.style.format({
             "Segment Flow (m³/hr)": "{:.2f}",
             "Pump Flow (m³/hr)": "{:.2f}",
