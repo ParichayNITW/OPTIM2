@@ -1113,31 +1113,39 @@ with tab4:
             Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
             f_vals = np.where(Re_vals>0,
                               0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-            # Build system curves for different DRA
+            # Professional gradient: from blue to red
+            n_curves = (max_dr // 5) + 1
+            # Use Plotly's blues-to-reds palette manually
+            color_palette = [
+                "#1565C0", "#1976D2", "#1E88E5", "#3949AB", "#8E24AA",
+                "#D81B60", "#F4511E", "#F9A825", "#43A047", "#00897B"
+            ]
+            color_idx = np.linspace(0, len(color_palette)-1, n_curves).astype(int)
             fig_sys = go.Figure()
-            color_map = px.colors.sequential.Viridis
-            n_colors = (max_dr // 5) + 1
             for j, dra in enumerate(range(0, max_dr+1, 5)):
                 DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                 SDH_vals = elev_i + DH
+                # Plot with bold line and custom color
                 fig_sys.add_trace(go.Scatter(
                     x=flows, y=SDH_vals,
                     mode='lines',
-                    line=dict(width=3, color=color_map[int(j*(len(color_map)-1)/n_colors)]),
+                    line=dict(width=4, color=color_palette[color_idx[j]]),
+                    opacity=0.82,
                     name=f"DRA {dra}%",
                     hovertemplate=f"DRA: {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
                 ))
             fig_sys.update_layout(
                 title=f"System Curve (Head vs Flow) — {stn['name']}",
                 xaxis_title="Flow (m³/hr)",
-                yaxis_title="Dynamic Head (m)",
-                font=dict(size=17),
-                legend=dict(font=dict(size=13), title="DRA Dosage"),
-                height=430,
+                yaxis_title="Static + Dynamic Head (m)",
+                font=dict(size=18, family="Segoe UI"),
+                legend=dict(font=dict(size=14), title="DRA Dosage"),
+                height=450,
                 margin=dict(l=10, r=10, t=60, b=30),
                 plot_bgcolor="#f5f8fc"
             )
             st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+
 
 
 
