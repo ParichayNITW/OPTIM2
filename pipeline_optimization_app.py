@@ -1171,7 +1171,7 @@ with tab5:
         max_flow = np.max(user_flows)
     else:
         max_flow = st.session_state.get("FLOW", 1000.0)
-    flows = np.linspace(0, max_flow, 500)
+    flows = np.linspace(0, max_flow, 800)
 
     # --- Downstream pump bypass logic (as before) ---
     downstream_pumps = [s for s in stations_data[st_idx+1:] if s.get('is_pump', False)]
@@ -1201,7 +1201,8 @@ with tab5:
     kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
     visc = kv_list[st_idx]
 
-    # --- Parameters for pump curves ---
+    # --- Pump curves ---
+    pump_curves = []
     if is_pump:
         N_min = int(res.get(f"min_rpm_{key}", 1200))
         N_max = int(res.get(f"dol_{key}", 3000))
@@ -1209,15 +1210,15 @@ with tab5:
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
+        for npump in range(1, n_pumps+1):
+            for rpm in rpm_steps:
+                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                H_pump = np.clip(H_pump, 0, None)
+                pump_curves.append((f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)", H_pump))
 
-    # --- Colors ---
-    system_colormap = 'Viridis'
-    pump_colors = ['#E57300', '#1769AA', '#43A047', '#AD1457', '#0097A7', '#A93226', '#E91E63', '#8E24AA']
-
-    fig = go.Figure()
-    # --- 1. Plot all system curves ---
-    system_dra_steps = list(range(0, max_dr+1, 5))
+    # --- System curves ---
     system_curves = []
+    system_dra_steps = list(range(0, max_dr+1, 5))
     for dra in system_dra_steps:
         v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
         Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
@@ -1226,61 +1227,48 @@ with tab5:
         DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
         SDH_vals = max(0, current_elev) + DH
         SDH_vals = np.clip(SDH_vals, 0, None)
-        system_curves.append((dra, SDH_vals))
+        system_curves.append((f"System DRA {dra}%", SDH_vals))
+
+    # --- Compute envelope: for each flow, the min system curve and max pump curve
+    min_sys = np.min([c[1] for c in system_curves], axis=0)
+    max_pump = np.max([c[1] for c in pump_curves], axis=0)
+    valid = min_sys > max_pump  # Only where system curve is above pump
+    envelope_x = flows[valid]
+    envelope_y1 = min_sys[valid]
+    envelope_y2 = max_pump[valid]
+
+    # --- Plot system curves ---
+    fig = go.Figure()
+    for idx, (label, y) in enumerate(system_curves):
         fig.add_trace(go.Scatter(
-            x=flows, y=SDH_vals,
+            x=flows, y=y,
             mode='lines',
-            line=dict(width=1.2, color=sample_colorscale(system_colormap, dra/max_dr)[0]),
-            name=f"System DRA {dra}%",
-            showlegend=(dra % 10 == 0 or dra == max_dr),
-            opacity=0.55 if not (dra % 10 == 0 or dra == max_dr) else 1,
+            line=dict(width=1.3, color=sample_colorscale('Viridis', idx/(len(system_curves)-1))[0]),
+            name=label,
+            showlegend=(idx % 2 == 0 or idx == len(system_curves)-1),
+            opacity=0.5 if not (idx % 2 == 0 or idx == len(system_curves)-1) else 1,
             hoverinfo="skip"
         ))
-
-    # --- 2. Plot ALL pump curves for ALL RPMs and ALL series ---
-    pump_curves = []
-    if is_pump:
-        for npump in range(1, n_pumps+1):
-            for rpm in rpm_steps:
-                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
-                H_pump = np.clip(H_pump, 0, None)
-                pump_curves.append((npump, rpm, H_pump))
-                fig.add_trace(go.Scatter(
-                    x=flows, y=H_pump,
-                    mode='lines',
-                    line=dict(width=1.7, color=pump_colors[(npump-1)%len(pump_colors)]),
-                    name=f"{npump} Pump{'s' if npump > 1 else ''} ({rpm} rpm)",
-                    showlegend=True,
-                    opacity=0.82,
-                    hoverinfo="skip"
-                ))
-
-    # --- 3. Optimization envelope: find all intersection points and fill polygon ---
-    # Collect all intersection points between every system and pump curve
-    intersection_x, intersection_y = [], []
-    for dra, SDH_vals in system_curves:
-        for npump, rpm, H_pump in pump_curves:
-            diff = H_pump - SDH_vals
-            sign_change = np.where(np.diff(np.sign(diff)))[0]
-            for k in sign_change:
-                x0, x1 = flows[k], flows[k+1]
-                y0, y1 = diff[k], diff[k+1]
-                q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
-                h_sys = np.interp(q_op, flows, SDH_vals)
-                intersection_x.append(q_op)
-                intersection_y.append(h_sys)
-    # Sort points by flow for a nice envelope
-    if len(intersection_x) > 3:
-        order = np.argsort(intersection_x)
-        envelope_x = np.array(intersection_x)[order]
-        envelope_y = np.array(intersection_y)[order]
-        # Fill the region
+    # --- Plot pump curves ---
+    for idx, (label, y) in enumerate(pump_curves):
         fig.add_trace(go.Scatter(
-            x=envelope_x, y=envelope_y,
+            x=flows, y=y,
+            mode='lines',
+            line=dict(width=1.4, color='rgba(220,90,0,0.75)' if '1 Pump' in label else 'rgba(22,80,180,0.85)'),
+            name=label,
+            showlegend=True,
+            opacity=0.95,
+            hoverinfo="skip"
+        ))
+    # --- Fill envelope (the yellow region) ---
+    if len(envelope_x) > 2:
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([envelope_x, envelope_x[::-1]]),
+            y=np.concatenate([envelope_y1, envelope_y2[::-1]]),
             mode='lines',
             fill='toself',
-            fillcolor="rgba(254, 221, 38, 0.33)", # bright yellow translucent
-            line=dict(color='rgba(0,0,0,0.2)', width=0.8),
+            fillcolor="rgba(254, 221, 38, 0.38)",
+            line=dict(color='rgba(254,221,38,0.62)', width=2.2),
             name="Optimization Envelope",
             showlegend=True,
             hoverinfo="skip"
