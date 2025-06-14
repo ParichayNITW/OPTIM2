@@ -1150,33 +1150,37 @@ with tab4:
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+from math import pi
 
 with tab5:
-    st.markdown("<div class='section-title'>Pump-System Analytics: Pro Edition</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Pump-System Analytics — Safety & Optimization</div>", unsafe_allow_html=True)
 
-    # --- User selects station ---
+    # ---- Select station ----
     station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
-    st_idx = st.selectbox("Select station to analyze", range(len(stations_data)), format_func=lambda i: station_options[i])
+    st_idx = st.selectbox("Select station", range(len(stations_data)), format_func=lambda i: station_options[i])
     stn = stations_data[st_idx]
     key = stn['name'].lower().replace(' ','_')
-    max_dr = int(stn.get('max_dr', 40))
     is_pump = stn.get('is_pump', False)
-    # --- Max flow (from user table for this station) ---
+    max_dr = int(stn.get('max_dr', 40))
+    maop = float(stn.get('maop', 9999))
+    n_pumps = int(stn.get('max_pumps', 1))
+    color_base = "#1976D2"
+
+    # ---- Max flow ----
     df_head = st.session_state.get(f"head_data_{st_idx+1}")
     if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
         user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
         max_flow = np.max(user_flows)
     else:
         max_flow = st.session_state.get("FLOW", 1000.0)
-    flows = np.linspace(0, max_flow, 300)
+    flows = np.linspace(0, max_flow, 400)
 
-    # --- User can bypass downstream pumping stations (checkboxes) ---
+    # ---- Downstream pump bypass (affects total system length) ----
     downstream_pumps = [s for s in stations_data[st_idx+1:] if s.get('is_pump', False)]
     downstream_names = [f"{i+st_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
     bypassed = []
     if downstream_names:
-        bypassed = st.multiselect("Bypass downstream pump stations (length increases to next open pump/terminal)", downstream_names)
-    # --- Calculate total effective length downstream of this station, based on bypass ---
+        bypassed = st.multiselect("Bypass downstream pumps", downstream_names)
     total_length = stn['L']
     current_elev = stn['elev']
     downstream_idx = st_idx + 1
@@ -1185,150 +1189,199 @@ with tab5:
         label = f"{downstream_idx+1}: {s['name']}"
         total_length += s['L']
         current_elev = s['elev']
-        # If station is a pump and NOT bypassed, stop adding
         if s.get('is_pump', False) and label not in bypassed:
             break
         downstream_idx += 1
-    # Add terminal station if end reached
     if downstream_idx == len(stations_data):
         term_elev = st.session_state["last_term_data"]["elev"]
         current_elev = term_elev
 
-    # --- Segment data ---
+    # ---- Pipe, visc, rough ----
     d_inner = stn['D'] - 2*stn['t']
     rough = stn['rough']
+    linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
     kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
     visc = kv_list[st_idx]
-    # --- DRA control ---
-    dra_range = st.slider("Select DRA range for system curves (%)", 0, max_dr, (0, max_dr), step=5)
-    dra_list = list(range(dra_range[0], dra_range[1]+1, 5))
-    # --- RPM range for pump curves (if applicable) ---
+
+    # ---- DRA sliders (user can overlay two for visual comparison) ----
+    dra1 = st.slider("Primary DRA (%)", 0.0, float(max_dr), float(res.get(f"drag_reduction_{key}", 0.0)), step=0.1)
+    dra2 = st.slider("Overlay (compare) DRA (%)", 0.0, float(max_dr), dra1, step=0.1)
+
+    # ---- Pump speed slider ----
     if is_pump:
         N_min = int(res.get(f"min_rpm_{key}", 1200))
         N_max = int(res.get(f"dol_{key}", 3000))
-        rpm_range = st.slider("Select RPM range for pump curves", N_min, N_max, (N_min, N_max), step=100)
-        rpm_list = list(range(rpm_range[0], rpm_range[1]+1, 100))
+        rpm = st.slider("Pump RPM", N_min, N_max, N_max, step=1)
+        n_pumps_sel = st.select_slider("Number of Pumps in Series", options=list(range(1, n_pumps+1)), value=1)
+    else:
+        rpm = None
+        n_pumps_sel = 0
 
-    # --- Modern color palette ---
-    system_colors = px.colors.sequential.Blues[len(dra_list)+1:1:-1]  # Most subtle to deeper blue
-    pump_colors = px.colors.sequential.RdBu[len(rpm_list) // 2:len(rpm_list) + len(rpm_list) // 2] if is_pump else []
+    # --- Colors and visuals ---
+    pump_colors = ["#D84315", "#6A1B9A", "#00897B", "#F4511E", "#3949AB", "#F9A825", "#43A047", "#0288D1"]
 
-    # --- Build plot ---
-    fig = go.Figure()
-
-    # --- System Curves for DRA (blue palette) ---
-    for j, dra in enumerate(dra_list):
-        v_vals = flows/3600.0 / (np.pi*(d_inner**2)/4)
+    # ---- System Curves (primary and overlay) ----
+    def system_curve(flows, d_inner, rough, visc, length_km, dra, elev):
+        v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
         Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
         f_vals = np.where(Re_vals>0,
-                          0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-        DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
-        # Elevation is difference between upstream and end (current_elev includes terminal if end reached)
-        SDH_vals = max(0, current_elev) + DH
-        SDH_vals = np.clip(SDH_vals, 0, None)
-        fig.add_trace(go.Scatter(
-            x=flows, y=SDH_vals,
-            mode='lines',
-            line=dict(width=4, color=system_colors[j]),
-            name=f"System (DRA {dra}%)",
-            showlegend=True,
-            hovertemplate=f"DRA {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
-        ))
+            0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+        DH = f_vals * ((length_km*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+        SDH_vals = max(0, elev) + DH
+        return np.clip(SDH_vals, 0, None)
 
-    # --- Pump curves (if pumping station) ---
+    SDH_primary = system_curve(flows, d_inner, rough, visc, total_length, dra1, current_elev)
+    SDH_overlay = system_curve(flows, d_inner, rough, visc, total_length, dra2, current_elev) if dra2 != dra1 else None
+
+    # ---- Pump curves for all possible n_pumps in series ----
+    fig = go.Figure()
+    # Safe (below MAOP) and danger (above MAOP) region shading
+    fig.add_shape(type="rect", x0=0, x1=max_flow, y0=0, y1=maop, fillcolor="rgba(0,200,100,0.07)", line=dict(width=0))
+    fig.add_shape(type="rect", x0=0, x1=max_flow, y0=maop, y1=max(SDH_primary.max(), 1.2*maop), fillcolor="rgba(200,0,0,0.09)", line=dict(width=0))
+
+    # System curve primary
+    fig.add_trace(go.Scatter(
+        x=flows, y=SDH_primary,
+        mode='lines',
+        line=dict(width=5, color=color_base),
+        name=f"System Curve (DRA {dra1:.1f}%)",
+        hovertemplate=f"Flow: %{{x:.2f}} m³/hr<br>System Head: %{{y:.2f}} m"
+    ))
+    # System overlay
+    if SDH_overlay is not None:
+        fig.add_trace(go.Scatter(
+            x=flows, y=SDH_overlay,
+            mode='lines',
+            line=dict(width=4, color="#00b7ff", dash='dot'),
+            name=f"System Curve (DRA {dra2:.1f}%)",
+            hovertemplate=f"Flow: %{{x:.2f}} m³/hr<br>System Head: %{{y:.2f}} m"
+        ))
+    # MAOP line
+    fig.add_trace(go.Scatter(
+        x=[0, max_flow], y=[maop, maop],
+        mode='lines',
+        line=dict(width=3, dash='dash', color="#EF5350"),
+        name=f"MAOP: {maop} m",
+        hovertemplate=f"MAOP: {maop} m"
+    ))
+    # --- Pump curves for 1..N in series at selected rpm ---
     op_points = []
     if is_pump:
-        # Get pump coefficients
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
-        for k, rpm in enumerate(rpm_list):
-            H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
+        for npump in range(1, n_pumps+1):
+            H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
             H_pump = np.clip(H_pump, 0, None)
             fig.add_trace(go.Scatter(
                 x=flows, y=H_pump,
-                mode="lines",
-                line=dict(width=3, color=pump_colors[k % len(pump_colors)], dash='dot'),
-                name=f"Pump ({rpm} rpm)",
-                showlegend=True,
-                hovertemplate=f"Pump {rpm} rpm<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
+                mode='lines',
+                line=dict(width=3, color=pump_colors[(npump-1) % len(pump_colors)], dash='dot'),
+                name=f"{npump} Pump{'s' if npump > 1 else ''} ({rpm} rpm)",
+                hovertemplate=f"Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
             ))
-            # Find intersection with last system curve (e.g., max DRA), store op point for analytics
-            last_sdh = SDH_vals
-            diff = H_pump - last_sdh
+            # Intersection for analytics
+            diff = H_pump - SDH_primary
             sign_change = np.where(np.diff(np.sign(diff)))[0]
             if len(sign_change) > 0:
                 kx = sign_change[0]
                 x0, x1 = flows[kx], flows[kx+1]
                 y0, y1 = diff[kx], diff[kx+1]
                 q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
-                h_op = np.interp(q_op, flows, last_sdh)
-                op_points.append((rpm, q_op, h_op))
+                h_op = np.interp(q_op, flows, SDH_primary)
+                # Efficiency at op point (if available)
+                eff = None
+                if f"eff_data_{st_idx+1}" in st.session_state:
+                    Qe = st.session_state.get(f"eff_data_{st_idx+1}")
+                    if Qe is not None and len(Qe) > 1:
+                        flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
+                        eff_user = np.array(Qe['Efficiency (%)'], dtype=float)
+                        eff = np.interp(q_op, flow_user, eff_user)
+                op_points.append((npump, q_op, h_op, eff))
 
-    # --- Layout: no clutter, pro style ---
+    # --- Best efficiency point (if available) ---
+    eff_curve_shown = False
+    if is_pump and f"eff_data_{st_idx+1}" in st.session_state:
+        Qe = st.session_state.get(f"eff_data_{st_idx+1}")
+        if Qe is not None and len(Qe) > 1:
+            flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
+            eff_user = np.array(Qe['Efficiency (%)'], dtype=float)
+            idx_max = np.argmax(eff_user)
+            flow_best = flow_user[idx_max]
+            eff_best = eff_user[idx_max]
+            fig.add_trace(go.Scatter(
+                x=flow_user, y=eff_user/100.0*maop,  # scale for overlay
+                mode="lines", line=dict(width=2, color="#00b074", dash="dash"),
+                name="Efficiency Curve (scaled)",
+                hovertemplate="Flow: %{x:.2f} m³/hr<br>Efficiency: %{y:.2f} %"
+            ))
+            fig.add_trace(go.Scatter(
+                x=[flow_best], y=[eff_best/100.0*maop],
+                mode="markers",
+                marker=dict(size=12, color="#00b074", symbol="star"),
+                name="Best Efficiency Point"
+            ))
+            eff_curve_shown = True
+
     fig.update_layout(
-        title=f"System & Pump Curves — {stn['name']}",
+        title=f"Pump-System Safety/Optimization — {stn['name']}",
         xaxis_title="Flow (m³/hr)",
         yaxis_title="Head (m)",
-        font=dict(size=18, family="Segoe UI"),
+        font=dict(size=19, family="Segoe UI"),
         legend=dict(font=dict(size=15), title="Curves"),
-        height=530,
+        height=560,
         margin=dict(l=10, r=10, t=70, b=40),
-        plot_bgcolor="#f8fbfc",
-        showlegend=True
+        plot_bgcolor="#f7fbfc",
+        showlegend=True,
+        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.12)'),
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.12)')
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    # --- Download expander for all CSVs ---
+    with st.expander("📥 Download All Curve Data"):
+        df_sys = pd.DataFrame({"Flow (m³/hr)": flows, f"System Head (m) (DRA {dra1:.1f}%)": SDH_primary})
+        st.download_button("System Curve CSV", df_sys.to_csv(index=False).encode(), file_name=f"system_curve_{stn['name']}_DRA{dra1:.1f}.csv")
+        if SDH_overlay is not None:
+            df_sys2 = pd.DataFrame({"Flow (m³/hr)": flows, f"System Head (m) (DRA {dra2:.1f}%)": SDH_overlay})
+            st.download_button("Overlay System Curve CSV", df_sys2.to_csv(index=False).encode(), file_name=f"system_curve_{stn['name']}_DRA{dra2:.1f}.csv")
+        if is_pump:
+            for npump in range(1, n_pumps+1):
+                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                H_pump = np.clip(H_pump, 0, None)
+                df_pump = pd.DataFrame({"Flow (m³/hr)": flows, f"{npump} Pump{'s' if npump > 1 else ''} Head (m)": H_pump})
+                st.download_button(
+                    f"{npump} Pump{'s' if npump > 1 else ''} Curve CSV",
+                    df_pump.to_csv(index=False).encode(),
+                    file_name=f"pump_curve_{stn['name']}_{npump}pumps_{rpm}rpm.csv"
+                )
     # --- Advanced Analytics ---
-    st.markdown("##### Download Data")
-    # System curve data (as CSV)
-    for j, dra in enumerate(dra_list):
-        v_vals = flows/3600.0 / (np.pi*(d_inner**2)/4)
-        Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-        f_vals = np.where(Re_vals>0,
-                          0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-        DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
-        SDH_vals = max(0, current_elev) + DH
-        SDH_vals = np.clip(SDH_vals, 0, None)
-        df_sys = pd.DataFrame({"Flow (m³/hr)": flows, f"System Head DRA {dra}% (m)": SDH_vals})
-        st.download_button(
-            f"📥 System Curve (DRA {dra}%)",
-            df_sys.to_csv(index=False).encode(),
-            file_name=f"system_curve_{stn['name']}_dra{dra}.csv"
-        )
-    # Pump curve data (if pumping station)
-    if is_pump:
-        for k, rpm in enumerate(rpm_list):
-            A = res.get(f"coef_A_{key}", 0)
-            B = res.get(f"coef_B_{key}", 0)
-            C = res.get(f"coef_C_{key}", 0)
-            H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
-            H_pump = np.clip(H_pump, 0, None)
-            df_pump = pd.DataFrame({"Flow (m³/hr)": flows, f"Pump Head {rpm}rpm (m)": H_pump})
-            st.download_button(
-                f"📥 Pump Curve ({rpm}rpm)",
-                df_pump.to_csv(index=False).encode(),
-                file_name=f"pump_curve_{stn['name']}_{rpm}rpm.csv"
-            )
-    # --- Operating point analytics table ---
-    if is_pump and op_points:
+    if op_points:
         df_ops = pd.DataFrame({
-            "Speed (rpm)": [pt[0] for pt in op_points],
-            "Flow at Operating Point (m³/hr)": [pt[1] for pt in op_points],
-            "Head at Operating Point (m)": [pt[2] for pt in op_points]
+            "No. of Pumps": [pt[0] for pt in op_points],
+            "Operating Flow (m³/hr)": [pt[1] for pt in op_points],
+            "Operating Head (m)": [pt[2] for pt in op_points],
+            "Efficiency (%)": [pt[3] if pt[3] is not None else np.nan for pt in op_points]
         })
+        st.markdown("##### Intersection (Operating Points) Analytics")
         st.dataframe(
             df_ops.style.format({
-                "Flow at Operating Point (m³/hr)": "{:.2f}",
-                "Head at Operating Point (m)": "{:.2f}"
+                "Operating Flow (m³/hr)": "{:.2f}",
+                "Operating Head (m)": "{:.2f}",
+                "Efficiency (%)": "{:.2f}"
             }),
             use_container_width=True, hide_index=True
         )
         st.download_button(
-            f"📥 Download Operating Points ({stn['name']})",
+            f"Download Operating Points ({stn['name']})",
             df_ops.to_csv(index=False).encode(),
             file_name=f"op_points_{stn['name']}.csv"
         )
+        # Safety warnings
+        above_maop = [pt for pt in op_points if pt[2] > maop]
+        if above_maop:
+            st.error(f"⚠️ Warning: {len(above_maop)} configuration(s) have Head above MAOP. Adjust pump count, speed, or flow for safe operation.")
+
 
 
 
