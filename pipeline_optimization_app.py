@@ -493,6 +493,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 ])
 
 # ---- Tab 1: Summary ----
+import numpy as np
+
 with tab1:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -516,7 +518,7 @@ with tab1:
                 segment_flows.append(flow)
                 flow = pump_flow
             else:
-                pump_flows.append(None)
+                pump_flows.append(np.nan)
                 segment_flows.append(flow)
                 flow = flow - delivery + supply
         segment_flows.append(flow)  # For terminal
@@ -555,35 +557,47 @@ with tab1:
             else:
                 dra_cost = 0.0
 
-            # Add both segment flow and pump flow (None if not a pump)
+            # For numeric columns, always use np.nan if not available
+            pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
             summary[nm] = [
                 segment_flows[idx],
-                pump_flows[idx] if idx < len(pump_flows) and pump_flows[idx] is not None else "",
-                res.get(f"power_cost_{key}",0.0),
+                pumpflow,
+                res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
                 dra_cost,
-                station_ppm.get(key, 0.0),
-                int(res.get(f"num_pumps_{key}",0)),
-                res.get(f"speed_{key}",0.0),
-                res.get(f"efficiency_{key}",0.0),
-                res.get(f"reynolds_{key}",0.0),
-                res.get(f"head_loss_{key}",0.0),
-                res.get(f"velocity_{key}",0.0),
-                res.get(f"residual_head_{key}",0.0),
-                res.get(f"sdh_{key}",0.0),
-                res.get(f"maop_{key}",0.0),
-                res.get(f"drag_reduction_{key}",0.0)
+                station_ppm.get(key, np.nan),
+                int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
+                res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
+                res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
+                res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
+                res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
+                res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
+                res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
+                res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
+                res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
+                res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
             ]
 
         df_sum = pd.DataFrame(summary)
-        fmt = {c: "{:.2f}" for c in df_sum.columns if c != "Parameters"}
-        fmt["No. of Pumps"] = "{:.0f}"
-        fmt["Pump Speed (rpm)"] = "{:.0f}"
-        fmt["Segment Flow (m³/hr)"] = "{:.2f}"
-        fmt["Pump Flow (m³/hr)"] = "{:.2f}"
+        fmt = {
+            "Segment Flow (m³/hr)": "{:.2f}",
+            "Pump Flow (m³/hr)": "{:.2f}",
+            "Power+Fuel Cost (INR/day)": "{:.2f}",
+            "DRA Cost (INR/day)": "{:.2f}",
+            "DRA PPM": "{:.2f}",
+            "No. of Pumps": "{:.0f}",
+            "Pump Speed (rpm)": "{:.0f}",
+            "Pump Eff (%)": "{:.2f}",
+            "Reynolds No.": "{:.0f}",
+            "Head Loss (m)": "{:.2f}",
+            "Vel (m/s)": "{:.2f}",
+            "Residual Head (m)": "{:.2f}",
+            "SDH (m)": "{:.2f}",
+            "MAOP (m)": "{:.2f}",
+            "Drag Reduction (%)": "{:.2f}"
+        }
 
         st.markdown("<div class='section-title'>Optimization Results (Hydraulically Accurate)</div>", unsafe_allow_html=True)
-        styled = df_sum.style.format(fmt).set_properties(**{'text-align': 'left'})
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(df_sum.style.format(fmt), use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
 
         # KPI summaries as before
