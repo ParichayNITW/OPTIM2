@@ -1086,25 +1086,20 @@ with tab3:
 
 # ---- Tab 4: System Curves ----
 with tab4:
-    st.markdown("<div class='section-title'>Pump-System Interaction: Operating Point Analysis</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>System Curve: Pipeline Head vs Flow</div>", unsafe_allow_html=True)
     for i, stn in enumerate(stations_data, start=1):
         if not stn.get('is_pump', False):
             continue
         key = stn['name'].lower().replace(' ', '_')
-        # ---- Get Pump Curve Coefficients for this station ----
-        A = res.get(f"coef_A_{key}", 0)
-        B = res.get(f"coef_B_{key}", 0)
-        C = res.get(f"coef_C_{key}", 0)
-        N_min = int(res.get(f"min_rpm_{key}", 0))
-        N_max = int(res.get(f"dol_{key}", 0))
         # ---- Get System Curve Coefficients ----
         sys_A = res.get(f"coef_A_sys_{key}", None)
         sys_B = res.get(f"coef_B_sys_{key}", None)
         sys_C = res.get(f"coef_C_sys_{key}", None)
         if sys_A is None:
-            sys_A = A
-            sys_B = B
-            sys_C = C
+            # Fallback: use first pump's coefficients, or set to only static head
+            sys_A = res.get(f"coef_A_{key}", 0)
+            sys_B = res.get(f"coef_B_{key}", 0)
+            sys_C = res.get(f"coef_C_{key}", 0)
         # ---- Get max user-entered flow for this pump ----
         df_head = st.session_state.get(f"head_data_{i}")
         if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
@@ -1112,84 +1107,38 @@ with tab4:
             max_flow = np.max(user_flows)
         else:
             max_flow = st.session_state.get("FLOW", 1000.0)
-        # ---- Limit flow range up to user-provided max ----
         flows = np.linspace(0, max_flow, 400)
         # --- Compute System Head, CLIP negative heads to zero ---
         H_sys = np.clip(sys_A * flows**2 + sys_B * flows + sys_C, 0, None)
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=flows, y=H_sys,
-            mode="lines",
+            x=flows,
+            y=H_sys,
+            mode="lines+markers",
             name="System Curve",
-            line=dict(width=4, color="#37474F", dash='solid'),
-            hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
+            line=dict(width=4, color="#1976D2"),
+            marker=dict(size=6),
+            hovertemplate="Flow: %{x:.2f} m³/hr<br>System Head: %{y:.2f} m"
         ))
-        color_seq = ['#1976D2', '#43A047', '#F9A825', '#E53935', '#8E24AA', '#00897B']
-        step = max(100, int((N_max-N_min)/4))
-        op_points = []
-        for idx, rpm in enumerate(range(N_min, N_max+1, step)):
-            # --- Compute Pump Head at this RPM, CLIP negative heads to zero ---
-            H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
-            H_pump = np.clip(H_pump, 0, None)
-            # Only consider the domain where both curves are positive:
-            valid = (H_pump > 0) & (H_sys > 0)
-            if not np.any(valid):
-                continue
-            flows_valid = flows[valid]
-            H_sys_valid = H_sys[valid]
-            H_pump_valid = H_pump[valid]
-            # --- Intersection search only on valid domain ---
-            diff = H_pump_valid - H_sys_valid
-            sign_change = np.where(np.diff(np.sign(diff)))[0]
-            if len(sign_change) > 0:
-                k = sign_change[0]
-                x0, x1 = flows_valid[k], flows_valid[k+1]
-                y0, y1 = diff[k], diff[k+1]
-                q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
-                h_op = np.interp(q_op, flows_valid, H_sys_valid)
-                op_points.append((rpm, q_op, h_op))
-                fig.add_trace(go.Scatter(
-                    x=[q_op], y=[h_op],
-                    mode='markers+text',
-                    marker=dict(size=14, color=color_seq[idx % len(color_seq)], symbol='x'),
-                    text=[f"Operating<br>({rpm} rpm)"],
-                    textposition="top center",
-                    showlegend=False,
-                    hovertemplate=f"Operating Point:<br>Flow: {q_op:.2f} m³/hr<br>Head: {h_op:.2f} m<br>Speed: {rpm} rpm"
-                ))
-            fig.add_trace(go.Scatter(
-                x=flows_valid, y=H_pump_valid,
-                mode="lines",
-                name=f"Pump Curve ({rpm} rpm)",
-                line=dict(width=3, color=color_seq[idx % len(color_seq)], dash='dot'),
-                hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
-            ))
-
         fig.update_layout(
-            title=f"Pump-System Interaction: {stn['name']}",
+            title=f"System Curve (Pipeline Only): {stn['name']}",
             xaxis_title="Flow (m³/hr)",
-            yaxis_title="Head (m)",
+            yaxis_title="Total System Head (m)",
             font=dict(size=17),
             legend=dict(font=dict(size=14)),
-            height=480,
-            margin=dict(l=10, r=10, t=70, b=40),
-            hovermode='x',
+            height=430,
+            margin=dict(l=10, r=10, t=60, b=30),
             plot_bgcolor="#f5f8fc"
         )
         st.plotly_chart(fig, use_container_width=True)
-        if op_points:
-            st.markdown("##### Operating Points")
-            df_ops = pd.DataFrame({
-                "Speed (rpm)": [pt[0] for pt in op_points],
-                "Flow at Operating Point (m³/hr)": [pt[1] for pt in op_points],
-                "Head at Operating Point (m)": [pt[2] for pt in op_points]
-            })
-            st.dataframe(df_ops.style.format({"Flow at Operating Point (m³/hr)": "{:.2f}", "Head at Operating Point (m)": "{:.2f}"}), use_container_width=True, hide_index=True)
-            st.download_button(
-                "📥 Download Operating Points (CSV)",
-                df_ops.to_csv(index=False).encode(),
-                file_name=f"operating_points_{stn['name']}.csv"
-            )
+        # Download button for data
+        df_sys = pd.DataFrame({"Flow (m³/hr)": flows, "System Head (m)": H_sys})
+        st.download_button(
+            f"📥 Download System Curve Data ({stn['name']})",
+            df_sys.to_csv(index=False).encode(),
+            file_name=f"system_curve_{stn['name']}.csv"
+        )
+
 
 # ---- Tab 5: Pump-System Interaction ----
 with tab5:
