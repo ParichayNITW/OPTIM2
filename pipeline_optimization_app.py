@@ -579,10 +579,10 @@ with tab1:
 
         df_sum = pd.DataFrame(summary)
 
-        # --- Rounding fix for display: ---
+        # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
         for col in df_sum.columns:
             if col not in ["Parameters", "No. of Pumps"]:
-                df_sum[col] = pd.to_numeric(df_sum[col], errors='coerce').round(2)
+                df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
         if "No. of Pumps" in df_sum.columns:
             df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
 
@@ -618,6 +618,7 @@ with tab1:
             """,
             unsafe_allow_html=True
         )
+
 
 
 # ---- Tab 2: Cost Breakdown ----
