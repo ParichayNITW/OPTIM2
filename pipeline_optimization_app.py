@@ -998,6 +998,8 @@ with tab3:
             st.plotly_chart(fig_p, use_container_width=True)
         
         # --- 6. Power vs Speed/Flow ---
+        import plotly.graph_objects as go
+        
         with power_tab:
             st.markdown("<div class='section-title'>Power vs Flow (THEORETICAL PUMP CURVE, DOL Speed)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data, start=1):
@@ -1005,29 +1007,73 @@ with tab3:
                     continue
                 key = stn['name'].lower().replace(' ', '_')
                 rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-                # Use the same flow range as was fitted for the curves (say, 0 to 1.2 * max of fit curve)
-                # Here, let's use a generic range unless you want to use stored curve data
-                Q_min, Q_max = 0, st.session_state.get("FLOW", 1000.0) * 1.2
-                flows = np.linspace(Q_min, Q_max, 40)
-                # Pump curve coefficients
+        
+                # ---- Take Pump Flow from summary table! ----
+                pump_flow = res.get(f'flow_{key}', 0.0)
+                DOL = float(stn.get('DOL', 1500))
+        
+                # Coefficients for head & efficiency curve
                 A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
                 P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-                DOL = float(stn.get('DOL', 1500))
+        
+                Q_min = 0
+                Q_max = 1.2 * pump_flow if pump_flow > 0 else st.session_state.get("FLOW", 1000.0) * 1.2
+                flows = np.linspace(Q_min, Q_max, 40)
+        
                 heads = A*flows**2 + B*flows + C
                 effs = P*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T
-                effs = np.clip(effs, 5, 100)  # Clamp efficiency to physical range (5% to 100%)
+                effs = np.clip(effs, 5, 100)  # Clamp efficiency to 5-100%
+        
                 powers = (rho * flows * 9.81 * heads) / (3600*1000*effs/100)
-                powers = np.where(flows > 0, powers, 0.0)  # Zero power at zero flow
-                import plotly.graph_objects as go
+                powers = np.where(flows > 0, powers, 0.0)
+        
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=flows, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
                 fig.update_layout(
                     title=f"Power vs Flow (Pump Curve, DOL): {stn['name']}",
-                    xaxis_title="Flow (m³/hr)",
+                    xaxis_title="Pump Flow (m³/hr)",
                     yaxis_title="Power (kW)",
                     height=400
                 )
                 st.plotly_chart(fig, use_container_width=True)
+        
+            # -------------------- Power vs Speed --------------------
+            st.markdown("<div class='section-title'>Power vs Speed (THEORETICAL PUMP CURVE, Q = Pump Flow)</div>", unsafe_allow_html=True)
+            for idx, stn in enumerate(stations_data, start=1):
+                if not stn.get('is_pump', False):
+                    continue
+                key = stn['name'].lower().replace(' ', '_')
+                rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
+        
+                # ---- Take Pump Flow from summary table! ----
+                pump_flow = res.get(f'flow_{key}', 0.0)
+                DOL = float(stn.get('DOL', 1500))
+                MinRPM = float(stn.get('MinRPM', 1000))
+        
+                # Coefficients for head & efficiency curve
+                A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
+                P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
+        
+                # Take head and efficiency at DOL for given pump flow
+                head_DOL = A*pump_flow**2 + B*pump_flow + C
+                eff_DOL = P*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T
+                eff_DOL = max(min(eff_DOL, 100), 5)  # Clamp 5-100%
+        
+                # Power at DOL (reference)
+                P_DOL = (rho * pump_flow * 9.81 * head_DOL) / (3600*1000*eff_DOL/100)
+        
+                rpm_vals = np.linspace(MinRPM, DOL, 40)
+                power_speed = P_DOL * (rpm_vals / DOL) ** 3
+        
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(x=rpm_vals, y=power_speed, mode='lines+markers', name=f'{stn["name"]}'))
+                fig2.update_layout(
+                    title=f"Power vs Speed (Pump Curve, Q={pump_flow:.1f} m³/hr): {stn['name']}",
+                    xaxis_title="Pump Speed (RPM)",
+                    yaxis_title="Power (kW)",
+                    height=400
+                )
+                st.plotly_chart(fig2, use_container_width=True)
 
         # --- Power vs Speed (THEORETICAL) ---
         with power_tab:
