@@ -1130,7 +1130,7 @@ with tab4:
             fig_sys.update_layout(
                 title=f"System Curve (Head vs Flow) — {stn['name']}",
                 xaxis_title="Flow (m³/hr)",
-                yaxis_title="Static + Dynamic Head (m)",
+                yaxis_title="Dynamic Head (m)",
                 font=dict(size=17),
                 legend=dict(font=dict(size=13), title="DRA Dosage"),
                 height=430,
