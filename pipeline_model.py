@@ -253,6 +253,7 @@ def solve_pipeline(
             model.peak_limit.add(model.RH[seg['from_node']] - static_h - DH_peak >= 50.0)
 
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
+    model.RH[N+1].fix(terminal.get('min_residual', 50.0))
     for j in range(2, N+2):
         model.RH[j].setlb(50.0)
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
