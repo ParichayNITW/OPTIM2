@@ -539,7 +539,7 @@ with tab1:
             station_ppm[key] = ppm
 
         params = [
-            "Segment Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
+            "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
             "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
             "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
         ]
@@ -586,7 +586,7 @@ with tab1:
         if "No. of Pumps" in df_sum.columns:
             df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
 
-        st.markdown("<div class='section-title'>Optimization Results (Hydraulically Accurate)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         st.dataframe(df_sum, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
 
