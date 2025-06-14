@@ -1154,13 +1154,13 @@ from plotly.colors import qualitative, sample_colorscale
 
 with tab5:
     st.markdown(
-        "<div class='section-title'>System & Pump Curves (All DRA, All RPM, All Series)</div>",
+        "<div class='section-title'>Pump-System Curves at All DRA, All Series & All RPM</div>",
         unsafe_allow_html=True
     )
 
     # -------- Station Selection Dropdown --------
     station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
-    st_idx = st.selectbox("Select station", range(len(stations_data)), format_func=lambda i: station_options[i])
+    st_idx = st.selectbox("Select station (Pump-System Interaction)", range(len(stations_data)), format_func=lambda i: station_options[i])
     stn = stations_data[st_idx]
     key = stn['name'].lower().replace(' ','_')
     is_pump = stn.get('is_pump', False)
@@ -1181,7 +1181,7 @@ with tab5:
     downstream_names = [f"{i+st_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
     bypassed = []
     if downstream_names:
-        bypassed = st.multiselect("Bypass downstream pumps", downstream_names)
+        bypassed = st.multiselect("Bypass downstream pumps (Pump-System)", downstream_names)
     total_length = stn['L']
     current_elev = stn['elev']
     downstream_idx = st_idx + 1
@@ -1207,36 +1207,7 @@ with tab5:
     # --------- Begin Figure ---------
     fig = go.Figure()
 
-    # -------- Pump Curves: All Series, All RPM, Vivid Colors --------
-    pump_palettes = qualitative.Plotly + qualitative.D3 + qualitative.Bold
-    if is_pump:
-        N_min = int(res.get(f"min_rpm_{key}", 1200))
-        N_max = int(res.get(f"dol_{key}", 3000))
-        rpm_steps = np.arange(N_min, N_max+1, 100)
-        n_rpms = len(rpm_steps)
-        A = res.get(f"coef_A_{key}", 0)
-        B = res.get(f"coef_B_{key}", 0)
-        C = res.get(f"coef_C_{key}", 0)
-        for npump in range(1, n_pumps+1):
-            pump_color = pump_palettes[(npump-1) % len(pump_palettes)]
-            for idx, rpm in enumerate(rpm_steps):
-                blend = idx / max(1, n_rpms-1)
-                color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]  # Use central turbo band for brightness
-                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
-                H_pump = np.clip(H_pump, 0, None)
-                label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
-                showlegend = (idx == 0 or idx == n_rpms-1)  # Only endpoints in legend
-                fig.add_trace(go.Scatter(
-                    x=flows, y=H_pump,
-                    mode='lines',
-                    line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
-                    name=label if showlegend else None,
-                    showlegend=showlegend,
-                    opacity=0.92 if showlegend else 0.56,
-                    hoverinfo="skip"
-                ))
-
-    # -------- System Curves: All DRA, Turbo Colormap --------
+    # -------- System Curves: All DRA, Turbo Colormap, Vivid and Bold --------
     system_dra_steps = list(range(0, max_dr+1, 5))
     for idx, dra in enumerate(system_dra_steps):
         v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
@@ -1259,9 +1230,37 @@ with tab5:
             hoverinfo="skip"
         ))
 
+    # -------- Pump Curves: All Series, All RPM, Vivid Colors --------
+    pump_palettes = qualitative.Plotly + qualitative.D3 + qualitative.Bold
+    if is_pump:
+        N_min = int(res.get(f"min_rpm_{key}", 1200))
+        N_max = int(res.get(f"dol_{key}", 3000))
+        rpm_steps = np.arange(N_min, N_max+1, 100)
+        n_rpms = len(rpm_steps)
+        A = res.get(f"coef_A_{key}", 0)
+        B = res.get(f"coef_B_{key}", 0)
+        C = res.get(f"coef_C_{key}", 0)
+        for npump in range(1, n_pumps+1):
+            for idx, rpm in enumerate(rpm_steps):
+                blend = idx / max(1, n_rpms-1)
+                color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]  # Use central turbo band for brightness
+                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                H_pump = np.clip(H_pump, 0, None)
+                label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
+                showlegend = (idx == 0 or idx == n_rpms-1)  # Only endpoints in legend
+                fig.add_trace(go.Scatter(
+                    x=flows, y=H_pump,
+                    mode='lines',
+                    line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
+                    name=label if showlegend else None,
+                    showlegend=showlegend,
+                    opacity=0.92 if showlegend else 0.56,
+                    hoverinfo="skip"
+                ))
+
     # -------- Layout Polish: Bright, Vivid, Clean --------
     fig.update_layout(
-        title=f"<b style='color:#222'>System & Pump Curves: {stn['name']}</b>",
+        title=f"<b style='color:#222'>Pump-System Curves: {stn['name']}</b>",
         xaxis_title="Flow (m³/hr)",
         yaxis_title="Head (m)",
         font=dict(size=23, family="Segoe UI, Arial"),
@@ -1274,6 +1273,7 @@ with tab5:
         hovermode="closest"
     )
     st.plotly_chart(fig, use_container_width=True)
+
 
 
 
