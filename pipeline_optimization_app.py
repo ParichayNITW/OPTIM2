@@ -1151,7 +1151,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-with psi_tab:
+with tab5:
     st.markdown("<div class='section-title'>Pump-System Analytics: Pro Edition</div>", unsafe_allow_html=True)
 
     # --- User selects station ---
