@@ -26,6 +26,7 @@ def solve_pipeline(
     model.FLOW = pyo.Param(initialize=FLOW)
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
+    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
 
     length, d_inner, roughness, thickness, smys, design_factor, elev = {}, {}, {}, {}, {}, {}, {}
     Acoef, Bcoef, Ccoef, Pcoef, Qcoef, Rcoef, Scoef, Tcoef = {}, {}, {}, {}, {}, {}, {}, {}
@@ -251,7 +252,6 @@ def solve_pipeline(
             static_h = elev_k - seg['start_elev']
             model.peak_limit.add(model.RH[seg['from_node']] - static_h - DH_peak >= 50.0)
 
-    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
     for j in range(2, N+2):
         model.RH[j].setlb(50.0)
