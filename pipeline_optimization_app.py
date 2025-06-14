@@ -74,6 +74,57 @@ st.markdown("""
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
+# --- DRA Curve Data ---
+DRA_CSV_FILES = {
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv"
+}
+DRA_CURVE_DATA = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
+        df = pd.read_csv(fname)
+        DRA_CURVE_DATA[cst] = df
+    else:
+        DRA_CURVE_DATA[cst] = None
+
+def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
+    cst_list = sorted(dra_curve_data.keys())
+    visc = float(visc)
+    # --- New: always round to nearest 0.5 ppm ---
+    def round_ppm(val, step=0.5):
+        return round(val / step) * step
+    if visc <= cst_list[0]:
+        df = dra_curve_data[cst_list[0]]
+        return round_ppm(_ppm_from_df(df, dr))
+    elif visc >= cst_list[-1]:
+        df = dra_curve_data[cst_list[-1]]
+        return round_ppm(_ppm_from_df(df, dr))
+    else:
+        lower = max([c for c in cst_list if c <= visc])
+        upper = min([c for c in cst_list if c >= visc])
+        df_lower = dra_curve_data[lower]
+        df_upper = dra_curve_data[upper]
+        ppm_lower = _ppm_from_df(df_lower, dr)
+        ppm_upper = _ppm_from_df(df_upper, dr)
+        ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+        return round_ppm(ppm_interp)
+def _ppm_from_df(df, dr):
+    x = df['%Drag Reduction'].values
+    y = df['PPM'].values
+    if dr <= x[0]:
+        return y[0]
+    elif dr >= x[-1]:
+        return y[-1]
+    else:
+        return np.interp(dr, x, y)
+
+# --- User Login Logic ---
+
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 users = {"parichay_das": hash_pwd("heteroscedasticity")}
