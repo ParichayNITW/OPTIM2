@@ -212,35 +212,38 @@ def solve_pipeline(
         return sum(inflow) - sum(outflow) == demand
     model.node_continuity = pyo.Constraint(model.Nodes, rule=continuity_rule)
 
-    # --- Velocity, Reynolds, Friction Factor for each segment (at design flow) ---
+    # --- Velocity, Reynolds, Friction Factor: symbolic-safe ---
     g = 9.81
-    v, Re, f = {}, {}, {}
-    for seg in segments:
-        idx = seg['idx']
-        def vfun(q): return (q/3600.0) / (pi * (seg['D']**2) / 4.0) if seg['D'] > 0 else 0.0
-        def Refun(q, kv): return vfun(q) * seg['D'] / (kv * 1e-6) if kv > 0 else 0.0
-        def ffun(q, kv, dr): 
-            re = Refun(q, kv)
-            if re == 0: return 0.0
-            if re < 4000: return 64.0/re
-            arg = (seg['rough']/seg['D']/3.7) + (5.74/(re**0.9))
-            fval = 0.25/(log10(arg)**2) if arg > 0 else 0.0
-            fval = fval * (1 - dr/100.0)
-            return fval
-        v[idx] = vfun
-        Re[idx] = Refun
-        f[idx] = ffun
+
+    def vfun(q, D):
+        return (q/3600.0) / (pi * (D**2) / 4.0)
+
+    def Refun(q, D, kv):
+        return vfun(q, D) * D / (kv * 1e-6)
+
+    def ffun(q, D, rough, kv, dr):
+        re = Refun(q, D, kv)
+        # (add small epsilon to arg to avoid log10(0) if needed)
+        arg = (rough/D/3.7) + (5.74/(re**0.9)) + 1e-10
+        fval = 0.25 / (log10(arg)**2)
+        return fval * (1 - dr/100.0)
 
     # ---- Head Loss Equations for Mainline and Looplines ----
-    # For each segment, head loss = f*(L/D)*(v^2/(2g)), DR if allowed
     def headloss_expr(m, idx):
         seg = segment_map[idx]
         q = m.Q[idx]
+        D = seg['D']
+        rough = seg['rough']
         kv = kv_dict.get(seg['from_node'], 1.1)
         dr = m.DR_seg[idx] if idx in dra_segments else 0.0
-        fseg = f[idx](q, kv, dr)
-        vseg = v[idx](q)
-        return fseg * ((seg['L']*1000.0)/seg['D']) * (vseg**2/(2*g))
+
+        vseg = vfun(q, D)
+        Re = vseg * D / (kv * 1e-6)
+        arg = (rough/D/3.7) + (5.74/(Re**0.9)) + 1e-10
+        fseg = 0.25 / (log10(arg)**2) * (1 - dr/100.0)
+
+        return fseg * ((seg['L']*1000.0)/D) * (vseg**2/(2*g))
+
     # --- For each pair of parallel segments between the same nodes, enforce equal head loss ---
     pairwise = {}
     for seg in segments:
@@ -266,18 +269,15 @@ def solve_pipeline(
             q = model.Q[idx]
             kv = kv_dict.get(seg['from_node'], 1.1)
             dr = model.DR_seg[idx] if idx in dra_segments else 0.0
-            f_i = f[idx](q, kv, dr)
-            v_i = v[idx](q)
-            DH_peak = f_i * (L_peak / seg['D']) * (v_i**2/(2*g))
+            vseg = vfun(q, seg['D'])
+            Re_val = vseg * seg['D'] / (kv * 1e-6)
+            arg = (seg['rough']/seg['D']/3.7) + (5.74/(Re_val**0.9)) + 1e-10
+            f_i = 0.25/(log10(arg)**2) * (1 - dr/100.0)
+            DH_peak = f_i * (L_peak / seg['D']) * (vseg**2/(2*g))
             static_h = elev_k - seg['start_elev']
             model.peak_limit.add(model.RH[seg['from_node']] - static_h - DH_peak >= 50.0)
-    # No separate loopline peak constraint block needed; above covers all.
 
     # ---- Residual Head and Static Discharge Head at Each Node ----
-    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
-    model.RH[1].fix(stations[0].get('min_residual', 50.0))
-    for j in range(2, N+2):
-        model.RH[j].setlb(50.0)
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
     for i in range(1, N+1):
@@ -289,9 +289,11 @@ def solve_pipeline(
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
-            f_i = f[i](model.Q[i], kv_dict[i], model.DR_seg[i] if i in dra_segments else 0.0)
-            v_i = v[i](model.Q[i])
-            DH_peak = f_i * (L_peak / seg['D']) * (v_i**2/(2*g))
+            vseg = vfun(model.Q[i], seg['D'])
+            Re_val = vseg * seg['D'] / (kv_dict[i] * 1e-6)
+            arg = (seg['rough']/seg['D']/3.7) + (5.74/(Re_val**0.9)) + 1e-10
+            f_i = 0.25/(log10(arg)**2) * (1 - (model.DR_seg[i] if i in dra_segments else 0.0)/100.0)
+            DH_peak = f_i * (L_peak / seg['D']) * (vseg**2/(2*g))
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
 
@@ -331,7 +333,6 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        # --- Mainline DRA cost (if DRA allowed on mainline)
         if i in dra_segments:
             dra_cost = (model.DR_seg[i]/4) * (FLOW*1000.0*24.0/1e6) * RateDRA
         else:
@@ -369,10 +370,12 @@ def solve_pipeline(
         # --- Stationwise hydraulic output ---
         seg = next(s for s in segments if s['type'] == 'main' and s['idx'] == i)
         q_val = pyo.value(model.Q[i])
-        v_val = v[i](q_val)
-        re_val = Re[i](q_val, kv_dict[i])
-        f_val = f[i](q_val, kv_dict[i], pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0)
-        hl_val = headloss_expr(model, i)
+        v_val = vfun(q_val, seg['D'])
+        re_val = v_val * seg['D'] / (kv_dict[i] * 1e-6)
+        dr_val = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
+        arg_val = (seg['rough']/seg['D']/3.7) + (5.74/(re_val**0.9)) + 1e-10
+        f_val = 0.25/(log10(arg_val)**2) * (1 - dr_val/100.0)
+        hl_val = f_val * ((seg['L']*1000.0)/seg['D']) * (v_val**2/(2*g))
         sdh_val = pyo.value(model.SDH[i])
         maop_val = maop_dict[i]
         result[f"flow_{name}"] = q_val
@@ -408,10 +411,12 @@ def solve_pipeline(
             elev_k = peak['elev']
             q = q_val
             kv = kv_dict[i]
-            dr = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
-            f_i = f[i](q, kv, dr)
-            v_i = v[i](q)
-            DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * 9.81))
+            dr = dr_val
+            v_i = vfun(q, seg['D'])
+            re_i = v_i * seg['D'] / (kv * 1e-6)
+            arg_i = (seg['rough']/seg['D']/3.7) + (5.74/(re_i**0.9)) + 1e-10
+            f_i = 0.25/(log10(arg_i)**2) * (1 - dr/100.0)
+            DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * g))
             static_h = elev_k - seg['start_elev']
             peak_head = pyo.value(model.RH[i]) - static_h - DH_peak
             result[f"peak_head_{name}_{pidx}"] = peak_head
@@ -421,16 +426,18 @@ def solve_pipeline(
         if seg['type'] == 'loop':
             key = f"loopline_{seg['from_node']}_{seg['to_node']}"
             q_val = pyo.value(model.Q[seg['idx']])
-            v_val = v[seg['idx']](q_val)
-            re_val = Re[seg['idx']](q_val, kv_dict.get(seg['from_node'], 1.1))
-            f_val = f[seg['idx']](q_val, kv_dict.get(seg['from_node'], 1.1), pyo.value(model.DR_seg[seg['idx']]))
-            hl_val = headloss_expr(model, seg['idx'])
+            v_val = vfun(q_val, seg['D'])
+            re_val = v_val * seg['D'] / (kv_dict.get(seg['from_node'], 1.1) * 1e-6)
+            dr_val = pyo.value(model.DR_seg[seg['idx']])
+            arg_val = (seg['rough']/seg['D']/3.7) + (5.74/(re_val**0.9)) + 1e-10
+            f_val = 0.25/(log10(arg_val)**2) * (1 - dr_val/100.0)
+            hl_val = f_val * ((seg['L']*1000.0)/seg['D']) * (v_val**2/(2*g))
             result[f"{key}_flow_m3hr"] = q_val
             result[f"{key}_velocity_ms"] = v_val
             result[f"{key}_reynolds"] = re_val
             result[f"{key}_friction"] = f_val
             result[f"{key}_head_loss_m"] = hl_val
-            result[f"{key}_drag_reduction_percent"] = pyo.value(model.DR_seg[seg['idx']])
+            result[f"{key}_drag_reduction_percent"] = dr_val
             result[f"{key}_power_cost"] = 0.0
             # --- Loopline peaks output (if any) ---
             if seg.get('peaks'):
@@ -439,10 +446,12 @@ def solve_pipeline(
                     elev_k = peak['elev']
                     q = q_val
                     kv = kv_dict.get(seg['from_node'], 1.1)
-                    dr = pyo.value(model.DR_seg[seg['idx']])
-                    f_i = f[seg['idx']](q, kv, dr)
-                    v_i = v[seg['idx']](q)
-                    DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * 9.81))
+                    dr = dr_val
+                    v_i = vfun(q, seg['D'])
+                    re_i = v_i * seg['D'] / (kv * 1e-6)
+                    arg_i = (seg['rough']/seg['D']/3.7) + (5.74/(re_i**0.9)) + 1e-10
+                    f_i = 0.25/(log10(arg_i)**2) * (1 - dr/100.0)
+                    DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * g))
                     static_h = elev_k - seg['start_elev']
                     peak_head = pyo.value(model.RH[seg['from_node']]) - static_h - DH_peak
                     result[f"{key}_peak_{pidx}"] = peak_head
