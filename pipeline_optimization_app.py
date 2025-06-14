@@ -704,7 +704,7 @@ with tab2:
         ))
         fig_grouped.update_layout(
             barmode='group',
-            title="Stationwise Daily Cost: Power+Fuel vs. DRA (Grouped Bars)",
+            title="Station Daily Cost: Power+Fuel vs. DRA (Grouped Bars)",
             xaxis_title="Station",
             yaxis_title="Cost (INR/day)",
             font=dict(size=16),
@@ -786,9 +786,9 @@ with tab2:
         st.dataframe(df_cost_fmt, use_container_width=True, hide_index=True)
 
         st.download_button(
-            "📥 Download Stationwise Cost (CSV)",
+            "📥 Download Station Cost (CSV)",
             df_cost.to_csv(index=False).encode(),
-            file_name="stationwise_cost.csv"
+            file_name="station_cost.csv"
         )
 
         # --- KPI highlights ---
