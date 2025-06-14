@@ -646,37 +646,57 @@ with tab2:
             "Total Cost (INR/day)": total_costs,
         })
 
-        # --- Stacked bar chart ---
-        fig_bar = go.Figure()
-        fig_bar.add_trace(go.Bar(
+        # --- Grouped bar chart (side by side) for Power+Fuel and DRA ---
+        fig_grouped = go.Figure()
+        fig_grouped.add_trace(go.Bar(
             x=df_cost["Station"],
             y=df_cost["Power+Fuel Cost (INR/day)"],
             name="Power+Fuel",
             marker_color="#1976D2",
             text=[f"{x:.2f}" for x in df_cost["Power+Fuel Cost (INR/day)"]],
-            textposition='auto'
+            textposition='outside'
         ))
-        fig_bar.add_trace(go.Bar(
+        fig_grouped.add_trace(go.Bar(
             x=df_cost["Station"],
             y=df_cost["DRA Cost (INR/day)"],
             name="DRA",
             marker_color="#FFA726",
             text=[f"{x:.2f}" for x in df_cost["DRA Cost (INR/day)"]],
-            textposition='auto'
+            textposition='outside'
         ))
-        fig_bar.update_layout(
-            barmode='stack',
-            title="Stationwise Daily Cost Breakdown",
+        fig_grouped.update_layout(
+            barmode='group',
+            title="Stationwise Daily Cost: Power+Fuel vs. DRA (Grouped Bars)",
             xaxis_title="Station",
             yaxis_title="Cost (INR/day)",
             font=dict(size=16),
             legend=dict(font=dict(size=14)),
-            height=420
+            height=430,
+            margin=dict(l=0, r=0, t=40, b=0)
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_grouped, use_container_width=True)
 
-        # --- Pie chart: Cost distribution by station ---
-        st.markdown("#### Cost Contribution by Station")
+        # --- Zoomed DRA cost bar chart only ---
+        st.markdown("#### Zoom: DRA Cost Only (All Stations)")
+        fig_dra = px.bar(
+            df_cost,
+            x="Station",
+            y="DRA Cost (INR/day)",
+            text="DRA Cost (INR/day)",
+            color="DRA Cost (INR/day)",
+            color_continuous_scale=px.colors.sequential.YlOrBr,
+            height=320,
+        )
+        fig_dra.update_traces(texttemplate="%{text:.2f}", textposition='outside')
+        fig_dra.update_layout(
+            yaxis_title="DRA Cost (INR/day)",
+            showlegend=False,
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+        st.plotly_chart(fig_dra, use_container_width=True)
+
+        # --- Pie chart: Total cost distribution by station ---
+        st.markdown("#### Cost Contribution by Station (Total)")
         fig_pie = px.pie(
             df_cost,
             values="Total Cost (INR/day)",
@@ -687,7 +707,7 @@ with tab2:
         fig_pie.update_traces(textinfo='label+percent', pull=[0.05]*len(df_cost))
         fig_pie.update_layout(
             font=dict(size=15),
-            height=350,
+            height=330,
             showlegend=False,
             margin=dict(l=10, r=10, t=40, b=10)
         )
@@ -715,7 +735,7 @@ with tab2:
                 xaxis_title="Cumulative Distance (km)",
                 yaxis_title="Cost (INR/day)",
                 font=dict(size=15),
-                height=360
+                height=350
             )
             st.plotly_chart(fig_line, use_container_width=True)
 
