@@ -1085,59 +1085,60 @@ with tab3:
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
 # ---- Tab 4: System Curves ----
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+from math import pi
+
 with tab4:
-    st.markdown("<div class='section-title'>System Curve: Pipeline Head vs Flow</div>", unsafe_allow_html=True)
-    for i, stn in enumerate(stations_data, start=1):
-        if not stn.get('is_pump', False):
-            continue
-        key = stn['name'].lower().replace(' ', '_')
-        # ---- Get System Curve Coefficients ----
-        sys_A = res.get(f"coef_A_sys_{key}", None)
-        sys_B = res.get(f"coef_B_sys_{key}", None)
-        sys_C = res.get(f"coef_C_sys_{key}", None)
-        if sys_A is None:
-            # Fallback: use first pump's coefficients, or set to only static head
-            sys_A = res.get(f"coef_A_{key}", 0)
-            sys_B = res.get(f"coef_B_{key}", 0)
-            sys_C = res.get(f"coef_C_{key}", 0)
-        # ---- Get max user-entered flow for this pump ----
-        df_head = st.session_state.get(f"head_data_{i}")
-        if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
-            user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
-            max_flow = np.max(user_flows)
-        else:
-            max_flow = st.session_state.get("FLOW", 1000.0)
-        flows = np.linspace(0, max_flow, 400)
-        # --- Compute System Head, CLIP negative heads to zero ---
-        H_sys = np.clip(sys_A * flows**2 + sys_B * flows + sys_C, 0, None)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=flows,
-            y=H_sys,
-            mode="lines+markers",
-            name="System Curve",
-            line=dict(width=4, color="#1976D2"),
-            marker=dict(size=6),
-            hovertemplate="Flow: %{x:.2f} m³/hr<br>System Head: %{y:.2f} m"
-        ))
-        fig.update_layout(
-            title=f"System Curve (Pipeline Only): {stn['name']}",
-            xaxis_title="Flow (m³/hr)",
-            yaxis_title="Total System Head (m)",
-            font=dict(size=17),
-            legend=dict(font=dict(size=14)),
-            height=430,
-            margin=dict(l=10, r=10, t=60, b=30),
-            plot_bgcolor="#f5f8fc"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        # Download button for data
-        df_sys = pd.DataFrame({"Flow (m³/hr)": flows, "System Head (m)": H_sys})
-        st.download_button(
-            f"📥 Download System Curve Data ({stn['name']})",
-            df_sys.to_csv(index=False).encode(),
-            file_name=f"system_curve_{stn['name']}.csv"
-        )
+    if "last_res" not in st.session_state:
+        st.info("Please run optimization.")
+    else:
+        res = st.session_state["last_res"]
+        stations_data = st.session_state["last_stations_data"]
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        for i, stn in enumerate(stations_data, start=1):
+            if not stn.get('is_pump', False): 
+                continue
+            key = stn['name'].lower().replace(' ','_')
+            d_inner_i = stn['D'] - 2*stn['t']
+            rough = stn['rough']
+            L_seg = stn['L']
+            elev_i = stn['elev']
+            max_dr = int(stn.get('max_dr', 40))
+            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+            visc = kv_list[i-1]
+            flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
+            v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
+            Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
+            f_vals = np.where(Re_vals>0,
+                              0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+            # Build system curves for different DRA
+            fig_sys = go.Figure()
+            color_map = px.colors.sequential.Viridis
+            n_colors = (max_dr // 5) + 1
+            for j, dra in enumerate(range(0, max_dr+1, 5)):
+                DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+                SDH_vals = elev_i + DH
+                fig_sys.add_trace(go.Scatter(
+                    x=flows, y=SDH_vals,
+                    mode='lines',
+                    line=dict(width=3, color=color_map[int(j*(len(color_map)-1)/n_colors)]),
+                    name=f"DRA {dra}%",
+                    hovertemplate=f"DRA: {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
+                ))
+            fig_sys.update_layout(
+                title=f"System Curve (Head vs Flow) — {stn['name']}",
+                xaxis_title="Flow (m³/hr)",
+                yaxis_title="Static + Dynamic Head (m)",
+                font=dict(size=17),
+                legend=dict(font=dict(size=13), title="DRA Dosage"),
+                height=430,
+                margin=dict(l=10, r=10, t=60, b=30),
+                plot_bgcolor="#f5f8fc"
+            )
+            st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+
 
 
 # ---- Tab 5: Pump-System Interaction ----
