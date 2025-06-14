@@ -1151,166 +1151,185 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-with tab5:
-    st.markdown("<div class='section-title'>Pump-System Interaction — Operating Point Analytics</div>", unsafe_allow_html=True)
-    # Advanced: select which DRA (drag reduction) to visualize
-    # By default, use DRA = optimized value at that station
-    for i, stn in enumerate(stations_data, start=1):
-        if not stn.get('is_pump', False):
-            continue
-        key = stn['name'].lower().replace(' ', '_')
-        # System Curve parameters (as per your best tab4 code)
-        d_inner_i = stn['D'] - 2*stn['t']
-        rough = stn['rough']
-        L_seg = stn['L']
-        elev_i = stn['elev']
-        max_dr = int(stn.get('max_dr', 40))
-        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-        visc = kv_list[i-1]
+with psi_tab:
+    st.markdown("<div class='section-title'>Pump-System Analytics: Pro Edition</div>", unsafe_allow_html=True)
 
-        # Fetch user head table for max flow
-        df_head = st.session_state.get(f"head_data_{i}")
-        if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
-            user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
-            max_flow = np.max(user_flows)
-        else:
-            max_flow = st.session_state.get("FLOW", 1000.0)
-        flows = np.linspace(0, max_flow, 400)
-        v_vals = flows/3600.0 / (np.pi*(d_inner_i**2)/4)
-        Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
+    # --- User selects station ---
+    station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
+    st_idx = st.selectbox("Select station to analyze", range(len(stations_data)), format_func=lambda i: station_options[i])
+    stn = stations_data[st_idx]
+    key = stn['name'].lower().replace(' ','_')
+    max_dr = int(stn.get('max_dr', 40))
+    is_pump = stn.get('is_pump', False)
+    # --- Max flow (from user table for this station) ---
+    df_head = st.session_state.get(f"head_data_{st_idx+1}")
+    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+        user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
+        max_flow = np.max(user_flows)
+    else:
+        max_flow = st.session_state.get("FLOW", 1000.0)
+    flows = np.linspace(0, max_flow, 300)
+
+    # --- User can bypass downstream pumping stations (checkboxes) ---
+    downstream_pumps = [s for s in stations_data[st_idx+1:] if s.get('is_pump', False)]
+    downstream_names = [f"{i+st_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
+    bypassed = []
+    if downstream_names:
+        bypassed = st.multiselect("Bypass downstream pump stations (length increases to next open pump/terminal)", downstream_names)
+    # --- Calculate total effective length downstream of this station, based on bypass ---
+    total_length = stn['L']
+    current_elev = stn['elev']
+    downstream_idx = st_idx + 1
+    while downstream_idx < len(stations_data):
+        s = stations_data[downstream_idx]
+        label = f"{downstream_idx+1}: {s['name']}"
+        total_length += s['L']
+        current_elev = s['elev']
+        # If station is a pump and NOT bypassed, stop adding
+        if s.get('is_pump', False) and label not in bypassed:
+            break
+        downstream_idx += 1
+    # Add terminal station if end reached
+    if downstream_idx == len(stations_data):
+        term_elev = st.session_state["last_term_data"]["elev"]
+        current_elev = term_elev
+
+    # --- Segment data ---
+    d_inner = stn['D'] - 2*stn['t']
+    rough = stn['rough']
+    kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+    visc = kv_list[st_idx]
+    # --- DRA control ---
+    dra_range = st.slider("Select DRA range for system curves (%)", 0, max_dr, (0, max_dr), step=5)
+    dra_list = list(range(dra_range[0], dra_range[1]+1, 5))
+    # --- RPM range for pump curves (if applicable) ---
+    if is_pump:
+        N_min = int(res.get(f"min_rpm_{key}", 1200))
+        N_max = int(res.get(f"dol_{key}", 3000))
+        rpm_range = st.slider("Select RPM range for pump curves", N_min, N_max, (N_min, N_max), step=100)
+        rpm_list = list(range(rpm_range[0], rpm_range[1]+1, 100))
+
+    # --- Modern color palette ---
+    system_colors = px.colors.sequential.Blues[len(dra_list)+1:1:-1]  # Most subtle to deeper blue
+    pump_colors = px.colors.sequential.RdBu[len(rpm_list) // 2:len(rpm_list) + len(rpm_list) // 2] if is_pump else []
+
+    # --- Build plot ---
+    fig = go.Figure()
+
+    # --- System Curves for DRA (blue palette) ---
+    for j, dra in enumerate(dra_list):
+        v_vals = flows/3600.0 / (np.pi*(d_inner**2)/4)
+        Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
         f_vals = np.where(Re_vals>0,
-                          0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-        # DRA: use optimized, fallback to zero
-        opt_dra = res.get(f"drag_reduction_{key}", 0.0)
-        dra_list = [int(opt_dra)] if opt_dra else [0]
-        # Want to see at least DRA=0 and DRA=optimized
-        if 0 not in dra_list: dra_list.insert(0,0)
+                          0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+        DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+        # Elevation is difference between upstream and end (current_elev includes terminal if end reached)
+        SDH_vals = max(0, current_elev) + DH
+        SDH_vals = np.clip(SDH_vals, 0, None)
+        fig.add_trace(go.Scatter(
+            x=flows, y=SDH_vals,
+            mode='lines',
+            line=dict(width=4, color=system_colors[j]),
+            name=f"System (DRA {dra}%)",
+            showlegend=True,
+            hovertemplate=f"DRA {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
+        ))
 
-        # --- Pump Curve Coefficients ---
+    # --- Pump curves (if pumping station) ---
+    op_points = []
+    if is_pump:
+        # Get pump coefficients
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
-        N_min = int(res.get(f"min_rpm_{key}", 0))
-        N_max = int(res.get(f"dol_{key}", 0))
-
-        # Color palette: blue to red
-        color_seq = ['#1976D2', '#43A047', '#F9A825', '#E53935', '#8E24AA', '#00897B', '#D84315', '#F4511E']
-
-        # Only one DRA for clarity (change to loop over many DRAs for sensitivity)
-        for d_idx, dra in enumerate(dra_list):
-            # --- Compute System Curve for this DRA ---
-            DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
-            SDH_vals = elev_i + DH
-            SDH_vals = np.clip(SDH_vals, 0, None)
-            fig = go.Figure()
+        for k, rpm in enumerate(rpm_list):
+            H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
+            H_pump = np.clip(H_pump, 0, None)
             fig.add_trace(go.Scatter(
-                x=flows,
-                y=SDH_vals,
-                mode='lines',
-                line=dict(width=5, color=color_seq[0]),
-                name=f"System Curve (DRA {dra}%)",
-                hovertemplate=f"DRA {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
+                x=flows, y=H_pump,
+                mode="lines",
+                line=dict(width=3, color=pump_colors[k % len(pump_colors)], dash='dot'),
+                name=f"Pump ({rpm} rpm)",
+                showlegend=True,
+                hovertemplate=f"Pump {rpm} rpm<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
             ))
+            # Find intersection with last system curve (e.g., max DRA), store op point for analytics
+            last_sdh = SDH_vals
+            diff = H_pump - last_sdh
+            sign_change = np.where(np.diff(np.sign(diff)))[0]
+            if len(sign_change) > 0:
+                kx = sign_change[0]
+                x0, x1 = flows[kx], flows[kx+1]
+                y0, y1 = diff[kx], diff[kx+1]
+                q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
+                h_op = np.interp(q_op, flows, last_sdh)
+                op_points.append((rpm, q_op, h_op))
 
-            # Pump curves at key RPMs (N_min, mid, N_max)
-            rpm_steps = [N_min]
-            if N_min != N_max:
-                rpm_steps += [int(N_min + (N_max-N_min)*0.33), int(N_min + (N_max-N_min)*0.66)]
-            if N_max not in rpm_steps: rpm_steps.append(N_max)
+    # --- Layout: no clutter, pro style ---
+    fig.update_layout(
+        title=f"System & Pump Curves — {stn['name']}",
+        xaxis_title="Flow (m³/hr)",
+        yaxis_title="Head (m)",
+        font=dict(size=18, family="Segoe UI"),
+        legend=dict(font=dict(size=15), title="Curves"),
+        height=530,
+        margin=dict(l=10, r=10, t=70, b=40),
+        plot_bgcolor="#f8fbfc",
+        showlegend=True
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-            op_points = []
-            for j, rpm in enumerate(rpm_steps):
-                # --- Pump head, clip negative ---
-                H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
-                H_pump = np.clip(H_pump, 0, None)
-                # Only valid where both positive
-                valid = (H_pump > 0) & (SDH_vals > 0)
-                if not np.any(valid): continue
-                flows_valid = flows[valid]
-                SDH_valid = SDH_vals[valid]
-                H_pump_valid = H_pump[valid]
-                # Intersection (operating point)
-                diff = H_pump_valid - SDH_valid
-                sign_change = np.where(np.diff(np.sign(diff)))[0]
-                if len(sign_change) > 0:
-                    k = sign_change[0]
-                    x0, x1 = flows_valid[k], flows_valid[k+1]
-                    y0, y1 = diff[k], diff[k+1]
-                    q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
-                    h_op = np.interp(q_op, flows_valid, SDH_valid)
-                    op_points.append((rpm, q_op, h_op, dra))
-                    fig.add_trace(go.Scatter(
-                        x=[q_op], y=[h_op],
-                        mode='markers+text',
-                        marker=dict(size=14, color=color_seq[j+1], symbol='x'),
-                        text=[f"Op<br>{rpm}rpm"],
-                        textposition="top center",
-                        showlegend=False,
-                        hovertemplate=f"Operating Point:<br>Flow: {q_op:.2f} m³/hr<br>Head: {h_op:.2f} m<br>Speed: {rpm} rpm"
-                    ))
-                fig.add_trace(go.Scatter(
-                    x=flows_valid, y=H_pump_valid,
-                    mode="lines",
-                    name=f"Pump Curve ({rpm} rpm)",
-                    line=dict(width=3, color=color_seq[j+1], dash='dot'),
-                    hovertemplate=f"Pump {rpm} rpm<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
-                ))
+    # --- Advanced Analytics ---
+    st.markdown("##### Download Data")
+    # System curve data (as CSV)
+    for j, dra in enumerate(dra_list):
+        v_vals = flows/3600.0 / (np.pi*(d_inner**2)/4)
+        Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
+        f_vals = np.where(Re_vals>0,
+                          0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+        DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+        SDH_vals = max(0, current_elev) + DH
+        SDH_vals = np.clip(SDH_vals, 0, None)
+        df_sys = pd.DataFrame({"Flow (m³/hr)": flows, f"System Head DRA {dra}% (m)": SDH_vals})
+        st.download_button(
+            f"📥 System Curve (DRA {dra}%)",
+            df_sys.to_csv(index=False).encode(),
+            file_name=f"system_curve_{stn['name']}_dra{dra}.csv"
+        )
+    # Pump curve data (if pumping station)
+    if is_pump:
+        for k, rpm in enumerate(rpm_list):
+            A = res.get(f"coef_A_{key}", 0)
+            B = res.get(f"coef_B_{key}", 0)
+            C = res.get(f"coef_C_{key}", 0)
+            H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
+            H_pump = np.clip(H_pump, 0, None)
+            df_pump = pd.DataFrame({"Flow (m³/hr)": flows, f"Pump Head {rpm}rpm (m)": H_pump})
+            st.download_button(
+                f"📥 Pump Curve ({rpm}rpm)",
+                df_pump.to_csv(index=False).encode(),
+                file_name=f"pump_curve_{stn['name']}_{rpm}rpm.csv"
+            )
+    # --- Operating point analytics table ---
+    if is_pump and op_points:
+        df_ops = pd.DataFrame({
+            "Speed (rpm)": [pt[0] for pt in op_points],
+            "Flow at Operating Point (m³/hr)": [pt[1] for pt in op_points],
+            "Head at Operating Point (m)": [pt[2] for pt in op_points]
+        })
+        st.dataframe(
+            df_ops.style.format({
+                "Flow at Operating Point (m³/hr)": "{:.2f}",
+                "Head at Operating Point (m)": "{:.2f}"
+            }),
+            use_container_width=True, hide_index=True
+        )
+        st.download_button(
+            f"📥 Download Operating Points ({stn['name']})",
+            df_ops.to_csv(index=False).encode(),
+            file_name=f"op_points_{stn['name']}.csv"
+        )
 
-            # Analytics: show all intersection points for this DRA in a table
-            if op_points:
-                df_ops = pd.DataFrame({
-                    "Speed (rpm)": [pt[0] for pt in op_points],
-                    "Flow at Operating Point (m³/hr)": [pt[1] for pt in op_points],
-                    "Head at Operating Point (m)": [pt[2] for pt in op_points],
-                    "DRA (%)": [pt[3] for pt in op_points]
-                })
-                # Add efficiency at each point (optional, if you want to display)
-                df_ops["Pump Efficiency (%)"] = [
-                    max(0.0, min(100.0, (
-                        stn.get('P',0)*q**4 + stn.get('Q',0)*q**3 + stn.get('R',0)*q**2 +
-                        stn.get('S',0)*q + stn.get('T',0)
-                    ))) for (_, q, _, _) in op_points
-                ]
-                fig.update_layout(
-                    title=f"Pump-System Interaction — {stn['name']} (DRA {dra}%)",
-                    xaxis_title="Flow (m³/hr)",
-                    yaxis_title="Head (m)",
-                    font=dict(size=18),
-                    legend=dict(font=dict(size=15)),
-                    height=520,
-                    margin=dict(l=10, r=10, t=70, b=40),
-                    hovermode='x',
-                    plot_bgcolor="#f6fbfd"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                st.markdown("##### Advanced Analytics: Operating Points Table")
-                st.dataframe(
-                    df_ops.style.format({
-                        "Flow at Operating Point (m³/hr)": "{:.2f}",
-                        "Head at Operating Point (m)": "{:.2f}",
-                        "Pump Efficiency (%)": "{:.2f}"
-                    }),
-                    use_container_width=True, hide_index=True
-                )
-                st.download_button(
-                    f"📥 Download Operating Points ({stn['name']} DRA {dra}%)",
-                    df_ops.to_csv(index=False).encode(),
-                    file_name=f"op_points_{stn['name']}_DRA{dra}.csv"
-                )
-            else:
-                fig.update_layout(
-                    title=f"Pump-System Interaction — {stn['name']} (DRA {dra}%)",
-                    xaxis_title="Flow (m³/hr)",
-                    yaxis_title="Head (m)",
-                    font=dict(size=18),
-                    legend=dict(font=dict(size=15)),
-                    height=520,
-                    margin=dict(l=10, r=10, t=70, b=40),
-                    hovermode='x',
-                    plot_bgcolor="#f6fbfd"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                st.info("No feasible operating point (intersection) found for this combination.")
 
 
 # ---- Tab 6: DRA Curves ----
