@@ -1,7 +1,7 @@
 import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
-from math import log10, pi
+from math import pi  # Only for static constants
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
@@ -9,15 +9,12 @@ def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD,
     linefill_dict=None, looplines=None, deliveries=None
 ):
-    """
-    PIPELINE OPTIMA™: Backend Solver (Loopline/Peaks/DRA/Deliveries)
-    """
     if deliveries is None:
         deliveries = {}
     elif isinstance(deliveries, list):
         deliveries = {i+1: float(val) for i, val in enumerate(deliveries)}
     deliveries.setdefault(len(stations)+1, 0.0)
-    
+
     model = pyo.ConcreteModel()
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
@@ -30,7 +27,6 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # -- Station input extraction (Mainline geometry, elevation, pump data)
     length, d_inner, roughness, thickness, smys, design_factor, elev = {}, {}, {}, {}, {}, {}, {}
     Acoef, Bcoef, Ccoef, Pcoef, Qcoef, Rcoef, Scoef, Tcoef = {}, {}, {}, {}, {}, {}, {}, {}
     min_rpm, max_rpm = {}, {}
@@ -128,13 +124,10 @@ def solve_pipeline(
     # --- DELIVERY INPUTS ---
     if deliveries is None:
         deliveries = {}
-    # --- LOOPLINES DATA ---
+
     if looplines is None:
         looplines = []
-    # Build a list of all segments, including mainline and each loopline
-    # Segment: (type, from_node, to_node, properties dict)
     segments = []
-    # Add all mainline segments (default)
     for i in range(1, N+1):
         seg = {
             'type': 'main',
@@ -153,9 +146,7 @@ def solve_pipeline(
             'peaks': peaks_dict[i]
         }
         segments.append(seg)
-    # Add all loopline segments (custom)
     for idx, lp in enumerate(looplines, start=1):
-        # Map start_km and end_km to nearest node indices
         chainages = [0]
         for stn in stations:
             chainages.append(chainages[-1] + stn['L'])
@@ -182,15 +173,12 @@ def solve_pipeline(
         }
         segments.append(seg)
 
-    # ---- Build Segment and Node Flow Variables ----
     model.segments = pyo.Set(initialize=[seg['idx'] for seg in segments])
     segment_map = {seg['idx']: seg for seg in segments}
-    model.Q = pyo.Var(model.segments, domain=pyo.NonNegativeReals, initialize=FLOW) # m3/hr
+    model.Q = pyo.Var(model.segments, domain=pyo.NonNegativeReals, initialize=FLOW)
 
-    # --- DRA variables for each segment (mainline pump stations + each loopline) ---
     dra_segments = [seg['idx'] for seg in segments if seg['type']=='loop'] + [i for i in pump_indices]
     model.DR_seg = pyo.Var(dra_segments, domain=pyo.NonNegativeReals)
-    # Add bounds per segment
     for segidx in dra_segments:
         seg = segment_map[segidx] if segidx in segment_map else None
         maxval = seg['max_dr'] if seg else max_dr.get(segidx, 0.0)
@@ -212,44 +200,35 @@ def solve_pipeline(
         return sum(inflow) - sum(outflow) == demand
     model.node_continuity = pyo.Constraint(model.Nodes, rule=continuity_rule)
 
-    # --- Velocity, Reynolds, Friction Factor: symbolic-safe ---
+    # --- Velocity, Reynolds, Friction Factor for each segment (Pyomo safe) ---
     g = 9.81
 
-    def vfun(q, D):
-        return (q/3600.0) / (pi * (D**2) / 4.0)
-
+    def vfun(q, D):  # For Pyomo safety, all args explicit
+        return (q/3600.0) / (pi * (D**2) / 4.0) if D > 0 else 0.0
     def Refun(q, D, kv):
-        return vfun(q, D) * D / (kv * 1e-6)
-
+        return vfun(q, D) * D / (kv * 1e-6) if kv > 0 else 0.0
     def ffun(q, D, rough, kv, dr):
         re = Refun(q, D, kv)
-        # (add small epsilon to arg to avoid log10(0) if needed)
-        arg = (rough/D/3.7) + (5.74/(re**0.9)) + 1e-10
-        fval = 0.25 / (log10(arg)**2)
-        return fval * (1 - dr/100.0)
-
+        # Now, re may be Pyomo expression; use Pyomo logic everywhere
+        # Swamee-Jain only for re > 4000, else laminar
+        return pyo.conditional(re < 1e-5, 0.0, pyo.conditional(re < 4000, 64.0/re, 
+                0.25/(pyo.log10(rough/D/3.7 + 5.74/(re**0.9))**2) * (1-dr/100.0)))
     # ---- Head Loss Equations for Mainline and Looplines ----
     def headloss_expr(m, idx):
         seg = segment_map[idx]
         q = m.Q[idx]
-        D = seg['D']
-        rough = seg['rough']
         kv = kv_dict.get(seg['from_node'], 1.1)
         dr = m.DR_seg[idx] if idx in dra_segments else 0.0
-
+        D = seg['D']
+        rough = seg['rough']
+        fseg = ffun(q, D, rough, kv, dr)
         vseg = vfun(q, D)
-        Re = vseg * D / (kv * 1e-6)
-        arg = (rough/D/3.7) + (5.74/(Re**0.9)) + 1e-10
-        fseg = 0.25 / (log10(arg)**2) * (1 - dr/100.0)
-
         return fseg * ((seg['L']*1000.0)/D) * (vseg**2/(2*g))
-
-    # --- For each pair of parallel segments between the same nodes, enforce equal head loss ---
     pairwise = {}
+    model.parallel_headloss = pyo.ConstraintList()
     for seg in segments:
         key = (seg['from_node'], seg['to_node'])
         pairwise.setdefault(key, []).append(seg['idx'])
-    model.parallel_headloss = pyo.ConstraintList()
     for segids in pairwise.values():
         if len(segids) > 1:
             hl0 = headloss_expr(model, segids[0])
@@ -258,7 +237,6 @@ def solve_pipeline(
                     headloss_expr(model, idx) == hl0
                 )
 
-    # --- Peak Pressure Constraints (applies to all segments: mainline & loopline) ---
     model.peak_limit = pyo.ConstraintList()
     for seg in segments:
         idx = seg['idx']
@@ -269,15 +247,18 @@ def solve_pipeline(
             q = model.Q[idx]
             kv = kv_dict.get(seg['from_node'], 1.1)
             dr = model.DR_seg[idx] if idx in dra_segments else 0.0
-            vseg = vfun(q, seg['D'])
-            Re_val = vseg * seg['D'] / (kv * 1e-6)
-            arg = (seg['rough']/seg['D']/3.7) + (5.74/(Re_val**0.9)) + 1e-10
-            f_i = 0.25/(log10(arg)**2) * (1 - dr/100.0)
-            DH_peak = f_i * (L_peak / seg['D']) * (vseg**2/(2*g))
+            D = seg['D']
+            rough = seg['rough']
+            f_i = ffun(q, D, rough, kv, dr)
+            v_i = vfun(q, D)
+            DH_peak = f_i * (L_peak / D) * (v_i**2/(2*g))
             static_h = elev_k - seg['start_elev']
             model.peak_limit.add(model.RH[seg['from_node']] - static_h - DH_peak >= 50.0)
 
-    # ---- Residual Head and Static Discharge Head at Each Node ----
+    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
+    model.RH[1].fix(stations[0].get('min_residual', 50.0))
+    for j in range(2, N+2):
+        model.RH[j].setlb(50.0)
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
     for i in range(1, N+1):
@@ -285,19 +266,17 @@ def solve_pipeline(
         hl = headloss_expr(model, i)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + hl
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
-        # For all peaks
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
-            vseg = vfun(model.Q[i], seg['D'])
-            Re_val = vseg * seg['D'] / (kv_dict[i] * 1e-6)
-            arg = (seg['rough']/seg['D']/3.7) + (5.74/(Re_val**0.9)) + 1e-10
-            f_i = 0.25/(log10(arg)**2) * (1 - (model.DR_seg[i] if i in dra_segments else 0.0)/100.0)
-            DH_peak = f_i * (L_peak / seg['D']) * (vseg**2/(2*g))
+            D = seg['D']
+            rough = seg['rough']
+            f_i = ffun(model.Q[i], D, rough, kv_dict[i], model.DR_seg[i] if i in dra_segments else 0.0)
+            v_i = vfun(model.Q[i], D)
+            DH_peak = f_i * (L_peak / D) * (v_i**2/(2*g))
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
 
-    # --- Pump Equations, Objective, MAOP Constraints ---
     TDH, EFFP, maop_dict = {}, {}, {}
     model.head_balance = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
@@ -323,7 +302,6 @@ def solve_pipeline(
         maop_dict[i] = MAOP_head
         model.pressure_limit.add(model.SDH[i] <= MAOP_head)
 
-    # --- Objective Function: Minimize Pumping + DRA (main + loopline) + Power/Fuel Cost ---
     total_cost = 0
     for i in pump_indices:
         rho_i = rho_dict[i]
@@ -338,18 +316,15 @@ def solve_pipeline(
         else:
             dra_cost = 0
         total_cost += power_cost + dra_cost
-    # --- Loopline DRA cost ---
     for seg in segments:
         if seg['type'] == 'loop':
             dra_cost = (model.DR_seg[seg['idx']]/4) * (model.Q[seg['idx']]*1000.0*24.0/1e6) * RateDRA
             total_cost += dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
-    # --- Output Section ---
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -361,21 +336,21 @@ def solve_pipeline(
             num_pumps = 0
             speed_rpm = 0.0
             eff = 0.0
-    
+
         result[f"num_pumps_{name}"] = num_pumps
         result[f"speed_{name}"] = speed_rpm
         result[f"efficiency_{name}"] = eff
         result[f"residual_head_{name}"] = float(pyo.value(model.RH[i]))
-    
-        # --- Stationwise hydraulic output ---
+
         seg = next(s for s in segments if s['type'] == 'main' and s['idx'] == i)
         q_val = pyo.value(model.Q[i])
-        v_val = vfun(q_val, seg['D'])
-        re_val = v_val * seg['D'] / (kv_dict[i] * 1e-6)
-        dr_val = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
-        arg_val = (seg['rough']/seg['D']/3.7) + (5.74/(re_val**0.9)) + 1e-10
-        f_val = 0.25/(log10(arg_val)**2) * (1 - dr_val/100.0)
-        hl_val = f_val * ((seg['L']*1000.0)/seg['D']) * (v_val**2/(2*g))
+        D = seg['D']
+        kv = kv_dict[i]
+        dr = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
+        v_val = vfun(q_val, D)
+        re_val = Refun(q_val, D, kv)
+        f_val = ffun(q_val, D, seg['rough'], kv, dr)
+        hl_val = pyo.value(headloss_expr(model, i))
         sdh_val = pyo.value(model.SDH[i])
         maop_val = maop_dict[i]
         result[f"flow_{name}"] = q_val
@@ -385,10 +360,9 @@ def solve_pipeline(
         result[f"head_loss_{name}"] = hl_val
         result[f"sdh_{name}"] = sdh_val
         result[f"maop_{name}"] = maop_val
-    
+
         if i in pump_indices:
             result[f"drag_reduction_{name}"] = float(pyo.value(model.DR_seg[i]))  # Mainline DRA (%)
-            # Power Cost Output
             rho_i = rho_dict[i]
             TDH_val = (Acoef[i] * FLOW ** 2 + Bcoef[i] * FLOW + Ccoef[i]) * ((pyo.value(model.N[i]) / max_rpm[i]) ** 2)
             eff_val = float(pyo.value(EFFP[i]))
@@ -403,55 +377,46 @@ def solve_pipeline(
             result[f"power_cost_{name}"] = float(power_cost)
         else:
             result[f"power_cost_{name}"] = 0.0
-    
-        # Output peak pressures (for all peaks defined for the station)
+
         peaks = stn.get('peaks', [])
         for pidx, peak in enumerate(peaks, start=1):
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
             q = q_val
-            kv = kv_dict[i]
-            dr = dr_val
-            v_i = vfun(q, seg['D'])
-            re_i = v_i * seg['D'] / (kv * 1e-6)
-            arg_i = (seg['rough']/seg['D']/3.7) + (5.74/(re_i**0.9)) + 1e-10
-            f_i = 0.25/(log10(arg_i)**2) * (1 - dr/100.0)
-            DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * g))
+            dr = pyo.value(model.DR_seg[i]) if i in dra_segments else 0.0
+            f_i = ffun(q, D, seg['rough'], kv, dr)
+            v_i = vfun(q, D)
+            DH_peak = f_i * (L_peak / D) * (v_i ** 2 / (2 * 9.81))
             static_h = elev_k - seg['start_elev']
             peak_head = pyo.value(model.RH[i]) - static_h - DH_peak
             result[f"peak_head_{name}_{pidx}"] = peak_head
 
-    # ---- Output for looplines: include flows, velocities, head loss, DR, etc. ----
     for seg in segments:
         if seg['type'] == 'loop':
             key = f"loopline_{seg['from_node']}_{seg['to_node']}"
             q_val = pyo.value(model.Q[seg['idx']])
-            v_val = vfun(q_val, seg['D'])
-            re_val = v_val * seg['D'] / (kv_dict.get(seg['from_node'], 1.1) * 1e-6)
-            dr_val = pyo.value(model.DR_seg[seg['idx']])
-            arg_val = (seg['rough']/seg['D']/3.7) + (5.74/(re_val**0.9)) + 1e-10
-            f_val = 0.25/(log10(arg_val)**2) * (1 - dr_val/100.0)
-            hl_val = f_val * ((seg['L']*1000.0)/seg['D']) * (v_val**2/(2*g))
+            D = seg['D']
+            kv = kv_dict.get(seg['from_node'], 1.1)
+            dr = pyo.value(model.DR_seg[seg['idx']])
+            v_val = vfun(q_val, D)
+            re_val = Refun(q_val, D, kv)
+            f_val = ffun(q_val, D, seg['rough'], kv, dr)
+            hl_val = pyo.value(headloss_expr(model, seg['idx']))
             result[f"{key}_flow_m3hr"] = q_val
             result[f"{key}_velocity_ms"] = v_val
             result[f"{key}_reynolds"] = re_val
             result[f"{key}_friction"] = f_val
             result[f"{key}_head_loss_m"] = hl_val
-            result[f"{key}_drag_reduction_percent"] = dr_val
+            result[f"{key}_drag_reduction_percent"] = dr
             result[f"{key}_power_cost"] = 0.0
-            # --- Loopline peaks output (if any) ---
             if seg.get('peaks'):
                 for pidx, peak in enumerate(seg['peaks'], start=1):
                     L_peak = peak['loc'] * 1000.0
                     elev_k = peak['elev']
                     q = q_val
-                    kv = kv_dict.get(seg['from_node'], 1.1)
-                    dr = dr_val
-                    v_i = vfun(q, seg['D'])
-                    re_i = v_i * seg['D'] / (kv * 1e-6)
-                    arg_i = (seg['rough']/seg['D']/3.7) + (5.74/(re_i**0.9)) + 1e-10
-                    f_i = 0.25/(log10(arg_i)**2) * (1 - dr/100.0)
-                    DH_peak = f_i * (L_peak / seg['D']) * (v_i ** 2 / (2 * g))
+                    f_i = ffun(q, D, seg['rough'], kv, dr)
+                    v_i = vfun(q, D)
+                    DH_peak = f_i * (L_peak / D) * (v_i ** 2 / (2 * 9.81))
                     static_h = elev_k - seg['start_elev']
                     peak_head = pyo.value(model.RH[seg['from_node']]) - static_h - DH_peak
                     result[f"{key}_peak_{pidx}"] = peak_head
