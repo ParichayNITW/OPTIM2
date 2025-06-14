@@ -734,7 +734,7 @@ with tab2:
         st.plotly_chart(fig_dra, use_container_width=True)
 
         # --- Pie chart: Total cost distribution by station ---
-        st.markdown("#### Cost Contribution by Station (Total)")
+        st.markdown("#### Cost Contribution by Station")
         fig_pie = px.pie(
             df_cost,
             values="Total Cost (INR/day)",
