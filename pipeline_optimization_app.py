@@ -1091,28 +1091,25 @@ with tab4:
         if not stn.get('is_pump', False):
             continue
         key = stn['name'].lower().replace(' ', '_')
-        # ---- Get Pump Curve Coefficients for this station ----
         A = res.get(f"coef_A_{key}", 0)
         B = res.get(f"coef_B_{key}", 0)
         C = res.get(f"coef_C_{key}", 0)
         N_min = int(res.get(f"min_rpm_{key}", 0))
         N_max = int(res.get(f"dol_{key}", 0))
-        # ---- Get System Curve Coefficients (use matching segment/pipeline) ----
-        # If you have segment-specific system coefficients, use those here
+
         sys_A = res.get(f"coef_A_sys_{key}", None)
         sys_B = res.get(f"coef_B_sys_{key}", None)
         sys_C = res.get(f"coef_C_sys_{key}", None)
         if sys_A is None:
-            sys_A = A  # Fallback: use pump coefficients if system not defined
+            sys_A = A
             sys_B = B
             sys_C = C
-        # ---- Flow range ----
+
         pump_flow = st.session_state.get("FLOW", 1000.0)
         flows = np.linspace(0, 1.5 * pump_flow, 400)
-        # ---- System Curve ----
-        H_sys = sys_A * flows**2 + sys_B * flows + sys_C
-        H_sys = np.clip(H_sys, 0, None)
-        # ---- Figure ----
+        # --- Compute System Head, CLIP negative heads to zero ---
+        H_sys = np.clip(sys_A * flows**2 + sys_B * flows + sys_C, 0, None)
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=flows, y=H_sys,
@@ -1121,22 +1118,30 @@ with tab4:
             line=dict(width=4, color="#37474F", dash='solid'),
             hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
         ))
-        # ---- Pump Curves at Different Speeds ----
+
         color_seq = ['#1976D2', '#43A047', '#F9A825', '#E53935', '#8E24AA', '#00897B']
-        step = max(100, int((N_max-N_min)/4))  # Show max 5 pump curves
-        op_points = []  # To store intersection data
+        step = max(100, int((N_max-N_min)/4))
+        op_points = []
         for idx, rpm in enumerate(range(N_min, N_max+1, step)):
+            # --- Compute Pump Head at this RPM, CLIP negative heads to zero ---
             H_pump = (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows)
-            # Find intersection (where H_pump - H_sys crosses zero)
-            diff = H_pump - H_sys
+            H_pump = np.clip(H_pump, 0, None)
+            # Only consider the domain where both curves are positive:
+            valid = (H_pump > 0) & (H_sys > 0)
+            if not np.any(valid):
+                continue
+            flows_valid = flows[valid]
+            H_sys_valid = H_sys[valid]
+            H_pump_valid = H_pump[valid]
+            # --- Intersection search only on valid domain ---
+            diff = H_pump_valid - H_sys_valid
             sign_change = np.where(np.diff(np.sign(diff)))[0]
             if len(sign_change) > 0:
                 k = sign_change[0]
-                # Linear interpolation to get intersection
-                x0, x1 = flows[k], flows[k+1]
+                x0, x1 = flows_valid[k], flows_valid[k+1]
                 y0, y1 = diff[k], diff[k+1]
                 q_op = x0 - y0 * (x1 - x0) / (y1 - y0)
-                h_op = np.interp(q_op, flows, H_sys)
+                h_op = np.interp(q_op, flows_valid, H_sys_valid)
                 op_points.append((rpm, q_op, h_op))
                 fig.add_trace(go.Scatter(
                     x=[q_op], y=[h_op],
@@ -1148,13 +1153,13 @@ with tab4:
                     hovertemplate=f"Operating Point:<br>Flow: {q_op:.2f} m³/hr<br>Head: {h_op:.2f} m<br>Speed: {rpm} rpm"
                 ))
             fig.add_trace(go.Scatter(
-                x=flows, y=H_pump,
+                x=flows_valid, y=H_pump_valid,
                 mode="lines",
                 name=f"Pump Curve ({rpm} rpm)",
                 line=dict(width=3, color=color_seq[idx % len(color_seq)], dash='dot'),
                 hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
             ))
-        # ---- Beautify layout ----
+
         fig.update_layout(
             title=f"Pump-System Interaction: {stn['name']}",
             xaxis_title="Flow (m³/hr)",
@@ -1167,7 +1172,6 @@ with tab4:
             plot_bgcolor="#f5f8fc"
         )
         st.plotly_chart(fig, use_container_width=True)
-        # ---- KPI Table for Operating Points ----
         if op_points:
             st.markdown("##### Operating Points")
             df_ops = pd.DataFrame({
@@ -1181,6 +1185,7 @@ with tab4:
                 df_ops.to_csv(index=False).encode(),
                 file_name=f"operating_points_{stn['name']}.csv"
             )
+
 
 
 # ---- Tab 5: Pump-System Interaction ----
