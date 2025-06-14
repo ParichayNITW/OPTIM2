@@ -998,67 +998,66 @@ with tab3:
             st.plotly_chart(fig_p, use_container_width=True)
         
         # --- 6. Power vs Speed/Flow ---
-        with power_tabs[0]:
-            st.markdown("<div class='section-title'>Power vs Speed (at constant Flow)</div>", unsafe_allow_html=True)
+        with power_tabs[1]:
+            st.markdown("<div class='section-title'>Power vs Flow (THEORETICAL PUMP CURVE, DOL Speed)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ', '_')
                 rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-                flow = res.get(f"flow_{key}", 0.0)
-                if flow == 0.0:
-                    st.warning(f"{stn['name']}: No flow value in summary table, skipping plot.")
-                    continue
-                min_rpm = int(stn.get('MinRPM', 1000))
-                max_rpm = int(stn.get('DOL', 1500))
-                # Get poly head and efficiency coefficients at DOL
+                # Use the same flow range as was fitted for the curves (say, 0 to 1.2 * max of fit curve)
+                # Here, let's use a generic range unless you want to use stored curve data
+                Q_min, Q_max = 0, st.session_state.get("FLOW", 1000.0) * 1.2
+                flows = np.linspace(Q_min, Q_max, 40)
+                # Pump curve coefficients
                 A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
                 P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
                 DOL = float(stn.get('DOL', 1500))
-                # Calculate Head and Efficiency at DOL (Rated) speed for this flow
-                head_DOL = (A*flow**2 + B*flow + C)
-                eff_DOL = (P*flow**4 + Qc*flow**3 + R*flow**2 + S*flow + T)
-                eff_DOL = max(eff_DOL, 1e-4)  # Avoid divide by zero
-                # Calculate Power at DOL for this flow
-                power_DOL = (rho * flow * 9.81 * head_DOL) / (3600*1000*eff_DOL/100)
-                # RPM range
-                rpms = np.linspace(min_rpm, max_rpm, 40)
-                powers = power_DOL * (rpms/DOL)**3
+                heads = A*flows**2 + B*flows + C
+                effs = P*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T
+                effs = np.clip(effs, 5, 100)  # Clamp efficiency to physical range (5% to 100%)
+                powers = (rho * flows * 9.81 * heads) / (3600*1000*effs/100)
+                powers = np.where(flows > 0, powers, 0.0)  # Zero power at zero flow
                 import plotly.graph_objects as go
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=rpms, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
+                fig.add_trace(go.Scatter(x=flows, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
                 fig.update_layout(
-                    title=f"Power vs Speed: {stn['name']}",
-                    xaxis_title="Pump Speed (RPM)",
+                    title=f"Power vs Flow (Pump Curve, DOL): {stn['name']}",
+                    xaxis_title="Flow (m³/hr)",
                     yaxis_title="Power (kW)",
                     height=400
                 )
                 st.plotly_chart(fig, use_container_width=True)
-        
-        # --- Power vs Flow ---
-        with power_tab:
-            st.markdown("<div class='section-title'>Power vs Flow (at DOL Speed)</div>", unsafe_allow_html=True)
+
+        # --- Power vs Speed (THEORETICAL) ---
+        with power_tabs[0]:
+            st.markdown("<div class='section-title'>Power vs Speed (THEORETICAL PUMP CURVE, fixed Flow)</div>", unsafe_allow_html=True)
             for idx, stn in enumerate(stations_data, start=1):
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ', '_')
                 rho = rho_list[idx-1] if idx-1 < len(rho_list) else 850
-                max_flow = res.get(f"flow_{key}", 0.0) * 1.2
-                min_flow = 0.0
+                # Take a reasonable flow for this curve (midpoint of fitted curve or design flow)
+                Q_rated = st.session_state.get("FLOW", 1000.0)  # You can also use flow at BEP
                 DOL = float(stn.get('DOL', 1500))
-                # Get poly head and efficiency coefficients at DOL
+                min_rpm = int(stn.get('MinRPM', 1000))
+                max_rpm = int(DOL)
+                rpms = np.linspace(min_rpm, max_rpm, 40)
+                # Get pump head and efficiency at DOL, for this Q_rated
                 A = stn.get('A', 0); B = stn.get('B', 0); C = stn.get('C', 0)
                 P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0); S = stn.get('S', 0); T = stn.get('T', 0)
-                flows = np.linspace(min_flow, max_flow, 40)
-                heads = A*flows**2 + B*flows + C
-                effs = P*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T
-                effs = np.where(effs <= 0, 1e-4, effs)  # avoid zero or negative
-                powers = (rho * flows * 9.81 * heads) / (3600*1000*effs/100)
+                head_DOL = (A*Q_rated**2 + B*Q_rated + C)
+                eff_DOL = (P*Q_rated**4 + Qc*Q_rated**3 + R*Q_rated**2 + S*Q_rated + T)
+                eff_DOL = max(eff_DOL, 5)  # Clamp minimum
+                power_DOL = (rho * Q_rated * 9.81 * head_DOL) / (3600*1000*eff_DOL/100)
+                # Use affinity law: Power ~ (N/N_rated)^3 at fixed flow
+                powers = power_DOL * (rpms/DOL)**3
+                powers = np.where(rpms > 0, powers, 0.0)
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=flows, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
+                fig.add_trace(go.Scatter(x=rpms, y=powers, mode='lines+markers', name=f'{stn["name"]}'))
                 fig.update_layout(
-                    title=f"Power vs Flow: {stn['name']}",
-                    xaxis_title="Flow (m³/hr)",
+                    title=f"Power vs Speed (Pump Curve, Q={Q_rated:.1f} m³/hr): {stn['name']}",
+                    xaxis_title="Pump Speed (RPM)",
                     yaxis_title="Power (kW)",
                     height=400
                 )
