@@ -1084,39 +1084,77 @@ with tab3:
                 )
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
-
-
 # ---- Tab 4: System Curves ----
 with tab4:
-    if "last_res" not in st.session_state:
-        st.info("Please run optimization.")
+    st.markdown("<div class='section-title'>Pipeline System Curve (TDH vs Flow)</div>", unsafe_allow_html=True)
+    # Assume single system curve for now (could extend to segment-wise if required)
+    # You may want to pull these from user input or backend as appropriate:
+    # For this code: H_static, L_total, D, f, etc., can be customized.
+    # For now, using backend coefficients for total head loss approximation:
+    # System: H_sys(Q) = H_static + A*Q^2 + B*Q + C (use segment 1 as "system" or aggregate)
+    # Note: If you have the actual system equation, use it.
+    # For this demo, using coef_A, coef_B, coef_C from the *first pump station*.
+    # If that's not correct, substitute your own.
+
+    # Select coefficients:
+    # If you want to use segment 1 for "system," adapt as needed:
+    sys_A = res.get("coef_A_system", None)
+    sys_B = res.get("coef_B_system", None)
+    sys_C = res.get("coef_C_system", None)
+    if sys_A is None:
+        # fallback: use first pump's coefficients
+        for stn in stations_data:
+            if stn.get('is_pump', False):
+                sys_A = res.get(f"coef_A_{stn['name'].lower().replace(' ','_')}", 0)
+                sys_B = res.get(f"coef_B_{stn['name'].lower().replace(' ','_')}", 0)
+                sys_C = res.get(f"coef_C_{stn['name'].lower().replace(' ','_')}", 0)
+                break
+        else:
+            sys_A = sys_B = 0; sys_C = 10  # Fallback static lift
+
+    # Define flow range: 0 to 1.2 × max pipeline flow in summary
+    max_pipe_flow = 0
+    df_summary = st.session_state.get("summary_table", None)
+    if df_summary is not None:
+        pipeline_flows = df_summary.loc[df_summary['Parameters'] == 'Pipeline Flow (m³/hr)'].values[0, 1:]
+        max_pipe_flow = np.max([float(f) for f in pipeline_flows if f is not None])
     else:
-        res = st.session_state["last_res"]
-        stations_data = st.session_state["last_stations_data"]
-        for i, stn in enumerate(stations_data, start=1):
-            if not stn.get('is_pump', False): 
-                continue
-            key = stn['name'].lower().replace(' ','_')
-            d_inner_i = stn['D'] - 2*stn['t']
-            rough = stn['rough']; L_seg = stn['L']; elev_i = stn['elev']
-            max_dr = int(stn.get('max_dr', 40))
-            curves = []
-            for dra in range(0, max_dr+1, 5):
-                flows = np.linspace(0, st.session_state.get("FLOW",1000.0), 101)
-                v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-                linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-                visc = kv_list[i-1]
-                Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                f_vals = np.where(Re_vals>0,
-                                  0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-                DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
-                SDH_vals = elev_i + DH
-                curves.append(pd.DataFrame({"Flow": flows, "SDH": SDH_vals, "DRA": dra}))
-            df_sys = pd.concat(curves)
-            fig_sys = px.line(df_sys, x="Flow", y="SDH", color="DRA", title=f"System Head ({stn['name']}) at various % DRA")
-            fig_sys.update_layout(yaxis_title="Static+Dyn Head (m)")
-            st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+        max_pipe_flow = st.session_state.get("FLOW", 1000.0)
+    flows = np.linspace(0, 1.2 * max_pipe_flow, 200)
+
+    # Compute system head
+    H_sys = sys_A * flows**2 + sys_B * flows + sys_C
+    H_sys = np.clip(H_sys, 0, None)  # Do not show negative heads
+
+    fig_sys = go.Figure()
+    fig_sys.add_trace(go.Scatter(
+        x=flows,
+        y=H_sys,
+        mode='lines+markers',
+        name='System Curve',
+        line=dict(width=4, color='#1565C0'),
+        marker=dict(size=5),
+        hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
+    ))
+    fig_sys.update_layout(
+        title="System Curve (TDH vs Flow)",
+        xaxis_title="Flow (m³/hr)",
+        yaxis_title="Total Dynamic Head (m)",
+        font=dict(size=17, family="Segoe UI"),
+        legend=dict(font=dict(size=14)),
+        hovermode='x',
+        height=430,
+        margin=dict(l=10, r=10, t=60, b=30),
+        plot_bgcolor="#f5f8fc"
+    )
+    st.plotly_chart(fig_sys, use_container_width=True)
+    # Data table for download
+    df_sys = pd.DataFrame({"Flow (m³/hr)": flows, "System Head (m)": H_sys})
+    st.download_button(
+        "📥 Download System Curve Data (CSV)",
+        df_sys.to_csv(index=False).encode(),
+        file_name="system_curve.csv"
+    )
 
 # ---- Tab 5: Pump-System Interaction ----
 with tab5:
