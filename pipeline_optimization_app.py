@@ -634,9 +634,47 @@ with tab2:
         names = [s['name'] for s in stations_data] + [terminal_name]
         keys = [n.lower().replace(' ', '_') for n in names]
 
-        # Collect stationwise cost data
+        # --- Recompute hydraulically correct segment flows and DRA cost for every station ---
+        segment_flows = []
+        flow = st.session_state.get("FLOW", 1000.0)
+        for stn in stations_data:
+            delivery = float(stn.get('delivery', 0.0))
+            supply = float(stn.get('supply', 0.0))
+            is_pump = stn.get('is_pump', False)
+            if is_pump:
+                pump_flow = flow - delivery + supply
+                segment_flows.append(flow)
+                flow = pump_flow
+            else:
+                segment_flows.append(flow)
+                flow = flow - delivery + supply
+        segment_flows.append(flow)  # For terminal
+
+        # --- Get DRA PPM values as in Tab 1 ---
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+        station_ppm = {}
+        for idx, stn in enumerate(stations_data, start=1):
+            key = stn['name'].lower().replace(' ', '_')
+            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+            dr_max = stn.get('max_dr', 0.0)
+            viscosity = kv_list[idx-1]
+            dr_use = min(dr_opt, dr_max)
+            station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+
+        # --- Compute power and DRA costs just as in summary ---
         power_costs = [float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys]
-        dra_costs = [float(res.get(f"dra_cost_{k}", 0.0) or 0.0) for k in keys]
+        dra_costs = []
+        for idx, key in enumerate(keys):
+            if key in station_ppm:
+                dra_cost = (
+                    station_ppm[key]
+                    * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                    * st.session_state["RateDRA"]
+                )
+            else:
+                dra_cost = 0.0
+            dra_costs.append(dra_cost)
         total_costs = [p + d for p, d in zip(power_costs, dra_costs)]
 
         df_cost = pd.DataFrame({
