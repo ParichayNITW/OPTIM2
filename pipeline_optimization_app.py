@@ -1230,13 +1230,14 @@ with tab5:
         DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
         SDH_vals = max(0, current_elev) + DH
         SDH_vals = np.clip(SDH_vals, 0, None)
+        legend_bool = True if (dra % 10 == 0 or dra == max_dr) else False
         fig.add_trace(go.Scatter(
             x=flows, y=SDH_vals,
             mode='lines',
             line=dict(width=1.3, color=color, shape='spline'),
-            name=f"System DRA {dra}%" if dra % 10 == 0 or dra == max_dr else None,
-            showlegend=(dra % 10 == 0 or dra == max_dr),
-            hoverinfo="skip" if not (dra % 10 == 0 or dra == max_dr) else "x+y+name"
+            name=f"System DRA {dra}%" if legend_bool else None,
+            showlegend=legend_bool,
+            hoverinfo="skip" if not legend_bool else "x+y+name"
         ))
 
     # --- 2. Plot all pump curves for all combinations and RPMs ---
@@ -1250,18 +1251,17 @@ with tab5:
                 H_pump = np.clip(H_pump, 0, None)
                 # thinner lines for non-nominal RPM, thick for DOL (rated)
                 linew = 2.5 if rpm == N_max else 1.3
+                legend_bool = True if rpm==N_max else False
                 fig.add_trace(go.Scatter(
                     x=flows, y=H_pump,
                     mode='lines',
                     line=dict(width=linew, color=color, dash='dash' if npump > 1 else 'solid', shape='spline'),
-                    name=f"{npump} Pump{'s' if npump > 1 else ''} ({rpm} rpm)" if rpm==N_max else None,
-                    showlegend=(rpm==N_max),
-                    hoverinfo="skip" if rpm!=N_max else "x+y+name"
+                    name=f"{npump} Pump{'s' if npump > 1 else ''} ({rpm} rpm)" if legend_bool else None,
+                    showlegend=legend_bool,
+                    hoverinfo="skip" if not legend_bool else "x+y+name"
                 ))
                 # --- Find intersection points with all system curves ---
                 for j, dra in enumerate(system_dra_steps):
-                    # Calculate system curve for this DRA
-                    color_sys = sample_colorscale(system_colormap, dra/max_dr)[0]
                     v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
                     Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
                     f_vals = np.where(Re_vals>0,
@@ -1269,7 +1269,6 @@ with tab5:
                     DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = max(0, current_elev) + DH
                     SDH_vals = np.clip(SDH_vals, 0, None)
-                    # Find intersection points
                     diff = H_pump - SDH_vals
                     sign_change = np.where(np.diff(np.sign(diff)))[0]
                     if len(sign_change) > 0:
