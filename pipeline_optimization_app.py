@@ -1153,130 +1153,135 @@ from math import pi
 from plotly.colors import qualitative, sample_colorscale
 
 with tab5:
-    st.markdown(
-        "<div class='section-title'>Pump-System Curves at All DRA, All Series & All RPM</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown("<div class='section-title'>Pump-System Interaction</div>", unsafe_allow_html=True)
 
-    # -------- Station Selection Dropdown --------
-    station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(stations_data)]
-    st_idx = st.selectbox("Select station (Pump-System Interaction)", range(len(stations_data)), format_func=lambda i: station_options[i])
-    stn = stations_data[st_idx]
-    key = stn['name'].lower().replace(' ','_')
-    is_pump = stn.get('is_pump', False)
-    max_dr = int(stn.get('max_dr', 40))
-    n_pumps = int(stn.get('max_pumps', 1))
-
-    # -------- Max Flow Based on Pump Data Table --------
-    df_head = st.session_state.get(f"head_data_{st_idx+1}")
-    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
-        user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
-        max_flow = np.max(user_flows)
+    if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
+        st.info("Please run optimization first to access Pump-System analysis.")
     else:
-        max_flow = st.session_state.get("FLOW", 1000.0)
-    flows = np.linspace(0, max_flow, 800)
+        res = st.session_state["last_res"]
+        stations_data = st.session_state["last_stations_data"]
 
-    # -------- Downstream Pump Bypass Logic --------
-    downstream_pumps = [s for s in stations_data[st_idx+1:] if s.get('is_pump', False)]
-    downstream_names = [f"{i+st_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
-    bypassed = []
-    if downstream_names:
-        bypassed = st.multiselect("Bypass downstream pumps (Pump-System)", downstream_names)
-    total_length = stn['L']
-    current_elev = stn['elev']
-    downstream_idx = st_idx + 1
-    while downstream_idx < len(stations_data):
-        s = stations_data[downstream_idx]
-        label = f"{downstream_idx+1}: {s['name']}"
-        total_length += s['L']
-        current_elev = s['elev']
-        if s.get('is_pump', False) and label not in bypassed:
-            break
-        downstream_idx += 1
-    if downstream_idx == len(stations_data):
-        term_elev = st.session_state["last_term_data"]["elev"]
-        current_elev = term_elev
+        # Show only pump stations in dropdown
+        pump_indices = [i for i, s in enumerate(stations_data) if s.get('is_pump', False)]
+        if not pump_indices:
+            st.warning("No pump stations defined in your pipeline setup.")
+        else:
+            station_options = [f"{i+1}: {stations_data[i]['name']}" for i in pump_indices]
+            st_choice = st.selectbox("Select Pump Station", station_options, key="ps_stn")
+            selected_index = station_options.index(st_choice)
+            stn_idx = pump_indices[selected_index]
+            stn = stations_data[stn_idx]
+            key = stn['name'].lower().replace(' ','_')
+            is_pump = stn.get('is_pump', False)
+            max_dr = int(stn.get('max_dr', 40))
+            n_pumps = int(stn.get('max_pumps', 1))
 
-    # -------- Pipe, Viscosity, Roughness --------
-    d_inner = stn['D'] - 2*stn['t']
-    rough = stn['rough']
-    linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-    kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-    visc = kv_list[st_idx]
+            # -------- Max Flow Based on Pump Data Table --------
+            df_head = st.session_state.get(f"head_data_{stn_idx+1}")
+            if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
+                max_flow = np.max(user_flows)
+            else:
+                max_flow = st.session_state.get("FLOW", 1000.0)
+            flows = np.linspace(0, max_flow, 800)
 
-    # --------- Begin Figure ---------
-    fig = go.Figure()
+            # -------- Downstream Pump Bypass Logic --------
+            downstream_pumps = [s for s in stations_data[stn_idx+1:] if s.get('is_pump', False)]
+            downstream_names = [f"{i+stn_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
+            bypassed = []
+            if downstream_names:
+                bypassed = st.multiselect("Bypass downstream pumps (Pump-System)", downstream_names)
+            total_length = stn['L']
+            current_elev = stn['elev']
+            downstream_idx = stn_idx + 1
+            while downstream_idx < len(stations_data):
+                s = stations_data[downstream_idx]
+                label = f"{downstream_idx+1}: {s['name']}"
+                total_length += s['L']
+                current_elev = s['elev']
+                if s.get('is_pump', False) and label not in bypassed:
+                    break
+                downstream_idx += 1
+            if downstream_idx == len(stations_data):
+                term_elev = st.session_state["last_term_data"]["elev"]
+                current_elev = term_elev
 
-    # -------- System Curves: All DRA, Turbo Colormap, Vivid and Bold --------
-    system_dra_steps = list(range(0, max_dr+1, 5))
-    for idx, dra in enumerate(system_dra_steps):
-        v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
-        Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-        f_vals = np.where(Re_vals>0,
-            0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
-        DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
-        SDH_vals = max(0, current_elev) + DH
-        SDH_vals = np.clip(SDH_vals, 0, None)
-        label = f"System DRA {dra}%"
-        showlegend = (dra == 0 or dra == 10 or dra == 20 or dra == max_dr)
-        color = sample_colorscale("Turbo", 0.1 + 0.8 * (idx/(len(system_dra_steps)-1)))[0]
-        fig.add_trace(go.Scatter(
-            x=flows, y=SDH_vals,
-            mode='lines',
-            line=dict(width=4 if showlegend else 2.2, color=color, dash='solid'),
-            name=label if showlegend else None,
-            showlegend=showlegend,
-            opacity=1 if showlegend else 0.67,
-            hoverinfo="skip"
-        ))
+            # -------- Pipe, Viscosity, Roughness --------
+            d_inner = stn['D'] - 2*stn['t']
+            rough = stn['rough']
+            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+            visc = kv_list[stn_idx]
 
-    # -------- Pump Curves: All Series, All RPM, Vivid Colors --------
-    pump_palettes = qualitative.Plotly + qualitative.D3 + qualitative.Bold
-    if is_pump:
-        N_min = int(res.get(f"min_rpm_{key}", 1200))
-        N_max = int(res.get(f"dol_{key}", 3000))
-        rpm_steps = np.arange(N_min, N_max+1, 100)
-        n_rpms = len(rpm_steps)
-        A = res.get(f"coef_A_{key}", 0)
-        B = res.get(f"coef_B_{key}", 0)
-        C = res.get(f"coef_C_{key}", 0)
-        for npump in range(1, n_pumps+1):
-            for idx, rpm in enumerate(rpm_steps):
-                blend = idx / max(1, n_rpms-1)
-                color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]  # Use central turbo band for brightness
-                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
-                H_pump = np.clip(H_pump, 0, None)
-                label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
-                showlegend = (idx == 0 or idx == n_rpms-1)  # Only endpoints in legend
+            # --------- Begin Figure ---------
+            fig = go.Figure()
+
+            # -------- System Curves: All DRA, Turbo Colormap, Vivid and Bold --------
+            system_dra_steps = list(range(0, max_dr+1, 5))
+            for idx, dra in enumerate(system_dra_steps):
+                v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
+                Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
+                f_vals = np.where(Re_vals>0,
+                    0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
+                SDH_vals = max(0, current_elev) + DH
+                SDH_vals = np.clip(SDH_vals, 0, None)
+                label = f"System DRA {dra}%"
+                showlegend = (dra == 0 or dra == 10 or dra == 20 or dra == max_dr)
+                color = sample_colorscale("Turbo", 0.1 + 0.8 * (idx/(len(system_dra_steps)-1)))[0]
                 fig.add_trace(go.Scatter(
-                    x=flows, y=H_pump,
+                    x=flows, y=SDH_vals,
                     mode='lines',
-                    line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
+                    line=dict(width=4 if showlegend else 2.2, color=color, dash='solid'),
                     name=label if showlegend else None,
                     showlegend=showlegend,
-                    opacity=0.92 if showlegend else 0.56,
+                    opacity=1 if showlegend else 0.67,
                     hoverinfo="skip"
                 ))
 
-    # -------- Layout Polish: Bright, Vivid, Clean --------
-    fig.update_layout(
-        title=f"<b style='color:#222'>Pump-System Curves: {stn['name']}</b>",
-        xaxis_title="Flow (m³/hr)",
-        yaxis_title="Head (m)",
-        font=dict(size=23, family="Segoe UI, Arial"),
-        legend=dict(font=dict(size=17), itemsizing="constant", borderwidth=1, bordercolor="#ddd"),
-        height=700,
-        margin=dict(l=25, r=25, t=90, b=50),
-        plot_bgcolor="#fffdf9",
-        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
-        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
-        hovermode="closest"
-    )
-    st.plotly_chart(fig, use_container_width=True)
+            # -------- Pump Curves: All Series, All RPM, Vivid Colors --------
+            pump_palettes = qualitative.Plotly + qualitative.D3 + qualitative.Bold
+            if is_pump:
+                N_min = int(res.get(f"min_rpm_{key}", 1200))
+                N_max = int(res.get(f"dol_{key}", 3000))
+                rpm_steps = np.arange(N_min, N_max+1, 100)
+                n_rpms = len(rpm_steps)
+                A = res.get(f"coef_A_{key}", 0)
+                B = res.get(f"coef_B_{key}", 0)
+                C = res.get(f"coef_C_{key}", 0)
+                for npump in range(1, n_pumps+1):
+                    for idx, rpm in enumerate(rpm_steps):
+                        blend = idx / max(1, n_rpms-1)
+                        color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
+                        H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                        H_pump = np.clip(H_pump, 0, None)
+                        label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
+                        showlegend = (idx == 0 or idx == n_rpms-1)
+                        fig.add_trace(go.Scatter(
+                            x=flows, y=H_pump,
+                            mode='lines',
+                            line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
+                            name=label if showlegend else None,
+                            showlegend=showlegend,
+                            opacity=0.92 if showlegend else 0.56,
+                            hoverinfo="skip"
+                        ))
 
-
-
-
+            # -------- Layout Polish: Bright, Vivid, Clean --------
+            fig.update_layout(
+                title=f"<b style='color:#222'>Pump-System Curves: {stn['name']}</b>",
+                xaxis_title="Flow (m³/hr)",
+                yaxis_title="Head (m)",
+                font=dict(size=23, family="Segoe UI, Arial"),
+                legend=dict(font=dict(size=17), itemsizing="constant", borderwidth=1, bordercolor="#ddd"),
+                height=700,
+                margin=dict(l=25, r=25, t=90, b=50),
+                plot_bgcolor="#fffdf9",
+                xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
+                yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
+                hovermode="closest"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 
 # ---- Tab 6: DRA Curves ----
