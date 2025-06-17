@@ -95,7 +95,6 @@ for cst, fname in DRA_CSV_FILES.items():
 def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
     cst_list = sorted(dra_curve_data.keys())
     visc = float(visc)
-    # --- New: always round to nearest 0.5 ppm ---
     def round_ppm(val, step=0.5):
         return round(val / step) * step
     if visc <= cst_list[0]:
@@ -122,6 +121,25 @@ def _ppm_from_df(df, dr):
         return y[-1]
     else:
         return np.interp(dr, x, y)
+
+def compute_physically_correct_flows(stations_data, initial_flow):
+    segment_flows, pump_flows = [], []
+    flow = initial_flow
+    for stn in stations_data:
+        delivery = float(stn.get('delivery', 0.0))
+        supply = float(stn.get('supply', 0.0))
+        is_pump = stn.get('is_pump', False)
+        if is_pump:
+            pump_flow = flow - delivery + supply
+            pump_flows.append(pump_flow)
+            segment_flows.append(flow)
+            flow = pump_flow
+        else:
+            pump_flows.append(None)
+            segment_flows.append(flow)
+            flow = flow - delivery + supply
+    segment_flows.append(flow)  # For terminal
+    return segment_flows, pump_flows
 
 # --- User Login Logic ---
 
