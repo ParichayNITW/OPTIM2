@@ -545,7 +545,7 @@ with tab1:
             dra_cost = ppm * (seg_flow * 1000 * 24 / 1e6) * st.session_state["RateDRA"]
             summary[nm] = [
                 seg_flow,
-                (pump_flows[idx] if idx < len(pump_flows) else np.nan)
+                (pump_flows[idx] if idx < len(pump_flows) else np.nan),
                 res.get(f"power_cost_{key}",0.0) or 0.0,
                 dra_cost,
                 ppm,
