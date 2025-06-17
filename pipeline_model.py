@@ -292,7 +292,7 @@ def solve_pipeline(
         # DRA cost at this station
         viscosity = kv_dict[i]
         segment_flow = segment_flows[i-1]
-        drag_red = float(pyo.value(model.DR[i]) if model.DR[i].is_fixed() else model.DR[i])
+        drag_red = float(pyo.value(model.DR[i]))
         ppm = get_ppm_for_drag_reduction(dra_curves, viscosity, drag_red)
         dra_cost = ppm * (segment_flow * 1000.0 * 24.0 / 1e6) * RateDRA  # PPM × m³/day × rate
 
