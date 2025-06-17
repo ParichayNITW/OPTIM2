@@ -458,7 +458,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 if run:
     with st.spinner("Solving optimization..."):
         stations_data = st.session_state.stations
-        term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+        term_data = {"name": st.session_state.get("terminal_name", "Terminal"), "elev": st.session_state.get("terminal_elev",0.0), "min_residual": st.session_state.get("terminal_head",50.0)}
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -491,7 +491,7 @@ if run:
             stn['peaks'] = peaks_list
         linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
+        res = solve_pipeline(stations_data, term_data, st.session_state.get("FLOW",1000.0), kv_list, rho_list, st.session_state.get("RateDRA",500.0), st.session_state.get("Price_HSD",70.0), linefill_df.to_dict())
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
@@ -511,8 +511,6 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 ])
 
 # ---- Tab 1: Summary ----
-import numpy as np
-
 with tab1:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
@@ -522,80 +520,89 @@ with tab1:
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
 
-        # --- Compute hydraulically correct flows for every segment and pump ---
-        segment_flows = []
-        pump_flows = []
-        flow = st.session_state.get("FLOW", 1000.0)
-        for stn in stations_data:
-            delivery = float(stn.get('delivery', 0.0))
-            supply = float(stn.get('supply', 0.0))
-            is_pump = stn.get('is_pump', False)
-            if is_pump:
-                pump_flow = flow - delivery + supply
-                pump_flows.append(pump_flow)
-                segment_flows.append(flow)
-                flow = pump_flow
-            else:
-                pump_flows.append(np.nan)
-                segment_flows.append(flow)
-                flow = flow - delivery + supply
-        segment_flows.append(flow)  # For terminal
+        # --- Compute correct segment/pump flows ---
+        segment_flows, pump_flows = compute_physically_correct_flows(
+            stations_data, st.session_state.get("FLOW", 1000.0)
+        )
 
-        # DRA/PPM summary and table columns as before
-        station_dr_capped = {}
-        station_ppm = {}
+        # --- Get segment-wise viscosity (kv_list) for PPM and DRA cost ---
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-        for idx, stn in enumerate(stations_data, start=1):
-            key = stn['name'].lower().replace(' ', '_')
-            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-            dr_max = stn.get('max_dr', 0.0)
-            viscosity = kv_list[idx-1]
-            dr_use = min(dr_opt, dr_max)
-            station_dr_capped[key] = dr_use
-            ppm = get_ppm_for_dr(viscosity, dr_use)
-            station_ppm[key] = ppm
 
         params = [
-            "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-            "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
+            "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
+            "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.",
             "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
         ]
         summary = {"Parameters": params}
 
         for idx, nm in enumerate(names):
             key = nm.lower().replace(' ','_')
-            # For DRA cost at each station, use hydraulically-correct flow
-            if key in station_ppm:
-                dra_cost = (
-                    station_ppm[key]
-                    * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                    * st.session_state["RateDRA"]
-                )
-            else:
-                dra_cost = 0.0
-
-            # For numeric columns, always use np.nan if not available
-            pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
+            viscosity = kv_list[idx-1] if idx < len(kv_list) else kv_list[-1]
+            drag_reduction = res.get(f"drag_reduction_{key}", 0.0)
+            ppm = get_ppm_for_dr(viscosity, drag_reduction)
+            seg_flow = segment_flows[idx]
+            dra_cost = ppm * (seg_flow * 1000 * 24 / 1e6) * st.session_state["RateDRA"]
             summary[nm] = [
-                segment_flows[idx],
-                pumpflow,
-                res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                seg_flow,
+                pump_flows[idx] if pump_flows[idx] is not None else np.nan,
+                res.get(f"power_cost_{key}",0.0) or 0.0,
                 dra_cost,
-                station_ppm.get(key, np.nan),
-                int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
-                res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
-                res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
-                res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
-                res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
-                res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-                res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
-                res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
-                res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
-                res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                ppm,
+                int(res.get(f"num_pumps_{key}",0)) or 0,
+                res.get(f"speed_{key}",0.0) or 0.0,
+                res.get(f"efficiency_{key}",0.0) or 0.0,
+                res.get(f"reynolds_{key}",0.0) or 0.0,
+                res.get(f"head_loss_{key}",0.0) or 0.0,
+                res.get(f"velocity_{key}",0.0) or 0.0,
+                res.get(f"residual_head_{key}",0.0) or 0.0,
+                res.get(f"sdh_{key}",0.0) or 0.0,
+                res.get(f"maop_{key}",0.0) or 0.0,
+                drag_reduction
             ]
 
         df_sum = pd.DataFrame(summary)
+
+        # --- Format as per your style ---
+        for col in df_sum.columns:
+            if col not in ["Parameters", "No. of Pumps"]:
+                df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+        if "No. of Pumps" in df_sum.columns:
+            df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
+
+        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+        st.dataframe(df_sum, use_container_width=True, hide_index=True)
+        st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+
+        # --- KPI summaries as before ---
+        total_cost = res.get('total_cost', 0)
+        if isinstance(total_cost, str):
+            total_cost = float(total_cost.replace(',', ''))
+        total_pumps = 0
+        effs = []
+        speeds = []
+        for stn in stations_data:
+            key = stn['name'].lower().replace(' ','_')
+            npump = int(res.get(f"num_pumps_{key}", 0))
+            if npump > 0:
+                total_pumps += npump
+                eff = float(res.get(f"efficiency_{key}", 0.0))
+                speed = float(res.get(f"speed_{key}", 0.0))
+                for _ in range(npump):
+                    effs.append(eff)
+                    speeds.append(speed)
+        avg_eff = sum(effs)/len(effs) if effs else 0.0
+        avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
+        st.markdown(
+            f"""<br>
+            <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
+            <b>No. of operating Pumps:</b> {total_pumps}<br>
+            <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
+            <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
+            """,
+            unsafe_allow_html=True
+        )
+
 
         # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
         for col in df_sum.columns:
