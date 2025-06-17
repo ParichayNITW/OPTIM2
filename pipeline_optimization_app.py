@@ -607,7 +607,10 @@ with tab1:
         # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
         for col in df_sum.columns:
             if col not in ["Parameters", "No. of Pumps"]:
-                df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+                df_sum[col] = df_sum[col].apply(
+                    lambda x: f"{float(x):.2f}" if (pd.notna(x) and isinstance(x, (int, float, np.floating))) else ""
+                )
+
         if "No. of Pumps" in df_sum.columns:
             df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
 
