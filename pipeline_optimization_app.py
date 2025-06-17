@@ -537,29 +537,31 @@ with tab1:
         summary = {"Parameters": params}
 
         for idx, nm in enumerate(names):
-            key = nm.lower().replace(' ','_')
-            viscosity = kv_list[idx-1] if idx < len(kv_list) else kv_list[-1]
+            key = nm.lower().replace(' ', '_')
+            viscosity = kv_list[idx] if idx < len(kv_list) else kv_list[-1]
             drag_reduction = res.get(f"drag_reduction_{key}", 0.0)
             ppm = get_ppm_for_dr(viscosity, drag_reduction)
-            seg_flow = segment_flows[idx]
-            dra_cost = ppm * (seg_flow * 1000 * 24 / 1e6) * st.session_state["RateDRA"]
+            seg_flow = segment_flows[idx] if idx < len(segment_flows) else np.nan
+            pump_flow = pump_flows[idx] if idx < len(pump_flows) and pump_flows[idx] is not None else np.nan
+            dra_cost = ppm * (seg_flow * 1000 * 24 / 1e6) * st.session_state["RateDRA"] if not np.isnan(seg_flow) else 0
             summary[nm] = [
                 seg_flow,
-                (pump_flows[idx] if idx < len(pump_flows) else np.nan),
-                res.get(f"power_cost_{key}",0.0) or 0.0,
+                pump_flow,
+                res.get(f"power_cost_{key}", 0.0) or 0.0,
                 dra_cost,
                 ppm,
-                int(res.get(f"num_pumps_{key}",0)) or 0,
-                res.get(f"speed_{key}",0.0) or 0.0,
-                res.get(f"efficiency_{key}",0.0) or 0.0,
-                res.get(f"reynolds_{key}",0.0) or 0.0,
-                res.get(f"head_loss_{key}",0.0) or 0.0,
-                res.get(f"velocity_{key}",0.0) or 0.0,
-                res.get(f"residual_head_{key}",0.0) or 0.0,
-                res.get(f"sdh_{key}",0.0) or 0.0,
-                res.get(f"maop_{key}",0.0) or 0.0,
+                int(res.get(f"num_pumps_{key}", 0)) or 0,
+                res.get(f"speed_{key}", 0.0) or 0.0,
+                res.get(f"efficiency_{key}", 0.0) or 0.0,
+                res.get(f"reynolds_{key}", 0.0) or 0.0,
+                res.get(f"head_loss_{key}", 0.0) or 0.0,
+                res.get(f"velocity_{key}", 0.0) or 0.0,
+                res.get(f"residual_head_{key}", 0.0) or 0.0,
+                res.get(f"sdh_{key}", 0.0) or 0.0,
+                res.get(f"maop_{key}", 0.0) or 0.0,
                 drag_reduction
             ]
+
 
         df_sum = pd.DataFrame(summary)
 
