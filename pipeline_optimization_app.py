@@ -520,12 +520,10 @@ with tab1:
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
 
-        # --- Compute correct segment/pump flows ---
         segment_flows, pump_flows = compute_physically_correct_flows(
             stations_data, st.session_state.get("FLOW", 1000.0)
         )
 
-        # --- Get segment-wise viscosity (kv_list) for PPM and DRA cost ---
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
 
@@ -562,15 +560,18 @@ with tab1:
                 drag_reduction
             ]
 
-
         df_sum = pd.DataFrame(summary)
 
-        # --- Format as per your style ---
+        # --- Format only numeric columns ---
         for col in df_sum.columns:
             if col not in ["Parameters", "No. of Pumps"]:
-                df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+                df_sum[col] = pd.to_numeric(df_sum[col], errors='coerce')
+                df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "")
         if "No. of Pumps" in df_sum.columns:
             df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
+
+        # Save for later use if needed
+        st.session_state["summary_table"] = df_sum
 
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         st.dataframe(df_sum, use_container_width=True, hide_index=True)
@@ -584,7 +585,7 @@ with tab1:
         effs = []
         speeds = []
         for stn in stations_data:
-            key = stn['name'].lower().replace(' ','_')
+            key = stn['name'].lower().replace(' ', '_')
             npump = int(res.get(f"num_pumps_{key}", 0))
             if npump > 0:
                 total_pumps += npump
@@ -605,49 +606,6 @@ with tab1:
             unsafe_allow_html=True
         )
 
-
-        # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
-        for col in df_sum.columns:
-            if col not in ["Parameters", "No. of Pumps"]:
-                df_sum[col] = df_sum[col].apply(
-                    lambda x: f"{float(x):.2f}" if (pd.notna(x) and isinstance(x, (int, float, np.floating))) else ""
-                )
-
-        if "No. of Pumps" in df_sum.columns:
-            df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
-
-        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-        st.dataframe(df_sum, use_container_width=True, hide_index=True)
-        st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-
-        # KPI summaries as before
-        total_cost = res.get('total_cost', 0)
-        if isinstance(total_cost, str):
-            total_cost = float(total_cost.replace(',', ''))
-        total_pumps = 0
-        effs = []
-        speeds = []
-        for stn in stations_data:
-            key = stn['name'].lower().replace(' ','_')
-            npump = int(res.get(f"num_pumps_{key}", 0))
-            if npump > 0:
-                total_pumps += npump
-                eff = float(res.get(f"efficiency_{key}", 0.0))
-                speed = float(res.get(f"speed_{key}", 0.0))
-                for _ in range(npump):
-                    effs.append(eff)
-                    speeds.append(speed)
-        avg_eff = sum(effs)/len(effs) if effs else 0.0
-        avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
-        st.markdown(
-            f"""<br>
-            <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
-            <b>No. of operating Pumps:</b> {total_pumps}<br>
-            <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
-            <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
-            """,
-            unsafe_allow_html=True
-        )
 
 # ---- Tab 2: Cost Breakdown ----
 import numpy as np
