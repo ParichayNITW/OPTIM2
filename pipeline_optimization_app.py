@@ -722,7 +722,7 @@ with tab3:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
-        perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
+        perf_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
             "Velocity & Re", 
             "Pump Characteristic Curve", "Pump Efficiency Curve",
             "Pressure vs Pipeline Length", "Power vs Speed/Flow"
