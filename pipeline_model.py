@@ -170,7 +170,7 @@ def solve_pipeline(
                 model.PPM[i], model.DR[i],
                 pw_pts=list(DR_pts),
                 pw_constr_type='EQ',
-                f_rule=lambda m, x: float(np.interp(x, DR_pts, PPM_pts)),
+                f_rule=lambda *args: float(np.interp(args[-1], DR_pts, PPM_pts)),
                 pw_repn='SOS2'
             )
         )
