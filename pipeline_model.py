@@ -5,6 +5,65 @@ from math import log10, pi
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
+import os
+import pyomo.environ as pyo
+from pyomo.opt import SolverManagerFactory
+from math import log10, pi
+import pandas as pd
+import numpy as np
+
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+
+# ---- DRA Curve Loading & Interpolation Functions ----
+
+DRA_CSV_FILES = {
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv"
+}
+DRA_CURVE_DATA = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
+        DRA_CURVE_DATA[cst] = pd.read_csv(fname)
+    else:
+        DRA_CURVE_DATA[cst] = None
+
+def _ppm_from_df(df, dr):
+    if df is None:
+        return 0
+    x = df['%Drag Reduction'].values
+    y = df['PPM'].values
+    if dr <= x[0]:
+        return y[0]
+    elif dr >= x[-1]:
+        return y[-1]
+    else:
+        return np.interp(dr, x, y)
+
+def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
+    cst_list = sorted([c for c in dra_curve_data.keys() if dra_curve_data[c] is not None])
+    visc = float(visc)
+    if not cst_list:
+        return 0
+    if visc <= cst_list[0]:
+        df = dra_curve_data[cst_list[0]]
+        return _ppm_from_df(df, dr)
+    elif visc >= cst_list[-1]:
+        df = dra_curve_data[cst_list[-1]]
+        return _ppm_from_df(df, dr)
+    else:
+        lower = max([c for c in cst_list if c <= visc])
+        upper = min([c for c in cst_list if c >= visc])
+        df_lower = dra_curve_data[lower]
+        df_upper = dra_curve_data[upper]
+        ppm_lower = _ppm_from_df(df_lower, dr)
+        ppm_upper = _ppm_from_df(df_upper, dr)
+        return np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
 ):
