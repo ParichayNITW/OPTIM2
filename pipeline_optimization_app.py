@@ -579,10 +579,18 @@ with tab1:
         st.dataframe(df_sum, use_container_width=True, hide_index=True)
         st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
 
-        # KPI summaries as before
-        total_cost = res.get('total_cost', 0)
-        if isinstance(total_cost, str):
-            total_cost = float(total_cost.replace(',', ''))
+        # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
+        total_cost = 0.0
+        for idx, stn in enumerate(stations_data):
+            key = stn['name'].lower().replace(' ', '_')
+            power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+            dra_cost = (
+                station_ppm.get(key, 0.0)
+                * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                * st.session_state["RateDRA"]
+            )
+            total_cost += power_cost + dra_cost
+        
         total_pumps = 0
         effs = []
         speeds = []
@@ -598,6 +606,7 @@ with tab1:
                     speeds.append(speed)
         avg_eff = sum(effs)/len(effs) if effs else 0.0
         avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
+        
         st.markdown(
             f"""<br>
             <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
