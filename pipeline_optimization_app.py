@@ -735,6 +735,14 @@ with tab3:
                 "Velocity (m/s)": [res.get(f"velocity_{s['name'].lower().replace(' ','_')}", 0) for s in stations_data],
                 "Reynolds Number": [res.get(f"reynolds_{s['name'].lower().replace(' ','_')}", 0) for s in stations_data]
             })
+            df_hloss = pd.DataFrame({
+                "Station": [s['name'] for s in stations_data],
+                "Head Loss (m)": [
+                    res.get(f"head_loss_{s['name'].lower().replace(' ','_')}", 0)
+                    for s in stations_data
+                ]
+            })
+
             fig_h = go.Figure(go.Bar(
                 x=df_hloss["Station"], y=df_hloss["Head Loss (m)"],
                 marker_color='#1976D2',
