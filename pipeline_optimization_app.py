@@ -494,7 +494,7 @@ if run:
         linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         # --- MAIN CALL: call backend, pass all required
-        res = solve_pipeline(stations_data, term_data, st.session_state.get("FLOW",1000.0), kv_list, rho_list, st.session_state.get("RateDRA",500.0), st.session_state.get("Price_HSD",70.0), linefill_df.to_dict())
+        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, './')  # If CSVs are in root
         import copy
         st.session_state["last_res"] = copy.deepcopy(res)
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
