@@ -989,7 +989,7 @@ with tab3:
         
         # --- 6. Power vs Speed/Flow ---
         with power_tab:
-            st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow (Engineering Accurate)</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
             # Fetch summary DataFrame for pump flows
             df_summary = st.session_state.get("summary_table", None)
             if df_summary is not None:
