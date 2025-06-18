@@ -504,25 +504,14 @@ with tab1:
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
 
-        # --- Compute hydraulically correct flows for every segment and pump ---
+        # --- Use flows from backend output only ---
         segment_flows = []
         pump_flows = []
-        flow = st.session_state.get("FLOW", 1000.0)
-        for stn in stations_data:
-            delivery = float(stn.get('delivery', 0.0))
-            supply = float(stn.get('supply', 0.0))
-            is_pump = stn.get('is_pump', False)
-            if is_pump:
-                pump_flow = flow - delivery + supply
-                pump_flows.append(pump_flow)
-                segment_flows.append(flow)
-                flow = pump_flow
-            else:
-                pump_flows.append(np.nan)
-                segment_flows.append(flow)
-                flow = flow - delivery + supply
-        segment_flows.append(flow)  # For terminal
-
+        for nm in names:
+            key = nm.lower().replace(' ', '_')
+            segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
+            pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
+            
         # DRA/PPM summary and table columns as before
         station_dr_capped = {}
         station_ppm = {}
