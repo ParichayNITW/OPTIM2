@@ -352,7 +352,11 @@ def solve_pipeline(
         dra_cost = 0.0
         for j in range(i, N+1):
             if dra_map[j] == i and drag_red > 0:
-                dra_cost += (drag_red/4) * (segment_flows[j-1]*1000.0*24.0/1e6) * Rate_DRA
+                # get viscosity for this segment
+                visc = float(KV_list[j-1]) if isinstance(KV_list[j-1], (int, float, np.floating)) else float(KV_list[j-1][0])
+                ppm = get_ppm_for_dr(visc, drag_red)
+                dra_cost += ppm * (segment_flows[j-1]*1000.0*24.0/1e6) * Rate_DRA
+
 
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
         res_head = float(pyo.value(model.RH[i]))
