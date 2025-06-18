@@ -625,20 +625,9 @@ with tab2:
 
         # --- Recompute hydraulically correct segment flows and DRA cost for every station ---
         segment_flows = []
-        flow = st.session_state.get("FLOW", 1000.0)
-        for stn in stations_data:
-            delivery = float(stn.get('delivery', 0.0))
-            supply = float(stn.get('supply', 0.0))
-            is_pump = stn.get('is_pump', False)
-            if is_pump:
-                pump_flow = flow - delivery + supply
-                segment_flows.append(flow)
-                flow = pump_flow
-            else:
-                segment_flows.append(flow)
-                flow = flow - delivery + supply
-        segment_flows.append(flow)  # For terminal
-
+        for key in keys:
+            segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
+        
         # --- Get DRA PPM values as in Tab 1 ---
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
