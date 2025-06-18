@@ -12,7 +12,7 @@ from plotly.colors import qualitative
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide")
 
-# --- Custom Styles: World Class Look ---
+#Custom Styles
 st.markdown("""
     <style>
     .red-btn {
