@@ -12,16 +12,31 @@ def load_dra_curves(base_dir='./'):
         if not os.path.exists(csv_path):
             continue
         df = pd.read_csv(csv_path)
-        df.columns = [c.strip().lower() for c in df.columns]
-        dr_col = 'drag_reduction' if 'drag_reduction' in df.columns else 'drag reduction'
+
+        # --- Robustly detect correct columns ---
+        # Lowercase and strip all column names, remove special chars
+        clean_cols = [c.strip().lower().replace('%', '').replace(' ', '').replace('_','') for c in df.columns]
+        col_map = {}
+        for idx, c in enumerate(clean_cols):
+            if 'dragreduction' in c:
+                col_map['dr'] = df.columns[idx]
+            if 'ppm' == c:
+                col_map['ppm'] = df.columns[idx]
+
+        # Check both columns are present
+        if not ('dr' in col_map and 'ppm' in col_map):
+            raise Exception(f"Columns not found in {csv_path}. Found: {df.columns}")
+
         pairs = sorted([
-            (float(row[dr_col]), float(row['ppm']))
+            (float(row[col_map['dr']]), float(row[col_map['ppm']]))
             for _, row in df.iterrows()
-            if row[dr_col] >= 0 and row['ppm'] >= 0
+            if pd.notnull(row[col_map['dr']]) and pd.notnull(row[col_map['ppm']])
+               and float(row[col_map['dr']]) >= 0 and float(row[col_map['ppm']]) >= 0
         ])
         if len(pairs) >= 2:
             dra_curves[visc] = pairs
     return dra_curves
+
 
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, dra_curve_dir='./'
