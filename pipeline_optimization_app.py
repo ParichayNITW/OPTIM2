@@ -489,7 +489,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🌀 System Curves", 
     "🔄 Pump-System",
     "📉 DRA Curves",
-    "🧊 3D Analysis and Surface Plots"
+    "🧊 3D Analysis and Surface Plots",
     "🧮 3D Pressure Profile"
 ])
 
