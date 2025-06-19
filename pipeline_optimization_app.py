@@ -10,7 +10,7 @@ import uuid
 import json
 from plotly.colors import qualitative
 
-st.set_page_config(page_title="Pipeline Optima™", layout="wide")
+st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
 #Custom Styles
 st.markdown("""
