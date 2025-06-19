@@ -147,7 +147,6 @@ def check_login():
                 &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
             </div>
         """, unsafe_allow_html=True)
-        )
         st.stop()
     with st.sidebar:
         if st.button("Logout"):
