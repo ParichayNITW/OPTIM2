@@ -1804,13 +1804,13 @@ with tab8:
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
-    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results using your actual pipeline and optimization logic.")
+    st.write("Response of model outputs to variations in inpput parameter.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first to enable sensitivity analysis.")
         st.stop()
 
-    param = st.selectbox("Parameter to vary", [
+    param = st.selectbox("Input parameter", [
         "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Diesel Price (INR/L)", "DRA Cost (INR/L)"
     ])
     output = st.selectbox("Output metric", [
