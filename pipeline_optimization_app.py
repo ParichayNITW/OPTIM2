@@ -1798,8 +1798,7 @@ with tab8:
         st.plotly_chart(fig3d, use_container_width=True)
         st.markdown(
             "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
-            "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
-            "Stations, terminal, and peaks are all shown with dynamic coloring.</div>",
+            "3D Pressure Profile <br>"
             unsafe_allow_html=True
         )
 
