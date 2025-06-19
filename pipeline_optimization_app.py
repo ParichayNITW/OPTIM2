@@ -2007,7 +2007,7 @@ with tab_bench:
 
 with tab_sim:
     st.markdown("<div class='section-title'>Annualized Savings Simulator</div>", unsafe_allow_html=True)
-    st.write("Instantly estimate annual savings from efficiency improvements, energy cost, or DRA optimizations.")
+    st.write("Annual savings from efficiency improvements, energy cost and DRA optimizations.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first.")
@@ -2015,7 +2015,7 @@ with tab_sim:
     FLOW = st.session_state["FLOW"]
     RateDRA = st.session_state["RateDRA"]
     Price_HSD = st.session_state["Price_HSD"]
-    st.write("Adjust improvement assumptions and see the impact over a year.")
+    st.write("Adjust improvement assumptions and note the impact over a year.")
     pump_eff_impr = st.slider("Pump Efficiency Improvement (%)", 0, 10, 3)
     dra_cost_impr = st.slider("DRA Price Reduction (%)", 0, 30, 5)
     flow_change = st.slider("Throughput Increase (%)", 0, 30, 0)
