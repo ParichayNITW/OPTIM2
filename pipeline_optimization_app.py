@@ -482,14 +482,15 @@ if run:
 
 
 # ---- Result Tabs ----
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
     "⚙️ Performance", 
     "🌀 System Curves", 
     "🔄 Pump-System",
     "📉 DRA Curves",
-    "🧊 3D Analysis and Surface Plots"      
+    "🧊 3D Analysis and Surface Plots"
+    "🧮 3D Pressure Profile"
 ])
 
 # ---- Tab 1: Summary ----
@@ -1550,6 +1551,29 @@ with tab7:
         """,
         unsafe_allow_html=True
     )
+
+# ---- Tab 8: 3D Pressure Profile ----
+with tab8:
+    # Collect the station elevations (or any 3rd dimension: elevation, DR%, etc.)
+    station_elevs = [stn['elev'] for stn in stations_data] + [terminal['elev']]
+    fig3d = go.Figure(data=[go.Scatter3d(
+        x=lengths, y=rh, z=station_elevs,
+        mode='lines+markers+text',
+        marker=dict(size=6, color=rh, colorscale='Viridis'),
+        text=[s['name'] for s in stations_data] + [terminal['name']],
+        textposition='top center'
+    )])
+    fig3d.update_layout(
+        scene=dict(
+            xaxis_title='Cumulative Length (km)',
+            yaxis_title='Pressure Head (mcl)',
+            zaxis_title='Elevation (m)'
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+        height=600,
+        title="3D Pressure vs Pipeline Length & Elevation"
+    )
+    st.plotly_chart(fig3d, use_container_width=True)
 
 st.markdown(
     """
