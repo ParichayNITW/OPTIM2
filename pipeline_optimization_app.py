@@ -1615,16 +1615,22 @@ with tab8:
     fig3d.update_layout(
         scene=dict(
             xaxis=dict(
-                title='Pipeline Chainage (km)', backgroundcolor='rgb(247,249,255)', gridcolor='lightgrey',
-                showspikes=False, titlefont=dict(size=20, color='#205081')
+                title=dict(text='Pipeline Chainage (km)', font=dict(size=20, color='#205081')),
+                backgroundcolor='rgb(247,249,255)',
+                gridcolor='lightgrey',
+                showspikes=False
             ),
             yaxis=dict(
-                title='Residual Head (mcl)', backgroundcolor='rgb(249,255,250)', gridcolor='lightgrey',
-                showspikes=False, titlefont=dict(size=20, color='#1C7D6C')
+                title=dict(text='Residual Head (mcl)', font=dict(size=20, color='#1C7D6C')),
+                backgroundcolor='rgb(249,255,250)',
+                gridcolor='lightgrey',
+                showspikes=False
             ),
             zaxis=dict(
-                title='Elevation (m)', backgroundcolor='rgb(252,252,252)', gridcolor='lightgrey',
-                showspikes=False, titlefont=dict(size=20, color='#8B332A')
+                title=dict(text='Elevation (m)', font=dict(size=20, color='#8B332A')),
+                backgroundcolor='rgb(252,252,252)',
+                gridcolor='lightgrey',
+                showspikes=False
             ),
             camera=dict(
                 eye=dict(x=1.65, y=1.5, z=1.0)
@@ -1651,10 +1657,11 @@ with tab8:
         """
         <div style='text-align: center; color: #566; margin-top: 1.5em; font-size: 1.04em;'>
             <i>Visualizes the residual head evolution across the pipeline route with respect to chainage and station elevation.<br>
-            <b>Tip:</b> Rotate, zoom, and hover for precise values and station names</i>
+            <b>Tip:</b> Rotate, zoom, and hover for precise values and station names!</i>
         </div>
         """, unsafe_allow_html=True
     )
+
 
 
 st.markdown(
