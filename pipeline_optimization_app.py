@@ -1131,7 +1131,6 @@ with tab4:
                               0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
             # Professional gradient: from blue to red
             n_curves = (max_dr // 5) + 1
-            # Use Plotly's blues-to-reds palette manually
             color_palette = [
                 "#1565C0", "#1976D2", "#1E88E5", "#3949AB", "#8E24AA",
                 "#D81B60", "#F4511E", "#F9A825", "#43A047", "#00897B"
@@ -1141,11 +1140,12 @@ with tab4:
             for j, dra in enumerate(range(0, max_dr+1, 5)):
                 DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                 SDH_vals = elev_i + DH
-                # Plot with bold line and custom color
+                # Fix: safe indexing for palette if only 1 curve
+                color = color_palette[color_idx[j]] if n_curves > 1 else color_palette[0]
                 fig_sys.add_trace(go.Scatter(
                     x=flows, y=SDH_vals,
                     mode='lines',
-                    line=dict(width=4, color=color_palette[color_idx[j]]),
+                    line=dict(width=4, color=color),
                     opacity=0.82,
                     name=f"DRA {dra}%",
                     hovertemplate=f"DRA: {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
@@ -1161,6 +1161,7 @@ with tab4:
                 plot_bgcolor="#f5f8fc"
             )
             st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+
 
 # ---- Tab 5: Pump-System Interaction ----
 import plotly.graph_objects as go
@@ -1234,6 +1235,7 @@ with tab5:
 
             # -------- System Curves: All DRA, Turbo Colormap, Vivid and Bold --------
             system_dra_steps = list(range(0, max_dr+1, 5))
+            n_dra = len(system_dra_steps)
             for idx, dra in enumerate(system_dra_steps):
                 v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
                 Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
@@ -1244,7 +1246,12 @@ with tab5:
                 SDH_vals = np.clip(SDH_vals, 0, None)
                 label = f"System DRA {dra}%"
                 showlegend = (dra == 0 or dra == 10 or dra == 20 or dra == max_dr)
-                color = sample_colorscale("Turbo", 0.1 + 0.8 * (idx/(len(system_dra_steps)-1)))[0]
+                # Fix: protect division by zero
+                if n_dra > 1:
+                    blend = idx / (n_dra-1)
+                else:
+                    blend = 0.5
+                color = sample_colorscale("Turbo", 0.1 + 0.8 * blend)[0]
                 fig.add_trace(go.Scatter(
                     x=flows, y=SDH_vals,
                     mode='lines',
@@ -1261,8 +1268,13 @@ with tab5:
                 N_min = int(res.get(f"min_rpm_{key}", 1200))
                 N_max = int(res.get(f"dol_{key}", 3000))
                 rpm_steps = np.arange(N_min, N_max+1, 100)
+                n_rpms = len(rpm_steps)
+                A = res.get(f"coef_A_{key}", 0)
+                B = res.get(f"coef_B_{key}", 0)
+                C = res.get(f"coef_C_{key}", 0)
                 for npump in range(1, n_pumps+1):
                     for idx, rpm in enumerate(rpm_steps):
+                        # Fix: protect division by zero
                         if n_rpms > 1:
                             blend = idx / (n_rpms-1)
                         else:
@@ -1297,6 +1309,7 @@ with tab5:
                 hovermode="closest"
             )
             st.plotly_chart(fig, use_container_width=True)
+
 
 
 # ---- Tab 6: DRA Curves ----
