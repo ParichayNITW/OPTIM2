@@ -1261,13 +1261,12 @@ with tab5:
                 N_min = int(res.get(f"min_rpm_{key}", 1200))
                 N_max = int(res.get(f"dol_{key}", 3000))
                 rpm_steps = np.arange(N_min, N_max+1, 100)
-                n_rpms = len(rpm_steps)
-                A = res.get(f"coef_A_{key}", 0)
-                B = res.get(f"coef_B_{key}", 0)
-                C = res.get(f"coef_C_{key}", 0)
                 for npump in range(1, n_pumps+1):
                     for idx, rpm in enumerate(rpm_steps):
-                        blend = idx / max(1, n_rpms-1)
+                        if n_rpms > 1:
+                            blend = idx / (n_rpms-1)
+                        else:
+                            blend = 0.5
                         color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
                         H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
                         H_pump = np.clip(H_pump, 0, None)
