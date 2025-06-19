@@ -1556,111 +1556,140 @@ import plotly.graph_objects as go
 import numpy as np
 
 with tab8:
-    st.markdown("<div class='section-title'>3D Pressure Profile (Residual Head, Chainage, Elevation)</div>", unsafe_allow_html=True)
+    st.markdown("""
+        <style>
+        .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+            color: #1e4b82 !important;
+            border-bottom: 3.5px solid #2f84d6 !important;
+            font-weight: bold !important;
+            background: linear-gradient(90deg, #e3f2fd55 30%, #e1f5feaa 100%) !important;
+            box-shadow: 0 2px 10px #e3f2fd33 !important;
+        }
+        .stTabs [data-baseweb="tab-list"] button {
+            font-size: 1.25em !important;
+            font-family: 'Segoe UI', Arial, sans-serif !important;
+        }
+        </style>
+        <div style='margin-bottom: 0.7em;'></div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div class='section-title'>3D Pressure Profile along Pipeline (Head & Elevation)</div>", unsafe_allow_html=True)
 
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
-        st.info("Please run optimization to view the 3D Pressure Profile.")
-        st.stop()
+        st.info("Run optimization to enable 3D Pressure Profile.")
+    else:
+        # Gather data
+        res = st.session_state["last_res"]
+        stations_data = st.session_state["last_stations_data"]
+        terminal = st.session_state["last_term_data"]
 
-    res = st.session_state["last_res"]
-    stations_data = st.session_state["last_stations_data"]
-    terminal = st.session_state["last_term_data"]
+        # Chainage, names, elevation, and residual head
+        lengths = [0]
+        elevs = []
+        rh = []
+        names = []
 
-    # 1. Cumulative chainages (distance along pipeline)
-    lengths = [0.0]
-    for stn in stations_data:
-        lengths.append(lengths[-1] + stn.get("L", 0.0))
+        for stn in stations_data:
+            names.append(stn["name"])
+            lengths.append(lengths[-1] + stn.get("L", 0.0))
+            elevs.append(stn["elev"])
+            key = stn["name"].lower().replace(" ", "_")
+            rh.append(res.get(f"residual_head_{key}", 0.0))
+        # Add terminal
+        names.append(terminal["name"])
+        elevs.append(terminal["elev"])
+        key_term = terminal["name"].lower().replace(" ", "_")
+        rh.append(res.get(f"residual_head_{key_term}", 0.0))
 
-    # 2. Residual head (from optimizer)
-    keys_p = [s['name'].lower().replace(' ', '_') for s in stations_data] + [terminal['name'].lower().replace(' ', '_')]
-    rh = [res.get(f"residual_head_{k}", 0.0) for k in keys_p]
+        # Make arrays
+        x = np.array(lengths)
+        y = np.array(rh)
+        z = np.array(elevs)
+        n = np.array(names)
 
-    # 3. Elevations
-    station_elevs = [stn['elev'] for stn in stations_data] + [terminal['elev']]
+        # Build 3D scatter/line plot
+        fig3d = go.Figure(data=[
+            go.Scatter3d(
+                x=x,
+                y=y,
+                z=z,
+                mode='lines+markers+text',
+                text=n,
+                textposition="top center",
+                marker=dict(
+                    size=7, color=y, colorscale='Viridis',
+                    colorbar=dict(title="Residual Head (mcl)"),
+                    line=dict(color='rgba(20,20,20,0.29)', width=0.9)
+                ),
+                line=dict(width=5, color='#2e77d0'),
+                hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>RH: %{y:.1f} mcl<br>Elevation: %{z:.1f} m"
+            )
+        ])
 
-    # 4. Names for hover/text
-    names = [s['name'] for s in stations_data] + [terminal['name']]
+        # Optional: annotate peaks (example)
+        for i, stn in enumerate(stations_data):
+            if 'peaks' in stn and stn['peaks']:
+                for pk in stn['peaks']:
+                    pk_chainage = lengths[i] + pk['loc']
+                    pk_elev = pk['elev']
+                    pk_rh = y[i]  # Approximating RH at the peak as RH at upstream station
+                    fig3d.add_trace(go.Scatter3d(
+                        x=[pk_chainage], y=[pk_rh], z=[pk_elev],
+                        mode='markers+text',
+                        marker=dict(size=10, color='crimson', symbol='diamond'),
+                        text=["Peak"], textposition="bottom center",
+                        name=f"Peak @ {stn['name']}"
+                    ))
 
-    # --- 3D Pressure Profile Plot ---
-    fig3d = go.Figure()
-
-    fig3d.add_trace(go.Scatter3d(
-        x=lengths,  # Pipeline length (km)
-        y=rh,       # Residual head (mcl)
-        z=station_elevs,  # Elevation (m)
-        mode='lines+markers',
-        marker=dict(
-            size=8,
-            color=rh,
-            colorscale='Viridis',
-            colorbar=dict(
-                title='Residual Head (mcl)',
-                thickness=16,
-                x=1.08
+        # Style and polish
+        fig3d.update_layout(
+            scene=dict(
+                xaxis=dict(
+                    title=dict(text='Pipeline Chainage (km)', font=dict(size=20, color='#205081')),
+                    backgroundcolor='rgb(247,249,255)',
+                    gridcolor='lightgrey',
+                    showspikes=False,
+                    tickfont=dict(size=16, color='#183453')
+                ),
+                yaxis=dict(
+                    title=dict(text='Residual Head (mcl)', font=dict(size=20, color='#1C7D6C')),
+                    backgroundcolor='rgb(249,255,250)',
+                    gridcolor='lightgrey',
+                    showspikes=False,
+                    tickfont=dict(size=16, color='#16514B')
+                ),
+                zaxis=dict(
+                    title=dict(text='Elevation (m)', font=dict(size=20, color='#8B332A')),
+                    backgroundcolor='rgb(252,252,252)',
+                    gridcolor='lightgrey',
+                    showspikes=False,
+                    tickfont=dict(size=16, color='#792B22')
+                ),
+                camera=dict(eye=dict(x=1.55, y=1.3, z=0.99)),
+                aspectmode='auto'
             ),
-            line=dict(width=2, color='DarkSlateGrey'),
-            symbol='diamond'
-        ),
-        line=dict(width=7, color='#6C7A89'),
-        text=names,
-        hovertemplate=
-            "<b>%{text}</b><br>" +
-            "Chainage: %{x:.1f} km<br>" +
-            "Residual Head: %{y:.1f} mcl<br>" +
-            "Elevation: %{z:.1f} m",
-        showlegend=False
-    ))
+            plot_bgcolor="#fff",
+            paper_bgcolor="#fcfcff",
+            margin=dict(l=30, r=30, t=60, b=30),
+            height=640,
+            title={
+                'text': "<b>3D Pipeline Pressure Profile</b>",
+                'y':0.96,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=28, family="Segoe UI, Arial, sans-serif", color="#163269")
+            },
+            showlegend=False
+        )
 
-    # --- Visual polish: view angle, axis, background, title ---
-    fig3d.update_layout(
-        scene=dict(
-            xaxis=dict(
-                title=dict(text='Pipeline Chainage (km)', font=dict(size=20, color='#205081')),
-                backgroundcolor='rgb(247,249,255)',
-                gridcolor='lightgrey',
-                showspikes=False
-            ),
-            yaxis=dict(
-                title=dict(text='Residual Head (mcl)', font=dict(size=20, color='#1C7D6C')),
-                backgroundcolor='rgb(249,255,250)',
-                gridcolor='lightgrey',
-                showspikes=False
-            ),
-            zaxis=dict(
-                title=dict(text='Elevation (m)', font=dict(size=20, color='#8B332A')),
-                backgroundcolor='rgb(252,252,252)',
-                gridcolor='lightgrey',
-                showspikes=False
-            ),
-            camera=dict(
-                eye=dict(x=1.65, y=1.5, z=1.0)
-            ),
-            aspectmode='auto'
-        ),
-        plot_bgcolor="#fff",
-        paper_bgcolor="#fcfcff",
-        margin=dict(l=30, r=30, t=60, b=30),
-        height=640,
-        title={
-            'text': "<b>3D Pipeline Pressure Profile</b>",
-            'y':0.96,
-            'x':0.5,
-            'xanchor': 'center',
-            'yanchor': 'top',
-            'font': dict(size=28, family="Segoe UI, Arial, sans-serif", color="#163269")
-        }
-    )
+        st.plotly_chart(fig3d, use_container_width=True)
+        st.markdown(
+            "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
+            "Chainage is cumulative distance. Residual head shown at each node. Peaks (if any) are highlighted.</div>",
+            unsafe_allow_html=True
+        )
 
-    st.plotly_chart(fig3d, use_container_width=True)
-
-    st.markdown(
-        """
-        <div style='text-align: center; color: #566; margin-top: 1.5em; font-size: 1.04em;'>
-            <i>Visualizes the residual head evolution across the pipeline route with respect to chainage and station elevation.<br>
-            <b>Tip:</b> Rotate, zoom, and hover for precise values and station names!</i>
-        </div>
-        """, unsafe_allow_html=True
-    )
 
 
 
