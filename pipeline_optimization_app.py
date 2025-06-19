@@ -2062,10 +2062,9 @@ with tab_sim:
     st.info("Calculations are based on optimized parameters.")
 
 
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    st.markdown("&copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.", unsafe_allow_html=True)
+st.markdown("""
+    <div style='text-align:center;color:#888;margin-top:1.1em;'>
+    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
     </div>
-    """, unsafe_allow_html=True
+""", unsafe_allow_html=True)
 )
