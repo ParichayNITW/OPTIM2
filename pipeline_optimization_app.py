@@ -2058,8 +2058,8 @@ with tab_sim:
     st.markdown(f"""
     ### <span style="color:#2b9348"><b>Annual Savings: {annual_savings:,.0f} INR/year</b></span>
     """, unsafe_allow_html=True)
-    st.write("Based on your selected improvements and model output.")
-    st.info("All calculations use the real optimization backend for highest accuracy.")
+    st.write("Based on selected improvements and model output.")
+    st.info("Calculations are based on optimized parameters.")
 
 
 st.markdown(
