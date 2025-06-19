@@ -702,7 +702,7 @@ with tab2:
         st.plotly_chart(fig_grouped, use_container_width=True)
 
         # DRA cost bar chart only ---
-        st.markdown("DRA Cost")
+        st.markdown("# DRA Cost")
         fig_dra = px.bar(
             df_cost,
             x="Station",
