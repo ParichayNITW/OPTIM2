@@ -1798,8 +1798,9 @@ with tab8:
         st.plotly_chart(fig3d, use_container_width=True)
         st.markdown(
             "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
-            "3D Pressure Profile <br>"
-            unsafe_allow_html=True
+                "3D Pressure Profile <br>"
+            </div>
+        """, unsafe_allow_html=True)
         )
 
 with tab_sens:
