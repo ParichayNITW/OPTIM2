@@ -1573,7 +1573,7 @@ with tab8:
         <div style='margin-bottom: 0.7em;'></div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>3D Pressure Profile along Pipeline (Head & Elevation)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>3D Pressure Profile: Residual Head & Peaks</div>", unsafe_allow_html=True)
 
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Run optimization to enable 3D Pressure Profile.")
@@ -1583,65 +1583,120 @@ with tab8:
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
 
-        # Chainage, names, elevation, and residual head
-        lengths = [0]
+        # ---- 1. Gather all points: stations and peaks ----
+        chainages = [0]
         elevs = []
         rh = []
         names = []
+        mesh_x, mesh_y, mesh_z, mesh_text, mesh_color = [], [], [], [], []
+        peak_x, peak_y, peak_z, peak_label = [], [], [], []
 
-        for stn in stations_data:
-            names.append(stn["name"])
-            lengths.append(lengths[-1] + stn.get("L", 0.0))
+        # Stations (include terminal as last "station")
+        for i, stn in enumerate(stations_data):
+            chainages.append(chainages[-1] + stn.get("L", 0.0))
             elevs.append(stn["elev"])
             key = stn["name"].lower().replace(" ", "_")
-            rh.append(res.get(f"residual_head_{key}", 0.0))
-        # Add terminal
-        names.append(terminal["name"])
-        elevs.append(terminal["elev"])
-        key_term = terminal["name"].lower().replace(" ", "_")
-        rh.append(res.get(f"residual_head_{key_term}", 0.0))
-
-        # Make arrays
-        x = np.array(lengths)
-        y = np.array(rh)
-        z = np.array(elevs)
-        n = np.array(names)
-
-        # Build 3D scatter/line plot
-        fig3d = go.Figure(data=[
-            go.Scatter3d(
-                x=x,
-                y=y,
-                z=z,
-                mode='lines+markers+text',
-                text=n,
-                textposition="top center",
-                marker=dict(
-                    size=7, color=y, colorscale='Viridis',
-                    colorbar=dict(title="Residual Head (mcl)"),
-                    line=dict(color='rgba(20,20,20,0.29)', width=0.9)
-                ),
-                line=dict(width=5, color='#2e77d0'),
-                hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>RH: %{y:.1f} mcl<br>Elevation: %{z:.1f} m"
-            )
-        ])
-
-        # Optional: annotate peaks (example)
-        for i, stn in enumerate(stations_data):
+            rh_val = res.get(f"residual_head_{key}", 0.0)
+            rh.append(rh_val)
+            names.append(stn["name"])
+            mesh_x.append(chainages[-1])
+            mesh_y.append(stn["elev"])
+            mesh_z.append(rh_val)
+            mesh_text.append(stn["name"])
+            mesh_color.append(rh_val)
+            # Peaks for this station
             if 'peaks' in stn and stn['peaks']:
                 for pk in stn['peaks']:
-                    pk_chainage = lengths[i] + pk['loc']
-                    pk_elev = pk['elev']
-                    pk_rh = y[i]  # Approximating RH at the peak as RH at upstream station
-                    fig3d.add_trace(go.Scatter3d(
-                        x=[pk_chainage], y=[pk_rh], z=[pk_elev],
-                        mode='markers+text',
-                        marker=dict(size=10, color='crimson', symbol='diamond'),
-                        text=["Peak"], textposition="bottom center",
-                        name=f"Peak @ {stn['name']}"
-                    ))
+                    # pk['loc'] = distance from upstream station start (km)
+                    px = chainages[-2] + pk.get('loc', 0)
+                    py = pk.get('elev', stn['elev'])
+                    pz = rh_val  # Assume RH at station for peak (or interpolate as needed)
+                    mesh_x.append(px)
+                    mesh_y.append(py)
+                    mesh_z.append(pz)
+                    mesh_text.append("Peak")
+                    mesh_color.append(pz)
+                    # Separate for special peak markers
+                    peak_x.append(px)
+                    peak_y.append(py)
+                    peak_z.append(pz)
+                    peak_label.append(f"Peak @ {stn['name']}")
 
-        # Style and polish
+        # Add terminal
+        terminal_chainage = chainages[-1] + terminal.get("L", 0.0)
+        mesh_x.append(terminal_chainage)
+        mesh_y.append(terminal["elev"])
+        key_term = terminal["name"].lower().replace(" ", "_")
+        rh_term = res.get(f"residual_head_{key_term}", 0.0)
+        mesh_z.append(rh_term)
+        mesh_text.append(terminal["name"])
+        mesh_color.append(rh_term)
+        names.append(terminal["name"])
+        elevs.append(terminal["elev"])
+        rh.append(rh_term)
+        chainages.append(terminal_chainage)
+
+        # ---- 2. 3D mesh surface using station & peak points ----
+        fig3d = go.Figure()
+
+        # 2.1 Mesh Surface: Triangulate all (station + peak) points
+        fig3d.add_trace(go.Mesh3d(
+            x=mesh_x, y=mesh_y, z=mesh_z,
+            intensity=mesh_color, colorscale="Viridis",
+            alphahull=8, opacity=0.55,
+            showscale=True, colorbar=dict(title="Residual Head (mcl)", x=0.95, y=0.7, len=0.5),
+            hovertemplate="Chainage: %{x:.2f} km<br>Elevation: %{y:.2f} m<br>RH: %{z:.1f} mcl<br>%{text}",
+            text=mesh_text,
+            name="Pressure Mesh Surface"
+        ))
+
+        # 2.2 Stations: Big colored spheres, labeled
+        fig3d.add_trace(go.Scatter3d(
+            x=[chainages[i+1] for i in range(len(stations_data))],
+            y=elevs[:-1],
+            z=rh[:-1],
+            mode='markers+text',
+            marker=dict(size=10, color=rh[:-1], colorscale='Plasma', symbol='circle', line=dict(width=2, color='black')),
+            text=names[:-1], textposition="top center",
+            name="Stations",
+            hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
+        ))
+
+        # 2.3 Terminal: Big blue sphere, labeled
+        fig3d.add_trace(go.Scatter3d(
+            x=[terminal_chainage],
+            y=[terminal["elev"]],
+            z=[rh_term],
+            mode='markers+text',
+            marker=dict(size=11, color='#238be6', symbol='circle', line=dict(width=3, color='#103d68')),
+            text=[terminal["name"]], textposition="top center",
+            name="Terminal",
+            hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
+        ))
+
+        # 2.4 Peaks: Crimson diamonds, labeled
+        if peak_x:
+            fig3d.add_trace(go.Scatter3d(
+                x=peak_x, y=peak_y, z=peak_z,
+                mode='markers+text',
+                marker=dict(size=10, color='crimson', symbol='diamond', line=dict(width=2, color='black')),
+                text=peak_label, textposition="bottom center",
+                name="Peaks",
+                hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
+            ))
+
+        # 2.5 Connecting line (stations+terminal): Show pressure path
+        fig3d.add_trace(go.Scatter3d(
+            x=[chainages[i+1] for i in range(len(stations_data)+1)],
+            y=elevs,
+            z=rh,
+            mode='lines',
+            line=dict(color='deepskyblue', width=6),
+            name="Pressure Path",
+            hoverinfo="skip"
+        ))
+
+        # ---- 3. Layout and style polish ----
         fig3d.update_layout(
             scene=dict(
                 xaxis=dict(
@@ -1652,43 +1707,53 @@ with tab8:
                     tickfont=dict(size=16, color='#183453')
                 ),
                 yaxis=dict(
-                    title=dict(text='Residual Head (mcl)', font=dict(size=20, color='#1C7D6C')),
-                    backgroundcolor='rgb(249,255,250)',
-                    gridcolor='lightgrey',
-                    showspikes=False,
-                    tickfont=dict(size=16, color='#16514B')
-                ),
-                zaxis=dict(
                     title=dict(text='Elevation (m)', font=dict(size=20, color='#8B332A')),
                     backgroundcolor='rgb(252,252,252)',
                     gridcolor='lightgrey',
                     showspikes=False,
                     tickfont=dict(size=16, color='#792B22')
                 ),
-                camera=dict(eye=dict(x=1.55, y=1.3, z=0.99)),
+                zaxis=dict(
+                    title=dict(text='Residual Head (mcl)', font=dict(size=20, color='#1C7D6C')),
+                    backgroundcolor='rgb(249,255,250)',
+                    gridcolor='lightgrey',
+                    showspikes=False,
+                    tickfont=dict(size=16, color='#16514B')
+                ),
+                camera=dict(eye=dict(x=1.6, y=1.3, z=1.08)),
                 aspectmode='auto'
             ),
             plot_bgcolor="#fff",
             paper_bgcolor="#fcfcff",
-            margin=dict(l=30, r=30, t=60, b=30),
-            height=640,
+            margin=dict(l=25, r=25, t=70, b=30),
+            height=690,
             title={
-                'text': "<b>3D Pipeline Pressure Profile</b>",
+                'text': "<b>3D Pressure Profile: Pipeline Chainage vs Elevation vs Residual Head</b>",
                 'y':0.96,
                 'x':0.5,
                 'xanchor': 'center',
                 'yanchor': 'top',
-                'font': dict(size=28, family="Segoe UI, Arial, sans-serif", color="#163269")
+                'font': dict(size=27, family="Segoe UI, Arial, sans-serif", color="#163269")
             },
-            showlegend=False
+            showlegend=True,
+            legend=dict(
+                font=dict(size=15, color='#183453'),
+                orientation='h',
+                yanchor='bottom', y=1.01,
+                xanchor='right', x=1.0,
+                bgcolor='rgba(240,248,255,0.96)',
+                bordercolor='#d1e1f5', borderwidth=1
+            )
         )
 
         st.plotly_chart(fig3d, use_container_width=True)
         st.markdown(
             "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
-            "Chainage is cumulative distance. Residual head shown at each node. Peaks (if any) are highlighted.</div>",
+            "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
+            "Stations, terminal, and peaks are all shown with dynamic coloring.</div>",
             unsafe_allow_html=True
         )
+
 
 
 
