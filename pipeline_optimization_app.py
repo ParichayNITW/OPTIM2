@@ -145,7 +145,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das.
+            st.markdown("&copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.", unsafe_allow_html=True)
             </div>
             """,
             unsafe_allow_html=True
@@ -2065,7 +2065,7 @@ with tab_sim:
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+    st.markdown("&copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.", unsafe_allow_html=True)
     </div>
     """,
     unsafe_allow_html=True
