@@ -2067,6 +2067,5 @@ st.markdown(
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
     st.markdown("&copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.", unsafe_allow_html=True)
     </div>
-    """,
-    unsafe_allow_html=True
+    """, unsafe_allow_html=True
 )
