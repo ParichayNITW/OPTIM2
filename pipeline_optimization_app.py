@@ -963,39 +963,68 @@ with tab3:
         # --- 5. Pressure vs Pipeline Length ---
         with press_tab:
             st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
+            stations_data = st.session_state["last_stations_data"]
+            res = st.session_state["last_res"]
+            terminal = st.session_state["last_term_data"]
+            N = len(stations_data)
             lengths = [0]
             for stn in stations_data:
-                l = stn.get('L', 0)
-                lengths.append(lengths[-1] + l)
-            terminal_name = terminal["name"]
-            keys_p = [s['name'].lower().replace(' ','_') for s in stations_data] + [terminal_name.lower().replace(' ','_')]
-            rh = [res.get(f"residual_head_{k}", 0.0) for k in keys_p]
-            sdh = [res.get(f"sdh_{k}", 0.0) for k in keys_p[:-1]]
-            x_pts = []
-            y_pts = []
-            # Pressure profile points as per your logic
-            for i in range(len(stations_data)):
-                x_pts += [lengths[i], lengths[i+1]]
-                y_pts += [rh[i], sdh[i] if i < len(sdh) else rh[i]]
-                x_pts += [lengths[i+1], lengths[i+1]]
-                y_pts += [sdh[i] if i < len(sdh) else rh[i], rh[i+1]]
-            fig_p = go.Figure()
-            fig_p.add_trace(go.Scatter(
-                x=x_pts, y=y_pts, mode='lines+markers',
-                name="Pressure Profile", line=dict(width=3, color="#1976D2")
+                lengths.append(lengths[-1] + stn.get("L", 0.0))
+            names = [s['name'] for s in stations_data] + [terminal["name"]]
+            keys = [n.lower().replace(' ', '_') for n in names]
+            rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
+            sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
+        
+            # Gather all X, Y, annotation points
+            x_pts, y_pts, annotations = [], [], []
+            for i, stn in enumerate(stations_data):
+                # 1. Start: RH at station i
+                x_pts.append(lengths[i])
+                y_pts.append(rh_list[i])
+                annotations.append((lengths[i], rh_list[i], stn['name']))
+                # 2. If pump running, vertical jump to SDH
+                if abs(sdh_list[i] - rh_list[i]) > 1e-3:
+                    x_pts.append(lengths[i])
+                    y_pts.append(sdh_list[i])
+                    # Optionally: annotations.append((lengths[i], sdh_list[i], f"SDH {stn['name']}"))
+                # 3. For each peak (ordered by loc within segment):
+                seg_len = stn['L']
+                next_rh = rh_list[i+1]
+                start_sdh = sdh_list[i]  # This is the actual SDH, not RH!
+                if 'peaks' in stn and stn['peaks']:
+                    for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
+                        pk_loc = pk['loc']
+                        pk_x = lengths[i] + pk_loc
+                        # Linear head drop from SDH at i to RH at i+1:
+                        frac = pk_loc / seg_len if seg_len > 0 else 0
+                        pk_head = start_sdh - (start_sdh - next_rh) * frac
+                        x_pts.append(pk_x)
+                        y_pts.append(pk_head)
+                        annotations.append((pk_x, pk_head, f"Peak ({stn['name']})"))
+                # 4. End: RH at next station
+                x_pts.append(lengths[i+1])
+                y_pts.append(next_rh)
+                annotations.append((lengths[i+1], next_rh, names[i+1]))
+        
+            # Plot
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=x_pts, y=y_pts, mode='lines+markers', name="Pressure Profile", line=dict(width=3, color="#1976D2"),
+                marker=dict(size=8)
             ))
-            for idx, name in enumerate(keys_p):
-                fig_p.add_annotation(x=lengths[idx], y=rh[idx], text=names[idx], showarrow=True, yshift=14)
-            fig_p.update_layout(
-                title="Pressure vs Pipeline Length",
+            # Annotate stations and peaks
+            for xp, yp, txt in annotations:
+                fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, yshift=12)
+            fig.update_layout(
+                title="Pressure vs Pipeline Length (with Peaks)",
                 xaxis_title="Cumulative Length (km)",
                 yaxis_title="Pressure Head (mcl)",
                 font=dict(size=15),
                 showlegend=False,
                 height=420
             )
-            st.plotly_chart(fig_p, use_container_width=True)
-        
+            st.plotly_chart(fig, use_container_width=True)
+
         # --- 6. Power vs Speed/Flow ---
         with power_tab:
             st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
