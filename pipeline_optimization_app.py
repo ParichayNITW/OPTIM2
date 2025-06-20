@@ -142,10 +142,11 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das.
+        st.markdown("""
+            <div style='text-align:center;color:#888;margin-top:1.1em;'>
+                &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+            </div>
+        """, unsafe_allow_html=True)
             </div>
             """,
             unsafe_allow_html=True
@@ -481,12 +482,66 @@ if run:
         st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
 
 
+# ---- VISUAL SUMMARY DASHBOARD (KPI METRICS) ----
+if "last_res" in st.session_state:
+    res = st.session_state["last_res"]
+    stations_data = st.session_state["last_stations_data"]
+    term_data = st.session_state["last_term_data"]
+    names = [s['name'] for s in stations_data] + [term_data['name']]
+    keys = [n.lower().replace(' ', '_') for n in names]
+    linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+    FLOW = st.session_state.get("FLOW", 1000.0)
+    RateDRA = st.session_state.get("RateDRA", 500.0)
+    # ---- Calculate KPIs ----
+    # Total Cost (INR/day)
+    total_cost = 0
+    dra_cost_total = 0
+    total_power_cost = 0
+    max_velocity = 0
+    min_pump_eff = 100
+    for idx, stn in enumerate(stations_data):
+        key = stn['name'].lower().replace(' ', '_')
+        # DRA cost
+        dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+        dr_max = stn.get('max_dr', 0.0)
+        viscosity = kv_list[idx]
+        dr_use = min(dr_opt, dr_max)
+        ppm = get_ppm_for_dr(viscosity, dr_use)
+        seg_flow = res.get(f"pipeline_flow_{key}", FLOW)
+        dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
+        power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+        velocity = res.get(f"velocity_{key}", 0.0) or 0.0
+        eff = float(res.get(f"efficiency_{key}", 100.0))
+        total_cost += dra_cost + power_cost
+        dra_cost_total += dra_cost
+        total_power_cost += power_cost
+        if velocity > max_velocity: max_velocity = velocity
+        if stn.get('is_pump', False) and eff < min_pump_eff: min_pump_eff = eff
+    # Operating pumps
+    total_pumps = sum([int(res.get(f"num_pumps_{stn['name'].lower().replace(' ', '_')}", 0)) for stn in stations_data])
+    # Alerts
+    alert = "✅ All OK"
+    if max_velocity > 2.5:
+        alert = "⚠️ High velocity"
+    elif min_pump_eff < 60:
+        alert = "⚠️ Low efficiency"
+    # ---- KPI Cards ----
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Cost (INR/day)", f"{total_cost:,.0f}")
+    k2.metric("Power Cost (INR/day)", f"{total_power_cost:,.0f}")
+    k3.metric("DRA Cost (INR/day)", f"{dra_cost_total:,.0f}")
+    k4.metric("Max Velocity (m/s)", f"{max_velocity:.2f}")
+    k5.metric("Operating Pumps", f"{total_pumps} | {alert}")
+    st.markdown("<hr style='margin-bottom:0.7em;'>", unsafe_allow_html=True)
+
 # ---- Result Tabs ----
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
     "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
     "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
     "📈 Sensitivity", "📊 Benchmarking", "💡 Savings Simulator"
 ])
+
 
 # ---- Tab 1: Summary ----
 import numpy as np
@@ -1723,7 +1778,7 @@ with tab8:
             margin=dict(l=25, r=25, t=70, b=30),
             height=690,
             title={
-                'text': "<b>3D Pressure Profile:</b>",
+                'text': "<b>3D Pressure Profile: Pipeline Chainage vs Elevation vs Residual Head</b>",
                 'y':0.96,
                 'x':0.5,
                 'xanchor': 'center',
@@ -1744,20 +1799,20 @@ with tab8:
         st.plotly_chart(fig3d, use_container_width=True)
         st.markdown(
             "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
-            "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
-            "Stations, terminal, and peaks are all shown with dynamic coloring.</div>",
-            unsafe_allow_html=True
+                "3D Pressure Profile <br>"
+            </div>
+        """, unsafe_allow_html=True)
         )
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
-    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results based on set pipeline parameter and optimization metric.")
+    st.write("Response of model outputs to variations in inpput parameter.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first to enable sensitivity analysis.")
         st.stop()
 
-    param = st.selectbox("Parameter to vary", [
+    param = st.selectbox("Input parameter", [
         "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Diesel Price (INR/L)", "DRA Cost (INR/L)"
     ])
     output = st.selectbox("Output metric", [
@@ -1865,11 +1920,9 @@ with tab_sens:
     st.dataframe(df_sens, use_container_width=True, hide_index=True)
     st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
 
-
-
 with tab_bench:
     st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
-    st.write("Compare pipeline performance with global/ custom benchmarks. Green indicates Pipeline operation match/exceed global standards while red means improvement is needed.")
+    st.write("Comparison of pipeline performance to global/ past benchmarks. Green indicates that it matches/exceeds global standards, while red idicates scope for improvement.")
 
     # --- User can pick standard or edit/upload their own
     b_mode = st.radio("Benchmark Source", ["Global Standards", "Edit Benchmarks", "Upload CSV"])
@@ -1949,7 +2002,7 @@ with tab_bench:
         if bench is not None:
             status = "✅" if (k != "Pump Efficiency (%)" and v <= bench) or (k == "Pump Efficiency (%)" and v >= bench) else "🔴"
             rows.append((k, f"{v:.2f}", f"{bench:.2f}", status))
-    df_bench = pd.DataFrame(rows, columns=["Parameter", "Pipeline", "Benchmark", "Status"])
+    df_bench = pd.DataFrame(rows, columns=["Parameter", "Your Pipeline", "Benchmark", "Status"])
     st.dataframe(df_bench, use_container_width=True, hide_index=True)
 
 
@@ -1963,7 +2016,7 @@ with tab_sim:
     FLOW = st.session_state["FLOW"]
     RateDRA = st.session_state["RateDRA"]
     Price_HSD = st.session_state["Price_HSD"]
-    st.write("Adjust improvement assumptions and see the impact over a year.")
+    st.write("Adjust improvement assumptions and note the impact over a year.")
     pump_eff_impr = st.slider("Pump Efficiency Improvement (%)", 0, 10, 3)
     dra_cost_impr = st.slider("DRA Price Reduction (%)", 0, 30, 5)
     flow_change = st.slider("Throughput Increase (%)", 0, 30, 0)
@@ -2007,16 +2060,10 @@ with tab_sim:
     ### <span style="color:#2b9348"><b>Annual Savings: {annual_savings:,.0f} INR/year</b></span>
     """, unsafe_allow_html=True)
     st.write("Based on selected improvements and model output.")
-    st.info("Calculations are based on optimized values.")
+    st.info("Calculations are based on optimized parameters.")
 
-
-
-
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+st.markdown("""
+    <div style='text-align:center;color:#888;margin-top:1.1em;'>
+        &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
     </div>
-    """,
-    unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
