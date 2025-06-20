@@ -142,14 +142,11 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-        st.markdown("""
-            <div style='text-align:center;color:#888;margin-top:1.1em;'>
-                &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
-            </div>
-        """, unsafe_allow_html=True)
-            </div>
-            """,
-            unsafe_allow_html=True
+    st.markdown("""
+        <div style='text-align:center;color:#888;margin-top:1.1em;'>
+            &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+        </div>
+    """, unsafe_allow_html=True)
         )
         st.stop()
     with st.sidebar:
