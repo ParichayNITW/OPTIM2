@@ -1751,7 +1751,7 @@ with tab8:
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
-    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results using actual pipeline and optimization logic.")
+    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results based on set pipeline parameter and optimization metric.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first to enable sensitivity analysis.")
