@@ -1728,7 +1728,7 @@ with tab8:
             margin=dict(l=25, r=25, t=70, b=30),
             height=690,
             title={
-                'text': "<b>3D Pressure Profile: Pipeline Chainage vs Elevation vs Residual Head</b>",
+                'text': "<b>3D Pressure Profile: Pipeline Chainage vs Elevation vs RH</b>",
                 'y':0.96,
                 'x':0.5,
                 'xanchor': 'center',
