@@ -482,14 +482,15 @@ if run:
 
 
 # ---- Result Tabs ----
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📋 Summary", 
     "💰 Costs", 
     "⚙️ Performance", 
     "🌀 System Curves", 
     "🔄 Pump-System",
     "📉 DRA Curves",
-    "🧊 3D Analysis and Surface Plots"      
+    "🧊 3D Analysis and Surface Plots",
+    "🧮 3D Pressure Profile"
 ])
 
 # ---- Tab 1: Summary ----
