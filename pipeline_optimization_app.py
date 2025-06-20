@@ -14,27 +14,31 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 
 st.markdown("""
     <style>
-    .main {
+    html, body, .main, .block-container {
         overflow-x: auto !important;
         overflow-y: auto !important;
     }
-    section[data-testid="stSidebar"] > div:first-child {
-        overflow-x: auto !important;
-        overflow-y: auto !important;
-    }
-    .dataframe {
+    .element-container {
         overflow-x: auto !important;
         overflow-y: auto !important;
         max-width: 100vw !important;
-        max-height: 60vh !important;
-        display: block;
+        max-height: 100vh !important;
+        display: block !important;
     }
-    [data-testid="stHorizontalBlock"] {
+    div[data-testid="stVerticalBlock"] {
         overflow-x: auto !important;
         overflow-y: auto !important;
     }
+    .stDataFrame, .dataframe {
+        overflow-x: auto !important;
+        overflow-y: auto !important;
+        max-width: 100vw !important;
+        max-height: 70vh !important;
+        display: block !important;
+    }
     </style>
 """, unsafe_allow_html=True)
+
 
 
 #Custom Styles
