@@ -12,29 +12,6 @@ from plotly.colors import qualitative
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
-st.markdown("""
-    <style>
-    html, body, [data-testid="stAppViewContainer"], .main {
-        overflow-x: auto !important;
-        overflow-y: auto !important;
-        height: 100vh !important;
-    }
-    .block-container {
-        min-width: 1200px !important;  /* Adjust as per your widest content */
-        min-height: 900px !important;
-        max-width: 100vw !important;
-        max-height: 100vh !important;
-        overflow-x: auto !important;
-        overflow-y: auto !important;
-    }
-    [data-testid="stSidebar"] {
-        overflow-y: auto !important;
-        height: 100vh !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-
 #Custom Styles
 st.markdown("""
     <style>
@@ -165,10 +142,11 @@ def check_login():
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das.
+        st.markdown("""
+            <div style='text-align:center;color:#888;margin-top:1.1em;'>
+                &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+            </div>
+        """, unsafe_allow_html=True)
             </div>
             """,
             unsafe_allow_html=True
