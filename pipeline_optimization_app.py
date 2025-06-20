@@ -1603,19 +1603,20 @@ with tab8:
             if 'peaks' in stn and stn['peaks']:
                 for pk in stn['peaks']:
                     # pk['loc'] = distance from upstream station start (km)
-                    px = chainages[-2] + pk.get('loc', 0)
+                    peak_x_val = chainages[-2] + pk.get('loc', 0)
                     py = pk.get('elev', stn['elev'])
                     pz = rh_val  # Assume RH at station for peak (or interpolate as needed)
-                    mesh_x.append(px)
+                    mesh_x.append(peak_x_val)
                     mesh_y.append(py)
                     mesh_z.append(pz)
                     mesh_text.append("Peak")
                     mesh_color.append(pz)
                     # Separate for special peak markers
-                    peak_x.append(px)
+                    peak_x.append(peak_x_val)
                     peak_y.append(py)
                     peak_z.append(pz)
                     peak_label.append(f"Peak @ {stn['name']}")
+
 
         # Add terminal
         terminal_chainage = chainages[-1] + terminal.get("L", 0.0)
