@@ -1603,7 +1603,7 @@ with tab8:
             if 'peaks' in stn and stn['peaks']:
                 for pk in stn['peaks']:
                     # pk['loc'] = distance from upstream station start (km)
-                    px = (chainages[-2] if len(chainages) > 1 else 0) + pk.get('loc', 0)
+                    px = chainages[-2] + pk.get('loc', 0)
                     py = pk.get('elev', stn['elev'])
                     pz = rh_val  # Assume RH at station for peak (or interpolate as needed)
                     mesh_x.append(px)
@@ -1618,7 +1618,7 @@ with tab8:
                     peak_label.append(f"Peak @ {stn['name']}")
 
         # Add terminal
-        terminal_chainage = chainages[-1]
+        terminal_chainage = chainages[-1] + terminal.get("L", 0.0)
         mesh_x.append(terminal_chainage)
         mesh_y.append(terminal["elev"])
         key_term = terminal["name"].lower().replace(" ", "_")
