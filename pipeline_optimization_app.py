@@ -1801,7 +1801,6 @@ with tab8:
                 "3D Pressure Profile <br>"
             </div>
         """, unsafe_allow_html=True)
-        )
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
