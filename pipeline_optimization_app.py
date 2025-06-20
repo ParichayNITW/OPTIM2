@@ -1751,7 +1751,7 @@ with tab8:
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
-    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results using your actual pipeline and optimization logic.")
+    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results using actual pipeline and optimization logic.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first to enable sensitivity analysis.")
@@ -1949,13 +1949,13 @@ with tab_bench:
         if bench is not None:
             status = "✅" if (k != "Pump Efficiency (%)" and v <= bench) or (k == "Pump Efficiency (%)" and v >= bench) else "🔴"
             rows.append((k, f"{v:.2f}", f"{bench:.2f}", status))
-    df_bench = pd.DataFrame(rows, columns=["Parameter", "Your Pipeline", "Benchmark", "Status"])
+    df_bench = pd.DataFrame(rows, columns=["Parameter", "Pipeline", "Benchmark", "Status"])
     st.dataframe(df_bench, use_container_width=True, hide_index=True)
 
 
 with tab_sim:
     st.markdown("<div class='section-title'>Annualized Savings Simulator</div>", unsafe_allow_html=True)
-    st.write("Instantly estimate annual savings from efficiency improvements, energy cost, or DRA optimizations.")
+    st.write("Annual savings from efficiency improvements, energy cost and DRA optimizations.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first.")
@@ -2006,8 +2006,8 @@ with tab_sim:
     st.markdown(f"""
     ### <span style="color:#2b9348"><b>Annual Savings: {annual_savings:,.0f} INR/year</b></span>
     """, unsafe_allow_html=True)
-    st.write("Based on your selected improvements and model output.")
-    st.info("All calculations use the real optimization backend for highest accuracy.")
+    st.write("Based on selected improvements and model output.")
+    st.info("Calculations are based on optimized values.")
 
 
 
