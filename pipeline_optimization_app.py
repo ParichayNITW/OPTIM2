@@ -1869,7 +1869,7 @@ with tab_sens:
 
 with tab_bench:
     st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
-    st.write("Compare your pipeline performance to global or custom benchmarks. Green means you match/exceed global standards, red means improvement needed.")
+    st.write("Compare pipeline performance with global/ custom benchmarks. Green indicates Pipeline operation match/exceed global standards while red means improvement is needed.")
 
     # --- User can pick standard or edit/upload their own
     b_mode = st.radio("Benchmark Source", ["Global Standards", "Edit Benchmarks", "Upload CSV"])
