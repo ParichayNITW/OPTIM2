@@ -10,7 +10,7 @@ import uuid
 import json
 from plotly.colors import qualitative
 
-st.set_page_config(page_title="Pipeline Optima", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
 #Custom Styles
 st.markdown("""
@@ -144,9 +144,13 @@ def check_login():
                 st.error("Invalid username or password.")
         st.markdown("""
             <div style='text-align:center;color:#888;margin-top:1.1em;'>
-                &copy; 2025 Pipeline Optima v1.1.1. Developed by Parichay Das.
+                &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
             </div>
         """, unsafe_allow_html=True)
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.stop()
     with st.sidebar:
         if st.button("Logout"):
@@ -262,7 +266,7 @@ st.markdown(
         letter-spacing:0.5px;
         font-family: inherit;
     '>
-        Pipeline Optima: Intelligent Pipeline Network Optimization Suite
+        Pipeline Optima™: Intelligent Pipeline Network Optimization Suite
     </h1>
     """,
     unsafe_allow_html=True
@@ -2063,4 +2067,3 @@ st.markdown("""
         &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
     </div>
 """, unsafe_allow_html=True)
-
