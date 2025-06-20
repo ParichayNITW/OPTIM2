@@ -12,6 +12,31 @@ from plotly.colors import qualitative
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
+st.markdown("""
+    <style>
+    .main {
+        overflow-x: auto !important;
+        overflow-y: auto !important;
+    }
+    section[data-testid="stSidebar"] > div:first-child {
+        overflow-x: auto !important;
+        overflow-y: auto !important;
+    }
+    .dataframe {
+        overflow-x: auto !important;
+        overflow-y: auto !important;
+        max-width: 100vw !important;
+        max-height: 60vh !important;
+        display: block;
+    }
+    [data-testid="stHorizontalBlock"] {
+        overflow-x: auto !important;
+        overflow-y: auto !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+
 #Custom Styles
 st.markdown("""
     <style>
