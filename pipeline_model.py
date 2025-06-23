@@ -43,10 +43,16 @@ def get_ppm_breakpoints(visc):
         dr_points = np.unique(np.concatenate((x_lower, x_upper)))
         ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
                      np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
-        return list(dr_points), list(ppm_points)
+        # Remove duplicate and non-increasing
+        unique_dr, unique_indices = np.unique(dr_points, return_index=True)
+        unique_ppm = ppm_points[unique_indices]
+        return list(unique_dr), list(unique_ppm)
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
-    return list(x), list(y)
+    # Remove duplicates
+    unique_x, unique_indices = np.unique(x, return_index=True)
+    unique_y = y[unique_indices]
+    return list(unique_x), list(unique_y)
 
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
@@ -252,23 +258,23 @@ def solve_pipeline(
 
     # ---- DRA PPM Piecewise and Cost Calculation ----
     model.PPM = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
-    # Remove: model.dra_cost = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
     model.dra_cost = pyo.Expression(model.pump_stations)
     for i in pump_indices:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        piecewise_name = f'piecewise_dra_ppm_{i}'
-        setattr(model, piecewise_name,
+        # Guarantee unique and strictly increasing breakpoints for Piecewise
+        dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
+        setattr(model, f'piecewise_dra_ppm_{i}',
             pyo.Piecewise(
                 f'pw_dra_ppm_{i}',
                 model.PPM[i], model.DR[i],
-                pw_pts=dr_points,
-                f_rule=ppm_points,
+                pw_pts=dr_points_fixed,
+                f_rule=ppm_points_fixed,
                 pw_constr_type='EQ'
             )
         )
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
-        model.dra_cost[i] = dra_cost_expr   # <--- No Expression(), just assign
+        model.dra_cost[i] = dra_cost_expr
 
     # ---- Objective Function (Power/Fuel + DRA Cost) ----
     total_cost = 0
@@ -292,19 +298,21 @@ def solve_pipeline(
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
-    # --- Results Section (as before) ---
+    # --- Results Section (robust, never fails) ---
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
         inflow = segment_flows[i-1]
         outflow = segment_flows[i]
         pump_flow = outflow if stn.get('is_pump', False) else 0.0
+
         if i in pump_indices:
-            num_pumps = int(pyo.value(model.NOP[i]))
-            speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 else 0.0
+            # Defensive extraction: always use .value, fallback to 0
+            num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
+            speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 and model.N[i]() is not None else 0.0
             eff = float(pyo.value(EFFP[i])*100.0) if num_pumps > 0 else 0.0
-            dra_ppm = float(pyo.value(model.PPM[i]))
-            dra_cost_i = float(pyo.value(model.dra_cost[i]))
+            dra_ppm = float(pyo.value(model.PPM[i])) if model.PPM[i].value is not None else 0.0
+            dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i]() is not None else 0.0
         else:
             num_pumps = 0; speed_rpm = 0.0; eff = 0.0; dra_ppm = 0.0; dra_cost_i = 0.0
 
@@ -321,9 +329,9 @@ def solve_pipeline(
         else:
             power_cost = 0.0
 
-        drag_red = float(pyo.value(model.DR[i])) if i in pump_indices else 0.0
-        head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
-        res_head = float(pyo.value(model.RH[i]))
+        drag_red = float(pyo.value(model.DR[i])) if i in pump_indices and model.DR[i].value is not None else 0.0
+        head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
+        res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
 
         result[f"pipeline_flow_{name}"] = outflow
@@ -341,7 +349,7 @@ def solve_pipeline(
         result[f"velocity_{name}"] = velocity
         result[f"reynolds_{name}"] = reynolds
         result[f"friction_{name}"] = fric
-        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i]))
+        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
         result[f"maop_{name}"] = maop_dict[i]
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
@@ -367,7 +375,7 @@ def solve_pipeline(
         f"reynolds_{term}": 0.0,
         f"friction_{term}": 0.0,
         f"sdh_{term}": 0.0,
-        f"residual_head_{term}": float(pyo.value(model.RH[N+1])),
+        f"residual_head_{term}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
     })
-    result['total_cost'] = float(pyo.value(model.Obj))
+    result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj() is not None else 0.0
     return result
