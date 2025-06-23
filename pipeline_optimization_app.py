@@ -889,6 +889,7 @@ with tab3:
                     st.error(f"DOL (rated RPM) for station {stn['name']} must be > 0. Please check your input.")
                     continue
                 step = max(100, int((N_max-N_min)/5))
+                fig = go.Figure()
                 for rpm in range(max(N_min, 1), N_max+1, step):  # Ensure rpm > 0
                     if rpm <= 0:
                         continue
