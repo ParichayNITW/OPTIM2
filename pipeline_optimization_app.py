@@ -883,18 +883,19 @@ with tab3:
                 A = res.get(f"coef_A_{key}",0)
                 B = res.get(f"coef_B_{key}",0)
                 C = res.get(f"coef_C_{key}",0)
-                N_min = int(res.get(f"min_rpm_{key}", 0))
-                N_max = int(res.get(f"dol_{key}", 0))
+                N_min = int(res.get(f"min_rpm_{key}", 1000))
+                N_max = int(res.get(f"dol_{key}", 1500))
+                if N_max <= 0:
+                    st.error(f"DOL (rated RPM) for station {stn['name']} must be > 0. Please check your input.")
+                    continue
                 step = max(100, int((N_max-N_min)/5))
-                fig = go.Figure()
-                for rpm in range(N_min, N_max+1, step):
-                    # For each desired speed, scale flows according to affinity law
-                    Q_at_rpm = flows                 # Flows at this rpm
-                    Q_equiv_DOL = Q_at_rpm * N_max / rpm   # Map these flows to DOL for the polynomial
-                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)  # Head at DOL curve
-                    H = H_DOL * (rpm/N_max)**2      # Scale head to current rpm
-                
-                    # Remove negatives
+                for rpm in range(max(N_min, 1), N_max+1, step):  # Ensure rpm > 0
+                    if rpm <= 0:
+                        continue
+                    Q_at_rpm = flows
+                    Q_equiv_DOL = Q_at_rpm * N_max / rpm
+                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
+                    H = H_DOL * (rpm/N_max)**2
                     valid = H >= 0
                     fig.add_trace(go.Scatter(
                         x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
