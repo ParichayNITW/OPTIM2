@@ -252,7 +252,8 @@ def solve_pipeline(
 
     # ---- DRA PPM Piecewise and Cost Calculation ----
     model.PPM = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
-    model.dra_cost = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
+    # Remove: model.dra_cost = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
+    model.dra_cost = pyo.Expression(model.pump_stations)
     for i in pump_indices:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
@@ -267,7 +268,7 @@ def solve_pipeline(
             )
         )
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
-        model.dra_cost[i] = pyo.Expression(expr=dra_cost_expr)
+        model.dra_cost[i] = dra_cost_expr   # <--- No Expression(), just assign
 
     # ---- Objective Function (Power/Fuel + DRA Cost) ----
     total_cost = 0
