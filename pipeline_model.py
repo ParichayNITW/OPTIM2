@@ -199,7 +199,6 @@ def solve_pipeline(
     EFFP = {}
 
     for i in range(1, N+1):
-        # DRA only at pump stations
         if i in pump_indices:
             DR_frac = model.DR[i] / 100.0
         else:
@@ -213,9 +212,8 @@ def solve_pipeline(
             DH_peak = f[i] * (L_peak / d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
-        # Pump equations: use pump_flows!
         if i in pump_indices:
-            pump_flow_i = float(segment_flows[i])  # always use after delivery
+            pump_flow_i = float(segment_flows[i])
             TDH[i] = (model.A[i]*pump_flow_i**2 + model.B[i]*pump_flow_i + model.C[i]) * ((model.N[i]/model.DOL[i])**2)
             flow_eq = pump_flow_i * model.DOL[i]/model.N[i]
             EFFP[i] = (
@@ -256,22 +254,28 @@ def solve_pipeline(
     # ---- DRA PPM Piecewise and Cost Calculation ----
     model.PPM = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
     model.dra_cost = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
-    model.pw_constr = pyo.ConstraintList()
     for i in pump_indices:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        # Use Pyomo Piecewise or direct interpolation for small number of breakpoints (for production: use Piecewise for full MIP)
-        # For now, set as equality for each pump station:
-        model.pw_constr.add(model.PPM[i] == np.interp(model.DR[i], dr_points, ppm_points))
+        piecewise_name = f'piecewise_dra_ppm_{i}'
+        setattr(model, piecewise_name,
+            pyo.Piecewise(
+                f'pw_dra_ppm_{i}',
+                model.PPM[i], model.DR[i],
+                pw_pts=dr_points,
+                f_rule=ppm_points,
+                pw_constr_type='EQ',
+                warn_domain_violations=True
+            )
+        )
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
-        model.dra_cost[i].set_value(dra_cost_expr)
+        model.dra_cost[i] = pyo.Expression(expr=dra_cost_expr)
 
     # ---- Objective Function (Power/Fuel + DRA Cost) ----
     total_cost = 0
     for i in pump_indices:
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
-        # Power calculation
         if i in pump_indices:
             power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
         else:
