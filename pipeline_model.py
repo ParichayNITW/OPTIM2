@@ -264,8 +264,7 @@ def solve_pipeline(
                 model.PPM[i], model.DR[i],
                 pw_pts=dr_points,
                 f_rule=ppm_points,
-                pw_constr_type='EQ',
-                warn_domain_violations=True
+                pw_constr_type='EQ'
             )
         )
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
