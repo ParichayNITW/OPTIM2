@@ -43,13 +43,11 @@ def get_ppm_breakpoints(visc):
         dr_points = np.unique(np.concatenate((x_lower, x_upper)))
         ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
                      np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
-        # Remove duplicate and non-increasing
         unique_dr, unique_indices = np.unique(dr_points, return_index=True)
         unique_ppm = ppm_points[unique_indices]
         return list(unique_dr), list(unique_ppm)
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
-    # Remove duplicates
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
@@ -71,7 +69,7 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # ---- Segment Flows ----
+    # Segment Flows
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -80,7 +78,7 @@ def solve_pipeline(
         out_flow = prev_flow - delivery + supply
         segment_flows.append(out_flow)
 
-    # --- Parameter Initialization ---
+    # Parameter Initialization
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
     Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
@@ -262,7 +260,6 @@ def solve_pipeline(
     for i in pump_indices:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        # Guarantee unique and strictly increasing breakpoints for Piecewise
         dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
         setattr(model, f'piecewise_dra_ppm_{i}',
             pyo.Piecewise(
@@ -296,6 +293,18 @@ def solve_pipeline(
 
     # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
+
+    # --- Check and Handle Solver Status ---
+    status = results.solver.status
+    term = results.solver.termination_condition
+    if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
+        return {
+            "error": True,
+            "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
+            "termination_condition": str(term),
+            "solver_status": str(status)
+        }
+
     model.solutions.load_from(results)
 
     # --- Results Section (robust, never fails) ---
@@ -307,7 +316,6 @@ def solve_pipeline(
         pump_flow = outflow if stn.get('is_pump', False) else 0.0
 
         if i in pump_indices:
-            # Defensive extraction: always use .value, fallback to 0
             num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
             speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 and model.N[i]() is not None else 0.0
             eff = float(pyo.value(EFFP[i])*100.0) if num_pumps > 0 else 0.0
@@ -378,4 +386,5 @@ def solve_pipeline(
         f"residual_head_{term}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
     })
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj() is not None else 0.0
+    result["error"] = False
     return result
