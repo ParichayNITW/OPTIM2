@@ -392,3 +392,140 @@ def solve_pipeline(
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj() is not None else 0.0
     result["error"] = False
     return result
+
+def solve_pipeline_with_params(
+    stations, terminal, FLOW, KV_list, rho_list, 
+    user_nop, user_dr, user_dra_cost, user_elec_rates, user_fuel_price
+):
+    # Prepare the modified stations data
+    stations_mod = []
+    k = 0
+    for stn in stations:
+        stn_mod = stn.copy()
+        if stn.get('is_pump', False):
+            stn_mod['max_pumps'] = max(stn.get('max_pumps', 2), user_nop[k])
+            stn_mod['min_pumps'] = user_nop[k]
+            stn_mod['max_dr'] = max(stn.get('max_dr', 60), user_dr[k])
+            stn_mod['rate'] = user_elec_rates[k]
+            k += 1
+        stations_mod.append(stn_mod)
+
+    # Base case
+    result = solve_pipeline(
+        stations_mod, terminal, FLOW, KV_list, rho_list, 
+        user_dra_cost, user_fuel_price
+    )
+
+    # Compose per-station cost breakdowns
+    station_names = [s['name'] for s in stations if s.get('is_pump', False)]
+    dra_cost_per_station = [result.get(f'dra_cost_{n.lower().replace(" ", "_")}', 0) for n in station_names]
+    power_cost_per_station = [result.get(f'power_cost_{n.lower().replace(" ", "_")}', 0) for n in station_names]
+    fuel_cost_per_station = [result.get(f'fuel_cost_{n.lower().replace(" ", "_")}', 0) for n in station_names]
+    station_outputs = []
+    for i, name in enumerate(station_names):
+        station_outputs.append({
+            "Station": name,
+            "NOP": user_nop[i],
+            "DR (%)": user_dr[i],
+            "DRA Cost": dra_cost_per_station[i],
+            "Power Cost": power_cost_per_station[i],
+            "Fuel Cost": fuel_cost_per_station[i],
+            "Total Cost": dra_cost_per_station[i] + power_cost_per_station[i] + fuel_cost_per_station[i]
+        })
+    total_dra_cost = sum(dra_cost_per_station)
+    total_power_cost = sum(power_cost_per_station)
+    total_fuel_cost = sum(fuel_cost_per_station)
+    total_cost = result['total_cost']
+
+    # --- Sensitivity: Parameter Sweeps for Tornado Chart ---
+    param_names = ["NOP", "DR", "DRA Cost", "Electricity Rate", "Fuel Price"]
+    base_vals = [user_nop[:], user_dr[:], user_dra_cost, user_elec_rates[:], user_fuel_price]
+    deltas = []
+    tornado_costs = []
+
+    # Sensitivity for NOP (increase NOP at each station by +1)
+    costs_nop = []
+    for idx in range(len(user_nop)):
+        nop_up = user_nop[:]
+        nop_up[idx] = min(nop_up[idx]+1, stations[idx].get('max_pumps', 4))
+        res_nop = solve_pipeline_with_params(
+            stations, terminal, FLOW, KV_list, rho_list,
+            nop_up, user_dr, user_dra_cost, user_elec_rates, user_fuel_price
+        )
+        costs_nop.append(res_nop['total_cost'])
+    tornado_costs.append(max(costs_nop) - total_cost)
+
+    # Sensitivity for DR (increase DR at each station by +10%)
+    costs_dr = []
+    for idx in range(len(user_dr)):
+        dr_up = user_dr[:]
+        dr_up[idx] = min(dr_up[idx]+10, stations[idx].get('max_dr', 60))
+        res_dr = solve_pipeline_with_params(
+            stations, terminal, FLOW, KV_list, rho_list,
+            user_nop, dr_up, user_dra_cost, user_elec_rates, user_fuel_price
+        )
+        costs_dr.append(res_dr['total_cost'])
+    tornado_costs.append(max(costs_dr) - total_cost)
+
+    # Sensitivity for DRA cost (+20%)
+    dra_cost_up = user_dra_cost * 1.2
+    res_dra_cost = solve_pipeline_with_params(
+        stations, terminal, FLOW, KV_list, rho_list,
+        user_nop, user_dr, dra_cost_up, user_elec_rates, user_fuel_price
+    )
+    tornado_costs.append(res_dra_cost['total_cost'] - total_cost)
+
+    # Sensitivity for Electricity Rate (+20% at each station)
+    elec_rate_up = [x * 1.2 for x in user_elec_rates]
+    res_elec = solve_pipeline_with_params(
+        stations, terminal, FLOW, KV_list, rho_list,
+        user_nop, user_dr, user_dra_cost, elec_rate_up, user_fuel_price
+    )
+    tornado_costs.append(res_elec['total_cost'] - total_cost)
+
+    # Sensitivity for Fuel Price (+20%)
+    fuel_price_up = user_fuel_price * 1.2
+    res_fuel = solve_pipeline_with_params(
+        stations, terminal, FLOW, KV_list, rho_list,
+        user_nop, user_dr, user_dra_cost, user_elec_rates, fuel_price_up
+    )
+    tornado_costs.append(res_fuel['total_cost'] - total_cost)
+
+    # --- Heatmap for combinations of NOP and DR (example for first pump station only) ---
+    heatmap_nop = []
+    heatmap_dr = []
+    heatmap_cost = []
+    for nop in range(1, stations[0].get('max_pumps', 4)+1):
+        for dr in range(0, int(stations[0].get('max_dr', 60))+1, 10):
+            test_nop = user_nop[:]
+            test_dr = user_dr[:]
+            test_nop[0] = nop
+            test_dr[0] = dr
+            res_hm = solve_pipeline(
+                stations_mod, terminal, FLOW, KV_list, rho_list, 
+                user_dra_cost, user_fuel_price
+            )
+            heatmap_nop.append(nop)
+            heatmap_dr.append(dr)
+            heatmap_cost.append(res_hm['total_cost'])
+    heatmap = pd.DataFrame({
+        "NOP": heatmap_nop,
+        "DR": heatmap_dr,
+        "Total Cost": heatmap_cost
+    })
+
+    return {
+        "total_cost": total_cost,
+        "total_dra_cost": total_dra_cost,
+        "total_power_cost": total_power_cost,
+        "total_fuel_cost": total_fuel_cost,
+        "dra_cost_per_station": dra_cost_per_station,
+        "power_cost_per_station": power_cost_per_station,
+        "fuel_cost_per_station": fuel_cost_per_station,
+        "param_sensitivity": tornado_costs,
+        "heatmap": heatmap,
+        "station_outputs": station_outputs,
+        "error": result.get("error", False),
+        "message": result.get("message", "")
+    }
+
