@@ -1761,15 +1761,14 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 
 with tab_sens:
-    st.title("Sensitivity Analysis – Pipeline Optima™")
-    st.markdown("""
-    Analyze and visualize how your pipeline's economics change with operational parameters. 
-    Tornado, line, stacked bar, and pie chart analytics for senior management/Chairman.
-    """)
+    st.title("Pipeline Optima™ – Sensitivity & Executive Analytics")
 
-    # Sensitivity setup
+    # Make sure these are already defined in your app:
+    # stations, terminal, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df
+
     param_options = [
         "Drag Reduction (%)",
         "DRA Cost (INR/L)",
@@ -1785,32 +1784,30 @@ with tab_sens:
     ]
     param = st.selectbox("Parameter to vary", param_options, index=0)
     metric = st.selectbox("Output metric", output_options, index=0)
-
     sweep_ranges = {
-        "Drag Reduction (%)": np.arange(0, 61, 5),   # 0-60% drag reduction
+        "Drag Reduction (%)": np.arange(0, 61, 5),
         "DRA Cost (INR/L)": np.arange(50, 201, 10),
-        "Number of Pumps (NOP)": np.arange(1, 5, 1),  # 1-4 pumps
+        "Number of Pumps (NOP)": np.arange(1, 5, 1),
         "Diesel Price (INR/L)": np.arange(60, 131, 5),
         "Electricity Rate (INR/kWh)": np.arange(6, 21, 1),
     }
     pvals = sweep_ranges[param]
 
     if st.button("Run Sensitivity Analysis"):
-        st.info("Running parametric study. Please wait...")
+        st.info("Running scenario analysis... Please wait...")
         results = []
-        prog = st.progress(0, text="Initializing...")
+        prog = st.progress(0, text="Starting...")
 
         for i, val in enumerate(pvals):
-            # Deep copy everything for safety
-            stations_mod = [dict(stn) for stn in stations_data]
-            term_mod = dict(term_data)
+            # Deep copy for safety
+            stations_mod = [dict(stn) for stn in stations]
+            terminal_mod = dict(terminal)
             this_FLOW = FLOW
             this_RateDRA = RateDRA
             this_Price_HSD = Price_HSD
             this_kv_list = list(kv_list)
             this_rho_list = list(rho_list)
 
-            # Apply parameter change
             if param == "Drag Reduction (%)":
                 for stn in stations_mod:
                     if stn.get('is_pump', False):
@@ -1827,10 +1824,9 @@ with tab_sens:
                 for stn in stations_mod:
                     stn['electricity_rate'] = float(val)
 
-            # Call the backend
             try:
                 res = solve_pipeline(
-                    stations_mod, term_mod, this_FLOW, this_kv_list, this_rho_list,
+                    stations_mod, terminal_mod, this_FLOW, this_kv_list, this_rho_list,
                     this_RateDRA, this_Price_HSD, linefill_df.to_dict()
                 )
                 outputs = {
@@ -1857,7 +1853,26 @@ with tab_sens:
         prog.empty()
         df = pd.DataFrame(results)
 
-        # ==== 1. Main Sensitivity Line Plot ====
+        # ========== 1. Executive Summary ==========
+        st.header("Executive Summary & Business Insights")
+        min_row = df.loc[df["Total Cost"].idxmin()]
+        max_row = df.loc[df["Total Cost"].idxmax()]
+        base_row = df.iloc[0]
+        annual_savings = (max_row["Total Cost"] - min_row["Total Cost"]) * 365
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric(f"Lowest {metric}", f"₹{min_row[metric.split()[0]]:,.0f}/day", f"{param} = {min_row['Parameter']}")
+        col2.metric(f"Highest {metric}", f"₹{max_row[metric.split()[0]]:,.0f}/day", f"{param} = {max_row['Parameter']}")
+        col3.metric(f"Annual Savings", f"₹{annual_savings:,.0f}/yr",
+                    f"{max_row['Parameter']} → {min_row['Parameter']}")
+
+        st.markdown(f"""
+        - **Range of Impact:** {param} can change {metric} by ₹{max_row[metric.split()[0]] - min_row[metric.split()[0]]:,.0f} per day
+        - **Business Takeaway:** Optimizing `{param}` from {max_row['Parameter']} to {min_row['Parameter']} will save about ₹{annual_savings:,.0f} per year
+        - **Optimal Value:** Board should target {param} = **{min_row['Parameter']}** for cost minimization
+        """)
+
+        # ========== 2. Sensitivity Line ==========
         yfield = {
             "Total Cost (INR/day)": "Total Cost",
             "DRA Cost (INR/day)": "DRA Cost",
@@ -1870,7 +1885,7 @@ with tab_sens:
                        title=f"{metric} vs {param}")
         st.plotly_chart(fig1, use_container_width=True)
 
-        # ==== 2. Tornado Bar for Sensitivity ====
+        # ========== 3. Tornado Chart ==========
         st.markdown("### Tornado Sensitivity Chart")
         base_idx = df[yfield].idxmin() if df[yfield].notna().any() else 0
         base_cost = df.loc[base_idx, yfield] if df[yfield].notna().any() else 0
@@ -1878,12 +1893,58 @@ with tab_sens:
         tornado_df = df[["Parameter", "Delta Cost"]].sort_values("Delta Cost")
         fig_tornado = px.bar(
             tornado_df, y="Parameter", x="Delta Cost", orientation="h",
-            title=f"Tornado Chart: Delta {metric} vs {param}"
+            title=f"Tornado Chart: Δ{metric} vs {param}"
         )
         st.plotly_chart(fig_tornado, use_container_width=True)
 
-        # ==== 3. Stationwise Stacked Bar ====
-        st.markdown("### Stationwise Cost Breakdown (Stacked Bar Chart)")
+        # ========== 4. Waterfall Chart ==========
+        st.markdown("### Waterfall Chart: Incremental Cost Impact")
+        diff_vals = df[yfield].diff().fillna(0)
+        base_val = df[yfield].iloc[0]
+        steps = [base_val] + list(diff_vals.iloc[1:])
+        fig_wf = go.Figure(go.Waterfall(
+            x=[f"{param}={v}" for v in df["Parameter"]],
+            y=diff_vals,
+            base=base_val,
+            measure=["relative"] * len(diff_vals),
+            textposition="outside",
+            text=[f"₹{v:,.0f}" for v in diff_vals]
+        ))
+        fig_wf.update_layout(title="Cost Change as Parameter Varies",
+                             yaxis_title=metric)
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+        # ========== 5. Dual-Parameter Heatmap ==========
+        if param in ["Drag Reduction (%)", "Number of Pumps (NOP)"]:
+            st.markdown("### Heatmap: Total Cost vs Drag Reduction & NOP (Business Sweet Spot)")
+            drag_vals = np.arange(0, 61, 10)
+            nop_vals = np.arange(1, 5, 1)
+            heatmap_data = []
+            for dr in drag_vals:
+                for nop in nop_vals:
+                    stations_mod = [dict(stn) for stn in stations]
+                    for stn in stations_mod:
+                        if stn.get('is_pump', False):
+                            stn['drag_reduction'] = float(dr)
+                            stn['nop'] = int(nop)
+                    try:
+                        res = solve_pipeline(
+                            stations_mod, dict(terminal), FLOW, list(kv_list), list(rho_list),
+                            RateDRA, Price_HSD, linefill_df.to_dict()
+                        )
+                        totcost = res.get("total_cost", np.nan)
+                    except:
+                        totcost = np.nan
+                    heatmap_data.append({"Drag Reduction (%)": dr, "NOP": nop, "Total Cost": totcost})
+            hdf = pd.DataFrame(heatmap_data)
+            fig_hm = px.density_heatmap(hdf, x="Drag Reduction (%)", y="NOP", z="Total Cost",
+                                       color_continuous_scale="Viridis",
+                                       histfunc="avg",
+                                       title="Business Cost Surface")
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+        # ========== 6. Stationwise Stacked Bar ==========
+        st.markdown("### Stationwise Cost Breakdown")
         all_stationwise = []
         for idx, row in df.iterrows():
             for s in row["Stationwise"]:
@@ -1902,7 +1963,7 @@ with tab_sens:
                 )
                 st.plotly_chart(fig2, use_container_width=True)
 
-        # ==== 4. Pie Charts for Min/Max ====
+        # ========== 7. Pie Charts (Min/Max) ==========
         st.markdown("### Cost Structure at Extremes")
         left, right = st.columns(2)
         idx_min = df[yfield].idxmin()
@@ -1917,16 +1978,21 @@ with tab_sens:
             )
             col.plotly_chart(pie, use_container_width=True)
 
-        # ==== 5. Full Results Data Table ====
-        st.markdown("### Results Table")
+        # ========== 8. Results Table & Download ==========
+        st.markdown("### Results Table & Export")
         st.dataframe(df[["Parameter", "Total Cost", "DRA Cost", "Power Cost", "Fuel Cost"]])
         csv = df.to_csv(index=False).encode()
         st.download_button(
-            "Download as CSV",
+            "Download Results as CSV",
             data=csv,
             file_name=f"sensitivity_{param.replace(' ','_')}.csv",
             mime="text/csv"
         )
+
+
+
+
+
 
 with tab_bench:
     st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
