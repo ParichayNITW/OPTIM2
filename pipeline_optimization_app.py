@@ -1762,15 +1762,14 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-# ========== SENSITIVITY TAB ==========
 with tab_sens:
-    st.title("Sensitivity Analysis")
-    st.write(
-        "Analyze how pipeline outputs respond to changes in key input parameters. "
-        "Visualizations below show how DRA cost, drag reduction, NOP, and other parameters impact total cost and stationwise performance."
-    )
+    st.title("Sensitivity Analysis – Pipeline Optima™")
+    st.markdown("""
+    Analyze and visualize how your pipeline's economics change with operational parameters. 
+    Tornado, line, stacked bar, and pie chart analytics for senior management/Chairman.
+    """)
 
-    # === User selects parameter and output metric ===
+    # Sensitivity setup
     param_options = [
         "Drag Reduction (%)",
         "DRA Cost (INR/L)",
@@ -1787,36 +1786,35 @@ with tab_sens:
     param = st.selectbox("Parameter to vary", param_options, index=0)
     metric = st.selectbox("Output metric", output_options, index=0)
 
-    # === Define sweep ranges for each parameter ===
     sweep_ranges = {
-        "Drag Reduction (%)": np.arange(0, 31, 2),
+        "Drag Reduction (%)": np.arange(0, 61, 5),   # 0-60% drag reduction
         "DRA Cost (INR/L)": np.arange(50, 201, 10),
-        "Number of Pumps (NOP)": np.arange(1, 5, 1),  # edit upper range if more
+        "Number of Pumps (NOP)": np.arange(1, 5, 1),  # 1-4 pumps
         "Diesel Price (INR/L)": np.arange(60, 131, 5),
         "Electricity Rate (INR/kWh)": np.arange(6, 21, 1),
     }
     pvals = sweep_ranges[param]
 
-    # === Run sensitivity analysis ===
     if st.button("Run Sensitivity Analysis"):
+        st.info("Running parametric study. Please wait...")
         results = []
-        prog = st.progress(0)
+        prog = st.progress(0, text="Initializing...")
+
         for i, val in enumerate(pvals):
-            # Deep copy base data
+            # Deep copy everything for safety
             stations_mod = [dict(stn) for stn in stations_data]
             term_mod = dict(term_data)
-            kv_list = [1]*len(stations_mod)  # adjust if needed
-            rho_list = [1]*len(stations_mod) # adjust if needed
             this_FLOW = FLOW
             this_RateDRA = RateDRA
             this_Price_HSD = Price_HSD
+            this_kv_list = list(kv_list)
+            this_rho_list = list(rho_list)
 
-            # --- Apply parameter variation ---
+            # Apply parameter change
             if param == "Drag Reduction (%)":
                 for stn in stations_mod:
                     if stn.get('is_pump', False):
                         stn['drag_reduction'] = float(val)
-                        stn['max_dr'] = max(stn.get('max_dr', val), val)
             elif param == "DRA Cost (INR/L)":
                 this_RateDRA = float(val)
             elif param == "Number of Pumps (NOP)":
@@ -1829,10 +1827,11 @@ with tab_sens:
                 for stn in stations_mod:
                     stn['electricity_rate'] = float(val)
 
-            # --- Call backend ---
+            # Call the backend
             try:
                 res = solve_pipeline(
-                    stations_mod, term_mod, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, linefill_df.to_dict()
+                    stations_mod, term_mod, this_FLOW, this_kv_list, this_rho_list,
+                    this_RateDRA, this_Price_HSD, linefill_df.to_dict()
                 )
                 outputs = {
                     "Parameter": val,
@@ -1840,7 +1839,7 @@ with tab_sens:
                     "DRA Cost": res.get("total_dra_cost", np.nan),
                     "Power Cost": res.get("total_power_cost", np.nan),
                     "Fuel Cost": res.get("total_fuel_cost", np.nan),
-                    "Stationwise": res.get("station_outputs", [])
+                    "Stationwise": res.get("station_outputs", []),
                 }
             except Exception as e:
                 outputs = {
@@ -1853,31 +1852,45 @@ with tab_sens:
                     "Error": str(e)
                 }
             results.append(outputs)
-            prog.progress((i+1)/len(pvals))
+            prog.progress((i + 1) / len(pvals), text=f"Running {i+1}/{len(pvals)} scenarios...")
 
         prog.empty()
         df = pd.DataFrame(results)
 
-        # ========== MAIN SENSITIVITY CURVE ==========
+        # ==== 1. Main Sensitivity Line Plot ====
         yfield = {
             "Total Cost (INR/day)": "Total Cost",
             "DRA Cost (INR/day)": "DRA Cost",
             "Power Cost (INR/day)": "Power Cost",
             "Fuel Cost (INR/day)": "Fuel Cost"
         }[metric]
-        st.markdown(f"### {metric} vs {param} (Sensitivity)")
-        fig1 = px.line(df, x="Parameter", y=yfield, markers=True, labels={"Parameter": param, yfield: metric})
+        st.markdown(f"### {metric} vs {param}")
+        fig1 = px.line(df, x="Parameter", y=yfield, markers=True,
+                       labels={"Parameter": param, yfield: metric},
+                       title=f"{metric} vs {param}")
         st.plotly_chart(fig1, use_container_width=True)
 
-        # ========== STATIONWISE STACKED BAR ==========
-        if any(len(x) > 0 for x in df["Stationwise"]):
-            st.markdown("### Stationwise Cost Breakdown (Stacked Bar Chart)")
-            all_stationwise = []
-            for idx, row in df.iterrows():
-                for s in row["Stationwise"]:
-                    s_out = dict(s)
-                    s_out["Parameter"] = row["Parameter"]
-                    all_stationwise.append(s_out)
+        # ==== 2. Tornado Bar for Sensitivity ====
+        st.markdown("### Tornado Sensitivity Chart")
+        base_idx = df[yfield].idxmin() if df[yfield].notna().any() else 0
+        base_cost = df.loc[base_idx, yfield] if df[yfield].notna().any() else 0
+        df['Delta Cost'] = df[yfield] - base_cost
+        tornado_df = df[["Parameter", "Delta Cost"]].sort_values("Delta Cost")
+        fig_tornado = px.bar(
+            tornado_df, y="Parameter", x="Delta Cost", orientation="h",
+            title=f"Tornado Chart: Delta {metric} vs {param}"
+        )
+        st.plotly_chart(fig_tornado, use_container_width=True)
+
+        # ==== 3. Stationwise Stacked Bar ====
+        st.markdown("### Stationwise Cost Breakdown (Stacked Bar Chart)")
+        all_stationwise = []
+        for idx, row in df.iterrows():
+            for s in row["Stationwise"]:
+                s_out = dict(s)
+                s_out["Parameter"] = row["Parameter"]
+                all_stationwise.append(s_out)
+        if all_stationwise:
             stationwise_df = pd.DataFrame(all_stationwise)
             if "station_name" in stationwise_df and "cost" in stationwise_df:
                 fig2 = px.bar(
@@ -1889,76 +1902,31 @@ with tab_sens:
                 )
                 st.plotly_chart(fig2, use_container_width=True)
 
-        # ========== COST BREAKDOWN PIE CHARTS ==========
-        st.markdown("### Cost Breakdown at Key Parameter Values")
+        # ==== 4. Pie Charts for Min/Max ====
+        st.markdown("### Cost Structure at Extremes")
         left, right = st.columns(2)
         idx_min = df[yfield].idxmin()
         idx_max = df[yfield].idxmax()
-        minval, maxval = df.loc[idx_min, "Parameter"], df.loc[idx_max, "Parameter"]
-        pie_vals = [("Minimum", idx_min, minval), ("Maximum", idx_max, maxval)]
-        for tag, idx, pval in pie_vals:
+        for tag, idx, col in [("Minimum", idx_min, left), ("Maximum", idx_max, right)]:
             row = df.iloc[idx]
-            vals = [row["DRA Cost"], row["Power Cost"], row["Fuel Cost"]]
+            pie_vals = [row["DRA Cost"], row["Power Cost"], row["Fuel Cost"]]
             pie = px.pie(
                 names=["DRA", "Power", "Fuel"],
-                values=vals,
-                title=f"{tag} {metric} (Parameter={pval})"
+                values=pie_vals,
+                title=f"{tag} {metric} (Parameter={row['Parameter']})"
             )
-            if tag == "Minimum":
-                left.plotly_chart(pie, use_container_width=True)
-            else:
-                right.plotly_chart(pie, use_container_width=True)
+            col.plotly_chart(pie, use_container_width=True)
 
-        # ========== RESULTS TABLE ==========
-        st.markdown("### Full Results Table")
+        # ==== 5. Full Results Data Table ====
+        st.markdown("### Results Table")
         st.dataframe(df[["Parameter", "Total Cost", "DRA Cost", "Power Cost", "Fuel Cost"]])
-
-        # ========== DOWNLOAD OPTION ==========
         csv = df.to_csv(index=False).encode()
         st.download_button(
-            "Download Sensitivity Data as CSV",
+            "Download as CSV",
             data=csv,
             file_name=f"sensitivity_{param.replace(' ','_')}.csv",
             mime="text/csv"
         )
-
-        # ========== OPTIONAL: HEATMAP (EXAMPLE for Drag Reduction vs NOP) ==========
-        if param == "Drag Reduction (%)":
-            st.markdown("### Heatmap: Total Cost vs Drag Reduction and NOP (at first station)")
-            # Generate grid if you want deeper analysis (for demo)
-            heatmap_records = []
-            for dr in np.arange(0, 31, 5):
-                for nop in range(1, 5):
-                    stations_mod = [dict(stn) for stn in stations_data]
-                    for stn in stations_mod:
-                        if stn.get('is_pump', False):
-                            stn['drag_reduction'] = dr
-                            stn['nop'] = nop
-                    try:
-                        res = solve_pipeline(
-                            stations_mod, term_mod, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, linefill_df.to_dict()
-                        )
-                        heatmap_records.append({
-                            "Drag Reduction": dr, "NOP": nop,
-                            "Total Cost": res.get("total_cost", np.nan)
-                        })
-                    except Exception:
-                        heatmap_records.append({"Drag Reduction": dr, "NOP": nop, "Total Cost": np.nan})
-            if heatmap_records:
-                heatmap_df = pd.DataFrame(heatmap_records)
-                fig_hm = px.density_heatmap(
-                    heatmap_df, x="Drag Reduction", y="NOP", z="Total Cost", histfunc="avg",
-                    title="Heatmap: Total Cost vs Drag Reduction and NOP"
-                )
-                st.plotly_chart(fig_hm, use_container_width=True)
-
-
-
-
-
-
-
-
 
 with tab_bench:
     st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
