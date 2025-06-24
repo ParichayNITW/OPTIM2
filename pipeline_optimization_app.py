@@ -1759,13 +1759,14 @@ with tab8:
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
-    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results based on set pipeline parameter and optimization metric.")
+    st.write(
+        "Analyze how pipeline outputs respond to changes in input parameters. Visualizations below show how DRA cost, drag reduction, and other parameters impact total cost and station performance."
+    )
 
     if "last_res" not in st.session_state or "stations" not in st.session_state:
         st.info("Run optimization first to enable sensitivity analysis.")
         st.stop()
 
-    # Choose parameter and output metric
     param = st.selectbox("Parameter to vary", [
         "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Diesel Price (INR/L)", "DRA Cost (INR/L)"
     ])
@@ -1780,9 +1781,8 @@ with tab_sens:
     linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
     stations_data = st.session_state['stations']
     term_data = st.session_state.get("last_term_data", {})
-    N = 10  # number of steps in sweep
+    N = 12  # more steps for smoother plots
 
-    # Range setup for the chosen parameter
     if param == "Flowrate (m³/hr)":
         pvals = np.linspace(max(10, 0.5*FLOW), 1.5*FLOW, N)
     elif param == "Viscosity (cSt)":
@@ -1800,11 +1800,10 @@ with tab_sens:
     elif param == "DRA Cost (INR/L)":
         pvals = np.linspace(0.5*RateDRA, 2*RateDRA, N)
 
-    yvals = []
-    st.info("Running sensitivity... This may take a few seconds per parameter.")
+    yvals, dra_vals, power_vals = [], [], []
+    st.info("Running sensitivity... This may take a few seconds.")
     progress = st.progress(0)
     for i, val in enumerate(pvals):
-        # Clone input parameters for each run
         stations_mod = [dict(s) for s in stations_data]
         term_mod = dict(term_data)
         linefill_mod = linefill_df.copy()
@@ -1813,7 +1812,6 @@ with tab_sens:
         this_RateDRA = RateDRA
         this_Price_HSD = Price_HSD
 
-        # Modify only the selected parameter
         if param == "Flowrate (m³/hr)":
             this_FLOW = val
         elif param == "Viscosity (cSt)":
@@ -1829,14 +1827,11 @@ with tab_sens:
         elif param == "DRA Cost (INR/L)":
             this_RateDRA = val
 
-        # --- Run solver (always backend) ---
         resi = solve_pipeline(stations_mod, term_mod, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, linefill_mod.to_dict())
-
-        # Extract output metric (consistent with summary tab)
+        # Gather costs as before
         total_cost = power_cost = dra_cost = rh = eff = 0
         for idx, stn in enumerate(stations_mod):
             key = stn['name'].lower().replace(' ', '_')
-            # DRA
             dr_opt = resi.get(f"drag_reduction_{key}", 0.0)
             dr_max = stn.get('max_dr', 0.0)
             viscosity = kv_list[idx]
@@ -1852,27 +1847,124 @@ with tab_sens:
             power_cost += power_cost_i
             if eff_i < eff or i == 0: eff = eff_i
             if rh_i < rh or i == 0: rh = rh_i
-        # Choose output metric
-        if output == "Total Cost (INR/day)":
-            yvals.append(total_cost)
-        elif output == "Power Cost (INR/day)":
-            yvals.append(power_cost)
-        elif output == "DRA Cost (INR/day)":
-            yvals.append(dra_cost)
-        elif output == "Residual Head (m)":
-            yvals.append(rh)
-        elif output == "Pump Efficiency (%)":
-            yvals.append(eff)
+        yvals.append(
+            total_cost if output == "Total Cost (INR/day)" else
+            power_cost if output == "Power Cost (INR/day)" else
+            dra_cost if output == "DRA Cost (INR/day)" else
+            rh if output == "Residual Head (m)" else
+            eff
+        )
+        dra_vals.append(dra_cost)
+        power_vals.append(power_cost)
         progress.progress((i+1)/len(pvals))
     progress.empty()
-    # Plot
+    import plotly.express as px
+
+    # 1. Main line plot
     fig = px.line(x=pvals, y=yvals, markers=True,
         labels={"x": param, "y": output},
-        title=f"{output} vs {param} (Sensitivity)")
+        title=f"{output} vs {param} (Sensitivity)"
+    )
     st.plotly_chart(fig, use_container_width=True)
-    df_sens = pd.DataFrame({param: pvals, output: yvals})
+
+    # 2. DRA cost vs parameter
+    st.markdown("#### DRA Cost vs Parameter")
+    fig2 = px.line(x=pvals, y=dra_vals, markers=True,
+        labels={"x": param, "y": "DRA Cost (INR/day)"},
+        title=f"DRA Cost vs {param}"
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # 3. Stacked cost breakdown bar
+    st.markdown("#### Cost Breakdown (DRA + Power) across Parameter Sweep")
+    import pandas as pd
+    df_stack = pd.DataFrame({
+        param: pvals,
+        "DRA Cost": dra_vals,
+        "Power Cost": power_vals
+    })
+    df_stack["Other Cost"] = np.array(yvals) - np.array(dra_vals) - np.array(power_vals)
+    fig3 = px.bar(
+        df_stack, x=param, y=["DRA Cost", "Power Cost", "Other Cost"],
+        title="Stacked Cost Breakdown",
+        labels={"value": "Cost (INR/day)", "variable": "Cost Component"},
+        barmode="stack"
+    )
+    st.plotly_chart(fig3, use_container_width=True)
+
+    # 4. Show DRA % contribution, min/max, cost sensitivity numbers
+    st.markdown("#### Key Sensitivity Insights")
+    dra_share = (np.array(dra_vals) / np.array(yvals) * 100).mean() if np.all(np.array(yvals)>0) else 0
+    st.write(f"- **Average DRA Cost Share:** {dra_share:.1f}% of total")
+    st.write(f"- **Min/Max Total Cost:** {np.nanmin(yvals):,.2f} / {np.nanmax(yvals):,.2f} INR/day")
+
+    # 5. Tornado Chart (cost sensitivity to ±10% of each main input, at baseline)
+    st.markdown("#### Tornado Sensitivity (Cost Change for ±10% Input Variation)")
+    baseline_idx = N // 2  # Use mid value as baseline
+    baseline_cost = yvals[baseline_idx]
+    tornado_params = [
+        ("Flowrate (m³/hr)", FLOW),
+        ("Viscosity (cSt)", linefill_df.iloc[0]["Viscosity (cSt)"] if not linefill_df.empty else 10),
+        ("Drag Reduction (%)", max_dr if 'max_dr' in locals() else 20),
+        ("Diesel Price (INR/L)", Price_HSD),
+        ("DRA Cost (INR/L)", RateDRA)
+    ]
+    tornado_changes = []
+    for tpar, tbase in tornado_params:
+        delta = 0.1 * tbase
+        test_vals = [tbase - delta, tbase + delta]
+        deltas = []
+        for v in test_vals:
+            # As above, but vary only this param
+            stations_mod = [dict(s) for s in stations_data]
+            term_mod = dict(term_data)
+            linefill_mod = linefill_df.copy()
+            kv_list, rho_list = map_linefill_to_segments(linefill_mod, stations_mod)
+            tFLOW, tRateDRA, tPrice_HSD = FLOW, RateDRA, Price_HSD
+            if tpar == "Flowrate (m³/hr)":
+                tFLOW = v
+            elif tpar == "Viscosity (cSt)":
+                linefill_mod["Viscosity (cSt)"] = v
+                kv_list, rho_list = map_linefill_to_segments(linefill_mod, stations_mod)
+            elif tpar == "Drag Reduction (%)":
+                for stn in stations_mod:
+                    if stn.get('is_pump', False):
+                        stn['max_dr'] = max(stn.get('max_dr', v), v)
+                        break
+            elif tpar == "Diesel Price (INR/L)":
+                tPrice_HSD = v
+            elif tpar == "DRA Cost (INR/L)":
+                tRateDRA = v
+            resi = solve_pipeline(stations_mod, term_mod, tFLOW, kv_list, rho_list, tRateDRA, tPrice_HSD, linefill_mod.to_dict())
+            total_cost = 0
+            for idx, stn in enumerate(stations_mod):
+                key = stn['name'].lower().replace(' ', '_')
+                dr_opt = resi.get(f"drag_reduction_{key}", 0.0)
+                dr_max = stn.get('max_dr', 0.0)
+                viscosity = kv_list[idx]
+                dr_use = min(dr_opt, dr_max)
+                ppm = get_ppm_for_dr(viscosity, dr_use)
+                seg_flow = resi.get(f"pipeline_flow_{key}", tFLOW)
+                dra_cost_i = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * tRateDRA
+                power_cost_i = float(resi.get(f"power_cost_{key}", 0.0) or 0.0)
+                total_cost += dra_cost_i + power_cost_i
+            deltas.append(total_cost - baseline_cost)
+        tornado_changes.append(max(abs(d) for d in deltas))
+    df_tornado = pd.DataFrame({
+        "Parameter": [t[0] for t in tornado_params],
+        "Delta Cost (INR/day)": tornado_changes
+    }).sort_values("Delta Cost (INR/day)", ascending=True)
+    fig_torn = px.bar(
+        df_tornado, x="Delta Cost (INR/day)", y="Parameter", orientation="h",
+        title="Tornado Chart: Cost Sensitivity"
+    )
+    st.plotly_chart(fig_torn, use_container_width=True)
+
+    # 6. Data table and download
+    df_sens = pd.DataFrame({param: pvals, output: yvals, "DRA Cost": dra_vals, "Power Cost": power_vals})
     st.dataframe(df_sens, use_container_width=True, hide_index=True)
     st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
+
 
 
 
