@@ -1758,96 +1758,96 @@ with tab8:
         )
 
 with tab_sens:
-import streamlit as st
-import numpy as np
-import plotly.express as px
-
-# Example: assuming `stations`, `terminal`, `FLOW`, `KV_list`, `rho_list` are already defined from elsewhere
-
-st.header("Pipeline Sensitivity Analysis")
-
-# Extract pump stations
-pump_stations = [s for s in stations if s.get('is_pump', False)]
-pump_names = [s['name'] for s in pump_stations]
-num_pump_stations = len(pump_stations)
-
-# 1. NOP (Number of Pumps)
-st.subheader("Select Number of Pumps (NOP) at Each Station")
-user_nop = []
-for i, name in enumerate(pump_names):
-    max_pumps = pump_stations[i].get('max_pumps', 4)
-    user_nop.append(
-        st.number_input(f"NOP at {name}", min_value=1, max_value=max_pumps, value=1, step=1, key=f"nop_{name}")
-    )
-
-# 2. DR (Drag Reduction %)
-st.subheader("Select Drag Reduction (%) at Each Station")
-user_dr = []
-for i, name in enumerate(pump_names):
-    max_dr = int(pump_stations[i].get('max_dr', 60))
-    user_dr.append(
-        st.slider(f"DR at {name} (%)", min_value=0, max_value=max_dr, value=0, step=1, key=f"dr_{name}")
-    )
-
-# 3. DRA Cost (INR/L) - Global
-user_dra_cost = st.number_input("DRA Cost (INR/L)", min_value=0.0, value=120.0, step=1.0)
-
-# 4. Electricity Rate (INR/kWh) - Per Station
-st.subheader("Electricity Rate at Each Pump Station (INR/kWh)")
-user_elec_rates = []
-for i, name in enumerate(pump_names):
-    user_elec_rates.append(
-        st.number_input(f"Electricity Rate at {name} (INR/kWh)", min_value=0.0, value=8.0, step=0.1, key=f"elec_{name}")
-    )
-
-# 5. Fuel Price (INR/L) - Global
-user_fuel_price = st.number_input("Fuel Price (INR/L)", min_value=0.0, value=90.0, step=1.0)
-if st.button("Run Sensitivity Analysis"):
-    with st.spinner("Running analysis..."):
-        result = solve_pipeline_with_params(
-            stations, terminal, FLOW, KV_list, rho_list,
-            user_nop, user_dr, user_dra_cost, user_elec_rates, user_fuel_price
+    import streamlit as st
+    import numpy as np
+    import plotly.express as px
+    
+    # Example: assuming `stations`, `terminal`, `FLOW`, `KV_list`, `rho_list` are already defined from elsewhere
+    
+    st.header("Pipeline Sensitivity Analysis")
+    
+    # Extract pump stations
+    pump_stations = [s for s in stations if s.get('is_pump', False)]
+    pump_names = [s['name'] for s in pump_stations]
+    num_pump_stations = len(pump_stations)
+    
+    # 1. NOP (Number of Pumps)
+    st.subheader("Select Number of Pumps (NOP) at Each Station")
+    user_nop = []
+    for i, name in enumerate(pump_names):
+        max_pumps = pump_stations[i].get('max_pumps', 4)
+        user_nop.append(
+            st.number_input(f"NOP at {name}", min_value=1, max_value=max_pumps, value=1, step=1, key=f"nop_{name}")
         )
     
-    if result.get("error", False):
-        st.error(result.get("message", "Error running sensitivity analysis."))
-    else:
-        st.success("Sensitivity Analysis Complete.")
-
-        # --- Show Summary ---
-        st.subheader("Summary")
-        st.write(f"**Total Cost:** ₹{result['total_cost']:,.2f}")
-        st.write(f"**Total DRA Cost:** ₹{result['total_dra_cost']:,.2f}")
-        st.write(f"**Total Power Cost:** ₹{result['total_power_cost']:,.2f}")
-        st.write(f"**Total Fuel Cost:** ₹{result['total_fuel_cost']:,.2f}")
-
-        # --- Show Stationwise Table ---
-        st.subheader("Stationwise Breakdown")
-        st.dataframe(pd.DataFrame(result["station_outputs"]))
-
-        # --- Tornado Chart ---
-        st.subheader("Cost Sensitivity (Tornado Chart)")
-        tornado_df = pd.DataFrame({
-            "Parameter": ["NOP", "DR", "DRA Cost", "Electricity Rate", "Fuel Price"],
-            "Delta Cost (₹)": result["param_sensitivity"]
-        }).sort_values("Delta Cost (₹)")
-        fig_tornado = px.bar(
-            tornado_df, y="Parameter", x="Delta Cost (₹)", orientation="h",
-            title="Cost Sensitivity to Each Parameter"
+    # 2. DR (Drag Reduction %)
+    st.subheader("Select Drag Reduction (%) at Each Station")
+    user_dr = []
+    for i, name in enumerate(pump_names):
+        max_dr = int(pump_stations[i].get('max_dr', 60))
+        user_dr.append(
+            st.slider(f"DR at {name} (%)", min_value=0, max_value=max_dr, value=0, step=1, key=f"dr_{name}")
         )
-        st.plotly_chart(fig_tornado, use_container_width=True)
-
-        # --- Heatmap for NOP/DR (1st Station Example) ---
-        st.subheader(f"Total Cost Heatmap (NOP vs DR) for {pump_names[0]}")
-        heatmap_df = result["heatmap"]
-        fig_heatmap = px.density_heatmap(
-            heatmap_df, x="NOP", y="DR", z="Total Cost", histfunc="avg",
-            title=f"Heatmap: Total Cost vs NOP and DR at {pump_names[0]}"
+    
+    # 3. DRA Cost (INR/L) - Global
+    user_dra_cost = st.number_input("DRA Cost (INR/L)", min_value=0.0, value=120.0, step=1.0)
+    
+    # 4. Electricity Rate (INR/kWh) - Per Station
+    st.subheader("Electricity Rate at Each Pump Station (INR/kWh)")
+    user_elec_rates = []
+    for i, name in enumerate(pump_names):
+        user_elec_rates.append(
+            st.number_input(f"Electricity Rate at {name} (INR/kWh)", min_value=0.0, value=8.0, step=0.1, key=f"elec_{name}")
         )
-        st.plotly_chart(fig_heatmap, use_container_width=True)
-
-        # --- Add further visualizations if needed ---
-        # e.g. stationwise cost stack bar, pie charts, trend plots, etc.
+    
+    # 5. Fuel Price (INR/L) - Global
+    user_fuel_price = st.number_input("Fuel Price (INR/L)", min_value=0.0, value=90.0, step=1.0)
+    if st.button("Run Sensitivity Analysis"):
+        with st.spinner("Running analysis..."):
+            result = solve_pipeline_with_params(
+                stations, terminal, FLOW, KV_list, rho_list,
+                user_nop, user_dr, user_dra_cost, user_elec_rates, user_fuel_price
+            )
+        
+        if result.get("error", False):
+            st.error(result.get("message", "Error running sensitivity analysis."))
+        else:
+            st.success("Sensitivity Analysis Complete.")
+    
+            # --- Show Summary ---
+            st.subheader("Summary")
+            st.write(f"**Total Cost:** ₹{result['total_cost']:,.2f}")
+            st.write(f"**Total DRA Cost:** ₹{result['total_dra_cost']:,.2f}")
+            st.write(f"**Total Power Cost:** ₹{result['total_power_cost']:,.2f}")
+            st.write(f"**Total Fuel Cost:** ₹{result['total_fuel_cost']:,.2f}")
+    
+            # --- Show Stationwise Table ---
+            st.subheader("Stationwise Breakdown")
+            st.dataframe(pd.DataFrame(result["station_outputs"]))
+    
+            # --- Tornado Chart ---
+            st.subheader("Cost Sensitivity (Tornado Chart)")
+            tornado_df = pd.DataFrame({
+                "Parameter": ["NOP", "DR", "DRA Cost", "Electricity Rate", "Fuel Price"],
+                "Delta Cost (₹)": result["param_sensitivity"]
+            }).sort_values("Delta Cost (₹)")
+            fig_tornado = px.bar(
+                tornado_df, y="Parameter", x="Delta Cost (₹)", orientation="h",
+                title="Cost Sensitivity to Each Parameter"
+            )
+            st.plotly_chart(fig_tornado, use_container_width=True)
+    
+            # --- Heatmap for NOP/DR (1st Station Example) ---
+            st.subheader(f"Total Cost Heatmap (NOP vs DR) for {pump_names[0]}")
+            heatmap_df = result["heatmap"]
+            fig_heatmap = px.density_heatmap(
+                heatmap_df, x="NOP", y="DR", z="Total Cost", histfunc="avg",
+                title=f"Heatmap: Total Cost vs NOP and DR at {pump_names[0]}"
+            )
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+    
+            # --- Add further visualizations if needed ---
+            # e.g. stationwise cost stack bar, pie charts, trend plots, etc.
 
 
 
