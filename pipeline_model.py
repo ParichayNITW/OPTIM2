@@ -315,9 +315,10 @@ def _solve_pipeline_single(
                     stn_key = k.split("drag_reduction_")[1]
                     idx = name_to_idx.get(stn_key)
                     if idx is not None:
-                        rel_exprs.append(abs(model.DR[idx] - val) > 1e-2)
-            if rel_exprs:
+                        rel_exprs.append((model.DR[idx] - val >= 1e-2) | (model.DR[idx] - val <= -1e-2))
+            if len(rel_exprs) > 0:
                 model.exclusion.add(sum(rel_exprs) >= 1)
+
 
     # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
