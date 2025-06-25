@@ -939,10 +939,12 @@ with tab3:
         
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
-                    # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
-                    q_upper = flow_max * (rpm/N_max) if N_max else flow_max
-                    q_lower = flow_min * (rpm/N_max) if N_max else flow_min
+                    if N_max == 0:
+                        q_upper = flow_max
+                        q_lower = flow_min
+                    else:
+                        q_upper = flow_max * (rpm/N_max)
+                        q_lower = flow_min * (rpm/N_max)
                     flows = np.linspace(q_lower, q_upper, 100)
                     if rpm == 0 or N_max == 0:
                         Q_equiv = flows
