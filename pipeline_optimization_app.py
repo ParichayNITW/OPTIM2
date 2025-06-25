@@ -944,7 +944,10 @@ with tab3:
                     q_upper = flow_max * (rpm/N_max) if N_max else flow_max
                     q_lower = flow_min * (rpm/N_max) if N_max else flow_min
                     flows = np.linspace(q_lower, q_upper, 100)
-                    Q_equiv = flows * N_max / rpm if rpm else flows
+                    if rpm == 0 or N_max == 0:
+                        Q_equiv = flows
+                    else:
+                        Q_equiv = flows * N_max / rpm
                     eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
                     eff = np.clip(eff, 0, max_user_eff)
                     fig.add_trace(go.Scatter(
