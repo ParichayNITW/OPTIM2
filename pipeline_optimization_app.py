@@ -475,10 +475,22 @@ if run:
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
         import copy
-        st.session_state["last_res"] = copy.deepcopy(res)
+        
+        # Check if backend returns multiple solutions under "solutions" key
+        if isinstance(res, dict) and "solutions" in res:
+            st.session_state["solution_list"] = copy.deepcopy(res["solutions"])
+            st.session_state["best_index"] = res.get("best_index", 0)
+            st.session_state["last_res"] = copy.deepcopy(res["solutions"][res.get("best_index", 0)])  # Default to L1
+        else:
+            # fallback to old behavior for backward compatibility
+            st.session_state["solution_list"] = [copy.deepcopy(res)]
+            st.session_state["best_index"] = 0
+            st.session_state["last_res"] = copy.deepcopy(res)
+            
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+
 
 
 # ---- Result Tabs ----
