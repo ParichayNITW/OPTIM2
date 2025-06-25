@@ -1420,7 +1420,10 @@ with tab5:
                         else:
                             blend = 0.5
                         color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
-                        H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                        if N_max == 0:
+                            H_pump = np.zeros_like(flows)
+                        else:
+                            H_pump = npump * (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2
                         H_pump = np.clip(H_pump, 0, None)
                         label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
                         showlegend = (idx == 0 or idx == n_rpms-1)
