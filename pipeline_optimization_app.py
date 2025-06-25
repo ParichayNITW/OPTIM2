@@ -1197,7 +1197,7 @@ with tab3:
                 eff = max(0.01, eff/100)
                 P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
                 speeds = np.arange(N_min, N_max+1, 100)
-                power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
+                power_curve = [P1 * (rpm/N_max)**3 if N_max != 0 else 0 for rpm in speeds]
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(
                     x=speeds, y=power_curve, mode='lines+markers',
