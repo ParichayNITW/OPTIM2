@@ -52,7 +52,8 @@ def get_ppm_breakpoints(visc):
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
 
-def solve_pipeline(
+# --- Core Single-Solution Solver (refactored for loop use) ---
+def _solve_pipeline_single(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None, exclusions=None
 ):
     if exclusions is None:
@@ -168,7 +169,6 @@ def solve_pipeline(
                         initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
-    # Option B: DR is a continuous variable, not an Expression!
     model.DR = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
                        bounds=lambda m,j: (0, max_dr[j]), initialize=0)
 
@@ -219,12 +219,9 @@ def solve_pipeline(
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
-            # Correct affinity law: map flow to equivalent DOL reference
             Q_equiv = pump_flow_i * model.DOL[i] / model.N[i]
             H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
             TDH[i] = H_DOL * (model.N[i] / model.DOL[i])**2
-        
-            # Efficiency polynomial at equivalent flow (already correct)
             EFFP[i] = (
                 model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 + model.Rcoef[i]*Q_equiv**2
                 + model.Scoef[i]*Q_equiv + model.Tcoef[i]
@@ -297,7 +294,6 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-
     # --- Add exclusion constraints if exclusions passed ---
     if exclusions:
         model.exclusion = pyo.ConstraintList()
@@ -367,97 +363,62 @@ def solve_pipeline(
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
 
         result[f"pipeline_flow_{name}"] = outflow
-        result[f"pipeline_flow_in_{name}"] = inflow
         result[f"pump_flow_{name}"] = pump_flow
         result[f"num_pumps_{name}"] = num_pumps
         result[f"speed_{name}"] = speed_rpm
         result[f"efficiency_{name}"] = eff
+        result[f"drag_reduction_{name}"] = drag_red
+        result[f"dra_ppm_{name}"] = dra_ppm
         result[f"power_cost_{name}"] = power_cost
         result[f"dra_cost_{name}"] = dra_cost_i
-        result[f"dra_ppm_{name}"] = dra_ppm
-        result[f"drag_reduction_{name}"] = drag_red
         result[f"head_loss_{name}"] = head_loss
         result[f"residual_head_{name}"] = res_head
         result[f"velocity_{name}"] = velocity
         result[f"reynolds_{name}"] = reynolds
-        result[f"friction_{name}"] = fric
-        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
+        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i]))
         result[f"maop_{name}"] = maop_dict[i]
-        if i in pump_indices:
-            result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
-            result[f"coef_B_{name}"] = float(pyo.value(model.B[i]))
-            result[f"coef_C_{name}"] = float(pyo.value(model.C[i]))
-            result[f"dol_{name}"]    = float(pyo.value(model.DOL[i]))
-            result[f"min_rpm_{name}"]= float(pyo.value(model.MinRPM[i]))
+        # Polynomial coefficients, min/max RPM for frontend system curves:
+        result[f"coef_A_{name}"] = Acoef.get(i, 0)
+        result[f"coef_B_{name}"] = Bcoef.get(i, 0)
+        result[f"coef_C_{name}"] = Ccoef.get(i, 0)
+        result[f"min_rpm_{name}"] = min_rpm.get(i, 0)
+        result[f"dol_{name}"] = max_rpm.get(i, 0)
 
-    term = terminal.get('name','terminal').strip().lower().replace(' ','_')
-    result.update({
-        f"pipeline_flow_{term}": segment_flows[-1],
-        f"pipeline_flow_in_{term}": segment_flows[-2],
-        f"pump_flow_{term}": 0.0,
-        f"speed_{term}": 0.0,
-        f"num_pumps_{term}": 0,
-        f"efficiency_{term}": 0.0,
-        f"power_cost_{term}": 0.0,
-        f"dra_cost_{term}": 0.0,
-        f"dra_ppm_{term}": 0.0,
-        f"drag_reduction_{term}": 0.0,
-        f"head_loss_{term}": 0.0,
-        f"velocity_{term}": 0.0,
-        f"reynolds_{term}": 0.0,
-        f"friction_{term}": 0.0,
-        f"sdh_{term}": 0.0,
-        f"residual_head_{term}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
-    })
-    result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj() is not None else 0.0
-    result["error"] = False
+    # Terminal station result
+    result[f"pipeline_flow_{terminal.get('name', 'terminal').strip().lower().replace(' ','_')}"] = segment_flows[-1]
+    # (add more terminal keys if required)
+
     return result
 
-import copy
-def solve_pipeline_top5(
-    stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
+# --- Utility: Solution "closeness" test ---
+def _is_close_config(sol1, sol2, tol=1e-2):
+    keys = [k for k in sol1 if k.startswith("num_pumps_") or k.startswith("speed_") or k.startswith("drag_reduction_")]
+    for k in keys:
+        if k in sol2 and abs(sol1[k] - sol2[k]) > tol:
+            return False
+    return True
+
+# --- Main Public Function: K-best Solver ---
+def solve_pipeline(
+    stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None, exclusions=None, K=5
 ):
+    # If called from frontend, always generate top 5
+    exclusions_list = exclusions if exclusions is not None else []
     solutions = []
-    exclusion_combos = []
-    max_solutions = 5
-
-    for run in range(max_solutions):
-        result = solve_pipeline(
-            stations=copy.deepcopy(stations),
-            terminal=copy.deepcopy(terminal),
-            FLOW=FLOW,
-            KV_list=KV_list,
-            rho_list=rho_list,
-            RateDRA=RateDRA,
-            Price_HSD=Price_HSD,
-            linefill_dict=copy.deepcopy(linefill_dict),
-            exclusions=exclusion_combos
+    for idx in range(K):
+        res = _solve_pipeline_single(
+            stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, exclusions=exclusions_list
         )
-        if result.get("error", False):
+        if "error" in res:
             break
-
-        # Prepare exclusion for next run (num_pumps_*, speed_*, drag_reduction_*)
-        current_config = {}
-        for k in result:
-            if any(x in k for x in ["num_pumps_", "speed_", "drag_reduction_"]):
-                current_config[k] = round(result[k], 2) if isinstance(result[k], float) else result[k]
-        exclusion_combos.append(current_config)
-
-        # Add label for user-friendliness
-        label = [
-            "L1 (Optimal Cost Solution)",
-            "L2 (Second Best Solution)",
-            "L3 (Third Best Solution)",
-            "L4 (Fourth Best Solution)",
-            "L5 (Fifth Best Solution)",
-        ][run]
-
-        sol = copy.deepcopy(result)
-        sol["label"] = label
-        solutions.append(sol)
-
-    # Sort by cost, just in case
-    solutions = sorted(solutions, key=lambda s: s.get("total_cost", float('inf')))
-    return {"error": False, "solutions": solutions, "best_index": 0}
-
-
+        # Only add if not duplicate
+        is_dup = any(_is_close_config(res, s) for s in solutions)
+        if not is_dup:
+            solutions.append(res)
+        # Prepare exclusion dict for this solution to exclude on next iteration
+        config = {}
+        for k in res:
+            if k.startswith("num_pumps_") or k.startswith("speed_") or k.startswith("drag_reduction_"):
+                config[k] = res[k]
+        exclusions_list = exclusions_list + [config]
+    return {"solutions": solutions, "best_index": 0 if solutions else None}
