@@ -976,7 +976,6 @@ with tab3:
         
             names = [s['name'] for s in stations_data] + [terminal["name"]]
             keys = [n.lower().replace(' ', '_') for n in names]
-        
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
             elev_list = [stn['elev'] for stn in stations_data] + [terminal.get('elev', 0.0)]
@@ -986,7 +985,7 @@ with tab3:
             for i in range(N):
                 key = keys[i]
                 segment_maop.append(res.get(f"maop_{key}", np.nan))
-            maop_list = segment_maop + [segment_maop[-1] if segment_maop else np.nan]  # Extend to terminal
+            maop_list = segment_maop + [segment_maop[-1] if segment_maop else np.nan]
         
             # Gather station locations for triangle markers
             station_x = lengths[:-1]
@@ -1001,7 +1000,6 @@ with tab3:
                 if 'peaks' in stn and stn['peaks']:
                     for pk in stn['peaks']:
                         pk_loc = pk.get('loc', 0.0)
-                        pk_elev = pk.get('elev', 0.0)
                         frac = pk_loc / seg_len if seg_len > 0 else 0
                         pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
                         peak_x.append(seg_start + pk_loc)
@@ -1026,15 +1024,41 @@ with tab3:
                 line=dict(color='red', width=1.5, dash='dash')
             ))
         
-            # Pressure Optimization (blue staircase)
+            # ------- KEY PART: Pressure Optimization (with vertical jumps at pump stations) -------
             for i in range(N):
+                # 1. Vertical jump from RH (inlet) to SDH (if not the same)
+                if abs(sdh_list[i] - rh_list[i]) > 1e-3:
+                    fig.add_trace(go.Scatter(
+                        x=[lengths[i], lengths[i]],
+                        y=[rh_list[i], sdh_list[i]],
+                        mode='lines',
+                        line=dict(color='blue', width=2, dash='solid'),
+                        showlegend=(i == 0),
+                        name='Pressure Optimization' if i == 0 else None,
+                    ))
+                # 2. Diagonal/segmented drop from SDH to RH at next station (with peaks if any)
+                seg_len = stations_data[i].get("L", 0.0)
+                seg_start = lengths[i]
+                seg_end = lengths[i+1]
+                seg_peaks = []
+                if 'peaks' in stations_data[i] and stations_data[i]['peaks']:
+                    seg_peaks = sorted(stations_data[i]['peaks'], key=lambda x: x['loc'])
+                # Prepare points: start at SDH, through all peaks, to next RH
+                x_pts = [seg_start]
+                y_pts = [sdh_list[i]]
+                for pk in seg_peaks:
+                    pk_loc = pk.get('loc', 0.0)
+                    frac = pk_loc / seg_len if seg_len > 0 else 0
+                    pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
+                    x_pts.append(seg_start + pk_loc)
+                    y_pts.append(pk_pressure)
+                x_pts.append(seg_end)
+                y_pts.append(rh_list[i+1])
                 fig.add_trace(go.Scatter(
-                    x=[lengths[i], lengths[i+1]],
-                    y=[sdh_list[i], rh_list[i+1]],
+                    x=x_pts, y=y_pts,
                     mode='lines',
                     line=dict(color='blue', width=2),
-                    name='Pressure Optimization' if i == 0 else None,
-                    showlegend=(i == 0)
+                    showlegend=False
                 ))
         
             # Residual Head at nodes (blue open circles)
@@ -1080,6 +1104,7 @@ with tab3:
                 margin=dict(l=40, r=20, t=60, b=40)
             )
             st.plotly_chart(fig, use_container_width=True)
+
 
 
 
