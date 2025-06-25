@@ -1430,7 +1430,6 @@ with tab7:
     Price_HSD = st.session_state.get("Price_HSD", 70.0)
     key = stations_data[0]['name'].lower().replace(' ', '_')
 
-    res, sol_index = get_selected_solution()
     speed_opt = float(res.get(f"speed_{key}", 1500.0))
     dra_opt = float(res.get(f"drag_reduction_{key}", 0.0))
     nopt_opt = int(res.get(f"num_pumps_{key}", 1))
@@ -1505,7 +1504,7 @@ with tab7:
         DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
         return stn['elev'] + DH
         
-    dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
+    dr_opt = res.get(f"drag_reduction_{key}", 0.0)
     dr_max = stn.get('max_dr', 0.0)
     viscosity = kv_list[0]
     dr_use = min(dr_opt, dr_max)
