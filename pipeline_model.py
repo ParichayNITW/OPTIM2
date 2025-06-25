@@ -413,13 +413,15 @@ def solve_pipeline(
     result["error"] = False
     return result
 
+import copy
 def solve_pipeline_top5(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
 ):
-    top_solutions = []
+    solutions = []
     exclusion_combos = []
+    max_solutions = 5
 
-    for run in range(5):
+    for run in range(max_solutions):
         result = solve_pipeline(
             stations=copy.deepcopy(stations),
             terminal=copy.deepcopy(terminal),
@@ -434,36 +436,28 @@ def solve_pipeline_top5(
         if result.get("error", False):
             break
 
-        total_cost = result["total_cost"]
-        result_clean = copy.deepcopy(result)
-        result_clean.pop("error", None)
-        result_clean.pop("total_cost", None)
-
-        top_solutions.append({
-            "total_cost": total_cost,
-            "details": result_clean
-        })
-
-        # Extract only key config to exclude (num_pumps_*, speed_*, drag_reduction_*)
+        # Prepare exclusion for next run (num_pumps_*, speed_*, drag_reduction_*)
         current_config = {}
-        for k in result.keys():
+        for k in result:
             if any(x in k for x in ["num_pumps_", "speed_", "drag_reduction_"]):
                 current_config[k] = round(result[k], 2) if isinstance(result[k], float) else result[k]
         exclusion_combos.append(current_config)
 
-    # Sort by total_cost to ensure ranking
-    top_solutions = sorted(top_solutions, key=lambda s: s["total_cost"])
+        # Add label for user-friendliness
+        label = [
+            "L1 (Optimal Cost Solution)",
+            "L2 (Second Best Solution)",
+            "L3 (Third Best Solution)",
+            "L4 (Fourth Best Solution)",
+            "L5 (Fifth Best Solution)",
+        ][run]
 
-    # Assign professional labels
-    solution_labels = [
-        "Optimal Cost Solution",
-        "Second Best Solution",
-        "Third Best Solution",
-        "Fourth Best Solution",
-        "Fifth Best Solution"
-    ]
-    for i, sol in enumerate(top_solutions):
-        sol["label"] = solution_labels[i]
+        sol = copy.deepcopy(result)
+        sol["label"] = label
+        solutions.append(sol)
 
-    return {"error": False, "solutions": top_solutions}
+    # Sort by cost, just in case
+    solutions = sorted(solutions, key=lambda s: s.get("total_cost", float('inf')))
+    return {"error": False, "solutions": solutions, "best_index": 0}
+
 
