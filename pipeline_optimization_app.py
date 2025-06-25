@@ -1105,53 +1105,117 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # ----- 3D Surface Plot: Head/Pressure vs Length vs Flow -----
             import numpy as np
             import plotly.graph_objects as go
-        
-            st.markdown("<div class='section-title'>3D Surface: Head/Pressure vs. Pipeline Length and Flow</div>", unsafe_allow_html=True)
-        
-            flow_range = np.linspace(0.5 * st.session_state["FLOW"], 1.5 * st.session_state["FLOW"], 7)  # 7 flows (50% to 150%)
+            
+            st.markdown("<div class='section-title'>4D Animation: Head/Pressure vs. Pipeline Length & Flow (DRA % Drag Reduction Sweep)</div>", unsafe_allow_html=True)
+            
+            # Set range for Drag Reduction (%) - e.g., from 0% to 60% in 8 steps
+            dra_perc_range = np.linspace(0, 60, 8)
+            # Range of flows to sweep (as before)
+            flow_range = np.linspace(0.5 * st.session_state["FLOW"], 1.5 * st.session_state["FLOW"], 7)
             stations_data = st.session_state["last_stations_data"]
             terminal = st.session_state["last_term_data"]
+            
             lengths = [0]
             for stn in stations_data:
                 lengths.append(lengths[-1] + stn.get("L", 0.0))
             n_nodes = len(lengths)
-        
-            Z = []  # Will be list of [head at each node] for each flow
-            with st.spinner("Generating 3D plot..."):
-                for flow in flow_range:
-                    kv_list, rho_list = map_linefill_to_segments(
-                        st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame())),
-                        stations_data
+            
+            frames = []
+            with st.spinner("Generating 4D animation..."):
+                # For legend: Keep track of first surface for initial display
+                Z0 = None
+                for i, dra_perc in enumerate(dra_perc_range):
+                    Z = []
+                    for flow in flow_range:
+                        # -- Use the DRA sweep logic: For each pump station, set max_dr to dra_perc --
+                        # You may need to update your solve_pipeline function to accept station-wise max_dr overrides
+                        stations_data_mod = []
+                        for stn in stations_data:
+                            stn_mod = stn.copy()
+                            if 'max_dr' in stn_mod:
+                                stn_mod['max_dr'] = dra_perc  # Override DRA% for this sweep
+                            stations_data_mod.append(stn_mod)
+                        kv_list, rho_list = map_linefill_to_segments(
+                            st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame())),
+                            stations_data_mod
+                        )
+                        res3d = solve_pipeline(
+                            stations_data_mod, terminal, flow, kv_list, rho_list,
+                            st.session_state["RateDRA"], st.session_state["Price_HSD"], None
+                        )
+                        keys3d = [s['name'].lower().replace(' ', '_') for s in stations_data_mod] + [terminal["name"].lower().replace(' ', '_')]
+                        head_profile = [res3d.get(f"residual_head_{k}", np.nan) for k in keys3d]
+                        Z.append(head_profile)
+                    Z = np.array(Z)
+                    X, Y = np.meshgrid(lengths, flow_range)
+                    frame = go.Frame(
+                        data=[go.Surface(
+                            x=X, y=Y, z=Z,
+                            colorscale='Viridis',
+                            cmin=None, cmax=None,
+                            showscale=False  # Only show colorbar on initial surface for clarity
+                        )],
+                        name=f"DRA: {dra_perc:.1f}%",
+                        traces=[0],
+                        layout=go.Layout(
+                            title_text=f"Drag Reduction = {dra_perc:.1f} %"
+                        )
                     )
-                    res3d = solve_pipeline(
-                        stations_data, terminal, flow, kv_list, rho_list,
-                        st.session_state["RateDRA"], st.session_state["Price_HSD"], None
-                    )
-                    keys3d = [s['name'].lower().replace(' ', '_') for s in stations_data] + [terminal["name"].lower().replace(' ', '_')]
-                    head_profile = [res3d.get(f"residual_head_{k}", np.nan) for k in keys3d]
-                    Z.append(head_profile)
-                Z = np.array(Z)  # shape: (num_flows, n_nodes)
-                X, Y = np.meshgrid(lengths, flow_range)
-        
-                fig3d = go.Figure(data=[go.Surface(
-                    x=X, y=Y, z=Z,
-                    colorscale='Viridis',
-                    colorbar=dict(title="Head (m)")
-                )])
-                fig3d.update_layout(
-                    title="3D Surface: Head/Pressure vs. Pipeline Length and Flow",
+                    frames.append(frame)
+                    if i == 0:
+                        Z0 = Z  # Save the first surface for initial plot
+            
+                # Initial surface plot
+                fig4d = go.Figure(
+                    data=[go.Surface(
+                        x=X, y=Y, z=Z0,
+                        colorscale='Viridis',
+                        colorbar=dict(title="Head (m)")
+                    )],
+                    frames=frames
+                )
+            
+                # Animation controls and layout
+                fig4d.update_layout(
+                    updatemenus=[
+                        dict(
+                            type='buttons',
+                            showactive=False,
+                            y=1,
+                            x=1.18,
+                            xanchor='right',
+                            yanchor='top',
+                            buttons=[dict(label='Play', method='animate', args=[None, {
+                                "frame": {"duration": 900, "redraw": True},
+                                "fromcurrent": True, "transition": {"duration": 350, "easing": "cubic-in-out"}
+                            }])]
+                        )
+                    ],
+                    sliders=[{
+                        "active": 0,
+                        "currentvalue": {"prefix": "DRA (%): ", "visible": True, "xanchor": "center"},
+                        "pad": {"t": 40},
+                        "steps": [
+                            {"args": [[f"DRA: {dra_perc:.1f}%"], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}],
+                             "label": f"{dra_perc:.1f}",
+                             "method": "animate"} for dra_perc in dra_perc_range
+                        ]
+                    }],
+                    title="4D: Head/Pressure vs. Pipeline Length & Flow (DRA Sweep)",
                     scene=dict(
                         xaxis_title='Pipeline Length (km)',
                         yaxis_title='Flow (m³/hr)',
-                        zaxis_title='Head / Pressure (m)'
+                        zaxis_title='Head / Pressure (m)',
+                        aspectmode="manual", aspectratio=dict(x=1.4, y=1, z=0.75)
                     ),
-                    height=540,
+                    font=dict(size=15),
+                    height=600,
                     margin=dict(l=0, r=0, t=40, b=0)
                 )
-                st.plotly_chart(fig3d, use_container_width=True)
+                st.plotly_chart(fig4d, use_container_width=True)
+
 
 
 
