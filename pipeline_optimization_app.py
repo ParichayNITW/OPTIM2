@@ -198,19 +198,6 @@ if st.session_state.get("should_rerun", False):
     st.rerun()
     st.stop()
 
-def get_selected_solution():
-    # Returns currently selected solution, handles selector logic
-    if "solution_list" in st.session_state and len(st.session_state["solution_list"]) > 1:
-        opt_labels = [f"L{i+1}" for i in range(len(st.session_state["solution_list"]))]
-        sol_index = st.selectbox("Select Solution (Top 5 Lowest-Cost)", options=range(len(opt_labels)),
-                                format_func=lambda x: opt_labels[x], index=st.session_state.get("best_index", 0), key="sol_selector")
-        res = st.session_state["solution_list"][sol_index]
-        st.session_state["last_res"] = res
-        return res, sol_index
-    else:
-        res = st.session_state.get("last_res", {})
-        return res, 0
-
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
@@ -488,22 +475,10 @@ if run:
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
         import copy
-        
-        # Check if backend returns multiple solutions under "solutions" key
-        if isinstance(res, dict) and "solutions" in res:
-            st.session_state["solution_list"] = copy.deepcopy(res["solutions"])
-            st.session_state["best_index"] = res.get("best_index", 0)
-            st.session_state["last_res"] = copy.deepcopy(res["solutions"][res.get("best_index", 0)])  # Default to L1
-        else:
-            # fallback to old behavior for backward compatibility
-            st.session_state["solution_list"] = [copy.deepcopy(res)]
-            st.session_state["best_index"] = 0
-            st.session_state["last_res"] = copy.deepcopy(res)
-            
+        st.session_state["last_res"] = copy.deepcopy(res)
         st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-
 
 
 # ---- Result Tabs ----
@@ -520,7 +495,7 @@ with tab1:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res, sol_index = get_selected_solution()
+        res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
@@ -647,7 +622,7 @@ with tab2:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res, sol_index = get_selected_solution()
+        res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
@@ -818,7 +793,7 @@ with tab3:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res, sol_index = get_selected_solution()
+        res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
         perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
@@ -1136,7 +1111,7 @@ with tab4:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res, sol_index = get_selected_solution()
+        res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         for i, stn in enumerate(stations_data, start=1):
@@ -1201,7 +1176,7 @@ with tab5:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization first to access Pump-System analysis.")
     else:
-        res, sol_index = get_selected_solution()
+        res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
 
         # Show only pump stations in dropdown
@@ -1344,7 +1319,7 @@ with tab6:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization first to analyze DRA curves.")
         st.stop()
-    res, sol_index = get_selected_solution()
+    res = st.session_state["last_res"]
     stations_data = st.session_state["last_stations_data"]
     linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
     kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
@@ -1423,16 +1398,16 @@ with tab7:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization at least once to enable 3D analysis.")
         st.stop()
-    res, sol_index = get_selected_solution()
+    last_res = st.session_state["last_res"]
     stations_data = st.session_state["last_stations_data"]
     FLOW = st.session_state.get("FLOW", 1000.0)
     RateDRA = st.session_state.get("RateDRA", 500.0)
     Price_HSD = st.session_state.get("Price_HSD", 70.0)
     key = stations_data[0]['name'].lower().replace(' ', '_')
 
-    speed_opt = float(res.get(f"speed_{key}", 1500.0))
-    dra_opt = float(res.get(f"drag_reduction_{key}", 0.0))
-    nopt_opt = int(res.get(f"num_pumps_{key}", 1))
+    speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
+    dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
+    nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
     flow_opt = FLOW
 
     delta_speed = 150
@@ -1504,7 +1479,7 @@ with tab7:
         DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
         return stn['elev'] + DH
         
-    dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+    dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
     dr_max = stn.get('max_dr', 0.0)
     viscosity = kv_list[0]
     dr_use = min(dr_opt, dr_max)
@@ -1605,7 +1580,7 @@ with tab8:
         st.info("Run optimization to enable 3D Pressure Profile.")
     else:
         # Gather data
-        res, sol_index = get_selected_solution()
+        res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
 
