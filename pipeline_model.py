@@ -305,7 +305,7 @@ def _solve_pipeline_single(
                     stn_key = k.split("num_pumps_")[1]
                     idx = name_to_idx.get(stn_key)
                     if idx is not None:
-                        rel_exprs.append(model.NOP[idx] != val)
+                        rel_exprs.append(model.NOP[idx] != val)   # NO 'if' on this line!
                 elif "speed_" in k:
                     stn_key = k.split("speed_")[1]
                     idx = name_to_idx.get(stn_key)
@@ -315,9 +315,12 @@ def _solve_pipeline_single(
                     stn_key = k.split("drag_reduction_")[1]
                     idx = name_to_idx.get(stn_key)
                     if idx is not None:
+                        # Use Pyomo OR operator for abs() style exclusion
                         rel_exprs.append((model.DR[idx] - val >= 1e-2) | (model.DR[idx] - val <= -1e-2))
+            # Only check Python list for length, NOT any Pyomo object!
             if len(rel_exprs) > 0:
                 model.exclusion.add(sum(rel_exprs) >= 1)
+
 
 
     # --- Solve ---
