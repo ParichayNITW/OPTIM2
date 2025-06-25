@@ -198,6 +198,19 @@ if st.session_state.get("should_rerun", False):
     st.rerun()
     st.stop()
 
+def get_selected_solution():
+    # Returns currently selected solution, handles selector logic
+    if "solution_list" in st.session_state and len(st.session_state["solution_list"]) > 1:
+        opt_labels = [f"L{i+1}" for i in range(len(st.session_state["solution_list"]))]
+        sol_index = st.selectbox("Select Solution (Top 5 Lowest-Cost)", options=range(len(opt_labels)),
+                                format_func=lambda x: opt_labels[x], index=st.session_state.get("best_index", 0), key="sol_selector")
+        res = st.session_state["solution_list"][sol_index]
+        st.session_state["last_res"] = res
+        return res, sol_index
+    else:
+        res = st.session_state.get("last_res", {})
+        return res, 0
+
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
@@ -507,7 +520,7 @@ with tab1:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res = st.session_state["last_res"]
+        res, sol_index = get_selected_solution()
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
@@ -634,7 +647,7 @@ with tab2:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res = st.session_state["last_res"]
+        res, sol_index = get_selected_solution()
         stations_data = st.session_state["last_stations_data"]
         terminal_name = st.session_state["last_term_data"]["name"]
         names = [s['name'] for s in stations_data] + [terminal_name]
@@ -805,7 +818,7 @@ with tab3:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res = st.session_state["last_res"]
+        res, sol_index = get_selected_solution()
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
         perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
@@ -1123,7 +1136,7 @@ with tab4:
     if "last_res" not in st.session_state:
         st.info("Please run optimization.")
     else:
-        res = st.session_state["last_res"]
+        res, sol_index = get_selected_solution()
         stations_data = st.session_state["last_stations_data"]
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         for i, stn in enumerate(stations_data, start=1):
@@ -1188,7 +1201,7 @@ with tab5:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization first to access Pump-System analysis.")
     else:
-        res = st.session_state["last_res"]
+        res, sol_index = get_selected_solution()
         stations_data = st.session_state["last_stations_data"]
 
         # Show only pump stations in dropdown
@@ -1331,7 +1344,7 @@ with tab6:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization first to analyze DRA curves.")
         st.stop()
-    res = st.session_state["last_res"]
+    res, sol_index = get_selected_solution()
     stations_data = st.session_state["last_stations_data"]
     linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
     kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
@@ -1410,7 +1423,7 @@ with tab7:
     if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
         st.info("Please run optimization at least once to enable 3D analysis.")
         st.stop()
-    last_res = st.session_state["last_res"]
+    res, sol_index = get_selected_solution()
     stations_data = st.session_state["last_stations_data"]
     FLOW = st.session_state.get("FLOW", 1000.0)
     RateDRA = st.session_state.get("RateDRA", 500.0)
@@ -1592,7 +1605,7 @@ with tab8:
         st.info("Run optimization to enable 3D Pressure Profile.")
     else:
         # Gather data
-        res = st.session_state["last_res"]
+        res, sol_index = get_selected_solution()
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
 
