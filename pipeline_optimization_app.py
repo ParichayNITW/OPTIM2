@@ -1105,6 +1105,54 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
 
+            # ----- 3D Surface Plot: Head/Pressure vs Length vs Flow -----
+            import numpy as np
+            import plotly.graph_objects as go
+        
+            st.markdown("<div class='section-title'>3D Surface: Head/Pressure vs. Pipeline Length and Flow</div>", unsafe_allow_html=True)
+        
+            flow_range = np.linspace(0.5 * st.session_state["FLOW"], 1.5 * st.session_state["FLOW"], 7)  # 7 flows (50% to 150%)
+            stations_data = st.session_state["last_stations_data"]
+            terminal = st.session_state["last_term_data"]
+            lengths = [0]
+            for stn in stations_data:
+                lengths.append(lengths[-1] + stn.get("L", 0.0))
+            n_nodes = len(lengths)
+        
+            Z = []  # Will be list of [head at each node] for each flow
+            with st.spinner("Generating 3D plot..."):
+                for flow in flow_range:
+                    kv_list, rho_list = map_linefill_to_segments(
+                        st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame())),
+                        stations_data
+                    )
+                    res3d = solve_pipeline(
+                        stations_data, terminal, flow, kv_list, rho_list,
+                        st.session_state["RateDRA"], st.session_state["Price_HSD"], None
+                    )
+                    keys3d = [s['name'].lower().replace(' ', '_') for s in stations_data] + [terminal["name"].lower().replace(' ', '_')]
+                    head_profile = [res3d.get(f"residual_head_{k}", np.nan) for k in keys3d]
+                    Z.append(head_profile)
+                Z = np.array(Z)  # shape: (num_flows, n_nodes)
+                X, Y = np.meshgrid(lengths, flow_range)
+        
+                fig3d = go.Figure(data=[go.Surface(
+                    x=X, y=Y, z=Z,
+                    colorscale='Viridis',
+                    colorbar=dict(title="Head (m)")
+                )])
+                fig3d.update_layout(
+                    title="3D Surface: Head/Pressure vs. Pipeline Length and Flow",
+                    scene=dict(
+                        xaxis_title='Pipeline Length (km)',
+                        yaxis_title='Flow (m³/hr)',
+                        zaxis_title='Head / Pressure (m)'
+                    ),
+                    height=540,
+                    margin=dict(l=0, r=0, t=40, b=0)
+                )
+                st.plotly_chart(fig3d, use_container_width=True)
+
 
 
 
