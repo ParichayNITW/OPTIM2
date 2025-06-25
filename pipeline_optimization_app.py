@@ -1105,116 +1105,148 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            import numpy as np
-            import plotly.graph_objects as go
-            
-            st.markdown("<div class='section-title'>4D Animation: Head/Pressure vs. Pipeline Length & Flow (DRA % Drag Reduction Sweep)</div>", unsafe_allow_html=True)
-            
-            # Set range for Drag Reduction (%) - e.g., from 0% to 60% in 8 steps
-            dra_perc_range = np.linspace(0, 60, 8)
-            # Range of flows to sweep (as before)
-            flow_range = np.linspace(0.5 * st.session_state["FLOW"], 1.5 * st.session_state["FLOW"], 7)
+            # 3D Plot
             stations_data = st.session_state["last_stations_data"]
+            res = st.session_state["last_res"]
             terminal = st.session_state["last_term_data"]
-            
+            N = len(stations_data)
+        
+            # Cumulative pipeline lengths at each node
             lengths = [0]
             for stn in stations_data:
                 lengths.append(lengths[-1] + stn.get("L", 0.0))
-            n_nodes = len(lengths)
-            
-            frames = []
-            with st.spinner("Generating 4D animation..."):
-                # For legend: Keep track of first surface for initial display
-                Z0 = None
-                for i, dra_perc in enumerate(dra_perc_range):
-                    Z = []
-                    for flow in flow_range:
-                        # -- Use the DRA sweep logic: For each pump station, set max_dr to dra_perc --
-                        # You may need to update your solve_pipeline function to accept station-wise max_dr overrides
-                        stations_data_mod = []
-                        for stn in stations_data:
-                            stn_mod = stn.copy()
-                            if 'max_dr' in stn_mod:
-                                stn_mod['max_dr'] = dra_perc  # Override DRA% for this sweep
-                            stations_data_mod.append(stn_mod)
-                        kv_list, rho_list = map_linefill_to_segments(
-                            st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame())),
-                            stations_data_mod
-                        )
-                        res3d = solve_pipeline(
-                            stations_data_mod, terminal, flow, kv_list, rho_list,
-                            st.session_state["RateDRA"], st.session_state["Price_HSD"], None
-                        )
-                        keys3d = [s['name'].lower().replace(' ', '_') for s in stations_data_mod] + [terminal["name"].lower().replace(' ', '_')]
-                        head_profile = [res3d.get(f"residual_head_{k}", np.nan) for k in keys3d]
-                        Z.append(head_profile)
-                    Z = np.array(Z)
-                    X, Y = np.meshgrid(lengths, flow_range)
-                    frame = go.Frame(
-                        data=[go.Surface(
-                            x=X, y=Y, z=Z,
-                            colorscale='Viridis',
-                            cmin=None, cmax=None,
-                            showscale=False  # Only show colorbar on initial surface for clarity
-                        )],
-                        name=f"DRA: {dra_perc:.1f}%",
-                        traces=[0],
-                        layout=go.Layout(
-                            title_text=f"Drag Reduction = {dra_perc:.1f} %"
-                        )
-                    )
-                    frames.append(frame)
-                    if i == 0:
-                        Z0 = Z  # Save the first surface for initial plot
-            
-                # Initial surface plot
-                fig4d = go.Figure(
-                    data=[go.Surface(
-                        x=X, y=Y, z=Z0,
-                        colorscale='Viridis',
-                        colorbar=dict(title="Head (m)")
-                    )],
-                    frames=frames
-                )
-            
-                # Animation controls and layout
-                fig4d.update_layout(
-                    updatemenus=[
-                        dict(
-                            type='buttons',
-                            showactive=False,
-                            y=1,
-                            x=1.18,
-                            xanchor='right',
-                            yanchor='top',
-                            buttons=[dict(label='Play', method='animate', args=[None, {
-                                "frame": {"duration": 900, "redraw": True},
-                                "fromcurrent": True, "transition": {"duration": 350, "easing": "cubic-in-out"}
-                            }])]
-                        )
-                    ],
-                    sliders=[{
-                        "active": 0,
-                        "currentvalue": {"prefix": "DRA (%): ", "visible": True, "xanchor": "center"},
-                        "pad": {"t": 40},
-                        "steps": [
-                            {"args": [[f"DRA: {dra_perc:.1f}%"], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}],
-                             "label": f"{dra_perc:.1f}",
-                             "method": "animate"} for dra_perc in dra_perc_range
-                        ]
-                    }],
-                    title="4D: Head/Pressure vs. Pipeline Length & Flow (DRA Sweep)",
-                    scene=dict(
-                        xaxis_title='Pipeline Length (km)',
-                        yaxis_title='Flow (m³/hr)',
-                        zaxis_title='Head / Pressure (m)',
-                        aspectmode="manual", aspectratio=dict(x=1.4, y=1, z=0.75)
-                    ),
-                    font=dict(size=15),
-                    height=600,
-                    margin=dict(l=0, r=0, t=40, b=0)
-                )
-                st.plotly_chart(fig4d, use_container_width=True)
+        
+            names = [s['name'] for s in stations_data] + [terminal["name"]]
+            keys = [n.lower().replace(' ', '_') for n in names]
+            rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
+            sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
+            elev_list = [stn['elev'] for stn in stations_data] + [terminal.get('elev', 0.0)]
+        
+            # --- Correct MAOP as a step function ---
+            segment_maop = []
+            for i in range(N):
+                key = keys[i]
+                segment_maop.append(res.get(f"maop_{key}", np.nan))
+            maop_list = segment_maop + [segment_maop[-1] if segment_maop else np.nan]
+        
+            # Gather station locations for triangle markers
+            station_x = lengths[:-1]
+            station_y = [sdh_list[i] for i in range(N)]
+        
+            # Gather peaks for diamond markers (now purple)
+            peak_x = []
+            peak_y = []
+            for i, stn in enumerate(stations_data):
+                seg_start = lengths[i]
+                seg_len = stn.get("L", 0.0)
+                if 'peaks' in stn and stn['peaks']:
+                    for pk in stn['peaks']:
+                        pk_loc = pk.get('loc', 0.0)
+                        frac = pk_loc / seg_len if seg_len > 0 else 0
+                        pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
+                        peak_x.append(seg_start + pk_loc)
+                        peak_y.append(pk_pressure)
+        
+            fig = go.Figure()
+        
+            # Elevation profile (green dotted)
+            fig.add_trace(go.Scatter(
+                x=lengths, y=elev_list,
+                name='Elevation',
+                mode='lines+markers',
+                line=dict(color='green', width=2, dash='dot'),
+                marker=dict(symbol='circle', size=7)
+            ))
+        
+            # MAOP Envelope (correct, red dashed, as step)
+            fig.add_trace(go.Scatter(
+                x=lengths, y=maop_list,
+                name='MAOP Envelope',
+                mode='lines',
+                line=dict(color='red', width=1.5, dash='dash')
+            ))
+        
+            # ------- KEY PART: Pressure Optimization (with vertical jumps at pump stations) -------
+            for i in range(N):
+                # 1. Vertical jump from RH (inlet) to SDH (if not the same)
+                if abs(sdh_list[i] - rh_list[i]) > 1e-3:
+                    fig.add_trace(go.Scatter(
+                        x=[lengths[i], lengths[i]],
+                        y=[rh_list[i], sdh_list[i]],
+                        mode='lines',
+                        line=dict(color='blue', width=2, dash='solid'),
+                        showlegend=(i == 0),
+                        name='Pressure Optimization' if i == 0 else None,
+                    ))
+                # 2. Diagonal/segmented drop from SDH to RH at next station (with peaks if any)
+                seg_len = stations_data[i].get("L", 0.0)
+                seg_start = lengths[i]
+                seg_end = lengths[i+1]
+                seg_peaks = []
+                if 'peaks' in stations_data[i] and stations_data[i]['peaks']:
+                    seg_peaks = sorted(stations_data[i]['peaks'], key=lambda x: x['loc'])
+                # Prepare points: start at SDH, through all peaks, to next RH
+                x_pts = [seg_start]
+                y_pts = [sdh_list[i]]
+                for pk in seg_peaks:
+                    pk_loc = pk.get('loc', 0.0)
+                    frac = pk_loc / seg_len if seg_len > 0 else 0
+                    pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
+                    x_pts.append(seg_start + pk_loc)
+                    y_pts.append(pk_pressure)
+                x_pts.append(seg_end)
+                y_pts.append(rh_list[i+1])
+                fig.add_trace(go.Scatter(
+                    x=x_pts, y=y_pts,
+                    mode='lines',
+                    line=dict(color='blue', width=2),
+                    showlegend=False
+                ))
+        
+            # Residual Head at nodes (blue open circles)
+            fig.add_trace(go.Scatter(
+                x=lengths, y=rh_list,
+                mode='markers+text',
+                marker=dict(color='blue', symbol='circle-open', size=10, line=dict(width=2)),
+                text=[f"{v:.1f}" for v in rh_list],
+                textposition='bottom center',
+                name='Residual Head'
+            ))
+        
+            # Station locations (black triangles)
+            fig.add_trace(go.Scatter(
+                x=station_x, y=station_y,
+                mode='markers+text',
+                marker=dict(symbol='triangle-up', color='black', size=14, line=dict(width=1.5, color='white')),
+                name='Station Locations',
+                text=[s['name'] for s in stations_data],
+                textposition='top center'
+            ))
+        
+            # Peak locations (purple diamonds)
+            if peak_x:
+                fig.add_trace(go.Scatter(
+                    x=peak_x, y=peak_y,
+                    mode='markers+text',
+                    marker=dict(symbol='diamond', color='purple', size=14, line=dict(width=2, color='white')),
+                    name='Peaks',
+                    text=["Peak" for _ in peak_x],
+                    textposition='top right'
+                ))
+        
+            fig.update_layout(
+                title="Pipeline Hydraulics Profile: Pressure Optimization & Elevation",
+                xaxis_title="Pipeline Length (km)",
+                yaxis_title="Elevation / Pressure / Head (m)",
+                legend=dict(font=dict(size=14)),
+                font=dict(size=15),
+                height=520,
+                hovermode="x unified",
+                template='simple_white',
+                margin=dict(l=40, r=20, t=60, b=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
 
 
 
