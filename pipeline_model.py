@@ -217,10 +217,17 @@ def solve_pipeline(
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
-            # Correct affinity law: map flow to equivalent DOL reference
-            Q_equiv = pump_flow_i * model.DOL[i] / model.N[i]
-            H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
-            TDH[i] = H_DOL * (model.N[i] / model.DOL[i])**2
+            # Defensive: protect against division by zero
+            N_val = float(pyo.value(model.N[i])) if model.N[i]() is not None else 0.0
+            DOL_val = float(pyo.value(model.DOL[i])) if model.DOL[i]() is not None else 0.0
+            if N_val > 0.0 and DOL_val > 0.0:
+                Q_equiv = pump_flow_i * DOL_val / N_val
+                H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
+                TDH[i] = H_DOL * (N_val / DOL_val)**2
+            else:
+                Q_equiv = 0.0
+                H_DOL = 0.0
+                TDH[i] = 0.0
         
             # Efficiency polynomial at equivalent flow (already correct)
             EFFP[i] = (
