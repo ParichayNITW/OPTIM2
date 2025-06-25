@@ -218,8 +218,10 @@ def solve_pipeline(
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
             # Defensive: protect against division by zero
-            N_val = float(pyo.value(model.N[i])) if model.N[i]() is not None else 0.0
-            DOL_val = float(pyo.value(model.DOL[i])) if model.DOL[i]() is not None else 0.0
+            N_val = pyo.value(model.N[i])
+            DOL_val = pyo.value(model.DOL[i])
+            N_val = float(N_val) if N_val is not None else 0.0
+            DOL_val = float(DOL_val) if DOL_val is not None else 0.0
             if N_val > 0.0 and DOL_val > 0.0:
                 Q_equiv = pump_flow_i * DOL_val / N_val
                 H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
@@ -228,6 +230,7 @@ def solve_pipeline(
                 Q_equiv = 0.0
                 H_DOL = 0.0
                 TDH[i] = 0.0
+
         
             # Efficiency polynomial at equivalent flow (already correct)
             EFFP[i] = (
