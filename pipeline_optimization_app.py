@@ -979,14 +979,20 @@ with tab3:
         
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
-            maop_list = [res.get(f"maop_{k}", 0.0) for k in keys]
             elev_list = [stn['elev'] for stn in stations_data] + [terminal.get('elev', 0.0)]
+        
+            # --- Correct MAOP as a step function ---
+            segment_maop = []
+            for i in range(N):
+                key = keys[i]
+                segment_maop.append(res.get(f"maop_{key}", np.nan))
+            maop_list = segment_maop + [segment_maop[-1] if segment_maop else np.nan]  # Extend to terminal
         
             # Gather station locations for triangle markers
             station_x = lengths[:-1]
             station_y = [sdh_list[i] for i in range(N)]
         
-            # Gather peaks for diamond/star markers
+            # Gather peaks for diamond markers (now purple)
             peak_x = []
             peak_y = []
             for i, stn in enumerate(stations_data):
@@ -996,16 +1002,14 @@ with tab3:
                     for pk in stn['peaks']:
                         pk_loc = pk.get('loc', 0.0)
                         pk_elev = pk.get('elev', 0.0)
-                        # Find interpolated pressure/head at this location (approximate as linear between SDH[i] and RH[i+1])
                         frac = pk_loc / seg_len if seg_len > 0 else 0
                         pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
                         peak_x.append(seg_start + pk_loc)
                         peak_y.append(pk_pressure)
         
-            # Start the figure
             fig = go.Figure()
         
-            # Elevation profile (green)
+            # Elevation profile (green dotted)
             fig.add_trace(go.Scatter(
                 x=lengths, y=elev_list,
                 name='Elevation',
@@ -1014,7 +1018,7 @@ with tab3:
                 marker=dict(symbol='circle', size=7)
             ))
         
-            # MAOP Envelope (red dashed)
+            # MAOP Envelope (correct, red dashed, as step)
             fig.add_trace(go.Scatter(
                 x=lengths, y=maop_list,
                 name='MAOP Envelope',
@@ -1022,23 +1026,22 @@ with tab3:
                 line=dict(color='red', width=1.5, dash='dash')
             ))
         
-            # Pressure Optimization profile (blue staircase)
+            # Pressure Optimization (blue staircase)
             for i in range(N):
-                # Staircase: SDH[i] (start of segment), drop to RH[i+1] (end of segment)
                 fig.add_trace(go.Scatter(
                     x=[lengths[i], lengths[i+1]],
                     y=[sdh_list[i], rh_list[i+1]],
                     mode='lines',
                     line=dict(color='blue', width=2),
                     name='Pressure Optimization' if i == 0 else None,
-                    showlegend=(i==0)
+                    showlegend=(i == 0)
                 ))
         
             # Residual Head at nodes (blue open circles)
             fig.add_trace(go.Scatter(
                 x=lengths, y=rh_list,
                 mode='markers+text',
-                marker=dict(color='blue', symbol='circle-open', size=9, line=dict(width=2)),
+                marker=dict(color='blue', symbol='circle-open', size=10, line=dict(width=2)),
                 text=[f"{v:.1f}" for v in rh_list],
                 textposition='bottom center',
                 name='Residual Head'
@@ -1054,12 +1057,12 @@ with tab3:
                 textposition='top center'
             ))
         
-            # Peak locations (black diamonds)
+            # Peak locations (purple diamonds)
             if peak_x:
                 fig.add_trace(go.Scatter(
                     x=peak_x, y=peak_y,
                     mode='markers+text',
-                    marker=dict(symbol='diamond', color='black', size=12, line=dict(width=1, color='yellow')),
+                    marker=dict(symbol='diamond', color='purple', size=14, line=dict(width=2, color='white')),
                     name='Peaks',
                     text=["Peak" for _ in peak_x],
                     textposition='top right'
@@ -1077,6 +1080,7 @@ with tab3:
                 margin=dict(l=40, r=20, t=60, b=40)
             )
             st.plotly_chart(fig, use_container_width=True)
+
 
 
         # --- 6. Power vs Speed/Flow ---
