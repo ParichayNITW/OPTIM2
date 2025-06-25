@@ -1430,9 +1430,10 @@ with tab7:
     Price_HSD = st.session_state.get("Price_HSD", 70.0)
     key = stations_data[0]['name'].lower().replace(' ', '_')
 
-    speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
-    dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
-    nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
+    res, sol_index = get_selected_solution()
+    speed_opt = float(res.get(f"speed_{key}", 1500.0))
+    dra_opt = float(res.get(f"drag_reduction_{key}", 0.0))
+    nopt_opt = int(res.get(f"num_pumps_{key}", 1))
     flow_opt = FLOW
 
     delta_speed = 150
