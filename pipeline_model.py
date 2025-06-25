@@ -295,6 +295,24 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
+
+    # --- Add exclusion constraints if exclusions passed ---
+    if exclusions:
+        model.exclusion = pyo.ConstraintList()
+        for config in exclusions:
+            expr = 0
+            for k, val in config.items():
+                if "num_pumps_" in k:
+                    i = k.split("num_pumps_")[1]
+                    expr += (model.NOP[int(i)] != val)
+                elif "speed_" in k:
+                    i = k.split("speed_")[1]
+                    expr += (model.N[int(i)] != val)
+                elif "drag_reduction_" in k:
+                    i = k.split("drag_reduction_")[1]
+                    expr += (abs(model.DR[int(i)] - val) > 1e-2)
+            model.exclusion.add(expr >= 1)
+
     # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
 
