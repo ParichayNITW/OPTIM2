@@ -299,25 +299,25 @@ def _solve_pipeline_single(
         model.exclusion = pyo.ConstraintList()
         name_to_idx = {stn['name'].strip().lower().replace(' ', '_'): i for i, stn in enumerate(stations, start=1)}
         for config in exclusions:
-            expr = 0
+            rel_exprs = []
             for k, val in config.items():
                 if "num_pumps_" in k:
                     stn_key = k.split("num_pumps_")[1]
                     idx = name_to_idx.get(stn_key)
                     if idx is not None:
-                        expr += (model.NOP[idx] != val)
+                        rel_exprs.append(model.NOP[idx] != val)
                 elif "speed_" in k:
                     stn_key = k.split("speed_")[1]
                     idx = name_to_idx.get(stn_key)
                     if idx is not None:
-                        expr += (model.N[idx] != val)
+                        rel_exprs.append(model.N[idx] != val)
                 elif "drag_reduction_" in k:
                     stn_key = k.split("drag_reduction_")[1]
                     idx = name_to_idx.get(stn_key)
                     if idx is not None:
-                        expr += (abs(model.DR[idx] - val) > 1e-2)
-            model.exclusion.add(expr >= 1)
-
+                        rel_exprs.append(abs(model.DR[idx] - val) > 1e-2)
+            if rel_exprs:
+                model.exclusion.add(sum(rel_exprs) >= 1)
 
     # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
