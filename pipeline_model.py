@@ -412,3 +412,58 @@ def solve_pipeline(
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj() is not None else 0.0
     result["error"] = False
     return result
+
+def solve_pipeline_top5(
+    stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
+):
+    top_solutions = []
+    exclusion_combos = []
+
+    for run in range(5):
+        result = solve_pipeline(
+            stations=copy.deepcopy(stations),
+            terminal=copy.deepcopy(terminal),
+            FLOW=FLOW,
+            KV_list=KV_list,
+            rho_list=rho_list,
+            RateDRA=RateDRA,
+            Price_HSD=Price_HSD,
+            linefill_dict=copy.deepcopy(linefill_dict),
+            exclusions=exclusion_combos
+        )
+        if result.get("error", False):
+            break
+
+        total_cost = result["total_cost"]
+        result_clean = copy.deepcopy(result)
+        result_clean.pop("error", None)
+        result_clean.pop("total_cost", None)
+
+        top_solutions.append({
+            "total_cost": total_cost,
+            "details": result_clean
+        })
+
+        # Extract only key config to exclude (num_pumps_*, speed_*, drag_reduction_*)
+        current_config = {}
+        for k in result.keys():
+            if any(x in k for x in ["num_pumps_", "speed_", "drag_reduction_"]):
+                current_config[k] = round(result[k], 2) if isinstance(result[k], float) else result[k]
+        exclusion_combos.append(current_config)
+
+    # Sort by total_cost to ensure ranking
+    top_solutions = sorted(top_solutions, key=lambda s: s["total_cost"])
+
+    # Assign professional labels
+    solution_labels = [
+        "Optimal Cost Solution",
+        "Second Best Solution",
+        "Third Best Solution",
+        "Fourth Best Solution",
+        "Fifth Best Solution"
+    ]
+    for i, sol in enumerate(top_solutions):
+        sol["label"] = solution_labels[i]
+
+    return {"error": False, "solutions": top_solutions}
+
