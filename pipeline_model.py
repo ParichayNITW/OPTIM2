@@ -1,3 +1,40 @@
+import pandas as pd
+import numpy as np
+from scipy.interpolate import RegularGridInterpolator
+
+# List of your CSV files and corresponding viscosities
+viscs = [10, 15, 20, 25, 30, 35, 40]
+csvs = [
+    '/mnt/data/10 cst.csv',
+    '/mnt/data/15 cst.csv',
+    '/mnt/data/20 cst.csv',
+    '/mnt/data/25 cst.csv',
+    '/mnt/data/30 cst.csv',
+    '/mnt/data/35 cst.csv',
+    '/mnt/data/40 cst.csv',
+]
+
+# Load all DRA data into a 3D array: [viscosity][drag reduction] = ppm
+dr_grid = None
+ppm_grid = []
+for csv in csvs:
+    df = pd.read_csv(csv)
+    if dr_grid is None:
+        dr_grid = df['%Drag Reduction'].values
+    ppm_grid.append(df['PPM'].values)
+ppm_grid = np.array(ppm_grid)
+visc_grid = np.array(viscs)
+
+# Create the 2D interpolator function
+dra_surface_interp = RegularGridInterpolator(
+    (visc_grid, dr_grid), ppm_grid, bounds_error=False, fill_value=None
+)
+
+# Usage Example: For viscosity=12, DR=48%
+# dra_surface_interp([[12, 48]])[0]
+
+
+
 import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
