@@ -888,13 +888,13 @@ with tab3:
                 step = max(100, int((N_max-N_min)/5))
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    Q_at_rpm = flows
-                    if rpm == 0 or N_max == 0:
-                        H = np.zeros_like(Q_at_rpm)
-                    else:
-                        Q_equiv_DOL = Q_at_rpm * N_max / rpm
-                        H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
-                        H = H_DOL * (rpm/N_max)**2
+                    # For each desired speed, scale flows according to affinity law
+                    Q_at_rpm = flows                 # Flows at this rpm
+                    Q_equiv_DOL = Q_at_rpm * N_max / rpm   # Map these flows to DOL for the polynomial
+                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)  # Head at DOL curve
+                    H = H_DOL * (rpm/N_max)**2      # Scale head to current rpm
+                
+                    # Remove negatives
                     valid = H >= 0
                     fig.add_trace(go.Scatter(
                         x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
@@ -939,17 +939,12 @@ with tab3:
         
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    if N_max == 0:
-                        q_upper = flow_max
-                        q_lower = flow_min
-                    else:
-                        q_upper = flow_max * (rpm/N_max)
-                        q_lower = flow_min * (rpm/N_max)
+                    # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
+                    # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
+                    q_upper = flow_max * (rpm/N_max) if N_max else flow_max
+                    q_lower = flow_min * (rpm/N_max) if N_max else flow_min
                     flows = np.linspace(q_lower, q_upper, 100)
-                    if rpm == 0 or N_max == 0:
-                        Q_equiv = flows
-                    else:
-                        Q_equiv = flows * N_max / rpm
+                    Q_equiv = flows * N_max / rpm if rpm else flows
                     eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
                     eff = np.clip(eff, 0, max_user_eff)
                     fig.add_trace(go.Scatter(
@@ -973,197 +968,63 @@ with tab3:
             res = st.session_state["last_res"]
             terminal = st.session_state["last_term_data"]
             N = len(stations_data)
-        
-            # Cumulative pipeline lengths at each node
             lengths = [0]
             for stn in stations_data:
                 lengths.append(lengths[-1] + stn.get("L", 0.0))
-        
             names = [s['name'] for s in stations_data] + [terminal["name"]]
             keys = [n.lower().replace(' ', '_') for n in names]
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
-            elev_list = [stn['elev'] for stn in stations_data] + [terminal.get('elev', 0.0)]
         
-            # --- Correct MAOP as a step function ---
-            segment_maop = []
-            for i in range(N):
-                key = keys[i]
-                segment_maop.append(res.get(f"maop_{key}", np.nan))
-            maop_list = segment_maop + [segment_maop[-1] if segment_maop else np.nan]
-        
-            # Gather station locations for triangle markers
-            station_x = lengths[:-1]
-            station_y = [sdh_list[i] for i in range(N)]
-        
-            # Gather peaks for diamond markers (now purple)
-            peak_x = []
-            peak_y = []
+            # Gather all X, Y, annotation points
+            x_pts, y_pts, annotations = [], [], []
             for i, stn in enumerate(stations_data):
-                seg_start = lengths[i]
-                seg_len = stn.get("L", 0.0)
-                if 'peaks' in stn and stn['peaks']:
-                    for pk in stn['peaks']:
-                        pk_loc = pk.get('loc', 0.0)
-                        frac = pk_loc / seg_len if seg_len > 0 else 0
-                        pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
-                        peak_x.append(seg_start + pk_loc)
-                        peak_y.append(pk_pressure)
-        
-            fig = go.Figure()
-        
-            # Elevation profile (green dotted)
-            fig.add_trace(go.Scatter(
-                x=lengths, y=elev_list,
-                name='Elevation',
-                mode='lines+markers',
-                line=dict(color='green', width=2, dash='dot'),
-                marker=dict(symbol='circle', size=7)
-            ))
-        
-            # MAOP Envelope (correct, red dashed, as step)
-            fig.add_trace(go.Scatter(
-                x=lengths, y=maop_list,
-                name='MAOP Envelope',
-                mode='lines',
-                line=dict(color='red', width=1.5, dash='dash')
-            ))
-        
-            # ------- KEY PART: Pressure Optimization (with vertical jumps at pump stations) -------
-            for i in range(N):
-                # 1. Vertical jump from RH (inlet) to SDH (if not the same)
+                # 1. Start: RH at station i
+                x_pts.append(lengths[i])
+                y_pts.append(rh_list[i])
+                annotations.append((lengths[i], rh_list[i], stn['name']))
+                # 2. If pump running, vertical jump to SDH
                 if abs(sdh_list[i] - rh_list[i]) > 1e-3:
-                    fig.add_trace(go.Scatter(
-                        x=[lengths[i], lengths[i]],
-                        y=[rh_list[i], sdh_list[i]],
-                        mode='lines',
-                        line=dict(color='blue', width=2, dash='solid'),
-                        showlegend=(i == 0),
-                        name='Pressure Optimization' if i == 0 else None,
-                    ))
-                # 2. Diagonal/segmented drop from SDH to RH at next station (with peaks if any)
-                seg_len = stations_data[i].get("L", 0.0)
-                seg_start = lengths[i]
-                seg_end = lengths[i+1]
-                seg_peaks = []
-                if 'peaks' in stations_data[i] and stations_data[i]['peaks']:
-                    seg_peaks = sorted(stations_data[i]['peaks'], key=lambda x: x['loc'])
-                # Prepare points: start at SDH, through all peaks, to next RH
-                x_pts = [seg_start]
-                y_pts = [sdh_list[i]]
-                for pk in seg_peaks:
-                    pk_loc = pk.get('loc', 0.0)
-                    frac = pk_loc / seg_len if seg_len > 0 else 0
-                    pk_pressure = sdh_list[i] + frac * (rh_list[i+1] - sdh_list[i])
-                    x_pts.append(seg_start + pk_loc)
-                    y_pts.append(pk_pressure)
-                x_pts.append(seg_end)
-                y_pts.append(rh_list[i+1])
-                fig.add_trace(go.Scatter(
-                    x=x_pts, y=y_pts,
-                    mode='lines',
-                    line=dict(color='blue', width=2),
-                    showlegend=False
-                ))
+                    x_pts.append(lengths[i])
+                    y_pts.append(sdh_list[i])
+                    # Optionally: annotations.append((lengths[i], sdh_list[i], f"SDH {stn['name']}"))
+                # 3. For each peak (ordered by loc within segment):
+                seg_len = stn['L']
+                next_rh = rh_list[i+1]
+                start_sdh = sdh_list[i]  # This is the actual SDH, not RH!
+                if 'peaks' in stn and stn['peaks']:
+                    for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
+                        pk_loc = pk['loc']
+                        pk_x = lengths[i] + pk_loc
+                        # Linear head drop from SDH at i to RH at i+1:
+                        frac = pk_loc / seg_len if seg_len > 0 else 0
+                        pk_head = start_sdh - (start_sdh - next_rh) * frac
+                        x_pts.append(pk_x)
+                        y_pts.append(pk_head)
+                        annotations.append((pk_x, pk_head, f"Peak ({stn['name']})"))
+                # 4. End: RH at next station
+                x_pts.append(lengths[i+1])
+                y_pts.append(next_rh)
+                annotations.append((lengths[i+1], next_rh, names[i+1]))
         
-            # Residual Head at nodes (blue open circles)
+            # Plot
+            fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=lengths, y=rh_list,
-                mode='markers+text',
-                marker=dict(color='blue', symbol='circle-open', size=10, line=dict(width=2)),
-                text=[f"{v:.1f}" for v in rh_list],
-                textposition='bottom center',
-                name='Residual Head'
+                x=x_pts, y=y_pts, mode='lines+markers', name="Pressure Profile", line=dict(width=3, color="#1976D2"),
+                marker=dict(size=8)
             ))
-        
-            # Station locations (black triangles)
-            fig.add_trace(go.Scatter(
-                x=station_x, y=station_y,
-                mode='markers+text',
-                marker=dict(symbol='triangle-up', color='black', size=14, line=dict(width=1.5, color='white')),
-                name='Station Locations',
-                text=[s['name'] for s in stations_data],
-                textposition='top center'
-            ))
-        
-            # Peak locations (purple diamonds)
-            if peak_x:
-                fig.add_trace(go.Scatter(
-                    x=peak_x, y=peak_y,
-                    mode='markers+text',
-                    marker=dict(symbol='diamond', color='purple', size=14, line=dict(width=2, color='white')),
-                    name='Peaks',
-                    text=["Peak" for _ in peak_x],
-                    textposition='top right'
-                ))
-        
+            # Annotate stations and peaks
+            for xp, yp, txt in annotations:
+                fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, yshift=12)
             fig.update_layout(
-                title="Pipeline Hydraulics Profile: Pressure Optimization & Elevation",
-                xaxis_title="Pipeline Length (km)",
-                yaxis_title="Elevation / Pressure / Head (m)",
-                legend=dict(font=dict(size=14)),
+                title="Pressure vs Pipeline Length (with Peaks)",
+                xaxis_title="Cumulative Length (km)",
+                yaxis_title="Pressure Head (mcl)",
                 font=dict(size=15),
-                height=520,
-                hovermode="x unified",
-                template='simple_white',
-                margin=dict(l=40, r=20, t=60, b=40)
+                showlegend=False,
+                height=420
             )
             st.plotly_chart(fig, use_container_width=True)
-
-    
-            # ----- 3D Surface Plot: Head/Pressure vs Length vs Flow -----
-            import numpy as np
-            import plotly.graph_objects as go
-        
-            st.markdown("<div class='section-title'>3D Surface: Head/Pressure vs. Pipeline Length and Flow</div>", unsafe_allow_html=True)
-        
-            flow_range = np.linspace(0.5 * st.session_state["FLOW"], 1.5 * st.session_state["FLOW"], 7)  # 7 flows (50% to 150%)
-            stations_data = st.session_state["last_stations_data"]
-            terminal = st.session_state["last_term_data"]
-            lengths = [0]
-            for stn in stations_data:
-                lengths.append(lengths[-1] + stn.get("L", 0.0))
-            n_nodes = len(lengths)
-        
-            Z = []  # Will be list of [head at each node] for each flow
-            with st.spinner("Generating 3D plot..."):
-                for flow in flow_range:
-                    kv_list, rho_list = map_linefill_to_segments(
-                        st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame())),
-                        stations_data
-                    )
-                    res3d = solve_pipeline(
-                        stations_data, terminal, flow, kv_list, rho_list,
-                        st.session_state["RateDRA"], st.session_state["Price_HSD"], None
-                    )
-                    keys3d = [s['name'].lower().replace(' ', '_') for s in stations_data] + [terminal["name"].lower().replace(' ', '_')]
-                    head_profile = [res3d.get(f"residual_head_{k}", np.nan) for k in keys3d]
-                    Z.append(head_profile)
-                Z = np.array(Z)  # shape: (num_flows, n_nodes)
-                X, Y = np.meshgrid(lengths, flow_range)
-        
-                fig3d = go.Figure(data=[go.Surface(
-                    x=X, y=Y, z=Z,
-                    colorscale='Viridis',
-                    colorbar=dict(title="Head (m)")
-                )])
-                fig3d.update_layout(
-                    title="3D Surface: Head/Pressure vs. Pipeline Length and Flow",
-                    scene=dict(
-                        xaxis_title='Pipeline Length (km)',
-                        yaxis_title='Flow (m³/hr)',
-                        zaxis_title='Head / Pressure (m)'
-                    ),
-                    height=540,
-                    margin=dict(l=0, r=0, t=40, b=0)
-                )
-                st.plotly_chart(fig3d, use_container_width=True)
-
-
-
-
-
-
 
         # --- 6. Power vs Speed/Flow ---
         with power_tab:
@@ -1199,7 +1060,7 @@ with tab3:
                 eff = max(0.01, eff/100)
                 P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
                 speeds = np.arange(N_min, N_max+1, 100)
-                power_curve = [P1 * (rpm/N_max)**3 if N_max != 0 else 0 for rpm in speeds]
+                power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
                 fig_pwr = go.Figure()
                 fig_pwr.add_trace(go.Scatter(
                     x=speeds, y=power_curve, mode='lines+markers',
@@ -1420,10 +1281,7 @@ with tab5:
                         else:
                             blend = 0.5
                         color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
-                        if N_max == 0:
-                            H_pump = np.zeros_like(flows)
-                        else:
-                            H_pump = npump * (A * flows**2 + B * flows + C) * (rpm / N_max) ** 2
+                        H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
                         H_pump = np.clip(H_pump, 0, None)
                         label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
                         showlegend = (idx == 0 or idx == n_rpms-1)
