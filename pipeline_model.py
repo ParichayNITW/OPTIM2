@@ -1,4 +1,4 @@
-import os
+import os 
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 from math import log10, pi
@@ -51,6 +51,17 @@ def get_ppm_breakpoints(visc):
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
+
+def safe_div(val, minval=1e-4):
+    # Protect against division by zero/NaN in all denominators
+    if isinstance(val, (float, np.floating)) and (np.isnan(val) or abs(val) < minval):
+        return minval
+    try:
+        if abs(float(val)) < minval:
+            return minval
+    except:
+        return minval
+    return val
 
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
@@ -180,21 +191,26 @@ def solve_pipeline(
     for i in range(1, N+1):
         flow_m3s = float(segment_flows[i])/3600.0
         area = pi * (d_inner[i]**2) / 4.0
-        v[i] = flow_m3s / area if area > 0 else 0.0
+        area = safe_div(area, 1e-6)
+        v[i] = flow_m3s / area
+
         kv = kv_dict[i]
-        rho = rho_dict[i]
-        if kv > 0:
-            Re[i] = v[i]*d_inner[i]/(float(kv)*1e-6)
-        else:
-            Re[i] = 0.0
-        if Re[i] > 0:
-            if Re[i] < 4000:
-                f[i] = 64.0/Re[i]
-            else:
-                arg = (roughness[i]/d_inner[i]/3.7) + (5.74/(Re[i]**0.9))
-                f[i] = 0.25/(log10(arg)**2) if arg > 0 else 0.0
-        else:
+        kv_used = safe_div(kv, 1e-8)
+        d_in = safe_div(d_inner[i], 1e-8)
+        Re[i] = v[i]*d_in/(float(kv_used)*1e-6)
+
+        # Friction factor, patch for all possible division by zero
+        if abs(Re[i]) < 1e-8:
             f[i] = 0.0
+        elif Re[i] < 4000:
+            f[i] = 64.0 / safe_div(Re[i], 1e-8)
+        else:
+            arg = (safe_div(roughness[i], 1e-8)/d_in/3.7) + (5.74/(safe_div(Re[i], 1e-8)**0.9))
+            arg = safe_div(arg, 1e-8)
+            try:
+                f[i] = 0.25/(log10(arg)**2)
+            except:
+                f[i] = 0.0
 
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
@@ -206,13 +222,13 @@ def solve_pipeline(
             DR_frac = model.DR[i] / 100.0
         else:
             DR_frac = 0.0
-        DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
+        DH_next = f[i] * ((length[i]*1000.0)/safe_div(d_inner[i], 1e-8)) * (v[i]**2/(2*g)) * (1 - DR_frac)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
-            DH_peak = f[i] * (L_peak / d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
+            DH_peak = f[i] * (L_peak / safe_div(d_inner[i], 1e-8)) * (v[i]**2/(2*g)) * (1 - DR_frac)
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
         if i in pump_indices:
@@ -223,20 +239,20 @@ def solve_pipeline(
             N_val = float(N_val) if N_val is not None else 0.0
             DOL_val = float(DOL_val) if DOL_val is not None else 0.0
             if N_val > 0.0 and DOL_val > 0.0:
-                Q_equiv = pump_flow_i * DOL_val / N_val
+                Q_equiv = pump_flow_i * DOL_val / safe_div(N_val, 1e-4)
                 H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
-                TDH[i] = H_DOL * (N_val / DOL_val)**2
+                TDH[i] = H_DOL * (safe_div(N_val, 1e-4) / safe_div(DOL_val, 1e-4))**2
             else:
                 Q_equiv = 0.0
                 H_DOL = 0.0
                 TDH[i] = 0.0
 
-        
             # Efficiency polynomial at equivalent flow (already correct)
-            EFFP[i] = (
+            eff_num = (
                 model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 + model.Rcoef[i]*Q_equiv**2
                 + model.Scoef[i]*Q_equiv + model.Tcoef[i]
-            ) / 100.0
+            )
+            EFFP[i] = safe_div(eff_num, 1e-2) / 100.0
         else:
             TDH[i] = 0.0
             EFFP[i] = 1.0
@@ -252,8 +268,8 @@ def solve_pipeline(
             model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] >= model.SDH[i])
         else:
             model.head_balance.add(model.RH[i] >= model.SDH[i])
-        D_out = d_inner[i] + 2 * thickness[i]
-        MAOP_head = (2 * thickness[i] * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / rho_dict[i]
+        D_out = safe_div(d_inner[i], 1e-4) + 2 * safe_div(thickness[i], 1e-4)
+        MAOP_head = (2 * safe_div(thickness[i], 1e-4) * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / safe_div(rho_dict[i], 1e-4)
         maop_dict[i] = MAOP_head
         model.pressure_limit.add(model.SDH[i] <= MAOP_head)
         peaks = peaks_dict[i]
@@ -261,7 +277,7 @@ def solve_pipeline(
             loc_km = peak['loc']
             elev_k = peak['elev']
             L_peak = loc_km*1000.0
-            loss_no_dra = f[i] * (L_peak/d_inner[i]) * (v[i]**2/(2*g))
+            loss_no_dra = f[i] * (L_peak/safe_div(d_inner[i], 1e-8)) * (v[i]**2/(2*g))
             if i in pump_indices:
                 expr = model.RH[i] + TDH[i]*model.NOP[i] - (elev_k - model.z[i]) - loss_no_dra
             else:
@@ -292,8 +308,9 @@ def solve_pipeline(
     for i in pump_indices:
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
+        eff = safe_div(float(pyo.value(EFFP[i])), 1e-2)
         if i in pump_indices:
-            power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
+            power_kW = (rho_i * pump_flow_i * 9.81 * float(pyo.value(TDH[i])) * model.NOP[i]) / (3600.0 * 1000.0 * eff * 0.95)
         else:
             power_kW = 0.0
         if i in electric_pumps:
@@ -332,15 +349,16 @@ def solve_pipeline(
         if i in pump_indices:
             num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
             speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 and model.N[i]() is not None else 0.0
-            eff = float(pyo.value(EFFP[i])*100.0) if num_pumps > 0 else 0.0
+            eff = safe_div(float(pyo.value(EFFP[i])), 1e-2) if num_pumps > 0 else 0.01
             dra_ppm = float(pyo.value(model.PPM[i])) if model.PPM[i].value is not None else 0.0
             dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i]() is not None else 0.0
         else:
-            num_pumps = 0; speed_rpm = 0.0; eff = 0.0; dra_ppm = 0.0; dra_cost_i = 0.0
+            num_pumps = 0; speed_rpm = 0.0; eff = 0.01; dra_ppm = 0.0; dra_cost_i = 0.0
 
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
-            power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
+            eff_val = safe_div(eff, 1e-2)
+            power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*eff_val*0.95)
             if i in electric_pumps:
                 rate = elec_cost.get(i,0.0)
                 power_cost = power_kW * 24.0 * rate
