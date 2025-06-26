@@ -1,40 +1,3 @@
-import pandas as pd
-import numpy as np
-from scipy.interpolate import RegularGridInterpolator
-
-# List of your CSV files and corresponding viscosities
-viscs = [10, 15, 20, 25, 30, 35, 40]
-csvs = [
-    '/mnt/data/10 cst.csv',
-    '/mnt/data/15 cst.csv',
-    '/mnt/data/20 cst.csv',
-    '/mnt/data/25 cst.csv',
-    '/mnt/data/30 cst.csv',
-    '/mnt/data/35 cst.csv',
-    '/mnt/data/40 cst.csv',
-]
-
-# Load all DRA data into a 3D array: [viscosity][drag reduction] = ppm
-dr_grid = None
-ppm_grid = []
-for csv in csvs:
-    df = pd.read_csv(csv)
-    if dr_grid is None:
-        dr_grid = df['%Drag Reduction'].values
-    ppm_grid.append(df['PPM'].values)
-ppm_grid = np.array(ppm_grid)
-visc_grid = np.array(viscs)
-
-# Create the 2D interpolator function
-dra_surface_interp = RegularGridInterpolator(
-    (visc_grid, dr_grid), ppm_grid, bounds_error=False, fill_value=None
-)
-
-# Usage Example: For viscosity=12, DR=48%
-# dra_surface_interp([[12, 48]])[0]
-
-
-
 import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
@@ -45,7 +8,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
-# === DRA Curve Data ===
+# ====== DRA Curve Data (All CSVs Uploaded by You) ======
 DRA_CSVS = [
     ('/mnt/data/10 cst.csv', 10),
     ('/mnt/data/15 cst.csv', 15),
@@ -53,10 +16,10 @@ DRA_CSVS = [
     ('/mnt/data/25 cst.csv', 25),
     ('/mnt/data/30 cst.csv', 30),
     ('/mnt/data/35 cst.csv', 35),
-    ('/mnt/data/40 cst.csv', 40),
+    ('/mnt/data/40 cst.csv', 40)
 ]
 
-# Build grid for interpolation
+# Build DRA 2D grid for RegularGridInterpolator
 dra_dr_grid = None
 dra_visc_grid = []
 dra_ppm_grid = []
@@ -68,21 +31,18 @@ for fname, visc in DRA_CSVS:
     dra_ppm_grid.append(df['PPM'].values)
 dra_visc_grid = np.array(dra_visc_grid)
 dra_ppm_grid = np.array(dra_ppm_grid)
-# Professional 2D interpolator: input (visc, dr) → ppm
 dra_surface_interp = RegularGridInterpolator(
     (dra_visc_grid, dra_dr_grid), dra_ppm_grid, bounds_error=False, fill_value=None
 )
 
 def get_ppm_for_dr(visc, dr):
-    """Interpolate ppm for any viscosity and drag reduction (%) using the fitted DRA surface."""
     visc = float(visc)
     dr = float(dr)
-    # Clamp drag reduction to the min/max in the data to avoid extrapolation issues
+    # Clamp drag reduction and viscosity to data grid for safety
     dr = np.clip(dr, dra_dr_grid[0], dra_dr_grid[-1])
-    # Clamp viscosity as well
     visc = np.clip(visc, dra_visc_grid[0], dra_visc_grid[-1])
     ppm = dra_surface_interp([[visc, dr]])[0]
-    return max(ppm, 0.0)  # No negative ppm
+    return max(ppm, 0.0)
 
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
@@ -101,7 +61,6 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # --- Flow profile across segments
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -117,7 +76,6 @@ def solve_pipeline(
         else:
             pump_flows.append(0.0)
 
-    # --- Parameter Initialization
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
     Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
@@ -294,7 +252,6 @@ def solve_pipeline(
                 expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
             model.peak_limit.add(expr >= 50.0)
 
-    # Objective Function: Power+Fuel + DRA cost at all pump stations
     total_cost = 0
     dra_costs = {}
     for i in pump_indices:
@@ -306,7 +263,6 @@ def solve_pipeline(
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        # --- DRA Cost using 2D interpolator: get DR, viscosity at this segment
         dr_val = model.DR[i]
         visc_val = kv_dict[i]
         ppm = float(get_ppm_for_dr(visc_val, pyo.value(dr_val)))
@@ -318,7 +274,6 @@ def solve_pipeline(
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
-    # === Post-processing results ===
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
