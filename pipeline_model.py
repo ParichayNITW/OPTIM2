@@ -274,15 +274,20 @@ def solve_pipeline(
     total_cost = 0
     for i in pump_indices:
         rho_i = rho_dict[i]
+        visc_i = kv_dict[i]
         pump_flow_i = float(segment_flows[i])
         power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
         if i in electric_pumps:
-            power_cost = power_kW * 24.0 * elec_cost.get(i,0.0)
+            power_cost = power_kW * 24.0 * elec_cost.get(i, 0.0)
         else:
-            fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
+            fuel_per_kWh = (sfc.get(i, 0.0) * 1.34102) / 820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost = 0
+
+        ppm_expr = 0.1425 * visc_i + 0.9294 * model.DR[i] + 0.00289 * visc_i * model.DR[i] - 16.5529
+        dra_cost = ppm_expr * (pump_flow_i * 24 * 1000 / 1e6) * RateDRA
+
         total_cost += power_cost + dra_cost
+
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
