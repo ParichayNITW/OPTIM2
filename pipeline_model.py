@@ -222,7 +222,7 @@ def solve_pipeline(
             TDH[i] = (model.A[i]*pump_flow_i**2 + model.B[i]*pump_flow_i + model.C[i]) * ((model.N[i]/model.DOL[i])**2)
             flow_eq = pump_flow_i * model.DOL[i]/model.N[i]
             # Safe efficiency: never below small epsilon
-            EFFP[i] = pyo.maximize(1e-4, (
+            EFFP[i] = max(1e-4, (
                 model.Pcoef[i]*flow_eq**4 + model.Qcoef[i]*flow_eq**3 + model.Rcoef[i]*flow_eq**2
                 + model.Scoef[i]*flow_eq + model.Tcoef[i]
             ) / 100.0)
