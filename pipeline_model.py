@@ -5,18 +5,17 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-# Ensure NEOS email is set
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
 # --- DRA Curve Data Loading ---
 DRA_CSV_FILES = {
-    10: "10 cst.csv",
-    15: "15 cst.csv",
-    20: "20 cst.csv",
-    25: "25 cst.csv",
-    30: "30 cst.csv",
-    35: "35 cst.csv",
-    40: "40 cst.csv"
+    10: "/mnt/data/10 cst.csv",
+    15: "/mnt/data/15 cst.csv",
+    20: "/mnt/data/20 cst.csv",
+    25: "/mnt/data/25 cst.csv",
+    30: "/mnt/data/30 cst.csv",
+    35: "/mnt/data/35 cst.csv",
+    40: "/mnt/data/40 cst.csv"
 }
 DRA_CURVE_DATA = {}
 for cst, fname in DRA_CSV_FILES.items():
@@ -223,6 +222,12 @@ def solve_pipeline(
             TDH[i] = 0.0
             EFFP[i] = 1.0
 
+    # --- Force DR to zero if no pumps running ---
+    for i in pump_indices:
+        model.add_component(f"dr_zero_if_no_pump_{i}",
+            pyo.Constraint(expr=model.DR_u[i] <= dr_max[i]*model.NOP[i])
+        )
+
     model.head_balance = pyo.ConstraintList()
     model.peak_limit = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
@@ -266,19 +271,23 @@ def solve_pipeline(
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
-    # ---- DRA: Compute after optimize, using actual viscosity, drag reduction ----
     dra_cost_station = {}
     dra_ppm_station = {}
     for i in pump_indices:
-        dr_val = float(pyo.value(model.DR[i]))
-        visc_val = kv_dict[i]
-        pump_flow_i = float(segment_flows[i])
-        ppm = get_ppm_for_dr(visc_val, dr_val)
-        dra_cost = ppm * (pump_flow_i * 1000.0 * 24.0 / 1e6) * RateDRA
+        num_pumps = int(pyo.value(model.NOP[i]))
+        if num_pumps > 0:
+            dr_val = float(pyo.value(model.DR[i]))
+            visc_val = kv_dict[i]
+            pump_flow_i = float(segment_flows[i])
+            ppm = get_ppm_for_dr(visc_val, dr_val)
+            dra_cost = ppm * (pump_flow_i * 1000.0 * 24.0 / 1e6) * RateDRA
+        else:
+            dr_val = 0.0
+            ppm = 0.0
+            dra_cost = 0.0
         dra_cost_station[i] = dra_cost
         dra_ppm_station[i] = ppm
 
-    # === RESULTS SECTION ===
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -289,7 +298,7 @@ def solve_pipeline(
             num_pumps = int(pyo.value(model.NOP[i]))
             speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 else 0.0
             eff = float(pyo.value(EFFP[i])*100.0) if num_pumps > 0 else 0.0
-            drag_red = float(pyo.value(model.DR[i]))
+            drag_red = float(pyo.value(model.DR[i])) if num_pumps > 0 else 0.0
             dra_cost = dra_cost_station.get(i, 0.0)
             ppm = dra_ppm_station.get(i, 0.0)
         else:
