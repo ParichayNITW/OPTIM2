@@ -888,19 +888,14 @@ with tab3:
                 step = max(100, int((N_max-N_min)/5))
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    # For each desired speed, scale flows according to affinity law
-                    Q_at_rpm = flows                 # Flows at this rpm
-                    Q_equiv_DOL = Q_at_rpm * N_max / rpm   # Map these flows to DOL for the polynomial
-                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)  # Head at DOL curve
-                    H = H_DOL * (rpm/N_max)**2      # Scale head to current rpm
-                
-                    # Remove negatives
-                    valid = H >= 0
+                    H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 if N_max else np.zeros_like(flows)
+                    # Remove all negative heads: mask out values where H < 0
+                    flows_pos = flows[H >= 0]
+                    H_pos = H[H >= 0]
                     fig.add_trace(go.Scatter(
-                        x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
+                        x=flows_pos, y=H_pos, mode='lines', name=f"{rpm} rpm",
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
                     ))
-
                 fig.update_layout(
                     title=f"Head vs Flow: {stn['name']}",
                     xaxis_title="Flow (m³/hr)",
@@ -1371,25 +1366,24 @@ with tab6:
             opt_ppm = get_ppm_for_dr(viscosity, dr_opt)
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=ppm_vals,           # Swap: X-axis is now PPM
-                y=percent_dr,         # Swap: Y-axis is now % Drag Reduction
+                x=percent_dr,
+                y=ppm_vals,
                 mode='lines+markers',
                 name=curve_label
             ))
             fig.add_trace(go.Scatter(
-                x=[opt_ppm], y=[dr_opt],      # Swap: optimized point
+                x=[dr_opt], y=[opt_ppm],
                 mode='markers',
                 marker=dict(size=12, color='red', symbol='diamond'),
                 name="Optimized Point"
             ))
             fig.update_layout(
                 title=f"DRA Curve for {stn['name']} (Viscosity: {viscosity:.2f} cSt)",
-                xaxis_title="PPM",                   # Swap labels
-                yaxis_title="% Drag Reduction",
+                xaxis_title="% Drag Reduction",
+                yaxis_title="PPM",
                 legend=dict(orientation="h", y=-0.2)
             )
             st.plotly_chart(fig, use_container_width=True)
-
         else:
             st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
 
@@ -1609,20 +1603,19 @@ with tab8:
             if 'peaks' in stn and stn['peaks']:
                 for pk in stn['peaks']:
                     # pk['loc'] = distance from upstream station start (km)
-                    peak_x_val = chainages[-2] + pk.get('loc', 0)
+                    px = chainages[-2] + pk.get('loc', 0)
                     py = pk.get('elev', stn['elev'])
                     pz = rh_val  # Assume RH at station for peak (or interpolate as needed)
-                    mesh_x.append(peak_x_val)
+                    mesh_x.append(px)
                     mesh_y.append(py)
                     mesh_z.append(pz)
                     mesh_text.append("Peak")
                     mesh_color.append(pz)
                     # Separate for special peak markers
-                    peak_x.append(peak_x_val)
+                    peak_x.append(px)
                     peak_y.append(py)
                     peak_z.append(pz)
                     peak_label.append(f"Peak @ {stn['name']}")
-
 
         # Add terminal
         terminal_chainage = chainages[-1] + terminal.get("L", 0.0)
@@ -1730,7 +1723,7 @@ with tab8:
             margin=dict(l=25, r=25, t=70, b=30),
             height=690,
             title={
-                'text': "<b>3D Pressure Profile:</b>",
+                'text': "<b>3D Pressure Profile: Pipeline Chainage vs Elevation vs RH</b>",
                 'y':0.96,
                 'x':0.5,
                 'xanchor': 'center',
@@ -1758,7 +1751,7 @@ with tab8:
 
 with tab_sens:
     st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
-    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results based on set pipeline parameter and optimization metric.")
+    st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results using actual pipeline and optimization logic.")
 
     if "last_res" not in st.session_state:
         st.info("Run optimization first to enable sensitivity analysis.")
@@ -1876,7 +1869,7 @@ with tab_sens:
 
 with tab_bench:
     st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
-    st.write("Compare pipeline performance with global/ custom benchmarks. Green indicates Pipeline operation match/exceed global standards while red means improvement is needed.")
+    st.write("Compare your pipeline performance to global or custom benchmarks. Green means you match/exceed global standards, red means improvement needed.")
 
     # --- User can pick standard or edit/upload their own
     b_mode = st.radio("Benchmark Source", ["Global Standards", "Edit Benchmarks", "Upload CSV"])
