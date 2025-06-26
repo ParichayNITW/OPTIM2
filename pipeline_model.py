@@ -4,45 +4,57 @@ from pyomo.opt import SolverManagerFactory
 from math import log10, pi
 import pandas as pd
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
-# ====== DRA Curve Data (All CSVs Uploaded by You) ======
-DRA_CSVS = [
-    ('/mnt/data/10 cst.csv', 10),
-    ('/mnt/data/15 cst.csv', 15),
-    ('/mnt/data/20 cst.csv', 20),
-    ('/mnt/data/25 cst.csv', 25),
-    ('/mnt/data/30 cst.csv', 30),
-    ('/mnt/data/35 cst.csv', 35),
-    ('/mnt/data/40 cst.csv', 40)
-]
+# --- DRA Curve Data Loading ---
+DRA_CSV_FILES = {
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv"
+}
+DRA_CURVE_DATA = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
+        DRA_CURVE_DATA[cst] = pd.read_csv(fname)
+    else:
+        DRA_CURVE_DATA[cst] = None
 
-# Build DRA 2D grid for RegularGridInterpolator
-dra_dr_grid = None
-dra_visc_grid = []
-dra_ppm_grid = []
-for fname, visc in DRA_CSVS:
-    df = pd.read_csv(fname)
-    if dra_dr_grid is None:
-        dra_dr_grid = df['%Drag Reduction'].values
-    dra_visc_grid.append(visc)
-    dra_ppm_grid.append(df['PPM'].values)
-dra_visc_grid = np.array(dra_visc_grid)
-dra_ppm_grid = np.array(dra_ppm_grid)
-dra_surface_interp = RegularGridInterpolator(
-    (dra_visc_grid, dra_dr_grid), dra_ppm_grid, bounds_error=False, fill_value=None
-)
+def _ppm_from_df(df, dr):
+    if df is None:
+        return 0
+    x = df['%Drag Reduction'].values
+    y = df['PPM'].values
+    if dr <= x[0]:
+        return y[0]
+    elif dr >= x[-1]:
+        return y[-1]
+    else:
+        return np.interp(dr, x, y)
 
-def get_ppm_for_dr(visc, dr):
+def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
+    cst_list = sorted([c for c in dra_curve_data.keys() if dra_curve_data[c] is not None])
     visc = float(visc)
-    dr = float(dr)
-    # Clamp drag reduction and viscosity to data grid for safety
-    dr = np.clip(dr, dra_dr_grid[0], dra_dr_grid[-1])
-    visc = np.clip(visc, dra_visc_grid[0], dra_visc_grid[-1])
-    ppm = dra_surface_interp([[visc, dr]])[0]
-    return max(ppm, 0.0)
+    if not cst_list:
+        return 0
+    if visc <= cst_list[0]:
+        df = dra_curve_data[cst_list[0]]
+        return _ppm_from_df(df, dr)
+    elif visc >= cst_list[-1]:
+        df = dra_curve_data[cst_list[-1]]
+        return _ppm_from_df(df, dr)
+    else:
+        lower = max([c for c in cst_list if c <= visc])
+        upper = min([c for c in cst_list if c >= visc])
+        df_lower = dra_curve_data[lower]
+        df_upper = dra_curve_data[upper]
+        ppm_lower = _ppm_from_df(df_lower, dr)
+        ppm_upper = _ppm_from_df(df_upper, dr)
+        return np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
 
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
@@ -61,6 +73,7 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
+    # ---- SEGMENT FLOW LOGIC ----
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -76,6 +89,7 @@ def solve_pipeline(
         else:
             pump_flows.append(0.0)
 
+    # --- Parameter Initialization ---
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
     Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
@@ -252,28 +266,34 @@ def solve_pipeline(
                 expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
             model.peak_limit.add(expr >= 50.0)
 
+    # --- OBJECTIVE: INCLUDE DRA COST! ---
     total_cost = 0
-    dra_costs = {}
+    dra_ppm_station = {}
+    dra_cost_station = {}
     for i in pump_indices:
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
+        dr_val = model.DR[i]
+        visc_val = kv_dict[i]
+        # Pyomo-native callback to get ppm for optimized DR/visc
+        ppm = pyo.Expression(rule=lambda m, dr=dr_val, visc=visc_val: get_ppm_for_dr(visc, pyo.value(dr)))
+        dra_ppm_station[i] = ppm
+        dra_cost = pyo.Expression(rule=lambda m, _ppm=ppm: _ppm() * (pump_flow_i * 1000.0 * 24.0 / 1e6) * RateDRA)
+        dra_cost_station[i] = dra_cost
+
         power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
         if i in electric_pumps:
             power_cost = power_kW * 24.0 * elec_cost.get(i,0.0)
         else:
             fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dr_val = model.DR[i]
-        visc_val = kv_dict[i]
-        ppm = float(get_ppm_for_dr(visc_val, pyo.value(dr_val)))
-        dra_cost = ppm * (pump_flow_i * 1000.0 * 24.0 / 1e6) * RateDRA
-        dra_costs[i] = dra_cost
-        total_cost += power_cost + dra_cost
+        total_cost += power_cost + dra_cost()
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
+    # === RESULTS SECTION ===
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -303,7 +323,7 @@ def solve_pipeline(
         if i in pump_indices:
             drag_red = float(pyo.value(model.DR[i]))
             visc_val = kv_dict[i]
-            ppm = float(get_ppm_for_dr(visc_val, drag_red))
+            ppm = get_ppm_for_dr(visc_val, drag_red)
             dra_cost = ppm * (outflow * 1000.0 * 24.0 / 1e6) * RateDRA
         else:
             drag_red = 0.0
@@ -332,4 +352,23 @@ def solve_pipeline(
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i]))
         result[f"maop_{name}"] = maop_dict[i]
 
+    term = terminal.get('name','terminal').strip().lower().replace(' ','_')
+    result.update({
+        f"pipeline_flow_{term}": segment_flows[-1],
+        f"pipeline_flow_in_{term}": segment_flows[-2],
+        f"pump_flow_{term}": 0.0,
+        f"speed_{term}": 0.0,
+        f"num_pumps_{term}": 0,
+        f"efficiency_{term}": 0.0,
+        f"power_cost_{term}": 0.0,
+        f"dra_cost_{term}": 0.0,
+        f"drag_reduction_{term}": 0.0,
+        f"head_loss_{term}": 0.0,
+        f"velocity_{term}": 0.0,
+        f"reynolds_{term}": 0.0,
+        f"friction_{term}": 0.0,
+        f"sdh_{term}": 0.0,
+        f"residual_head_{term}": float(pyo.value(model.RH[N+1])),
+    })
+    result['total_cost'] = float(pyo.value(model.Obj))
     return result
