@@ -1,10 +1,11 @@
-import os 
+import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 from math import log10, pi
 import pandas as pd
 import numpy as np
 
+# Set NEOS email (make sure this is your real email for NEOS tracking/priority)
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
 # --- DRA Curve Data Loading ---
@@ -24,11 +25,24 @@ for cst, fname in DRA_CSV_FILES.items():
     else:
         DRA_CURVE_DATA[cst] = None
 
+def clean_piecewise_points(x, y, min_delta=1e-5):
+    """
+    Remove duplicate and near-identical consecutive points from x, y lists.
+    """
+    if not x or not y or len(x) < 2:
+        return x, y
+    x_clean, y_clean = [x[0]], [y[0]]
+    for i in range(1, len(x)):
+        if abs(x[i] - x_clean[-1]) > min_delta or abs(y[i] - y_clean[-1]) > min_delta:
+            x_clean.append(x[i])
+            y_clean.append(y[i])
+    return x_clean, y_clean
+
 def get_ppm_breakpoints(visc):
     cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
     visc = float(visc)
     if not cst_list:
-        return [0], [0]
+        return [0, 1], [0, 1]
     if visc <= cst_list[0]:
         df = DRA_CURVE_DATA[cst_list[0]]
     elif visc >= cst_list[-1]:
@@ -45,12 +59,20 @@ def get_ppm_breakpoints(visc):
                      np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
         unique_dr, unique_indices = np.unique(dr_points, return_index=True)
         unique_ppm = ppm_points[unique_indices]
-        return list(unique_dr), list(unique_ppm)
+        dr_clean, ppm_clean = clean_piecewise_points(list(unique_dr), list(unique_ppm))
+        if len(dr_clean) < 2:
+            dr_clean = [unique_dr[0], unique_dr[-1]]
+            ppm_clean = [unique_ppm[0], unique_ppm[-1]]
+        return list(dr_clean), list(ppm_clean)
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
-    return list(unique_x), list(unique_y)
+    x_clean, y_clean = clean_piecewise_points(list(unique_x), list(unique_y))
+    if len(x_clean) < 2:
+        x_clean = [unique_x[0], unique_x[-1]]
+        y_clean = [unique_y[0], unique_y[-1]]
+    return list(x_clean), list(y_clean)
 
 def safe_div(val, minval=1e-4):
     # Protect against division by zero/NaN in all denominators
@@ -177,7 +199,6 @@ def solve_pipeline(
                         initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
-    # Option B: DR is a continuous variable, not an Expression!
     model.DR = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
                        bounds=lambda m,j: (0, max_dr[j]), initialize=0)
 
@@ -233,7 +254,6 @@ def solve_pipeline(
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
-            # Defensive: protect against division by zero
             N_val = pyo.value(model.N[i])
             DOL_val = pyo.value(model.DOL[i])
             N_val = float(N_val) if N_val is not None else 0.0
@@ -290,13 +310,15 @@ def solve_pipeline(
     for i in pump_indices:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
+        if len(dr_points) < 2:
+            dr_points = [0, 1]
+            ppm_points = [0, 1]
         setattr(model, f'piecewise_dra_ppm_{i}',
             pyo.Piecewise(
                 f'pw_dra_ppm_{i}',
                 model.PPM[i], model.DR[i],
-                pw_pts=dr_points_fixed,
-                f_rule=ppm_points_fixed,
+                pw_pts=dr_points,
+                f_rule=ppm_points,
                 pw_constr_type='EQ'
             )
         )
@@ -338,7 +360,7 @@ def solve_pipeline(
 
     model.solutions.load_from(results)
 
-    # --- Results Section (robust, never fails) ---
+    # --- Results Section ---
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
