@@ -304,7 +304,7 @@ def solve_pipeline(
     # ---- DRA Cost as True Decision Variable ----
     model.dra_cost = pyo.Expression(model.pump_stations)
     for i in pump_indices:
-        model.dra_cost[i] = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * Rate_DRA
+        model.dra_cost[i] = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * model.Rate_DRA
 
     # ---- Objective Function (Power/Fuel + DRA Cost) ----
     total_cost = 0
