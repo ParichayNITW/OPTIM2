@@ -5,10 +5,9 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-# Set NEOS email (make sure this is your real email for NEOS tracking/priority)
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+# ------- USER CONFIG -------
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'your@email.com')
 
-# --- DRA Curve Data Loading ---
 DRA_CSV_FILES = {
     10: "10 cst.csv",
     15: "15 cst.csv",
@@ -18,6 +17,9 @@ DRA_CSV_FILES = {
     35: "35 cst.csv",
     40: "40 cst.csv"
 }
+# --------------------------
+
+# ---- DRA DATA LOAD ----
 DRA_CURVE_DATA = {}
 for cst, fname in DRA_CSV_FILES.items():
     if os.path.exists(fname):
@@ -25,24 +27,11 @@ for cst, fname in DRA_CSV_FILES.items():
     else:
         DRA_CURVE_DATA[cst] = None
 
-def clean_piecewise_points(x, y, min_delta=1e-5):
-    """
-    Remove duplicate and near-identical consecutive points from x, y lists.
-    """
-    if not x or not y or len(x) < 2:
-        return x, y
-    x_clean, y_clean = [x[0]], [y[0]]
-    for i in range(1, len(x)):
-        if abs(x[i] - x_clean[-1]) > min_delta or abs(y[i] - y_clean[-1]) > min_delta:
-            x_clean.append(x[i])
-            y_clean.append(y[i])
-    return x_clean, y_clean
-
 def get_ppm_breakpoints(visc):
     cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
     visc = float(visc)
     if not cst_list:
-        return [0, 1], [0, 1]
+        return [0], [0]
     if visc <= cst_list[0]:
         df = DRA_CURVE_DATA[cst_list[0]]
     elif visc >= cst_list[-1]:
@@ -59,35 +48,56 @@ def get_ppm_breakpoints(visc):
                      np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
         unique_dr, unique_indices = np.unique(dr_points, return_index=True)
         unique_ppm = ppm_points[unique_indices]
-        dr_clean, ppm_clean = clean_piecewise_points(list(unique_dr), list(unique_ppm))
-        if len(dr_clean) < 2:
-            dr_clean = [unique_dr[0], unique_dr[-1]]
-            ppm_clean = [unique_ppm[0], unique_ppm[-1]]
-        return list(dr_clean), list(ppm_clean)
+        return list(unique_dr), list(unique_ppm)
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
-    x_clean, y_clean = clean_piecewise_points(list(unique_x), list(unique_y))
-    if len(x_clean) < 2:
-        x_clean = [unique_x[0], unique_x[-1]]
-        y_clean = [unique_y[0], unique_y[-1]]
-    return list(x_clean), list(y_clean)
+    return list(unique_x), list(unique_y)
 
-def safe_div(val, minval=1e-4):
-    # Protect against division by zero/NaN in all denominators
-    if isinstance(val, (float, np.floating)) and (np.isnan(val) or abs(val) < minval):
-        return minval
+def safe_div(val, minval=1e-8):
     try:
-        if abs(float(val)) < minval:
+        if val is None or abs(float(val)) < minval:
             return minval
     except:
         return minval
     return val
 
+def validate_inputs(stations, terminal):
+    for idx, stn in enumerate(stations):
+        name = stn.get('name', f'Station_{idx+1}')
+        # Diameter
+        d = stn.get('d', 0)
+        D = stn.get('D', 0)
+        if (d is None or d == 0) and (D is None or D == 0):
+            raise ValueError(f"Station '{name}': Missing or zero diameter 'D' or 'd'. Please enter correct diameter.")
+        # Length
+        if not stn.get('L', 0) or stn.get('L', 0) <= 0:
+            raise ValueError(f"Station '{name}': Invalid or zero length 'L'. Please enter segment length in km.")
+        # Viscosity
+        kv = stn.get('kv', stn.get('KV', None))
+        if kv is not None and (kv == 0 or kv is None):
+            raise ValueError(f"Station '{name}': Invalid viscosity 'kv'.")
+        # For pump stations, check coefficients
+        if stn.get('is_pump', False):
+            for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
+                if coef not in stn or stn[coef] is None:
+                    raise ValueError(f"Pump station '{name}': Missing coefficient '{coef}'.")
+    # Terminal elevation
+    if 'elev' not in terminal or terminal['elev'] is None:
+        raise ValueError("Terminal: Missing or invalid 'elev' (elevation) parameter.")
+
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
 ):
+    # ------- VALIDATE INPUTS -------
+    try:
+        validate_inputs(stations, terminal)
+    except Exception as e:
+        return {"error": True, "message": str(e)}
+    print("All inputs validated.")
+    # -------
+
     model = pyo.ConcreteModel()
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
@@ -199,6 +209,7 @@ def solve_pipeline(
                         initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
+    # Option B: DR is a continuous variable, not an Expression!
     model.DR = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
                        bounds=lambda m,j: (0, max_dr[j]), initialize=0)
 
@@ -254,6 +265,7 @@ def solve_pipeline(
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
+            # Defensive: protect against division by zero
             N_val = pyo.value(model.N[i])
             DOL_val = pyo.value(model.DOL[i])
             N_val = float(N_val) if N_val is not None else 0.0
@@ -310,15 +322,17 @@ def solve_pipeline(
     for i in pump_indices:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        if len(dr_points) < 2:
-            dr_points = [0, 1]
-            ppm_points = [0, 1]
+        if not dr_points or not ppm_points or len(dr_points) < 2:
+            # Add dummy breakpoints if missing
+            dr_points = [0, 100]
+            ppm_points = [0, 0]
+        dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
         setattr(model, f'piecewise_dra_ppm_{i}',
             pyo.Piecewise(
                 f'pw_dra_ppm_{i}',
                 model.PPM[i], model.DR[i],
-                pw_pts=dr_points,
-                f_rule=ppm_points,
+                pw_pts=dr_points_fixed,
+                f_rule=ppm_points_fixed,
                 pw_constr_type='EQ'
             )
         )
@@ -345,8 +359,13 @@ def solve_pipeline(
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # --- Solve ---
-    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
-
+    try:
+        results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"NEOS solver failed to execute: {e}"
+        }
     # --- Check and Handle Solver Status ---
     status = results.solver.status
     term = results.solver.termination_condition
@@ -357,10 +376,8 @@ def solve_pipeline(
             "termination_condition": str(term),
             "solver_status": str(status)
         }
-
     model.solutions.load_from(results)
-
-    # --- Results Section ---
+    # --- Results Section (robust, never fails) ---
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
