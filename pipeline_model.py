@@ -275,18 +275,28 @@ def solve_pipeline(
     for i in pump_indices:
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
-        power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
+        power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i]) / (3600.0 * 1000.0 * EFFP[i] * 0.95)
+        
         if i in electric_pumps:
-            power_cost = power_kW * 24.0 * elec_cost.get(i,0.0)
+            power_cost = power_kW * 24.0 * elec_cost.get(i, 0.0)
         else:
-            fuel_per_kWh = (sfc.get(i,0.0)*1.34102)/820.0
+            fuel_per_kWh = (sfc.get(i, 0.0) * 1.34102) / 820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost = 0
-        total_cost += power_cost + dra_cost
+    
+        # === CRITICAL FIX: Calculate DRA Cost Correctly ===
+        drag_reduction = model.DR[i]  # DR in %
+        visc = kv_dict[i]
+        ppm = get_ppm_for_dr(visc, drag_reduction)
+        dra_cost = ppm * (pump_flow_i * 1000 * 24 / 1e6) * RateDRA  # Correct DRA Cost
+    
+        total_cost += power_cost + dra_cost  # Now includes correct DRA cost
+    
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
-
-    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
+    
+    # Recommended solver for global optimum:
+    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=True)
     model.solutions.load_from(results)
+
 
     running_pumps = []
     for i in pump_indices:
