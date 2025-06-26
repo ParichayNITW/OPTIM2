@@ -1366,25 +1366,24 @@ with tab6:
             opt_ppm = get_ppm_for_dr(viscosity, dr_opt)
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=ppm_vals,           # Swap: X-axis is now PPM
-                y=percent_dr,         # Swap: Y-axis is now % Drag Reduction
+                x=percent_dr,
+                y=ppm_vals,
                 mode='lines+markers',
                 name=curve_label
             ))
             fig.add_trace(go.Scatter(
-                x=[opt_ppm], y=[dr_opt],      # Swap: optimized point
+                x=[dr_opt], y=[opt_ppm],
                 mode='markers',
                 marker=dict(size=12, color='red', symbol='diamond'),
                 name="Optimized Point"
             ))
             fig.update_layout(
                 title=f"DRA Curve for {stn['name']} (Viscosity: {viscosity:.2f} cSt)",
-                xaxis_title="PPM",                   # Swap labels
-                yaxis_title="% Drag Reduction",
+                xaxis_title="% Drag Reduction",
+                yaxis_title="PPM",
                 legend=dict(orientation="h", y=-0.2)
             )
             st.plotly_chart(fig, use_container_width=True)
-
         else:
             st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
 
