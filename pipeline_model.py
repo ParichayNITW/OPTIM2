@@ -25,7 +25,6 @@ for cst, fname in DRA_CSV_FILES.items():
         DRA_CURVE_DATA[cst] = None
 
 def get_dr_ppm_arrays(visc):
-    """Return strictly increasing DR and corresponding PPM arrays for the given viscosity."""
     cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
     visc = float(visc)
     if not cst_list:
@@ -53,13 +52,6 @@ def get_dr_ppm_arrays(visc):
     unique_y = y[unique_indices]
     return unique_x.tolist(), unique_y.tolist()
 
-def get_active_interval(dr_points, dr_value):
-    """Return index k such that dr_points[k] <= dr_value <= dr_points[k+1], or nearest edge."""
-    for k in range(len(dr_points) - 1):
-        if dr_points[k] <= dr_value <= dr_points[k+1]:
-            return k
-    return max(0, len(dr_points) - 2)  # Use the last interval if out of bounds
-
 def solve_pipeline(
     stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None
 ):
@@ -77,7 +69,6 @@ def solve_pipeline(
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # ---- Segment Flows ----
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -86,7 +77,6 @@ def solve_pipeline(
         out_flow = prev_flow - delivery + supply
         segment_flows.append(out_flow)
 
-    # --- Parameter Initialization ---
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
     Acoef = {}; Bcoef = {}; Ccoef = {}
     Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
@@ -97,7 +87,6 @@ def solve_pipeline(
     peaks_dict = {}
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
 
-    # For linear interpolation, precompute breakpoints for each pump station
     station_dr_ppm = {}
 
     for i, stn in enumerate(stations, start=1):
@@ -137,7 +126,6 @@ def solve_pipeline(
                 electric_pumps.append(i)
                 elec_cost[i] = stn.get('rate', 0.0)
             max_dr[i] = stn.get('max_dr', 0.0)
-            # Precompute breakpoints for interpolation
             dr_pts, ppm_pts = get_dr_ppm_arrays(kv_dict[i])
             station_dr_ppm[i] = (dr_pts, ppm_pts)
 
@@ -180,10 +168,8 @@ def solve_pipeline(
                         initialize=lambda m,j: (speed_min[j]+speed_max[j])//2)
     model.N = pyo.Expression(model.pump_stations, rule=lambda m,j: 10*m.N_u[j])
 
-    # DRA decision variable, continuous, bounds [0, max_dr]
     model.DR = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
                        bounds=lambda m,j: (0, max_dr[j]), initialize=0)
-    # PPM variable to be linearly interpolated per DR
     model.PPM = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
 
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
@@ -235,10 +221,11 @@ def solve_pipeline(
             pump_flow_i = float(segment_flows[i])
             TDH[i] = (model.A[i]*pump_flow_i**2 + model.B[i]*pump_flow_i + model.C[i]) * ((model.N[i]/model.DOL[i])**2)
             flow_eq = pump_flow_i * model.DOL[i]/model.N[i]
-            EFFP[i] = (
+            # Safe efficiency: never below small epsilon
+            EFFP[i] = pyo.maximize(1e-4, (
                 model.Pcoef[i]*flow_eq**4 + model.Qcoef[i]*flow_eq**3 + model.Rcoef[i]*flow_eq**2
                 + model.Scoef[i]*flow_eq + model.Tcoef[i]
-            ) / 100.0
+            ) / 100.0)
         else:
             TDH[i] = 0.0
             EFFP[i] = 1.0
@@ -270,49 +257,34 @@ def solve_pipeline(
                 expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
             model.peak_limit.add(expr >= 50.0)
 
-    # --- DRA Linear Interpolation Constraints ---
     model.dra_interp_con = pyo.ConstraintList()
     for i in pump_indices:
         dr_pts, ppm_pts = station_dr_ppm[i]
-        # Use auxiliary parameters for lower and upper index per station
-        # Instead of variables, just build all segments, only one will be active per DR, as DR is continuous and objective is monotonic
-        # But we need a constraint for each interval and make all intervals feasible.
-        # Instead, we linearize only within the allowed range and restrict DR to grid, or use all intervals.
-        # For strict linearization, we just use the full piecewise-linear approximation:
-        # model.PPM[i] == interp_func(model.DR[i])
-        # Since DR is continuous, approximate PPM by linear interpolation between adjacent points
-        # To avoid Pyomo Piecewise, we use the following method:
-        # For a fine enough grid, enforce that at all times, PPM >= line between any two points
-        # But for production, for monotonic increasing, the optimal will always be on a breakpoint or between two.
-        # So, use the two nearest breakpoints for each current DR, or set up enough segments.
-        # But for robustness, enforce the segment constraints for all intervals:
         for k in range(len(dr_pts) - 1):
             x0 = dr_pts[k]; y0 = ppm_pts[k]
             x1 = dr_pts[k+1]; y1 = ppm_pts[k+1]
-            # For each segment, PPM >= y0 + slope*(DR - x0) for DR in [x0, x1]
             slope = (y1 - y0) / (x1 - x0) if (x1 - x0) != 0 else 0
             model.dra_interp_con.add(
                 model.PPM[i] >= y0 + slope*(model.DR[i] - x0)
             )
             model.dra_interp_con.add(
-                model.PPM[i] <= y0 + slope*(model.DR[i] - x0) + 1e-6  # small tolerance
+                model.PPM[i] <= y0 + slope*(model.DR[i] - x0) + 1e-6
             )
-        # Also, restrict PPM to within min and max of breakpoints
         model.dra_interp_con.add(model.PPM[i] >= min(ppm_pts))
         model.dra_interp_con.add(model.PPM[i] <= max(ppm_pts))
 
-    # ---- DRA Cost as True Decision Variable ----
     model.dra_cost = pyo.Expression(model.pump_stations)
     for i in pump_indices:
-        model.dra_cost[i] = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
+        model.dra_cost[i] = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * model.Rate_DRA
 
-    # ---- Objective Function (Power/Fuel + DRA Cost) ----
     total_cost = 0
     for i in pump_indices:
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
+        eff_value = EFFP[i] if (isinstance(EFFP[i], float) or isinstance(EFFP[i], int)) else 1.0
+        # Safe guard: avoid divide-by-zero in efficiency
         if i in pump_indices:
-            power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
+            power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*eff_value*0.95+1e-9)
         else:
             power_kW = 0.0
         if i in electric_pumps:
@@ -324,16 +296,13 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     model.solutions.load_from(results)
 
-    # ===== Robust Solver Status Check =====
     if (results.solver.status != SolverStatus.ok) or (results.solver.termination_condition != TerminationCondition.optimal):
         result = {'error': f"Solver failed: {results.solver.status}, {results.solver.termination_condition}. Problem may be infeasible or input is physically impossible. Please review your pipeline data, constraints, or try relaxing some limits."}
         return result
 
-    # --- Results Section (robust, never fails) ---
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -352,7 +321,8 @@ def solve_pipeline(
 
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
-            power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
+            denom = float(pyo.value(EFFP[i]))*0.95 if float(pyo.value(EFFP[i])) > 0 else 1e-6
+            power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*denom)
             if i in electric_pumps:
                 rate = elec_cost.get(i,0.0)
                 power_cost = power_kW * 24.0 * rate
