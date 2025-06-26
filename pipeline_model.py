@@ -343,8 +343,8 @@ def solve_pipeline(
             drag_red = 0.0
 
         visc_i = kv_dict[i]
-ppm_expr = 0.1425 * visc_i + 0.9294 * pyo.value(model.DR[i]) + 0.00289 * visc_i * pyo.value(model.DR[i]) - 16.5529
-dra_cost = ppm_expr * (pump_flow_i * 24 * 1000 / 1e6) * RateDRA
+        ppm_expr = 0.1425 * visc_i + 0.9294 * pyo.value(model.DR[i]) + 0.00289 * visc_i * pyo.value(model.DR[i]) - 16.5529
+        dra_cost = ppm_expr * (pump_flow_i * 24 * 1000 / 1e6) * RateDRA
 
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1]-model.z[i]))))
         res_head = float(pyo.value(model.RH[i]))
