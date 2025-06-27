@@ -888,14 +888,19 @@ with tab3:
                 step = max(100, int((N_max-N_min)/5))
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    H = (A*flows**2 + B*flows + C)*(rpm/N_max)**2 if N_max else np.zeros_like(flows)
-                    # Remove all negative heads: mask out values where H < 0
-                    flows_pos = flows[H >= 0]
-                    H_pos = H[H >= 0]
+                    # For each desired speed, scale flows according to affinity law
+                    Q_at_rpm = flows                 # Flows at this rpm
+                    Q_equiv_DOL = Q_at_rpm * N_max / rpm   # Map these flows to DOL for the polynomial
+                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)  # Head at DOL curve
+                    H = H_DOL * (rpm/N_max)**2      # Scale head to current rpm
+                
+                    # Remove negatives
+                    valid = H >= 0
                     fig.add_trace(go.Scatter(
-                        x=flows_pos, y=H_pos, mode='lines', name=f"{rpm} rpm",
+                        x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
                     ))
+
                 fig.update_layout(
                     title=f"Head vs Flow: {stn['name']}",
                     xaxis_title="Flow (m³/hr)",
