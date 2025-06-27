@@ -886,17 +886,32 @@ with tab3:
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
                 
-                # --- Defensive check ---
-                if N_max is None or N_max == 0:
+                # --- Defensive check for both N_min and N_max ---
+                if (N_max is None or N_max <= 0):
                     st.error(f"Rated RPM (DOL) for pump station '{stn['name']}' is zero or missing! Cannot plot pump curves. Please check your data.")
-                    continue  # skip to next station
-                if N_min is None or N_min == 0:
+                    continue
+                if (N_min is None or N_min < 0):
                     N_min = max(1, int(stn.get('MinRPM', 1)))
-                step = max(100, int((N_max-N_min)/5)) if (N_max > N_min) else 100
+                # If N_min is greater than N_max, correct it
+                if N_max < N_min:
+                    N_min = N_max
+                
+                # If N_max == N_min, only plot a single curve at N_max
+                if N_max == N_min:
+                    rpm_values = [N_max]
+                else:
+                    # Defensive: ensure at least one step, but not more than (N_max-N_min)
+                    step = max(1, int((N_max - N_min) / 5))
+                    if step == 0: step = 1
+                    rpm_values = list(range(N_min, N_max + 1, step))
+                    # Always include N_max at the end for full range
+                    if rpm_values[-1] != N_max:
+                        rpm_values.append(N_max)
+                
                 fig = go.Figure()
-                for rpm in range(N_min, N_max+1, step):
+                for rpm in rpm_values:
                     if rpm == 0:
-                        continue
+                        continue  # Skip division by zero
                     Q_at_rpm = flows
                     Q_equiv_DOL = Q_at_rpm * N_max / rpm
                     H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
@@ -906,6 +921,7 @@ with tab3:
                         x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
                     ))
+
 
 
                 fig.update_layout(
