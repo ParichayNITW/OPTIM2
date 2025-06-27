@@ -89,6 +89,7 @@ def solve_pipeline(
     peaks_dict = {}
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
 
+    # --- Input validation (Best Practice) ---
     for i, stn in enumerate(stations, start=1):
         length[i] = stn.get('L', 0.0)
         if 'D' in stn:
@@ -108,6 +109,14 @@ def solve_pipeline(
         peaks_dict[i] = stn.get('peaks', [])
         has_pump = stn.get('is_pump', False)
         if has_pump:
+            # DOL (rated RPM) must never be zero (Best Practice)
+            if stn.get('DOL', None) is None or stn['DOL'] <= 0:
+                return {
+                    "error": True,
+                    "message": f"Rated RPM (DOL) missing or zero for station {stn.get('name','?')}. Please correct the data.",
+                    "termination_condition": "invalid_data",
+                    "solver_status": "input_error"
+                }
             pump_indices.append(i)
             Acoef[i] = stn.get('A', 0.0)
             Bcoef[i] = stn.get('B', 0.0)
@@ -117,8 +126,10 @@ def solve_pipeline(
             Rcoef[i] = stn.get('R', 0.0)
             Scoef[i] = stn.get('S', 0.0)
             Tcoef[i] = stn.get('T', 0.0)
-            min_rpm[i] = stn.get('MinRPM', 0)
-            max_rpm[i] = stn.get('DOL', 0)
+            min_rpm_val = max(1, int(stn.get('MinRPM', 1)))  # never allow zero
+            dol_val = max(min_rpm_val, int(stn.get('DOL', 1500)))  # never allow zero
+            min_rpm[i] = min_rpm_val
+            max_rpm[i] = dol_val
             if stn.get('sfc', 0) not in (None, 0):
                 diesel_pumps.append(i)
                 sfc[i] = stn.get('sfc', 0.0)
@@ -217,11 +228,13 @@ def solve_pipeline(
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
-            # Correct affinity law: map flow to equivalent DOL reference
-            Q_equiv = pump_flow_i * model.DOL[i] / model.N[i]
+            # --- Guard against zero DOL (max_rpm) ---
+            N_i = model.N[i]
+            DOL_i = model.DOL[i]
+            # Pyomo expressions (symbolic) so skip runtime check
+            Q_equiv = pump_flow_i * DOL_i / N_i  # safe because bounds ensure N_i>0 and DOL_i>0
             H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
-            TDH[i] = H_DOL * (model.N[i] / model.DOL[i])**2
-        
+            TDH[i] = H_DOL * (N_i / DOL_i)**2
             # Efficiency polynomial at equivalent flow (already correct)
             EFFP[i] = (
                 model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 + model.Rcoef[i]*Q_equiv**2
@@ -283,6 +296,7 @@ def solve_pipeline(
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
         if i in pump_indices:
+            # EFFP is Pyomo expression; safe to use
             power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i])/(3600.0*1000.0*EFFP[i]*0.95)
         else:
             power_kW = 0.0
@@ -330,7 +344,7 @@ def solve_pipeline(
 
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
-            power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
+            power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95) if float(pyo.value(EFFP[i]))>0 else 0.0
             if i in electric_pumps:
                 rate = elec_cost.get(i,0.0)
                 power_cost = power_kW * 24.0 * rate
@@ -347,14 +361,12 @@ def solve_pipeline(
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
 
         result[f"pipeline_flow_{name}"] = outflow
-        result[f"pipeline_flow_in_{name}"] = inflow
         result[f"pump_flow_{name}"] = pump_flow
         result[f"num_pumps_{name}"] = num_pumps
         result[f"speed_{name}"] = speed_rpm
         result[f"efficiency_{name}"] = eff
-        result[f"power_cost_{name}"] = power_cost
-        result[f"dra_cost_{name}"] = dra_cost_i
         result[f"dra_ppm_{name}"] = dra_ppm
+        result[f"power_cost_{name}"] = power_cost
         result[f"drag_reduction_{name}"] = drag_red
         result[f"head_loss_{name}"] = head_loss
         result[f"residual_head_{name}"] = res_head
@@ -362,33 +374,14 @@ def solve_pipeline(
         result[f"reynolds_{name}"] = reynolds
         result[f"friction_{name}"] = fric
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-        result[f"maop_{name}"] = maop_dict[i]
-        if i in pump_indices:
-            result[f"coef_A_{name}"] = float(pyo.value(model.A[i]))
-            result[f"coef_B_{name}"] = float(pyo.value(model.B[i]))
-            result[f"coef_C_{name}"] = float(pyo.value(model.C[i]))
-            result[f"dol_{name}"]    = float(pyo.value(model.DOL[i]))
-            result[f"min_rpm_{name}"]= float(pyo.value(model.MinRPM[i]))
+        result[f"maop_{name}"] = maop_dict.get(i, 0.0)
+        result[f"station_elevation_{name}"] = elev[i]
+        result[f"dra_cost_{name}"] = dra_cost_i
 
-    term = terminal.get('name','terminal').strip().lower().replace(' ','_')
-    result.update({
-        f"pipeline_flow_{term}": segment_flows[-1],
-        f"pipeline_flow_in_{term}": segment_flows[-2],
-        f"pump_flow_{term}": 0.0,
-        f"speed_{term}": 0.0,
-        f"num_pumps_{term}": 0,
-        f"efficiency_{term}": 0.0,
-        f"power_cost_{term}": 0.0,
-        f"dra_cost_{term}": 0.0,
-        f"dra_ppm_{term}": 0.0,
-        f"drag_reduction_{term}": 0.0,
-        f"head_loss_{term}": 0.0,
-        f"velocity_{term}": 0.0,
-        f"reynolds_{term}": 0.0,
-        f"friction_{term}": 0.0,
-        f"sdh_{term}": 0.0,
-        f"residual_head_{term}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
-    })
-    result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj() is not None else 0.0
-    result["error"] = False
+    # Terminal Node
+    t_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
+    result[f"pipeline_flow_{t_name}"] = segment_flows[-1]
+    result[f"residual_head_{t_name}"] = float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0
+    result[f"station_elevation_{t_name}"] = elev[N+1]
+
     return result
