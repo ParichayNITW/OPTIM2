@@ -49,7 +49,10 @@ def get_ppm_for_dr(visc, dr):
     return float(np.interp(visc, [lower, upper], [ppm_lo, ppm_hi]))
 
 def solve_pipeline(
-    stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD
+    stations, terminal,
+    FLOW, KV_list, rho_list,
+    RateDRA, Price_HSD,
+    linefill_dict=None
 ):
     model = pyo.ConcreteModel()
     N = len(stations)
