@@ -885,21 +885,28 @@ with tab3:
                 C = res.get(f"coef_C_{key}",0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
-                step = max(100, int((N_max-N_min)/5))
+                
+                # --- Defensive check ---
+                if N_max is None or N_max == 0:
+                    st.error(f"Rated RPM (DOL) for pump station '{stn['name']}' is zero or missing! Cannot plot pump curves. Please check your data.")
+                    continue  # skip to next station
+                if N_min is None or N_min == 0:
+                    N_min = max(1, int(stn.get('MinRPM', 1)))
+                step = max(100, int((N_max-N_min)/5)) if (N_max > N_min) else 100
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    # For each desired speed, scale flows according to affinity law
-                    Q_at_rpm = flows                 # Flows at this rpm
-                    Q_equiv_DOL = Q_at_rpm * N_max / rpm   # Map these flows to DOL for the polynomial
-                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)  # Head at DOL curve
-                    H = H_DOL * (rpm/N_max)**2      # Scale head to current rpm
-                
-                    # Remove negatives
+                    if rpm == 0:
+                        continue
+                    Q_at_rpm = flows
+                    Q_equiv_DOL = Q_at_rpm * N_max / rpm
+                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
+                    H = H_DOL * (rpm/N_max)**2
                     valid = H >= 0
                     fig.add_trace(go.Scatter(
                         x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
                     ))
+
 
                 fig.update_layout(
                     title=f"Head vs Flow: {stn['name']}",
