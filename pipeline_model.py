@@ -81,10 +81,10 @@ def solve_pipeline(flow=2000.0,                    # target flow in m3/h through
     # Convert units: km to m, mm to m for calculations
     lengths_m = [L * 1000.0 for L in lengths_km]
     diameters_m = [d / 1000.0 for d in diameters_mm]
-    # Calculate base frictional head loss for each segment at given flow using Hazen-Williams formula (SI units) [oai_citation:7‡engineering.stackexchange.com](https://engineering.stackexchange.com/questions/45508/how-to-calculate-head-loss-in-vertical-pipe#:~:text=%241%29%24%20The%20the%20Hazen,in%20SI%20units%20is).
+    # Calculate base frictional head loss for each segment at given flow using Hazen-Williams formula (SI units):contentReference[oaicite:7]{index=7}.
     # h_f = 10.67 * L * Q^(1.852) / (C^(1.852) * d^(4.8704)), where Q in m3/s, L in m, d in m.
     # We choose a Hazen-Williams roughness coefficient C based on typical values (e.g., ~120 for clean pipeline steel).
-    # For simplicity, we adjust C slightly by viscosity (validity of Hazen-W ill decrease for high viscous fluids [oai_citation:8‡engineering.stackexchange.com](https://engineering.stackexchange.com/questions/45508/how-to-calculate-head-loss-in-vertical-pipe#:~:text=Note%201%3A%20The%20empirical%20nature,accurate%20prediction%20of%20head%20loss)).
+    # For simplicity, we adjust C slightly by viscosity (validity of Hazen-W ill decrease for high viscous fluids:contentReference[oaicite:8]{index=8}).
     base_C = 120.0
     # Adjust C for viscosity: assume water (1 cSt) ~ C=120; heavier fluids (like 40 cSt) lower C (e.g. ~100).
     # This is a rough adjustment for demonstration.
@@ -148,7 +148,7 @@ def solve_pipeline(flow=2000.0,                    # target flow in m3/h through
         return m.pressure[num_stations+1] >= m.target_pressure
     model.delivery_pressure = pyo.Constraint(rule=delivery_pressure_rule)
     # Power cost calculation: 
-    # Pump hydraulic power (kW) = 0.002725 * flow(m3/h) * head(m) / efficiency [oai_citation:9‡engineering.stackexchange.com](https://engineering.stackexchange.com/questions/45508/how-to-calculate-head-loss-in-vertical-pipe#:~:text=%24h_f%20%3D%2010.67%20L%20Q,4.8704).
+    # Pump hydraulic power (kW) = 0.002725 * flow(m3/h) * head(m) / efficiency:contentReference[oaicite:9]{index=9}.
     # So daily energy (kWh/day) = 0.002725 * flow * head / eff * 24.
     # Daily cost ($) = that * RatePower.
     def power_cost_expr(m, i):
