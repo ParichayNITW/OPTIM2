@@ -565,6 +565,10 @@ with tab1:
                 res.get(f"tdh_curve_{key}", np.nan)
             ]
 
+        print(f"Length of params: {len(params)}")
+        for nm in summary:
+            print(f"{nm}: {len(summary[nm]) if nm != 'Parameters' else 'header'}")
+
         df_sum = pd.DataFrame(summary)
 
         # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
