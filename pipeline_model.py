@@ -336,22 +336,29 @@ def solve_pipeline(
             rh_val = float(pyo.value(model.RH[i]))
             tdh_hyd = (sdh_val - rh_val) / num_pumps if num_pumps > 0 else 0.0
         
-            # Affinity-law TDH
+            # Affinity-law TDH (no ZeroDivisionError ever)
             pump_flow_i = float(segment_flows[i])
             rpm_solved = speed_rpm
-            rpm_dol = float(pyo.value(model.DOL[i])) if hasattr(model.DOL[i], "value") else model.DOL[i]
-            A = float(pyo.value(model.A[i]))
-            B = float(pyo.value(model.B[i]))
-            C = float(pyo.value(model.C[i]))
-            Q_equiv = pump_flow_i * rpm_dol / rpm_solved if rpm_solved else pump_flow_i
-            h_dol = A * Q_equiv**2 + B * Q_equiv + C
-        
-            if rpm_dol is None or rpm_dol == 0 or rpm_solved is None or rpm_solved == 0:
+            try:
+                rpm_dol = float(pyo.value(model.DOL[i])) if hasattr(model.DOL[i], "value") else model.DOL[i]
+            except Exception:
+                rpm_dol = 0.0
+            try:
+                A = float(pyo.value(model.A[i]))
+                B = float(pyo.value(model.B[i]))
+                C = float(pyo.value(model.C[i]))
+            except Exception:
+                A = B = C = 0.0
+            # Defensive calculation: never divide by zero!
+            if rpm_solved is None or rpm_solved == 0 or rpm_dol is None or rpm_dol == 0:
                 tdh_curve = 0.0
             else:
-                tdh_curve = h_dol * (rpm_solved / rpm_dol)**2
+                Q_equiv = pump_flow_i * rpm_dol / rpm_solved
+                h_dol = A * Q_equiv**2 + B * Q_equiv + C
+                tdh_curve = h_dol * (rpm_solved / rpm_dol) ** 2
         result[f"tdh_hyd_{name}"] = tdh_hyd
         result[f"tdh_curve_{name}"] = tdh_curve
+
 
 
         
