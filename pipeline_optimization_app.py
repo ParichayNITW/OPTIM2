@@ -1148,6 +1148,76 @@ with tab3:
                 )
                 st.plotly_chart(fig_pwr2, use_container_width=True)
 
+        # --- 7. 3D Hydraulics Profile ---
+        with hydr3d_tab:
+            st.markdown("<div class='section-title'>3D Hydraulics Profile: Pressure, Elevation & Station</div>", unsafe_allow_html=True)
+            stations_data = st.session_state["last_stations_data"]
+            res = st.session_state["last_res"]
+            terminal = st.session_state["last_term_data"]
+            N = len(stations_data)
+            lengths = [0]
+            for stn in stations_data:
+                lengths.append(lengths[-1] + stn.get("L", 0.0))
+            names = [s['name'] for s in stations_data] + [terminal["name"]]
+            keys = [n.lower().replace(' ', '_') for n in names]
+            rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
+            sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
+            elev_list = [s['elev'] for s in stations_data] + [terminal.get('elev', 0.0)]
+        
+            import plotly.graph_objects as go
+            fig3d = go.Figure()
+        
+            # Elevation curve
+            fig3d.add_trace(go.Scatter3d(
+                x=lengths, y=elev_list, z=[0]*len(lengths),
+                mode='lines+markers',
+                name='Elevation',
+                marker=dict(size=6, color='green'),
+                line=dict(color='green', width=3, dash='dot')
+            ))
+            # Residual Head curve
+            fig3d.add_trace(go.Scatter3d(
+                x=lengths, y=rh_list, z=[10]*len(lengths),
+                mode='lines+markers+text',
+                name='Residual Head',
+                marker=dict(size=6, color='blue'),
+                line=dict(color='blue', width=5),
+                text=names, textposition='top center'
+            ))
+            # SDH curve
+            fig3d.add_trace(go.Scatter3d(
+                x=lengths, y=sdh_list, z=[20]*len(lengths),
+                mode='lines+markers',
+                name='SDH',
+                marker=dict(size=6, color='red'),
+                line=dict(color='red', width=4)
+            ))
+            # Station markers
+            fig3d.add_trace(go.Scatter3d(
+                x=lengths, y=rh_list, z=[10]*len(lengths),
+                mode='markers+text',
+                marker=dict(symbol='diamond', size=8, color='navy'),
+                text=[f"{n}" for n in names],
+                textposition='top center',
+                name='Station'
+            ))
+        
+            fig3d.update_layout(
+                title="3D Hydraulics Profile: Pipeline Pressure and Elevation",
+                scene=dict(
+                    xaxis_title="Pipeline Length (km)",
+                    yaxis_title="Elevation / Head (m)",
+                    zaxis_title="Layer (Elev/RH/SDH)",
+                    aspectratio=dict(x=2.1, y=1.1, z=0.5)
+                ),
+                legend=dict(font=dict(size=13)),
+                height=600,
+                margin=dict(l=20, r=20, t=60, b=30),
+            )
+            st.plotly_chart(fig3d, use_container_width=True)
+
+
+
 # ---- Tab 4: System Curves ----
 import plotly.graph_objects as go
 import numpy as np
