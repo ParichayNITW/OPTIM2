@@ -976,56 +976,102 @@ with tab3:
             keys = [n.lower().replace(' ', '_') for n in names]
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
+            maop_list = [res.get(f"maop_{k}", None) for k in keys[:-1]]
+            elev_list = [s['elev'] for s in stations_data] + [terminal.get('elev', 0.0)]
         
-            # Gather all X, Y, annotation points
-            x_pts, y_pts, annotations = [], [], []
-            for i, stn in enumerate(stations_data):
-                # 1. Start: RH at station i
-                x_pts.append(lengths[i])
-                y_pts.append(rh_list[i])
-                annotations.append((lengths[i], rh_list[i], stn['name']))
-                # 2. If pump running, vertical jump to SDH
+            # --- Prepare MAOP as a horizontal envelope ---
+            maop_env = max([x for x in maop_list if x is not None]) if any(maop_list) else 800
+        
+            # --- Compose step profile for RH/SDH ---
+            x_prof, y_prof = [], []
+            for i in range(len(stations_data)):
+                x_prof.append(lengths[i])
+                y_prof.append(rh_list[i])
                 if abs(sdh_list[i] - rh_list[i]) > 1e-3:
-                    x_pts.append(lengths[i])
-                    y_pts.append(sdh_list[i])
-                    # Optionally: annotations.append((lengths[i], sdh_list[i], f"SDH {stn['name']}"))
-                # 3. For each peak (ordered by loc within segment):
-                seg_len = stn['L']
-                next_rh = rh_list[i+1]
-                start_sdh = sdh_list[i]  # This is the actual SDH, not RH!
-                if 'peaks' in stn and stn['peaks']:
-                    for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
-                        pk_loc = pk['loc']
-                        pk_x = lengths[i] + pk_loc
-                        # Linear head drop from SDH at i to RH at i+1:
-                        frac = pk_loc / seg_len if seg_len > 0 else 0
-                        pk_head = start_sdh - (start_sdh - next_rh) * frac
-                        x_pts.append(pk_x)
-                        y_pts.append(pk_head)
-                        annotations.append((pk_x, pk_head, f"Peak ({stn['name']})"))
-                # 4. End: RH at next station
-                x_pts.append(lengths[i+1])
-                y_pts.append(next_rh)
-                annotations.append((lengths[i+1], next_rh, names[i+1]))
+                    x_prof.append(lengths[i])
+                    y_prof.append(sdh_list[i])
+                seg_len = stations_data[i]['L']
+                pk_list = stations_data[i].get('peaks', [])
+                last_head = sdh_list[i] if abs(sdh_list[i] - rh_list[i]) > 1e-3 else rh_list[i]
+                last_x = lengths[i]
+                if pk_list:
+                    for pk in sorted(pk_list, key=lambda x: x['loc']):
+                        pk_x = lengths[i] + pk['loc']
+                        x_prof.append(pk_x)
+                        y_prof.append(pk['elev'])
+                        last_head = pk['elev']
+                        last_x = pk_x
+                x_prof.append(lengths[i+1])
+                y_prof.append(rh_list[i+1])
         
-            # Plot
+            # --- Peaks ---
+            peak_x = []
+            peak_y = []
+            peak_labels = []
+            for i, stn in enumerate(stations_data):
+                for pk in stn.get('peaks', []):
+                    peak_x.append(lengths[i] + pk['loc'])
+                    peak_y.append(pk['elev'])
+                    peak_labels.append('Peak')
+        
+            # --- Plotly Graph ---
+            import plotly.graph_objects as go
             fig = go.Figure()
+        
+            # Elevation Profile
             fig.add_trace(go.Scatter(
-                x=x_pts, y=y_pts, mode='lines+markers', name="Pressure Profile", line=dict(width=3, color="#1976D2"),
-                marker=dict(size=8)
+                x=lengths, y=elev_list, mode='lines+markers+text',
+                name='Elevation', line=dict(color='green', dash='dot'),
+                marker=dict(symbol='circle', size=8, color='green'),
+                text=[f"{elv:.0f}" for elv in elev_list], textposition="bottom left",
+                showlegend=True
             ))
-            # Annotate stations and peaks
-            for xp, yp, txt in annotations:
-                fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, yshift=12)
+        
+            # MAOP envelope
+            fig.add_trace(go.Scatter(
+                x=[lengths[0], lengths[-1]], y=[maop_env, maop_env],
+                mode='lines', name='MAOP Envelope', line=dict(color='red', dash='dash'),
+                showlegend=True
+            ))
+        
+            # Step profile (Pressure Optimizer: RH/SDH)
+            fig.add_trace(go.Scatter(
+                x=x_prof, y=y_prof, mode='lines+markers',
+                name='Pressure Optimizer', line=dict(color='blue', width=2),
+                marker=dict(symbol='circle-open', size=9, color='blue'),
+                showlegend=True
+            ))
+        
+            # Station markers and names
+            fig.add_trace(go.Scatter(
+                x=lengths, y=rh_list, mode='markers+text', name='Residual Head',
+                marker=dict(symbol='circle', size=11, color='blue', line=dict(width=2, color='navy')),
+                text=[f"{nm}<br>{rh:.1f}" for nm, rh in zip(names, rh_list)],
+                textposition="top right", showlegend=True
+            ))
+        
+            # Peaks
+            if peak_x:
+                fig.add_trace(go.Scatter(
+                    x=peak_x, y=peak_y, mode='markers+text', name='Peaks',
+                    marker=dict(symbol='diamond', size=12, color='purple'),
+                    text=['Peak']*len(peak_x), textposition="bottom center",
+                    showlegend=True
+                ))
+        
             fig.update_layout(
-                title="Pressure vs Pipeline Length (with Peaks)",
-                xaxis_title="Cumulative Length (km)",
-                yaxis_title="Pressure Head (mcl)",
-                font=dict(size=15),
-                showlegend=False,
-                height=420
+                xaxis_title="Pipeline Length (km)",
+                yaxis_title="Elevation / Pressure / Head (m)",
+                legend=dict(font=dict(size=15), x=0.99, y=0.99),
+                font=dict(size=14),
+                margin=dict(l=20, r=20, t=60, b=30),
+                height=640,
+                width=1450,
+                title="<b>Pipeline Hydraulics Profile: Pressure Optimization & Elevation</b>",
+                template="simple_white"
             )
             st.plotly_chart(fig, use_container_width=True)
+
 
         # --- 6. Power vs Speed/Flow ---
         with power_tab:
