@@ -796,11 +796,12 @@ with tab3:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         terminal = st.session_state["last_term_data"]
-        perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
+        perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab, hydr3d_tab = st.tabs([
             "Head Loss", "Velocity & Re", 
             "Pump Characteristic Curve", "Pump Efficiency Curve",
-            "Pressure vs Pipeline Length", "Power vs Speed/Flow"
+            "Pressure vs Pipeline Length", "Power vs Speed/Flow", "3D Hydraulics Profile"
         ])
+
         
         # --- 1. Head Loss ---
         with perf_tab:
