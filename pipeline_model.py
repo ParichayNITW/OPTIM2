@@ -221,7 +221,7 @@ def solve_pipeline(
             Q_equiv = pump_flow_i * model.DOL[i] / model.N[i]
             H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
             TDH[i] = H_DOL * (model.N[i] / model.DOL[i])**2
-
+        
             # Efficiency polynomial at equivalent flow (already correct)
             EFFP[i] = (
                 model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 + model.Rcoef[i]*Q_equiv**2
@@ -251,14 +251,11 @@ def solve_pipeline(
             loc_km = peak['loc']
             elev_k = peak['elev']
             L_peak = loc_km*1000.0
-            # ---- REVISED BLOCK for DRA effect on peak loss ----
+            loss_no_dra = f[i] * (L_peak/d_inner[i]) * (v[i]**2/(2*g))
             if i in pump_indices:
-                DR_frac = model.DR[i] / 100.0
-                loss_with_dra = f[i] * (L_peak/d_inner[i]) * (v[i]**2/(2*g)) * (1 - DR_frac)
-                expr = model.RH[i] + TDH[i]*model.NOP[i] - (elev_k - model.z[i]) - loss_with_dra
+                expr = model.RH[i] + TDH[i]*model.NOP[i] - (elev_k - model.z[i]) - loss_no_dra
             else:
-                loss_with_dra = f[i] * (L_peak/d_inner[i]) * (v[i]**2/(2*g))
-                expr = model.RH[i] - (elev_k - model.z[i]) - loss_with_dra
+                expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
             model.peak_limit.add(expr >= 50.0)
 
     # ---- DRA PPM Piecewise and Cost Calculation ----
@@ -298,17 +295,13 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # --- Solve (COUENNE) ---
-    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
+    # --- Solve ---
+    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
 
-    # --- Check and Handle Solver Status (allow locallyOptimal) ---
+    # --- Check and Handle Solver Status ---
     status = results.solver.status
     term = results.solver.termination_condition
-    if (status != pyo.SolverStatus.ok) or (term not in [
-        pyo.TerminationCondition.optimal,
-        pyo.TerminationCondition.feasible,
-        pyo.TerminationCondition.locallyOptimal
-    ]):
+    if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
         return {
             "error": True,
             "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
