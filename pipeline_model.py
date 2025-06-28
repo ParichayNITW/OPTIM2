@@ -328,6 +328,31 @@ def solve_pipeline(
         else:
             num_pumps = 0; speed_rpm = 0.0; eff = 0.0; dra_ppm = 0.0; dra_cost_i = 0.0
 
+        # --- Add TDH calculations ---
+        # Calculate TDH per pump using (SDH - RH)/NOP
+        tdh_hyd = 0.0
+        tdh_curve = 0.0
+        if i in pump_indices and num_pumps > 0:
+            sdh_val = float(pyo.value(model.SDH[i]))
+            rh_val = float(pyo.value(model.RH[i]))
+            tdh_hyd = (sdh_val - rh_val) / num_pumps if num_pumps > 0 else 0.0
+    
+            # Calculate TDH via pump curve (affinity law) at optimized RPM and flow
+            pump_flow_i = float(segment_flows[i])
+            rpm_solved = speed_rpm
+            rpm_dol = float(pyo.value(model.DOL[i])) if hasattr(model.DOL[i], "value") else model.DOL[i]
+            A = float(pyo.value(model.A[i]))
+            B = float(pyo.value(model.B[i]))
+            C = float(pyo.value(model.C[i]))
+            Q_equiv = pump_flow_i * rpm_dol / rpm_solved if rpm_solved else pump_flow_i
+            h_dol = A * Q_equiv**2 + B * Q_equiv + C
+            tdh_curve = h_dol * (rpm_solved / rpm_dol)**2 if rpm_dol else h_dol
+    
+        result[f"tdh_hyd_{name}"] = tdh_hyd
+        result[f"tdh_curve_{name}"] = tdh_curve
+
+        
+        
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
             power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
