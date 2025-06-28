@@ -127,7 +127,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, Rate_DRA, Price_
             Pcoef[i] = float(stn.get('P', 0.0))
             Qcoef[i] = float(stn.get('Q', 0.0))
             Rcoef[i] = float(stn.get('R', 0.0))
-            Scoef[i] = float(stn.get('S, 0.0))
+            Scoef[i] = float(stn.get('S', 0.0))
             Tcoef[i] = float(stn.get('T', 0.0))
             # Speed limits
             min_rpm_val = max(1, int(stn.get('MinRPM', 1)))
