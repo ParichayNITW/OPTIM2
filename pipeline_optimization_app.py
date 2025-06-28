@@ -560,7 +560,9 @@ with tab1:
                 res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
                 res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
                 res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
-                res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan,
+                res.get(f"tdh_hyd_{key}", np.nan),
+                res.get(f"tdh_curve_{key}", np.nan)
             ]
 
         df_sum = pd.DataFrame(summary)
