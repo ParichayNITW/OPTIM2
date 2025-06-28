@@ -336,7 +336,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                                     index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
                 with pcol2:
                     stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                    stn['DOL'] = st.number_input("Rated RPM", min_value=1.0, value=stn['DOL'], key=f"dol{idx}"))
                 with pcol3:
                     if stn['power_type']=="Grid":
                         stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
