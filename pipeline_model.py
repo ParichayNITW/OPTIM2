@@ -60,7 +60,7 @@ def get_ppm_breakpoints(visc):
         return [0, 100], [0, 0]
     return list(unique_x), list(unique_y)
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, Rate_DRA, Price_HSD):
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, Rate_DRA, Price_HSD, linefill_dict):
     model = pyo.ConcreteModel()
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
