@@ -335,7 +335,7 @@ def solve_pipeline(
             sdh_val = float(pyo.value(model.SDH[i]))
             rh_val = float(pyo.value(model.RH[i]))
             tdh_hyd = (sdh_val - rh_val) / num_pumps if num_pumps > 0 else 0.0
-
+        
             # Affinity-law TDH
             pump_flow_i = float(segment_flows[i])
             rpm_solved = speed_rpm
@@ -345,10 +345,14 @@ def solve_pipeline(
             C = float(pyo.value(model.C[i]))
             Q_equiv = pump_flow_i * rpm_dol / rpm_solved if rpm_solved else pump_flow_i
             h_dol = A * Q_equiv**2 + B * Q_equiv + C
-            tdh_curve = h_dol * (rpm_solved / rpm_dol)**2 if rpm_dol else h_dol
-
+        
+            if rpm_dol is None or rpm_dol == 0 or rpm_solved is None or rpm_solved == 0:
+                tdh_curve = 0.0
+            else:
+                tdh_curve = h_dol * (rpm_solved / rpm_dol)**2
         result[f"tdh_hyd_{name}"] = tdh_hyd
         result[f"tdh_curve_{name}"] = tdh_curve
+
 
         
         
