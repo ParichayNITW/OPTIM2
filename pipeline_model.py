@@ -190,7 +190,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         return sum(m.dra_bin[i, j] for j in range(len(allowed_dras[i]))) == 1
     model.dra_bin_sum = pyo.Constraint(model.pump_stations, rule=dra_bin_sum_rule)
     def dra_var_bounds(m, i):
-    return (min(allowed_dras[i]), max(allowed_dras[i]))
+        return (min(allowed_dras[i]), max(allowed_dras[i]))
     model.DR_var = pyo.Var(model.pump_stations, bounds=dra_var_bounds, domain=pyo.NonNegativeReals)
 
     def dra_value_rule(m, i):
