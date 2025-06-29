@@ -970,69 +970,78 @@ with tab3:
             terminal = st.session_state["last_term_data"]
             N = len(stations_data)
         
-            # 1. Chainage/cumulative length at each station
+            # Chainage/cumulative length at each station
             lengths = [0]
             for stn in stations_data:
                 lengths.append(lengths[-1] + stn.get("L", 0.0))
             names = [s['name'] for s in stations_data] + [terminal["name"]]
             keys = [n.lower().replace(' ', '_') for n in names]
         
-            # 2. Build elevation profile (stations + peaks)
+            # Elevation profile (stations + peaks)
             elev_x, elev_y = [], []
+            elev_labels = []
             for i, stn in enumerate(stations_data):
                 elev_x.append(lengths[i])
                 elev_y.append(stn['elev'])
-                # Intermediate peaks
+                elev_labels.append((lengths[i], stn['elev'], f"{stn['name']}<br>Elev={stn['elev']:.1f}"))
                 if 'peaks' in stn and stn['peaks']:
                     for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                         pk_x = lengths[i] + pk['loc']
                         elev_x.append(pk_x)
                         elev_y.append(pk['elev'])
-            # Terminal
+                        elev_labels.append((pk_x, pk['elev'], f"Peak<br>Elev={pk['elev']:.1f}"))
             elev_x.append(lengths[-1])
             elev_y.append(terminal['elev'])
+            elev_labels.append((lengths[-1], terminal['elev'], f"{terminal['name']}<br>Elev={terminal['elev']:.1f}"))
         
-            # 3. RH and SDH at stations/terminal
+            # RH and SDH at stations/terminal
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
         
-            # 4. MAOP stepped: for each segment
+            # MAOP stepped: for each segment
             maop_segments = []
             for i in range(N):
                 maop_val = res.get(f"maop_{keys[i]}", 850.0)
                 maop_segments.append((lengths[i], lengths[i+1], maop_val))
-            # Terminal MAOP
             terminal_maop = maop_segments[-1][2] if maop_segments else 850.0
         
-            # 5. Pressure profile (sawtooth: RH linear drop between stations, vertical for SDH if needed)
+            # Sawtooth pressure profile: vertical SDH jump at station, then linear drop to RH at next station
             x_pts, y_pts = [], []
             anno = []
             for i in range(N):
-                # Start at SDH if SDH != RH, otherwise at RH
+                # Vertical jump from RH to SDH at current station (if SDH != RH)
                 x_pts.append(lengths[i])
-                y_pts.append(sdh_list[i])
-                anno.append((lengths[i], sdh_list[i], f"{names[i]}<br>SDH={sdh_list[i]:.1f}"))
-                # Draw vertical if SDH != RH
+                y_pts.append(rh_list[i])
+                anno.append((lengths[i], rh_list[i], f"{names[i]}<br>RH={rh_list[i]:.1f}"))
                 if abs(sdh_list[i] - rh_list[i]) > 1e-2:
                     x_pts.append(lengths[i])
-                    y_pts.append(rh_list[i])
-                # Linear drop to next station RH
+                    y_pts.append(sdh_list[i])
+                    anno.append((lengths[i], sdh_list[i], f"{names[i]}<br>SDH={sdh_list[i]:.1f}"))
+                # Linear drop from SDH to RH at next station
                 x_pts.append(lengths[i+1])
                 y_pts.append(rh_list[i+1])
                 anno.append((lengths[i+1], rh_list[i+1], f"{names[i+1]}<br>RH={rh_list[i+1]:.1f}"))
         
-            # 6. Peaks: pressure at peak = max(50, elevation at peak + 0), shown as magenta diamond
+            # Peaks: interpolated pressure at location, but at least 50 mcl
             peak_x, peak_y, peak_text = [], [], []
             for i, stn in enumerate(stations_data):
+                seg_len = stn.get("L", 0.0)
                 if 'peaks' in stn and stn['peaks']:
                     for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                         pk_x = lengths[i] + pk['loc']
-                        pk_head = max(50, pk['elev'])  # At least 50, or more if logic requires
+                        # Interpolate between SDH at station and RH at next station
+                        if abs(sdh_list[i] - rh_list[i]) > 1e-2:
+                            head_start = sdh_list[i]
+                        else:
+                            head_start = rh_list[i]
+                        head_end = rh_list[i+1]
+                        frac = pk['loc'] / seg_len if seg_len > 0 else 0
+                        pk_head = head_start + (head_end - head_start) * frac
+                        pk_head = max(50, pk_head)  # At least 50 mcl
                         peak_x.append(pk_x)
                         peak_y.append(pk_head)
                         peak_text.append(f"Peak<br>{pk_head:.1f}m")
         
-            # --- Plotly Figure ---
             fig = go.Figure()
         
             # Elevation (green dotted)
@@ -1050,17 +1059,16 @@ with tab3:
                     line=dict(dash='dash', color='#e0115f', width=3.2),
                     showlegend=False
                 ))
-            # Add single legend for MAOP
             fig.add_trace(go.Scatter(
                 x=[maop_segments[0][0], maop_segments[-1][1]], y=[maop_segments[0][2], maop_segments[-1][2]],
                 mode='lines', line=dict(dash='dash', color='#e0115f', width=3.2),
                 name="MAOP Envelope (Stepped)", showlegend=True
             ))
         
-            # Pressure Profile (sawtooth, glossy blue)
+            # Pressure Profile (classic sawtooth)
             fig.add_trace(go.Scatter(
                 x=x_pts, y=y_pts, mode='lines+markers',
-                line=dict(width=3.6, color='#274bda', shape='hv'), # use 'hv' for clean sawtooth
+                line=dict(width=3.6, color='#274bda', shape='hv'),
                 marker=dict(symbol='circle', size=11, color='#fff', line=dict(width=3, color='#274bda')),
                 name="Pressure Profile"
             ))
@@ -1088,7 +1096,7 @@ with tab3:
                 showlegend=False
             ))
         
-            # --- Clean Annotations (SDH at left, RH at right, minimal clutter)
+            # --- Annotations (clean, non-cluttered) ---
             for xp, yp, txt in anno:
                 fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, arrowhead=2,
                                    ax=0, ay=-28, font=dict(size=15, color='#162133', family="Segoe UI, Arial"),
