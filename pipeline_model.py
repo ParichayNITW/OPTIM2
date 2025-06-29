@@ -7,6 +7,34 @@ import numpy as np
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
+def get_ppm_breakpoints(visc):
+    cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
+    visc = float(visc)
+    if not cst_list:
+        return [0], [0]
+    if visc <= cst_list[0]:
+        df = DRA_CURVE_DATA[cst_list[0]]
+    elif visc >= cst_list[-1]:
+        df = DRA_CURVE_DATA[cst_list[-1]]
+    else:
+        lower = max([c for c in cst_list if c <= visc])
+        upper = min([c for c in cst_list if c >= visc])
+        df_lower = DRA_CURVE_DATA[lower]
+        df_upper = DRA_CURVE_DATA[upper]
+        x_lower, y_lower = df_lower['%Drag Reduction'].values, df_lower['PPM'].values
+        x_upper, y_upper = df_upper['%Drag Reduction'].values, df_upper['PPM'].values
+        dr_points = np.unique(np.concatenate((x_lower, x_upper)))
+        ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
+                     np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
+        unique_dr, unique_indices = np.unique(dr_points, return_index=True)
+        unique_ppm = ppm_points[unique_indices]
+        return list(unique_dr), list(unique_ppm)
+    x = df['%Drag Reduction'].values
+    y = df['PPM'].values
+    unique_x, unique_indices = np.unique(x, return_index=True)
+    unique_y = y[unique_indices]
+    return list(unique_x), list(unique_y)
+
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     model = pyo.ConcreteModel()
     N = len(stations)
