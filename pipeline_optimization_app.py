@@ -964,7 +964,7 @@ with tab3:
         # --- 5. Pressure vs Pipeline Length ---
         with press_tab:
             import plotly.graph_objects as go
-            st.markdown("<div class='section-title'>Pipeline Hydraulics Profile: Pressure (Sawtooth), Elevation, MAOP & Peaks</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Pipeline Hydraulics Profile: Optimized Pressure, Elevation and MAOP</div>", unsafe_allow_html=True)
             stations_data = st.session_state["last_stations_data"]
             res = st.session_state["last_res"]
             terminal = st.session_state["last_term_data"]
