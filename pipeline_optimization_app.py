@@ -963,69 +963,166 @@ with tab3:
         
         # --- 5. Pressure vs Pipeline Length ---
         with press_tab:
-            st.markdown("<div class='section-title'>Pressure vs Pipeline Length</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Pipeline Hydraulics Profile: Pressure Optimization & Elevation</div>", unsafe_allow_html=True)
             stations_data = st.session_state["last_stations_data"]
             res = st.session_state["last_res"]
             terminal = st.session_state["last_term_data"]
             N = len(stations_data)
+        
+            # 1. Chainage/cumulative length at each station (for N+1 points including terminal)
             lengths = [0]
             for stn in stations_data:
                 lengths.append(lengths[-1] + stn.get("L", 0.0))
             names = [s['name'] for s in stations_data] + [terminal["name"]]
             keys = [n.lower().replace(' ', '_') for n in names]
+        
+            # 2. Build elevation profile (includes peaks)
+            elev_x = []
+            elev_y = []
+            elev_anno = []
+            for i, stn in enumerate(stations_data):
+                elev_x.append(lengths[i])
+                elev_y.append(stn['elev'])
+                elev_anno.append((lengths[i], stn['elev'], f"{stn['name']}<br>Elev={stn['elev']:.1f}"))
+                # If peaks exist in segment, insert them in correct order/location
+                if 'peaks' in stn and stn['peaks']:
+                    for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
+                        pk_x = lengths[i] + pk['loc']
+                        pk_y = pk['elev']
+                        elev_x.append(pk_x)
+                        elev_y.append(pk_y)
+                        elev_anno.append((pk_x, pk_y, f"Peak<br>Elev={pk_y:.1f}"))
+            # Add terminal
+            elev_x.append(lengths[-1])
+            elev_y.append(terminal['elev'])
+            elev_anno.append((lengths[-1], terminal['elev'], f"{terminal['name']}<br>Elev={terminal['elev']:.1f}"))
+        
+            # 3. Residual Head (RH) and SDH at each station/terminal
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
         
-            # Gather all X, Y, annotation points
-            x_pts, y_pts, annotations = [], [], []
+            # 4. MAOP stepped: get MAOP for each segment, plot as steps
+            maop_segments = []
+            for i in range(N):
+                # For segment between station i and i+1 (i.e., segment i)
+                maop_val = res.get(f"maop_{keys[i]}", 0.0)
+                if maop_val <= 0:
+                    # fallback: use a default or previous MAOP if missing
+                    maop_val = maop_segments[-1][2] if maop_segments else 850.0
+                maop_segments.append((lengths[i], lengths[i+1], maop_val))
+            # The terminal MAOP is same as last segment's MAOP
+            terminal_maop = maop_segments[-1][2] if maop_segments else 850.0
+        
+            # 5. Pressure profile (saw-tooth) + peaks
+            x_pts, y_pts, anno_labels, peak_x, peak_y = [], [], [], [], []
             for i, stn in enumerate(stations_data):
-                # 1. Start: RH at station i
+                # --- Vertical (saw tooth) from RH to SDH at station if SDH ≠ RH
                 x_pts.append(lengths[i])
                 y_pts.append(rh_list[i])
-                annotations.append((lengths[i], rh_list[i], stn['name']))
-                # 2. If pump running, vertical jump to SDH
+                anno_labels.append((lengths[i], rh_list[i], f"{stn['name']}<br>RH={rh_list[i]:.1f}"))
                 if abs(sdh_list[i] - rh_list[i]) > 1e-3:
                     x_pts.append(lengths[i])
                     y_pts.append(sdh_list[i])
-                    # Optionally: annotations.append((lengths[i], sdh_list[i], f"SDH {stn['name']}"))
-                # 3. For each peak (ordered by loc within segment):
+                    anno_labels.append((lengths[i], sdh_list[i], f"{stn['name']}<br>SDH={sdh_list[i]:.1f}"))
+                # --- Peaks within segment (if any)
                 seg_len = stn['L']
                 next_rh = rh_list[i+1]
-                start_sdh = sdh_list[i]  # This is the actual SDH, not RH!
+                start_sdh = sdh_list[i]
                 if 'peaks' in stn and stn['peaks']:
                     for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                         pk_loc = pk['loc']
                         pk_x = lengths[i] + pk_loc
-                        # Linear head drop from SDH at i to RH at i+1:
                         frac = pk_loc / seg_len if seg_len > 0 else 0
                         pk_head = start_sdh - (start_sdh - next_rh) * frac
                         x_pts.append(pk_x)
                         y_pts.append(pk_head)
-                        annotations.append((pk_x, pk_head, f"Peak ({stn['name']})"))
-                # 4. End: RH at next station
+                        # Mark peaks for diamond
+                        peak_x.append(pk_x)
+                        peak_y.append(pk_head)
+                        anno_labels.append((pk_x, pk_head, f"Peak<br>@{stn['name']}"))
+                # --- End: RH at next station
                 x_pts.append(lengths[i+1])
                 y_pts.append(next_rh)
-                annotations.append((lengths[i+1], next_rh, names[i+1]))
+                anno_labels.append((lengths[i+1], next_rh, f"{names[i+1]}<br>RH={next_rh:.1f}"))
         
-            # Plot
+            import plotly.graph_objects as go
             fig = go.Figure()
+        
+            # --- Elevation profile (dotted green)
             fig.add_trace(go.Scatter(
-                x=x_pts, y=y_pts, mode='lines+markers', name="Pressure Profile", line=dict(width=3, color="#1976D2"),
-                marker=dict(size=8)
+                x=elev_x, y=elev_y,
+                mode='lines+markers',
+                line=dict(dash='dot', color='#22b573', width=2.5),
+                marker=dict(symbol='circle', color='#22b573', size=7),
+                name="Elevation"
             ))
-            # Annotate stations and peaks
-            for xp, yp, txt in annotations:
-                fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, yshift=12)
-            fig.update_layout(
-                title="Pressure vs Pipeline Length (with Peaks)",
-                xaxis_title="Cumulative Length (km)",
-                yaxis_title="Pressure Head (mcl)",
-                font=dict(size=15),
+        
+            # --- Stepped MAOP: plot each segment as flat
+            for seg in maop_segments:
+                fig.add_trace(go.Scatter(
+                    x=[seg[0], seg[1]], y=[seg[2], seg[2]],
+                    mode='lines',
+                    line=dict(dash='dash', color='#ff1744', width=3),
+                    showlegend=False
+                ))
+            # Add single legend for MAOP
+            fig.add_trace(go.Scatter(
+                x=[maop_segments[0][0], maop_segments[-1][1]], y=[maop_segments[0][2], maop_segments[-1][2]],
+                mode='lines',
+                line=dict(dash='dash', color='#ff1744', width=3),
+                name="MAOP Envelope (Stepped)",
+                showlegend=True
+            ))
+        
+            # --- Pressure profile (saw-tooth, glossy blue)
+            fig.add_trace(go.Scatter(
+                x=x_pts, y=y_pts,
+                mode='lines+markers',
+                line=dict(width=4, color='#1565c0', shape='hv'),
+                marker=dict(symbol='circle', size=10, color='#1e88e5', line=dict(width=2, color='#1250A4')),
+                name="Pressure Profile (SDH & RH)"
+            ))
+            # --- Peaks as magenta diamonds with black edge
+            if peak_x:
+                fig.add_trace(go.Scatter(
+                    x=peak_x, y=peak_y,
+                    mode='markers',
+                    marker=dict(symbol='diamond', size=15, color='#d500f9', line=dict(width=2, color='black'), opacity=0.92),
+                    name="Peaks"
+                ))
+            # --- Mark stations (open circles)
+            fig.add_trace(go.Scatter(
+                x=[lengths[i] for i in range(N+1)],
+                y=[rh_list[i] for i in range(N+1)],
+                mode='markers+text',
+                marker=dict(symbol='circle-open', size=16, color='#222', line=dict(width=4, color='#1250A4')),
+                text=[f"{s}<br>RH={rh_list[i]:.1f}" for i,s in enumerate(names)],
+                textposition='top left',
                 showlegend=False,
-                height=420
+                name="Station Locations"
+            ))
+            # --- Annotate peaks, stations, elevation
+            for xp, yp, txt in anno_labels + elev_anno:
+                fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, yshift=15,
+                                   font=dict(size=15, color='#0e101a', family="Segoe UI, Arial", bold=True),
+                                   bordercolor="#888", borderpad=3, bgcolor="#fffbe8", opacity=0.94)
+            # --- Glossy style and layout
+            fig.update_layout(
+                title="<b>Pipeline Hydraulics Profile:</b> Pressure, Elevation, Stepped MAOP & Peaks",
+                xaxis_title="<b>Pipeline Length (km)</b>",
+                yaxis_title="<b>Elevation / Pressure Head (m)</b>",
+                font=dict(size=17, family="Segoe UI, Arial"),
+                legend=dict(font=dict(size=15), bgcolor="#f2f4fa", bordercolor="#bbb", borderwidth=1.1),
+                height=620,
+                margin=dict(l=15, r=15, t=70, b=20),
+                plot_bgcolor='rgba(255,255,255,0.97)',
+                paper_bgcolor='linear-gradient(0deg, #f8fafc 0%, #e3f0fb 100%)'
             )
+            fig.update_xaxes(gridcolor="#dadada", zeroline=False, showline=True, linewidth=2, linecolor='#1250A4', mirror=True)
+            fig.update_yaxes(gridcolor="#dadada", zeroline=False, showline=True, linewidth=2, linecolor='#1250A4', mirror=True)
+        
             st.plotly_chart(fig, use_container_width=True)
-
+        
         # --- 6. Power vs Speed/Flow ---
         with power_tab:
             st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
