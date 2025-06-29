@@ -53,6 +53,10 @@ def get_ppm_breakpoints(visc):
     return list(unique_x), list(unique_y)
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
+    # ==== Normalization parameters ====
+    RPM_STEP = 100  # in RPM
+    DRA_STEP = 5    # in percent
+
     model = pyo.ConcreteModel()
     N = len(stations)
     model.I = pyo.RangeSet(1, N)
@@ -87,6 +91,9 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     peaks_dict = {}
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
 
+    # ==== Allowed discrete RPM and DRA steps ====
+    allowed_rpms = {}
+    allowed_dras = {}
     for i, stn in enumerate(stations, start=1):
         length[i] = stn.get('L', 0.0)
         # Pipe diameter and thickness
@@ -105,7 +112,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         design_factor[i] = stn.get('DF', default_df)
         elev[i] = stn.get('elev', 0.0)
         peaks_dict[i] = stn.get('peaks', [])
-        # Check if station has a pump
+        # Pump station logic
         has_pump = stn.get('is_pump', False)
         if has_pump:
             pump_indices.append(i)
@@ -126,6 +133,16 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 electric_pumps.append(i)
                 elec_cost[i] = stn.get('rate', 0.0)
             max_dr[i] = stn.get('max_dr', 0.0)
+            # RPM and DRA discrete lists for each pump station
+            minval = int(min_rpm[i])
+            maxval = int(max_rpm[i])
+            allowed_rpms[i] = [r for r in range(minval, maxval+1, RPM_STEP)]
+            if allowed_rpms[i][-1] != maxval:
+                allowed_rpms[i].append(maxval)
+            maxval_dra = int(max_dr[i])
+            allowed_dras[i] = [d for d in range(0, maxval_dra+1, DRA_STEP)]
+            if allowed_dras[i][-1] != maxval_dra:
+                allowed_dras[i].append(maxval_dra)
 
     elev[N+1] = terminal.get('elev', 0.0)
 
@@ -149,7 +166,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         model.MinRPM = pyo.Param(model.pump_stations, initialize=min_rpm)
         model.DOL = pyo.Param(model.pump_stations, initialize=max_rpm)
 
-    # Number of pumps at each pump station (series)
+    # --- Variables for pump selection ---
     def nop_bounds(m, j):
         lb = 1 if j == 1 else 0
         ub = stations[j-1].get('max_pumps', 2)
@@ -157,15 +174,23 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=nop_bounds, initialize=1)
 
-    # Actual RPM of pumps
+    # --- Normalized RPM and DRA selection variables ---
     if pump_indices:
-        model.N = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
-                          bounds=lambda m,j: (m.MinRPM[j], m.DOL[j]),
-                          initialize=lambda m,j: m.MinRPM[j])
+        model.rpm_idx = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers, bounds=lambda m,j: (0, len(allowed_rpms[j])-1), initialize=0)
+        model.dra_idx = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers, bounds=lambda m,j: (0, len(allowed_dras[j])-1), initialize=0)
 
-    # Drag reduction (%) variable
-    model.DR = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals,
-                       bounds=lambda m,j: (0, max_dr[j]), initialize=0)
+        # Use expressions so that model.N and model.DR always point to the true selected values
+        def rpm_rule(m, j):
+            return allowed_rpms[j][pyo.value(m.rpm_idx[j])]
+        model.N = pyo.Expression(model.pump_stations, rule=rpm_rule)
+
+        def dra_rule(m, j):
+            return allowed_dras[j][pyo.value(m.dra_idx[j])]
+        model.DR = pyo.Expression(model.pump_stations, rule=dra_rule)
+
+    else:
+        model.N = {}
+        model.DR = {}
 
     # Residual head at nodes
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
@@ -196,20 +221,18 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
-    # Dictionaries for pump head (TDH per pump) and efficiency
     TDH = {}
     EFFP = {}
 
     for i in range(1, N+1):
         if i in pump_indices:
-            DR_frac = model.DR[i] / 100.0
+            DR_frac = model.DR[i] / 100.0 if hasattr(model.DR[i], 'expr') else model.DR[i] / 100.0
         else:
             DR_frac = 0.0
         # Frictional head loss downstream of station i
         DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2 / (2*g)) * (1 - DR_frac)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
-        # Check high points
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
@@ -219,10 +242,12 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
         if i in pump_indices:
             pump_flow_i = float(segment_flows[i])
-            # Affinity law calculations
-            Q_equiv = pump_flow_i * model.DOL[i] / model.N[i]
+            # Affinity law calculations with normalized RPM
+            rpm_val = model.N[i] if hasattr(model.N[i], 'expr') else model.N[i]
+            dol_val = model.DOL[i]
+            Q_equiv = pump_flow_i * dol_val / rpm_val
             H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
-            TDH[i] = H_DOL * (model.N[i] / model.DOL[i])**2
+            TDH[i] = H_DOL * (rpm_val / dol_val)**2
             EFFP[i] = (model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 +
                        model.Rcoef[i]*Q_equiv**2 + model.Scoef[i]*Q_equiv +
                        model.Tcoef[i]) / 100.0
@@ -230,7 +255,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             TDH[i] = 0.0
             EFFP[i] = 1.0
 
-    # Head balance and pressure constraints
     model.head_balance = pyo.ConstraintList()
     model.peak_limit = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
@@ -254,7 +278,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
             model.peak_limit.add(expr >= 50.0)
 
-    # DRA piecewise relationship and cost
     model.PPM = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
     model.dra_cost = pyo.Expression(model.pump_stations)
     for i in pump_indices:
@@ -274,7 +297,9 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     for i in pump_indices:
         rho_i = rho_dict[i]
         pump_flow_i = float(segment_flows[i])
-        power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i]) / (3600.0 * 1000.0 * EFFP[i] * 0.95)
+        rpm_val = model.N[i] if hasattr(model.N[i], 'expr') else model.N[i]
+        eff_val = EFFP[i]
+        power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i]) / (3600.0 * 1000.0 * eff_val * 0.95)
         if i in electric_pumps:
             power_cost = power_kW * 24.0 * elec_cost.get(i, 0.0)
         else:
@@ -310,20 +335,31 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
         if i in pump_indices:
             num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
-            speed_rpm = float(pyo.value(model.N[i])) if num_pumps > 0 and model.N[i]() is not None else 0.0
-            eff = float(pyo.value(EFFP[i]) * 100.0) if num_pumps > 0 else 0.0
+            idx_rpm = int(round(pyo.value(model.rpm_idx[i]))) if model.rpm_idx[i].value is not None else 0
+            idx_dra = int(round(pyo.value(model.dra_idx[i]))) if model.dra_idx[i].value is not None else 0
+            speed_rpm = allowed_rpms[i][idx_rpm]
+            dra_perc = allowed_dras[i][idx_dra]
+            rpm_val = speed_rpm
+            dol_val = model.DOL[i]
+            pump_flow_i = float(segment_flows[i])
+            Q_equiv = pump_flow_i * dol_val / rpm_val
+            tdh_val = float(model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]) * (rpm_val/dol_val)**2
+            eff = (model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 +
+                   model.Rcoef[i]*Q_equiv**2 + model.Scoef[i]*Q_equiv +
+                   model.Tcoef[i]) if num_pumps > 0 else 0.0
+            eff = float(eff)
             dra_ppm = float(pyo.value(model.PPM[i])) if model.PPM[i].value is not None else 0.0
             dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i].expr is not None else 0.0
-            tdh_val = float(pyo.value(TDH[i])) if num_pumps > 0 else 0.0
         else:
             num_pumps = 0
             speed_rpm = 0.0
             eff = 0.0
+            dra_perc = 0.0
             dra_ppm = 0.0
             dra_cost_i = 0.0
             tdh_val = 0.0
 
-        # Recompute power cost for reporting
+        # Power cost for reporting
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
             power_kW = (rho_i * pump_flow * 9.81 * tdh_val * num_pumps) / (3600.0 * 1000.0 * (eff/100.0) * 0.95) if eff > 0 else 0.0
@@ -337,7 +373,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         else:
             power_cost = 0.0
 
-        drag_red = float(pyo.value(model.DR[i])) if i in pump_indices and model.DR[i].value is not None else 0.0
+        drag_red = dra_perc
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
         res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
