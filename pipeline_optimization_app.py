@@ -1104,7 +1104,7 @@ with tab3:
             # --- Annotate peaks, stations, elevation
             for xp, yp, txt in anno_labels + elev_anno:
                 fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, yshift=15,
-                                   font=dict(size=15, color='#0e101a', family="Segoe UI, Arial", bold=True),
+                                   font=dict(size=15, color='#0e101a', family="Segoe UI, Arial"),
                                    bordercolor="#888", borderpad=3, bgcolor="#fffbe8", opacity=0.94)
             # --- Glossy style and layout
             fig.update_layout(
