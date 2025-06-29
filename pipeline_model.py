@@ -239,7 +239,7 @@ def solve_pipeline(
         kv = kv_dict[i]
         rho = rho_dict[i]
         if i in pump_indices:
-            model.head_balance.add(abs(model.RH[i] + TDH[i]*model.NOP[i] - model.SDH[i]) <= 1e-2)
+            model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] >= model.SDH[i])
         else:
             model.head_balance.add(model.RH[i] >= model.SDH[i])
         D_out = d_inner[i] + 2 * thickness[i]
@@ -296,7 +296,7 @@ def solve_pipeline(
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # --- Solve ---
-    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
+    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
 
     # --- Check and Handle Solver Status ---
     status = results.solver.status
@@ -328,41 +328,6 @@ def solve_pipeline(
         else:
             num_pumps = 0; speed_rpm = 0.0; eff = 0.0; dra_ppm = 0.0; dra_cost_i = 0.0
 
-        # --- NEW: TDH per pump (hydraulic and curve-based, always both!) ---
-        tdh_hyd = 0.0
-        tdh_curve = 0.0
-        if i in pump_indices and num_pumps > 0:
-            sdh_val = float(pyo.value(model.SDH[i]))
-            rh_val = float(pyo.value(model.RH[i]))
-            tdh_hyd = (sdh_val - rh_val) / num_pumps if num_pumps > 0 else 0.0
-        
-            # Affinity-law TDH (no ZeroDivisionError ever)
-            pump_flow_i = float(segment_flows[i])
-            rpm_solved = speed_rpm
-            try:
-                rpm_dol = float(pyo.value(model.DOL[i])) if hasattr(model.DOL[i], "value") else model.DOL[i]
-            except Exception:
-                rpm_dol = 0.0
-            try:
-                A = float(pyo.value(model.A[i]))
-                B = float(pyo.value(model.B[i]))
-                C = float(pyo.value(model.C[i]))
-            except Exception:
-                A = B = C = 0.0
-            # Defensive calculation: never divide by zero!
-            if rpm_solved is None or rpm_solved == 0 or rpm_dol is None or rpm_dol == 0:
-                tdh_curve = 0.0
-            else:
-                Q_equiv = pump_flow_i * rpm_dol / rpm_solved
-                h_dol = A * Q_equiv**2 + B * Q_equiv + C
-                tdh_curve = h_dol * (rpm_solved / rpm_dol) ** 2
-        result[f"tdh_hyd_{name}"] = tdh_hyd
-        result[f"tdh_curve_{name}"] = tdh_curve
-
-
-
-        
-        
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
             power_kW = (rho_i * pump_flow * 9.81 * float(pyo.value(TDH[i])) * num_pumps)/(3600.0*1000.0*float(pyo.value(EFFP[i]))*0.95)
