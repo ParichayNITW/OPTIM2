@@ -1004,7 +1004,6 @@ with tab3:
             # 4. MAOP stepped: get MAOP for each segment, plot as steps
             maop_segments = []
             for i in range(N):
-                # For segment between station i and i+1 (i.e., segment i)
                 maop_val = res.get(f"maop_{keys[i]}", 0.0)
                 if maop_val <= 0:
                     # fallback: use a default or previous MAOP if missing
@@ -1065,7 +1064,7 @@ with tab3:
                     line=dict(dash='dash', color='#ff1744', width=3),
                     showlegend=False
                 ))
-            # Add single legend for MAOP
+            # Add single legend for MAOP (invisible trace but needed for legend)
             fig.add_trace(go.Scatter(
                 x=[maop_segments[0][0], maop_segments[-1][1]], y=[maop_segments[0][2], maop_segments[-1][2]],
                 mode='lines',
@@ -1116,7 +1115,7 @@ with tab3:
                 height=620,
                 margin=dict(l=15, r=15, t=70, b=20),
                 plot_bgcolor='rgba(255,255,255,0.97)',
-                paper_bgcolor='linear-gradient(0deg, #f8fafc 0%, #e3f0fb 100%)'
+                paper_bgcolor='#f8fafc'    # Use only solid colors, never gradients!
             )
             fig.update_xaxes(gridcolor="#dadada", zeroline=False, showline=True, linewidth=2, linecolor='#1250A4', mirror=True)
             fig.update_yaxes(gridcolor="#dadada", zeroline=False, showline=True, linewidth=2, linecolor='#1250A4', mirror=True)
