@@ -239,7 +239,7 @@ def solve_pipeline(
         kv = kv_dict[i]
         rho = rho_dict[i]
         if i in pump_indices:
-            model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] = model.SDH[i])
+            model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] == model.SDH[i])
         else:
             model.head_balance.add(model.RH[i] >= model.SDH[i])
         D_out = d_inner[i] + 2 * thickness[i]
