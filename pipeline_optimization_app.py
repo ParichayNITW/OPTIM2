@@ -964,7 +964,7 @@ with tab3:
         # --- 5. Pressure vs Pipeline Length ---
         with press_tab:
             import plotly.graph_objects as go
-            st.markdown("<div class='section-title'>Pipeline Hydraulics Profile: Pressure (Sawtooth), Elevation, Stepped MAOP & Peaks</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Pipeline Hydraulics Profile: Pressure (Sawtooth), Elevation, MAOP & Peaks</div>", unsafe_allow_html=True)
             stations_data = st.session_state["last_stations_data"]
             res = st.session_state["last_res"]
             terminal = st.session_state["last_term_data"]
@@ -979,143 +979,109 @@ with tab3:
         
             # Elevation profile (stations + peaks)
             elev_x, elev_y = [], []
-            elev_labels = []
             for i, stn in enumerate(stations_data):
                 elev_x.append(lengths[i])
                 elev_y.append(stn['elev'])
-                elev_labels.append((lengths[i], stn['elev'], f"{stn['name']}<br>Elev={stn['elev']:.1f}"))
                 if 'peaks' in stn and stn['peaks']:
                     for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                         pk_x = lengths[i] + pk['loc']
                         elev_x.append(pk_x)
                         elev_y.append(pk['elev'])
-                        elev_labels.append((pk_x, pk['elev'], f"Peak<br>Elev={pk['elev']:.1f}"))
             elev_x.append(lengths[-1])
             elev_y.append(terminal['elev'])
-            elev_labels.append((lengths[-1], terminal['elev'], f"{terminal['name']}<br>Elev={terminal['elev']:.1f}"))
         
             # RH and SDH at stations/terminal
             rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
             sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
         
-            # MAOP stepped: for each segment
-            maop_segments = []
-            for i in range(N):
-                maop_val = res.get(f"maop_{keys[i]}", 850.0)
-                maop_segments.append((lengths[i], lengths[i+1], maop_val))
-            terminal_maop = maop_segments[-1][2] if maop_segments else 850.0
+            # MAOP: single line at max MAOP value across all segments (flat, not stepped)
+            maop_val = max([res.get(f"maop_{k}", 850.0) for k in keys[:-1]] + [850.0])
+            maop_x = [lengths[0], lengths[-1]]
+            maop_y = [maop_val, maop_val]
         
-            # Sawtooth pressure profile: vertical SDH jump at station, then linear drop to RH at next station
-            x_pts, y_pts = [], []
-            anno = []
+            # Build sawtooth pressure profile: 
+            press_x, press_y = [], []
             for i in range(N):
-                # Vertical jump from RH to SDH at current station (if SDH != RH)
-                x_pts.append(lengths[i])
-                y_pts.append(rh_list[i])
-                anno.append((lengths[i], rh_list[i], f"{names[i]}<br>RH={rh_list[i]:.1f}"))
-                if abs(sdh_list[i] - rh_list[i]) > 1e-2:
-                    x_pts.append(lengths[i])
-                    y_pts.append(sdh_list[i])
-                    anno.append((lengths[i], sdh_list[i], f"{names[i]}<br>SDH={sdh_list[i]:.1f}"))
-                # Linear drop from SDH to RH at next station
-                x_pts.append(lengths[i+1])
-                y_pts.append(rh_list[i+1])
-                anno.append((lengths[i+1], rh_list[i+1], f"{names[i+1]}<br>RH={rh_list[i+1]:.1f}"))
+                # 1. Vertical from RH up to SDH at station
+                press_x.extend([lengths[i], lengths[i]])
+                press_y.extend([rh_list[i], sdh_list[i]])
+                # 2. Sloped from SDH at this station down to RH at next station
+                press_x.append(lengths[i+1])
+                press_y.append(rh_list[i+1])
+            # Only one marker at terminal (no jump)
         
-            # Peaks: interpolated pressure at location, but at least 50 mcl
-            peak_x, peak_y, peak_text = [], [], []
+            # Peaks (diamond markers)
+            peak_x, peak_y = [], []
             for i, stn in enumerate(stations_data):
                 seg_len = stn.get("L", 0.0)
                 if 'peaks' in stn and stn['peaks']:
                     for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                         pk_x = lengths[i] + pk['loc']
-                        # Interpolate between SDH at station and RH at next station
-                        if abs(sdh_list[i] - rh_list[i]) > 1e-2:
-                            head_start = sdh_list[i]
-                        else:
-                            head_start = rh_list[i]
-                        head_end = rh_list[i+1]
-                        frac = pk['loc'] / seg_len if seg_len > 0 else 0
-                        pk_head = head_start + (head_end - head_start) * frac
-                        pk_head = max(50, pk_head)  # At least 50 mcl
+                        # Linear interpolate pressure head along segment
+                        y0, y1 = sdh_list[i], rh_list[i+1]
+                        frac = pk['loc']/seg_len if seg_len > 0 else 0
+                        pk_head = y0 + (y1 - y0) * frac
                         peak_x.append(pk_x)
                         peak_y.append(pk_head)
-                        peak_text.append(f"Peak<br>{pk_head:.1f}m")
         
             fig = go.Figure()
         
-            # Elevation (green dotted)
+            # Elevation (very subtle green dotted, thin)
             fig.add_trace(go.Scatter(
                 x=elev_x, y=elev_y, mode='lines+markers',
-                line=dict(dash='dot', color='#15b167', width=2.2),
-                marker=dict(symbol='circle', color='#15b167', size=7),
+                line=dict(dash='dot', color='#2ab240', width=1.5),
+                marker=dict(symbol='circle', color='#2ab240', size=5),
                 name="Elevation"
             ))
         
-            # Stepped MAOP (red dashed)
-            for seg in maop_segments:
-                fig.add_trace(go.Scatter(
-                    x=[seg[0], seg[1]], y=[seg[2], seg[2]], mode='lines',
-                    line=dict(dash='dash', color='#e0115f', width=3.2),
-                    showlegend=False
-                ))
+            # MAOP envelope (flat, dashed, red, thin)
             fig.add_trace(go.Scatter(
-                x=[maop_segments[0][0], maop_segments[-1][1]], y=[maop_segments[0][2], maop_segments[-1][2]],
-                mode='lines', line=dict(dash='dash', color='#e0115f', width=3.2),
-                name="MAOP Envelope (Stepped)", showlegend=True
+                x=maop_x, y=maop_y, mode='lines',
+                line=dict(dash='dash', color='#e0115f', width=2),
+                name="MAOP Envelope"
             ))
         
-            # Pressure Profile (classic sawtooth)
+            # Pressure Profile (sawtooth, blue, not too thick)
             fig.add_trace(go.Scatter(
-                x=x_pts, y=y_pts, mode='lines+markers',
-                line=dict(width=3.6, color='#274bda', shape='hv'),
-                marker=dict(symbol='circle', size=11, color='#fff', line=dict(width=3, color='#274bda')),
-                name="Pressure Profile"
+                x=press_x, y=press_y, mode='lines',
+                line=dict(color='#1846d2', width=2.8),
+                name="Pressure Optimizer"
             ))
         
-            # Peaks as magenta diamonds
-            if peak_x:
-                fig.add_trace(go.Scatter(
-                    x=peak_x, y=peak_y, mode='markers+text',
-                    marker=dict(symbol='diamond', size=16, color='#b501c9', line=dict(width=2, color='#333'), opacity=0.90),
-                    name="Peaks",
-                    text=peak_text,
-                    textposition='bottom center',
-                    textfont=dict(size=12)
-                ))
-        
-            # Mark stations as open circles
+            # RH markers at stations (open circles, black border)
             fig.add_trace(go.Scatter(
                 x=[lengths[i] for i in range(N+1)],
                 y=[rh_list[i] for i in range(N+1)],
                 mode='markers+text',
-                marker=dict(symbol='circle-open', size=18, color='#333', line=dict(width=3, color='#274bda')),
-                text=[f"{s}" for s in names],
+                marker=dict(symbol='circle-open', size=12, color='#222', line=dict(width=2, color='#1846d2')),
+                text=[f"{s}<br>{rh_list[i]:.1f}" for i,s in enumerate(names)],
                 textposition='top center',
-                name="Station Locations",
-                showlegend=False
+                name="Residual Head",
+                showlegend=True
             ))
         
-            # --- Annotations (clean, non-cluttered) ---
-            for xp, yp, txt in anno:
-                fig.add_annotation(x=xp, y=yp, text=txt, showarrow=True, arrowhead=2,
-                                   ax=0, ay=-28, font=dict(size=15, color='#162133', family="Segoe UI, Arial"),
-                                   bordercolor="#AAA", borderpad=2.3, bgcolor="#f8f9fa", opacity=0.92)
+            # Peaks (diamond, magenta, no text)
+            if peak_x:
+                fig.add_trace(go.Scatter(
+                    x=peak_x, y=peak_y, mode='markers',
+                    marker=dict(symbol='diamond', size=14, color='#b501c9', line=dict(width=1.5, color='#222')),
+                    name="Peaks"
+                ))
         
-            # --- Layout (modern/clean) ---
+            # Layout (clean, minimal, not cluttered)
             fig.update_layout(
-                title="<b>Pipeline Hydraulics Profile:</b> Pressure (Sawtooth), Elevation, Stepped MAOP & Peaks",
-                xaxis_title="<b>Pipeline Length (km)</b>",
-                yaxis_title="<b>Elevation / Pressure Head (m)</b>",
-                font=dict(size=16, family="Segoe UI, Arial"),
-                legend=dict(font=dict(size=15), bgcolor="#f5f5fa", bordercolor="#ddd", borderwidth=1.1, x=0.73, y=0.98),
-                height=650,
-                margin=dict(l=40, r=30, t=65, b=40),
-                plot_bgcolor='rgba(255,255,255,1)',
-                paper_bgcolor='rgba(249,250,253,1)'
+                title="Pipeline Hydraulics Profile: Pressure Optimization & Elevation",
+                xaxis_title="Pipeline Length (km)",
+                yaxis_title="Elevation / Pressure Head (m)",
+                font=dict(size=15, family="Segoe UI, Arial"),
+                legend=dict(font=dict(size=12), bgcolor="rgba(255,255,255,0.95)", bordercolor="#bbb", borderwidth=1, x=0.78, y=0.98),
+                height=560,
+                margin=dict(l=35, r=15, t=60, b=35),
+                plot_bgcolor='#fff',
+                paper_bgcolor='#fff'
             )
-            fig.update_xaxes(gridcolor="#ececec", zeroline=False, showline=True, linewidth=2, linecolor='#274bda', mirror=True)
-            fig.update_yaxes(gridcolor="#ececec", zeroline=False, showline=True, linewidth=2, linecolor='#274bda', mirror=True)
+            fig.update_xaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
+            fig.update_yaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
         
             st.plotly_chart(fig, use_container_width=True)
         
