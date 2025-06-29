@@ -357,6 +357,17 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             eff = float(eff)
             dra_ppm = float(pyo.value(model.PPM[i])) if model.PPM[i].value is not None else 0.0
             dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i].expr is not None else 0.0
+        
+            # >>> INSERT THIS BLOCK HERE <<<
+            # If optimizer turned off all pumps, zero all reporting values:
+            if num_pumps == 0:
+                rpm_val = 0.0
+                eff = 0.0
+                dra_perc = 0.0
+                dra_ppm = 0.0
+                dra_cost_i = 0.0
+                tdh_val = 0.0
+        
         else:
             num_pumps = 0
             rpm_val = 0.0
@@ -365,6 +376,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             dra_ppm = 0.0
             dra_cost_i = 0.0
             tdh_val = 0.0
+
 
         if i in pump_indices and num_pumps > 0:
             rho_i = rho_dict[i]
