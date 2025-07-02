@@ -267,16 +267,12 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     for (i, t) in pump_pairs:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        zipped = sorted(zip(dr_points, ppm_points))
-        dr_points_sorted = []
-        ppm_points_sorted = []
-        last_x = None
-        for x, y in zipped:
-            if last_x is None or x > last_x:
-                dr_points_sorted.append(float(x))
-                ppm_points_sorted.append(float(y))
-                last_x = x
-        if len(dr_points_sorted) < 2:
+        # Ensure floats and strictly increasing, unique breakpoints
+        zipped = sorted({float(x): float(y) for x, y in zip(dr_points, ppm_points)}.items())
+        dr_points_sorted = [x for x, y in zipped]
+        ppm_points_sorted = [y for x, y in zipped]
+        # Piecewise needs at least 2 strictly increasing points
+        if len(dr_points_sorted) < 2 or dr_points_sorted[0] == dr_points_sorted[-1]:
             dr_points_sorted = [0.0, 1.0]
             ppm_points_sorted = [0.0, 1.0]
         setattr(
@@ -289,6 +285,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 pw_constr_type='EQ'
             )
         )
+
         dra_cost_expr = model.PPM[i, t] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i, t] = dra_cost_expr
 
