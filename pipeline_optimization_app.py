@@ -9,8 +9,6 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
-import requests
-import copy
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
@@ -316,54 +314,36 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                if 'pump_types' not in stn or not isinstance(stn['pump_types'], list):
-                    stn['pump_types'] = []
-                st.markdown("#### Pump Models at this Station")
-                if st.button(f"Add Pump Type at {stn['name']}", key=f"addpump_{idx}"):
-                    if len(stn['pump_types']) < 3:
-                        stn['pump_types'].append({
-                            'model_no': f"Model-{len(stn['pump_types'])+1}",
-                            'MinRPM': 1000,
-                            'DOL': 1500,
-                            'max_dr': stn.get('max_dr', 40.0),
-                            'power_type': 'Grid',
-                            'rate': 9.0,
-                            'sfc': 150.0,
-                            'A': 0.0, 'B': 0.0, 'C': 0.0,
-                            'P': 0.0, 'Q': 0.0, 'R': 0.0, 'S': 0.0, 'T': 0.0,
-                            'head_data': pd.DataFrame({"Flow (m³/hr)": [0.0, 500.0, 1000.0], "Head (m)": [90.0, 85.0, 70.0]}),
-                            'eff_data': pd.DataFrame({"Flow (m³/hr)": [0.0, 400.0, 700.0, 1000.0, 1300.0], "Efficiency (%)": [60.0, 70.0, 78.0, 75.0, 68.0]})
-                        })
+                key_head = f"head_data_{idx}"
+                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                    df_head = st.session_state[key_head]
+                else:
+                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                st.session_state[key_head] = df_head
+
+                key_eff = f"eff_data_{idx}"
+                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                    df_eff = st.session_state[key_eff]
+                else:
+                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                st.session_state[key_eff] = df_eff
+
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                with pcol2:
+                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                with pcol3:
+                    if stn['power_type']=="Grid":
+                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                        stn['sfc'] = 0.0
                     else:
-                        st.warning("Maximum 3 pump types allowed per station.")
-            
-                del_index = None
-                for pidx, pump in enumerate(stn['pump_types']):
-                    with st.expander(f"Pump Type {pidx+1}: {pump['model_no']}", expanded=False):
-                        pump['model_no'] = st.text_input("Pump Model Number", value=pump['model_no'], key=f"modelno_{idx}_{pidx}")
-                        pump['MinRPM'] = st.number_input("Min RPM", min_value=500, max_value=10000, value=pump['MinRPM'], step=10, key=f"minrpm_{idx}_{pidx}")
-                        pump['DOL'] = st.number_input("Rated RPM", min_value=500, max_value=10000, value=pump['DOL'], step=10, key=f"dol_{idx}_{pidx}")
-                        pump['max_dr'] = st.number_input("Max Drag Reduction (%)", min_value=0.0, max_value=90.0, value=pump.get('max_dr', 0.0), step=1.0, key=f"maxdr_{idx}_{pidx}")
-                        pump['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"], index=0 if pump['power_type']=="Grid" else 1, key=f"ptype_{idx}_{pidx}")
-                        if pump['power_type']=="Grid":
-                            pump['rate'] = st.number_input("Elec Rate (INR/kWh)", min_value=0.0, value=pump['rate'], step=0.1, key=f"rate_{idx}_{pidx}")
-                            pump['sfc'] = 0.0
-                        else:
-                            pump['sfc'] = st.number_input("SFC (gm/bhp·hr)", min_value=0.0, value=pump['sfc'], step=1.0, key=f"sfc_{idx}_{pidx}")
-                            pump['rate'] = 0.0
-                        pump['head_data'] = st.data_editor(
-                            pump['head_data'] if isinstance(pump['head_data'], pd.DataFrame) else pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]}),
-                            num_rows="dynamic",
-                            key=f"head_{idx}_{pidx}")
-                        pump['eff_data'] = st.data_editor(
-                            pump['eff_data'] if isinstance(pump['eff_data'], pd.DataFrame) else pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]}),
-                            num_rows="dynamic",
-                            key=f"eff_{idx}_{pidx}")
-                        if st.button(f"Remove This Pump Type", key=f"delpump_{idx}_{pidx}"):
-                            del_index = pidx
-                if del_index is not None:
-                    stn['pump_types'].pop(del_index)
-                    st.experimental_rerun()
+                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                        stn['rate'] = 0.0
             else:
                 st.info("Not a pumping station. No pump data required.")
 
@@ -418,27 +398,12 @@ def get_full_case_dict():
     }
 
 case_data = get_full_case_dict()
-
-# 1. Prepare safe_case_data above the download_button call
-safe_case_data = copy.deepcopy(case_data)
-for stn in safe_case_data['stations']:
-    if stn.get('is_pump', False):
-        for pump in stn.get('pump_types', []):
-            if isinstance(pump.get('head_data'), pd.DataFrame):
-                pump['head_data'] = pump['head_data'].to_dict("list")
-            if isinstance(pump.get('eff_data'), pd.DataFrame):
-                pump['eff_data'] = pump['eff_data'].to_dict("list")
-
-data = json.dumps(safe_case_data, indent=2)
-
-# 2. Now call the download button with data parameter
 st.sidebar.download_button(
     label="💾 Save Case",
-    data=data,
+    data=json.dumps(case_data, indent=2),
     file_name="pipeline_case.json",
     mime="application/json"
 )
-
 
 def map_linefill_to_segments(linefill_df, stations):
     cumlen = [0]
@@ -478,24 +443,17 @@ if run:
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
-                for pump in stn['pump_types']:
-                    dfh = pump['head_data']
-                    dfe = pump['eff_data']
-                    if dfh is None or len(dfh) < 3:
-                        st.error(f"Station {idx} / Pump Model {pump['model_no']}: At least 3 points for flow-head are required.")
-                        st.stop()
-                    if dfe is None or len(dfe) < 5:
-                        st.error(f"Station {idx} / Pump Model {pump['model_no']}: At least 5 points for flow-efficiency are required.")
-                        st.stop()
-                    Qh = dfh.iloc[:,0].values
-                    Hh = dfh.iloc[:,1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    pump['A'], pump['B'], pump['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                    Qe = dfe.iloc[:,0].values
-                    Ee = dfe.iloc[:,1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    pump['P'], pump['Q'], pump['R'], pump['S'], pump['T'] = (float(coeff_e[0]), float(coeff_e[1]), float(coeff_e[2]), float(coeff_e[3]), float(coeff_e[4]))
-
+                dfh = st.session_state.get(f"head_data_{idx}")
+                dfe = st.session_state.get(f"eff_data_{idx}")
+                if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                    st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
+                    st.stop()
+                Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
+                coeff = np.polyfit(Qh, Hh, 2)
+                stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
+                Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
+                coeff_e = np.polyfit(Qe, Ee, 4)
+                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
             peaks_df = st.session_state.get(f"peak_data_{idx}")
             peaks_list = []
             if peaks_df is not None:
