@@ -418,7 +418,7 @@ def get_full_case_dict():
 case_data = get_full_case_dict()
 st.sidebar.download_button(
     label="💾 Save Case",
-    data=json.dumps(case_data, indent=2),
+    data=json.dumps(safe_case_data, indent=2)
     file_name="pipeline_case.json",
     mime="application/json"
 )
