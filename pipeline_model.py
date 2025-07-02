@@ -49,7 +49,8 @@ def get_ppm_breakpoints(visc):
     y = df['PPM'].values
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
-    return list(unique_x, unique_y)
+    return list(unique_x), list(unique_y)
+
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     RPM_STEP = 100
