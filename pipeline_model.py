@@ -7,7 +7,6 @@ import numpy as np
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
-# DRA curve files
 DRA_CSV_FILES = {
     10: "10 cst.csv",
     15: "15 cst.csv",
@@ -147,7 +146,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         if dra_dict[(i, t)] and dra_dict[(i, t)][-1] != maxval_dra:
             dra_dict[(i, t)].append(maxval_dra)
 
-    # Binaries for RPM/DRA selection
     model.rpm_bin = pyo.Var(
         ((i, t, j) for (i, t) in pump_pairs for j in range(len(rpm_dict[(i, t)]))),
         domain=pyo.Binary
@@ -163,7 +161,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.rpm_bin_sum = pyo.Constraint(model.PUMP_PAIRS, rule=rpm_bin_sum_rule)
     model.dra_bin_sum = pyo.Constraint(model.PUMP_PAIRS, rule=dra_bin_sum_rule)
 
-    # Assign RPM and DRA from binaries
     def rpm_value_rule(m, i, t):
         return m.RPM[i, t] == sum(rpm_dict[(i, t)][j] * m.rpm_bin[i, t, j] for j in range(len(rpm_dict[(i, t)])))
     def dra_value_rule(m, i, t):
@@ -171,12 +168,23 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.rpm_value = pyo.Constraint(model.PUMP_PAIRS, rule=rpm_value_rule)
     model.dra_value = pyo.Constraint(model.PUMP_PAIRS, rule=dra_value_rule)
 
-    # --- Station constraint: max total number of pumps at a station is 4 ---
     def total_pumps_limit(m, i):
         return sum(m.NOP[i, t] for t in station_types.get(i, [])) <= 4
     model.pump_limit = pyo.Constraint(model.PUMP_STATIONS, rule=total_pumps_limit)
 
-    # --- Hydraulics as before ---
+    # --- Pyomo Expression for DR_frac per station ---
+    def dr_frac_rule(m, i):
+        if station_types.get(i, []):
+            return (
+                sum(m.DRA[i, t] * m.NOP[i, t] for t in station_types[i])
+                /
+                (sum(m.NOP[i, t] for t in station_types[i]) + 1e-6)
+            )
+        else:
+            return 0.0
+    model.DR_frac = pyo.Expression(model.PUMP_STATIONS, rule=dr_frac_rule)
+
+    # --- Hydraulics ---
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
     for j in range(2, N+2):
@@ -204,14 +212,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
-    # --- Station-wise TDH/EFF, DRA aggregation ---
     TDH = {}; EFFP = {}
     for i in range(1, N+1):
-        # Aggregate head addition at station i (sum over types)
         head_add = 0
         eff_add = 0
-        # DRA for all types at this station (used for loss reduction)
-        total_DR_frac = 0
         if i in station_types and station_types[i]:
             for t in station_types[i]:
                 pump = pump_type_info[(i, t)]
@@ -223,26 +227,23 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 A, B, C = pump['A'], pump['B'], pump['C']
                 TDH_ = (A * Q_equiv**2 + B * Q_equiv + C) * (rpm_val / dol_val)**2
                 head_add += TDH_ * model.NOP[i, t]
-                # Efficiency:
                 P, Qc, R, S, T = pump['P'], pump['Q'], pump['R'], pump['S'], pump['T']
                 EFF_ = (P * Q_equiv**4 + Qc * Q_equiv**3 + R * Q_equiv**2 + S * Q_equiv + T)
                 eff_add += EFF_ * model.NOP[i, t]
-                total_DR_frac += DR_frac * model.NOP[i, t]  # Only for pumps ON
         TDH[i] = head_add
         EFFP[i] = eff_add
-        # SDH constraint and peak constraints as before
-        DR_frac = total_DR_frac / max(1, sum([model.NOP[i, t] for t in station_types.get(i, [])])) if station_types.get(i, []) else 0.0
-        DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2 / (2*g)) * (1 - DR_frac)
+        # Use Pyomo Expression for DR_frac
+        dr_frac_expr = model.DR_frac[i] if i in station_types and station_types[i] else 0.0
+        DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2 / (2*g)) * (1 - dr_frac_expr)
         expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
         model.sdh_constraint.add(model.SDH[i] >= expr_next)
         for peak in peaks_dict[i]:
             L_peak = peak['loc'] * 1000.0
             elev_k = peak['elev']
-            DH_peak = f[i] * (L_peak / d_inner[i]) * (v[i]**2 / (2*g)) * (1 - DR_frac)
+            DH_peak = f[i] * (L_peak / d_inner[i]) * (v[i]**2 / (2*g)) * (1 - dr_frac_expr)
             expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
             model.sdh_constraint.add(model.SDH[i] >= expr_peak)
 
-    # --- Head balance and limits ---
     model.head_balance = pyo.ConstraintList()
     model.peak_limit = pyo.ConstraintList()
     model.pressure_limit = pyo.ConstraintList()
@@ -265,7 +266,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             else:
                 model.peak_limit.add(model.RH[i] - (elev_k - model.z[i]) - loss_no_dra >= 50.0)
 
-    # --- DRA cost piecewise per (station, type) ---
     model.PPM = pyo.Var(model.PUMP_PAIRS, domain=pyo.NonNegativeReals)
     model.dra_cost = pyo.Expression(model.PUMP_PAIRS)
     for (i, t) in pump_pairs:
@@ -281,7 +281,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         dra_cost_expr = model.PPM[i, t] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i, t] = dra_cost_expr
 
-    # --- Objective: aggregate all pumps/costs ---
     total_cost = 0
     for (i, t) in pump_pairs:
         pump = pump_type_info[(i, t)]
@@ -290,7 +289,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         rpm_val = model.RPM[i, t]
         dol_val = pump['DOL']
         Q_equiv = pump_flow_i * dol_val / rpm_val
-        # Calculate head and eff:
         A, B, C = pump['A'], pump['B'], pump['C']
         TDH_ = (A * Q_equiv**2 + B * Q_equiv + C) * (rpm_val / dol_val)**2
         P, Qc, R, S, T = pump['P'], pump['Q'], pump['R'], pump['S'], pump['T']
@@ -310,7 +308,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # --- Solve ---
     results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
     status = results.solver.status
     term = results.solver.termination_condition
@@ -323,7 +320,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         }
     model.solutions.load_from(results)
 
-    # --- Collect results ---
     result = {}
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
@@ -360,7 +356,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 eff = float(eff)
                 dra_ppm = float(pyo.value(model.PPM[i, t])) if model.PPM[i, t].value is not None else 0.0
                 dra_cost_i = float(pyo.value(model.dra_cost[i, t])) if model.dra_cost[i, t].expr is not None else 0.0
-                # Zero all if all pumps off:
                 if NOP_val == 0:
                     rpm_val = 0.0
                     eff = 0.0
@@ -368,7 +363,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                     dra_ppm = 0.0
                     dra_cost_i = 0.0
                     tdh_val = 0.0
-                # Power cost
                 rho_i = rho_dict[i]
                 power_kW = (rho_i * pump_flow * 9.81 * tdh_val * NOP_val) / (3600.0 * 1000.0 * (eff/100.0) * 0.95) if eff > 0 else 0.0
                 if pump.get('power_type', 'Grid') == 'Grid':
@@ -387,12 +381,9 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 result[f"{name}_model_{model_no}_dra_ppm"] = dra_ppm
                 result[f"{name}_model_{model_no}_drag_reduction"] = drag_red
                 result[f"{name}_model_{model_no}_tdh"] = tdh_val
-        # Station-aggregated values (sum of all types)
         total_pumps = sum(int(round(pyo.value(model.NOP[i, t]))) if model.NOP[i, t].value is not None else 0 for t in station_types.get(i, []))
         result[f"num_pumps_{name}"] = total_pumps
-        # Add other aggregated station results if desired...
 
-    # Terminal as before:
     term_name = terminal.get('name','terminal').strip().lower().replace(' ', '_')
     result.update({
         f"pipeline_flow_{term_name}": segment_flows[-1],
