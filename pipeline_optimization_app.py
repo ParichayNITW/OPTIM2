@@ -461,17 +461,24 @@ if run:
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
-                if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
-                    st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
-                    st.stop()
-                Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
-                coeff = np.polyfit(Qh, Hh, 2)
-                stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
-                coeff_e = np.polyfit(Qe, Ee, 4)
-                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
+                for pump in stn['pump_types']:
+                    dfh = pump['head_data']
+                    dfe = pump['eff_data']
+                    if dfh is None or len(dfh) < 3:
+                        st.error(f"Station {idx} / Pump Model {pump['model_no']}: At least 3 points for flow-head are required.")
+                        st.stop()
+                    if dfe is None or len(dfe) < 5:
+                        st.error(f"Station {idx} / Pump Model {pump['model_no']}: At least 5 points for flow-efficiency are required.")
+                        st.stop()
+                    Qh = dfh.iloc[:,0].values
+                    Hh = dfh.iloc[:,1].values
+                    coeff = np.polyfit(Qh, Hh, 2)
+                    pump['A'], pump['B'], pump['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                    Qe = dfe.iloc[:,0].values
+                    Ee = dfe.iloc[:,1].values
+                    coeff_e = np.polyfit(Qe, Ee, 4)
+                    pump['P'], pump['Q'], pump['R'], pump['S'], pump['T'] = (float(coeff_e[0]), float(coeff_e[1]), float(coeff_e[2]), float(coeff_e[3]), float(coeff_e[4]))
+
             peaks_df = st.session_state.get(f"peak_data_{idx}")
             peaks_list = []
             if peaks_df is not None:
