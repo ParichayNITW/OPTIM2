@@ -54,7 +54,7 @@ def get_ppm_breakpoints(visc):
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     RPM_STEP = 100
     DRA_STEP = 5
-    MIN_RPM = 1    # Minimum allowed for RPM and DOL to avoid division by zero
+    MIN_RPM = 1.0    # Minimum allowed for RPM and DOL to avoid division by zero
 
     model = pyo.ConcreteModel()
     N = len(stations)
@@ -117,8 +117,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         if stn.get('is_pump', False):
             for pump in stn.get('pump_types', []):
                 # Enforce safe DOL and MinRPM on input!
-                pump['DOL'] = max(MIN_RPM, int(pump.get('DOL', MIN_RPM)))
-                pump['MinRPM'] = max(MIN_RPM, int(pump.get('MinRPM', MIN_RPM)))
+                pump['DOL'] = max(MIN_RPM, float(pump.get('DOL', MIN_RPM)))
+                pump['MinRPM'] = max(MIN_RPM, float(pump.get('MinRPM', MIN_RPM)))
                 t = pump['model_no']
                 pump_pairs.append((i, t))
                 station_types[i].append(t)
@@ -136,8 +136,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     dra_dict = {}
     for (i, t) in pump_pairs:
         p = pump_type_info[(i, t)]
-        minrpm = max(MIN_RPM, int(p.get('MinRPM', MIN_RPM)))
-        dol = max(MIN_RPM, int(p.get('DOL', MIN_RPM)))
+        minrpm = max(MIN_RPM, float(p.get('MinRPM', MIN_RPM)))
+        dol = max(MIN_RPM, float(p.get('DOL', MIN_RPM)))
+        minrpm = int(round(minrpm))
+        dol = int(round(dol))
         rpm_dict[(i, t)] = [r for r in range(minrpm, dol+1, RPM_STEP)]
         if rpm_dict[(i, t)][-1] != dol:
             rpm_dict[(i, t)].append(dol)
@@ -267,11 +269,14 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     for (i, t) in pump_pairs:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        # Ensure floats and strictly increasing, unique breakpoints
-        zipped = sorted({float(x): float(y) for x, y in zip(dr_points, ppm_points)}.items())
-        dr_points_sorted = [x for x, y in zipped]
-        ppm_points_sorted = [y for x, y in zipped]
-        # Piecewise needs at least 2 strictly increasing points
+        # ---- 100% robust block for piecewise breakpoints ----
+        paired = sorted(set((float(x), float(y)) for x, y in zip(dr_points, ppm_points)))
+        dr_points_sorted = []
+        ppm_points_sorted = []
+        for x, y in paired:
+            if not dr_points_sorted or x > dr_points_sorted[-1]:
+                dr_points_sorted.append(x)
+                ppm_points_sorted.append(y)
         if len(dr_points_sorted) < 2 or dr_points_sorted[0] == dr_points_sorted[-1]:
             dr_points_sorted = [0.0, 1.0]
             ppm_points_sorted = [0.0, 1.0]
@@ -285,7 +290,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 pw_constr_type='EQ'
             )
         )
-
         dra_cost_expr = model.PPM[i, t] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i, t] = dra_cost_expr
 
