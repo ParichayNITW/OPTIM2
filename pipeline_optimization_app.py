@@ -9,6 +9,8 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
+import requests
+import copy
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
@@ -418,8 +420,6 @@ def get_full_case_dict():
 case_data = get_full_case_dict()
 st.sidebar.download_button(
     label="💾 Save Case",
-    import copy
-    import pandas as pd
     safe_case_data = copy.deepcopy(case_data)
     for stn in safe_case_data['stations']:
         if stn.get('is_pump', False):
