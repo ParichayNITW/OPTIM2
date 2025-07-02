@@ -418,6 +418,17 @@ def get_full_case_dict():
 case_data = get_full_case_dict()
 st.sidebar.download_button(
     label="💾 Save Case",
+    import copy
+    import pandas as pd
+    safe_case_data = copy.deepcopy(case_data)
+    for stn in safe_case_data['stations']:
+        if stn.get('is_pump', False):
+            for pump in stn.get('pump_types', []):
+                if isinstance(pump.get('head_data'), pd.DataFrame):
+                    pump['head_data'] = pump['head_data'].to_dict("list")
+                if isinstance(pump.get('eff_data'), pd.DataFrame):
+                    pump['eff_data'] = pump['eff_data'].to_dict("list")
+
     data=json.dumps(safe_case_data, indent=2),
     file_name="pipeline_case.json",
     mime="application/json"
