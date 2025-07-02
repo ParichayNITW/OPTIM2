@@ -51,7 +51,6 @@ def get_ppm_breakpoints(visc):
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
 
-
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     RPM_STEP = 100
     DRA_STEP = 5
@@ -299,7 +298,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         dra_cost_expr = model.PPM[i, t] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i, t] = dra_cost_expr
 
-
     total_cost = 0
     for (i, t) in pump_pairs:
         pump = pump_type_info[(i, t)]
@@ -374,7 +372,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T) if NOP_val > 0 else 0.0
                 eff = float(eff)
                 dra_ppm = float(pyo.value(model.PPM[i, t])) if model.PPM[i, t].value is not None else 0.0
-                dra_cost_i = float(pyo.value(model.dra_cost[i, t])) if model.dra_cost[i, t].expr is not None else 0.0
+                dra_cost_i = float(pyo.value(model.dra_cost[i, t]))
                 if NOP_val == 0:
                     rpm_val = 0.0
                     eff = 0.0
