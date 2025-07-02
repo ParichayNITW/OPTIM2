@@ -272,15 +272,33 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     for (i, t) in pump_pairs:
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
-        if dr_points and ppm_points:
-            dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
-            setattr(model, f'piecewise_dra_ppm_{i}_{t}',
-                pyo.Piecewise(f'pw_dra_ppm_{i}_{t}', model.PPM[i, t], model.DRA[i, t],
-                              pw_pts=dr_points_fixed,
-                              f_rule=ppm_points_fixed,
-                              pw_constr_type='EQ'))
+        # Clean and ensure strictly increasing breakpoints
+        zipped = sorted(zip(dr_points, ppm_points))
+        dr_points_sorted = []
+        ppm_points_sorted = []
+        last_x = None
+        for x, y in zipped:
+            if last_x is None or x > last_x:
+                dr_points_sorted.append(float(x))
+                ppm_points_sorted.append(float(y))
+                last_x = x
+        # If not enough points for Piecewise, use default linear segment
+        if len(dr_points_sorted) < 2:
+            dr_points_sorted = [0.0, 1.0]
+            ppm_points_sorted = [0.0, 1.0]
+        setattr(
+            model, f'piecewise_dra_ppm_{i}_{t}',
+            pyo.Piecewise(
+                f'pw_dra_ppm_{i}_{t}',
+                model.PPM[i, t], model.DRA[i, t],
+                pw_pts=dr_points_sorted,
+                f_rule=ppm_points_sorted,
+                pw_constr_type='EQ'
+            )
+        )
         dra_cost_expr = model.PPM[i, t] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i, t] = dra_cost_expr
+
 
     total_cost = 0
     for (i, t) in pump_pairs:
