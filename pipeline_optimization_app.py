@@ -994,36 +994,35 @@ with tab3:
                 if not stn.get('is_pump', False):
                     continue
                 key = stn['name'].lower().replace(' ','_')
-                # Get user's Flow vs Head data for this pump
                 df_head = st.session_state.get(f"head_data_{i}")
                 if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
                     flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
                     max_flow = np.max(flow_user)
                 else:
                     max_flow = st.session_state.get("FLOW", 1000.0)
-                # Now only plot up to user-provided max flow
                 flows = np.linspace(0, max_flow, 200)
                 A = res.get(f"coef_A_{key}",0)
                 B = res.get(f"coef_B_{key}",0)
                 C = res.get(f"coef_C_{key}",0)
                 N_min = int(res.get(f"min_rpm_{key}", 0))
                 N_max = int(res.get(f"dol_{key}", 0))
-                step = max(100, int((N_max-N_min)/5))
+                if N_max == 0:
+                    st.warning(f"Pump DOL (max RPM) not set for {stn['name']} — cannot plot characteristic curves.")
+                    continue
+                step = max(100, int((N_max-N_min)/5)) if N_max > N_min else 100
                 fig = go.Figure()
                 for rpm in range(N_min, N_max+1, step):
-                    # For each desired speed, scale flows according to affinity law
-                    Q_at_rpm = flows                 # Flows at this rpm
-                    Q_equiv_DOL = Q_at_rpm * N_max / rpm   # Map these flows to DOL for the polynomial
-                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)  # Head at DOL curve
-                    H = H_DOL * (rpm/N_max)**2      # Scale head to current rpm
-                
-                    # Remove negatives
+                    if rpm == 0:
+                        continue
+                    Q_at_rpm = flows
+                    Q_equiv_DOL = Q_at_rpm * N_max / rpm
+                    H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
+                    H = H_DOL * (rpm/N_max)**2
                     valid = H >= 0
                     fig.add_trace(go.Scatter(
                         x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
                     ))
-
                 fig.update_layout(
                     title=f"Head vs Flow: {stn['name']}",
                     xaxis_title="Flow (m³/hr)",
