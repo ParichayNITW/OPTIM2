@@ -494,7 +494,12 @@ if auto_batch:
             df_batch = pd.DataFrame(result_rows)
             st.dataframe(df_batch, use_container_width=True)
             st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
-        
+            if len(result_rows) > 0:
+                scenario_list = [row["Scenario"] for row in result_rows]
+                sel_scenario = st.selectbox("Select scenario for detailed output (2 products):", scenario_list, key="scen2")
+                selected = next(row for row in result_rows if row["Scenario"] == sel_scenario)
+                st.write(selected)
+
         if num_products == 3:
             for pct_A in range(step_size, 100, step_size):
                 for pct_B in range(step_size, 100 - pct_A + step_size, step_size):
@@ -536,7 +541,12 @@ if auto_batch:
             df_batch = pd.DataFrame(result_rows)
             st.dataframe(df_batch, use_container_width=True)
             st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
-
+            if len(result_rows) > 0:
+                scenario_list = [row["Scenario"] for row in result_rows]
+                sel_scenario = st.selectbox("Select scenario for detailed output (2 products):", scenario_list, key="scen2")
+                selected = next(row for row in result_rows if row["Scenario"] == sel_scenario)
+                st.write(selected)
+                
 # ---- Run Optimization Button (red) ----
 st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
 run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
