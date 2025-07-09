@@ -449,7 +449,7 @@ if auto_batch:
         num_rows="dynamic", key="batch_prod_tbl"
     )
     step_size = st.number_input("Step Size (%)", min_value=5, max_value=50, value=10, step=5)
-    batch_run = st.button("Run Batch Optimization", key="runbatchbtn")
+    batch_run = st.button("Run Batch Optimization", key="runbatchbtn", type="primary")
 
     if batch_run:
         segs = int(100 // step_size)
