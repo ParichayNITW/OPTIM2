@@ -498,7 +498,11 @@ if auto_batch:
                 scenario_list = [row["Scenario"] for row in result_rows]
                 sel_scenario = st.selectbox("Select scenario for detailed output (2 products):", scenario_list, key="scen2")
                 selected = next(row for row in result_rows if row["Scenario"] == sel_scenario)
-                st.write(selected)
+                import copy
+                st.session_state["last_res"] = copy.deepcopy(selected)
+                st.session_state["last_stations_data"] = copy.deepcopy(st.session_state.stations)
+                st.session_state["last_term_data"] = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+                st.session_state["last_linefill"] = copy.deepcopy(st.session_state["linefill_df"])
 
         if num_products == 3:
             for pct_A in range(step_size, 100, step_size):
@@ -545,7 +549,11 @@ if auto_batch:
                 scenario_list = [row["Scenario"] for row in result_rows]
                 sel_scenario = st.selectbox("Select scenario for detailed output (2 products):", scenario_list, key="scen2")
                 selected = next(row for row in result_rows if row["Scenario"] == sel_scenario)
-                st.write(selected)
+                import copy
+                st.session_state["last_res"] = copy.deepcopy(selected)
+                st.session_state["last_stations_data"] = copy.deepcopy(st.session_state.stations)
+                st.session_state["last_term_data"] = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+                st.session_state["last_linefill"] = copy.deepcopy(st.session_state["linefill_df"])
                 
 # ---- Run Optimization Button (red) ----
 st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
