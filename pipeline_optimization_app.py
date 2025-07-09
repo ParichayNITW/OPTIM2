@@ -432,6 +432,111 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     importlib.reload(pipeline_model)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
+st.markdown("---")
+st.subheader("Batch Linefill Scenario Analysis")
+
+auto_batch = st.checkbox("Run Auto Linefill Generator (Batch Interface Scenarios)")
+
+if auto_batch:
+    total_length = sum(stn["L"] for stn in st.session_state.stations)
+    num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
+    product_table = st.data_editor(
+        pd.DataFrame({
+            "Product": [f"Product {i+1}" for i in range(num_products)],
+            "Viscosity (cSt)": [1.0 + i for i in range(num_products)],
+            "Density (kg/m³)": [800 + 40*i for i in range(num_products)],
+        }),
+        num_rows="dynamic", key="batch_prod_tbl"
+    )
+    step_size = st.number_input("Step Size (%)", min_value=5, max_value=50, value=10, step=5)
+    batch_run = st.button("Run Batch Optimization", key="runbatchbtn")
+
+    if batch_run:
+        segs = int(100 // step_size)
+        stations_data = st.session_state.stations
+        term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+        result_rows = []
+
+        if num_products == 2:
+            for pct_A in range(step_size, 100, step_size):
+                pct_B = 100 - pct_A
+                # Assign segment boundaries
+                segment_limits = [0]
+                for stn in stations_data:
+                    segment_limits.append(segment_limits[-1] + stn["L"])
+                cumlen = segment_limits
+                kv_list = []
+                rho_list = []
+                for i in range(len(stations_data)):
+                    mid = (cumlen[i]+cumlen[i+1])/2
+                    frac = 100*mid/total_length
+                    if frac <= pct_A:
+                        prod_row = product_table.iloc[0]
+                    else:
+                        prod_row = product_table.iloc[1]
+                    kv_list.append(prod_row["Viscosity (cSt)"])
+                    rho_list.append(prod_row["Density (kg/m³)"])
+                res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                row = {
+                    "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}"
+                }
+                for idx, stn in enumerate(stations_data, start=1):
+                    key = stn['name'].lower().replace(' ', '_')
+                    row[f"num_pumps_{key}"] = res.get(f"num_pumps_{key}", "")
+                    row[f"speed_{key}"] = res.get(f"speed_{key}", "")
+                    row[f"sdh_{key}"] = res.get(f"sdh_{key}", "")
+                    row[f"rh_{key}"] = res.get(f"residual_head_{key}", "")
+                    row[f"dra_ppm_{key}"] = res.get(f"dra_ppm_{key}", "")
+                    row[f"power_cost_{key}"] = res.get(f"power_cost_{key}", "")
+                    row[f"drag_reduction_{key}"] = res.get(f"drag_reduction_{key}", "")
+                row["total_cost"] = res.get("total_cost", "")
+                result_rows.append(row)
+            df_batch = pd.DataFrame(result_rows)
+            st.dataframe(df_batch, use_container_width=True)
+            st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
+        
+        if num_products == 3:
+            for pct_A in range(step_size, 100, step_size):
+                for pct_B in range(step_size, 100 - pct_A + step_size, step_size):
+                    pct_C = 100 - pct_A - pct_B
+                    if pct_C < 0 or pct_C > 100:
+                        continue
+                    segment_limits = [0]
+                    for stn in stations_data:
+                        segment_limits.append(segment_limits[-1] + stn["L"])
+                    cumlen = segment_limits
+                    kv_list = []
+                    rho_list = []
+                    for i in range(len(stations_data)):
+                        mid = (cumlen[i]+cumlen[i+1])/2
+                        frac = 100*mid/total_length
+                        if frac <= pct_A:
+                            prod_row = product_table.iloc[0]
+                        elif frac <= pct_A + pct_B:
+                            prod_row = product_table.iloc[1]
+                        else:
+                            prod_row = product_table.iloc[2]
+                        kv_list.append(prod_row["Viscosity (cSt)"])
+                        rho_list.append(prod_row["Density (kg/m³)"])
+                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                    row = {
+                        "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
+                    }
+                    for idx, stn in enumerate(stations_data, start=1):
+                        key = stn['name'].lower().replace(' ', '_')
+                        row[f"num_pumps_{key}"] = res.get(f"num_pumps_{key}", "")
+                        row[f"speed_{key}"] = res.get(f"speed_{key}", "")
+                        row[f"sdh_{key}"] = res.get(f"sdh_{key}", "")
+                        row[f"rh_{key}"] = res.get(f"residual_head_{key}", "")
+                        row[f"dra_ppm_{key}"] = res.get(f"dra_ppm_{key}", "")
+                        row[f"power_cost_{key}"] = res.get(f"power_cost_{key}", "")
+                        row[f"drag_reduction_{key}"] = res.get(f"drag_reduction_{key}", "")
+                    row["total_cost"] = res.get("total_cost", "")
+                    result_rows.append(row)
+            df_batch = pd.DataFrame(result_rows)
+            st.dataframe(df_batch, use_container_width=True)
+            st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
+
 # ---- Run Optimization Button (red) ----
 st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
 run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
