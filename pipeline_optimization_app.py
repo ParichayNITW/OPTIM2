@@ -680,14 +680,36 @@ if auto_batch:
             # Convert to numeric
             pc_df = df_batch[pc_cols].apply(pd.to_numeric, errors='coerce')
             st.markdown("#### Multi-dimensional Batch Optimization Visualization")
+            import plotly.express as px
+            
             fig = px.parallel_coordinates(
                 pc_df,
-                color=pc_df[pc_cols[-1]],  # Color by the last param, usually Total Cost
+                color=pc_df[pc_cols[-1]],
                 labels={col: col for col in pc_cols},
                 color_continuous_scale=px.colors.sequential.Viridis,
-                title="Scenario-wise Multi-Dimensional Results"
+                title="Scenario-wise Multi-Dimensional Results",
             )
+            
+            # Improve visibility: Larger font, thicker lines, tighter margins
+            fig.update_layout(
+                font=dict(size=20),              # Larger font for all text
+                title_font=dict(size=26),        # Even bigger title
+                margin=dict(l=40, r=40, t=80, b=40),
+                height=750,                      # Make the plot much taller
+                plot_bgcolor='white',
+            )
+            
+            # Make lines thicker
+            for d in fig.data:
+                d.line.width = 6
+            
+            # Make tick labels larger for every axis
+            for axis in fig.layout.parallel_coordinates.dimensions:
+                axis.tickfont = dict(size=19)
+                axis.labelfont = dict(size=21)
+            
             st.plotly_chart(fig, use_container_width=True)
+
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     # If not in batch mode, clear batch results
