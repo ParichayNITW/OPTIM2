@@ -432,6 +432,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     importlib.reload(pipeline_model)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
+# ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
 st.subheader("Batch Linefill Scenario Analysis")
 
@@ -454,7 +455,10 @@ if auto_batch:
     if batch_run:
         segs = int(100 // step_size)
         stations_data = st.session_state.stations
-        term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+        term_data = {"name": st.session_state.get("terminal_name","Terminal"), "elev": st.session_state.get("terminal_elev",0.0), "min_residual": st.session_state.get("terminal_head",50.0)}
+        FLOW = st.session_state.get("FLOW", 1000.0)
+        RateDRA = st.session_state.get("RateDRA", 500.0)
+        Price_HSD = st.session_state.get("Price_HSD", 70.0)
         result_rows = []
         if num_products == 2:
             for pct_A in range(step_size, 100, step_size):
@@ -490,19 +494,7 @@ if auto_batch:
                 row["Total Cost"] = res.get("total_cost", "")
                 result_rows.append(row)
             df_batch = pd.DataFrame(result_rows)
-            st.dataframe(df_batch, use_container_width=True)
-            st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
-            if len(result_rows) > 0:
-                graph_options = [col for col in df_batch.columns if col not in ["Scenario"]]
-                graph_param = st.selectbox("Select parameter for plotting (Y-axis):", graph_options)
-                fig = px.line(
-                    df_batch,
-                    x="Scenario",
-                    y=graph_param,
-                    markers=True,
-                    title=f"{graph_param} across Batch Scenarios"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            st.session_state['batch_df'] = df_batch  # <<---- Store results
         if num_products == 3:
             for pct_A in range(step_size, 100, step_size):
                 for pct_B in range(step_size, 100 - pct_A + step_size, step_size):
@@ -542,20 +534,28 @@ if auto_batch:
                     row["Total Cost"] = res.get("total_cost", "")
                     result_rows.append(row)
             df_batch = pd.DataFrame(result_rows)
-            st.dataframe(df_batch, use_container_width=True)
-            st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
-            if len(result_rows) > 0:
-                graph_options = [col for col in df_batch.columns if col not in ["Scenario"]]
-                graph_param = st.selectbox("Select parameter for plotting (Y-axis):", graph_options)
-                fig = px.line(
-                    df_batch,
-                    x="Scenario",
-                    y=graph_param,
-                    markers=True,
-                    title=f"{graph_param} across Batch Scenarios"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            st.session_state['batch_df'] = df_batch  # <<---- Store results
 
+    # ------ Display batch results if present ------
+    if 'batch_df' in st.session_state:
+        df_batch = st.session_state['batch_df']
+        st.dataframe(df_batch, use_container_width=True)
+        st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
+        if len(df_batch) > 0:
+            graph_options = [col for col in df_batch.columns if col not in ["Scenario"]]
+            graph_param = st.selectbox("Select parameter for plotting (Y-axis):", graph_options, key="batch_plot_param")
+            fig = px.line(
+                df_batch,
+                x="Scenario",
+                y=graph_param,
+                markers=True,
+                title=f"{graph_param} across Batch Scenarios"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+else:
+    # If not in batch mode, clear batch results
+    st.session_state.pop('batch_df', None)
 
 if not auto_batch:
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
