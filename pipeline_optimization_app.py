@@ -698,12 +698,7 @@ if auto_batch:
                 height=750,                      # Make the plot much taller
                 plot_bgcolor='white',
             )
-                       
-            # Make tick labels larger for every axis
-            for axis in fig.layout.parallel_coordinates.dimensions:
-                axis.tickfont = dict(size=19)
-                axis.labelfont = dict(size=21)
-            
+                                 
             st.plotly_chart(fig, use_container_width=True)
 
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
