@@ -161,8 +161,18 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         model.MinRPM = pyo.Param(model.pump_stations, initialize=min_rpm)
         model.DOL = pyo.Param(model.pump_stations, initialize=max_rpm)
 
+    # Identify the originating pump station (first with is_pump=True)
+    originating_pump_index = None
+    for idx, stn in enumerate(stations, start=1):  # 1-based indexing!
+        if stn.get('is_pump', False):
+            originating_pump_index = idx
+            break
+    if originating_pump_index is None:
+        raise ValueError("No originating pump station found in input!")
+    
     def nop_bounds(m, j):
-        lb = 1 if j == 1 else 0
+        # j is the station index in model.pump_stations
+        lb = 1 if j == originating_pump_index else 0
         ub = stations[j-1].get('max_pumps', 2)
         return (lb, ub)
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
