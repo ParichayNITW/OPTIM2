@@ -542,17 +542,35 @@ if auto_batch:
         st.dataframe(df_batch, use_container_width=True)
         st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
         if len(df_batch) > 0:
-            graph_options = [col for col in df_batch.columns if col not in ["Scenario"]]
-            graph_param = st.selectbox("Select parameter for plotting (Y-axis):", graph_options, key="batch_plot_param")
-            fig = px.line(
-                df_batch,
-                x="Scenario",
-                y=graph_param,
-                markers=True,
-                title=f"{graph_param} across Batch Scenarios"
+            # --- Multi-dimensional Parallel Coordinates Plot ---
+            # Select relevant columns: product %, speed, number of pumps, DRA, and cost
+            pc_cols = []
+            for c in df_batch.columns:
+                c_lower = c.lower()
+                if (
+                    '%prod' in c_lower or 
+                    'speed' in c_lower or 
+                    'num pumps' in c_lower or
+                    'dra ppm' in c_lower or
+                    'total cost' in c_lower
+                ):
+                    pc_cols.append(c)
+            # Fallback: if detection fails, use all except "Scenario"
+            if len(pc_cols) < 3:
+                pc_cols = [c for c in df_batch.columns if c != "Scenario"]
+            pc_cols = [c for c in pc_cols if df_batch[c].notnull().sum() > 0]
+            # Convert to numeric
+            pc_df = df_batch[pc_cols].apply(pd.to_numeric, errors='coerce')
+            st.markdown("#### Multi-dimensional Batch Optimization Visualization")
+            fig = px.parallel_coordinates(
+                pc_df,
+                color=pc_df[pc_cols[-1]],  # Color by the last param, usually Total Cost
+                labels={col: col for col in pc_cols},
+                color_continuous_scale=px.colors.sequential.Viridis,
+                title="Scenario-wise Multi-Dimensional Results"
             )
             st.plotly_chart(fig, use_container_width=True)
-
+            st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     # If not in batch mode, clear batch results
     st.session_state.pop('batch_df', None)
