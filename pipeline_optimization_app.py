@@ -698,11 +698,7 @@ if auto_batch:
                 height=750,                      # Make the plot much taller
                 plot_bgcolor='white',
             )
-            
-            # Make lines thicker
-            for d in fig.data:
-                d.line.width = 6
-            
+                       
             # Make tick labels larger for every axis
             for axis in fig.layout.parallel_coordinates.dimensions:
                 axis.tickfont = dict(size=19)
