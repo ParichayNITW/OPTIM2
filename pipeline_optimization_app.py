@@ -461,6 +461,57 @@ if auto_batch:
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
         result_rows = []
         if num_products == 2:
+            # --- Add 100% A ---
+            segment_limits = [0]
+            for stn in stations_data:
+                segment_limits.append(segment_limits[-1] + stn["L"])
+            cumlen = segment_limits
+            kv_list = []
+            rho_list = []
+            for i in range(len(stations_data)):
+                prod_row = product_table.iloc[0]  # 100% A
+                kv_list.append(prod_row["Viscosity (cSt)"])
+                rho_list.append(prod_row["Density (kg/m³)"])
+            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+            row = {
+                "Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}"
+            }
+            for idx, stn in enumerate(stations_data, start=1):
+                key = stn['name'].lower().replace(' ', '_')
+                row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+                row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
+                row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+                row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+            row["Total Cost"] = res.get("total_cost", "")
+            result_rows.append(row)
+        
+            # --- Add 100% B ---
+            kv_list = []
+            rho_list = []
+            for i in range(len(stations_data)):
+                prod_row = product_table.iloc[1]  # 100% B
+                kv_list.append(prod_row["Viscosity (cSt)"])
+                rho_list.append(prod_row["Density (kg/m³)"])
+            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+            row = {
+                "Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}"
+            }
+            for idx, stn in enumerate(stations_data, start=1):
+                key = stn['name'].lower().replace(' ', '_')
+                row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+                row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
+                row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+                row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+            row["Total Cost"] = res.get("total_cost", "")
+            result_rows.append(row)
+        
+            # --- Existing loop for in-between scenarios ---
             for pct_A in range(step_size, 100, step_size):
                 pct_B = 100 - pct_A
                 segment_limits = [0]
@@ -494,48 +545,115 @@ if auto_batch:
                 row["Total Cost"] = res.get("total_cost", "")
                 result_rows.append(row)
             df_batch = pd.DataFrame(result_rows)
-            st.session_state['batch_df'] = df_batch  # <<---- Store results
-        if num_products == 3:
-            for pct_A in range(step_size, 100, step_size):
-                for pct_B in range(step_size, 100 - pct_A + step_size, step_size):
-                    pct_C = 100 - pct_A - pct_B
-                    if pct_C < 0 or pct_C > 100:
-                        continue
-                    segment_limits = [0]
-                    for stn in stations_data:
-                        segment_limits.append(segment_limits[-1] + stn["L"])
-                    cumlen = segment_limits
-                    kv_list = []
-                    rho_list = []
-                    for i in range(len(stations_data)):
-                        mid = (cumlen[i]+cumlen[i+1])/2
-                        frac = 100*mid/total_length
-                        if frac <= pct_A:
-                            prod_row = product_table.iloc[0]
-                        elif frac <= pct_A + pct_B:
-                            prod_row = product_table.iloc[1]
-                        else:
-                            prod_row = product_table.iloc[2]
-                        kv_list.append(prod_row["Viscosity (cSt)"])
-                        rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
-                    row = {
-                        "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
-                    }
-                    for idx, stn in enumerate(stations_data, start=1):
-                        key = stn['name'].lower().replace(' ', '_')
-                        row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                        row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
-                        row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
-                        row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
-                        row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
-                        row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
-                        row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-                    row["Total Cost"] = res.get("total_cost", "")
-                    result_rows.append(row)
-            df_batch = pd.DataFrame(result_rows)
-            st.session_state['batch_df'] = df_batch  # <<---- Store results
-
+            st.session_state['batch_df'] = df_batch
+        
+    if num_products == 3:
+        # --- 100% A ---
+        kv_list = []
+        rho_list = []
+        for i in range(len(stations_data)):
+            prod_row = product_table.iloc[0]
+            kv_list.append(prod_row["Viscosity (cSt)"])
+            rho_list.append(prod_row["Density (kg/m³)"])
+        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+        row = {
+            "Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}, 0% {product_table.iloc[2]['Product']}"
+        }
+        for idx, stn in enumerate(stations_data, start=1):
+            key = stn['name'].lower().replace(' ', '_')
+            row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+            row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+            row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
+            row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+            row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+            row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+            row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+        row["Total Cost"] = res.get("total_cost", "")
+        result_rows.append(row)
+        # --- 100% B ---
+        kv_list = []
+        rho_list = []
+        for i in range(len(stations_data)):
+            prod_row = product_table.iloc[1]
+            kv_list.append(prod_row["Viscosity (cSt)"])
+            rho_list.append(prod_row["Density (kg/m³)"])
+        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+        row = {
+            "Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}, 0% {product_table.iloc[2]['Product']}"
+        }
+        for idx, stn in enumerate(stations_data, start=1):
+            key = stn['name'].lower().replace(' ', '_')
+            row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+            row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+            row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
+            row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+            row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+            row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+            row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+        row["Total Cost"] = res.get("total_cost", "")
+        result_rows.append(row)
+        # --- 100% C ---
+        kv_list = []
+        rho_list = []
+        for i in range(len(stations_data)):
+            prod_row = product_table.iloc[2]
+            kv_list.append(prod_row["Viscosity (cSt)"])
+            rho_list.append(prod_row["Density (kg/m³)"])
+        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+        row = {
+            "Scenario": f"0% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}, 100% {product_table.iloc[2]['Product']}"
+        }
+        for idx, stn in enumerate(stations_data, start=1):
+            key = stn['name'].lower().replace(' ', '_')
+            row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+            row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+            row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
+            row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+            row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+            row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+            row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+        row["Total Cost"] = res.get("total_cost", "")
+        result_rows.append(row)
+        # --- Existing nested loop for in-between scenarios ---
+        for pct_A in range(step_size, 100, step_size):
+            for pct_B in range(step_size, 100 - pct_A + step_size, step_size):
+                pct_C = 100 - pct_A - pct_B
+                if pct_C < 0 or pct_C > 100:
+                    continue
+                segment_limits = [0]
+                for stn in stations_data:
+                    segment_limits.append(segment_limits[-1] + stn["L"])
+                cumlen = segment_limits
+                kv_list = []
+                rho_list = []
+                for i in range(len(stations_data)):
+                    mid = (cumlen[i]+cumlen[i+1])/2
+                    frac = 100*mid/total_length
+                    if frac <= pct_A:
+                        prod_row = product_table.iloc[0]
+                    elif frac <= pct_A + pct_B:
+                        prod_row = product_table.iloc[1]
+                    else:
+                        prod_row = product_table.iloc[2]
+                    kv_list.append(prod_row["Viscosity (cSt)"])
+                    rho_list.append(prod_row["Density (kg/m³)"])
+                res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                row = {
+                    "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
+                }
+                for idx, stn in enumerate(stations_data, start=1):
+                    key = stn['name'].lower().replace(' ', '_')
+                    row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+                    row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                    row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
+                    row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                    row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                    row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+                    row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+                row["Total Cost"] = res.get("total_cost", "")
+                result_rows.append(row)
+        df_batch = pd.DataFrame(result_rows)
+        st.session_state['batch_df'] = df_batch
     # ------ Display batch results if present ------
     if 'batch_df' in st.session_state:
         df_batch = st.session_state['batch_df']
