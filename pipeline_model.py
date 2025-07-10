@@ -177,6 +177,13 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         return (lb, ub)
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=nop_bounds, initialize=1)
+    
+    # <<< ADD THIS NEW BLOCK >>>
+    # This constraint ensures that the originating pump station always has at least 1 pump running
+    def min_pump_origin_rule(m):
+        return m.NOP[originating_pump_index] >= 1
+    model.min_pump_origin = pyo.Constraint(rule=min_pump_origin_rule)
+    # <<< END OF NEW BLOCK >>>
 
     # ---- RPM selection via binaries ----
     model.rpm_bin = pyo.Var(
