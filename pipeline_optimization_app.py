@@ -556,6 +556,7 @@ if auto_batch:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
+
 if not auto_batch:
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
     run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
@@ -608,6 +609,8 @@ if not auto_batch:
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
         "📈 Sensitivity", "📊 Benchmarking", "💡 Savings Simulator"
     ])
+    
+
 
 
 # ---- Tab 1: Summary ----
