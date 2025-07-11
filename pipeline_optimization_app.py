@@ -426,11 +426,13 @@ def map_linefill_to_segments(linefill_df, stations):
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines=None):
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
+    if looplines is None:
+        looplines = []
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines)
 
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
