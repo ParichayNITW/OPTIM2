@@ -356,6 +356,53 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[key_peak] = peak_df
 
+# ----- LOOPLINE UI SECTION -----
+st.subheader("Looplines (Parallel/Bypass Lines)")
+
+# Initialize looplines in session state if not already there
+if "looplines" not in st.session_state:
+    st.session_state["looplines"] = []
+
+# Buttons to add/remove looplines
+col1, col2 = st.columns([1,1])
+with col1:
+    if st.button("➕ Add Loopline"):
+        st.session_state["looplines"].append({
+            "start_idx": 0,
+            "end_idx": 1,
+            "L": 10.0,
+            "D": 0.711,
+            "t": 0.007,
+            "rough": 0.00004,
+            "kv": 10.0
+        })
+with col2:
+    if st.button("🗑️ Remove Last Loopline"):
+        if st.session_state["looplines"]:
+            st.session_state["looplines"].pop()
+
+# Loopline edit UI
+for i, lp in enumerate(st.session_state["looplines"]):
+    st.markdown(f"**Loopline {i+1}:**")
+    lp["start_idx"] = st.number_input(
+        f"Start Station Index (0 = first)", min_value=0,
+        max_value=len(st.session_state["stations"])-2,
+        value=lp["start_idx"], key=f"ll_start_{i}"
+    )
+    lp["end_idx"] = st.number_input(
+        f"End Station Index (1 = second, etc)", min_value=lp["start_idx"]+1,
+        max_value=len(st.session_state["stations"])-1,
+        value=lp["end_idx"], key=f"ll_end_{i}"
+    )
+    lp["L"] = st.number_input("Loopline Length (km)", value=lp["L"], step=1.0, key=f"ll_len_{i}")
+    lp["D"] = st.number_input("Loopline OD (m)", value=lp["D"], format="%.3f", step=0.01, key=f"ll_D_{i}")
+    lp["t"] = st.number_input("Loopline Wall Thk (m)", value=lp["t"], format="%.4f", step=0.001, key=f"ll_t_{i}")
+    lp["rough"] = st.number_input("Loopline Roughness (m)", value=lp["rough"], format="%.5f", step=0.00001, key=f"ll_rough_{i}")
+    lp["kv"] = st.number_input("Loopline Viscosity (cSt)", value=lp.get("kv", 10.0), step=1.0, key=f"ll_kv_{i}")
+    st.markdown("---")
+
+
+
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
