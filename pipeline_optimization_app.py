@@ -796,7 +796,7 @@ if not auto_batch:
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
             looplines = st.session_state.get("looplines", [])
-            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict(), looplines)
+            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict(), looplines=st.session_state.get("looplines", [])
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
