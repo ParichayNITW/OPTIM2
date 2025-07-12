@@ -364,12 +364,12 @@ if "looplines" not in st.session_state:
     st.session_state["looplines"] = []
 
 # Buttons to add/remove looplines
-col1, col2 = st.columns([1,1])
+col1, col2 = st.columns([1, 1])
 with col1:
     if st.button("➕ Add Loopline"):
         st.session_state["looplines"].append({
-            "start_idx": 0,
-            "end_idx": 1,
+            "start_km": 0.0,
+            "end_km": sum(stn["L"] for stn in st.session_state.get("stations", [])),
             "L": 10.0,
             "D": 0.711,
             "t": 0.007,
@@ -381,34 +381,26 @@ with col2:
         if st.session_state["looplines"]:
             st.session_state["looplines"].pop()
 
-# Loopline edit UI
+# Get cumulative km at each station for reference
+cum_km = [0.0]
+for stn in st.session_state.get("stations", []):
+    cum_km.append(cum_km[-1] + stn["L"])
+
+# Loopline edit UI - input by km, show valid km range
 for i, lp in enumerate(st.session_state["looplines"]):
     st.markdown(f"**Loopline {i+1}:**")
-    num_stations = len(st.session_state["stations"])
-    # Prevent crash when there are not enough stations
-    if num_stations < 2:
-        st.warning("At least 2 stations are needed to define a loopline.")
-        continue
-
-    # Fix start_idx and end_idx if out of range
-    if "start_idx" not in lp or lp["start_idx"] > num_stations-2:
-        lp["start_idx"] = 0
-    if "end_idx" not in lp or lp["end_idx"] > num_stations-1 or lp["end_idx"] <= lp["start_idx"]:
-        lp["end_idx"] = lp["start_idx"] + 1
-
-    # Choose start index
-    lp["start_idx"] = st.number_input(
-        f"Start Station Index (0 = first)", min_value=0,
-        max_value=num_stations-2,
-        value=lp["start_idx"], key=f"ll_start_{i}"
-    )
-    # Choose end index (must be after start_idx)
-    lp["end_idx"] = st.number_input(
-        f"End Station Index (1 = second, etc)", min_value=lp["start_idx"]+1,
-        max_value=num_stations-1,
-        value=max(lp["end_idx"], lp["start_idx"]+1), key=f"ll_end_{i}"
-    )
-    lp["L"] = st.number_input("Loopline Length (km)", value=lp["L"], step=1.0, key=f"ll_len_{i}")
+    colA, colB = st.columns(2)
+    with colA:
+        lp["start_km"] = st.number_input(
+            "Start Location (km)", min_value=float(cum_km[0]), max_value=float(cum_km[-2] if len(cum_km) > 1 else 0.0),
+            value=lp.get("start_km", 0.0), step=0.1, key=f"ll_start_km_{i}"
+        )
+    with colB:
+        lp["end_km"] = st.number_input(
+            "End Location (km)", min_value=lp["start_km"] + 0.01, max_value=float(cum_km[-1] if len(cum_km) > 1 else 0.0),
+            value=lp.get("end_km", cum_km[-1] if len(cum_km) > 1 else 0.0), step=0.1, key=f"ll_end_km_{i}"
+        )
+    lp["L"] = lp["end_km"] - lp["start_km"]
     lp["D"] = st.number_input("Loopline OD (m)", value=lp["D"], format="%.3f", step=0.01, key=f"ll_D_{i}")
     lp["t"] = st.number_input("Loopline Wall Thk (m)", value=lp["t"], format="%.4f", step=0.001, key=f"ll_t_{i}")
     lp["rough"] = st.number_input("Loopline Roughness (m)", value=lp["rough"], format="%.5f", step=0.00001, key=f"ll_rough_{i}")
