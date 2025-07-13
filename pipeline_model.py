@@ -492,8 +492,119 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     })
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result["error"] = False
-    # Loopline results
+    # ====== Loopline flow results (keep these for compatibility) ======
     for idx, lp in enumerate(looplines):
         flowval = pyo.value(loopline_vars[idx])
         result[f"loopline_{idx}_flow"] = flowval
+
+    # ====== Begin auto batch fill and batch interface logic ======
+    from math import pi
+
+    # ---- Batch fill: mainline and looplines ----
+    batch_fractions = {'LS Crude': 0.5, 'HS Crude': 0.5}  # Example: 50-50, can make dynamic if needed
+    batchfill_results = {}
+
+    # Mainline batch fill
+    mainline_name = stations[0]['name'].strip().lower().replace(' ', '_')
+    if linefill_dict and mainline_name in linefill_dict:
+        mainline_linefill = linefill_dict[mainline_name]  # m3
+    else:
+        D_main = d_inner[1]  # m
+        L_main = length[1]   # km
+        mainline_linefill = (pi/4) * D_main**2 * L_main * 1000  # m3
+
+    mainline_batches = {}
+    for batch, frac in batch_fractions.items():
+        mainline_batches[batch] = mainline_linefill * frac
+    batchfill_results['mainline'] = {
+        'linefill': mainline_linefill,
+        'batches': mainline_batches
+    }
+
+    # Loopline batch fill
+    loopline_batch_list = []
+    for idx, lp in enumerate(looplines):
+        loopline_name = lp.get('name', f"loopline_{idx}").strip().lower().replace(' ', '_')
+        if linefill_dict and loopline_name in linefill_dict:
+            loop_linefill = linefill_dict[loopline_name]
+        else:
+            D_lp = lp['D'] - 2*lp.get('t', 0.007)
+            L_lp = lp['L']
+            loop_linefill = (pi/4) * D_lp**2 * L_lp * 1000
+        loop_batches = {}
+        for batch, frac in batch_fractions.items():
+            loop_batches[batch] = loop_linefill * frac
+        loopline_batch_list.append({
+            'name': loopline_name,
+            'linefill': loop_linefill,
+            'batches': loop_batches
+        })
+    batchfill_results['looplines'] = loopline_batch_list
+    result['batchfill'] = batchfill_results
+
+    # ===== Batch interface arrival and slop window calculation =====
+    def compute_area(d):
+        return (pi / 4) * (d ** 2)
+
+    def compute_velocity(flow_m3h, diameter_m):
+        flow_m3s = flow_m3h / 3600
+        area = compute_area(diameter_m)
+        return flow_m3s / area if area > 0 else 0
+
+    def compute_arrival_time(length_km, velocity_mps):
+        if velocity_mps <= 0:
+            return float('inf')
+        length_m = length_km * 1000
+        return length_m / velocity_mps / 3600  # in hours
+
+    batch_switch_time_hr = 0.0  # Assume interface starts at t=0
+
+    # Mainline
+    D_main = d_inner[1]
+    L_main = length[1]
+    mainline_flow = float(pyo.value(model.segment_flow[0])) if model.segment_flow[0].value is not None else 0.0
+    v_main = compute_velocity(mainline_flow, D_main)
+    t_main_arrival = batch_switch_time_hr + compute_arrival_time(L_main, v_main)
+
+    # Looplines
+    loopline_arrivals = []
+    for idx, lp in enumerate(looplines):
+        D_lp = lp['D'] - 2*lp.get('t', 0.007)
+        L_lp = lp['L']
+        loop_flow = pyo.value(loopline_vars[idx]) if loopline_vars[idx].value is not None else 0.0
+        v_lp = compute_velocity(loop_flow, D_lp)
+        t_lp_arrival = batch_switch_time_hr + compute_arrival_time(L_lp, v_lp)
+        loopline_arrivals.append({
+            'name': lp.get('name', f"loopline_{idx}"),
+            'length_km': L_lp,
+            'd_in_m': D_lp,
+            'flow_m3h': loop_flow,
+            'velocity_mps': v_lp,
+            'interface_arrival_hr': t_lp_arrival
+        })
+
+    # Find slop window (window between first and last arrival)
+    all_arrival_times = [t_main_arrival] + [lp['interface_arrival_hr'] for lp in loopline_arrivals]
+    earliest = min(all_arrival_times)
+    latest = max(all_arrival_times)
+    slop_window_hr = latest - earliest
+    slop_present = slop_window_hr > 0.0
+
+    result['batch_interface_arrival'] = {
+        'mainline': {
+            'name': mainline_name,
+            'length_km': L_main,
+            'd_in_m': D_main,
+            'flow_m3h': mainline_flow,
+            'velocity_mps': v_main,
+            'interface_arrival_hr': t_main_arrival
+        },
+        'looplines': loopline_arrivals,
+        'earliest_arrival_hr': earliest,
+        'latest_arrival_hr': latest,
+        'slop_window_hr': slop_window_hr,
+        'slop_present': slop_present
+    }
+
+    # ====== Final output ======
     return result
