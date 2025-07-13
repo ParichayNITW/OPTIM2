@@ -356,57 +356,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = st.data_editor(peak_df, num_rows="dynamic", key=f"peak{idx}")
             st.session_state[key_peak] = peak_df
 
-# ----- LOOPLINE UI SECTION -----
-st.subheader("Looplines (Parallel/Bypass Lines)")
-
-# Initialize looplines in session state if not already there
-if "looplines" not in st.session_state:
-    st.session_state["looplines"] = []
-
-# Buttons to add/remove looplines
-col1, col2 = st.columns([1, 1])
-with col1:
-    if st.button("➕ Add Loopline"):
-        st.session_state["looplines"].append({
-            "start_km": 0.0,
-            "end_km": sum(stn["L"] for stn in st.session_state.get("stations", [])),
-            "L": 10.0,
-            "D": 0.711,
-            "t": 0.007,
-            "rough": 0.00004,
-            "kv": 10.0
-        })
-with col2:
-    if st.button("🗑️ Remove Last Loopline"):
-        if st.session_state["looplines"]:
-            st.session_state["looplines"].pop()
-
-# Get cumulative km at each station for reference
-cum_km = [0.0]
-for stn in st.session_state.get("stations", []):
-    cum_km.append(cum_km[-1] + stn["L"])
-
-# Loopline edit UI - input by km, show valid km range
-for i, lp in enumerate(st.session_state["looplines"]):
-    st.markdown(f"**Loopline {i+1}:**")
-    colA, colB = st.columns(2)
-    with colA:
-        lp["start_km"] = st.number_input(
-            "Start Location (km)", min_value=float(cum_km[0]), max_value=float(cum_km[-2] if len(cum_km) > 1 else 0.0),
-            value=lp.get("start_km", 0.0), step=0.1, key=f"ll_start_km_{i}"
-        )
-    with colB:
-        lp["end_km"] = st.number_input(
-            "End Location (km)", min_value=lp["start_km"] + 0.01, max_value=float(cum_km[-1] if len(cum_km) > 1 else 0.0),
-            value=lp.get("end_km", cum_km[-1] if len(cum_km) > 1 else 0.0), step=0.1, key=f"ll_end_km_{i}"
-        )
-    lp["L"] = lp["end_km"] - lp["start_km"]
-    lp["D"] = st.number_input("Loopline OD (m)", value=lp["D"], format="%.3f", step=0.01, key=f"ll_D_{i}")
-    lp["t"] = st.number_input("Loopline Wall Thk (m)", value=lp["t"], format="%.4f", step=0.001, key=f"ll_t_{i}")
-    lp["rough"] = st.number_input("Loopline Roughness (m)", value=lp["rough"], format="%.5f", step=0.00001, key=f"ll_rough_{i}")
-    lp["kv"] = st.number_input("Loopline Viscosity (cSt)", value=lp.get("kv", 10.0), step=1.0, key=f"ll_kv_{i}")
-    st.markdown("---")
-
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
@@ -477,13 +426,11 @@ def map_linefill_to_segments(linefill_df, stations):
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines=None):
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
-    if looplines is None:
-        looplines = []
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, looplines)
+    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
@@ -799,8 +746,7 @@ if not auto_batch:
                 stn['peaks'] = peaks_list
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-            looplines = st.session_state.get("looplines", [])
-            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict(), looplines=st.session_state.get("looplines", []))
+            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
