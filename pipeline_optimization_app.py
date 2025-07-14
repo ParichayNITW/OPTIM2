@@ -713,18 +713,24 @@ if not auto_batch:
     if run:
         with st.spinner("Solving optimization..."):
             stations_data = st.session_state.stations
-            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+            term_data = {
+                "name": terminal_name,
+                "elev": terminal_elev,
+                "min_residual": terminal_head
+            }
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     dfh = st.session_state.get(f"head_data_{idx}")
                     dfe = st.session_state.get(f"eff_data_{idx}")
-                    if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                    if dfh is None or dfe is None or len(dfh) < 3 or len(dfe) < 5:
                         st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
                         st.stop()
-                    Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
+                    Qh = dfh.iloc[:, 0].values
+                    Hh = dfh.iloc[:, 1].values
                     coeff = np.polyfit(Qh, Hh, 2)
                     stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                    Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
+                    Qe = dfe.iloc[:, 0].values
+                    Ee = dfe.iloc[:, 1].values
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
                 peaks_df = st.session_state.get(f"peak_data_{idx}")
@@ -736,7 +742,7 @@ if not auto_batch:
                             elev_pk = float(row["Elevation (m)"])
                         except:
                             continue
-                        if loc<0 or loc>stn['L']:
+                        if loc < 0 or loc > stn['L']:
                             st.error(f"Station {idx}: Peak location must be between 0 and segment length.")
                             st.stop()
                         if elev_pk < stn['elev']:
@@ -745,13 +751,29 @@ if not auto_batch:
                         peaks_list.append({'loc': loc, 'elev': elev_pk})
                 stn['peaks'] = peaks_list
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+            if linefill_df.empty or linefill_df.isnull().any().any():
+                st.error("Please fill out the linefill table completely before running optimization.")
+                st.stop()
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
+            if len(kv_list) != len(stations_data):
+                st.error("Viscosity/Density mapping failed. Check your linefill table and station count.")
+                st.stop()
+            res = solve_pipeline(
+                stations_data,
+                term_data,
+                FLOW,
+                kv_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                linefill_df.to_dict()
+            )
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+
 
 if not auto_batch:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
