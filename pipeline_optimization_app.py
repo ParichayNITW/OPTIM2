@@ -714,46 +714,32 @@ if not auto_batch:
         with st.spinner("Solving optimization..."):
             stations_data = st.session_state.stations
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+    
+            # ------------- ADD THIS BLOCK -------------
+            import pandas as pd
+            import numpy as np
+    
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     dfh = st.session_state.get(f"head_data_{idx}")
                     dfe = st.session_state.get(f"eff_data_{idx}")
-                    if dfh is None or dfe is None or len(dfh) < 3 or len(dfe) < 5:
-                        st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
-                        st.stop()
-                    Qh = dfh.iloc[:, 0].values
-                    Hh = dfh.iloc[:, 1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                    Qe = dfe.iloc[:, 0].values
-                    Ee = dfe.iloc[:, 1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
-                peaks_df = st.session_state.get(f"peak_data_{idx}")
-                peaks_list = []
-                if peaks_df is not None:
-                    for _, row in peaks_df.iterrows():
-                        try:
-                            loc = float(row["Location (km)"])
-                            elev_pk = float(row["Elevation (m)"])
-                        except:
-                            continue
-                        if loc < 0 or loc > stn['L']:
-                            st.error(f"Station {idx}: Peak location must be between 0 and segment length.")
-                            st.stop()
-                        if elev_pk < stn['elev']:
-                            st.error(f"Station {idx}: Peak elevation cannot be below station elevation.")
-                            st.stop()
-                        peaks_list.append({'loc': loc, 'elev': elev_pk})
-                stn['peaks'] = peaks_list
-            linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-            if linefill_df.empty or linefill_df.isnull().any().any():
-                st.error("Please fill out the linefill table completely before running optimization.")
-                st.stop()
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-            if len(kv_list) != len(stations_data):
-                st.error("Viscosity/Density mapping failed. Check your linefill table and station count.")
-                st.stop()
+                    if dfh is None and "head_data" in stn:
+                        dfh = pd.DataFrame(stn["head_data"])
+                    if dfe is None and "eff_data" in stn:
+                        dfe = pd.DataFrame(stn["eff_data"])
+                    if dfh is not None and len(dfh) >= 3:
+                        Qh = dfh.iloc[:, 0].values
+                        Hh = dfh.iloc[:, 1].values
+                        coeff = np.polyfit(Qh, Hh, 2)
+                        stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                    if dfe is not None and len(dfe) >= 5:
+                        Qe = dfe.iloc[:, 0].values
+                        Ee = dfe.iloc[:, 1].values
+                        coeff_e = np.polyfit(Qe, Ee, 4)
+                        stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+            # ------------- END OF BLOCK -------------
+    
+            # Now call solve_pipeline
             res = solve_pipeline(
                 stations_data,
                 term_data,
@@ -764,6 +750,7 @@ if not auto_batch:
                 Price_HSD,
                 linefill_df.to_dict()
             )
+
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
