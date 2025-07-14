@@ -773,7 +773,7 @@ if not auto_batch:
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-
+        st.rerun()
 
 if not auto_batch:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
