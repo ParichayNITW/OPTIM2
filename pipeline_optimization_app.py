@@ -455,6 +455,20 @@ if auto_batch:
     if batch_run:
         import pandas as pd
         import numpy as np
+        # 1. Define all variables first
+        stations_data = st.session_state.stations
+        term_data = {
+            "name": st.session_state.get("terminal_name", "Terminal"),
+            "elev": st.session_state.get("terminal_elev", 0.0),
+            "min_residual": st.session_state.get("terminal_head", 50.0)
+        }
+        FLOW = st.session_state.get("FLOW", 1000.0)
+        RateDRA = st.session_state.get("RateDRA", 500.0)
+        Price_HSD = st.session_state.get("Price_HSD", 70.0)
+        result_rows = []
+        segs = int(100 // step_size)
+    
+        # 2. Ensure pump coefficients are always filled from head/eff tables or JSON before any solve_pipeline
         for idx, stn in enumerate(stations_data, start=1):
             if stn.get('is_pump', False):
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -473,14 +487,8 @@ if auto_batch:
                     Ee = dfe.iloc[:, 1].values
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
-       
-        segs = int(100 // step_size)
-        stations_data = st.session_state.stations
-        term_data = {"name": st.session_state.get("terminal_name","Terminal"), "elev": st.session_state.get("terminal_elev",0.0), "min_residual": st.session_state.get("terminal_head",50.0)}
-        FLOW = st.session_state.get("FLOW", 1000.0)
-        RateDRA = st.session_state.get("RateDRA", 500.0)
-        Price_HSD = st.session_state.get("Price_HSD", 70.0)
-        result_rows = []
+
+
         if num_products == 2:
             # --- Add 100% A ---
             segment_limits = [0]
