@@ -363,6 +363,28 @@ terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("ter
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
 def get_full_case_dict():
+    import numpy as np
+    import pandas as pd
+
+    for idx, stn in enumerate(st.session_state.get('stations', []), start=1):
+        if stn.get('is_pump', False):
+            dfh = st.session_state.get(f"head_data_{idx}")
+            dfe = st.session_state.get(f"eff_data_{idx}")
+            if dfh is None and "head_data" in stn:
+                dfh = pd.DataFrame(stn["head_data"])
+            if dfe is None and "eff_data" in stn:
+                dfe = pd.DataFrame(stn["eff_data"])
+            if dfh is not None and len(dfh) >= 3:
+                Qh = dfh.iloc[:, 0].values
+                Hh = dfh.iloc[:, 1].values
+                coeff = np.polyfit(Qh, Hh, 2)
+                stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+            if dfe is not None and len(dfe) >= 5:
+                Qe = dfe.iloc[:, 0].values
+                Ee = dfe.iloc[:, 1].values
+                coeff_e = np.polyfit(Qe, Ee, 4)
+                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+
     return {
         "stations": st.session_state.get('stations', []),
         "terminal": {
@@ -396,6 +418,7 @@ def get_full_case_dict():
             for i in range(len(st.session_state.get('stations', [])))
         }
     }
+
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
