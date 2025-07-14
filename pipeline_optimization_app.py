@@ -453,6 +453,27 @@ if auto_batch:
     batch_run = st.button("Run Batch Optimization", key="runbatchbtn", type="primary")
 
     if batch_run:
+        import pandas as pd
+        import numpy as np
+        for idx, stn in enumerate(stations_data, start=1):
+            if stn.get('is_pump', False):
+                dfh = st.session_state.get(f"head_data_{idx}")
+                dfe = st.session_state.get(f"eff_data_{idx}")
+                if dfh is None and "head_data" in stn:
+                    dfh = pd.DataFrame(stn["head_data"])
+                if dfe is None and "eff_data" in stn:
+                    dfe = pd.DataFrame(stn["eff_data"])
+                if dfh is not None and len(dfh) >= 3:
+                    Qh = dfh.iloc[:, 0].values
+                    Hh = dfh.iloc[:, 1].values
+                    coeff = np.polyfit(Qh, Hh, 2)
+                    stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                if dfe is not None and len(dfe) >= 5:
+                    Qe = dfe.iloc[:, 0].values
+                    Ee = dfe.iloc[:, 1].values
+                    coeff_e = np.polyfit(Qe, Ee, 4)
+                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+       
         segs = int(100 // step_size)
         stations_data = st.session_state.stations
         term_data = {"name": st.session_state.get("terminal_name","Terminal"), "elev": st.session_state.get("terminal_elev",0.0), "min_residual": st.session_state.get("terminal_head",50.0)}
