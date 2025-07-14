@@ -713,11 +713,7 @@ if not auto_batch:
     if run:
         with st.spinner("Solving optimization..."):
             stations_data = st.session_state.stations
-            term_data = {
-                "name": terminal_name,
-                "elev": terminal_elev,
-                "min_residual": terminal_head
-            }
+            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     dfh = st.session_state.get(f"head_data_{idx}")
@@ -773,7 +769,9 @@ if not auto_batch:
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+        # --- CRUCIAL LINE TO FORCE UI REFRESH ---
         st.rerun()
+
 
 if not auto_batch:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
