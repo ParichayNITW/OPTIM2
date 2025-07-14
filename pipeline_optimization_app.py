@@ -714,7 +714,11 @@ if not auto_batch:
         with st.spinner("Solving optimization..."):
             stations_data = st.session_state.stations
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-    
+            # Always ensure linefill_df, kv_list, rho_list are defined!
+            linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+
+            
             # ------------- ADD THIS BLOCK -------------
             import pandas as pd
             import numpy as np
