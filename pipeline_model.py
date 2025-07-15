@@ -374,14 +374,9 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # Solve
-    try:
-        results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
-    finally:
-        import gc
-        if 'model' is not None:
-            del model
-        gc.collect()
-
+    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
+    import gc
+    gc.collect()
 
     status = results.solver.status
     term = results.solver.termination_condition
