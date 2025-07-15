@@ -161,29 +161,23 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         model.MinRPM = pyo.Param(model.pump_stations, initialize=min_rpm)
         model.DOL = pyo.Param(model.pump_stations, initialize=max_rpm)
 
-    # Identify the originating pump station (first with is_pump=True)
-    originating_pump_index = None
-    for idx, stn in enumerate(stations, start=1):  # 1-based indexing!
-        if stn.get('is_pump', False):
-            originating_pump_index = idx
-            break
-    if originating_pump_index is None:
-        raise ValueError("No originating pump station found in input!")
+    # --- BEGIN REPLACEMENT BLOCK ---
+    
+    # Identify all pump stations and guarantee first is always running
+    pump_indices = [i for i, stn in enumerate(stations, start=1) if stn.get('is_pump', False)]
+    if not pump_indices:
+        raise ValueError("No pump stations found in input!")
+    first_pump_station = min(pump_indices)  # always the leftmost/first pump station
     
     def nop_bounds(m, j):
-        # j is the station index in model.pump_stations
-        lb = 1 if j == originating_pump_index else 0
+        lb = 1 if j == first_pump_station else 0
         ub = stations[j-1].get('max_pumps', 2)
         return (lb, ub)
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=nop_bounds, initialize=1)
     
-    # <<< ADD THIS NEW BLOCK >>>
-    # This constraint ensures that the originating pump station always has at least 1 pump running
-    def min_pump_origin_rule(m):
-        return m.NOP[originating_pump_index] >= 1
-    model.min_pump_origin = pyo.Constraint(rule=min_pump_origin_rule)
-    # <<< END OF NEW BLOCK >>>
+    # --- END REPLACEMENT BLOCK ---
+
 
     # ---- RPM selection via binaries ----
     model.rpm_bin = pyo.Var(
