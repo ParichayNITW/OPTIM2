@@ -452,7 +452,6 @@ def map_linefill_to_segments(linefill_df, stations):
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
     import pipeline_model
     import importlib
-    importlib.reload(pipeline_model)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
 # ==== Batch Linefill Scenario Analysis ====
