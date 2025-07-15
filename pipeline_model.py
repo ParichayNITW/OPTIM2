@@ -375,18 +375,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     # Solve
     try:
         results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
-    except Exception as e:
-        # Cleanup before raising error
-        try:
+    finally:
+        import gc
+        if 'model' in locals():
             del model
-        except Exception:
-            pass
-        import gc
-        gc.collect()
-        raise e
-    else:
-        del model
-        import gc
         gc.collect()
 
 
