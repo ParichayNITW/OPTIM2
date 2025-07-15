@@ -55,7 +55,8 @@ def get_ppm_breakpoints(visc):
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     import numpy as np
     import pandas as pd
-
+    model = None
+    
     def safe_polyfit(x, y, degree):
         if len(x) >= degree + 1:
             return np.polyfit(x, y, degree)
