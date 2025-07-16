@@ -487,6 +487,13 @@ if auto_batch:
                 kv_list.append(prod_row["Viscosity (cSt)"])
                 rho_list.append(prod_row["Density (kg/m³)"])
             res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+            if isinstance(res, dict) and res.get('error'):
+                st.error("BATCH ERROR: " + res['message'])
+                st.stop()
+            if res is None:
+                st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+                st.stop()
+
             row = {
                 "Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}"
             }
@@ -510,6 +517,13 @@ if auto_batch:
                 kv_list.append(prod_row["Viscosity (cSt)"])
                 rho_list.append(prod_row["Density (kg/m³)"])
             res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+            if isinstance(res, dict) and res.get('error'):
+                st.error("BATCH ERROR: " + res['message'])
+                st.stop()
+            if res is None:
+                st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+                st.stop()
+
             row = {
                 "Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}"
             }
@@ -544,6 +558,13 @@ if auto_batch:
                     kv_list.append(prod_row["Viscosity (cSt)"])
                     rho_list.append(prod_row["Density (kg/m³)"])
                 res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                if isinstance(res, dict) and res.get('error'):
+                    st.error("BATCH ERROR: " + res['message'])
+                    st.stop()
+                if res is None:
+                    st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+                    st.stop()
+
                 row = {
                     "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}"
                 }
@@ -570,6 +591,13 @@ if auto_batch:
             kv_list.append(prod_row["Viscosity (cSt)"])
             rho_list.append(prod_row["Density (kg/m³)"])
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+        if isinstance(res, dict) and res.get('error'):
+            st.error("BATCH ERROR: " + res['message'])
+            st.stop()
+        if res is None:
+            st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+            st.stop()
+
         row = {
             "Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}, 0% {product_table.iloc[2]['Product']}"
         }
@@ -592,6 +620,13 @@ if auto_batch:
             kv_list.append(prod_row["Viscosity (cSt)"])
             rho_list.append(prod_row["Density (kg/m³)"])
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+        if isinstance(res, dict) and res.get('error'):
+            st.error("BATCH ERROR: " + res['message'])
+            st.stop()
+        if res is None:
+            st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+            st.stop()
+
         row = {
             "Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}, 0% {product_table.iloc[2]['Product']}"
         }
@@ -614,6 +649,13 @@ if auto_batch:
             kv_list.append(prod_row["Viscosity (cSt)"])
             rho_list.append(prod_row["Density (kg/m³)"])
         res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+        if isinstance(res, dict) and res.get('error'):
+            st.error("BATCH ERROR: " + res['message'])
+            st.stop()
+        if res is None:
+            st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+            st.stop()
+
         row = {
             "Scenario": f"0% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}, 100% {product_table.iloc[2]['Product']}"
         }
@@ -652,6 +694,12 @@ if auto_batch:
                     kv_list.append(prod_row["Viscosity (cSt)"])
                     rho_list.append(prod_row["Density (kg/m³)"])
                 res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                if isinstance(res, dict) and res.get('error'):
+                    st.error("BATCH ERROR: " + res['message'])
+                    st.stop()
+                if res is None:
+                    st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+                    st.stop()
                 row = {
                     "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
                 }
@@ -761,6 +809,13 @@ if not auto_batch:
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
             res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
+            if isinstance(res, dict) and res.get('error'):
+                st.error("BATCH ERROR: " + res['message'])
+                st.stop()
+            if res is None:
+                st.error("BATCH ERROR: Backend returned no result. Check DRA files and input data.")
+                st.stop()
+
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
