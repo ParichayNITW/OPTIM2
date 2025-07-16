@@ -1,94 +1,118 @@
-import os
-import pyomo.environ as pyo
-from pyomo.opt import SolverManagerFactory
-from math import log10, pi
-import pandas as pd
 import numpy as np
+import pandas as pd
+from itertools import product
 
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+def interpolate_curve(x, y, x0):
+    x = np.array(x)
+    y = np.array(y)
+    if len(x) < 2 or len(y) < 2:
+        return y[0] if len(y) > 0 else 0.0
+    if x0 <= x[0]:
+        return y[0]
+    if x0 >= x[-1]:
+        return y[-1]
+    return np.interp(x0, x, y)
 
-# DRA curve files
-DRA_CSV_FILES = {
-    10: "10 cst.csv",
-    15: "15 cst.csv",
-    20: "20 cst.csv",
-    25: "25 cst.csv",
-    30: "30 cst.csv",
-    35: "35 cst.csv",
-    40: "40 cst.csv"
-}
-DRA_CURVE_DATA = {}
-for cst, fname in DRA_CSV_FILES.items():
-    if os.path.exists(fname):
-        DRA_CURVE_DATA[cst] = pd.read_csv(fname)
-    else:
-        DRA_CURVE_DATA[cst] = None
-
-def get_ppm_breakpoints(visc):
-    cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
-    visc = float(visc)
+def get_ppm_from_dra_curve(dra_curve_dict, viscosity, dr_percent):
+    cst_list = sorted(dra_curve_dict.keys())
     if not cst_list:
-        return [0], [0]
-    if visc <= cst_list[0]:
-        df = DRA_CURVE_DATA[cst_list[0]]
-        x = df['%Drag Reduction'].values
-        y = df['PPM'].values
-        unique_x, unique_indices = np.unique(x, return_index=True)
-        unique_y = y[unique_indices]
-        return list(unique_x), list(unique_y)
-    elif visc >= cst_list[-1]:
-        df = DRA_CURVE_DATA[cst_list[-1]]
-        x = df['%Drag Reduction'].values
-        y = df['PPM'].values
-        unique_x, unique_indices = np.unique(x, return_index=True)
-        unique_y = y[unique_indices]
-        return list(unique_x), list(unique_y)
+        return 0.0
+    if viscosity <= cst_list[0]:
+        df = dra_curve_dict[cst_list[0]]
+    elif viscosity >= cst_list[-1]:
+        df = dra_curve_dict[cst_list[-1]]
     else:
-        lower = max([c for c in cst_list if c <= visc])
-        upper = min([c for c in cst_list if c >= visc])
-        df_lower = DRA_CURVE_DATA[lower]
-        df_upper = DRA_CURVE_DATA[upper]
-        x_lower, y_lower = df_lower['%Drag Reduction'].values, df_lower['PPM'].values
-        x_upper, y_upper = df_upper['%Drag Reduction'].values, df_upper['PPM'].values
+        lower = max([c for c in cst_list if c <= viscosity])
+        upper = min([c for c in cst_list if c >= viscosity])
+        df_lower = dra_curve_dict[lower]
+        df_upper = dra_curve_dict[upper]
+        ppm_lower = interpolate_curve(df_lower['%Drag Reduction'].values, df_lower['PPM'].values, dr_percent)
+        ppm_upper = interpolate_curve(df_upper['%Drag Reduction'].values, df_upper['PPM'].values, dr_percent)
+        if upper == lower:
+            return ppm_lower
+        return (ppm_lower * (upper - viscosity) + ppm_upper * (viscosity - lower)) / (upper - lower)
+    return interpolate_curve(df['%Drag Reduction'].values, df['PPM'].values, dr_percent)
 
-        dr_points = np.unique(np.concatenate((x_lower, x_upper)))
-        delta = upper - lower
-        if delta == 0:
-            # Shouldn't happen, but fallback: use lower
-            ppm_points = np.interp(dr_points, x_lower, y_lower)
-        else:
-            try:
-                ppm_points = (
-                    np.interp(dr_points, x_lower, y_lower) * (upper - visc) / delta +
-                    np.interp(dr_points, x_upper, y_upper) * (visc - lower) / delta
-                )
-            except Exception:
-                ppm_points = np.zeros_like(dr_points)
-        ppm_points = np.nan_to_num(ppm_points, nan=0.0, posinf=0.0, neginf=0.0)
-        unique_dr, unique_indices = np.unique(dr_points, return_index=True)
-        unique_ppm = ppm_points[unique_indices]
-        return list(unique_dr), list(unique_ppm)
+def pump_head(A, B, C, Q, RPM, DOL):
+    if RPM == 0 or DOL == 0:
+        return 0.0
+    Q_equiv = Q * DOL / RPM
+    H_DOL = A * Q_equiv**2 + B * Q_equiv + C
+    return H_DOL * (RPM / DOL)**2
 
+def pump_eff(P, Qc, Rc, Sc, Tc, Q, RPM, DOL):
+    if RPM == 0 or DOL == 0:
+        return 0.0
+    Q_equiv = Q * DOL / RPM
+    return P * Q_equiv**4 + Qc * Q_equiv**3 + Rc * Q_equiv**2 + Sc * Q_equiv + Tc
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
-    RPM_STEP = 100  # RPM step
-    DRA_STEP = 5    # DRA step
+def friction_factor_swamee_jain(Re, rough, D):
+    if Re < 1e-6 or D == 0:
+        return 0.0
+    if Re < 4000:
+        return 64.0 / Re
+    try:
+        arg = (rough / D / 3.7) + (5.74 / (Re**0.9))
+        return 0.25 / (np.log10(arg)**2) if arg > 0 else 0.0
+    except Exception:
+        return 0.0
 
-    model = pyo.ConcreteModel()
+def compute_system_head(L, D, rough, kv, flow, elev_start, elev_end, drag_reduction_percent):
+    g = 9.81
+    Q = flow / 3600.0
+    area = np.pi * (D**2) / 4.0
+    v = Q / area if area > 0 else 0.0
+    if kv > 0:
+        Re = v * D / (kv * 1e-6)
+    else:
+        Re = 0.0
+    f = friction_factor_swamee_jain(Re, rough, D)
+    frac = 1.0 - (drag_reduction_percent / 100.0)
+    friction_head = f * ((L*1000.0) / D) * (v**2 / (2*g)) * frac
+    elevation_head = elev_end - elev_start
+    return friction_head + elevation_head, v, area, Re, f, friction_head, elevation_head
+
+def check_maop(thickness, SMYS, DF, D_out, density, sdh_val):
+    maop_head = (2 * thickness * (SMYS * 0.070307) * DF / D_out) * 10000.0 / density
+    return sdh_val <= maop_head, maop_head
+
+def check_peaks(L, D, rough, kv, flow, elev_start, peaks):
+    g = 9.81
+    peak_report = []
+    Q = flow / 3600.0
+    area = np.pi * (D**2) / 4.0
+    v = Q / area if area > 0 else 0.0
+    if kv > 0:
+        Re = v * D / (kv * 1e-6)
+    else:
+        Re = 0.0
+    f = friction_factor_swamee_jain(Re, rough, D)
+    for pk in peaks:
+        L_peak = pk.get('loc', 0.0) * L * 1000.0
+        elev_k = pk.get('elev', 0.0)
+        loss_no_dra = f * (L_peak / D) * (v**2 / (2*g))
+        peak_head = elev_k - elev_start + loss_no_dra + 50.0
+        peak_report.append({
+            'L_peak': L_peak,
+            'elev_peak': elev_k,
+            'loss_no_dra': loss_no_dra,
+            'required_head_at_peak': peak_head
+        })
+    return peak_report
+
+def optimize_pipeline(
+    stations,
+    terminal,
+    FLOW,
+    kv_list,
+    rho_list,
+    RateDRA,
+    Price_HSD,
+    dra_curve_dict,
+    rpm_step = 100,
+    dra_step = 1
+):
     N = len(stations)
-    model.I = pyo.RangeSet(1, N)
-    model.Nodes = pyo.RangeSet(1, N+1)
-
-    kv_dict = {i: float(KV_list[i-1]) for i in range(1, N+1)}
-    rho_dict = {i: float(rho_list[i-1]) for i in range(1, N+1)}
-    model.KV = pyo.Param(model.I, initialize=kv_dict)
-    model.rho = pyo.Param(model.I, initialize=rho_dict)
-
-    model.FLOW = pyo.Param(initialize=FLOW)
-    model.Rate_DRA = pyo.Param(initialize=RateDRA)
-    model.Price_HSD = pyo.Param(initialize=Price_HSD)
-
-    # Compute flow in each segment
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -96,379 +120,200 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         prev_flow = segment_flows[-1]
         out_flow = prev_flow - delivery + supply
         segment_flows.append(out_flow)
-
-    # Pipeline and pump parameters
-    length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}
-    Acoef = {}; Bcoef = {}; Ccoef = {}
-    Pcoef = {}; Qcoef = {}; Rcoef = {}; Scoef = {}; Tcoef = {}
-    min_rpm = {}; max_rpm = {}
-    sfc = {}; elec_cost = {}
-    pump_indices = []; diesel_pumps = []; electric_pumps = []
-    max_dr = {}
-    peaks_dict = {}
-    default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
-    allowed_rpms = {}
-    allowed_dras = {}
-
+    elev = {}
     for i, stn in enumerate(stations, start=1):
-        length[i] = stn.get('L', 0.0)
-        if 'D' in stn:
-            D_out = stn['D']
-            thickness[i] = stn.get('t', default_t)
-            d_inner[i] = D_out - 2*thickness[i]
-        elif 'd' in stn:
-            d_inner[i] = stn['d']
-            thickness[i] = stn.get('t', default_t)
-        else:
-            d_inner[i] = 0.7
-            thickness[i] = default_t
-        roughness[i] = stn.get('rough', default_e)
-        smys[i] = stn.get('SMYS', default_smys)
-        design_factor[i] = stn.get('DF', default_df)
         elev[i] = stn.get('elev', 0.0)
-        peaks_dict[i] = stn.get('peaks', [])
-        has_pump = stn.get('is_pump', False)
-        if has_pump:
-            pump_indices.append(i)
-            Acoef[i] = stn.get('A', 0.0)
-            Bcoef[i] = stn.get('B', 0.0)
-            Ccoef[i] = stn.get('C', 0.0)
-            Pcoef[i] = stn.get('P', 0.0)
-            Qcoef[i] = stn.get('Q', 0.0)
-            Rcoef[i] = stn.get('R', 0.0)
-            Scoef[i] = stn.get('S', 0.0)
-            Tcoef[i] = stn.get('T', 0.0)
-            min_rpm[i] = stn.get('MinRPM', 0)
-            max_rpm[i] = stn.get('DOL', 0)
-            if stn.get('sfc', 0) not in (None, 0):
-                diesel_pumps.append(i)
-                sfc[i] = stn.get('sfc', 0.0)
-            else:
-                electric_pumps.append(i)
-                elec_cost[i] = stn.get('rate', 0.0)
-            max_dr[i] = stn.get('max_dr', 0.0)
-            minval = int(min_rpm[i])
-            maxval = int(max_rpm[i])
-            allowed_rpms[i] = [r for r in range(minval, maxval+1, RPM_STEP)]
-            if allowed_rpms[i][-1] != maxval:
-                allowed_rpms[i].append(maxval)
-            maxval_dra = int(max_dr[i])
-            allowed_dras[i] = [d for d in range(0, maxval_dra+1, DRA_STEP)]
-            if allowed_dras[i][-1] != maxval_dra:
-                allowed_dras[i].append(maxval_dra)
-
     elev[N+1] = terminal.get('elev', 0.0)
+    total_cost = 0.0
+    best_config = []
+    upstream_head = stations[0].get('min_residual', 50.0)
+    results = {}
+    raw_results = []
 
-    model.L = pyo.Param(model.I, initialize=length)
-    model.d = pyo.Param(model.I, initialize=d_inner)
-    model.e = pyo.Param(model.I, initialize=roughness)
-    model.SMYS = pyo.Param(model.I, initialize=smys)
-    model.DF = pyo.Param(model.I, initialize=design_factor)
-    model.z = pyo.Param(model.Nodes, initialize=elev)
-
-    model.pump_stations = pyo.Set(initialize=pump_indices)
-    if pump_indices:
-        model.A = pyo.Param(model.pump_stations, initialize=Acoef)
-        model.B = pyo.Param(model.pump_stations, initialize=Bcoef)
-        model.C = pyo.Param(model.pump_stations, initialize=Ccoef)
-        model.Pcoef = pyo.Param(model.pump_stations, initialize=Pcoef)
-        model.Qcoef = pyo.Param(model.pump_stations, initialize=Qcoef)
-        model.Rcoef = pyo.Param(model.pump_stations, initialize=Rcoef)
-        model.Scoef = pyo.Param(model.pump_stations, initialize=Scoef)
-        model.Tcoef = pyo.Param(model.pump_stations, initialize=Tcoef)
-        model.MinRPM = pyo.Param(model.pump_stations, initialize=min_rpm)
-        model.DOL = pyo.Param(model.pump_stations, initialize=max_rpm)
-
-    # --- BEGIN REPLACEMENT BLOCK ---
-    
-    # Identify all pump stations and guarantee first is always running
-    pump_indices = [i for i, stn in enumerate(stations, start=1) if stn.get('is_pump', False)]
-    if not pump_indices:
-        raise ValueError("No pump stations found in input!")
-    first_pump_station = min(pump_indices)  # always the leftmost/first pump station
-    
-    def nop_bounds(m, j):
-        lb = 1 if j == first_pump_station else 0
-        ub = stations[j-1].get('max_pumps', 2)
-        return (lb, ub)
-    model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
-                        bounds=nop_bounds, initialize=1)
-    
-    # --- END REPLACEMENT BLOCK ---
-
-
-    # ---- RPM selection via binaries ----
-    model.rpm_bin = pyo.Var(
-        ((i, j) for i in pump_indices for j in range(len(allowed_rpms[i]))),
-        domain=pyo.Binary
-    )
-    def rpm_bin_sum_rule(m, i):
-        return sum(m.rpm_bin[i, j] for j in range(len(allowed_rpms[i]))) == 1
-    model.rpm_bin_sum = pyo.Constraint(model.pump_stations, rule=rpm_bin_sum_rule)
-    model.RPM_var = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
-    def rpm_value_rule(m, i):
-        return m.RPM_var[i] == sum(allowed_rpms[i][j] * m.rpm_bin[i, j] for j in range(len(allowed_rpms[i])))
-    model.rpm_value = pyo.Constraint(model.pump_stations, rule=rpm_value_rule)
-
-    # ---- DRA selection via binaries ----
-    model.dra_bin = pyo.Var(
-        ((i, j) for i in pump_indices for j in range(len(allowed_dras[i]))),
-        domain=pyo.Binary
-    )
-    def dra_bin_sum_rule(m, i):
-        return sum(m.dra_bin[i, j] for j in range(len(allowed_dras[i]))) == 1
-    model.dra_bin_sum = pyo.Constraint(model.pump_stations, rule=dra_bin_sum_rule)
-    def dra_var_bounds(m, i):
-        return (min(allowed_dras[i]), max(allowed_dras[i]))
-    model.DR_var = pyo.Var(model.pump_stations, bounds=dra_var_bounds, domain=pyo.NonNegativeReals)
-
-    def dra_value_rule(m, i):
-        return m.DR_var[i] == sum(allowed_dras[i][j] * m.dra_bin[i, j] for j in range(len(allowed_dras[i])))
-    model.dra_value = pyo.Constraint(model.pump_stations, rule=dra_value_rule)
-
-    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
-    model.RH[1].fix(stations[0].get('min_residual', 50.0))
-    for j in range(2, N+2):
-        model.RH[j].setlb(50.0)
-
-    g = 9.81
-    v = {}; Re = {}; f = {}
-    for i in range(1, N+1):
-        flow_m3s = float(segment_flows[i]) / 3600.0
-        area = pi * (d_inner[i]**2) / 4.0
-        v[i] = flow_m3s / area if area > 0 else 0.0
-        kv = kv_dict[i]
-        if kv > 0:
-            Re[i] = v[i] * d_inner[i] / (float(kv) * 1e-6)
-        else:
-            Re[i] = 0.0
-        if Re[i] > 0:
-            if Re[i] < 4000:
-                f[i] = 64.0 / Re[i]
-            else:
-                arg = (roughness[i] / d_inner[i] / 3.7) + (5.74 / (Re[i]**0.9))
-                f[i] = 0.25 / (log10(arg)**2) if arg > 0 else 0.0
-        else:
-            f[i] = 0.0
-
-    model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
-    model.sdh_constraint = pyo.ConstraintList()
-    TDH = {}
-    EFFP = {}
-
-    for i in range(1, N+1):
-        if i in pump_indices:
-            DR_frac = model.DR_var[i] / 100.0
-        else:
-            DR_frac = 0.0
-        DH_next = f[i] * ((length[i]*1000.0)/d_inner[i]) * (v[i]**2 / (2*g)) * (1 - DR_frac)
-        expr_next = model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next
-        model.sdh_constraint.add(model.SDH[i] >= expr_next)
-        for peak in peaks_dict[i]:
-            L_peak = peak['loc'] * 1000.0
-            elev_k = peak['elev']
-            DH_peak = f[i] * (L_peak / d_inner[i]) * (v[i]**2 / (2*g)) * (1 - DR_frac)
-            expr_peak = (elev_k - model.z[i]) + DH_peak + 50.0
-            model.sdh_constraint.add(model.SDH[i] >= expr_peak)
-
-        if i in pump_indices:
-            pump_flow_i = float(segment_flows[i])
-            rpm_val = model.RPM_var[i]
-            dol_val = model.DOL[i]
-            Q_equiv = pump_flow_i * dol_val / rpm_val
-            H_DOL = model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]
-            TDH[i] = H_DOL * (rpm_val / dol_val)**2
-            EFFP[i] = (model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 +
-                       model.Rcoef[i]*Q_equiv**2 + model.Scoef[i]*Q_equiv +
-                       model.Tcoef[i]) / 100.0
-        else:
-            TDH[i] = 0.0
-            EFFP[i] = 1.0
-
-    model.head_balance = pyo.ConstraintList()
-    model.peak_limit = pyo.ConstraintList()
-    model.pressure_limit = pyo.ConstraintList()
-    maop_dict = {}
-    for i in range(1, N+1):
-        if i in pump_indices:
-            model.head_balance.add(model.RH[i] + TDH[i]*model.NOP[i] >= model.SDH[i])
-        else:
-            model.head_balance.add(model.RH[i] >= model.SDH[i])
-        D_out = d_inner[i] + 2 * thickness[i]
-        MAOP_head = (2 * thickness[i] * (smys[i] * 0.070307) * design_factor[i] / D_out) * 10000.0 / rho_dict[i]
-        maop_dict[i] = MAOP_head
-        model.pressure_limit.add(model.SDH[i] <= MAOP_head)
-        for peak in peaks_dict[i]:
-            L_peak = peak['loc'] * 1000.0
-            elev_k = peak['elev']
-            loss_no_dra = f[i] * (L_peak / d_inner[i]) * (v[i]**2 / (2*g))
-            if i in pump_indices:
-                expr = model.RH[i] + TDH[i]*model.NOP[i] - (elev_k - model.z[i]) - loss_no_dra
-            else:
-                expr = model.RH[i] - (elev_k - model.z[i]) - loss_no_dra
-            model.peak_limit.add(expr >= 50.0)
-
-    model.PPM = pyo.Var(model.pump_stations, domain=pyo.NonNegativeReals)
-    model.dra_cost = pyo.Expression(model.pump_stations)
-    for i in pump_indices:
-        visc = kv_dict[i]
-        dr_points, ppm_points = get_ppm_breakpoints(visc)
-        dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
-        setattr(model, f'piecewise_dra_ppm_{i}',
-            pyo.Piecewise(f'pw_dra_ppm_{i}', model.PPM[i], model.DR_var[i],
-                          pw_pts=dr_points_fixed,
-                          f_rule=ppm_points_fixed,
-                          pw_constr_type='EQ'))
-        dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
-        model.dra_cost[i] = dra_cost_expr
-
-    total_cost = 0
-    for i in pump_indices:
-        rho_i = rho_dict[i]
-        pump_flow_i = float(segment_flows[i])
-        rpm_val = model.RPM_var[i]
-        eff_val = EFFP[i]
-        power_kW = (rho_i * pump_flow_i * 9.81 * TDH[i] * model.NOP[i]) / (3600.0 * 1000.0 * eff_val * 0.95)
-        if i in electric_pumps:
-            power_cost = power_kW * 24.0 * elec_cost.get(i, 0.0)
-        else:
-            fuel_per_kWh = (sfc.get(i,0.0) * 1.34102) / 820.0
-            power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-        dra_cost_i = model.dra_cost[i]
-        total_cost += power_cost + dra_cost_i
-    model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
-
-    # Solve
-    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
-    status = results.solver.status
-    term = results.solver.termination_condition
-    if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
-        return {
-            "error": True,
-            "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
-            "termination_condition": str(term),
-            "solver_status": str(status)
+    for idx, stn in enumerate(stations, start=1):
+        name = stn['name']
+        is_pump = stn.get('is_pump', False)
+        flow = float(segment_flows[idx-1])
+        kv = float(kv_list[idx-1])
+        rho = float(rho_list[idx-1])
+        L = float(stn.get('L', 0.0))
+        D = float(stn.get('D', 0.0))
+        t = float(stn.get('t', 0.007))
+        rough = float(stn.get('rough', 0.00004))
+        SMYS = float(stn.get('SMYS', 52000))
+        DF = float(stn.get('DF', 0.72))
+        elev_start = elev[idx]
+        elev_end = elev[idx+1]
+        peaks = stn.get('peaks', [])
+        station_result = {
+            "name": name,
+            "is_pump": is_pump,
+            "best_cost": float('inf'),
+            "best_config": {},
+            "all_feasible": [],
+            "all_configs": []
         }
-    model.solutions.load_from(results)
-
-    # Collect results
-    result = {}
-    for i, stn in enumerate(stations, start=1):
-        name = stn['name'].strip().lower().replace(' ', '_')
-        inflow = segment_flows[i-1]
-        outflow = segment_flows[i]
-        pump_flow = outflow if stn.get('is_pump', False) else 0.0
-
-        if i in pump_indices:
-            num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
-            # RPM and DRA value selection
-            rpm_val = None
-            for j in range(len(allowed_rpms[i])):
-                if round(pyo.value(model.rpm_bin[i, j])) == 1:
-                    rpm_val = allowed_rpms[i][j]
-                    break
-            dra_perc = None
-            for j in range(len(allowed_dras[i])):
-                if round(pyo.value(model.dra_bin[i, j])) == 1:
-                    dra_perc = allowed_dras[i][j]
-                    break
-            if rpm_val is None:
-                rpm_val = allowed_rpms[i][0]
-            if dra_perc is None:
-                dra_perc = allowed_dras[i][0]
-            dol_val = model.DOL[i]
-            pump_flow_i = float(segment_flows[i])
-            Q_equiv = pump_flow_i * dol_val / rpm_val
-            tdh_val = float(model.A[i] * Q_equiv**2 + model.B[i] * Q_equiv + model.C[i]) * (rpm_val/dol_val)**2
-            eff = (model.Pcoef[i]*Q_equiv**4 + model.Qcoef[i]*Q_equiv**3 +
-                   model.Rcoef[i]*Q_equiv**2 + model.Scoef[i]*Q_equiv +
-                   model.Tcoef[i]) if num_pumps > 0 else 0.0
-            eff = float(eff)
-            dra_ppm = float(pyo.value(model.PPM[i])) if model.PPM[i].value is not None else 0.0
-            dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i].expr is not None else 0.0
-        
-            # >>> INSERT THIS BLOCK HERE <<<
-            # If optimizer turned off all pumps, zero all reporting values:
-            if num_pumps == 0:
-                rpm_val = 0.0
-                eff = 0.0
-                dra_perc = 0.0
-                dra_ppm = 0.0
-                dra_cost_i = 0.0
-                tdh_val = 0.0
-        
+        if is_pump:
+            max_pumps = int(stn.get('max_pumps', 2))
+            min_nop = 1 if idx == 1 else 0
+            A, B, C = stn.get('A', 0.0), stn.get('B', 0.0), stn.get('C', 0.0)
+            P, Qc, Rc, Sc, Tc = stn.get('P', 0.0), stn.get('Q', 0.0), stn.get('R', 0.0), stn.get('S', 0.0), stn.get('T', 0.0)
+            min_rpm, max_rpm = int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0))
+            max_dr = int(stn.get('max_dr', 0))
+            allowed_nop = list(range(min_nop, max_pumps + 1))
+            allowed_rpm = list(range(min_rpm, max_rpm + 1, rpm_step))
+            if allowed_rpm and allowed_rpm[-1] != max_rpm:
+                allowed_rpm.append(max_rpm)
+            allowed_dr = list(range(0, max_dr + 1, dra_step))
+            if allowed_dr and allowed_dr[-1] != max_dr:
+                allowed_dr.append(max_dr)
+            combos = product(allowed_nop, allowed_rpm, allowed_dr)
         else:
-            num_pumps = 0
-            rpm_val = 0.0
-            eff = 0.0
-            dra_perc = 0.0
-            dra_ppm = 0.0
-            dra_cost_i = 0.0
-            tdh_val = 0.0
-
-
-        if i in pump_indices and num_pumps > 0:
-            rho_i = rho_dict[i]
-            power_kW = (rho_i * pump_flow * 9.81 * tdh_val * num_pumps) / (3600.0 * 1000.0 * (eff/100.0) * 0.95) if eff > 0 else 0.0
-            if i in electric_pumps:
-                rate = elec_cost.get(i, 0.0)
-                power_cost = power_kW * 24.0 * rate
+            combos = [(0, 0, 0)]
+        for NOP, RPM, DR in combos:
+            rejection_reason = None
+            if is_pump and NOP == 0:
+                continue
+            sys_head, v, area, Re, f, friction_head, elevation_head = compute_system_head(L, D, rough, kv, flow, elev_start, elev_end, DR)
+            required_head = sys_head - upstream_head
+            if required_head < 0:
+                required_head = 0.0
+            peak_report = check_peaks(L, D, rough, kv, flow, elev_start, peaks) if peaks else []
+            peak_ok = True
+            peak_violated = None
+            for j, pk in enumerate(peak_report):
+                if sys_head < pk['required_head_at_peak']:
+                    peak_ok = False
+                    peak_violated = j
+                    break
+            if not peak_ok:
+                rejection_reason = f"Peak constraint violated at peak {peak_violated}"
+            if is_pump:
+                H_pump = pump_head(A, B, C, flow, RPM, max_rpm) * NOP
+                eff = pump_eff(P, Qc, Rc, Sc, Tc, flow, RPM, max_rpm)
             else:
-                sfc_val = sfc.get(i, 0.0)
-                fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                H_pump = 0.0
+                eff = 1.0
+            if is_pump and H_pump < required_head - 1e-2:
+                rejection_reason = "Pump head insufficient"
+            D_out = D + 2 * t
+            sdh_val = sys_head
+            maop_ok, maop_head = check_maop(t, SMYS, DF, D_out, rho, sdh_val)
+            if not maop_ok:
+                rejection_reason = "MAOP violated"
+            if is_pump:
+                ppm = get_ppm_from_dra_curve(dra_curve_dict, kv, DR)
+                dra_mass_per_day = ppm * (flow * 1000.0 * 24.0 / 1e6)
+                dra_cost = dra_mass_per_day * RateDRA
+            else:
+                dra_cost = 0.0
+                ppm = 0.0
+            if is_pump and eff > 0 and NOP > 0:
+                power_kW = (rho * flow * 9.81 * H_pump) / (3600.0 * 1000.0 * (eff/100.0) * 0.95)
+                if stn.get('sfc', 0) not in (None, 0):
+                    sfc_val = stn.get('sfc', 0.0)
+                    fuel_per_kWh = (sfc_val * 1.34102) / 820.0
+                    power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                else:
+                    rate = stn.get('rate', 0.0)
+                    power_cost = power_kW * 24.0 * rate
+            else:
+                power_cost = 0.0
+            total_station_cost = power_cost + dra_cost
+            conf = {
+                'NOP': NOP, 'RPM': RPM, 'DR': DR, 'H_pump': H_pump,
+                'Head_req': required_head, 'Eff': eff, 'DRA_cost': dra_cost,
+                'PPM': ppm, 'Power_cost': power_cost, 'Total_cost': total_station_cost,
+                'Peak_ok': peak_ok, 'MAOP_ok': maop_ok, 'sys_head': sys_head,
+                'velocity': v, 'area': area,
+                'Re': Re, 'friction_factor': f,
+                'friction_head': friction_head, 'elevation_head': elevation_head,
+                'maop_head': maop_head,
+                'peaks': peak_report, 'rejection_reason': rejection_reason
+            }
+            station_result['all_configs'].append(conf)
+            if not rejection_reason:
+                station_result['all_feasible'].append(conf)
+                if total_station_cost < station_result['best_cost']:
+                    station_result['best_cost'] = total_station_cost
+                    station_result['best_config'] = conf
+        if station_result['best_config']:
+            best_c = station_result['best_config']
+            upstream_head = best_c['sys_head']
+            total_cost += best_c['Total_cost']
         else:
-            power_cost = 0.0
+            upstream_head = upstream_head + 0.0
+        best_config.append(station_result)
+        results[f"station_{idx}_{name.strip().replace(' ','_').lower()}"] = station_result
+        raw_results.append({
+            "station": name,
+            "configs": station_result['all_configs']
+        })
+    results['total_cost'] = total_cost
+    results['best_config'] = best_config
+    results['raw_results'] = raw_results
 
-        drag_red = dra_perc
-        head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
-        res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
-        velocity = v[i]; reynolds = Re[i]; fric = f[i]
+    summary_table = []
+    station_tables = {}
+    for station_info in results['best_config']:
+        name = station_info['name']
+        best = station_info['best_config']
+        if not best:
+            row = {
+                "Station": name, "NOP": None, "RPM": None, "DR%": None, "Head_Required (m)": None,
+                "Head_Generated (m)": None, "Eff (%)": None, "DRA_PPM": None, "DRA_Cost": None,
+                "Power_Cost": None, "Total_Cost": None, "Peak_OK": False, "MAOP_OK": False
+            }
+        else:
+            row = {
+                "Station": name,
+                "NOP": int(best['NOP']),
+                "RPM": int(best['RPM']),
+                "DR%": float(best['DR']),
+                "Head_Required (m)": round(float(best['Head_req']),2),
+                "Head_Generated (m)": round(float(best['H_pump']),2),
+                "Eff (%)": round(float(best['Eff']),2),
+                "DRA_PPM": round(float(best['PPM']),2),
+                "DRA_Cost": round(float(best['DRA_cost']),2),
+                "Power_Cost": round(float(best['Power_cost']),2),
+                "Total_Cost": round(float(best['Total_cost']),2),
+                "Peak_OK": bool(best['Peak_ok']),
+                "MAOP_OK": bool(best['MAOP_ok'])
+            }
+        summary_table.append(row)
+    for station_info in results['best_config']:
+        name = station_info['name']
+        feas = station_info['all_feasible']
+        if feas:
+            df = pd.DataFrame(feas)
+            colmap = {
+                "NOP": "NOP",
+                "RPM": "RPM",
+                "DR": "DR%",
+                "Head_req": "Head_Required (m)",
+                "H_pump": "Head_Generated (m)",
+                "Eff": "Eff (%)",
+                "PPM": "DRA_PPM",
+                "DRA_cost": "DRA_Cost",
+                "Power_cost": "Power_Cost",
+                "Total_cost": "Total_Cost",
+                "Peak_ok": "Peak_OK",
+                "MAOP_ok": "MAOP_OK"
+            }
+            df = df[list(colmap.keys())]
+            df = df.rename(columns=colmap)
+            for col in ["DR%", "Head_Required (m)", "Head_Generated (m)", "Eff (%)", "DRA_PPM", "DRA_Cost", "Power_Cost", "Total_Cost"]:
+                df[col] = df[col].round(2)
+            station_tables[name] = df
+        else:
+            station_tables[name] = pd.DataFrame([{"No feasible configs": "See rejection reasons in raw_results"}])
+    csv_tables = {k: v.to_csv(index=False) for k,v in station_tables.items()}
 
-        result[f"pipeline_flow_{name}"] = outflow
-        result[f"pipeline_flow_in_{name}"] = inflow
-        result[f"pump_flow_{name}"] = pump_flow
-        result[f"num_pumps_{name}"] = num_pumps
-        result[f"speed_{name}"] = rpm_val
-        result[f"efficiency_{name}"] = eff
-        result[f"power_cost_{name}"] = power_cost
-        result[f"dra_cost_{name}"] = dra_cost_i
-        result[f"dra_ppm_{name}"] = dra_ppm
-        result[f"drag_reduction_{name}"] = drag_red
-        result[f"head_loss_{name}"] = head_loss
-        result[f"residual_head_{name}"] = res_head
-        result[f"velocity_{name}"] = velocity
-        result[f"reynolds_{name}"] = reynolds
-        result[f"friction_{name}"] = fric
-        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-        result[f"maop_{name}"] = maop_dict[i]
-        if i in pump_indices:
-            result[f"coef_A_{name}"] = float(model.A[i])
-            result[f"coef_B_{name}"] = float(model.B[i])
-            result[f"coef_C_{name}"] = float(model.C[i])
-            result[f"dol_{name}"]    = float(model.DOL[i])
-            result[f"min_rpm_{name}"]= float(model.MinRPM[i])
-            result[f"tdh_{name}"]    = tdh_val
-
-    term_name = terminal.get('name','terminal').strip().lower().replace(' ', '_')
-    result.update({
-        f"pipeline_flow_{term_name}": segment_flows[-1],
-        f"pipeline_flow_in_{term_name}": segment_flows[-2],
-        f"pump_flow_{term_name}": 0.0,
-        f"speed_{term_name}": 0.0,
-        f"num_pumps_{term_name}": 0,
-        f"efficiency_{term_name}": 0.0,
-        f"power_cost_{term_name}": 0.0,
-        f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"drag_reduction_{term_name}": 0.0,
-        f"head_loss_{term_name}": 0.0,
-        f"velocity_{term_name}": 0.0,
-        f"reynolds_{term_name}": 0.0,
-        f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": 0.0,
-        f"residual_head_{term_name}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
-    })
-    result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
-    result["error"] = False
-    return result
+    return {
+        "summary_table": summary_table,
+        "station_tables": station_tables,
+        "csv_tables": csv_tables,
+        "best_config": results['best_config'],
+        "total_cost": round(float(results['total_cost']),2),
+        "raw_results": results['raw_results']
+    }
