@@ -28,34 +28,60 @@ def get_ppm_breakpoints(visc):
     cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
     visc = float(visc)
     if not cst_list:
+        # No DRA curve data available at all
         return [0], [0]
     if visc <= cst_list[0]:
+        # Viscosity below minimum curve
         df = DRA_CURVE_DATA[cst_list[0]]
+        x = df['%Drag Reduction'].values
+        y = df['PPM'].values
+        unique_x, unique_indices = np.unique(x, return_index=True)
+        unique_y = y[unique_indices]
+        return list(unique_x), list(unique_y)
     elif visc >= cst_list[-1]:
+        # Viscosity above maximum curve
         df = DRA_CURVE_DATA[cst_list[-1]]
+        x = df['%Drag Reduction'].values
+        y = df['PPM'].values
+        unique_x, unique_indices = np.unique(x, return_index=True)
+        unique_y = y[unique_indices]
+        return list(unique_x), list(unique_y)
     else:
+        # Interpolation needed between curves
         lower = max([c for c in cst_list if c <= visc])
         upper = min([c for c in cst_list if c >= visc])
         df_lower = DRA_CURVE_DATA[lower]
         df_upper = DRA_CURVE_DATA[upper]
         x_lower, y_lower = df_lower['%Drag Reduction'].values, df_lower['PPM'].values
         x_upper, y_upper = df_upper['%Drag Reduction'].values, df_upper['PPM'].values
-        if upper == lower:
-            dr_points = x_lower
-            ppm_points = y_lower
-        else:
-            dr_points = np.unique(np.concatenate((x_lower, x_upper)))
-            ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
-                         np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
-        unique_dr, unique_indices = np.unique(dr_points, return_index=True)
-        unique_ppm = ppm_points[unique_indices]
-        return list(unique_dr), list(unique_ppm)
 
-    x = df['%Drag Reduction'].values
-    y = df['PPM'].values
-    unique_x, unique_indices = np.unique(x, return_index=True)
-    unique_y = y[unique_indices]
-    return list(unique_x), list(unique_y)
+        if upper == lower or (upper - lower) == 0:
+            # Exact match or zero division edge case: return lower curve directly
+            x = x_lower
+            y = y_lower
+            unique_x, unique_indices = np.unique(x, return_index=True)
+            unique_y = y[unique_indices]
+            return list(unique_x), list(unique_y)
+        else:
+            # Safe interpolation
+            dr_points = np.unique(np.concatenate((x_lower, x_upper)))
+            delta = upper - lower
+            if delta == 0:
+                # Failsafe (should not occur but included for safety)
+                return list(dr_points), list(np.interp(dr_points, x_lower, y_lower))
+            try:
+                ppm_points = (
+                    np.interp(dr_points, x_lower, y_lower) * (upper - visc) / delta +
+                    np.interp(dr_points, x_upper, y_upper) * (visc - lower) / delta
+                )
+            except Exception as e:
+                # On any numerical issue, return zeros
+                return list(dr_points), [0 for _ in dr_points]
+            # Remove NaN or inf (replace with zero)
+            ppm_points = np.nan_to_num(ppm_points, nan=0.0, posinf=0.0, neginf=0.0)
+            unique_dr, unique_indices = np.unique(dr_points, return_index=True)
+            unique_ppm = ppm_points[unique_indices]
+            return list(unique_dr), list(unique_ppm)
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     RPM_STEP = 100  # RPM step
