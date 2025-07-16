@@ -41,6 +41,11 @@ def get_ppm_breakpoints(visc):
         x_lower, y_lower = df_lower['%Drag Reduction'].values, df_lower['PPM'].values
         x_upper, y_upper = df_upper['%Drag Reduction'].values, df_upper['PPM'].values
         dr_points = np.unique(np.concatenate((x_lower, x_upper)))
+    if upper == lower:
+        # Degenerate case, just use one curve
+        dr_points = x_lower
+        ppm_points = y_lower
+    else:
         ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
                      np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
         unique_dr, unique_indices = np.unique(dr_points, return_index=True)
