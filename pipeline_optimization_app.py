@@ -1,4 +1,23 @@
 import streamlit as st
+
+def login_widget():
+    st.title("Pipeline Optima Login")
+    userid = st.text_input("User ID")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if userid == "parichay_das" and password == "heteroscedasticity":  # change credentials
+            st.session_state["authenticated"] = True
+        else:
+            st.error("Invalid UserID or Password")
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    login_widget()
+    st.stop()
+
+
 import pandas as pd
 import json
 from pipeline_model import solve_pipeline
@@ -35,7 +54,6 @@ with tab1:
         {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
     ]
     station_df = get_table(station_defaults, "station_table")
-    st.session_state["station_table"] = station_df
     st.subheader("Q vs Head Curve")
     qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
     qh_df = get_table(qh_defaults, "qh_curve")
