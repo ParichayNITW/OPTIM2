@@ -8,7 +8,7 @@ def login_widget():
     userid = st.text_input("User ID")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-        if userid == "admin" and password == "yourpassword":
+        if userid == "parichay_das" and password == "heteroscedasticity":
             st.session_state["authenticated"] = True
         else:
             st.error("Invalid UserID or Password")
