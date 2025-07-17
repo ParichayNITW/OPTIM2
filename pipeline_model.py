@@ -118,7 +118,12 @@ def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity
                 ppm = interpolate_dra_ppm(dra_curve_dict, viscosity, DR)
                 dra_cost = ppm * flow_rate * 24
                 power = (flow_rate * Total_Head * 9.81) / (max(Eff, 0.01) / 100 * 3.6e6) if NOP else 0
-                power_cost = power * 24 * float(stn.get('Fuel Rate (Rs/kWh)', 12.5))
+                try:
+                    fuel = float(stn.get('Fuel Rate (Rs/kWh)', 12.5))
+                except (ValueError, TypeError):
+                    fuel = 12.5
+                power_cost = power * 24 * fuel
+
                 total = dra_cost + power_cost
                 feasible = True
                 constraint = ""
