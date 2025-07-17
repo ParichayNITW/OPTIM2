@@ -1,11 +1,14 @@
 import streamlit as st
+import pandas as pd
+import json
+from pipeline_model import solve_pipeline
 
 def login_widget():
     st.title("Pipeline Optima Login")
     userid = st.text_input("User ID")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-        if userid == "parichay_das" and password == "heteroscedasticity":  # change credentials
+        if userid == "admin" and password == "yourpassword":
             st.session_state["authenticated"] = True
         else:
             st.error("Invalid UserID or Password")
@@ -17,17 +20,15 @@ if not st.session_state["authenticated"]:
     login_widget()
     st.stop()
 
-
-import pandas as pd
-import json
-from pipeline_model import solve_pipeline
-
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
 
-def get_table(default, session_key):
+def get_or_init_table(default, session_key):
     if session_key not in st.session_state:
         st.session_state[session_key] = pd.DataFrame(default)
-    return st.data_editor(st.session_state[session_key], num_rows="dynamic", key=session_key)
+    df = st.data_editor(st.session_state[session_key], num_rows="dynamic", key=session_key)
+    if not df.equals(st.session_state[session_key]):
+        st.session_state[session_key] = df
+    return df
 
 def download_json(obj, filename):
     j = json.dumps(obj, indent=2)
@@ -41,28 +42,23 @@ def upload_json(session_keys):
             if k in data:
                 st.session_state[k] = pd.DataFrame(data[k]) if isinstance(data[k], list) else data[k]
         st.success("Scenario loaded.")
+        st.experimental_rerun()
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Input", "Optimization", "Visualization", "Cost Breakdown", "Download Report"
 ])
 
 with tab1:
-    st.subheader("Station Data")
     stations_cols = ["Station","Distance (km)","Elevation (m)","Diameter (mm)","Roughness (mm)","Is Pump Station","Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)","MAOP (m)"]
     station_defaults = [
         {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
         {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
     ]
-    station_df = get_table(station_defaults, "station_table")
-    st.subheader("Q vs Head Curve")
+    station_df = get_or_init_table(station_defaults, "station_table")
     qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
-    qh_df = get_table(qh_defaults, "qh_curve")
-    st.session_state["qh_curve"] = qh_df
-    st.subheader("Q vs Efficiency Curve")
+    qh_df = get_or_init_table(qh_defaults, "qh_curve")
     qeff_defaults = [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
-    qeff_df = get_table(qeff_defaults, "qeff_curve")
-    st.session_state["qeff_curve"] = qeff_df
-    st.subheader("Scenario Save/Load")
+    qeff_df = get_or_init_table(qeff_defaults, "qeff_curve")
     scenario = {
         "station_table": station_df.to_dict(orient="records"),
         "qh_curve": qh_df.to_dict(orient="records"),
