@@ -32,7 +32,8 @@ def interpolate_dra_ppm(dra_curve_dict, viscosity, dr_percent):
         return y_l + (y_u - y_l) * (viscosity - lower) / (upper - lower)
     return np.interp(dr_percent, df['%Drag Reduction'], df['PPM'])
 
-def friction_factor(D, Q, nu, e=0.045):
+def friction_factor_swamee_jain(D, Q, nu, e=0.045):
+    # All units: D in m, Q in m3/h, nu in cSt, e in mm
     A = np.pi / 4 * D**2
     v = Q / 3600 / A
     Re = v * D / (nu / 1e6)
@@ -46,24 +47,28 @@ def friction_factor(D, Q, nu, e=0.045):
         except:
             return 0.03
 
-def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity):
+def optimize_pipeline(station_data, q_h_curve, q_eff_curve, Qm3h, viscosity):
     dra_curve_dict = load_dra_curves()
     N = len(station_data)
-    results = []
     summary = []
+    results = []
+
+    # Decision space
     min_DR = 0
     max_DR = 60
     DR_step = 1
     allowed_DR = list(range(min_DR, max_DR+1, DR_step))
     NOP_range = [1,2,3]
-    RPM_fixed = 3000
+
+    # Extract parameters
     elevs = [float(stn.get("Elevation (m)", 0)) for stn in station_data]
-    lengths = [float(stn.get("Distance (km)", 50)) for stn in station_data]
+    dists = [float(stn.get("Distance (km)", 0)) for stn in station_data]
+    lengths = [dists[i+1] - dists[i] if i+1 < len(dists) else 0 for i in range(len(dists))]
     Ds = [float(stn.get("Diameter (mm)", 500))/1000 for stn in station_data]
     es = [float(stn.get("Roughness (mm)", 0.045)) for stn in station_data]
     maops = [float(stn.get("MAOP (m)", 900)) for stn in station_data]
 
-    # Robust peak handling (even for missing or blank Peaks fields)
+    # Peaks
     peaks = []
     for stn in station_data:
         p = stn.get("Peaks", [])
@@ -77,54 +82,72 @@ def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity
         peaks.append(p if p else [])
 
     for idx, stn in enumerate(station_data):
-        name = stn['Station']
+        Station = stn["Station"]
+        D = Ds[idx]
+        e = es[idx]
+        nu = viscosity
+        L = lengths[idx]*1000 if idx < N-1 else 1000
+        MAOP = maops[idx]
+
+        # Origin station cannot be bypassed
         if idx == 0:
-            allowed_NOP = [n for n in NOP_range if n >= 1]  # Origin cannot be bypassed
+            allowed_NOP = [n for n in NOP_range if n >= 1]
         else:
             allowed_NOP = [0] + NOP_range
-        best_cost = 1e99
+
+        best_cost = np.inf
         best_config = None
         all_configs = []
+
         for NOP in allowed_NOP:
             for DR in allowed_DR:
-                D = Ds[idx]
-                e = es[idx]
-                nu = viscosity
-                L = lengths[idx] * 1000 if idx < N-1 else 1000
-                MAOP = maops[idx]
-                f = friction_factor(D, flow_rate, nu, e) * (1 - DR/100)
-                A = np.pi / 4 * D**2
-                v = flow_rate / 3600 / A
-                hf = 8*f*L*flow_rate**2/(np.pi**2*9.81*D**5*3600**2)
-                head_next = (elevs[idx+1] if idx+1<N else elevs[idx]) - elevs[idx] + hf + 50
+                # Friction Factor with DRA effect
+                f = friction_factor_swamee_jain(D, Qm3h, nu, e) * (1 - DR/100)
+                A = np.pi/4 * D**2
+                v = Qm3h / 3600 / A
+                hf = 8*f*L*Qm3h**2/(np.pi**2*9.81*D**5*3600**2)
+                elev_dn = elevs[idx+1] if idx+1<N else elevs[idx]
+                head_next = elev_dn - elevs[idx] + hf + 50  # 50 = RHmin
+
+                # Peak pressure logic
                 heads_peaks = []
-                # PEAK PRESSURE: check all peaks for this segment
                 if peaks[idx] and idx < N-1:
                     for ep in peaks[idx]:
                         if idx+1 < N:
                             frac = (ep - elevs[idx]) / (elevs[idx+1] - elevs[idx]) if elevs[idx+1] != elevs[idx] else 0.5
                             Lpeak = L * frac
-                            hf_peak = 8*f*Lpeak*flow_rate**2/(np.pi**2*9.81*D**5*3600**2)
+                            hf_peak = 8*f*Lpeak*Qm3h**2/(np.pi**2*9.81*D**5*3600**2)
                             heads_peaks.append((ep - elevs[idx]) + hf_peak + 50)
                 all_heads = [head_next] + heads_peaks
                 SDH = max(all_heads) if NOP else 0
+
+                # Q-H, Q-Eff interpolated from curves
                 if NOP == 0:
                     Head = 0
                     Eff = 0.01
                 else:
-                    Head = np.interp(flow_rate, [row['Flow (m3/h)'] for row in q_h_curve], [row['Head (m)'] for row in q_h_curve])
-                    Eff = np.interp(flow_rate, [row['Flow (m3/h)'] for row in q_eff_curve], [row['Efficiency (%)'] for row in q_eff_curve])
+                    Head = np.interp(Qm3h, [row['Flow (m3/h)'] for row in q_h_curve], [row['Head (m)'] for row in q_h_curve])
+                    Eff = np.interp(Qm3h, [row['Flow (m3/h)'] for row in q_eff_curve], [row['Efficiency (%)'] for row in q_eff_curve])
+
                 Total_Head = Head * NOP if NOP >= 1 else 0
-                ppm = interpolate_dra_ppm(dra_curve_dict, viscosity, DR)
-                dra_cost = ppm * flow_rate * 24
-                power = (flow_rate * Total_Head * 9.81) / (max(Eff, 0.01) / 100 * 3.6e6) if NOP else 0
+                PPM = interpolate_dra_ppm(dra_curve_dict, viscosity, DR)
+                dra_cost = PPM * Qm3h * 24
+
+                # Robust fuel rate
+                fr = stn.get('Fuel Rate (Rs/kWh)', 12.5)
                 try:
-                    fuel = float(stn.get('Fuel Rate (Rs/kWh)', 12.5))
+                    fr_val = float(fr)
+                    if np.isnan(fr_val): fr_val = 12.5
                 except (ValueError, TypeError):
-                    fuel = 12.5
-                power_cost = power * 24 * fuel
+                    fr_val = 12.5
+
+                # Power (kW), power cost (Rs/day)
+                power = (Qm3h * Total_Head * 9.81) / (max(Eff, 0.01) / 100 * 3.6e6) if NOP else 0
+                power_cost = power * 24 * fr_val
 
                 total = dra_cost + power_cost
+
+                # Constraints
                 feasible = True
                 constraint = ""
                 outlet_head = SDH + elevs[idx]
@@ -134,20 +157,42 @@ def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity
                 if NOP == 0 and idx == 0:
                     feasible = False
                     constraint = "Origin cannot be bypassed"
+
                 if feasible and total < best_cost:
                     best_cost = total
                     best_config = {
-                        "NOP": NOP, "%DR": DR, "Head": Total_Head, "Eff": Eff, "SDH": SDH, "PPM": ppm,
-                        "DRA Cost": dra_cost, "Power Cost": power_cost, "Total Cost": total,
-                        "Bypass": (NOP==0), "Feasible": feasible, "Constraint": constraint
+                        "Station": Station,
+                        "NOP": NOP,
+                        "%DR": DR,
+                        "Head": Total_Head,
+                        "Eff": Eff,
+                        "SDH": SDH,
+                        "PPM": PPM,
+                        "DRA Cost": dra_cost,
+                        "Power Cost": power_cost,
+                        "Total Cost": total,
+                        "Bypass": (NOP == 0),
+                        "Feasible": feasible,
+                        "Constraint": constraint
                     }
                 all_configs.append({
-                    "NOP": NOP, "%DR": DR, "Head": Total_Head, "Eff": Eff, "SDH": SDH, "PPM": ppm,
-                    "DRA Cost": dra_cost, "Power Cost": power_cost, "Total Cost": total,
-                    "Bypass": (NOP==0), "Feasible": feasible, "Constraint": constraint
+                    "Station": Station,
+                    "NOP": NOP,
+                    "%DR": DR,
+                    "Head": Total_Head,
+                    "Eff": Eff,
+                    "SDH": SDH,
+                    "PPM": PPM,
+                    "DRA Cost": dra_cost,
+                    "Power Cost": power_cost,
+                    "Total Cost": total,
+                    "Bypass": (NOP == 0),
+                    "Feasible": feasible,
+                    "Constraint": constraint
                 })
+
         summary.append({
-            "Station": name,
+            "Station": best_config["Station"] if best_config else Station,
             "NOP": best_config["NOP"] if best_config else 0,
             "%DR": best_config["%DR"] if best_config else 0,
             "Head (m)": best_config["Head"] if best_config else 0,
@@ -161,7 +206,8 @@ def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity
             "Feasible": best_config["Feasible"] if best_config else False,
             "Constraint": best_config["Constraint"] if best_config else "",
         })
-        results.append({"Station": name, "AllConfigs": all_configs})
+        results.append({"Station": Station, "AllConfigs": all_configs})
+
     total_cost = sum([row["Total Cost"] for row in summary])
     out = {
         "summary_table": summary,
