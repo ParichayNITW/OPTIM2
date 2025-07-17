@@ -8,7 +8,7 @@ def login_widget():
     userid = st.text_input("User ID")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-        if userid == "parichay_das" and password == "heteroscedasticity":
+        if userid == "admin" and password == "yourpassword":
             st.session_state["authenticated"] = True
         else:
             st.error("Invalid UserID or Password")
@@ -22,28 +22,6 @@ if not st.session_state["authenticated"]:
 
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
 
-def get_or_init_table(default, session_key):
-    if session_key not in st.session_state:
-        st.session_state[session_key] = pd.DataFrame(default)
-    df = st.data_editor(st.session_state[session_key], num_rows="dynamic", key=session_key)
-    if not df.equals(st.session_state[session_key]):
-        st.session_state[session_key] = df
-    return df
-
-def download_json(obj, filename):
-    j = json.dumps(obj, indent=2)
-    st.download_button("Download Scenario as JSON", j, file_name=filename, mime="application/json")
-
-def upload_json(session_keys):
-    uploaded = st.file_uploader("Upload Saved Scenario (JSON)", type="json")
-    if uploaded:
-        data = json.load(uploaded)
-        for k in session_keys:
-            if k in data:
-                st.session_state[k] = pd.DataFrame(data[k]) if isinstance(data[k], list) else data[k]
-        st.success("Scenario loaded.")
-        st.experimental_rerun()
-
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Input", "Optimization", "Visualization", "Cost Breakdown", "Download Report"
 ])
@@ -54,18 +32,29 @@ with tab1:
         {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
         {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
     ]
-    station_df = get_or_init_table(station_defaults, "station_table")
     qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
-    qh_df = get_or_init_table(qh_defaults, "qh_curve")
     qeff_defaults = [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
-    qeff_df = get_or_init_table(qeff_defaults, "qeff_curve")
-    scenario = {
-        "station_table": station_df.to_dict(orient="records"),
-        "qh_curve": qh_df.to_dict(orient="records"),
-        "qeff_curve": qeff_df.to_dict(orient="records"),
-    }
-    download_json(scenario, "pipeline_scenario.json")
-    upload_json(["station_table","qh_curve","qeff_curve"])
+
+    station_df = st.data_editor(pd.DataFrame(station_defaults), num_rows="dynamic", key="station_table")
+    qh_df = st.data_editor(pd.DataFrame(qh_defaults), num_rows="dynamic", key="qh_curve")
+    qeff_df = st.data_editor(pd.DataFrame(qeff_defaults), num_rows="dynamic", key="qeff_curve")
+
+    if st.button("Download Scenario as JSON"):
+        scenario = {
+            "station_table": station_df.to_dict(orient="records"),
+            "qh_curve": qh_df.to_dict(orient="records"),
+            "qeff_curve": qeff_df.to_dict(orient="records"),
+        }
+        j = json.dumps(scenario, indent=2)
+        st.download_button("Save Scenario as JSON", j, file_name="pipeline_scenario.json", mime="application/json")
+
+    uploaded = st.file_uploader("Upload Scenario (JSON)", type="json")
+    if uploaded:
+        data = json.load(uploaded)
+        st.session_state["station_table"] = pd.DataFrame(data["station_table"])
+        st.session_state["qh_curve"] = pd.DataFrame(data["qh_curve"])
+        st.session_state["qeff_curve"] = pd.DataFrame(data["qeff_curve"])
+        st.experimental_rerun()
 
 with tab2:
     st.header("Pipeline Optima™ Optimization")
@@ -74,9 +63,9 @@ with tab2:
     if st.button("Run Optimization"):
         with st.spinner("Optimizing..."):
             result = solve_pipeline(
-                st.session_state["station_table"].to_dict(orient="records"),
-                st.session_state["qh_curve"].to_dict(orient="records"),
-                st.session_state["qeff_curve"].to_dict(orient="records"),
+                station_df.to_dict(orient="records"),
+                qh_df.to_dict(orient="records"),
+                qeff_df.to_dict(orient="records"),
                 flow_rate, viscosity
             )
             st.session_state["opt_result"] = result
@@ -88,10 +77,10 @@ with tab2:
 
 with tab3:
     st.header("Visualization")
-    if "qh_curve" in st.session_state:
+    if not qh_df.empty:
         import matplotlib.pyplot as plt
         import numpy as np
-        qh = st.session_state["qh_curve"]
+        qh = qh_df
         q_vals = np.linspace(min(qh["Flow (m3/h)"]), max(qh["Flow (m3/h)"]), 100)
         H = np.interp(q_vals, qh["Flow (m3/h)"], qh["Head (m)"])
         plt.figure(figsize=(8,4))
@@ -102,8 +91,8 @@ with tab3:
         plt.grid(True)
         plt.legend()
         st.pyplot(plt.gcf())
-    if "qeff_curve" in st.session_state:
-        qeff = st.session_state["qeff_curve"]
+    if not qeff_df.empty:
+        qeff = qeff_df
         Eff = np.interp(q_vals, qeff["Flow (m3/h)"], qeff["Efficiency (%)"])
         plt.figure(figsize=(8,4))
         plt.plot(q_vals, Eff, label="Pump Efficiency Curve", color="green")
@@ -139,9 +128,9 @@ with tab5:
             mime="text/csv"
         )
     st.markdown("Download Input Tables")
-    station_csv = st.session_state["station_table"].to_csv(index=False).encode("utf-8")
-    qh_csv = st.session_state["qh_curve"].to_csv(index=False).encode("utf-8")
-    qeff_csv = st.session_state["qeff_curve"].to_csv(index=False).encode("utf-8")
+    station_csv = station_df.to_csv(index=False).encode("utf-8")
+    qh_csv = qh_df.to_csv(index=False).encode("utf-8")
+    qeff_csv = qeff_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="Download Station Table CSV",
         data=station_csv,
