@@ -1,287 +1,148 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import pipeline_model
-import plotly.express as px
-import plotly.graph_objects as go
+import json
+from pipeline_model import solve_pipeline
 
 st.set_page_config(page_title="Pipeline Optima", layout="wide")
-st.markdown("""
-<style>
-.big-red {font-size:2em; color:#e74c3c; font-weight:bold;}
-.stTabs [data-baseweb="tab"] {font-size: 1.05em;}
-thead tr th {background:#f7fafd;}
-</style>
-""", unsafe_allow_html=True)
-st.markdown("<div class='big-red'>Batch Linefill Scenario Analysis</div>", unsafe_allow_html=True)
 
-col1, col2 = st.columns([1,4])
-with col1:
-    auto_batch = st.checkbox("Run Auto Linefill Generator (Batch Interface Scenarios)")
-with col2:
-    st.write("")
+def get_table(default, session_key):
+    if session_key not in st.session_state:
+        st.session_state[session_key] = pd.DataFrame(default)
+    return st.data_editor(st.session_state[session_key], num_rows="dynamic", key=session_key)
 
-st.markdown("<br>", unsafe_allow_html=True)
-run_col = st.container()
-with run_col:
-    run_btn = st.button("🚨 Run Optimization", key="runopt", use_container_width=True)
+def download_json(obj, filename):
+    j = json.dumps(obj, indent=2)
+    st.download_button("Download Scenario as JSON", j, file_name=filename, mime="application/json")
 
-tab_labels = [
-    "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves", "🛢️ Pump-System",
-    "🧪 DRA Curves", "📊 3D Analysis and Surface Plots", "🧩 3D Pressure Profile",
-    "📈 Sensitivity", "📚 Benchmarking", "🏆 Savings Simulation"
-]
-tabs = st.tabs(tab_labels)
+def upload_json(session_keys):
+    uploaded = st.file_uploader("Upload Saved Scenario (JSON)", type="json")
+    if uploaded:
+        data = json.load(uploaded)
+        for k in session_keys:
+            if k in data:
+                st.session_state[k] = pd.DataFrame(data[k]) if isinstance(data[k], list) else data[k]
+        st.success("Scenario loaded.")
 
-if "last_output" not in st.session_state:
-    st.session_state["last_output"] = None
-if "last_data" not in st.session_state:
-    st.session_state["last_data"] = {}
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Input", "Optimization", "Visualization", "Cost Breakdown", "Download Report"
+])
 
-with st.sidebar:
-    st.header("Pipeline Settings")
-    FLOW = st.number_input("Pipeline Flow (m³/hr)", min_value=1.0, value=5000.0, step=100.0)
-    RateDRA = st.number_input("DRA Cost per kg (INR)", min_value=0.0, value=300.0, step=1.0)
-    Price_HSD = st.number_input("Fuel Price (INR/L)", min_value=0.0, value=100.0, step=1.0)
-    rpm_step = st.selectbox("RPM Step", [10, 25, 50, 100], index=3)
-    dra_step = st.selectbox("DRA% Step", [1, 2, 5, 10], index=0)
-    st.header("Upload Data")
-    stations_file = st.file_uploader("Stations CSV", type=['csv'])
-    dra_files = st.file_uploader("DRA Curve CSVs (multiple files)", accept_multiple_files=True, type=['csv'])
+with tab1:
+    st.subheader("Station Data")
+    stations_cols = ["Station","Distance (km)","Elevation (m)","Diameter (mm)","Roughness (mm)","Is Pump Station","Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)","MAOP (m)"]
+    station_defaults = [
+        {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
+        {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
+    ]
+    station_df = get_table(station_defaults, "station_table")
+    st.session_state["station_table"] = station_df
+    st.subheader("Q vs Head Curve")
+    qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
+    qh_df = get_table(qh_defaults, "qh_curve")
+    st.session_state["qh_curve"] = qh_df
+    st.subheader("Q vs Efficiency Curve")
+    qeff_defaults = [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
+    qeff_df = get_table(qeff_defaults, "qeff_curve")
+    st.session_state["qeff_curve"] = qeff_df
+    st.subheader("Scenario Save/Load")
+    scenario = {
+        "station_table": station_df.to_dict(orient="records"),
+        "qh_curve": qh_df.to_dict(orient="records"),
+        "qeff_curve": qeff_df.to_dict(orient="records"),
+    }
+    download_json(scenario, "pipeline_scenario.json")
+    upload_json(["station_table","qh_curve","qeff_curve"])
 
-def load_station_data(csv_file):
-    df = pd.read_csv(csv_file)
-    stations = df.to_dict(orient="records")
-    return stations, df
-
-def load_dra_curves(dra_files):
-    dra_curve_dict = {}
-    dra_curve_table = {}
-    for file in dra_files:
-        try:
-            vis = float(''.join(filter(str.isdigit, file.name)))
-            df = pd.read_csv(file)
-            dra_curve_dict[vis] = df
-            dra_curve_table[vis] = df
-        except Exception:
-            continue
-    return dra_curve_dict, dra_curve_table
-
-ready = stations_file and dra_files
-
-if ready and run_btn:
-    stations, stations_df = load_station_data(stations_file)
-    dra_curve_dict, dra_curve_table = load_dra_curves(dra_files)
-    N = len(stations)
-    kv_list = []
-    rho_list = []
-    for idx in range(N):
-        kv_list.append(stations[idx].get('kv', 10.0))
-        rho_list.append(stations[idx].get('rho', 850.0))
-    terminal = {"elev": stations[-1].get('elev', 0.0), "name": "Terminal"}
-    try:
-        with st.spinner("Running optimization..."):
-            output = pipeline_model.optimize_pipeline(
-                stations, terminal, FLOW, kv_list, rho_list, RateDRA, Price_HSD, dra_curve_dict,
-                rpm_step=int(rpm_step), dra_step=int(dra_step)
+with tab2:
+    st.header("Pipeline Optima™ Optimization")
+    flow_rate = st.number_input("Enter flow rate (m³/h)", min_value=1, value=200, step=10)
+    viscosity = st.number_input("Enter kinematic viscosity (cSt)", min_value=1.0, value=20.0, step=0.1)
+    if st.button("Run Optimization"):
+        with st.spinner("Optimizing..."):
+            result = solve_pipeline(
+                st.session_state["station_table"].to_dict(orient="records"),
+                st.session_state["qh_curve"].to_dict(orient="records"),
+                st.session_state["qeff_curve"].to_dict(orient="records"),
+                flow_rate, viscosity
             )
-        st.session_state["last_output"] = output
-        st.session_state["last_data"] = {
-            "stations": stations,
-            "stations_df": stations_df,
-            "dra_curve_dict": dra_curve_dict,
-            "dra_curve_table": dra_curve_table
-        }
-        st.success("Optimization completed.")
-    except Exception as e:
-        st.session_state["last_output"] = None
-        st.error(f"Backend error: {e}")
+            st.session_state["opt_result"] = result
+            st.session_state["opt_summary"] = pd.DataFrame(result["summary_table"])
+            st.session_state["opt_total_cost"] = result["total_cost"]
+            st.success("Optimization complete")
+            st.dataframe(st.session_state["opt_summary"], use_container_width=True)
+            st.markdown(f"Total Operating Cost: ₹ {result['total_cost']:,.2f}")
 
-elif st.session_state["last_output"]:
-    output = st.session_state["last_output"]
-    stations = st.session_state["last_data"]["stations"]
-    stations_df = st.session_state["last_data"]["stations_df"]
-    dra_curve_dict = st.session_state["last_data"]["dra_curve_dict"]
-    dra_curve_table = st.session_state["last_data"]["dra_curve_table"]
-else:
-    for tab in tabs:
-        with tab:
-            st.info("Please run optimization.")
-    st.stop()
+with tab3:
+    st.header("Visualization")
+    if "qh_curve" in st.session_state:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        qh = st.session_state["qh_curve"]
+        q_vals = np.linspace(min(qh["Flow (m3/h)"]), max(qh["Flow (m3/h)"]), 100)
+        H = np.interp(q_vals, qh["Flow (m3/h)"], qh["Head (m)"])
+        plt.figure(figsize=(8,4))
+        plt.plot(q_vals, H, label="Pump Head Curve")
+        plt.xlabel("Flow (m³/h)")
+        plt.ylabel("Head (m)")
+        plt.title("Q vs Head")
+        plt.grid(True)
+        plt.legend()
+        st.pyplot(plt.gcf())
+    if "qeff_curve" in st.session_state:
+        qeff = st.session_state["qeff_curve"]
+        Eff = np.interp(q_vals, qeff["Flow (m3/h)"], qeff["Efficiency (%)"])
+        plt.figure(figsize=(8,4))
+        plt.plot(q_vals, Eff, label="Pump Efficiency Curve", color="green")
+        plt.xlabel("Flow (m³/h)")
+        plt.ylabel("Efficiency (%)")
+        plt.title("Q vs Efficiency")
+        plt.grid(True)
+        plt.legend()
+        st.pyplot(plt.gcf())
 
-# --- SUMMARY TAB ---
-with tabs[0]:
-    st.markdown("### Optimization Summary")
-    summary_df = pd.DataFrame(output['summary_table'])
-    st.dataframe(summary_df, use_container_width=True)
-    st.markdown(f"#### <span style='color:#006400'>Total Optimized Cost: ₹{output['total_cost']:,.2f}</span>", unsafe_allow_html=True)
-
-# --- COSTS TAB ---
-with tabs[1]:
-    st.markdown("### Cost Breakdown (All Stations)")
-    summary_df = pd.DataFrame(output['summary_table'])
-    cost_cols = ["Station","DRA_Cost","Power_Cost","Total_Cost"]
-    st.dataframe(summary_df[cost_cols], use_container_width=True)
-    st.bar_chart(summary_df.set_index("Station")[["Total_Cost"]])
-    st.line_chart(summary_df.set_index("Station")[["DRA_Cost","Power_Cost"]])
-    st.markdown("#### Cumulative Cost Pie")
-    fig = px.pie(summary_df, values="Total_Cost", names="Station", title="Share of Total Cost by Station")
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- PERFORMANCE TAB ---
-with tabs[2]:
-    st.markdown("### Hydraulic & Pump Performance")
-    perf_cols = ["Station","NOP","RPM","Eff (%)","Head_Required (m)","Head_Generated (m)"]
-    st.dataframe(summary_df[perf_cols], use_container_width=True)
-    st.line_chart(summary_df.set_index("Station")[["Eff (%)","Head_Required (m)","Head_Generated (m)"]])
-    eff_df = summary_df[["Station", "Eff (%)"]]
-    st.markdown("#### Efficiency by Station")
-    fig = px.bar(eff_df, x="Station", y="Eff (%)", title="Pump Efficiency per Station")
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- SYSTEM CURVES TAB ---
-with tabs[3]:
-    st.markdown("### System Curves")
-    st.info("Below: System head for each station at each DRA% (best config highlighted).")
-    for i, stn in enumerate(stations):
-        name = stn['name']
-        df = output['station_tables'][name]
-        if "DR%" in df.columns and "Head_Required (m)" in df.columns:
-            pivot = df.pivot(index="DR%", columns="RPM", values="Head_Required (m)")
-            fig = px.line(pivot, y=pivot.columns, x=pivot.index,
-                labels={"value":"Head_Required (m)","DR%":"DRA%"},
-                title=f"System Curve - {name} (varied RPM at each DRA%)")
+with tab4:
+    st.header("Cost Breakdown")
+    if "opt_summary" in st.session_state:
+        df = st.session_state["opt_summary"]
+        if "DRA Cost" in df.columns and "Power Cost" in df.columns and "Total Cost" in df.columns:
+            import plotly.express as px
+            st.dataframe(df[["Station", "DRA Cost", "Power Cost", "Total Cost"]], use_container_width=True)
+            st.bar_chart(df.set_index("Station")[["Total Cost"]])
+            fig = px.pie(df, values="Total Cost", names="Station", title="Share of Total Cost by Station")
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Run optimization to see cost breakdown.")
 
-# --- PUMP-SYSTEM TAB ---
-with tabs[4]:
-    st.markdown("### Pump-System Curve Overlays")
-    for i, stn in enumerate(stations):
-        name = stn['name']
-        df = output['station_tables'][name]
-        if "DR%" in df.columns and "Head_Generated (m)" in df.columns:
-            fig = px.scatter(df, x="Head_Required (m)", y="Head_Generated (m)", color="RPM",
-                labels={"Head_Required (m)":"System Head (m)","Head_Generated (m)":"Pump Head (m)"},
-                title=f"Pump vs System Head - {name}")
-            st.plotly_chart(fig, use_container_width=True)
-
-# --- DRA CURVES TAB ---
-with tabs[5]:
-    st.markdown("### DRA Curves")
-    for vis, df in dra_curve_table.items():
-        fig = px.line(df, x="%Drag Reduction", y="PPM", title=f"DRA Curve for {vis} cSt")
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- 3D ANALYSIS TAB ---
-with tabs[6]:
-    st.markdown("### 3D Cost & Performance Surface Plots")
-    for i, stn in enumerate(stations):
-        name = stn['name']
-        df = output['station_tables'][name]
-        if "RPM" in df.columns and "DR%" in df.columns and "Total_Cost" in df.columns:
-            fig = px.density_heatmap(df, x="RPM", y="DR%", z="Total_Cost", nbinsx=20, nbinsy=20, title=f"Cost Surface: {name}")
-            st.plotly_chart(fig, use_container_width=True)
-        if "NOP" in df.columns and "Eff (%)" in df.columns and "DR%" in df.columns:
-            fig2 = px.scatter_3d(df, x="NOP", y="DR%", z="Eff (%)", color="Total_Cost", title=f"Efficiency 3D: {name}")
-            st.plotly_chart(fig2, use_container_width=True)
-
-# --- 3D PRESSURE PROFILE TAB ---
-with tabs[7]:
-    st.markdown("### 3D Pressure/Head Profile")
-    x = [row['Station'] for row in output['summary_table']]
-    y = [row['Head_Required (m)'] for row in output['summary_table']]
-    z = [row['Head_Generated (m)'] for row in output['summary_table']]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='lines+markers', name='Pressure Profile'))
-    fig.update_layout(scene=dict(
-        xaxis_title='Station',
-        yaxis_title='Head Required (m)',
-        zaxis_title='Head Generated (m)'
-    ))
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- SENSITIVITY TAB ---
-with tabs[8]:
-    st.markdown("### Sensitivity Analysis")
-    st.info("Sensitivity with respect to DRA cost, Fuel price, and Flow rate.")
-    base_cost = output['total_cost']
-    for param, pct in [("DRA Cost per kg (INR)", RateDRA), ("Fuel Price (INR/L)", Price_HSD), ("Pipeline Flow (m³/hr)", FLOW)]:
-        deltas = np.linspace(-0.3, 0.3, 7)
-        costs = []
-        for delta in deltas:
-            if param == "DRA Cost per kg (INR)":
-                val = RateDRA * (1+delta)
-                results = pipeline_model.optimize_pipeline(
-                    stations, terminal, FLOW, kv_list, rho_list, val, Price_HSD, dra_curve_dict,
-                    rpm_step=int(rpm_step), dra_step=int(dra_step)
-                )
-            elif param == "Fuel Price (INR/L)":
-                val = Price_HSD * (1+delta)
-                results = pipeline_model.optimize_pipeline(
-                    stations, terminal, FLOW, kv_list, rho_list, RateDRA, val, dra_curve_dict,
-                    rpm_step=int(rpm_step), dra_step=int(dra_step)
-                )
-            else:
-                val = FLOW * (1+delta)
-                results = pipeline_model.optimize_pipeline(
-                    stations, terminal, val, kv_list, rho_list, RateDRA, Price_HSD, dra_curve_dict,
-                    rpm_step=int(rpm_step), dra_step=int(dra_step)
-                )
-            costs.append(results['total_cost'])
-        fig = px.line(x=(100*deltas+100), y=costs, title=f"Sensitivity: {param}", labels={"x":param,"y":"Total Cost"})
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- BENCHMARKING TAB ---
-with tabs[9]:
-    st.markdown("### Benchmarking")
-    base_df = pd.DataFrame(output['summary_table'])
-    st.info("You can upload a base case CSV for benchmarking if desired.")
-    base_file = st.file_uploader("Upload Base Case (summary_table CSV)", type=["csv"], key="bench_csv")
-    if base_file:
-        base_case = pd.read_csv(base_file)
-        merged = base_df.set_index("Station")[["Total_Cost"]].join(base_case.set_index("Station")[["Total_Cost"]], rsuffix="_base")
-        merged['Savings'] = merged["Total_Cost_base"] - merged["Total_Cost"]
-        st.dataframe(merged)
-        st.bar_chart(merged[["Total_Cost_base","Total_Cost"]])
-
-# --- SAVINGS SIMULATION TAB ---
-with tabs[10]:
-    st.markdown("### Savings Simulation")
-    yearly_savings = 0.0
-    base_case_file = st.file_uploader("Upload Base Case (summary_table CSV)", type=["csv"], key="savings_base_csv")
-    if base_case_file:
-        base_case = pd.read_csv(base_case_file)
-        merged = pd.DataFrame(output['summary_table']).set_index("Station").join(
-            base_case.set_index("Station"), rsuffix="_base"
-        )
-        merged['Savings'] = merged["Total_Cost_base"] - merged["Total_Cost"]
-        yearly_savings = merged['Savings'].sum() * 365
-        st.metric("Estimated Yearly Savings (INR)", f"{yearly_savings:,.0f}")
-        st.bar_chart(merged[["Total_Cost_base","Total_Cost","Savings"]])
-
-# --- Station-wise Export Tabs ---
-st.markdown("### Station-wise Detailed Results")
-station_tabs = st.tabs([f"{row['Station']}" for row in output['summary_table']])
-for idx, (tab, row) in enumerate(zip(station_tabs, output['summary_table'])):
-    name = row['Station']
-    with tab:
-        df = output['station_tables'].get(name, pd.DataFrame())
-        st.dataframe(df, use_container_width=True)
+with tab5:
+    st.header("Download Reports")
+    if "opt_summary" in st.session_state:
+        summary_df = st.session_state["opt_summary"]
+        csv = summary_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            f"Download Results for {name}",
-            output['csv_tables'].get(name, ""),
-            file_name=f"{name}_results.csv",
+            label="Download Optimization Summary as CSV",
+            data=csv,
+            file_name="optimization_summary.csv",
             mime="text/csv"
         )
-        if df.shape[1] == 1 and "No feasible configs" in df.columns[0]:
-            st.warning(f"No feasible configs for {name}. See raw_results for rejection reasons.")
-
-with st.expander("Show Raw Results (All Configs Tried, All Stations)"):
-    st.write(output['raw_results'])
-
-st.markdown("""
-<hr style="margin-top:2em; margin-bottom:1em; border: 1px solid #aaa;">
-<p style="text-align:right;font-size:0.9em;color:#888;">
-&copy; 2025 Pipeline Optima | Built on world-class graphical optimization engine.
-</p>
-""", unsafe_allow_html=True)
+    st.markdown("Download Input Tables")
+    station_csv = st.session_state["station_table"].to_csv(index=False).encode("utf-8")
+    qh_csv = st.session_state["qh_curve"].to_csv(index=False).encode("utf-8")
+    qeff_csv = st.session_state["qeff_curve"].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download Station Table CSV",
+        data=station_csv,
+        file_name="station_data.csv",
+        mime="text/csv"
+    )
+    st.download_button(
+        label="Download Q-H Curve CSV",
+        data=qh_csv,
+        file_name="q_h_curve.csv",
+        mime="text/csv"
+    )
+    st.download_button(
+        label="Download Q-Eff Curve CSV",
+        data=qeff_csv,
+        file_name="q_eff_curve.csv",
+        mime="text/csv"
+    )
