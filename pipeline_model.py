@@ -62,13 +62,24 @@ def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity
     Ds = [float(stn.get("Diameter (mm)", 500))/1000 for stn in station_data]
     es = [float(stn.get("Roughness (mm)", 0.045)) for stn in station_data]
     maops = [float(stn.get("MAOP (m)", 900)) for stn in station_data]
-    peaks = [[] for _ in range(N-1)]
-    for i in range(N-1):
-        peaks[i] = []
+
+    # Robust peak handling (even for missing or blank Peaks fields)
+    peaks = []
+    for stn in station_data:
+        p = stn.get("Peaks", [])
+        if isinstance(p, str) and p.strip() == "":
+            p = []
+        if not isinstance(p, list):
+            try:
+                p = eval(p)
+            except:
+                p = []
+        peaks.append(p if p else [])
+
     for idx, stn in enumerate(station_data):
         name = stn['Station']
         if idx == 0:
-            allowed_NOP = [n for n in NOP_range if n >= 1]
+            allowed_NOP = [n for n in NOP_range if n >= 1]  # Origin cannot be bypassed
         else:
             allowed_NOP = [0] + NOP_range
         best_cost = 1e99
@@ -87,12 +98,14 @@ def optimize_pipeline(station_data, q_h_curve, q_eff_curve, flow_rate, viscosity
                 hf = 8*f*L*flow_rate**2/(np.pi**2*9.81*D**5*3600**2)
                 head_next = (elevs[idx+1] if idx+1<N else elevs[idx]) - elevs[idx] + hf + 50
                 heads_peaks = []
+                # PEAK PRESSURE: check all peaks for this segment
                 if peaks[idx] and idx < N-1:
                     for ep in peaks[idx]:
-                        frac = (ep - elevs[idx]) / (elevs[idx+1] - elevs[idx]) if elevs[idx+1] != elevs[idx] else 0.5
-                        Lpeak = L * frac
-                        hf_peak = 8*f*Lpeak*flow_rate**2/(np.pi**2*9.81*D**5*3600**2)
-                        heads_peaks.append((ep - elevs[idx]) + hf_peak + 50)
+                        if idx+1 < N:
+                            frac = (ep - elevs[idx]) / (elevs[idx+1] - elevs[idx]) if elevs[idx+1] != elevs[idx] else 0.5
+                            Lpeak = L * frac
+                            hf_peak = 8*f*Lpeak*flow_rate**2/(np.pi**2*9.81*D**5*3600**2)
+                            heads_peaks.append((ep - elevs[idx]) + hf_peak + 50)
                 all_heads = [head_next] + heads_peaks
                 SDH = max(all_heads) if NOP else 0
                 if NOP == 0:
