@@ -8,7 +8,7 @@ def login_widget():
     userid = st.text_input("User ID")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-        if userid == "parichay_das" and password == "heteroscedasticity":
+        if userid == "admin" and password == "yourpassword":
             st.session_state["authenticated"] = True
         else:
             st.error("Invalid UserID or Password")
@@ -27,21 +27,37 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 with tab1:
-    stations_cols = ["Station","Distance (km)","Elevation (m)","Diameter (mm)","Roughness (mm)","Is Pump Station","Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)","MAOP (m)"]
+    st.subheader("Stations (last row = terminal station)")
     station_defaults = [
-        {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
-        {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,"Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900},
+        {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,
+         "Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900,"Peaks":[]},
+        {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,
+         "Is Pump Station":False,"Pump Count":"","Head Limit (m)":"","Max Power (kW)":"","Fuel Rate (Rs/kWh)":"","MAOP (m)":900,"Peaks":[]},
     ]
-    qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
-    qeff_defaults = [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
+    station_cols = [
+        "Station","Distance (km)","Elevation (m)","Diameter (mm)","Roughness (mm)",
+        "Is Pump Station","Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)","MAOP (m)","Peaks"
+    ]
+    df = pd.DataFrame(station_defaults)
+    edited_df = st.data_editor(df, num_rows="dynamic", key="station_table", column_order=station_cols)
 
-    station_df = st.data_editor(pd.DataFrame(station_defaults), num_rows="dynamic", key="station_table")
+    # Hide/disable pump columns if Is Pump Station is not checked
+    for idx, row in edited_df.iterrows():
+        if not row.get("Is Pump Station", False):
+            for col in ["Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)"]:
+                edited_df.at[idx, col] = ""
+
+    st.subheader("Q vs Head Curve")
+    qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
     qh_df = st.data_editor(pd.DataFrame(qh_defaults), num_rows="dynamic", key="qh_curve")
+
+    st.subheader("Q vs Efficiency Curve")
+    qeff_defaults = [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
     qeff_df = st.data_editor(pd.DataFrame(qeff_defaults), num_rows="dynamic", key="qeff_curve")
 
     if st.button("Download Scenario as JSON"):
         scenario = {
-            "station_table": station_df.to_dict(orient="records"),
+            "station_table": edited_df.to_dict(orient="records"),
             "qh_curve": qh_df.to_dict(orient="records"),
             "qeff_curve": qeff_df.to_dict(orient="records"),
         }
@@ -63,7 +79,7 @@ with tab2:
     if st.button("Run Optimization"):
         with st.spinner("Optimizing..."):
             result = solve_pipeline(
-                station_df.to_dict(orient="records"),
+                edited_df.to_dict(orient="records"),
                 qh_df.to_dict(orient="records"),
                 qeff_df.to_dict(orient="records"),
                 flow_rate, viscosity
@@ -128,7 +144,7 @@ with tab5:
             mime="text/csv"
         )
     st.markdown("Download Input Tables")
-    station_csv = station_df.to_csv(index=False).encode("utf-8")
+    station_csv = edited_df.to_csv(index=False).encode("utf-8")
     qh_csv = qh_df.to_csv(index=False).encode("utf-8")
     qeff_csv = qeff_df.to_csv(index=False).encode("utf-8")
     st.download_button(
