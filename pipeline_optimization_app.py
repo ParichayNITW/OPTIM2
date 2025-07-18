@@ -714,15 +714,12 @@ if not auto_batch:
         with st.spinner("Solving optimization..."):
             stations_data = st.session_state.stations
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-            # Always ensure linefill_df, kv_list, rho_list are defined!
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-
-            
-            # ------------- ADD THIS BLOCK -------------
+    
+            # --- Head/Efficiency Curve Fit Block ---
             import pandas as pd
             import numpy as np
-    
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     dfh = st.session_state.get(f"head_data_{idx}")
@@ -741,9 +738,8 @@ if not auto_batch:
                         Ee = dfe.iloc[:, 1].values
                         coeff_e = np.polyfit(Qe, Ee, 4)
                         stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
-            # ------------- END OF BLOCK -------------
     
-            # Now call solve_pipeline
+            # --- NOW THE FUNCTION CALL (all parenthesis must be closed!) ---
             res = solve_pipeline(
                 stations_data,
                 term_data,
@@ -754,15 +750,14 @@ if not auto_batch:
                 Price_HSD,
                 linefill_df.to_dict()
             )
-
-
+    
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-        # --- CRUCIAL LINE TO FORCE UI REFRESH ---
         st.rerun()
+
 
 
 if not auto_batch:
