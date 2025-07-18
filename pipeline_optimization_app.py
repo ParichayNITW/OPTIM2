@@ -854,6 +854,7 @@ if not auto_batch:
                     ]
             
             # Add the terminal station at the end as before
+            terminal_key = terminal_name.lower().replace(' ', '_')
             summary[terminal_name] = [
                 res.get(f"pipeline_flow_{terminal_key}", None),
                 res.get(f"pump_flow_{terminal_key}", None),
