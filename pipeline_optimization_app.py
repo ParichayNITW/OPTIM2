@@ -755,6 +755,7 @@ if not auto_batch:
                 linefill_df.to_dict()
             )
 
+
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
