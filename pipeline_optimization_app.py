@@ -28,7 +28,6 @@ tabs = st.tabs([
     "Input", "Optimization", "Visualization", "Cost Breakdown", "Download Report"
 ])
 
-# Helper to generate unique keys for widget tables (avoids key clash)
 def get_unique_key(stn, typ):
     base = f"{stn}_{typ}_curve"
     return f"{base}_{st.session_state.get('stations_uid', 'init')}"
@@ -49,9 +48,13 @@ with tabs[0]:
         {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,
          "Is Pump Station":False,"Pump Count":"","Head Limit (m)":"","Max Power (kW)":"","Fuel Rate (Rs/kWh)":"","MAOP (m)":900,"Peaks":[]},
     ]
-    # Load from session state if uploaded scenario, else use defaults
+    # Robust DataFrame assignment:
     if "station_table" in st.session_state:
-        df = st.session_state["station_table"].copy()
+        val = st.session_state["station_table"]
+        if isinstance(val, pd.DataFrame):
+            df = val.copy()
+        else:
+            df = pd.DataFrame(val)
     else:
         df = pd.DataFrame(station_defaults)
     edited_df = st.data_editor(
@@ -106,7 +109,11 @@ with tabs[0]:
     uploaded = st.file_uploader("Upload Scenario (JSON)", type="json")
     if uploaded:
         data = json.load(uploaded)
-        st.session_state["station_table"] = pd.DataFrame(data["station_table"])
+        # Always force a DataFrame
+        try:
+            st.session_state["station_table"] = pd.DataFrame(data["station_table"])
+        except:
+            st.session_state["station_table"] = data["station_table"]
         st.session_state["stations_uid"] = str(uuid.uuid4())
         st.experimental_rerun()
 
