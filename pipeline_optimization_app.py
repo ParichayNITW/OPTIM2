@@ -311,38 +311,52 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                key_head = f"head_data_{idx}"
-                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                    df_head = st.session_state[key_head]
-                else:
-                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.session_state[key_head] = df_head
-
-                key_eff = f"eff_data_{idx}"
-                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                    df_eff = st.session_state[key_eff]
-                else:
-                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[key_eff] = df_eff
-
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                with pcol2:
-                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                with pcol3:
-                    if stn['power_type']=="Grid":
-                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                        stn['sfc'] = 0.0
-                    else:
-                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                        stn['rate'] = 0.0
+                # --- New dual pump UI block ---
+                if "pumps" not in stn or not isinstance(stn["pumps"], list):
+                    stn["pumps"] = []
+                # Button to add pump type (max 2)
+                if st.button(f"Add Pump Type for {stn['name']}", key=f"add_pump_{idx}", disabled=len(stn["pumps"]) >= 2):
+                    stn["pumps"].append({
+                        "type": f"Type {len(stn['pumps'])+1}",
+                        "MinRPM": 1200,
+                        "DOL": 1500,
+                        "rate": 9.0,
+                        "sfc": 0.0,
+                        "max_units": 2,
+                        "power_type": "Grid",
+                        "head_data": [{"Flow (m³/hr)": 0.0, "Head (m)": 0.0}],
+                        "eff_data": [{"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0}],
+                    })
+                # Render each pump type's input fields
+                for t, pump in enumerate(stn["pumps"]):
+                    st.markdown(f"**Pump Type {t+1}**")
+                    pump["type"] = st.text_input("Type Name", pump.get("type", f"Type {t+1}"), key=f"ptype_{idx}_{t}")
+                    pump["power_type"] = st.selectbox("Power Type", options=["Grid", "Diesel"], index=0 if pump.get("power_type","Grid")=="Grid" else 1, key=f"ptypebox_{idx}_{t}")
+                    pump["MinRPM"] = st.number_input("Min RPM", min_value=0, value=pump.get("MinRPM",1200), key=f"minrpm_{idx}_{t}")
+                    pump["DOL"] = st.number_input("Rated RPM", min_value=0, value=pump.get("DOL",1500), key=f"dol_{idx}_{t}")
+                    pump["rate"] = st.number_input("Electricity Rate (₹/kWh)", min_value=0.0, value=pump.get("rate",9.0), key=f"rate_{idx}_{t}")
+                    pump["sfc"] = st.number_input("SFC (kg/kWh)", min_value=0.0, value=pump.get("sfc",0.0), key=f"sfc_{idx}_{t}")
+                    pump["max_units"] = st.number_input("Max Units", min_value=1, value=pump.get("max_units",2), key=f"maxu_{idx}_{t}")
+                    st.write("Head Curve Data")
+                    pump["head_data"] = st.data_editor(
+                        pd.DataFrame(pump.get("head_data", [{"Flow (m³/hr)":0.0,"Head (m)":0.0}])),
+                        num_rows="dynamic",
+                        key=f"head_data_{idx}_{t}"
+                    ).to_dict("records")
+                    st.write("Efficiency Curve Data")
+                    pump["eff_data"] = st.data_editor(
+                        pd.DataFrame(pump.get("eff_data", [{"Flow (m³/hr)":0.0,"Efficiency (%)":0.0}])),
+                        num_rows="dynamic",
+                        key=f"eff_data_{idx}_{t}"
+                    ).to_dict("records")
+                    # Remove pump type if more than one
+                    if len(stn["pumps"]) > 1:
+                        if st.button(f"Remove Pump Type {t+1} from {stn['name']}", key=f"rempump_{idx}_{t}"):
+                            stn["pumps"].pop(t)
+                            st.experimental_rerun()
             else:
                 st.info("Not a pumping station. No pump data required.")
+
 
         with tabs[1]:
             key_peak = f"peak_data_{idx}"
