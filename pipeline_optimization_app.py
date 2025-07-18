@@ -815,50 +815,64 @@ if not auto_batch:
                 "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
             ]
             summary = {"Parameters": params}
-    
-            for idx, nm in enumerate(names):
-                key = nm.lower().replace(' ','_')
-                # For DRA cost at each station, use hydraulically-correct flow
-                if key in station_ppm:
-                    dra_cost = (
-                        station_ppm[key]
-                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                        * st.session_state["RateDRA"]
-                    )
+            
+            # Loop over all stations
+            for idx, stn in enumerate(stations_data, start=1):
+                key = stn['name'].strip().lower().replace(' ','_')
+                # If this station is a pump station
+                if stn.get('is_pump', False):
+                    # Loop over all pump types for this station
+                    for t, pump in enumerate(stn.get("pumps", [])):
+                        tkey = f"{key}_type{t+1}"
+                        nm = f"{stn['name']} (Type {t+1})"
+                        summary[nm] = [
+                            res.get(f"pipeline_flow_{key}", None),
+                            res.get(f"pump_flow_{key}", None),
+                            res.get(f"power_cost_{tkey}",0.0),
+                            res.get(f"dra_cost_{tkey}",0.0),
+                            res.get(f"dra_ppm_{tkey}",0.0),
+                            int(res.get(f"num_pumps_{tkey}",0)),
+                            res.get(f"speed_{tkey}",0.0),
+                            res.get(f"efficiency_{tkey}",0.0),
+                            res.get(f"reynolds_{key}",0.0),
+                            res.get(f"head_loss_{key}",0.0),
+                            res.get(f"velocity_{key}",0.0),
+                            res.get(f"residual_head_{key}",0.0),
+                            res.get(f"sdh_{key}",0.0),
+                            res.get(f"maop_{key}",0.0),
+                            res.get(f"drag_reduction_{tkey}",0.0)
+                        ]
                 else:
-                    dra_cost = 0.0
-    
-                # For numeric columns, always use np.nan if not available
-                pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
-                summary[nm] = [
-                    segment_flows[idx],
-                    pumpflow,
-                    res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
-                    dra_cost,
-                    station_ppm.get(key, np.nan),
-                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
-                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
-                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
-                    res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
-                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-                    res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
-                    res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
-                    res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
-                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
-                ]
-    
+                    # For non-pump stations (delivery, supply etc)
+                    summary[stn['name']] = [
+                        res.get(f"pipeline_flow_{key}", None),
+                        res.get(f"pump_flow_{key}", None),
+                        0.0, 0.0, 0.0, 0, 0.0, 0.0,
+                        res.get(f"reynolds_{key}",0.0),
+                        res.get(f"head_loss_{key}",0.0),
+                        res.get(f"velocity_{key}",0.0),
+                        res.get(f"residual_head_{key}",0.0),
+                        res.get(f"sdh_{key}",0.0),
+                        res.get(f"maop_{key}",0.0),
+                        res.get(f"drag_reduction_{key}",0.0)
+                    ]
+            
+            # Add the terminal station at the end as before
+            summary[terminal_name] = [
+                res.get(f"pipeline_flow_{terminal_key}", None),
+                res.get(f"pump_flow_{terminal_key}", None),
+                0.0, 0.0, 0.0, 0, 0.0, 0.0,
+                res.get(f"reynolds_{terminal_key}",0.0),
+                res.get(f"head_loss_{terminal_key}",0.0),
+                res.get(f"velocity_{terminal_key}",0.0),
+                res.get(f"residual_head_{terminal_key}",0.0),
+                res.get(f"sdh_{terminal_key}",0.0),
+                res.get(f"maop_{terminal_key}",0.0),
+                res.get(f"drag_reduction_{terminal_key}",0.0)
+            ]
             df_sum = pd.DataFrame(summary)
-    
-            # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
-            for col in df_sum.columns:
-                if col not in ["Parameters", "No. of Pumps"]:
-                    df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-            if "No. of Pumps" in df_sum.columns:
-                df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
-    
-            st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
+
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
