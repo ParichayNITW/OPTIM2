@@ -319,11 +319,11 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         power_type = pt.get("power_type", "Grid").lower()
         if power_type == "grid":
             elec_cost = float(pt.get("rate", 0.0))
-            power_kW = (rho_i * pump_flow * 9.81 * TDH[(i, t)] * model.NOP[i, t]) / (3600.0 * 1000.0 * eff_val * 0.95)
+            power_kW = (rho_i * pump_flow * 9.81 * TDH[(i, t)] * model.NOP[i, t]) / (3600.0 * 1000.0 * (eff_val + 1e-6) * 0.95)
             power_cost = power_kW * 24.0 * elec_cost
         else:
             sfc = float(pt.get("sfc", 0.0))
-            power_kW = (rho_i * pump_flow * 9.81 * TDH[(i, t)] * model.NOP[i, t]) / (3600.0 * 1000.0 * eff_val * 0.95)
+            power_kW = (rho_i * pump_flow * 9.81 * TDH[(i, t)] * model.NOP[i, t]) / (3600.0 * 1000.0 * (eff_val + 1e-6) * 0.95)
             fuel_per_kWh = (sfc * 1.34102) / 820.0
             power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
         dra_cost_i = model.dra_cost[i, t]
