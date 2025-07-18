@@ -353,7 +353,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     if len(stn["pumps"]) > 1:
                         if st.button(f"Remove Pump Type {t+1} from {stn['name']}", key=f"rempump_{idx}_{t}"):
                             stn["pumps"].pop(t)
-                            st.experimental_rerun()
+                            st.rerun()
             else:
                 st.info("Not a pumping station. No pump data required.")
 
