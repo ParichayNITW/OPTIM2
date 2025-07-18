@@ -184,6 +184,9 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         return sum(m.rpm_bin[i, t, j] for j in range(len(allowed_rpms[(i, t)]))) == 1
     model.rpm_bin_sum = pyo.Constraint(model.pump_station_types, rule=rpm_bin_sum_rule)
     model.RPM_var = pyo.Var(model.pump_station_types, domain=pyo.NonNegativeReals)
+    for key in model.RPM_var:
+        model.RPM_var[key].setlb(1.0)
+
     def rpm_value_rule(m, i, t):
         return m.RPM_var[i, t] == sum(allowed_rpms[(i, t)][j] * m.rpm_bin[i, t, j] for j in range(len(allowed_rpms[(i, t)])))
     model.rpm_value = pyo.Constraint(model.pump_station_types, rule=rpm_value_rule)
