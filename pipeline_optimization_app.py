@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import json
+import uuid
 from pipeline_model import solve_pipeline
 
-# ---- Login ----
+# ----- Login Widget -----
 def login_widget():
     st.title("Pipeline Optima Login")
     userid = st.text_input("User ID")
@@ -27,23 +28,15 @@ tabs = st.tabs([
     "Input", "Optimization", "Visualization", "Cost Breakdown", "Download Report"
 ])
 
-# --------- Per-station Q-H/Q-Eff dict helpers ---------
-def get_pump_curve_table(station_name, curve_type, defaults):
-    key = f"{station_name}_{curve_type}_curve"
-    # Load from session or defaults
-    if key not in st.session_state:
-        st.session_state[key] = pd.DataFrame(defaults)
-    return st.data_editor(
-        st.session_state[key],
-        num_rows="dynamic",
-        key=key
-    )
+# Helper to generate unique keys for widget tables (avoids key clash)
+def get_unique_key(stn, typ):
+    base = f"{stn}_{typ}_curve"
+    return f"{base}_{st.session_state.get('stations_uid', 'init')}"
 
-def reset_pump_curve_table(station_name, curve_type, defaults):
-    key = f"{station_name}_{curve_type}_curve"
-    st.session_state[key] = pd.DataFrame(defaults)
+if "stations_uid" not in st.session_state:
+    st.session_state["stations_uid"] = str(uuid.uuid4())
 
-# ---------------- INPUT TAB -----------------
+# ------------------- INPUT TAB -------------------
 with tabs[0]:
     st.subheader("Stations (last row = terminal station)")
     station_cols = [
@@ -56,7 +49,11 @@ with tabs[0]:
         {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,
          "Is Pump Station":False,"Pump Count":"","Head Limit (m)":"","Max Power (kW)":"","Fuel Rate (Rs/kWh)":"","MAOP (m)":900,"Peaks":[]},
     ]
-    df = pd.DataFrame(station_defaults)
+    # Load from session state if uploaded scenario, else use defaults
+    if "station_table" in st.session_state:
+        df = st.session_state["station_table"].copy()
+    else:
+        df = pd.DataFrame(station_defaults)
     edited_df = st.data_editor(
         df, num_rows="dynamic", key="station_table", column_order=station_cols
     )
@@ -67,28 +64,37 @@ with tabs[0]:
             for col in ["Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)"]:
                 edited_df.at[idx, col] = ""
 
-    # ----- Per-station pump curves -----
+    st.markdown("If you add/remove stations, click below to reset all pump curve tables (prevents widget errors).")
+    if st.button("Reset Pump Curves"):
+        st.session_state["stations_uid"] = str(uuid.uuid4())
+        st.experimental_rerun()
+
     st.subheader("Pump Curves (per pump station)")
     station_curve_dict = {}
+    qh_defaults = [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
+    qeff_defaults = [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
     for idx, row in edited_df.iterrows():
         stn = row["Station"]
         if row.get("Is Pump Station", False):
             st.markdown(f"**{stn}:**")
-            qh_table = get_pump_curve_table(
-                stn, "qh",
-                [{"Flow (m3/h)":100,"Head (m)":1000},{"Flow (m3/h)":200,"Head (m)":900},{"Flow (m3/h)":300,"Head (m)":750}]
+            qh_table = st.data_editor(
+                pd.DataFrame(qh_defaults),
+                num_rows="dynamic",
+                key=get_unique_key(stn, "qh")
             )
-            qeff_table = get_pump_curve_table(
-                stn, "qeff",
-                [{"Flow (m3/h)":100,"Efficiency (%)":62},{"Flow (m3/h)":200,"Efficiency (%)":70},{"Flow (m3/h)":300,"Efficiency (%)":68}]
+            qeff_table = st.data_editor(
+                pd.DataFrame(qeff_defaults),
+                num_rows="dynamic",
+                key=get_unique_key(stn, "qeff")
             )
-            # Save per-station curve tables in dict
             station_curve_dict[stn] = {
                 "qh_curve": qh_table.to_dict(orient="records"),
                 "qeff_curve": qeff_table.to_dict(orient="records")
             }
+        else:
+            station_curve_dict[stn] = {"qh_curve": [], "qeff_curve": []}
 
-    # ------------- Scenario Save/Load -------------
+    # Download/Upload scenario
     if st.button("Download Scenario as JSON"):
         scenario = {
             "station_table": edited_df.to_dict(orient="records"),
@@ -101,28 +107,27 @@ with tabs[0]:
     if uploaded:
         data = json.load(uploaded)
         st.session_state["station_table"] = pd.DataFrame(data["station_table"])
-        # Restore per-station curves
-        for stn, curves in data.get("station_curve_dict", {}).items():
-            for curve_type in ["qh_curve", "qeff_curve"]:
-                key = f"{stn}_{curve_type}"
-                st.session_state[key] = pd.DataFrame(curves[curve_type])
+        st.session_state["stations_uid"] = str(uuid.uuid4())
         st.experimental_rerun()
 
-# ------------- OPTIMIZATION TAB --------------
+# ------------------- OPTIMIZATION TAB -------------------
 with tabs[1]:
     st.header("Pipeline Optima™ Optimization")
     flow_rate = st.number_input("Enter flow rate (m³/h)", min_value=1, value=200, step=10)
     viscosity = st.number_input("Enter kinematic viscosity (cSt)", min_value=1.0, value=20.0, step=0.1)
     if st.button("Run Optimization"):
         with st.spinner("Optimizing..."):
-            # Assemble per-station curves for backend
             per_stn_qh = {}
             per_stn_qeff = {}
             for idx, row in edited_df.iterrows():
                 stn = row["Station"]
                 if row.get("Is Pump Station", False):
-                    qh = st.session_state.get(f"{stn}_qh_curve", pd.DataFrame()).to_dict(orient="records")
-                    qeff = st.session_state.get(f"{stn}_qeff_curve", pd.DataFrame()).to_dict(orient="records")
+                    qh_key = get_unique_key(stn, "qh")
+                    qeff_key = get_unique_key(stn, "qeff")
+                    qh_df = st.session_state[qh_key]
+                    qeff_df = st.session_state[qeff_key]
+                    qh = qh_df.to_dict(orient="records")
+                    qeff = qeff_df.to_dict(orient="records")
                 else:
                     qh, qeff = [], []
                 per_stn_qh[stn] = qh
@@ -140,16 +145,17 @@ with tabs[1]:
             st.dataframe(st.session_state["opt_summary"], use_container_width=True)
             st.markdown(f"Total Operating Cost: ₹ {result['total_cost']:,.2f}")
 
-# ------------- VISUALIZATION TAB -------------
+# ------------------- VISUALIZATION TAB -------------------
 with tabs[2]:
     st.header("Visualization")
-    # Show all per-station pump curves
     for idx, row in edited_df.iterrows():
         stn = row["Station"]
         if row.get("Is Pump Station", False):
             st.subheader(f"Pump Curves - {stn}")
-            qh_df = st.session_state.get(f"{stn}_qh_curve", pd.DataFrame())
-            qeff_df = st.session_state.get(f"{stn}_qeff_curve", pd.DataFrame())
+            qh_key = get_unique_key(stn, "qh")
+            qeff_key = get_unique_key(stn, "qeff")
+            qh_df = st.session_state.get(qh_key, pd.DataFrame())
+            qeff_df = st.session_state.get(qeff_key, pd.DataFrame())
             if not qh_df.empty:
                 import matplotlib.pyplot as plt
                 import numpy as np
@@ -166,7 +172,6 @@ with tabs[2]:
             if not qeff_df.empty:
                 q_vals = np.linspace(min(qeff_df["Flow (m3/h)"]), max(qeff_df["Flow (m3/h)"]), 100)
                 Eff = np.interp(q_vals, qeff_df["Flow (m3/h)"], qeff_df["Efficiency (%)"])
-                import matplotlib.pyplot as plt
                 plt.figure(figsize=(7,3))
                 plt.plot(q_vals, Eff, label=f"{stn} Efficiency Curve", color="green")
                 plt.xlabel("Flow (m³/h)")
@@ -176,7 +181,7 @@ with tabs[2]:
                 plt.legend()
                 st.pyplot(plt.gcf())
 
-# ------------- COST BREAKDOWN TAB -------------
+# ------------------- COST BREAKDOWN TAB -------------------
 with tabs[3]:
     st.header("Cost Breakdown")
     if "opt_summary" in st.session_state:
@@ -190,7 +195,7 @@ with tabs[3]:
     else:
         st.info("Run optimization to see cost breakdown.")
 
-# ------------- DOWNLOAD REPORT TAB -------------
+# ------------------- DOWNLOAD REPORT TAB -------------------
 with tabs[4]:
     st.header("Download Reports")
     if "opt_summary" in st.session_state:
@@ -214,8 +219,10 @@ with tabs[4]:
     for idx, row in edited_df.iterrows():
         stn = row["Station"]
         if row.get("Is Pump Station", False):
-            qh_df = st.session_state.get(f"{stn}_qh_curve", pd.DataFrame())
-            qeff_df = st.session_state.get(f"{stn}_qeff_curve", pd.DataFrame())
+            qh_key = get_unique_key(stn, "qh")
+            qeff_key = get_unique_key(stn, "qeff")
+            qh_df = st.session_state.get(qh_key, pd.DataFrame())
+            qeff_df = st.session_state.get(qeff_key, pd.DataFrame())
             st.download_button(
                 label=f"Download {stn} Q-H Curve CSV",
                 data=qh_df.to_csv(index=False).encode("utf-8"),
