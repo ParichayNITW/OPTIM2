@@ -229,11 +229,9 @@ with st.sidebar:
             'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
             'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-            'max_dr': 0.0,
-            'delivery': 0.0,
-            'supply': 0.0
+            'max_dr': 0.0, 'delivery': 0.0, 'supply': 0.0,
+            # New: dual pump types field
+            'pumps': []
         }]
     if add_col.button("➕ Add Station"):
         n = len(st.session_state.get('stations',[])) + 1
@@ -241,13 +239,12 @@ with st.sidebar:
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
             'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0,
-            'delivery': 0.0,
-            'supply': 0.0
+            'max_dr': 0.0, 'delivery': 0.0, 'supply': 0.0,
+            # New: dual pump types field
+            'pumps': []
         }
         st.session_state.stations.append(default)
+
     if rem_col.button("🗑️ Remove Station"):
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
