@@ -417,21 +417,22 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         # Report sum (total) for station as a whole (all pump types)
         total_pumps = sum(int(round(pyo.value(model.NOP[i, t]))) for t, pt in enumerate(stn["pumps"])) if stn.get("is_pump", False) else 0
         total_power_cost = sum(
-            float(pyo.value(model.dra_cost[i, t])) +
+            pyo.value(model.dra_cost[i, t]) +
             (
                 (rho_dict[i] * pump_flow * 9.81 *
-                 float(model.A[i, t] * (pump_flow * model.DOL[i, t] / (model.RPM_var[i, t]) + 1e-3)**2 +
-                       model.B[i, t] * (pump_flow * model.DOL[i, t] / (model.RPM_var[i, t]) + 1e-3) +
-                       model.C[i, t]) * (model.RPM_var[i, t]/model.DOL[i, t])**2) *
-                 int(round(pyo.value(model.NOP[i, t]))) / (3600.0 * 1000.0 *
-                 ((model.Pcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t]) + 1e-3)**4) +
-                   model.Qcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t]) + 1e-3)**3) +
-                   model.Rcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t]) + 1e-3)**2) +
-                   model.Scoef[i, t]*(pump_flow * model.DOL[i, t]/(model.RPM_var[i, t]) + 1e-3) +
-                   model.Tcoef[i, t])/100.0) * 0.95) * 24.0 * float(pt.get("rate", 0.0)) if pt.get("power_type", "Grid").lower() == "grid" else 0.0
+                 (model.A[i, t] * (pump_flow * model.DOL[i, t] / (model.RPM_var[i, t] + 1e-3))**2 +
+                  model.B[i, t] * (pump_flow * model.DOL[i, t] / (model.RPM_var[i, t] + 1e-3)) +
+                  model.C[i, t]) * (model.RPM_var[i, t]/model.DOL[i, t])**2) *
+                 pyo.value(model.NOP[i, t]) / (3600.0 * 1000.0 *
+                 ((model.Pcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3))**4) +
+                   model.Qcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3))**3) +
+                   model.Rcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3))**2) +
+                   model.Scoef[i, t]*(pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3)) +
+                   model.Tcoef[i, t])/100.0) * 0.95) * 24.0 * pt.get("rate", 0.0) if pt.get("power_type", "Grid").lower() == "grid" else 0.0
             )
             for t, pt in enumerate(stn["pumps"])
         ) if stn.get("is_pump", False) else 0.0
+
 
 
         result[f"pipeline_flow_{name}"] = outflow
