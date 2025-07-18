@@ -35,28 +35,51 @@ def get_unique_key(stn, typ):
 if "stations_uid" not in st.session_state:
     st.session_state["stations_uid"] = str(uuid.uuid4())
 
+# --- Helper to fill missing fields in records for DataFrame safety ---
+def ensure_all_fields(list_of_dicts, required_fields, required_defaults):
+    clean = []
+    for d in list_of_dicts:
+        new_row = {}
+        for col, default in zip(required_fields, required_defaults):
+            new_row[col] = d.get(col, default)
+        clean.append(new_row)
+    return clean
+
+station_cols = [
+    "Station","Distance (km)","Elevation (m)","Diameter (mm)","Roughness (mm)",
+    "Is Pump Station","Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)","MAOP (m)","Peaks"
+]
+station_defaults = [
+    {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,
+     "Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900,"Peaks":[]},
+    {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,
+     "Is Pump Station":False,"Pump Count":"","Head Limit (m)":"","Max Power (kW)":"","Fuel Rate (Rs/kWh)":"","MAOP (m)":900,"Peaks":[]},
+]
+station_required_defaults = [
+    "",0,0,0,0.045,False,"","","","",900,""
+]
+
 # ------------------- INPUT TAB -------------------
 with tabs[0]:
     st.subheader("Stations (last row = terminal station)")
-    station_cols = [
-        "Station","Distance (km)","Elevation (m)","Diameter (mm)","Roughness (mm)",
-        "Is Pump Station","Pump Count","Head Limit (m)","Max Power (kW)","Fuel Rate (Rs/kWh)","MAOP (m)","Peaks"
-    ]
-    station_defaults = [
-        {"Station":"STN1","Distance (km)":0,"Elevation (m)":100,"Diameter (mm)":500,"Roughness (mm)":0.045,
-         "Is Pump Station":True,"Pump Count":2,"Head Limit (m)":1500,"Max Power (kW)":3000,"Fuel Rate (Rs/kWh)":12.5,"MAOP (m)":900,"Peaks":[]},
-        {"Station":"STN2","Distance (km)":50,"Elevation (m)":105,"Diameter (mm)":500,"Roughness (mm)":0.045,
-         "Is Pump Station":False,"Pump Count":"","Head Limit (m)":"","Max Power (kW)":"","Fuel Rate (Rs/kWh)":"","MAOP (m)":900,"Peaks":[]},
-    ]
-    # Robust DataFrame assignment:
     if "station_table" in st.session_state:
         val = st.session_state["station_table"]
         if isinstance(val, pd.DataFrame):
             df = val.copy()
-        else:
+        elif isinstance(val, list):
+            # Fill missing columns before DataFrame creation!
+            val = ensure_all_fields(val, station_cols, station_required_defaults)
             df = pd.DataFrame(val)
+        elif isinstance(val, dict):
+            # rare: loaded as dict of rows
+            val_list = [dict(zip(station_cols, row)) for row in zip(*val.values())]
+            val_list = ensure_all_fields(val_list, station_cols, station_required_defaults)
+            df = pd.DataFrame(val_list)
+        else:
+            df = pd.DataFrame(station_defaults)
     else:
         df = pd.DataFrame(station_defaults)
+
     edited_df = st.data_editor(
         df, num_rows="dynamic", key="station_table", column_order=station_cols
     )
@@ -109,10 +132,9 @@ with tabs[0]:
     uploaded = st.file_uploader("Upload Scenario (JSON)", type="json")
     if uploaded:
         data = json.load(uploaded)
-        # Always force a DataFrame
         try:
             st.session_state["station_table"] = pd.DataFrame(data["station_table"])
-        except:
+        except Exception:
             st.session_state["station_table"] = data["station_table"]
         st.session_state["stations_uid"] = str(uuid.uuid4())
         st.experimental_rerun()
