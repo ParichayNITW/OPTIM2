@@ -464,7 +464,13 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
+    # Call the correct backend function and return both outputs
+    df, result = pipeline_model.solve_pipeline_and_get_summary(
+        stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD
+    )
+    # Optionally return only the result dict for compatibility with your downstream code
+    return result
+
 
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
