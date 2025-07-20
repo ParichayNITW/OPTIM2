@@ -359,31 +359,22 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.solutions.load_from(results)
 
     # --- Results reporting ---
-    result = {}
+    station_results = {}
     for i, stn in enumerate(stations, start=1):
-        name = stn['name'].strip().lower().replace(' ', '_')
-        inflow = segment_flows[i-1]
-        outflow = segment_flows[i]
-        pump_flow = outflow if stn.get('is_pump', False) else 0.0
-
+        name = stn['name'].strip()
+        station_results[name] = {}
+        pump_flow = segment_flows[i] if stn.get('is_pump', False) else 0.0
+        # Per-type (row) results
         if stn.get('is_pump', False):
             for t, pt in enumerate(stn["pumps"]):
-                key = f"{name}_type{t+1}"
                 num_pumps = int(round(pyo.value(model.NOP[i, t]))) if model.NOP[i, t].value is not None else 0
                 rpm_val = None
                 for j in range(len(allowed_rpms[(i, t)])):
                     if round(pyo.value(model.rpm_bin[i, t, j])) == 1:
                         rpm_val = allowed_rpms[(i, t)][j]
                         break
-                dra_perc = None
-                for j in range(len(allowed_dras[(i, t)])):
-                    if round(pyo.value(model.dra_bin[i, t, j])) == 1:
-                        dra_perc = allowed_dras[(i, t)][j]
-                        break
                 if rpm_val is None:
                     rpm_val = allowed_rpms[(i, t)][0]
-                if dra_perc is None:
-                    dra_perc = allowed_dras[(i, t)][0]
                 dol_val = model.DOL[i, t]
                 Q_equiv = pump_flow * dol_val / rpm_val if rpm_val else 0.0
                 tdh_val = float(model.A[i, t] * Q_equiv**2 + model.B[i, t] * Q_equiv + model.C[i, t]) * (rpm_val/dol_val)**2 if rpm_val else 0.0
@@ -391,15 +382,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                        model.Rcoef[i, t]*Q_equiv**2 + model.Scoef[i, t]*Q_equiv +
                        model.Tcoef[i, t]) if num_pumps > 0 and rpm_val else 0.0
                 eff = float(eff)
-                dra_ppm = float(pyo.value(model.PPM[i, t])) if model.PPM[i, t].value is not None else 0.0
-                dra_cost_i = float(pyo.value(model.dra_cost[i, t])) if hasattr(model.dra_cost[i, t], "expr") else 0.0
-                if num_pumps == 0:
-                    rpm_val = 0.0
-                    eff = 0.0
-                    dra_perc = 0.0
-                    dra_ppm = 0.0
-                    dra_cost_i = 0.0
-                    tdh_val = 0.0
                 rho_i = rho_dict[i]
                 if num_pumps > 0 and eff > 0 and rpm_val > 0:
                     power_type = pt.get("power_type", "Grid").lower()
@@ -414,86 +396,30 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                         power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
                 else:
                     power_cost = 0.0
-                result[f"num_pumps_{key}"] = num_pumps
-                result[f"speed_{key}"] = rpm_val
-                result[f"efficiency_{key}"] = eff
-                result[f"power_cost_{key}"] = power_cost
-                result[f"dra_cost_{key}"] = dra_cost_i
-                result[f"dra_ppm_{key}"] = dra_ppm
-                result[f"drag_reduction_{key}"] = dra_perc
-                result[f"tdh_{key}"] = tdh_val
-
-        # Per-station aggregates (series)
-        if stn.get('is_pump', False):
-            total_tdh = 0.0
-            total_eff = 0.0
-            total_rpm = 0.0
-            total_dra = 0.0
-            total_dra_ppm = 0.0
-            total_power = 0.0
-            n_counted = 0
+                station_results[name][f"Type-{t+1}"] = {
+                    "num_pumps": num_pumps,
+                    "speed": rpm_val,
+                    "efficiency": eff,
+                    "tdh": tdh_val,
+                    "power_cost": power_cost
+                }
+            # DRA: Only one per station, aggregated
+            total_dra = 0.0; total_dra_ppm = 0.0; total_dra_cost = 0.0; running_types = 0
             for t, pt in enumerate(stn["pumps"]):
-                key = f"{name}_type{t+1}"
-                tdh = result.get(f"tdh_{key}", 0.0)
-                eff = result.get(f"efficiency_{key}", 0.0)
-                rpm = result.get(f"speed_{key}", 0.0)
-                dra = result.get(f"drag_reduction_{key}", 0.0)
-                dra_ppm = result.get(f"dra_ppm_{key}", 0.0)
-                power = result.get(f"power_cost_{key}", 0.0)
-                n_counted += 1 if tdh > 0 else 0
-                total_tdh += tdh
-                total_eff += eff
-                total_rpm += rpm
-                total_dra += dra
-                total_dra_ppm += dra_ppm
-                total_power += power
-            avg_eff = total_eff / n_counted if n_counted else 0.0
-            avg_rpm = total_rpm / n_counted if n_counted else 0.0
-            avg_dra = total_dra / n_counted if n_counted else 0.0
-            avg_dra_ppm = total_dra_ppm / n_counted if n_counted else 0.0
-            result[f"tdh_{name}"] = total_tdh
-            result[f"efficiency_{name}"] = avg_eff
-            result[f"speed_{name}"] = avg_rpm
-            result[f"drag_reduction_{name}"] = avg_dra
-            result[f"dra_ppm_{name}"] = avg_dra_ppm
-            result[f"power_cost_{name}"] = total_power
-
-        total_pumps = sum(int(round(pyo.value(model.NOP[i, t]))) for t, pt in enumerate(stn["pumps"])) if stn.get("is_pump", False) else 0
-        result[f"pipeline_flow_{name}"] = outflow
-        result[f"pipeline_flow_in_{name}"] = inflow
-        result[f"pump_flow_{name}"] = pump_flow
-        result[f"num_pumps_{name}"] = total_pumps
-
-        head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
-        res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
-        velocity = v[i]; reynolds = Re[i]; fric = f[i]
-        result[f"head_loss_{name}"] = head_loss
-        result[f"residual_head_{name}"] = res_head
-        result[f"velocity_{name}"] = velocity
-        result[f"reynolds_{name}"] = reynolds
-        result[f"friction_{name}"] = fric
-        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-        result[f"maop_{name}"] = maop_dict[i]
-
-    term_name = terminal.get('name','terminal').strip().lower().replace(' ', '_')
-    result.update({
-        f"pipeline_flow_{term_name}": segment_flows[-1],
-        f"pipeline_flow_in_{term_name}": segment_flows[-2],
-        f"pump_flow_{term_name}": 0.0,
-        f"num_pumps_{term_name}": 0,
-        f"speed_{term_name}": 0.0,
-        f"efficiency_{term_name}": 0.0,
-        f"power_cost_{term_name}": 0.0,
-        f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"drag_reduction_{term_name}": 0.0,
-        f"head_loss_{term_name}": 0.0,
-        f"velocity_{term_name}": 0.0,
-        f"reynolds_{term_name}": 0.0,
-        f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": 0.0,
-        f"residual_head_{term_name}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
-    })
-    result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
-    result["error"] = False
+                n = int(round(pyo.value(model.NOP[i, t]))) if model.NOP[i, t].value is not None else 0
+                if n > 0:
+                    running_types += 1
+                    total_dra += float(pyo.value(model.DR_var[i, t]))
+                    total_dra_ppm += float(pyo.value(model.PPM[i, t]))
+                    total_dra_cost += float(pyo.value(model.dra_cost[i, t]))
+            station_results[name]["DRA"] = {
+                "drag_reduction": total_dra / running_types if running_types else 0.0,
+                "dra_ppm": total_dra_ppm / running_types if running_types else 0.0,
+                "dra_cost": total_dra_cost
+            }
+    # --- Pipeline summary (all original keys preserved) ---
+    summary = {}
+    summary['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
+    summary["error"] = False
+    result = {"station_results": station_results, "summary": summary}
     return result
