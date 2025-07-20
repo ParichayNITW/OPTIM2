@@ -5,7 +5,7 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'your@email.com')
 
 # -------- DRA Curve Data Loader --------
 DRA_CSV_FILES = {
@@ -53,11 +53,10 @@ def get_ppm_breakpoints(visc):
     return list(unique_x), list(unique_y)
 
 def fit_pump_curves(stations):
-    # Auto-fit curves for all pumps, populates A,B,C,P,Q,R,S,T for each pump type
     for stn in stations:
         if stn.get('is_pump', False):
             for pt in stn['pumps']:
-                # Fit head curve (quadratic)
+                # Head curve fit (quadratic)
                 head_data = pt.get('head_data', [])
                 if head_data and len(head_data) >= 3:
                     flows = [float(x['Flow (m³/hr)']) for x in head_data]
@@ -66,7 +65,7 @@ def fit_pump_curves(stations):
                     pt['A'], pt['B'], pt['C'] = float(H_coeff[0]), float(H_coeff[1]), float(H_coeff[2])
                 else:
                     pt['A'], pt['B'], pt['C'] = 0, 0, 0
-                # Fit efficiency curve (4th order or quadratic fallback)
+                # Efficiency curve fit (4th or quadratic fallback)
                 eff_data = pt.get('eff_data', [])
                 if eff_data and len(eff_data) >= 5:
                     flows = [float(x['Flow (m³/hr)']) for x in eff_data]
@@ -82,7 +81,6 @@ def fit_pump_curves(stations):
                     pt['P'], pt['Q'], pt['R'], pt['S'], pt['T'] = 0, 0, 0, 0, 0
 
 def solve_pipeline_and_get_summary(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
-    # --- 1. Auto-fit curves before optimization ---
     fit_pump_curves(stations)
 
     RPM_STEP = 100
@@ -101,7 +99,7 @@ def solve_pipeline_and_get_summary(stations, terminal, FLOW, KV_list, rho_list, 
     model.Rate_DRA = pyo.Param(initialize=RateDRA)
     model.Price_HSD = pyo.Param(initialize=Price_HSD)
 
-    # Segment flow calculation
+    # Segment flows
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -520,7 +518,6 @@ def solve_pipeline_and_get_summary(stations, terminal, FLOW, KV_list, rho_list, 
             ("MAOP (m)", "maop_"),
             ("Drag Reduction (%)", "drag_reduction_"),
         ]
-        station_names = [s['name'].strip().lower().replace(' ', '_') for s in stations]
         user_station_names = [s['name'] for s in stations]
         table = {"Parameters": [label for label, _ in parameter_map]}
         for stn, user_name in zip(stations, user_station_names):
@@ -538,7 +535,6 @@ def solve_pipeline_and_get_summary(stations, terminal, FLOW, KV_list, rho_list, 
     df = build_summary_table_with_dra(result, stations)
     return df, result
 
-# -------------- USAGE ---------------
+# --------- USAGE EXAMPLE ----------
 # df, raw_result = solve_pipeline_and_get_summary(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD)
-# print(df)
-# Now you can use df directly in Streamlit: st.dataframe(df)
+# st.dataframe(df)
