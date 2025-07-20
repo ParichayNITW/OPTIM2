@@ -345,13 +345,23 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.solutions.load_from(results)
 
     # --- Collect results ---
+    def safe_div(a, b, default=0.0):
+        try:
+            bval = float(b)
+            if abs(bval) < 1e-6:
+                return default
+            return float(a) / bval
+        except Exception:
+            return default
+    
     result = {}
+    
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
         inflow = segment_flows[i-1]
         outflow = segment_flows[i]
         pump_flow = outflow if stn.get('is_pump', False) else 0.0
-
+    
         # --- Per-type reporting ---
         if stn.get('is_pump', False):
             for t, pt in enumerate(stn["pumps"]):
@@ -372,40 +382,40 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 if dra_perc is None:
                     dra_perc = allowed_dras[(i, t)][0]
                 dol_val = model.DOL[i, t]
-                Q_equiv = pump_flow * dol_val / rpm_val if rpm_val else 0.0
-                tdh_val = float(model.A[i, t] * Q_equiv**2 + model.B[i, t] * Q_equiv + model.C[i, t]) * (rpm_val/dol_val)**2 if rpm_val else 0.0
+                Q_equiv = pump_flow * dol_val / max(rpm_val, 1e-3) if rpm_val else 0.0
+                tdh_val = float(model.A[i, t] * Q_equiv**2 + model.B[i, t] * Q_equiv + model.C[i, t]) * (rpm_val/max(dol_val, 1e-3))**2 if rpm_val else 0.0
                 eff = (model.Pcoef[i, t]*Q_equiv**4 + model.Qcoef[i, t]*Q_equiv**3 +
                        model.Rcoef[i, t]*Q_equiv**2 + model.Scoef[i, t]*Q_equiv +
                        model.Tcoef[i, t]) if num_pumps > 0 and rpm_val else 0.0
                 eff = float(eff)
                 dra_ppm = float(pyo.value(model.PPM[i, t])) if model.PPM[i, t].value is not None else 0.0
                 dra_cost_i = float(pyo.value(model.dra_cost[i, t])) if hasattr(model.dra_cost[i, t], "expr") else 0.0
-
+    
                 # Zero all if optimizer turns off all
-                if num_pumps == 0:
+                if num_pumps == 0 or rpm_val == 0:
                     rpm_val = 0.0
                     eff = 0.0
                     dra_perc = 0.0
                     dra_ppm = 0.0
                     dra_cost_i = 0.0
                     tdh_val = 0.0
-
+    
                 # Power cost per type
                 rho_i = rho_dict[i]
                 if num_pumps > 0 and eff > 0 and rpm_val > 0:
                     power_type = pt.get("power_type", "Grid").lower()
                     if power_type == "grid":
                         rate = float(pt.get("rate", 0.0))
-                        power_kW = (rho_i * pump_flow * 9.81 * tdh_val * num_pumps) / (3600.0 * 1000.0 * (eff/100.0) * 0.95)
+                        power_kW = safe_div(rho_i * pump_flow * 9.81 * tdh_val * num_pumps, 3600.0 * 1000.0 * (eff/100.0) * 0.95)
                         power_cost = power_kW * 24.0 * rate
                     else:
                         sfc = float(pt.get("sfc", 0.0))
-                        fuel_per_kWh = (sfc * 1.34102) / 820.0
-                        power_kW = (rho_i * pump_flow * 9.81 * tdh_val * num_pumps) / (3600.0 * 1000.0 * (eff/100.0) * 0.95)
+                        fuel_per_kWh = safe_div(sfc * 1.34102, 820.0)
+                        power_kW = safe_div(rho_i * pump_flow * 9.81 * tdh_val * num_pumps, 3600.0 * 1000.0 * (eff/100.0) * 0.95)
                         power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
                 else:
                     power_cost = 0.0
-
+    
                 # Save per-type result
                 result[f"num_pumps_{key}"] = num_pumps
                 result[f"speed_{key}"] = rpm_val
@@ -415,55 +425,19 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 result[f"dra_ppm_{key}"] = dra_ppm
                 result[f"drag_reduction_{key}"] = dra_perc
                 result[f"tdh_{key}"] = tdh_val
-
-        # --- NEW: Aggregate series totals for this station ---
-        if stn.get('is_pump', False):
-            total_tdh = 0.0
-            total_eff = 0.0
-            total_rpm = 0.0
-            total_dra = 0.0
-            total_dra_ppm = 0.0
-            total_power = 0.0
-            n_counted = 0
-
-            for t, pt in enumerate(stn["pumps"]):
-                key = f"{name}_type{t+1}"
-                tdh = result.get(f"tdh_{key}", 0.0)
-                eff = result.get(f"efficiency_{key}", 0.0)
-                rpm = result.get(f"speed_{key}", 0.0)
-                dra = result.get(f"drag_reduction_{key}", 0.0)
-                dra_ppm = result.get(f"dra_ppm_{key}", 0.0)
-                power = result.get(f"power_cost_{key}", 0.0)
-                n_counted += 1 if tdh > 0 else 0
-
-                total_tdh += tdh
-                total_eff += eff
-                total_rpm += rpm
-                total_dra += dra
-                total_dra_ppm += dra_ppm
-                total_power += power
-
-            avg_eff = total_eff / n_counted if n_counted else 0.0
-            avg_rpm = total_rpm / n_counted if n_counted else 0.0
-            avg_dra = total_dra / n_counted if n_counted else 0.0
-            avg_dra_ppm = total_dra_ppm / n_counted if n_counted else 0.0
-
-            # Save total/average station fields (these are the main reporting fields for the station!)
-            result[f"tdh_{name}"] = total_tdh
-            result[f"efficiency_{name}"] = avg_eff
-            result[f"speed_{name}"] = avg_rpm
-            result[f"drag_reduction_{name}"] = avg_dra
-            result[f"dra_ppm_{name}"] = avg_dra_ppm
-            result[f"power_cost_{name}"] = total_power
-
-        # ---- Pipe-only and always-reported fields ----
+    
+        # --- Station level reporting ---
         total_pumps = sum(int(round(pyo.value(model.NOP[i, t]))) for t, pt in enumerate(stn["pumps"])) if stn.get("is_pump", False) else 0
+    
+        # Make sure to avoid duplicate station reporting blocks
         result[f"pipeline_flow_{name}"] = outflow
         result[f"pipeline_flow_in_{name}"] = inflow
         result[f"pump_flow_{name}"] = pump_flow
         result[f"num_pumps_{name}"] = total_pumps
-
-        head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
+    
+        # Head, velocity, etc.
+        head_loss = float(pyo.value(model.SDH[i]) - (pyo.value(model.RH[i+1]) + (model.z[i+1] - model.z[i]))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
+        head_loss = max(head_loss, 0.0)  # Never allow negative head loss!
         res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
         result[f"head_loss_{name}"] = head_loss
@@ -474,44 +448,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
         result[f"maop_{name}"] = maop_dict[i]
 
-
-        # Report sum (total) for station as a whole (all pump types)
-        total_pumps = sum(int(round(pyo.value(model.NOP[i, t]))) for t, pt in enumerate(stn["pumps"])) if stn.get("is_pump", False) else 0
-        total_power_cost = sum(
-            pyo.value(model.dra_cost[i, t]) +
-            (
-                (rho_dict[i] * pump_flow * 9.81 *
-                 (model.A[i, t] * (pump_flow * model.DOL[i, t] / (model.RPM_var[i, t] + 1e-3))**2 +
-                  model.B[i, t] * (pump_flow * model.DOL[i, t] / (model.RPM_var[i, t] + 1e-3)) +
-                  model.C[i, t]) * (model.RPM_var[i, t]/model.DOL[i, t])**2) *
-                 pyo.value(model.NOP[i, t]) / (3600.0 * 1000.0 *
-                 ((model.Pcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3))**4) +
-                   model.Qcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3))**3) +
-                   model.Rcoef[i, t]*((pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3))**2) +
-                   model.Scoef[i, t]*(pump_flow * model.DOL[i, t]/(model.RPM_var[i, t] + 1e-3)) +
-                   model.Tcoef[i, t])/100.0) * 0.95) * 24.0 * pt.get("rate", 0.0) if pt.get("power_type", "Grid").lower() == "grid" else 0.0
-            )
-            for t, pt in enumerate(stn["pumps"])
-        ) if stn.get("is_pump", False) else 0.0
-
-
-
-        result[f"pipeline_flow_{name}"] = outflow
-        result[f"pipeline_flow_in_{name}"] = inflow
-        result[f"pump_flow_{name}"] = pump_flow
-        result[f"num_pumps_{name}"] = total_pumps
-
-        # Head, velocity, etc. (from main pipe, not pump)
-        head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
-        res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
-        velocity = v[i]; reynolds = Re[i]; fric = f[i]
-        result[f"head_loss_{name}"] = head_loss
-        result[f"residual_head_{name}"] = res_head
-        result[f"velocity_{name}"] = velocity
-        result[f"reynolds_{name}"] = reynolds
-        result[f"friction_{name}"] = fric
-        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-        result[f"maop_{name}"] = maop_dict[i]
 
     term_name = terminal.get('name','terminal').strip().lower().replace(' ', '_')
     result.update({
