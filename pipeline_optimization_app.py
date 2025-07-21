@@ -1723,28 +1723,53 @@ if not auto_batch:
                 st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
     
     # ---- Tab 7: 3D Analysis ----
+    import plotly.graph_objects as go
+    import numpy as np
+    
     with tab7:
         if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
             st.info("Please run optimization at least once to enable 3D analysis.")
             st.stop()
+    
         last_res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         FLOW = st.session_state.get("FLOW", 1000.0)
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
-        key = stations_data[0]['name'].lower().replace(' ', '_')
     
-        speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
+        # ---- User can pick any pump station and pump type ----
+        pump_stations = [s for s in stations_data if s.get("is_pump", False)]
+        if not pump_stations:
+            st.warning("No pump stations available for 3D analysis.")
+            st.stop()
+    
+        station_options = [f"{i+1}: {s['name']}" for i, s in enumerate(pump_stations)]
+        stn_sel = st.selectbox("Select Pump Station", station_options, key="tab7_pumpstn")
+        stn_idx = station_options.index(stn_sel)
+        stn = pump_stations[stn_idx]
+        key = stn['name'].lower().replace(' ', '_')
+    
+        pump_types = stn.get("pumps", [])
+        if not pump_types:
+            st.warning("No pump types defined at this station.")
+            st.stop()
+        pump_type_labels = [f"{i+1}: {p.get('type', f'Type {i+1}')}" for i,p in enumerate(pump_types)]
+        pump_type_sel = st.selectbox("Select Pump Type", pump_type_labels, key="tab7_pumptype")
+        pump_type_idx = pump_type_labels.index(pump_type_sel)
+        pump = pump_types[pump_type_idx]
+        tkey = f"{key}_type{pump_type_idx+1}"
+    
+        # -- Get design points for selected pump station/type --
+        speed_opt = float(last_res.get(f"speed_{tkey}", 1500.0))
         dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
-        nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
-        flow_opt = FLOW
+        nopt_opt = int(last_res.get(f"num_pumps_{tkey}", 1))
+        flow_opt = float(last_res.get(f"pump_flow_{tkey}", FLOW))
     
         delta_speed = 150
         delta_dra = 10
         delta_nop = 1
         delta_flow = 150
         N = 9
-        stn = stations_data[0]
         N_min = int(stn.get('MinRPM', 1000))
         N_max = int(stn.get('DOL', 1500))
         DRA_max = int(stn.get('max_dr', 40))
@@ -1777,13 +1802,13 @@ if not auto_batch:
         Z = np.zeros_like(Xv, dtype=float)
     
         # --- Pump coefficients ---
-        A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
-        P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
-        S = stn.get('S', 0); T = stn.get('T', 0)
+        A = pump.get('A', 0); B = pump.get('B', 0); Cc = pump.get('C', 0)
+        P = pump.get('P', 0); Qc = pump.get('Q', 0); R = pump.get('R', 0)
+        S = pump.get('S', 0); T = pump.get('T', 0)
         DOL = float(stn.get('DOL', N_max))
-        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+        linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", np.zeros(len(stations_data))))
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        rho = rho_list[0]
+        rho = rho_list[stn_idx]
         rate = stn.get('rate', 9.0)
         g = 9.81
     
@@ -1798,7 +1823,7 @@ if not auto_batch:
             d_inner = stn['D'] - 2*stn['t']
             rough = stn['rough']
             L_seg = stn['L']
-            visc = kv_list[0]
+            visc = kv_list[stn_idx]
             v = q/3600.0/(np.pi*(d_inner**2)/4)
             Re = v*d_inner/(visc*1e-6) if visc > 0 else 0
             if Re > 0:
@@ -1807,10 +1832,10 @@ if not auto_batch:
                 f = 0.0
             DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
             return stn['elev'] + DH
-            
+    
         dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
         dr_max = stn.get('max_dr', 0.0)
-        viscosity = kv_list[0]
+        viscosity = kv_list[stn_idx]
         dr_use = min(dr_opt, dr_max)
         ppm_value = get_ppm_for_dr(viscosity, dr_use)
     
@@ -1866,7 +1891,7 @@ if not auto_batch:
                 yaxis_title=ylab,
                 zaxis_title=zlab
             ),
-            title=f"{plot_opt}",
+            title=f"{plot_opt} — {stn['name']} [{pump.get('type',f'Type {pump_type_idx+1}')}]",
             height=750,
             margin=dict(l=30, r=30, b=30, t=80)
         )
@@ -1876,11 +1901,12 @@ if not auto_batch:
         st.markdown(
             """
             <div style='text-align: center; color: gray; font-size: 0.95em; margin-bottom: 0.5em;'>
-                <span style='color:#AAA;'>Surface plot shows parameter variability of the originating pump station for clarity and hydraulic relevance.</span>
+                <span style='color:#AAA;'>Surface plot shows parameter variability of the selected pump station and pump type for clarity and hydraulic relevance.</span>
             </div>
             """,
             unsafe_allow_html=True
         )
+
     
     import plotly.graph_objects as go
     import numpy as np
