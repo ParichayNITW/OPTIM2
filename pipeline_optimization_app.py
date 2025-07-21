@@ -917,9 +917,10 @@ if not auto_batch:
                 # Fill terminal column for general params
                 tkey = terminal_name.lower().replace(' ', '_')
                 if param in ["DRA Cost (INR/day)", "DRA PPM", "Reynold's No.", "Head Loss (m)", "Velocity (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag reduction (%)"]:
-                    row["Terminal station"] = res.get(f"{param.lower().replace(' ', '_').replace(\"'\",'')}_{tkey}", 0.0)
+                    param_clean = param.lower().replace(' ', '_').replace("'",'')
+                    row["Terminal station"] = res.get(f"{param_clean}_{tkey}", 0.0)
                 else:
-                    row["Terminal station"] = ""
+                    row["Terminal station"] = ""                                                         
                 table_rows.append(row)
             
             # 4. To DataFrame and display:
