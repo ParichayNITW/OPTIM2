@@ -1910,93 +1910,80 @@ if not auto_batch:
     
     import plotly.graph_objects as go
     import numpy as np
+    import pandas as pd
     
     with tab8:
-        st.markdown("""
-            <style>
-            .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-                color: #1e4b82 !important;
-                border-bottom: 3.5px solid #2f84d6 !important;
-                font-weight: bold !important;
-                background: linear-gradient(90deg, #e3f2fd55 30%, #e1f5feaa 100%) !important;
-                box-shadow: 0 2px 10px #e3f2fd33 !important;
-            }
-            .stTabs [data-baseweb="tab-list"] button {
-                font-size: 1.25em !important;
-                font-family: 'Segoe UI', Arial, sans-serif !important;
-            }
-            </style>
-            <div style='margin-bottom: 0.7em;'></div>
-            """, unsafe_allow_html=True)
+        st.markdown("""...your style block here...""", unsafe_allow_html=True)
     
         st.markdown("<div class='section-title'>3D Pressure Profile: Residual Head & Peaks</div>", unsafe_allow_html=True)
     
         if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
             st.info("Run optimization to enable 3D Pressure Profile.")
         else:
-            # Gather data
             res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
             terminal = st.session_state["last_term_data"]
     
-            # ---- 1. Gather all points: stations and peaks ----
             chainages = [0]
-            elevs = []
-            rh = []
-            names = []
+            elevs, rh, names = [], [], []
             mesh_x, mesh_y, mesh_z, mesh_text, mesh_color = [], [], [], [], []
             peak_x, peak_y, peak_z, peak_label = [], [], [], []
     
-            # Stations (include terminal as last "station")
+            # Build station/peak/terminal mesh
             for i, stn in enumerate(stations_data):
-                chainages.append(chainages[-1] + stn.get("L", 0.0))
-                elevs.append(stn["elev"])
+                L = stn.get("L", 0.0)
+                elev = stn.get("elev", 0.0)
+                chainages.append(chainages[-1] + L)
+                elevs.append(elev)
                 key = stn["name"].lower().replace(" ", "_")
                 rh_val = res.get(f"residual_head_{key}", 0.0)
                 rh.append(rh_val)
                 names.append(stn["name"])
                 mesh_x.append(chainages[-1])
-                mesh_y.append(stn["elev"])
+                mesh_y.append(elev)
                 mesh_z.append(rh_val)
                 mesh_text.append(stn["name"])
                 mesh_color.append(rh_val)
-                # Peaks for this station
+                # Peaks
                 if 'peaks' in stn and stn['peaks']:
                     for pk in stn['peaks']:
-                        # pk['loc'] = distance from upstream station start (km)
                         peak_x_val = chainages[-2] + pk.get('loc', 0)
-                        py = pk.get('elev', stn['elev'])
-                        pz = rh_val  # Assume RH at station for peak (or interpolate as needed)
+                        py = pk.get('elev', elev)
+                        # Interpolate RH at peak (optional, for best accuracy)
+                        if i < len(stations_data)-1:
+                            rh0 = rh_val
+                            rh1 = res.get(f"residual_head_{stations_data[i+1]['name'].lower().replace(' ','_')}", 0.0)
+                            L_seg = L
+                            frac = pk.get('loc', 0) / L_seg if L_seg else 0
+                            pz = rh0 + (rh1 - rh0) * frac
+                        else:
+                            pz = rh_val
                         mesh_x.append(peak_x_val)
                         mesh_y.append(py)
                         mesh_z.append(pz)
                         mesh_text.append("Peak")
                         mesh_color.append(pz)
-                        # Separate for special peak markers
                         peak_x.append(peak_x_val)
                         peak_y.append(py)
                         peak_z.append(pz)
                         peak_label.append(f"Peak @ {stn['name']}")
     
-    
-            # Add terminal
+            # Terminal
             terminal_chainage = chainages[-1] + terminal.get("L", 0.0)
             mesh_x.append(terminal_chainage)
-            mesh_y.append(terminal["elev"])
+            mesh_y.append(terminal.get("elev", 0.0))
             key_term = terminal["name"].lower().replace(" ", "_")
             rh_term = res.get(f"residual_head_{key_term}", 0.0)
             mesh_z.append(rh_term)
             mesh_text.append(terminal["name"])
             mesh_color.append(rh_term)
             names.append(terminal["name"])
-            elevs.append(terminal["elev"])
+            elevs.append(terminal.get("elev", 0.0))
             rh.append(rh_term)
             chainages.append(terminal_chainage)
     
-            # ---- 2. 3D mesh surface using station & peak points ----
+            # 3D mesh surface
             fig3d = go.Figure()
-    
-            # 2.1 Mesh Surface: Triangulate all (station + peak) points
             fig3d.add_trace(go.Mesh3d(
                 x=mesh_x, y=mesh_y, z=mesh_z,
                 intensity=mesh_color, colorscale="Viridis",
@@ -2006,8 +1993,7 @@ if not auto_batch:
                 text=mesh_text,
                 name="Pressure Mesh Surface"
             ))
-    
-            # 2.2 Stations: Big colored spheres, labeled
+            # Stations
             fig3d.add_trace(go.Scatter3d(
                 x=[chainages[i+1] for i in range(len(stations_data))],
                 y=elevs[:-1],
@@ -2018,11 +2004,10 @@ if not auto_batch:
                 name="Stations",
                 hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
             ))
-    
-            # 2.3 Terminal: Big blue sphere, labeled
+            # Terminal
             fig3d.add_trace(go.Scatter3d(
                 x=[terminal_chainage],
-                y=[terminal["elev"]],
+                y=[terminal.get("elev", 0.0)],
                 z=[rh_term],
                 mode='markers+text',
                 marker=dict(size=11, color='#238be6', symbol='circle', line=dict(width=3, color='#103d68')),
@@ -2030,8 +2015,7 @@ if not auto_batch:
                 name="Terminal",
                 hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
             ))
-    
-            # 2.4 Peaks: Crimson diamonds, labeled
+            # Peaks
             if peak_x:
                 fig3d.add_trace(go.Scatter3d(
                     x=peak_x, y=peak_y, z=peak_z,
@@ -2041,8 +2025,7 @@ if not auto_batch:
                     name="Peaks",
                     hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
                 ))
-    
-            # 2.5 Connecting line (stations+terminal): Show pressure path
+            # Pressure path
             fig3d.add_trace(go.Scatter3d(
                 x=[chainages[i+1] for i in range(len(stations_data)+1)],
                 y=elevs,
@@ -2052,8 +2035,7 @@ if not auto_batch:
                 name="Pressure Path",
                 hoverinfo="skip"
             ))
-    
-            # ---- 3. Layout and style polish ----
+            # Layout
             fig3d.update_layout(
                 scene=dict(
                     xaxis=dict(
@@ -2104,12 +2086,27 @@ if not auto_batch:
             )
     
             st.plotly_chart(fig3d, use_container_width=True)
+    
+            # Optional: CSV download of mesh data
+            mesh_df = pd.DataFrame({
+                "Chainage (km)": mesh_x,
+                "Elevation (m)": mesh_y,
+                "Residual Head (mcl)": mesh_z,
+                "Label": mesh_text
+            })
+            st.download_button(
+                "Download 3D Profile Data (CSV)",
+                mesh_df.to_csv(index=False).encode(),
+                file_name="3d_pressure_profile.csv"
+            )
+    
             st.markdown(
                 "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
-                "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
+                "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks.<br>"
                 "Stations, terminal, and peaks are all shown with dynamic coloring.</div>",
                 unsafe_allow_html=True
             )
+
     
     with tab_sens:
         st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
