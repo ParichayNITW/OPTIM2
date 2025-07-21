@@ -1575,7 +1575,6 @@ if not auto_batch:
                     SDH_vals = np.clip(SDH_vals, 0, None)
                     label = f"System DRA {dra}%"
                     showlegend = (dra == 0 or dra == 10 or dra == 20 or dra == max_dr)
-                    # Fix: protect division by zero
                     if n_dra > 1:
                         blend = idx / (n_dra-1)
                     else:
@@ -1591,37 +1590,39 @@ if not auto_batch:
                         hoverinfo="skip"
                     ))
     
-                # -------- Pump Curves: All Series, All RPM, Vivid Colors --------
+                # -------- Pump Curves: All Series, All RPM, All Pump Types --------
                 pump_palettes = qualitative.Plotly + qualitative.D3 + qualitative.Bold
                 if is_pump:
-                    N_min = int(res.get(f"min_rpm_{key}", 1200))
-                    N_max = int(res.get(f"dol_{key}", 3000))
-                    rpm_steps = np.arange(N_min, N_max+1, 100)
-                    n_rpms = len(rpm_steps)
-                    A = res.get(f"coef_A_{key}", 0)
-                    B = res.get(f"coef_B_{key}", 0)
-                    C = res.get(f"coef_C_{key}", 0)
-                    for npump in range(1, n_pumps+1):
-                        for idx, rpm in enumerate(rpm_steps):
-                            # Fix: protect division by zero
-                            if n_rpms > 1:
-                                blend = idx / (n_rpms-1)
-                            else:
-                                blend = 0.5
-                            color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
-                            H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
-                            H_pump = np.clip(H_pump, 0, None)
-                            label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
-                            showlegend = (idx == 0 or idx == n_rpms-1)
-                            fig.add_trace(go.Scatter(
-                                x=flows, y=H_pump,
-                                mode='lines',
-                                line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
-                                name=label if showlegend else None,
-                                showlegend=showlegend,
-                                opacity=0.92 if showlegend else 0.56,
-                                hoverinfo="skip"
-                            ))
+                    for t, pump in enumerate(stn.get("pumps", [])):
+                        pump_type_label = pump.get("type", f"Type {t+1}")
+                        tkey = f"{key}_type{t+1}"
+                        N_min = int(res.get(f"min_rpm_{tkey}", 1200))
+                        N_max = int(res.get(f"dol_{tkey}", 3000))
+                        rpm_steps = np.arange(N_min, N_max+1, 100)
+                        n_rpms = len(rpm_steps)
+                        A = res.get(f"coef_A_{tkey}", 0)
+                        B = res.get(f"coef_B_{tkey}", 0)
+                        C = res.get(f"coef_C_{tkey}", 0)
+                        for npump in range(1, n_pumps+1):
+                            for idx, rpm in enumerate(rpm_steps):
+                                if n_rpms > 1:
+                                    blend = idx / (n_rpms-1)
+                                else:
+                                    blend = 0.5
+                                color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
+                                H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                                H_pump = np.clip(H_pump, 0, None)
+                                label = f"{npump} Pump{'s' if npump>1 else ''} [{pump_type_label}] ({rpm} rpm)"
+                                showlegend = (idx == 0 or idx == n_rpms-1)
+                                fig.add_trace(go.Scatter(
+                                    x=flows, y=H_pump,
+                                    mode='lines',
+                                    line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
+                                    name=label if showlegend else None,
+                                    showlegend=showlegend,
+                                    opacity=0.92 if showlegend else 0.56,
+                                    hoverinfo="skip"
+                                ))
     
                 # -------- Layout Polish: Bright, Vivid, Clean --------
                 fig.update_layout(
@@ -1638,6 +1639,7 @@ if not auto_batch:
                     hovermode="closest"
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
     
     
     
