@@ -2233,9 +2233,16 @@ if not auto_batch:
 
         
     
+    import pandas as pd
+    import numpy as np
+    
     with tab_bench:
         st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
-        st.write("Compare pipeline performance with global/ custom benchmarks. Green indicates Pipeline operation match/exceed global standards while red means improvement is needed.")
+        st.write("""
+            Compare pipeline performance with global/custom benchmarks.<br>
+            <span style='color:#44b664;'>Green = pipeline meets/exceeds the standard</span>, 
+            <span style='color:#e63946;'>Red = improvement needed</span>.
+            """, unsafe_allow_html=True)
     
         # --- User can pick standard or edit/upload their own
         b_mode = st.radio("Benchmark Source", ["Global Standards", "Edit Benchmarks", "Upload CSV"])
@@ -2259,14 +2266,20 @@ if not auto_batch:
             up = st.file_uploader("Upload Benchmark CSV", type=["csv"])
             benchmarks = {}
             if up:
-                bdf = pd.read_csv(up)
-                st.dataframe(bdf)
-                benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
+                try:
+                    bdf = pd.read_csv(up)
+                    if "Parameter" in bdf.columns and "Benchmark Value" in bdf.columns:
+                        st.dataframe(bdf)
+                        benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
+                    else:
+                        st.warning("CSV must have columns [Parameter, Benchmark Value]")
+                except Exception as e:
+                    st.error(f"Error reading CSV: {e}")
             if not benchmarks:
                 st.warning("Please upload a CSV with columns [Parameter, Benchmark Value]")
     
-        # --- Extract your computed results for comparison ---
-        if "last_res" not in st.session_state:
+        # --- Extract computed results ---
+        if "last_res" not in st.session_state or "last_stations_data" not in st.session_state:
             st.info("Run optimization to show benchmark analysis.")
             st.stop()
         res = st.session_state["last_res"]
@@ -2299,6 +2312,7 @@ if not auto_batch:
             if stn.get('is_pump', False):
                 effs.append(eff)
             if velocity > max_velocity: max_velocity = velocity
+    
         # Derived KPIs for benchmarking
         my_cost_per_km = total_cost / (total_length if total_length else 1)
         my_avg_eff = np.mean(effs) if effs else 0
@@ -2309,6 +2323,7 @@ if not auto_batch:
             "Specific Energy (kWh/m³)": my_spec_energy,
             "Max Velocity (m/s)": max_velocity
         }
+    
         rows = []
         for k, v in comp.items():
             bench = benchmarks.get(k, None)
@@ -2317,6 +2332,13 @@ if not auto_batch:
                 rows.append((k, f"{v:.2f}", f"{bench:.2f}", status))
         df_bench = pd.DataFrame(rows, columns=["Parameter", "Pipeline", "Benchmark", "Status"])
         st.dataframe(df_bench, use_container_width=True, hide_index=True)
+    
+        st.download_button(
+            "Download Benchmarking Table (CSV)",
+            df_bench.to_csv(index=False).encode(),
+            file_name="pipeline_benchmarking.csv"
+        )
+
     
     
     with tab_sim:
