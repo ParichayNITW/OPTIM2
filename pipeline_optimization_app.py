@@ -927,14 +927,21 @@ if not auto_batch:
             import pandas as pd
             import numpy as np
             
-            df_sum = pd.DataFrame(table_rows)
+            df_sum = pd.DataFrame(table_rows)  # After you finish filling table_rows
             
-            # Fix: Replace all blank strings with np.nan for Arrow/Streamlit compatibility
+            # Arrow/Streamlit compatibility fix:
             df_sum = df_sum.replace("", np.nan)
             
-            # Now display and export
+            # Optional: downcast columns to best types
+            df_sum = df_sum.infer_objects()
+            
+            # Show results table and download button
             st.dataframe(df_sum, use_container_width=True)
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+            
+            # (Optional, for debugging: shows the top 10 rows in your app)
+            st.write("DEBUG: Data preview", df_sum.head(10))
+
 
             
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
