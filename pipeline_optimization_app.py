@@ -1,4 +1,3 @@
-
 import os
 import streamlit as st
 import pandas as pd
@@ -927,10 +926,7 @@ if not auto_batch:
             df_sum = pd.DataFrame(table_rows)
             st.dataframe(df_sum, use_container_width=True)
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-
-
-            st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
-    
+            
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
             for idx, stn in enumerate(stations_data):
@@ -968,6 +964,7 @@ if not auto_batch:
                 """,
                 unsafe_allow_html=True
             )
+
     
     # ---- Tab 2: Cost Breakdown ----
     import numpy as np
