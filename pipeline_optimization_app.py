@@ -1371,62 +1371,63 @@ if not auto_batch:
                     if not stn.get('is_pump', False):
                         continue
                     key = stn['name'].lower().replace(' ','_')
-                    # 1. Get constants and coefficients
-                    A = res.get(f"coef_A_{key}", 0)
-                    B = res.get(f"coef_B_{key}", 0)
-                    C = res.get(f"coef_C_{key}", 0)
-                    P4 = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
-                    N_min = int(res.get(f"min_rpm_{key}", 0))
-                    N_max = int(res.get(f"dol_{key}", 0))
-                    rho = stn.get('rho', 850)
-                    # --- 1. Power vs Speed (at constant, optimized flow) ---
-                    pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW",1000.0))
-                    # Head and eff at pump_flow, DOL
-                    H = (A*pump_flow**2 + B*pump_flow + C)
-                    eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
-                    eff = max(0.01, eff/100)
-                    P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
-                    speeds = np.arange(N_min, N_max+1, 100)
-                    power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
-                    fig_pwr = go.Figure()
-                    fig_pwr.add_trace(go.Scatter(
-                        x=speeds, y=power_curve, mode='lines+markers',
-                        name="Power vs Speed",
-                        marker_color="#1976D2",
-                        line=dict(width=3),
-                        hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW"
-                    ))
-                    fig_pwr.update_layout(
-                        title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
-                        xaxis_title="Speed (rpm)",
-                        yaxis_title="Power (kW)",
-                        font=dict(size=16),
-                        height=400
-                    )
-                    st.plotly_chart(fig_pwr, use_container_width=True)
-            
-                    # --- 2. Power vs Flow (at DOL only) ---
-                    flows = np.linspace(0.01, 1.2*pump_flow, 100)
-                    H_flows = (A*flows**2 + B*flows + C)  # At DOL
-                    eff_flows = (P4*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T)
-                    eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
-                    power_flows = (rho * flows * 9.81 * H_flows)/(3600.0*1000*eff_flows)
-                    fig_pwr2 = go.Figure()
-                    fig_pwr2.add_trace(go.Scatter(
-                        x=flows, y=power_flows, mode='lines+markers',
-                        name="Power vs Flow",
-                        marker_color="#D84315",
-                        line=dict(width=3),
-                        hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW"
-                    ))
-                    fig_pwr2.update_layout(
-                        title=f"Power vs Flow (at DOL: {N_max} rpm): {stn['name']}",
-                        xaxis_title="Flow (m³/hr)",
-                        yaxis_title="Power (kW)",
-                        font=dict(size=16),
-                        height=400
-                    )
-                    st.plotly_chart(fig_pwr2, use_container_width=True)
+                    for t, pump in enumerate(stn.get("pumps", [])):
+                        tkey = f"{key}_type{t+1}"
+                        # 1. Get constants and coefficients for this pump type
+                        A = res.get(f"coef_A_{tkey}", 0)
+                        B = res.get(f"coef_B_{tkey}", 0)
+                        C = res.get(f"coef_C_{tkey}", 0)
+                        P4 = pump.get('P',0); Qc = pump.get('Q',0); R = pump.get('R',0); S = pump.get('S',0); T = pump.get('T',0)
+                        N_min = int(res.get(f"min_rpm_{tkey}", 0))
+                        N_max = int(res.get(f"dol_{tkey}", 0))
+                        rho = stn.get('rho', 850)
+                        # --- 1. Power vs Speed (at constant, optimized flow) ---
+                        pump_flow = res.get(f"pump_flow_{tkey}", st.session_state.get("FLOW",1000.0))
+                        H = (A*pump_flow**2 + B*pump_flow + C)
+                        eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
+                        eff = max(0.01, eff/100)
+                        P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
+                        speeds = np.arange(N_min, N_max+1, 100)
+                        power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
+                        fig_pwr = go.Figure()
+                        fig_pwr.add_trace(go.Scatter(
+                            x=speeds, y=power_curve, mode='lines+markers',
+                            name="Power vs Speed",
+                            marker_color="#1976D2",
+                            line=dict(width=3),
+                            hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW"
+                        ))
+                        fig_pwr.update_layout(
+                            title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']} [{pump.get('type',f'Type {t+1}')}]",
+                            xaxis_title="Speed (rpm)",
+                            yaxis_title="Power (kW)",
+                            font=dict(size=16),
+                            height=400
+                        )
+                        st.plotly_chart(fig_pwr, use_container_width=True)
+                        # --- 2. Power vs Flow (at DOL only) ---
+                        flows = np.linspace(0.01, 1.2*pump_flow, 100)
+                        H_flows = (A*flows**2 + B*flows + C)  # At DOL
+                        eff_flows = (P4*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T)
+                        eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
+                        power_flows = (rho * flows * 9.81 * H_flows)/(3600.0*1000*eff_flows)
+                        fig_pwr2 = go.Figure()
+                        fig_pwr2.add_trace(go.Scatter(
+                            x=flows, y=power_flows, mode='lines+markers',
+                            name="Power vs Flow",
+                            marker_color="#D84315",
+                            line=dict(width=3),
+                            hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW"
+                        ))
+                        fig_pwr2.update_layout(
+                            title=f"Power vs Flow (at DOL: {N_max} rpm): {stn['name']} [{pump.get('type',f'Type {t+1}')}]",
+                            xaxis_title="Flow (m³/hr)",
+                            yaxis_title="Power (kW)",
+                            font=dict(size=16),
+                            height=400
+                        )
+                        st.plotly_chart(fig_pwr2, use_container_width=True)
+
     
     # ---- Tab 4: System Curves ----
     import plotly.graph_objects as go
