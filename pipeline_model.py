@@ -196,9 +196,13 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     # Limit total pumps per station
     def max_pumps_at_station_rule(m, i):
         stn = stations[i-1]
+        if not stn.get("pumps"):  # No pumps at this station
+            return pyo.Constraint.Skip
         max_pumps = int(stn.get("max_pumps", 2))
         return sum(m.NOP[i, t] for t, pt in enumerate(stn["pumps"])) <= max_pumps
+    
     model.max_pumps_at_station = pyo.Constraint(model.pump_stations, rule=max_pumps_at_station_rule)
+
 
     # RPM binaries and values
     model.rpm_bin = pyo.Var(
