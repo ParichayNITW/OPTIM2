@@ -2108,11 +2108,15 @@ if not auto_batch:
             )
 
     
+    import plotly.express as px
+    import numpy as np
+    import pandas as pd
+    
     with tab_sens:
         st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
         st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results based on set pipeline parameter and optimization metric.")
     
-        if "last_res" not in st.session_state:
+        if "last_res" not in st.session_state or "stations" not in st.session_state or "last_term_data" not in st.session_state:
             st.info("Run optimization first to enable sensitivity analysis.")
             st.stop()
     
@@ -2123,25 +2127,26 @@ if not auto_batch:
             "Total Cost (INR/day)", "Power Cost (INR/day)", "DRA Cost (INR/day)",
             "Residual Head (m)", "Pump Efficiency (%)"
         ])
-        # Define range
-        FLOW = st.session_state["FLOW"]
-        RateDRA = st.session_state["RateDRA"]
-        Price_HSD = st.session_state["Price_HSD"]
+    
+        # Defaults
+        FLOW = st.session_state.get("FLOW", 1000.0)
+        RateDRA = st.session_state.get("RateDRA", 500.0)
+        Price_HSD = st.session_state.get("Price_HSD", 70.0)
         linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-        N = 10  # number of points
+        stations_base = st.session_state["stations"]
+        term_base = st.session_state["last_term_data"]
+    
+        # Define range
+        N = 10
         if param == "Flowrate (m³/hr)":
             pvals = np.linspace(max(10, 0.5*FLOW), 1.5*FLOW, N)
         elif param == "Viscosity (cSt)":
-            # Assume first segment viscosity is varied
+            # First segment viscosity
             first_visc = linefill_df.iloc[0]["Viscosity (cSt)"] if not linefill_df.empty else 10
             pvals = np.linspace(max(1, 0.5*first_visc), 2*first_visc, N)
         elif param == "Drag Reduction (%)":
-            # Use max_dr from first pump station
-            max_dr = 0
-            for stn in st.session_state['stations']:
-                if stn.get('is_pump', False):
-                    max_dr = stn.get('max_dr', 40)
-                    break
+            # Use max_dr from all pump stations
+            max_dr = max([s.get('max_dr', 40) for s in stations_base if s.get('is_pump', False)] or [40])
             pvals = np.linspace(0, max_dr, N)
         elif param == "Diesel Price (INR/L)":
             pvals = np.linspace(0.5*Price_HSD, 2*Price_HSD, N)
@@ -2149,13 +2154,12 @@ if not auto_batch:
             pvals = np.linspace(0.5*RateDRA, 2*RateDRA, N)
     
         yvals = []
-        # Iterate and re-solve (uses your backend and always uses *actual* pipeline logic)
-        st.info("Running sensitivity... This may take a few seconds per parameter.")
+        st.info("Running sensitivity... Please wait for each scenario to finish.")
         progress = st.progress(0)
         for i, val in enumerate(pvals):
-            # Clone all input parameters for each run
-            stations_data = [dict(s) for s in st.session_state['stations']]
-            term_data = dict(st.session_state["last_term_data"])
+            # Clone deep copy of stations and terminal for safe isolation
+            stations_data = [dict(s) for s in stations_base]
+            term_data = dict(term_base)
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
             this_FLOW = FLOW
             this_RateDRA = RateDRA
@@ -2165,25 +2169,25 @@ if not auto_batch:
             if param == "Flowrate (m³/hr)":
                 this_FLOW = val
             elif param == "Viscosity (cSt)":
-                # Set all segments to this value for test
                 this_linefill_df["Viscosity (cSt)"] = val
                 kv_list, rho_list = map_linefill_to_segments(this_linefill_df, stations_data)
             elif param == "Drag Reduction (%)":
-                # Set all max_dr to >= val; force first pump station's drag reduction to val
+                # Set all pump stations' max_dr to at least this value (ensures optimizer can select it)
                 for stn in stations_data:
                     if stn.get('is_pump', False):
                         stn['max_dr'] = max(stn.get('max_dr', val), val)
-                        break
-                # (the optimizer will always take optimal ≤ max_dr)
             elif param == "Diesel Price (INR/L)":
                 this_Price_HSD = val
             elif param == "DRA Cost (INR/L)":
                 this_RateDRA = val
-            # --- Run solver (always backend) ---
-            resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict())
-            # Extract output metric:
-            # Consistent with Summary tab (use only computed data!)
-            total_cost = power_cost = dra_cost = rh = eff = 0
+    
+            # Call backend solver
+            resi = solve_pipeline(
+                stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict()
+            )
+            # Calculate chosen output
+            total_cost = power_cost = dra_cost = 0
+            eff_vals, rh_vals = [], []
             for idx, stn in enumerate(stations_data):
                 key = stn['name'].lower().replace(' ', '_')
                 # DRA
@@ -2200,8 +2204,8 @@ if not auto_batch:
                 total_cost += dra_cost_i + power_cost_i
                 dra_cost += dra_cost_i
                 power_cost += power_cost_i
-                if eff_i < eff or i == 0: eff = eff_i
-                if rh_i < rh or i == 0: rh = rh_i
+                eff_vals.append(eff_i)
+                rh_vals.append(rh_i)
             # Choose output
             if output == "Total Cost (INR/day)":
                 yvals.append(total_cost)
@@ -2210,11 +2214,14 @@ if not auto_batch:
             elif output == "DRA Cost (INR/day)":
                 yvals.append(dra_cost)
             elif output == "Residual Head (m)":
-                yvals.append(rh)
+                # Minimum residual head at any station (most critical)
+                yvals.append(min(rh_vals) if rh_vals else 0)
             elif output == "Pump Efficiency (%)":
-                yvals.append(eff)
+                # Minimum pump efficiency at any station
+                yvals.append(min(eff_vals) if eff_vals else 0)
             progress.progress((i+1)/len(pvals))
         progress.empty()
+    
         # Plot
         fig = px.line(x=pvals, y=yvals, markers=True,
             labels={"x": param, "y": output},
@@ -2223,8 +2230,8 @@ if not auto_batch:
         df_sens = pd.DataFrame({param: pvals, output: yvals})
         st.dataframe(df_sens, use_container_width=True, hide_index=True)
         st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
-    
-    
+
+        
     
     with tab_bench:
         st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
