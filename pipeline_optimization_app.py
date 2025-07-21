@@ -906,50 +906,38 @@ if not auto_batch:
         else:
             res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
-            terminal_name = st.session_state["last_term_data"]["name"]
-            names = [s['name'] for s in stations_data] + [terminal_name]
-            keys = [n.lower().replace(' ', '_') for n in names]
-    
-            # --- Recompute hydraulically correct segment flows and DRA cost for every station ---
-            segment_flows = []
-            for key in keys:
-                segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
-            
-            # --- Get DRA PPM values as in Tab 1 ---
-            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-            station_ppm = {}
-            for idx, stn in enumerate(stations_data, start=1):
-                key = stn['name'].lower().replace(' ', '_')
-                dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-                dr_max = stn.get('max_dr', 0.0)
-                viscosity = kv_list[idx-1]
-                dr_use = min(dr_opt, dr_max)
-                station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
-    
-            # --- Compute power and DRA costs just as in summary ---
-            power_costs = [float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys]
+            terminal = st.session_state["last_term_data"]
+            names = [s['name'] for s in stations_data] + [terminal["name"]]
+            keys = [n.strip().lower().replace(' ', '_') for n in names]
+        
+            # --- Per-station Power+Fuel cost: sum over all pump types at each station ---
+            power_costs = []
             dra_costs = []
-            for idx, key in enumerate(keys):
-                if key in station_ppm:
-                    dra_cost = (
-                        station_ppm[key]
-                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                        * st.session_state["RateDRA"]
-                    )
-                else:
-                    dra_cost = 0.0
+            for idx, stn in enumerate(stations_data):
+                key = stn['name'].strip().lower().replace(' ','_')
+                # Power+Fuel cost: sum over pump types
+                power = 0.0
+                if stn.get('is_pump', False):
+                    for t, pump in enumerate(stn.get("pumps", [])):
+                        power += float(res.get(f"power_cost_{key}_type{t+1}", 0.0) or 0.0)
+                power_costs.append(power)
+                # DRA cost: stationwise (not per pump)
+                dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
                 dra_costs.append(dra_cost)
+        
+            # Terminal has no pumps/DRA
+            power_costs.append(0.0)
+            dra_costs.append(0.0)
             total_costs = [p + d for p, d in zip(power_costs, dra_costs)]
-    
+        
             df_cost = pd.DataFrame({
                 "Station": names,
                 "Power+Fuel Cost (INR/day)": power_costs,
                 "DRA Cost (INR/day)": dra_costs,
                 "Total Cost (INR/day)": total_costs,
             })
-    
-            # --- Grouped bar chart (side by side) for Power+Fuel and DRA ---
+        
+            # --- Grouped bar chart for Power+Fuel and DRA ---
             fig_grouped = go.Figure()
             fig_grouped.add_trace(go.Bar(
                 x=df_cost["Station"],
@@ -978,8 +966,8 @@ if not auto_batch:
                 margin=dict(l=0, r=0, t=40, b=0)
             )
             st.plotly_chart(fig_grouped, use_container_width=True)
-    
-            # DRA cost bar chart only ---
+        
+            # --- DRA cost bar chart only ---
             st.markdown("<h4 style='font-weight:600; margin-top: 2em;'>DRA Cost</h4>", unsafe_allow_html=True)
             fig_dra = px.bar(
                 df_cost,
@@ -997,7 +985,7 @@ if not auto_batch:
                 margin=dict(l=0, r=0, t=30, b=0)
             )
             st.plotly_chart(fig_dra, use_container_width=True)
-    
+        
             # --- Pie chart: Total cost distribution by station ---
             st.markdown("#### Cost Contribution by Station")
             fig_pie = px.pie(
@@ -1015,15 +1003,14 @@ if not auto_batch:
                 margin=dict(l=10, r=10, t=40, b=10)
             )
             st.plotly_chart(fig_pie, use_container_width=True)
-    
+        
             # --- Trend line: Total cost vs. chainage ---
             st.markdown("#### Cost Accumulation Along Pipeline")
             if "L" in stations_data[0]:
-                # Compute cumulative chainage for each station
                 chainage = [0]
                 for stn in stations_data:
                     chainage.append(chainage[-1] + stn.get("L", 0.0))
-                chainage = chainage[:len(names)]  # Match to station count
+                chainage = chainage[:len(names)]
                 fig_line = go.Figure()
                 fig_line.add_trace(go.Scatter(
                     x=chainage,
@@ -1041,7 +1028,7 @@ if not auto_batch:
                     height=350
                 )
                 st.plotly_chart(fig_line, use_container_width=True)
-    
+        
             # --- Table: All cost heads, 2-decimal formatted ---
             df_cost_fmt = df_cost.copy()
             for c in df_cost_fmt.columns:
@@ -1049,13 +1036,13 @@ if not auto_batch:
                     df_cost_fmt[c] = df_cost_fmt[c].apply(lambda x: f"{x:.2f}")
             st.markdown("#### Tabular Cost Summary")
             st.dataframe(df_cost_fmt, use_container_width=True, hide_index=True)
-    
+        
             st.download_button(
                 "📥 Download Station Cost (CSV)",
                 df_cost.to_csv(index=False).encode(),
                 file_name="station_cost.csv"
             )
-    
+        
             # --- KPI highlights ---
             st.markdown(
                 f"""<br>
