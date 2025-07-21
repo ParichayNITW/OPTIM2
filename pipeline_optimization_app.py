@@ -924,9 +924,18 @@ if not auto_batch:
                 table_rows.append(row)
             
             # 4. To DataFrame and display:
+            import pandas as pd
+            import numpy as np
+            
             df_sum = pd.DataFrame(table_rows)
+            
+            # Fix: Replace all blank strings with np.nan for Arrow/Streamlit compatibility
+            df_sum = df_sum.replace("", np.nan)
+            
+            # Now display and export
             st.dataframe(df_sum, use_container_width=True)
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+
             
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
