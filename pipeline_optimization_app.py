@@ -806,70 +806,128 @@ if not auto_batch:
                 ppm = get_ppm_for_dr(viscosity, dr_use)
                 station_ppm[key] = ppm
     
-            params = [
-                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
-                "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
-            ]
-            summary = {"Parameters": params}
+            import pandas as pd
             
-            # Loop over all stations
+            # 1. Define parameters block by block:
+            
+            main_parameters = [
+                "Pipeline Flow (m³/hr)",
+            ]
+            
+            pump_parameters = [
+                "Pump Flow (m³/hr)",
+                "No. of Pump(s)",
+                "Pump speed (rpm)",
+                "Pump Efficiency (%)",
+                "Pump TDH (m)",
+                "Pump Power + Fuel Cost (INR/day)"
+            ]
+            
+            after_pump_parameters = [
+                "DRA Cost (INR/day)",
+                "DRA PPM",
+                "Reynold's No.",
+                "Head Loss (m)",
+                "Velocity (m/s)",
+                "Residual Head (m)",
+                "SDH (m)",
+                "MAOP (m)",
+                "Drag reduction (%)"
+            ]
+            
+            # 2. Define columns (station names + terminal):
+            
+            station_names = []
             for idx, stn in enumerate(stations_data, start=1):
-                key = stn['name'].strip().lower().replace(' ','_')
-                # If this station is a pump station
-                if stn.get('is_pump', False):
-                    # Loop over all pump types for this station
-                    for t, pump in enumerate(stn.get("pumps", [])):
-                        tkey = f"{key}_type{t+1}"
-                        nm = f"{stn['name']} (Type {t+1})"
-                        summary[nm] = [
-                            res.get(f"pipeline_flow_{key}", None),
-                            res.get(f"pump_flow_{key}", None),
-                            res.get(f"power_cost_{tkey}",0.0),
-                            res.get(f"dra_cost_{tkey}",0.0),
-                            res.get(f"dra_ppm_{tkey}",0.0),
-                            int(res.get(f"num_pumps_{tkey}",0)),
-                            res.get(f"speed_{tkey}",0.0),
-                            res.get(f"efficiency_{tkey}",0.0),
-                            res.get(f"reynolds_{key}",0.0),
-                            res.get(f"head_loss_{key}",0.0),
-                            res.get(f"velocity_{key}",0.0),
-                            res.get(f"residual_head_{key}",0.0),
-                            res.get(f"sdh_{key}",0.0),
-                            res.get(f"maop_{key}",0.0),
-                            res.get(f"drag_reduction_{tkey}",0.0)
-                        ]
+                if idx == 1:
+                    station_names.append(f"Originating {stn['name']}")
                 else:
-                    # For non-pump stations (delivery, supply etc)
-                    summary[stn['name']] = [
-                        res.get(f"pipeline_flow_{key}", None),
-                        res.get(f"pump_flow_{key}", None),
-                        0.0, 0.0, 0.0, 0, 0.0, 0.0,
-                        res.get(f"reynolds_{key}",0.0),
-                        res.get(f"head_loss_{key}",0.0),
-                        res.get(f"velocity_{key}",0.0),
-                        res.get(f"residual_head_{key}",0.0),
-                        res.get(f"sdh_{key}",0.0),
-                        res.get(f"maop_{key}",0.0),
-                        res.get(f"drag_reduction_{key}",0.0)
-                    ]
+                    station_names.append(stn['name'])
+            station_names.append("Terminal station")  # for terminal
             
-            # Add the terminal station at the end as before
-            terminal_key = terminal_name.lower().replace(' ', '_')
-            summary[terminal_name] = [
-                res.get(f"pipeline_flow_{terminal_key}", None),
-                res.get(f"pump_flow_{terminal_key}", None),
-                0.0, 0.0, 0.0, 0, 0.0, 0.0,
-                res.get(f"reynolds_{terminal_key}",0.0),
-                res.get(f"head_loss_{terminal_key}",0.0),
-                res.get(f"velocity_{terminal_key}",0.0),
-                res.get(f"residual_head_{terminal_key}",0.0),
-                res.get(f"sdh_{terminal_key}",0.0),
-                res.get(f"maop_{terminal_key}",0.0),
-                res.get(f"drag_reduction_{terminal_key}",0.0)
-            ]
-            df_sum = pd.DataFrame(summary)
-            st.dataframe(df_sum, use_container_width=True, hide_index=True)
+            # 3. Build table:
+            
+            table_rows = []
+            
+            # --- Main row: Pipeline Flow ---
+            row = {"Parameters": "Pipeline Flow (m³/hr)"}
+            for idx, stn in enumerate(stations_data, start=1):
+                key = stn['name'].strip().lower().replace(' ', '_')
+                row[station_names[idx-1]] = res.get(f"pipeline_flow_{key}", None)
+            tkey = terminal_name.lower().replace(' ', '_')
+            row["Terminal station"] = res.get(f"pipeline_flow_{tkey}", None)
+            table_rows.append(row)
+            
+            # --- Pumps block (for each pump at each station) ---
+            for idx, stn in enumerate(stations_data, start=1):
+                colname = station_names[idx-1]
+                key = stn['name'].strip().lower().replace(' ', '_')
+                if stn.get('is_pump', False):
+                    for t, pump in enumerate(stn.get("pumps", [])):
+                        pump_type = pump.get("type", f"Type {t+1}")
+                        # Bold header row (not really bold in table, but label for grouping)
+                        pump_header = {"Parameters": f"Pump ({pump_type})"}
+                        for cname in station_names:
+                            pump_header[cname] = ""
+                        pump_header["Terminal station"] = ""
+                        table_rows.append(pump_header)
+                        # Pump parameter rows
+                        for subparam, res_field in [
+                            ("Pump Flow (m³/hr)", f"pump_flow_{key}_type{t+1}"),
+                            ("No. of Pump(s)", f"num_pumps_{key}_type{t+1}"),
+                            ("Pump speed (rpm)", f"speed_{key}_type{t+1}"),
+                            ("Pump Efficiency (%)", f"efficiency_{key}_type{t+1}"),
+                            ("Pump TDH (m)", f"tdh_{key}_type{t+1}"),
+                            ("Pump Power + Fuel Cost (INR/day)", f"power_cost_{key}_type{t+1}"),
+                        ]:
+                            prow = {"Parameters": subparam}
+                            for cname in station_names:
+                                if cname == colname:
+                                    prow[cname] = res.get(res_field, None)
+                                else:
+                                    prow[cname] = ""
+                            prow["Terminal station"] = ""
+                            table_rows.append(prow)
+            
+            # --- After pump block: DRA, Reynolds, Losses, etc. ---
+            for param in after_pump_parameters:
+                row = {"Parameters": param}
+                for idx, stn in enumerate(stations_data, start=1):
+                    colname = station_names[idx-1]
+                    key = stn['name'].strip().lower().replace(' ', '_')
+                    if param == "DRA Cost (INR/day)":
+                        row[colname] = sum([res.get(f"dra_cost_{key}_type{t+1}", 0.0) for t, _ in enumerate(stn.get("pumps", []))]) if stn.get('is_pump', False) else 0.0
+                    elif param == "DRA PPM":
+                        row[colname] = sum([res.get(f"dra_ppm_{key}_type{t+1}", 0.0) for t, _ in enumerate(stn.get("pumps", []))]) if stn.get('is_pump', False) else 0.0
+                    elif param == "Reynold's No.":
+                        row[colname] = res.get(f"reynolds_{key}", 0.0)
+                    elif param == "Head Loss (m)":
+                        row[colname] = res.get(f"head_loss_{key}", 0.0)
+                    elif param == "Velocity (m/s)":
+                        row[colname] = res.get(f"velocity_{key}", 0.0)
+                    elif param == "Residual Head (m)":
+                        row[colname] = res.get(f"residual_head_{key}", 0.0)
+                    elif param == "SDH (m)":
+                        row[colname] = res.get(f"sdh_{key}", 0.0)
+                    elif param == "MAOP (m)":
+                        row[colname] = res.get(f"maop_{key}", 0.0)
+                    elif param == "Drag reduction (%)":
+                        row[colname] = sum([res.get(f"drag_reduction_{key}_type{t+1}", 0.0) for t, _ in enumerate(stn.get("pumps", []))]) if stn.get('is_pump', False) else 0.0
+                    else:
+                        row[colname] = ""
+                # Fill terminal column for general params
+                tkey = terminal_name.lower().replace(' ', '_')
+                if param in ["DRA Cost (INR/day)", "DRA PPM", "Reynold's No.", "Head Loss (m)", "Velocity (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag reduction (%)"]:
+                    row["Terminal station"] = res.get(f"{param.lower().replace(' ', '_').replace(\"'\",'')}_{tkey}", 0.0)
+                else:
+                    row["Terminal station"] = ""
+                table_rows.append(row)
+            
+            # 4. To DataFrame and display:
+            df_sum = pd.DataFrame(table_rows)
+            st.dataframe(df_sum, use_container_width=True)
+            st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+
 
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
     
