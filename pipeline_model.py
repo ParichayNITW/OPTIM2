@@ -20,15 +20,12 @@ for cst, fname in DRA_CSV_FILES.items():
     else:
         DRA_CURVE_DATA[cst] = None
 
-def safe_int(x, default=0):
-    # Handles dicts, floats, strings safely
-    if isinstance(x, dict):
-        for key in ['value', 'Value', 'min', 'Min', 'rpm', 'RPM']:
-            if key in x:
-                return int(x[key])
-        if x:
-            return int(list(x.values())[0])
-        return int(default)
+def deepest_int(x, default=0):
+    # Recursively unwrap dicts until an int/float/str is found
+    while isinstance(x, dict):
+        if len(x) == 0:
+            return int(default)
+        x = next(iter(x.values()))
     try:
         return int(float(x))
     except Exception:
@@ -98,7 +95,6 @@ def friction_factor(Re, e, d):
             return 0
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, rpm_step=100, dra_step=5):
-    # --- Brute-force grid search ---
     max_types = 2
     max_nop = 3
 
@@ -140,10 +136,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     station_enum_list = []
     for idx, stn in enumerate(stations, start=1):
         if stn.get("is_pump", False):
-            pump_types = stn["pumps"][:max_types]  # Only up to 2 types
+            pump_types = stn["pumps"][:max_types]
             pump_choices = []
             for typidx, pt in enumerate(pump_types):
-                nops = list(range(0, safe_int(pt.get("max_units", max_nop))+1))
+                nops = list(range(0, deepest_int(pt.get("max_units", max_nop))+1))
                 pump_choices.append(nops)
             combos = []
             for nopA in pump_choices[0]:
@@ -152,20 +148,20 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                         combos.append((nopA, nopB))
                 else:
                     combos.append((nopA, 0))
-            min_rpm1 = safe_int(pump_types[0].get("MinRPM", 1000))
-            max_rpm1 = safe_int(pump_types[0].get("DOL", 3000))
+            min_rpm1 = deepest_int(pump_types[0].get("MinRPM", 1000))
+            max_rpm1 = deepest_int(pump_types[0].get("DOL", 3000))
             rpms1 = list(range(min_rpm1, max_rpm1+1, rpm_step))
-            if rpms1[-1] != max_rpm1:
+            if len(rpms1) == 0 or rpms1[-1] != max_rpm1:
                 rpms1.append(max_rpm1)
             if len(pump_types) > 1:
-                min_rpm2 = safe_int(pump_types[1].get("MinRPM", 1000))
-                max_rpm2 = safe_int(pump_types[1].get("DOL", 3000))
+                min_rpm2 = deepest_int(pump_types[1].get("MinRPM", 1000))
+                max_rpm2 = deepest_int(pump_types[1].get("DOL", 3000))
                 rpms2 = list(range(min_rpm2, max_rpm2+1, rpm_step))
-                if rpms2[-1] != max_rpm2:
+                if len(rpms2) == 0 or rpms2[-1] != max_rpm2:
                     rpms2.append(max_rpm2)
             else:
                 rpms2 = [0]
-            max_dr = safe_int(stn.get("max_dr", 30))
+            max_dr = deepest_int(stn.get("max_dr", 30))
             drs = list(range(0, max_dr+1, dra_step))
             if drs[-1] != max_dr:
                 drs.append(max_dr)
@@ -189,7 +185,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         sdh = {}; rh = {}; dra_ppm = {}; dra_cost = {}; velocity = {}; reynolds = {}; friction = {}
         rpm_out = {}; tdh_out = {}; eff_out = {}; pumpnum_out = {}; dra_perc_out = {}
 
-        # Initial RH at start
         rh[1] = stations[0].get('min_residual', 50.0)
         for idx, sidx in enumerate(cfg, start=1):
             combos, rpms1, rpms2, drs = station_enum_list[idx-1]
@@ -207,7 +202,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             }
             station_config.append(stn_dict)
 
-        # First station must have at least one pump on if it is a pump station
         if stations[0].get("is_pump", False):
             if station_config[0]['NOP1'] + station_config[0]['NOP2'] == 0:
                 continue
@@ -263,8 +257,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                                 qv = [float(x['Flow (m³/hr)']) for x in edata]
                                 ev = [float(x['Efficiency (%)']) for x in edata]
                                 coeffs_E = fit_poly_curve(qv, ev, 4 if len(edata)>=5 else 2)
-                        _tdh = pump_head(flow, rpm, safe_int(pt.get("DOL", rpm)), coeffs_H) * nops
-                        _eff = pump_eff(flow, rpm, safe_int(pt.get("DOL", rpm)), coeffs_E)
+                        _tdh = pump_head(flow, rpm, deepest_int(pt.get("DOL", rpm)), coeffs_H) * nops
+                        _eff = pump_eff(flow, rpm, deepest_int(pt.get("DOL", rpm)), coeffs_E)
                         tdh += _tdh
                         eff.append(_eff)
                         if _eff > 0:
