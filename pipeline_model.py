@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 # -------- NEOS email --------
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
 # -------- DRA Curve Data Loader --------
 DRA_CSV_FILES = {
