@@ -2,7 +2,6 @@ import os
 import numpy as np
 import pandas as pd
 from math import log10, pi
-from itertools import product
 
 # --------- DRA Curve Data Loader ----------
 DRA_CSV_FILES = {
@@ -84,16 +83,14 @@ def friction_factor(Re, e, d):
         else:
             return 0
 
-def solve_pipeline(
-    stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None,
-    rpm_step=100, dra_step=5
-):
+def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, rpm_step=100, dra_step=5):
     max_types = 2
     max_nop = 3
+
     N = len(stations)
     results_list = []
 
-    # Calculate per-segment constant flow
+    # Calculate per-segment flow
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
@@ -124,11 +121,11 @@ def solve_pipeline(
 
     elev[N+1] = terminal.get('elev', 0.0)
 
-    # Prepare search grids
+    # Build config options per station
     station_enum_list = []
     for idx, stn in enumerate(stations, start=1):
         if stn.get("is_pump", False):
-            pump_types = stn["pumps"][:max_types]  # Only up to 2 types
+            pump_types = stn["pumps"][:max_types]
             pump_choices = []
             for typidx, pt in enumerate(pump_types):
                 nops = list(range(0, int(pt.get("max_units", max_nop))+1))
@@ -157,7 +154,7 @@ def solve_pipeline(
         else:
             station_enum_list.append(([(0,0)], [0], [0], [0]))
 
-    # Grid search
+    from itertools import product
     all_indices = []
     for station_opts in station_enum_list:
         combos, rpms1, rpms2, drs = station_opts
@@ -166,13 +163,16 @@ def solve_pipeline(
 
     all_combination_indices = list(product(*all_indices))
 
+    # Identify first pump station (forcing at least one pump ON here)
+    first_pump_idx = next((idx for idx, stn in enumerate(stations) if stn.get('is_pump', False)), None)
+
     for cfg in all_combination_indices:
         station_config = []
         valid = True
         total_cost = 0.0
-        sdh = {}; rh = {}; dra_ppm = {}; dra_cost = {}
-        velocity = {}; reynolds = {}; friction = {}
-        rh[1] = stations[0].get('min_residual', 50.0)
+        sdh = {}; rh = {}; head_loss = {}; dra_ppm = {}; dra_cost = {}; dra_frac = {}; velocity = {}; reynolds = {}; friction = {}
+
+        # Build station_config (with patch for missing 'name')
         for idx, sidx in enumerate(cfg, start=1):
             combos, rpms1, rpms2, drs = station_enum_list[idx-1]
             c_idx, r1_idx, r2_idx, d_idx = sidx
@@ -188,6 +188,14 @@ def solve_pipeline(
                 'PumpType2': pump_types[1].get('name', 'Type2') if len(pump_types)>1 else ''
             }
             station_config.append(stn_dict)
+
+        # ---- FILTER: skip configs with all NOP=0 at first pump station ----
+        if first_pump_idx is not None:
+            stn_cfg = station_config[first_pump_idx]
+            if (stn_cfg['NOP1'] + stn_cfg['NOP2']) == 0:
+                continue  # skip, must have at least one pump ON at first pump station
+
+        # Initial RH at start
         rh[1] = stations[0].get('min_residual', 50.0)
         for i in range(1, N+1):
             stn = stations[i-1]
@@ -204,8 +212,11 @@ def solve_pipeline(
             f = friction_factor(Re, roughness[i], d_inner[i])
             velocity[i] = v; reynolds[i] = Re; friction[i] = f
             stn_cfg = station_config[i-1]
-            drag_frac = stn_cfg['DR']/100.0 if pump_flag and stn_cfg['DR']>0 else 0.0
-            HL = hydraulic_loss(f, length[i], d_inner[i], v, drag_frac=drag_frac)
+            if pump_flag:
+                drag_frac[i] = stn_cfg['DR']/100.0 if stn_cfg['DR']>0 else 0.0
+            else:
+                drag_frac[i] = 0.0
+            HL = hydraulic_loss(f, length[i], d_inner[i], v, drag_frac=drag_frac[i])
             D_out = d_inner[i] + 2 * thickness[i]
             MAOP_head = (2*thickness[i]*(smys[i]*0.070307)*design_factor[i]/D_out)*10000.0/rho
             sdh[i] = rh[i] + (elev[i+1]-elev[i]) + HL
@@ -216,9 +227,9 @@ def solve_pipeline(
             dra_ppm[i] = 0.0
             if pump_flag:
                 for typidx in range(max_types):
-                    nops_ = stn_cfg['NOP1'] if typidx==0 else stn_cfg['NOP2']
-                    rpm_ = stn_cfg['RPM1'] if typidx==0 else stn_cfg['RPM2']
-                    if nops_ > 0 and rpm_ > 0:
+                    nops = stn_cfg['NOP1'] if typidx==0 else stn_cfg['NOP2']
+                    rpm = stn_cfg['RPM1'] if typidx==0 else stn_cfg['RPM2']
+                    if nops > 0 and rpm > 0:
                         pt = stn['pumps'][typidx]
                         coeffs_H = pt.get('head_coeffs', [0,0,0])
                         if not coeffs_H or len(coeffs_H)<3:
@@ -234,11 +245,10 @@ def solve_pipeline(
                                 qv = [float(x['Flow (m³/hr)']) for x in edata]
                                 ev = [float(x['Efficiency (%)']) for x in edata]
                                 coeffs_E = fit_poly_curve(qv, ev, 4 if len(edata)>=5 else 2)
-                        _tdh = pump_head(flow, rpm_, pt.get("DOL", rpm_), coeffs_H) * nops_
-                        _eff = pump_eff(flow, rpm_, pt.get("DOL", rpm_), coeffs_E)
+                        _tdh = pump_head(flow, rpm, pt.get("DOL", rpm), coeffs_H) * nops
+                        _eff = pump_eff(flow, rpm, pt.get("DOL", rpm), coeffs_E)
                         tdh += _tdh
                         eff.append(_eff)
-                        # Power
                         if _eff > 0:
                             if pt.get("power_type","grid").lower() == "grid":
                                 rate = float(pt.get("rate",0.0))
@@ -255,13 +265,15 @@ def solve_pipeline(
                         dr_points, ppm_points = get_ppm_breakpoints(visc)
                         ppm_interp = np.interp([stn_cfg['DR']], dr_points, ppm_points)[0] if len(dr_points)>1 else 0.0
                         dra_ppm[i] += ppm_interp
-                        dra_cost[i] += ppm_interp*(flow*1000.0*24.0/1e6)*RateDRA*nops_
+                        dra_cost[i] += ppm_interp*(flow*1000.0*24.0/1e6)*RateDRA*nops
                     else:
                         eff.append(0.0)
                 rh[i+1] = sdh[i] + tdh
             else:
                 rh[i+1] = sdh[i]
-            if rh[i+1] < 50 or sdh[i] > MAOP_head:
+            if rh[i+1] < 50:
+                valid = False; break
+            if sdh[i] > MAOP_head:
                 valid = False; break
             for peak in peaks_dict[i]:
                 L_peak = peak['loc']*1000.0
@@ -276,76 +288,53 @@ def solve_pipeline(
                 "station_config": station_config,
                 "sdh": sdh,
                 "rh": rh,
+                "head_loss": head_loss,
                 "dra_ppm": dra_ppm,
                 "dra_cost": dra_cost,
                 "velocity": velocity,
                 "reynolds": reynolds,
                 "friction": friction,
-                "segment_flows": segment_flows,
             }
             results_list.append(result_out)
 
-    if len(results_list) == 0:
-        return {"error": True, "message": "No feasible solution found."}
+    if not results_list:
+        return {
+            "error": True,
+            "message": "No valid configuration found (possibly due to too strict constraints or too low pump capacity). Please adjust your input or check pump data."
+        }
+    best_result = min(results_list, key=lambda x: x['total_cost'])
 
-    # Flat output format for frontend compatibility (lowest-cost result)
-    best_result = sorted(results_list, key=lambda x: x['total_cost'])[0]
-    station_config = best_result["station_config"]
-    sdh = best_result["sdh"]
-    rh = best_result["rh"]
-    dra_ppm = best_result["dra_ppm"]
-    dra_cost = best_result["dra_cost"]
-    velocity = best_result["velocity"]
-    reynolds = best_result["reynolds"]
-    friction = best_result["friction"]
-    segment_flows = best_result["segment_flows"]
-
+    # --- Output mapping for frontend ---
     result = {}
     N = len(stations)
+    segment_flows = [float(FLOW)]
+    for stn in stations:
+        delivery = float(stn.get('delivery', 0.0))
+        supply = float(stn.get('supply', 0.0))
+        prev_flow = segment_flows[-1]
+        out_flow = prev_flow - delivery + supply
+        segment_flows.append(out_flow)
+    sdh = best_result["sdh"]; rh = best_result["rh"]
+    dra_ppm = best_result["dra_ppm"]; dra_cost = best_result["dra_cost"]
+    velocity = best_result["velocity"]; reynolds = best_result["reynolds"]; friction = best_result["friction"]
+
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
-        stn_cfg = station_config[i-1] if i-1 < len(station_config) else {}
-        # For up to 2 types
-        for typidx in range(2):
-            typename = stn_cfg.get(f'PumpType{typidx+1}', '')
-            if typename:
-                key = f"{name}_type{typidx+1}"
-                result[f"num_pumps_{key}"] = stn_cfg.get(f'NOP{typidx+1}', 0)
-                result[f"speed_{key}"] = stn_cfg.get(f'RPM{typidx+1}', 0)
-                result[f"drag_reduction_{key}"] = stn_cfg.get('DR', 0)
-                # Could output more per type here if needed
-
-        total_pumps = stn_cfg.get('NOP1', 0) + stn_cfg.get('NOP2', 0)
-        result[f"num_pumps_{name}"] = total_pumps
         result[f"pipeline_flow_{name}"] = segment_flows[i]
         result[f"pipeline_flow_in_{name}"] = segment_flows[i-1]
-        result[f"head_loss_{name}"] = sdh.get(i,0) - rh.get(i+1,0) if (i+1) in rh else 0
-        result[f"residual_head_{name}"] = rh.get(i, 0)
-        result[f"velocity_{name}"] = velocity.get(i, 0)
-        result[f"reynolds_{name}"] = reynolds.get(i, 0)
-        result[f"friction_{name}"] = friction.get(i, 0)
-        result[f"sdh_{name}"] = sdh.get(i, 0)
-        result[f"dra_ppm_{name}"] = dra_ppm.get(i, 0)
-        result[f"dra_cost_{name}"] = dra_cost.get(i, 0)
+        result[f"velocity_{name}"] = velocity.get(i, 0.0)
+        result[f"reynolds_{name}"] = reynolds.get(i, 0.0)
+        result[f"friction_{name}"] = friction.get(i, 0.0)
+        result[f"sdh_{name}"] = sdh.get(i, 0.0)
+        result[f"residual_head_{name}"] = rh.get(i, 0.0)
+        result[f"maop_{name}"] = 0.0
+        result[f"dra_ppm_{name}"] = dra_ppm.get(i, 0.0)
+        result[f"dra_cost_{name}"] = dra_cost.get(i, 0.0)
+        result[f"head_loss_{name}"] = 0.0
+        result[f"drag_reduction_{name}"] = 0.0
 
-    term_name = terminal.get('name','terminal').strip().lower().replace(' ', '_')
-    result.update({
-        f"pipeline_flow_{term_name}": segment_flows[-1],
-        f"pipeline_flow_in_{term_name}": segment_flows[-2],
-        f"num_pumps_{term_name}": 0,
-        f"speed_{term_name}": 0.0,
-        f"residual_head_{term_name}": rh.get(N+1, 0),
-        f"velocity_{term_name}": 0.0,
-        f"reynolds_{term_name}": 0.0,
-        f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"dra_cost_{term_name}": 0.0,
-        f"head_loss_{term_name}": 0.0,
-    })
-    result['total_cost'] = best_result["total_cost"]
+    # Add your pump type/speed/etc outputs here as per frontend requirements
+
+    result['total_cost'] = best_result['total_cost']
     result['error'] = False
-    # Optionally, attach top 3 configs for advanced usage
-    result['best_configs'] = sorted(results_list, key=lambda x: x['total_cost'])[:3]
-
     return result
