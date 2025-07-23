@@ -77,6 +77,7 @@ def pump_eff(flow, rpm, dol, coeffs, base_rpm):
         return 0
 
 def hydraulic_loss(f, L, d, v, g=9.81, drag_frac=0.0):
+    # L in meters!
     return f * (L/d) * (v**2/(2*g)) * (1-drag_frac)
 
 def safe_float(x, default=0.0):
@@ -107,11 +108,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         out_flow = prev_flow - delivery + supply
         segment_flows.append(out_flow)
 
-    # Pipe properties and geometry
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}; peaks_dict = {}
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
     for i, stn in enumerate(stations, start=1):
-        length[i] = safe_float(stn.get('L', 0.0)) * 1000.0  # Ensure L in meters!
+        length[i] = safe_float(stn.get('L', 0.0)) * 1000.0  # JSON has L in km; convert to meters!
         if 'D' in stn:
             D_out = safe_float(stn['D'])
             thickness[i] = safe_float(stn.get('t', default_t))
@@ -130,7 +130,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     elev[N+1] = safe_float(terminal.get('elev', 0.0))
 
-    # Prepare brute force search space
+    # Generate station options (pump combos, RPMs, DRs)
     from itertools import product
     station_options = []
     for idx, stn in enumerate(stations, start=1):
@@ -173,6 +173,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         indices = list(product(range(len(combos)), range(len(rpms1)), range(len(rpms2)), range(len(drs))))
         all_indices.append(indices)
     all_combination_indices = list(product(*all_indices))
+
+    # To avoid never getting output: break after 50,000 configs and always return SOMETHING
+    max_checks = 50000
+    check_count = 0
 
     for cfg in all_combination_indices:
         station_config = []
@@ -291,6 +295,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             per_station[f"friction_{name}"] = f
             per_station[f"velocity_{name}"] = v
             per_station[f"reynolds_{name}"] = Re
+        check_count += 1
         if valid:
             result_out = dict(
                 total_cost=total_cost,
@@ -298,11 +303,20 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 **per_station
             )
             results_list.append(result_out)
+        if check_count >= max_checks:  # Limit brute force for UI
+            break
 
+    # Always show the user what happened!
+    if not results_list:
+        return {
+            "error": True,
+            "message": f"No feasible solution found in {check_count} configs. "
+                       "Check all pipeline, pump, and DRA data. Try with only one pump and one RPM per station to debug.",
+            "checked_configs": int(check_count)
+        }
     top_results = sorted(results_list, key=lambda x: x['total_cost'])[:3]
-    if not top_results:
-        return {"error": True, "message": "No feasible solution found. Please check your input and relax constraints."}
     result = top_results[0]
     result['top3'] = top_results
     result['error'] = False
+    result['checked_configs'] = int(check_count)
     return result
