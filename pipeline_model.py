@@ -184,8 +184,8 @@ def solve_pipeline(
             pump_types = stn["pumps"][:max_types] if stn.get("is_pump", False) else []
             stn_dict = {
                 'NOP1': nops[0], 'NOP2': nops[1], 'RPM1': rpm1, 'RPM2': rpm2, 'DR': drag,
-                'PumpType1': pump_types[0]['name'] if pump_types else '',
-                'PumpType2': pump_types[1]['name'] if len(pump_types)>1 else ''
+                'PumpType1': pump_types[0].get('name', 'Type1') if len(pump_types)>0 else '',
+                'PumpType2': pump_types[1].get('name', 'Type2') if len(pump_types)>1 else ''
             }
             station_config.append(stn_dict)
         rh[1] = stations[0].get('min_residual', 50.0)
