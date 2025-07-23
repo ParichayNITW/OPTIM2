@@ -49,7 +49,6 @@ def get_ppm_breakpoints(visc):
     return list(unique_x), unique_y.tolist()
 
 def swamee_jain(Re, e, d):
-    # Swamee–Jain explicit friction factor equation
     if Re < 4000 and Re > 0:
         return 64.0 / Re
     elif Re >= 4000 and d > 0 and e >= 0:
@@ -60,7 +59,6 @@ def swamee_jain(Re, e, d):
         return 0
 
 def pump_head(flow, rpm, dol, coeffs):
-    # Quadratic: H = A Q^2 + B Q + C, scaled for rpm/dol
     Q_equiv = flow * dol / rpm if rpm > 0 else 0
     if len(coeffs) == 3:
         return (coeffs[0]*Q_equiv**2 + coeffs[1]*Q_equiv + coeffs[2]) * (rpm/dol)**2
@@ -79,7 +77,9 @@ def pump_eff(flow, rpm, dol, coeffs, base_rpm):
         return 0
 
 def hydraulic_loss(f, L, d, v, g=9.81, drag_frac=0.0):
-    # L must be in meters!
+    # L in meters, d in meters, v in m/s
+    if d <= 0 or L <= 0 or v <= 0 or f <= 0:
+        return 0
     return f * (L/d) * (v**2/(2*g)) * (1-drag_frac)
 
 def safe_float(x, default=0.0):
@@ -101,7 +101,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     N = len(stations)
     results_list = []
 
-    # Segment flows
+    # Segment flows (each segment flow at *outlet* of station i)
     segment_flows = [safe_float(FLOW)]
     for stn in stations:
         delivery = safe_float(stn.get('delivery', 0.0))
@@ -113,7 +113,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}; peaks_dict = {}
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
     for i, stn in enumerate(stations, start=1):
-        length[i] = safe_float(stn.get('L', 0.0)) * 1000.0   # CRITICAL FIX: L is now in meters!
+        # CRITICAL: Length in meters!
+        length[i] = safe_float(stn.get('L', 0.0)) * 1000.0
         if 'D' in stn:
             D_out = safe_float(stn['D'])
             thickness[i] = safe_float(stn.get('t', default_t))
@@ -132,7 +133,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     elev[N+1] = safe_float(terminal.get('elev', 0.0))
 
-    # Generate station options (pump combos, RPMs, DRs)
     from itertools import product
     station_options = []
     for idx, stn in enumerate(stations, start=1):
@@ -187,11 +187,12 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             stn = stations[i-1]
             name = stn['name'].strip().lower().replace(' ', '_')
             flow = segment_flows[i]
+            # Calculate area (m²), velocity (m/s)
             area = pi * (d_inner[i]**2)/4.0
-            v = flow/3600.0/area if area > 0 else 0.0
+            v = flow / 3600.0 / area if area > 0 else 0.0  # m³/hr to m³/s
             kv = safe_float(KV_list[i-1])
             rho = safe_float(rho_list[i-1])
-            Re = v*d_inner[i]/(kv*1e-6) if kv > 0 else 0.0
+            Re = v * d_inner[i] / (kv * 1e-6) if kv > 0 else 0.0
             f = swamee_jain(Re, roughness[i], d_inner[i])
             velocity[i] = v; reynolds[i] = Re; friction[i] = f
 
@@ -243,7 +244,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                     rh[i+1] = PH - HL + delta_z if PH > sdh[i] else max(50, rh[i])
                     _eff = pump_eff(flow, rpm, dol, coeffs_E, base_rpm)
                     eff.append(_eff)
-                    # Power/fuel cost
                     if _eff > 0:
                         if pt.get("power_type", "grid").lower() == "grid":
                             rate = safe_float(pt.get("rate", 0.0))
@@ -256,7 +256,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                             power_cost += power_kW * 24.0 * fuel_per_kWh * Price_HSD
                     else:
                         power_cost += 0.0
-                    # DRA (per station, per type)
                     visc = kv
                     dr_points, ppm_points = get_ppm_breakpoints(visc)
                     ppm_interp = np.interp([drag], dr_points, ppm_points)[0] if len(dr_points) > 1 else 0.0
