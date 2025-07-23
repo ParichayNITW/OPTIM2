@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 # -------- NEOS email --------
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'your@email.com')
 
 # -------- DRA Curve Data Loader --------
 DRA_CSV_FILES = {
@@ -51,7 +51,7 @@ def get_ppm_breakpoints(visc):
     y = df['PPM'].values
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
-    return list(unique_x), list(unique_y)
+    return list(unique_x), unique_y.tolist()
 
 def fit_pump_curves(stations):
     # Auto-fit curves for all pumps, populates A,B,C,P,Q,R,S,T for each pump type
@@ -83,10 +83,10 @@ def fit_pump_curves(stations):
                     pt['P'], pt['Q'], pt['R'], pt['S'], pt['T'] = 0, 0, 0, 0, 0
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
-    # --------- Fit pump curves before optimization ---------
     fit_pump_curves(stations)
     RPM_STEP = 100
     DRA_STEP = 5
+    big_M = 1e6  # For indicator constraints
 
     N = len(stations)
     model = pyo.ConcreteModel()
@@ -264,19 +264,33 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         DH_next = f[i] * ((length[i]*1000.0) / d_inner[i]) * (v[i]**2 / (2*g)) * (1 - DR_frac)
         model.sdh_constraint.add(model.SDH[i] == model.RH[i+1] + (model.z[i+1] - model.z[i]) + DH_next)
 
+    # --------- BYPASS LOGIC (Big-M INDICATOR) ----------
+    model.bypass = pyo.Var(model.pump_stations, domain=pyo.Binary)
+    model.bypass_link = pyo.ConstraintList()
+    for i in pump_stations:
+        types_here = [t for t, _ in enumerate(stations[i-1]["pumps"])]
+        nop_sum = sum(model.NOP[i, t] for t in types_here)
+        # If bypass=1, NOP=0; if bypass=0, NOP>=1
+        model.bypass_link.add(nop_sum <= big_M * (1 - model.bypass[i]))
+        model.bypass_link.add(nop_sum >= 1 - big_M * model.bypass[i])
+
     model.head_balance = pyo.ConstraintList()
     for i in range(1, N+1):
-        if stations[i-1].get("is_pump", False):
-            types_here = [t for t, _ in enumerate(stations[i-1]["pumps"])]
+        stn = stations[i-1]
+        if stn.get("is_pump", False):
+            types_here = [t for t, _ in enumerate(stn["pumps"])]
             TDH_sum = sum(
                 (model.A[i, t] * (float(segment_flows[i]) * model.DOL[i, t] / model.RPM_var[i, t])**2
                  + model.B[i, t] * (float(segment_flows[i]) * model.DOL[i, t] / model.RPM_var[i, t])
                  + model.C[i, t]) * (model.RPM_var[i, t] / model.DOL[i, t])**2 * model.NOP[i, t]
                 for t in types_here
             )
-            model.head_balance.add(
-                model.SDH[i] == model.RH[i] + TDH_sum
-            )
+            # If bypassed: SDH[i] == RH[i]
+            model.head_balance.add(model.SDH[i] - model.RH[i] <= big_M * model.bypass[i])
+            model.head_balance.add(model.RH[i] - model.SDH[i] <= big_M * model.bypass[i])
+            # If NOT bypassed: SDH[i] == RH[i] + TDH_sum
+            model.head_balance.add(model.SDH[i] - (model.RH[i] + TDH_sum) <= big_M * (1 - model.bypass[i]))
+            model.head_balance.add((model.RH[i] + TDH_sum) - model.SDH[i] <= big_M * (1 - model.bypass[i]))
         else:
             model.head_balance.add(model.SDH[i] == model.RH[i])
 
