@@ -77,9 +77,6 @@ def pump_eff(flow, rpm, dol, coeffs, base_rpm):
         return 0
 
 def hydraulic_loss(f, L, d, v, g=9.81, drag_frac=0.0):
-    # L in meters, d in meters, v in m/s
-    if d <= 0 or L <= 0 or v <= 0 or f <= 0:
-        return 0
     return f * (L/d) * (v**2/(2*g)) * (1-drag_frac)
 
 def safe_float(x, default=0.0):
@@ -101,7 +98,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     N = len(stations)
     results_list = []
 
-    # Segment flows (each segment flow at *outlet* of station i)
+    # Segment flows
     segment_flows = [safe_float(FLOW)]
     for stn in stations:
         delivery = safe_float(stn.get('delivery', 0.0))
@@ -110,11 +107,11 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         out_flow = prev_flow - delivery + supply
         segment_flows.append(out_flow)
 
+    # Pipe properties and geometry
     length = {}; d_inner = {}; roughness = {}; thickness = {}; smys = {}; design_factor = {}; elev = {}; peaks_dict = {}
     default_t = 0.007; default_e = 0.00004; default_smys = 52000; default_df = 0.72
     for i, stn in enumerate(stations, start=1):
-        # CRITICAL: Length in meters!
-        length[i] = safe_float(stn.get('L', 0.0)) * 1000.0
+        length[i] = safe_float(stn.get('L', 0.0)) * 1000.0  # Ensure L in meters!
         if 'D' in stn:
             D_out = safe_float(stn['D'])
             thickness[i] = safe_float(stn.get('t', default_t))
@@ -133,6 +130,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     elev[N+1] = safe_float(terminal.get('elev', 0.0))
 
+    # Prepare brute force search space
     from itertools import product
     station_options = []
     for idx, stn in enumerate(stations, start=1):
@@ -187,12 +185,11 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             stn = stations[i-1]
             name = stn['name'].strip().lower().replace(' ', '_')
             flow = segment_flows[i]
-            # Calculate area (m²), velocity (m/s)
             area = pi * (d_inner[i]**2)/4.0
-            v = flow / 3600.0 / area if area > 0 else 0.0  # m³/hr to m³/s
+            v = flow/3600.0/area if area > 0 else 0.0
             kv = safe_float(KV_list[i-1])
             rho = safe_float(rho_list[i-1])
-            Re = v * d_inner[i] / (kv * 1e-6) if kv > 0 else 0.0
+            Re = v*d_inner[i]/(kv*1e-6) if kv > 0 else 0.0
             f = swamee_jain(Re, roughness[i], d_inner[i])
             velocity[i] = v; reynolds[i] = Re; friction[i] = f
 
