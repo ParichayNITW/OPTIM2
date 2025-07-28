@@ -130,9 +130,23 @@ def solve_pipeline(
             curr_flow = FLOW
             idx_bypass = 0
 
-            pumpnum_out, speeds_out, effs_out, cost_out, dra_out = [],[],[],[],[]
-            heads_out, rh_out, drag_reductions = [],[],[]
-            dra_ppm_out, velocity_out, reynolds_out, flow_out, headloss_out, maop_out, sdhs_out, residual_heads = ([] for _ in range(14))
+            pumpnum_out = []
+            speeds_out = []
+            effs_out = []
+            cost_out = []
+            dra_out = []
+            heads_out = []
+            rh_out = []
+            drag_reductions = []
+            dra_ppm_out = []
+            velocity_out = []
+            reynolds_out = []
+            flow_out = []
+            headloss_out = []
+            maop_out = []
+            sdhs_out = []
+            residual_heads = []
+
 
             for stn_idx, stn in enumerate(stations):
                 key = stn['name'].lower().replace(' ','_')
