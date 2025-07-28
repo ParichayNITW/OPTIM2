@@ -157,6 +157,7 @@ def solve_pipeline(
                     MinRPM = stn.get('MinRPM',1000)
                     max_rpm = DOL
                     if head_table is None or eff_table is None or len(head_table) < 2 or len(eff_table) < 2:
+                        print(f"[DEBUG] Station {stn['name']}: Missing or too short pump table. Skipping scenario.")
                         feasible = False
                         break
                     head_table = sorted(head_table, key=lambda x: x['flow'])
@@ -176,7 +177,6 @@ def solve_pipeline(
                     # Try each speed (down to MinRPM), use affinity laws + interpolation for each
                     for rpm in range(int(MinRPM), int(max_rpm)+1, 10):
                         speed_ratio = rpm / DOL
-                        # At given FLOW and speed, the equivalent DOL flow is FLOW/speed_ratio
                         Q_equiv = curr_flow / speed_ratio
                         if Q_equiv < head_flows[0] or Q_equiv > head_flows[-1]:
                             continue
@@ -190,6 +190,7 @@ def solve_pipeline(
                             break
 
                     if not found_N or eff_val is None or eff_val < 1e-3:
+                        print(f"[DEBUG] Station {stn['name']}: No RPM ({MinRPM}-{max_rpm}) gives enough head for SDH {sdh_required:.2f}m, n={n}. Max curve head: {np.max(head_heads):.2f}.")
                         feasible = False
                         break
 
@@ -202,17 +203,15 @@ def solve_pipeline(
                         fuel_lph = stn['sfc'] * bhp / 1e3
                         fuel_cost = fuel_lph * HOURS_PER_DAY * Price_HSD
                         power_cost = fuel_cost
-                    # --- DRA cost: use kg/day
                     ppm = get_ppm_for_dr(visc, DR)
                     dra_kg_per_day = curr_flow * 1000 * HOURS_PER_DAY * ppm / 1e9
                     dra_cost = dra_kg_per_day * RateDRA
-                    # --- MAOP: compare SDH in bar to MAOP in bar
                     maop_val = calc_maop(SMYS, D, t)
                     sdh_bar = sdh_required * dens * g / 1e5
                     if sdh_bar > maop_val:
+                        print(f"[DEBUG] Station {stn['name']}: SDH (bar) {sdh_bar:.2f} > MAOP {maop_val:.2f}")
                         feasible = False
                         break
-                    # --- Store results
                     pumpnum_out.append(n)
                     speeds_out.append(found_N)
                     effs_out.append(eff_val)
