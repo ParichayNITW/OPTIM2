@@ -13,7 +13,7 @@ def solve_pipeline(
     Price_HSD,
     linefill_dict
 ):
-    g = 9.81  # m/s2
+    g = 9.81  # m/s²
     HOURS_PER_DAY = 24
     EPS = 1e-6
 
@@ -35,7 +35,6 @@ def solve_pipeline(
             DRA_CURVE_DATA[cst] = pd.DataFrame({'%Drag Reduction':[0,10,20,30],'PPM':[0,10,30,50]})
 
     def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
-        """Interpolate PPM for required DR and viscosity (cSt)."""
         cst_list = sorted(dra_curve_data.keys())
         visc = float(visc)
         if visc <= cst_list[0]:
@@ -54,24 +53,20 @@ def solve_pipeline(
             ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
             return ppm_interp
 
-    # ---- Hydraulic Equations ----
     def darcy_weisbach_head_loss(Q, D, L, rough, visc, dens, drag_reduction):
-        """Head loss in m for segment at given DRA (Swamee-Jain for Re>4000)."""
-        A = np.pi * (D/2)**2  # m2
-        v = Q / 3600 / A  # m/s
+        A = np.pi * (D/2)**2  # m²
+        v = Q / 3600 / A      # m/s
         Re = dens * v * D / (visc * 1e-6)
         eps_D = rough / D
         if Re < 2000:
             f = 64/Re
         else:
-            # Swamee-Jain (no approximation)
             f = 0.25/(np.log10(eps_D/3.7 + 5.74/(Re**0.9)))**2
         f = f * (1 - drag_reduction/100)
         hl = f * (L*1000) / D * v**2 / (2*g)
         return hl, v, Re
 
     def get_peaks_extra_head(peaks, stn_elev):
-        """Return max extra head (m) needed to cross peaks, relative to upstream station elevation."""
         extra = 0
         for pk in peaks:
             if pk["elev"] > stn_elev:
@@ -84,17 +79,6 @@ def solve_pipeline(
         SMYS_MPa = SMYS * 0.006895
         maop = 2 * t_mm * SMYS_MPa / (D_mm * 1.5) * 10.1972  # bar
         return maop
-
-    def eval_head_curve(Q, coefs, N, DOL):
-        """Head (m) at Q, N (rpm), given A,B,C at DOL."""
-        A,B,C = coefs
-        return A*Q**2 + B*Q*(N/DOL) + C*(N/DOL)**2
-
-    def eval_eff_curve(Q, coefs, N, DOL):
-        P, Qc, R, S, T = coefs
-        Qeq = Q * DOL / N if N != 0 else 0
-        eff = P*Qeq**4 + Qc*Qeq**3 + R*Qeq**2 + S*Qeq + T
-        return np.clip(eff, 1, 99.5)
 
     def pump_combos(max_n):
         return list(range(1, max_n+1))
@@ -147,7 +131,6 @@ def solve_pipeline(
             sdhs_out = []
             residual_heads = []
 
-
             for stn_idx, stn in enumerate(stations):
                 key = stn['name'].lower().replace(' ','_')
                 D = stn['D']
@@ -167,28 +150,49 @@ def solve_pipeline(
                     n = config[idx_bypass][0]
                     DR = config[idx_bypass][1]
                     idx_bypass += 1
-                    # Pump curve coefficients
-                    A,B,C = stn.get('A',0), stn.get('B',0), stn.get('C',0)
-                    P, Qc, R, S, T = stn.get('P',0), stn.get('Q',0), stn.get('R',0), stn.get('S',0), stn.get('T',0)
+                    # ---- Use tabular head/eff curves ----
+                    head_table = stn.get('head_curve', None)
+                    eff_table = stn.get('eff_curve', None)
                     DOL = stn.get('DOL',1500)
                     MinRPM = stn.get('MinRPM',1000)
                     max_rpm = DOL
-                    head_loss, vel, Re = darcy_weisbach_head_loss(curr_flow, D, L, rough, visc, dens, DR)
-                    sdh_required = head_loss + curr_rh + (elev_end-elev_start) + peak_head
-                    # --- Find RPM where n pumps at N gives SDH
-                    found_N = None
-                    eff_val = None
-                    for rpm in range(int(MinRPM), int(max_rpm)+1, 10):
-                        head_per_pump = eval_head_curve(curr_flow, (A,B,C), rpm, DOL)
-                        total_head = n * head_per_pump
-                        if total_head >= sdh_required-EPS:
-                            found_N = rpm
-                            eff_val = eval_eff_curve(curr_flow, (P,Qc,R,S,T), rpm, DOL)
-                            break
-                    if not found_N:
+                    if head_table is None or eff_table is None or len(head_table) < 2 or len(eff_table) < 2:
                         feasible = False
                         break
-                    eff_val = max(eff_val, 1.0)
+                    head_table = sorted(head_table, key=lambda x: x['flow'])
+                    eff_table = sorted(eff_table, key=lambda x: x['flow'])
+
+                    head_flows = np.array([row['flow'] for row in head_table])
+                    head_heads = np.array([row['head'] for row in head_table])
+                    eff_flows = np.array([row['flow'] for row in eff_table])
+                    eff_effs = np.array([row['eff'] for row in eff_table])
+
+                    head_loss, vel, Re = darcy_weisbach_head_loss(curr_flow, D, L, rough, visc, dens, DR)
+                    sdh_required = head_loss + curr_rh + (elev_end-elev_start) + peak_head
+
+                    found_N = None
+                    eff_val = None
+
+                    # Try each speed (down to MinRPM), use affinity laws + interpolation for each
+                    for rpm in range(int(MinRPM), int(max_rpm)+1, 10):
+                        speed_ratio = rpm / DOL
+                        # At given FLOW and speed, the equivalent DOL flow is FLOW/speed_ratio
+                        Q_equiv = curr_flow / speed_ratio
+                        if Q_equiv < head_flows[0] or Q_equiv > head_flows[-1]:
+                            continue
+                        head_at_Q_equiv = np.interp(Q_equiv, head_flows, head_heads)
+                        head_at_N = head_at_Q_equiv * (speed_ratio)**2  # Affinity law
+                        total_head = n * head_at_N
+                        if total_head >= sdh_required-EPS:
+                            eff_at_Q_equiv = np.interp(Q_equiv, eff_flows, eff_effs)
+                            found_N = rpm
+                            eff_val = eff_at_Q_equiv
+                            break
+
+                    if not found_N or eff_val is None or eff_val < 1e-3:
+                        feasible = False
+                        break
+
                     kw = (g * curr_flow/3600 * sdh_required * dens) / (eff_val/100) / 1000
                     if stn['power_type'] == 'Grid':
                         power_cost = kw * HOURS_PER_DAY * stn['rate']
@@ -200,7 +204,7 @@ def solve_pipeline(
                         power_cost = fuel_cost
                     # --- DRA cost: use kg/day
                     ppm = get_ppm_for_dr(visc, DR)
-                    dra_kg_per_day = curr_flow * 1000 * HOURS_PER_DAY * ppm / 1e9  # (m³/hr * 1000 = L/hr) * 24 * ppm [mg/L] / 1e9 = kg
+                    dra_kg_per_day = curr_flow * 1000 * HOURS_PER_DAY * ppm / 1e9
                     dra_cost = dra_kg_per_day * RateDRA
                     # --- MAOP: compare SDH in bar to MAOP in bar
                     maop_val = calc_maop(SMYS, D, t)
