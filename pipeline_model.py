@@ -435,6 +435,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         result[f"friction_{name}"] = fric
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
         result[f"maop_{name}"] = maop_dict[i]
+        result[f"density_{name}"] = rho_dict[i]
+
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(model.A[i])
             result[f"coef_B_{name}"] = float(model.B[i])
@@ -461,6 +463,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         f"friction_{term_name}": 0.0,
         f"sdh_{term_name}": 0.0,
         f"residual_head_{term_name}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
+        f"density_{term_name}": rho_dict.get(N, list(rho_dict.values())[-1]),
     })
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result["error"] = False
