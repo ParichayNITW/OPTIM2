@@ -819,6 +819,20 @@ if not auto_batch:
     
                 # For numeric columns, always use np.nan if not available
                 pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
+                
+                head_loss_m = res.get(f"head_loss_{key}", 0.0)
+                density = res.get(f"density_{key}", 850)
+                head_loss_kgcm2 = head_loss_m * density / 10000 if head_loss_m is not None and density is not None else None
+                
+                residual_m = res.get(f"residual_head_{key}", 0.0)
+                residual_kgcm2 = residual_m * density / 10000 if residual_m is not None and density is not None else None
+                
+                sdh_m = res.get(f"sdh_{key}", 0.0)
+                sdh_kgcm2 = sdh_m * density / 10000 if sdh_m is not None and density is not None else None
+                
+                maop_m = res.get(f"maop_{key}", 0.0)
+                maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
+                                                
                 summary[nm] = [
                     segment_flows[idx],
                     pumpflow,
@@ -828,28 +842,16 @@ if not auto_batch:
                     int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
                     res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
                     res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
-                    
-                    head_loss_m = res.get(f"head_loss_{key}", 0.0)
-                    density = res.get(f"density_{key}", 850)
-                    head_loss_kgcm2 = head_loss_m * density / 10000 if head_loss_m is not None and density is not None else None
+                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,                   
+
                     f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
 
                     res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
                     
-                    residual_m = res.get(f"residual_head_{key}", 0.0)
-                    density = res.get(f"density_{key}", 850)
-                    residual_kgcm2 = residual_m * density / 10000 if residual_m is not None and density is not None else None
                     f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
 
-                    sdh_m = res.get(f"sdh_{key}", 0.0)
-                    density = res.get(f"density_{key}", 850)
-                    sdh_kgcm2 = sdh_m * density / 10000 if sdh_m is not None and density is not None else None
                     f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
 
-                    maop_m = res.get(f"maop_{key}", 0.0)
-                    density = res.get(f"density_{key}", 850)
-                    maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
                     f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
 
                     res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
