@@ -227,7 +227,7 @@ with st.sidebar:
     if "stations" not in st.session_state:
         st.session_state["stations"] = [{
             'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'SMYS': 52000.0, 'rough': 0.0000127, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
@@ -239,7 +239,7 @@ with st.sidebar:
         n = len(st.session_state.get('stations',[])) + 1
         default = {
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'SMYS': 52000.0, 'rough': 0.0000127, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
