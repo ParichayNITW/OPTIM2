@@ -217,7 +217,12 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
     for j in range(2, N+2):
-        model.RH[j].setlb(50.0)
+        if j == N+1:
+            # Terminal node: use user-entered value
+            model.RH[j].setlb(terminal.get('min_residual', 50.0))
+        else:
+            model.RH[j].setlb(50.0)
+
 
     g = 9.81
     v = {}; Re = {}; f = {}
