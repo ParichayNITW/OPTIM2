@@ -359,7 +359,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # Solve
-    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
+    results = SolverManagerFactory('neos').solve(model, solver='conmin', tee=False)
     status = results.solver.status
     term = results.solver.termination_condition
     if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
