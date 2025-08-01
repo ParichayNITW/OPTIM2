@@ -328,9 +328,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
         dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
-        # Piecewise for DRA PPM mapping (must use model.DR_var[i], with bounds)
         if i in pump_indices:
-            # Set explicit bounds to avoid error
+            # Always set bounds for DR_var
             model.DR_var[i].setlb(min(dr_points_fixed))
             model.DR_var[i].setub(max(dr_points_fixed))
             setattr(model, f'piecewise_dra_ppm_{i}',
@@ -344,8 +343,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 )
             )
         else:
-            # If not a pump station, fix DRA to zero
             model.PPM[i].fix(0.0)
+
 
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i] = dra_cost_expr
