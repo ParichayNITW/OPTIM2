@@ -173,17 +173,24 @@ def restore_case_dict(loaded_data):
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    for i in range(len(st.session_state['stations'])):
-        head_data = loaded_data.get(f"head_data_{i+1}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
-        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
-        if head_data is not None:
-            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
-        if eff_data is not None:
-            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
+    for i, stn in enumerate(st.session_state.get('stations', []), start=1):
+        if stn.get('is_pump', False):
+            if i == 1:
+                # Restore all four tables for origin (Type A and B)
+                for key in ["head_data_A", "eff_data_A", "head_data_B", "eff_data_B"]:
+                    tbl = loaded_data.get(f"{key}_{i}", None)
+                    if tbl is not None:
+                        st.session_state[f"{key}_{i}"] = pd.DataFrame(tbl)
+            else:
+                # Restore for others (single pump type)
+                for key in ["head_data", "eff_data"]:
+                    tbl = loaded_data.get(f"{key}_{i}", None)
+                    if tbl is not None:
+                        st.session_state[f"{key}_{i}"] = pd.DataFrame(tbl)
+        # Restore peaks
+        peak_data = loaded_data.get(f"peak_data_{i}", None)
         if peak_data is not None:
-            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
-
+            st.session_state[f"peak_data_{i}"] = pd.DataFrame(peak_data)
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     loaded_data = json.load(uploaded_case)
