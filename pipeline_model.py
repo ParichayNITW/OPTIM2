@@ -232,20 +232,24 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     for i in range(1, N+1):
         if i == 1:
             pump_flow = float(segment_flows[i])
+            # --- Type A ---
             rpm_A = model.RPM_A_origin
             dol_A = float(DOL1)
-            Q_equiv_A = pump_flow * dol_A / rpm_A
-            H_DOL_A = float(A1) * Q_equiv_A**2 + float(B1) * Q_equiv_A + float(C1)
-            TDH_A = H_DOL_A * (rpm_A / dol_A)**2
-            EFF_A = (float(P1)*Q_equiv_A**4 + float(Q1)*Q_equiv_A**3 + float(R1)*Q_equiv_A**2 + float(S1)*Q_equiv_A + float(T1)) / 100.0
+            rpm_A_val = rpm_A.value if hasattr(rpm_A, 'value') and rpm_A.value not in (None, 0) else float(MinRPM1)
+            Q_equiv_A = pump_flow * dol_A / rpm_A_val if rpm_A_val != 0 else 1.0
+            H_DOL_A = max(0, float(A1) * Q_equiv_A**2 + float(B1) * Q_equiv_A + float(C1))
+            TDH_A = H_DOL_A * (rpm_A_val / dol_A)**2
+            EFF_A = max(0.01, (float(P1)*Q_equiv_A**4 + float(Q1)*Q_equiv_A**3 + float(R1)*Q_equiv_A**2 + float(S1)*Q_equiv_A + float(T1)) / 100.0)
             model.TDH_A_origin = pyo.Expression(expr=TDH_A)
             model.EFF_A_origin = pyo.Expression(expr=EFF_A)
+            # --- Type B ---
             rpm_B = model.RPM_B_origin
             dol_B = float(DOL2)
-            Q_equiv_B = pump_flow * dol_B / rpm_B
-            H_DOL_B = float(A2) * Q_equiv_B**2 + float(B2) * Q_equiv_B + float(C2)
-            TDH_B = H_DOL_B * (rpm_B / dol_B)**2
-            EFF_B = (float(P2)*Q_equiv_B**4 + float(Q2)*Q_equiv_B**3 + float(R2)*Q_equiv_B**2 + float(S2)*Q_equiv_B + float(T2)) / 100.0
+            rpm_B_val = rpm_B.value if hasattr(rpm_B, 'value') and rpm_B.value not in (None, 0) else float(MinRPM2)
+            Q_equiv_B = pump_flow * dol_B / rpm_B_val if rpm_B_val != 0 else 1.0
+            H_DOL_B = max(0, float(A2) * Q_equiv_B**2 + float(B2) * Q_equiv_B + float(C2))
+            TDH_B = H_DOL_B * (rpm_B_val / dol_B)**2
+            EFF_B = max(0.01, (float(P2)*Q_equiv_B**4 + float(Q2)*Q_equiv_B**3 + float(R2)*Q_equiv_B**2 + float(S2)*Q_equiv_B + float(T2)) / 100.0)
             model.TDH_B_origin = pyo.Expression(expr=TDH_B)
             model.EFF_B_origin = pyo.Expression(expr=EFF_B)
         elif i in pump_indices:
@@ -320,7 +324,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     # Determine appropriate PPM bounds (usually between 0 and, say, 1000 ppm, adjust as per your use case)
     PPM_LOWER = 0
     PPM_UPPER = 1000
-    
+
     model.PPM = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(PPM_LOWER, PPM_UPPER))
 
     model.dra_cost = pyo.Expression(model.I)
@@ -329,7 +333,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         dr_points, ppm_points = get_ppm_breakpoints(visc)
         dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
         if i in pump_indices:
-            # Always set bounds for DR_var
             model.DR_var[i].setlb(min(dr_points_fixed))
             model.DR_var[i].setub(max(dr_points_fixed))
             setattr(model, f'piecewise_dra_ppm_{i}',
@@ -344,7 +347,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             )
         else:
             model.PPM[i].fix(0.0)
-
 
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i] = dra_cost_expr
