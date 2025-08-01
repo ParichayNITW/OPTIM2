@@ -317,7 +317,12 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         return m.DR_var[i] == sum(allowed_dras[i][j] * m.dra_bin[i, j] for j in range(len(allowed_dras[i])))
     model.dra_value = pyo.Constraint(model.pump_stations, rule=dra_value_rule)
 
-    model.PPM = pyo.Var(model.I, domain=pyo.NonNegativeReals)
+    # Determine appropriate PPM bounds (usually between 0 and, say, 1000 ppm, adjust as per your use case)
+    PPM_LOWER = 0
+    PPM_UPPER = 1000
+    
+    model.PPM = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(PPM_LOWER, PPM_UPPER))
+
     model.dra_cost = pyo.Expression(model.I)
     for i in range(1, N+1):
         visc = kv_dict[i]
