@@ -5,7 +5,7 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'your@email.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
 DRA_CSV_FILES = {
     10: "10 cst.csv", 15: "15 cst.csv", 20: "20 cst.csv",
