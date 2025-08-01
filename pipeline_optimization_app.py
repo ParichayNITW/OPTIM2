@@ -340,7 +340,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         stn['MinRPM1'] = st.number_input("Min RPM (Type A)", value=stn.get('MinRPM1', 1000.0), key=f"minrpmA{idx}")
                         stn['DOL1'] = st.number_input("Rated RPM (Type A)", value=stn.get('DOL1', 1500.0), key=f"dolA{idx}")
                     with pcolA2:
-                        stn['max_pumps_typeA'] = st.number_input("Max Pumps Type A", min_value=0, value=stn.get('max_pumps_typeA', 2), key=f"mpA{idx}")
+                        stn['max_pumps_typeA'] = st.number_input("Max Pumps Type A", min_value=0, value=stn.get('max_pumps_typeA', 2), key=f"mpumpsA_{idx}")
                         stn['power_typeA'] = st.selectbox("Power Source (Type A)", ["Grid", "Diesel"],
                                                           index=0 if stn.get('power_typeA', "Grid")=="Grid" else 1, key=f"ptypeA{idx}")
                     with pcolA3:
@@ -377,7 +377,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         stn['MinRPM2'] = st.number_input("Min RPM (Type B)", value=stn.get('MinRPM2', 1000.0), key=f"minrpmB{idx}")
                         stn['DOL2'] = st.number_input("Rated RPM (Type B)", value=stn.get('DOL2', 1500.0), key=f"dolB{idx}")
                     with pcolB2:
-                        stn['max_pumps_typeB'] = st.number_input("Max Pumps Type B", min_value=0, value=stn.get('max_pumps_typeB', 2), key=f"mpB{idx}")
+                        stn['max_pumps_typeB'] = st.number_input("Max Pumps Type B", min_value=0, value=stn.get('max_pumps_typeB', 2), key=f"mpumpsB_{idx}")
                         stn['power_typeB'] = st.selectbox("Power Source (Type B)", ["Grid", "Diesel"],
                                                           index=0 if stn.get('power_typeB', "Grid")=="Grid" else 1, key=f"ptypeB{idx}")
                     with pcolB3:
