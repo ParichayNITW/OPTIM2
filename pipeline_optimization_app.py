@@ -793,46 +793,65 @@ if not auto_batch:
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     if idx == 1:
-                        # Type A: Validate and fit
+                        # ----------- Origin Station (Both Type A and B) -----------
+            
+                        # --- Type A: Validate and Fit ---
                         dfhA = st.session_state.get(f"head_data_A_{idx}")
                         dfeA = st.session_state.get(f"eff_data_A_{idx}")
-                        if dfhA is None or dfeA is None or len(dfhA)<3 or len(dfeA)<5:
+                        if dfhA is None or dfeA is None or len(dfhA) < 3 or len(dfeA) < 5:
                             st.error(f"Origin Station (Type A): At least 3 points for flow-head and 5 for flow-eff are required.")
                             st.stop()
-                        QhA = dfhA.iloc[:,0].values; HhA = dfhA.iloc[:,1].values
+                        QhA = dfhA.iloc[:, 0].values
+                        HhA = dfhA.iloc[:, 1].values
                         coeffA = np.polyfit(QhA, HhA, 2)
                         stn['A1'], stn['B1'], stn['C1'] = coeffA[0], coeffA[1], coeffA[2]
-                        QeA = dfeA.iloc[:,0].values; EeA = dfeA.iloc[:,1].values
+                        QeA = dfeA.iloc[:, 0].values
+                        EeA = dfeA.iloc[:, 1].values
                         coeff_eA = np.polyfit(QeA, EeA, 4)
                         stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = coeff_eA
             
-                        # Type B: Validate and fit
+                        # --- Type B: Validate and Fit ---
                         dfhB = st.session_state.get(f"head_data_B_{idx}")
                         dfeB = st.session_state.get(f"eff_data_B_{idx}")
-                        if dfhB is None or dfeB is None or len(dfhB)<3 or len(dfeB)<5:
+                        if dfhB is None or dfeB is None or len(dfhB) < 3 or len(dfeB) < 5:
                             st.error(f"Origin Station (Type B): At least 3 points for flow-head and 5 for flow-eff are required.")
                             st.stop()
-                        QhB = dfhB.iloc[:,0].values; HhB = dfhB.iloc[:,1].values
+                        QhB = dfhB.iloc[:, 0].values
+                        HhB = dfhB.iloc[:, 1].values
                         coeffB = np.polyfit(QhB, HhB, 2)
                         stn['A2'], stn['B2'], stn['C2'] = coeffB[0], coeffB[1], coeffB[2]
-                        QeB = dfeB.iloc[:,0].values; EeB = dfeB.iloc[:,1].values
+                        QeB = dfeB.iloc[:, 0].values
+                        EeB = dfeB.iloc[:, 1].values
                         coeff_eB = np.polyfit(QeB, EeB, 4)
                         stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = coeff_eB
+            
+                        # ----------- Max Pump Inputs for Origin Station -----------
+                        st.markdown("##### Origin Station: Max No. of Pumps")
+                        stn['max_pumps_typeA'] = st.number_input(
+                            "Max no. of Type A pumps (Origin)", min_value=0, max_value=3,
+                            value=stn.get('max_pumps_typeA', 2), step=1, key=f"max_pumps_typeA_{idx}"
+                        )
+                        stn['max_pumps_typeB'] = st.number_input(
+                            "Max no. of Type B pumps (Origin)", min_value=0, max_value=3,
+                            value=stn.get('max_pumps_typeB', 2), step=1, key=f"max_pumps_typeB_{idx}"
+                        )
                     else:
-                        # All other pump stations (no change)
+                        # ----------- All Other Pump Stations (Single Type Only) -----------
                         dfh = st.session_state.get(f"head_data_{idx}")
                         dfe = st.session_state.get(f"eff_data_{idx}")
-                        if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                        if dfh is None or dfe is None or len(dfh) < 3 or len(dfe) < 5:
                             st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
                             st.stop()
-                        Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
+                        Qh = dfh.iloc[:, 0].values
+                        Hh = dfh.iloc[:, 1].values
                         coeff = np.polyfit(Qh, Hh, 2)
                         stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                        Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
+                        Qe = dfe.iloc[:, 0].values
+                        Ee = dfe.iloc[:, 1].values
                         coeff_e = np.polyfit(Qe, Ee, 4)
                         stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
-
-
+            
+                # ========== No change needed for peaks, just keep this after each station ==========
                 peaks_df = st.session_state.get(f"peak_data_{idx}")
                 peaks_list = []
                 if peaks_df is not None:
@@ -842,7 +861,7 @@ if not auto_batch:
                             elev_pk = float(row["Elevation (m)"])
                         except:
                             continue
-                        if loc<0 or loc>stn['L']:
+                        if loc < 0 or loc > stn['L']:
                             st.error(f"Station {idx}: Peak location must be between 0 and segment length.")
                             st.stop()
                         if elev_pk < stn['elev']:
@@ -850,6 +869,7 @@ if not auto_batch:
                             st.stop()
                         peaks_list.append({'loc': loc, 'elev': elev_pk})
                 stn['peaks'] = peaks_list
+
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
             res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
