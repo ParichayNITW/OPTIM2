@@ -314,38 +314,116 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                key_head = f"head_data_{idx}"
-                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                    df_head = st.session_state[key_head]
-                else:
-                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.session_state[key_head] = df_head
-
-                key_eff = f"eff_data_{idx}"
-                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                    df_eff = st.session_state[key_eff]
-                else:
-                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[key_eff] = df_eff
-
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                with pcol2:
-                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                with pcol3:
-                    if stn['power_type']=="Grid":
-                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                        stn['sfc'] = 0.0
+                if idx == 1:
+                    st.markdown("#### Enter Data for Pump Type A (Origin Only)")
+                    # Type A - Flow vs Head
+                    key_head_A = f"head_data_A_{idx}"
+                    if key_head_A in st.session_state and isinstance(st.session_state[key_head_A], pd.DataFrame):
+                        df_head_A = st.session_state[key_head_A]
                     else:
-                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                        stn['rate'] = 0.0
+                        df_head_A = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head_A = st.data_editor(df_head_A, num_rows="dynamic", key=f"headA{idx}")
+                    st.session_state[key_head_A] = df_head_A
+        
+                    # Type A - Flow vs Efficiency
+                    key_eff_A = f"eff_data_A_{idx}"
+                    if key_eff_A in st.session_state and isinstance(st.session_state[key_eff_A], pd.DataFrame):
+                        df_eff_A = st.session_state[key_eff_A]
+                    else:
+                        df_eff_A = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff_A = st.data_editor(df_eff_A, num_rows="dynamic", key=f"effA{idx}")
+                    st.session_state[key_eff_A] = df_eff_A
+        
+                    # Type A - RPM, rates, etc.
+                    pcolA1, pcolA2, pcolA3 = st.columns(3)
+                    with pcolA1:
+                        stn['MinRPM1'] = st.number_input("Min RPM (Type A)", value=stn.get('MinRPM1', 1000.0), key=f"minrpmA{idx}")
+                        stn['DOL1'] = st.number_input("Rated RPM (Type A)", value=stn.get('DOL1', 1500.0), key=f"dolA{idx}")
+                    with pcolA2:
+                        stn['max_pumps_typeA'] = st.number_input("Max Pumps Type A", min_value=0, value=stn.get('max_pumps_typeA', 2), key=f"mpA{idx}")
+                        stn['power_typeA'] = st.selectbox("Power Source (Type A)", ["Grid", "Diesel"],
+                                                          index=0 if stn.get('power_typeA', "Grid")=="Grid" else 1, key=f"ptypeA{idx}")
+                    with pcolA3:
+                        if stn['power_typeA']=="Grid":
+                            stn['rate1'] = st.number_input("Elec Rate (Type A) (INR/kWh)", value=stn.get('rate1',9.0), key=f"rateA{idx}")
+                            stn['sfc1'] = 0.0
+                        else:
+                            stn['sfc1'] = st.number_input("SFC (Type A) (gm/bhp·hr)", value=stn.get('sfc1',150.0), key=f"sfcA{idx}")
+                            stn['rate1'] = 0.0
+        
+                    st.markdown("---")
+                    st.markdown("#### Enter Data for Pump Type B (Origin Only)")
+                    # Type B - Flow vs Head
+                    key_head_B = f"head_data_B_{idx}"
+                    if key_head_B in st.session_state and isinstance(st.session_state[key_head_B], pd.DataFrame):
+                        df_head_B = st.session_state[key_head_B]
+                    else:
+                        df_head_B = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head_B = st.data_editor(df_head_B, num_rows="dynamic", key=f"headB{idx}")
+                    st.session_state[key_head_B] = df_head_B
+        
+                    # Type B - Flow vs Efficiency
+                    key_eff_B = f"eff_data_B_{idx}"
+                    if key_eff_B in st.session_state and isinstance(st.session_state[key_eff_B], pd.DataFrame):
+                        df_eff_B = st.session_state[key_eff_B]
+                    else:
+                        df_eff_B = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff_B = st.data_editor(df_eff_B, num_rows="dynamic", key=f"effB{idx}")
+                    st.session_state[key_eff_B] = df_eff_B
+        
+                    # Type B - RPM, rates, etc.
+                    pcolB1, pcolB2, pcolB3 = st.columns(3)
+                    with pcolB1:
+                        stn['MinRPM2'] = st.number_input("Min RPM (Type B)", value=stn.get('MinRPM2', 1000.0), key=f"minrpmB{idx}")
+                        stn['DOL2'] = st.number_input("Rated RPM (Type B)", value=stn.get('DOL2', 1500.0), key=f"dolB{idx}")
+                    with pcolB2:
+                        stn['max_pumps_typeB'] = st.number_input("Max Pumps Type B", min_value=0, value=stn.get('max_pumps_typeB', 2), key=f"mpB{idx}")
+                        stn['power_typeB'] = st.selectbox("Power Source (Type B)", ["Grid", "Diesel"],
+                                                          index=0 if stn.get('power_typeB', "Grid")=="Grid" else 1, key=f"ptypeB{idx}")
+                    with pcolB3:
+                        if stn['power_typeB']=="Grid":
+                            stn['rate2'] = st.number_input("Elec Rate (Type B) (INR/kWh)", value=stn.get('rate2',9.0), key=f"rateB{idx}")
+                            stn['sfc2'] = 0.0
+                        else:
+                            stn['sfc2'] = st.number_input("SFC (Type B) (gm/bhp·hr)", value=stn.get('sfc2',150.0), key=f"sfcB{idx}")
+                            stn['rate2'] = 0.0
+                else:
+                    # Existing code for all other stations (one pump type only)
+                    # ... (PASTE YOUR OLD LOGIC HERE)
+                    key_head = f"head_data_{idx}"
+                    if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                        df_head = st.session_state[key_head]
+                    else:
+                        df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                    st.session_state[key_head] = df_head
+        
+                    key_eff = f"eff_data_{idx}"
+                    if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                        df_eff = st.session_state[key_eff]
+                    else:
+                        df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                    st.session_state[key_eff] = df_eff
+        
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    with pcol1:
+                        stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                        stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                    with pcol2:
+                        stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+                        stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                         index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    with pcol3:
+                        if stn['power_type']=="Grid":
+                            stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                            stn['sfc'] = 0.0
+                        else:
+                            stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                            stn['rate'] = 0.0
             else:
                 st.info("Not a pumping station. No pump data required.")
+
 
         with tabs[1]:
             key_peak = f"peak_data_{idx}"
