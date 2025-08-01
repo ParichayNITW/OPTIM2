@@ -314,9 +314,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                if idx == 1:
+                if idx == 1 and stn['is_pump']:
+                    # ---- Pump Type A ----
                     st.markdown("#### Enter Data for Pump Type A (Origin Only)")
-                    # Type A - Flow vs Head
                     key_head_A = f"head_data_A_{idx}"
                     if key_head_A in st.session_state and isinstance(st.session_state[key_head_A], pd.DataFrame):
                         df_head_A = st.session_state[key_head_A]
@@ -324,8 +324,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         df_head_A = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                     df_head_A = st.data_editor(df_head_A, num_rows="dynamic", key=f"headA{idx}")
                     st.session_state[key_head_A] = df_head_A
-        
-                    # Type A - Flow vs Efficiency
+                
                     key_eff_A = f"eff_data_A_{idx}"
                     if key_eff_A in st.session_state and isinstance(st.session_state[key_eff_A], pd.DataFrame):
                         df_eff_A = st.session_state[key_eff_A]
@@ -333,8 +332,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         df_eff_A = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                     df_eff_A = st.data_editor(df_eff_A, num_rows="dynamic", key=f"effA{idx}")
                     st.session_state[key_eff_A] = df_eff_A
-        
-                    # Type A - RPM, rates, etc.
+                
+                    # Type A - Parameters
                     pcolA1, pcolA2, pcolA3 = st.columns(3)
                     with pcolA1:
                         stn['MinRPM1'] = st.number_input("Min RPM (Type A)", value=stn.get('MinRPM1', 1000.0), key=f"minrpmA{idx}")
@@ -350,10 +349,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         else:
                             stn['sfc1'] = st.number_input("SFC (Type A) (gm/bhp·hr)", value=stn.get('sfc1',150.0), key=f"sfcA{idx}")
                             stn['rate1'] = 0.0
-        
+                
                     st.markdown("---")
+                    # ---- Pump Type B ----
                     st.markdown("#### Enter Data for Pump Type B (Origin Only)")
-                    # Type B - Flow vs Head
                     key_head_B = f"head_data_B_{idx}"
                     if key_head_B in st.session_state and isinstance(st.session_state[key_head_B], pd.DataFrame):
                         df_head_B = st.session_state[key_head_B]
@@ -361,8 +360,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         df_head_B = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                     df_head_B = st.data_editor(df_head_B, num_rows="dynamic", key=f"headB{idx}")
                     st.session_state[key_head_B] = df_head_B
-        
-                    # Type B - Flow vs Efficiency
+                
                     key_eff_B = f"eff_data_B_{idx}"
                     if key_eff_B in st.session_state and isinstance(st.session_state[key_eff_B], pd.DataFrame):
                         df_eff_B = st.session_state[key_eff_B]
@@ -370,8 +368,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         df_eff_B = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                     df_eff_B = st.data_editor(df_eff_B, num_rows="dynamic", key=f"effB{idx}")
                     st.session_state[key_eff_B] = df_eff_B
-        
-                    # Type B - RPM, rates, etc.
+                
                     pcolB1, pcolB2, pcolB3 = st.columns(3)
                     with pcolB1:
                         stn['MinRPM2'] = st.number_input("Min RPM (Type B)", value=stn.get('MinRPM2', 1000.0), key=f"minrpmB{idx}")
@@ -387,6 +384,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         else:
                             stn['sfc2'] = st.number_input("SFC (Type B) (gm/bhp·hr)", value=stn.get('sfc2',150.0), key=f"sfcB{idx}")
                             stn['rate2'] = 0.0
+
                 else:
                     # Existing code for all other stations (one pump type only)
                     # ... (PASTE YOUR OLD LOGIC HERE)
