@@ -439,7 +439,7 @@ terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("ter
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
 def get_full_case_dict():
-    return {
+    data = {
         "stations": st.session_state.get('stations', []),
         "terminal": {
             "name": st.session_state.get('terminal_name', 'Terminal'),
@@ -449,29 +449,28 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
-        **{
-            f"head_data_{i+1}": (
-                st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
-            )
-            for i in range(len(st.session_state.get('stations', [])))
-        },
-        **{
-            f"eff_data_{i+1}": (
-                st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
-            )
-            for i in range(len(st.session_state.get('stations', [])))
-        },
-        **{
-            f"peak_data_{i+1}": (
-                st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
-            )
-            for i in range(len(st.session_state.get('stations', [])))
-        }
+        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records")
     }
+    # Add pump data tables for each station
+    for i, stn in enumerate(st.session_state.get('stations', []), start=1):
+        if stn.get('is_pump', False):
+            if i == 1:
+                # Origin station: Type A and B
+                for key, suffix in [("head_data_A", "A"), ("eff_data_A", "A"), ("head_data_B", "B"), ("eff_data_B", "B")]:
+                    df = st.session_state.get(f"{key}_{i}")
+                    if isinstance(df, pd.DataFrame):
+                        data[f"{key}_{i}"] = df.to_dict(orient="records")
+            else:
+                # All other pump stations
+                for key in ["head_data", "eff_data"]:
+                    df = st.session_state.get(f"{key}_{i}")
+                    if isinstance(df, pd.DataFrame):
+                        data[f"{key}_{i}"] = df.to_dict(orient="records")
+        # Save peaks
+        df_peak = st.session_state.get(f"peak_data_{i}")
+        if isinstance(df_peak, pd.DataFrame):
+            data[f"peak_data_{i}"] = df_peak.to_dict(orient="records")
+    return data
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
