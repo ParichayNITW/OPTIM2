@@ -793,48 +793,62 @@ if not auto_batch:
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     if idx == 1:
-                        # ----------- Origin Station (Both Type A and B) -----------
-            
-                        # --- Type A: Validate and Fit ---
+                        # --- Type A Inputs ---
                         dfhA = st.session_state.get(f"head_data_A_{idx}")
                         dfeA = st.session_state.get(f"eff_data_A_{idx}")
-                        if dfhA is None or dfeA is None or len(dfhA) < 3 or len(dfeA) < 5:
-                            st.error(f"Origin Station (Type A): At least 3 points for flow-head and 5 for flow-eff are required.")
-                            st.stop()
-                        QhA = dfhA.iloc[:, 0].values
-                        HhA = dfhA.iloc[:, 1].values
-                        coeffA = np.polyfit(QhA, HhA, 2)
-                        stn['A1'], stn['B1'], stn['C1'] = coeffA[0], coeffA[1], coeffA[2]
-                        QeA = dfeA.iloc[:, 0].values
-                        EeA = dfeA.iloc[:, 1].values
-                        coeff_eA = np.polyfit(QeA, EeA, 4)
-                        stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = coeff_eA
+                        maxA = st.number_input(f"Max Pumps at Origin (Type A)", min_value=0, max_value=3, value=stn.get('max_pumps_typeA', 0), key=f"maxA{idx}")
+                        minrpmA = st.number_input(f"Min RPM (Type A)", min_value=100, max_value=6000, value=int(stn.get('MinRPM1', 1000)), key=f"minrpmA{idx}")
+                        dolA = st.number_input(f"DOL RPM (Type A)", min_value=100, max_value=6000, value=int(stn.get('DOL1', 1500)), key=f"dolA{idx}")
+                        sfcA = st.number_input(f"SFC (Type A) (leave 0 for electric)", value=float(stn.get('sfc1', 0.0)), key=f"sfcA{idx}")
+                        rateA = st.number_input(f"Electric Rate (Type A) (leave 0 for diesel)", value=float(stn.get('rate1', 0.0)), key=f"rateA{idx}")
             
-                        # --- Type B: Validate and Fit ---
+                        if dfhA is not None and dfeA is not None and len(dfhA) >= 3 and len(dfeA) >= 5:
+                            QhA = dfhA.iloc[:, 0].values; HhA = dfhA.iloc[:, 1].values
+                            coeffA = np.polyfit(QhA, HhA, 2)
+                            QeA = dfeA.iloc[:, 0].values; EeA = dfeA.iloc[:, 1].values
+                            coeff_eA = np.polyfit(QeA, EeA, 4)
+                            stn['A1'], stn['B1'], stn['C1'] = coeffA[0], coeffA[1], coeffA[2]
+                            stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = coeff_eA
+                        else:
+                            stn['A1'], stn['B1'], stn['C1'] = 0, 0, 0
+                            stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = 0, 0, 0, 0, 0
+            
+                        stn['max_pumps_typeA'] = maxA
+                        stn['MinRPM1'] = minrpmA
+                        stn['DOL1'] = dolA
+                        stn['sfc1'] = sfcA
+                        stn['rate1'] = rateA
+            
+                        # --- Type B Inputs ---
                         dfhB = st.session_state.get(f"head_data_B_{idx}")
                         dfeB = st.session_state.get(f"eff_data_B_{idx}")
-                        if dfhB is None or dfeB is None or len(dfhB) < 3 or len(dfeB) < 5:
-                            st.error(f"Origin Station (Type B): At least 3 points for flow-head and 5 for flow-eff are required.")
-                            st.stop()
-                        QhB = dfhB.iloc[:, 0].values
-                        HhB = dfhB.iloc[:, 1].values
-                        coeffB = np.polyfit(QhB, HhB, 2)
-                        stn['A2'], stn['B2'], stn['C2'] = coeffB[0], coeffB[1], coeffB[2]
-                        QeB = dfeB.iloc[:, 0].values
-                        EeB = dfeB.iloc[:, 1].values
-                        coeff_eB = np.polyfit(QeB, EeB, 4)
-                        stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = coeff_eB
+                        maxB = st.number_input(f"Max Pumps at Origin (Type B)", min_value=0, max_value=3, value=stn.get('max_pumps_typeB', 0), key=f"maxB{idx}")
+                        minrpmB = st.number_input(f"Min RPM (Type B)", min_value=100, max_value=6000, value=int(stn.get('MinRPM2', 1000)), key=f"minrpmB{idx}")
+                        dolB = st.number_input(f"DOL RPM (Type B)", min_value=100, max_value=6000, value=int(stn.get('DOL2', 1500)), key=f"dolB{idx}")
+                        sfcB = st.number_input(f"SFC (Type B) (leave 0 for electric)", value=float(stn.get('sfc2', 0.0)), key=f"sfcB{idx}")
+                        rateB = st.number_input(f"Electric Rate (Type B) (leave 0 for diesel)", value=float(stn.get('rate2', 0.0)), key=f"rateB{idx}")
             
-                        # ----------- Max Pump Inputs for Origin Station -----------
-                        st.markdown("##### Origin Station: Max No. of Pumps")
-                        stn['max_pumps_typeA'] = st.number_input(
-                            "Max no. of Type A pumps (Origin)", min_value=0, max_value=3,
-                            value=stn.get('max_pumps_typeA', 2), step=1, key=f"max_pumps_typeA_{idx}"
-                        )
-                        stn['max_pumps_typeB'] = st.number_input(
-                            "Max no. of Type B pumps (Origin)", min_value=0, max_value=3,
-                            value=stn.get('max_pumps_typeB', 2), step=1, key=f"max_pumps_typeB_{idx}"
-                        )
+                        if dfhB is not None and dfeB is not None and len(dfhB) >= 3 and len(dfeB) >= 5:
+                            QhB = dfhB.iloc[:, 0].values; HhB = dfhB.iloc[:, 1].values
+                            coeffB = np.polyfit(QhB, HhB, 2)
+                            QeB = dfeB.iloc[:, 0].values; EeB = dfeB.iloc[:, 1].values
+                            coeff_eB = np.polyfit(QeB, EeB, 4)
+                            stn['A2'], stn['B2'], stn['C2'] = coeffB[0], coeffB[1], coeffB[2]
+                            stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = coeff_eB
+                        else:
+                            stn['A2'], stn['B2'], stn['C2'] = 0, 0, 0
+                            stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = 0, 0, 0, 0, 0
+            
+                        stn['max_pumps_typeB'] = maxB
+                        stn['MinRPM2'] = minrpmB
+                        stn['DOL2'] = dolB
+                        stn['sfc2'] = sfcB
+                        stn['rate2'] = rateB
+            
+                        # --- Validation ---
+                        if (maxA == 0 or stn['A1'] == 0) and (maxB == 0 or stn['A2'] == 0):
+                            st.error("At least one pump type (A or B) with valid curves must be provided at the origin station.")
+                            st.stop()
                     else:
                         # ----------- All Other Pump Stations (Single Type Only) -----------
                         dfh = st.session_state.get(f"head_data_{idx}")
