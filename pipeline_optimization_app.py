@@ -411,7 +411,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
                         stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
                     with pcol2:
-                        stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+                        stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps_{idx}_other")
                         stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
                                                          index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
                     with pcol3:
