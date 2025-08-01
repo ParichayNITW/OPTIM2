@@ -795,32 +795,45 @@ if not auto_batch:
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
                     if idx == 1:
-                        # For Origin: check both Type A and Type B data
+                        # For Origin: fit both Type A and Type B
                         dfhA = st.session_state.get(f"head_data_A_{idx}")
                         dfeA = st.session_state.get(f"eff_data_A_{idx}")
                         dfhB = st.session_state.get(f"head_data_B_{idx}")
                         dfeB = st.session_state.get(f"eff_data_B_{idx}")
-                        # Type A check
-                        if dfhA is None or dfeA is None or len(dfhA)<3 or len(dfeA)<5:
+                        # Validate
+                        if dfhA is None or dfeA is None or len(dfhA) < 3 or len(dfeA) < 5:
                             st.error(f"Origin Station (Type A): At least 3 points for flow-head and 5 for flow-eff are required.")
                             st.stop()
-                        # Type B check
-                        if dfhB is None or dfeB is None or len(dfhB)<3 or len(dfeB)<5:
+                        if dfhB is None or dfeB is None or len(dfhB) < 3 or len(dfeB) < 5:
                             st.error(f"Origin Station (Type B): At least 3 points for flow-head and 5 for flow-eff are required.")
                             st.stop()
+                        # Fit curves for Type A
+                        QhA = dfhA.iloc[:, 0].values; HhA = dfhA.iloc[:, 1].values
+                        coeffA = np.polyfit(QhA, HhA, 2)
+                        stn['A1'], stn['B1'], stn['C1'] = coeffA[0], coeffA[1], coeffA[2]
+                        QeA = dfeA.iloc[:, 0].values; EeA = dfeA.iloc[:, 1].values
+                        coeff_eA = np.polyfit(QeA, EeA, 4)
+                        stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = coeff_eA
+                        # Fit curves for Type B
+                        QhB = dfhB.iloc[:, 0].values; HhB = dfhB.iloc[:, 1].values
+                        coeffB = np.polyfit(QhB, HhB, 2)
+                        stn['A2'], stn['B2'], stn['C2'] = coeffB[0], coeffB[1], coeffB[2]
+                        QeB = dfeB.iloc[:, 0].values; EeB = dfeB.iloc[:, 1].values
+                        coeff_eB = np.polyfit(QeB, EeB, 4)
+                        stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = coeff_eB
                     else:
                         dfh = st.session_state.get(f"head_data_{idx}")
                         dfe = st.session_state.get(f"eff_data_{idx}")
-                        if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                        if dfh is None or dfe is None or len(dfh) < 3 or len(dfe) < 5:
                             st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
                             st.stop()
+                        Qh = dfh.iloc[:, 0].values; Hh = dfh.iloc[:, 1].values
+                        coeff = np.polyfit(Qh, Hh, 2)
+                        stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
+                        Qe = dfe.iloc[:, 0].values; Ee = dfe.iloc[:, 1].values
+                        coeff_e = np.polyfit(Qe, Ee, 4)
+                        stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
 
-                    Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                    Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
                 peaks_df = st.session_state.get(f"peak_data_{idx}")
                 peaks_list = []
                 if peaks_df is not None:
