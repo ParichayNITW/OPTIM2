@@ -794,11 +794,27 @@ if not auto_batch:
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
-                    dfh = st.session_state.get(f"head_data_{idx}")
-                    dfe = st.session_state.get(f"eff_data_{idx}")
-                    if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
-                        st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
-                        st.stop()
+                    if idx == 1:
+                        # For Origin: check both Type A and Type B data
+                        dfhA = st.session_state.get(f"head_data_A_{idx}")
+                        dfeA = st.session_state.get(f"eff_data_A_{idx}")
+                        dfhB = st.session_state.get(f"head_data_B_{idx}")
+                        dfeB = st.session_state.get(f"eff_data_B_{idx}")
+                        # Type A check
+                        if dfhA is None or dfeA is None or len(dfhA)<3 or len(dfeA)<5:
+                            st.error(f"Origin Station (Type A): At least 3 points for flow-head and 5 for flow-eff are required.")
+                            st.stop()
+                        # Type B check
+                        if dfhB is None or dfeB is None or len(dfhB)<3 or len(dfeB)<5:
+                            st.error(f"Origin Station (Type B): At least 3 points for flow-head and 5 for flow-eff are required.")
+                            st.stop()
+                    else:
+                        dfh = st.session_state.get(f"head_data_{idx}")
+                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                            st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
+                            st.stop()
+
                     Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
                     coeff = np.polyfit(Qh, Hh, 2)
                     stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
