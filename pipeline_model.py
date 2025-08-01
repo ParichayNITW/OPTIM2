@@ -356,11 +356,15 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         visc = kv_dict[i]
         dr_points, ppm_points = get_ppm_breakpoints(visc)
         dr_points_fixed, ppm_points_fixed = zip(*sorted(set(zip(dr_points, ppm_points))))
-        setattr(model, f'piecewise_dra_ppm_{i}',
-            pyo.Piecewise(f'pw_dra_ppm_{i}', model.PPM[i], model.DR_var[i] if i in pump_indices else 0,
-                          pw_pts=dr_points_fixed,
-                          f_rule=ppm_points_fixed,
-                          pw_constr_type='EQ'))
+        if i in pump_indices:
+            setattr(model, f'piecewise_dra_ppm_{i}',
+                pyo.Piecewise(f'pw_dra_ppm_{i}', model.PPM[i], model.DR_var[i],
+                              pw_pts=dr_points_fixed,
+                              f_rule=ppm_points_fixed,
+                              pw_constr_type='EQ'))
+        else:
+            model.PPM[i].fix(0)
+
         dra_cost_expr = model.PPM[i] * (segment_flows[i] * 1000.0 * 24.0 / 1e6) * RateDRA
         model.dra_cost[i] = dra_cost_expr
 
