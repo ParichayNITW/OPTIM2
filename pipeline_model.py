@@ -224,10 +224,28 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         else:
             f[i] = 0.0
 
+    # Precompute nominal friction loss for each pipeline segment based on the
+    # current flow, pipe geometry, and fluid properties.  This dictionary
+    # (friction_loss0) is used later in the friction balance constraint to
+    # prevent the residual head (RH) from increasing arbitrarily between
+    # stations.  Without this check, the optimiser could avoid pumping by
+    # inflating the RH variable.
+    friction_loss0 = {}
+    for seg in range(1, N+1):
+        L_val = length.get(seg, 0.0)
+        di = d_inner.get(seg, 0.0)
+        if L_val > 0.0 and di > 0.0:
+            seg_len_m = float(L_val) * 1000.0  # convert km to metres
+            loss = f[seg] * (seg_len_m / di) * (v[seg]**2 / (2.0 * g))
+            friction_loss0[seg] = loss
+        else:
+            friction_loss0[seg] = 0.0
+
+    # Define suction/discharge head variables and associated constraint list.
     model.SDH = pyo.Var(model.I, domain=pyo.NonNegativeReals, initialize=0)
     model.sdh_constraint = pyo.ConstraintList()
-        TDH = {}
-        EFFP = {}
+    TDH = {}
+    EFFP = {}
 
     for i in range(1, N+1):
         if i == 1:
@@ -264,41 +282,23 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             TDH[i] = 0.0
             EFFP[i] = 1.0
 
-        # Precompute the nominal friction head loss for each pipeline segment.
-        # Without constraining the energy balance, the residual head (RH) and
-        # suction/discharge head (SDH) variables can drift arbitrarily, allowing
-        # the optimiser to avoid pumping by artificially increasing RH.
-        # The Darcy–Weisbach equation gives head loss (m) = f * (L / d) * (v^2 / (2 g)).
-        friction_loss0 = {}
-        for i in range(1, N+1):
-            L_val = length.get(i, 0.0)
-            di = d_inner.get(i, 0.0)
-            if L_val > 0.0 and di > 0.0:
-                seg_len_m = float(L_val) * 1000.0  # convert km to m
-                # Use previously computed friction factor f and velocity v
-                loss = f[i] * (seg_len_m / di) * (v[i]**2 / (2.0 * g))
-                friction_loss0[i] = loss
-            else:
-                friction_loss0[i] = 0.0
+        # NOTE: friction loss and balance constraints are handled outside this loop.
 
-        # Constrain the residual head so that downstream RH cannot exceed the
-        # upstream RH plus pump head minus friction and elevation difference.
-        # This approximates the energy equation and prevents the optimiser from
-        # inflating RH to avoid pumping.  Without this, SDH and RH values can
-        # become nonsensical.
-        model.friction_balance = pyo.ConstraintList()
-        for i in range(1, N+1):
-            # Determine pump head contribution for this segment
-            if i == 1:
-                pump_gain = model.TDH_A_origin * model.NOP_A_origin + model.TDH_B_origin * model.NOP_B_origin
-            elif i in pump_indices:
-                pump_gain = TDH[i] * model.NOP[i]
-            else:
-                pump_gain = 0.0
-            # RH[i] + pump_gain - friction_loss0[i] - elevation_diff >= RH[i+1]
-            model.friction_balance.add(
-                model.RH[i] + pump_gain - friction_loss0[i] - (model.z[i+1] - model.z[i]) >= model.RH[i+1]
-            )
+    # Apply energy balance including friction: for each segment the downstream
+    # residual head must not exceed the upstream residual head plus pump head minus
+    # nominal friction loss and elevation change.  Without this constraint,
+    # the optimiser could avoid pumping by artificially increasing residual head values.
+    model.friction_balance = pyo.ConstraintList()
+    for seg in range(1, N+1):
+        if seg == 1:
+            pump_gain = model.TDH_A_origin * model.NOP_A_origin + model.TDH_B_origin * model.NOP_B_origin
+        elif seg in pump_indices:
+            pump_gain = TDH[seg] * model.NOP[seg]
+        else:
+            pump_gain = 0.0
+        model.friction_balance.add(
+            model.RH[seg] + pump_gain - friction_loss0[seg] - (model.z[seg+1] - model.z[seg]) >= model.RH[seg+1]
+        )
 
     model.head_balance = pyo.ConstraintList()
     model.peak_limit = pyo.ConstraintList()
