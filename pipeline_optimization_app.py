@@ -901,7 +901,7 @@ if not auto_batch:
                         coeff_e = np.polyfit(Qe, Ee, 4)
                         stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
 
-                # ========== No change needed for peaks, just keep this after each station ==========
+                # ========== Peaks (Validation) ==========
                 peaks_df = st.session_state.get(f"peak_data_{idx}")
                 peaks_list = []
                 if peaks_df is not None:
@@ -920,17 +920,16 @@ if not auto_batch:
                         peaks_list.append({'loc': loc, 'elev': elev_pk})
                 stn['peaks'] = peaks_list
 
+            # Prepare linefill and call backend
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-            res = solve_pipeline(
-                stations_data, term_data, FLOW, kv_list, rho_list, RateDRA,
-                Price_HSD, linefill_df.to_dict()
-            )
+            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+
 
 
 if not auto_batch:
