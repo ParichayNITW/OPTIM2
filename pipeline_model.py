@@ -1,4 +1,3 @@
-
 import os
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
@@ -681,11 +680,19 @@ def solve_pipeline(
             if total_pumps > 0:
                 avg_speed = ((numA * rpmA) + (numB * rpmB)) / total_pumps
                 avg_eff   = ((numA * effA) + (numB * effB)) / total_pumps
-                avg_tdh   = ((numA * tdhA) + (numB * tdhB)) / total_pumps
+                # Compute per-pump head based on required head (SDH - RH)
+                total_head = float(pyo.value(model.SDH[i] - model.RH[i])) if (model.SDH[i].value is not None and model.RH[i].value is not None) else 0.0
+                tdh_per_pump = total_head / total_pumps
+                # Override TDH values to reflect required head per pump rather than curve-estimated head
+                tdhA = tdh_per_pump
+                tdhB = tdh_per_pump
+                avg_tdh = tdh_per_pump
             else:
                 avg_speed = 0.0
                 avg_eff = 0.0
                 avg_tdh = 0.0
+                tdhA = 0.0
+                tdhB = 0.0
             # Pack results for both lowercase and original names
             for nm in (lc_name, orig_name):
                 result[f"pipeline_flow_{nm}"] = outflow
