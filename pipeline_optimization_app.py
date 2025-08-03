@@ -561,7 +561,6 @@ if auto_batch:
             }
             for idx, stn in enumerate(stations_data, start=1):
                 key = stn['name'].lower().replace(' ', '_')
-                # Aggregate results
                 row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                 row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
                 row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
@@ -569,26 +568,6 @@ if auto_batch:
                 row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                 row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                 row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-                # Pump-type-specific results (origin pumps use these; others default to zero)
-                row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-                row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-                row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-                row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-                row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-                row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-                row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-                row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
-                # Pump-type-specific results (these keys exist in the backend for origin and
-                # default to zero for non-origin pumps).  They will display pump‑wise
-                # counts, speed, TDH and efficiency.
-                row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-                row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-                row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-                row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-                row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-                row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-                row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-                row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
             row["Total Cost"] = res.get("total_cost", "")
             result_rows.append(row)
         
@@ -612,15 +591,6 @@ if auto_batch:
                 row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                 row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                 row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-                # Pump‑type‑specific details for Type A and B
-                row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-                row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-                row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-                row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-                row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-                row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-                row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-                row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
             row["Total Cost"] = res.get("total_cost", "")
             result_rows.append(row)
         
@@ -655,24 +625,6 @@ if auto_batch:
                     row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                     row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                     row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-                    # Pump‑type‑specific details for Type A and B
-                    row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-                    row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-                    row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-                    row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-                    row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-                    row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-                    row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-                    row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
-                    # Pump-type-specific details for Type A and B
-                    row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-                    row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-                    row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-                    row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-                    row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-                    row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-                    row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-                    row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
                 row["Total Cost"] = res.get("total_cost", "")
                 result_rows.append(row)
             df_batch = pd.DataFrame(result_rows)
@@ -699,16 +651,6 @@ if auto_batch:
             row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-            # Pump‑type‑specific details for Type A and B
-            row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-            row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-            row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-            row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-            row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-            row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-            row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-            row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
-            # (pump-type-specific details already added above)
         row["Total Cost"] = res.get("total_cost", "")
         result_rows.append(row)
         # --- 100% B ---
@@ -731,24 +673,6 @@ if auto_batch:
             row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-            # Pump‑type‑specific details for Type A and B
-            row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-            row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-            row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-            row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-            row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-            row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-            row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-            row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
-            # Pump-type-specific details for Type A and B
-            row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-            row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-            row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-            row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-            row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-            row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-            row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-            row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
         row["Total Cost"] = res.get("total_cost", "")
         result_rows.append(row)
         # --- 100% C ---
@@ -771,15 +695,6 @@ if auto_batch:
             row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-            # Pump‑type‑specific details for Type A and B
-            row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-            row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-            row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-            row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-            row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-            row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-            row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-            row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
         row["Total Cost"] = res.get("total_cost", "")
         result_rows.append(row)
         # --- Existing nested loop for in-between scenarios ---
@@ -818,15 +733,6 @@ if auto_batch:
                     row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                     row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                     row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-                    # Pump‑type‑specific details for Type A and B
-                    row[f"Num Pumps A {stn['name']}"] = res.get(f"num_pumps_typeA_{key}", "")
-                    row[f"Num Pumps B {stn['name']}"] = res.get(f"num_pumps_typeB_{key}", "")
-                    row[f"Speed A {stn['name']}"] = res.get(f"speed_typeA_{key}", "")
-                    row[f"Speed B {stn['name']}"] = res.get(f"speed_typeB_{key}", "")
-                    row[f"TDH A {stn['name']}"] = res.get(f"tdh_typeA_{key}", "")
-                    row[f"TDH B {stn['name']}"] = res.get(f"tdh_typeB_{key}", "")
-                    row[f"Efficiency A {stn['name']}"] = res.get(f"efficiency_typeA_{key}", "")
-                    row[f"Efficiency B {stn['name']}"] = res.get(f"efficiency_typeB_{key}", "")
                 row["Total Cost"] = res.get("total_cost", "")
                 result_rows.append(row)
         df_batch = pd.DataFrame(result_rows)
@@ -1024,10 +930,33 @@ if not auto_batch:
                 ppm = get_ppm_for_dr(viscosity, dr_use)
                 station_ppm[key] = ppm
     
+            # Define summary parameter rows.  In addition to aggregated pump metrics we
+            # include pump‑type‑specific details (A and B) for number of pumps, speed,
+            # efficiency and TDH so that the summary tab shows which pumps are running.
             params = [
-                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
-                "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
+                "Pipeline Flow (m³/hr)",
+                "Pump Flow (m³/hr)",
+                "Power+Fuel Cost (INR/day)",
+                "DRA Cost (INR/day)",
+                "DRA PPM",
+                "No. of Pumps",
+                "No. of Pumps A",
+                "No. of Pumps B",
+                "Pump Speed (rpm)",
+                "Pump Speed A (rpm)",
+                "Pump Speed B (rpm)",
+                "Pump Eff (%)",
+                "Pump Eff A (%)",
+                "Pump Eff B (%)",
+                "TDH A (m)",
+                "TDH B (m)",
+                "Reynolds No.",
+                "Head Loss (m)",
+                "Vel (m/s)",
+                "Residual Head (m)",
+                "SDH (m)",
+                "MAOP (m)",
+                "Drag Reduction (%)"
             ]
             summary = {"Parameters": params}
     
@@ -1059,27 +988,45 @@ if not auto_batch:
                 maop_m = res.get(f"maop_{key}", 0.0)
                 maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
                                                 
+                # Gather pump‑specific metrics for station `key`.  Backend returns these keys for
+                # the originating pump station; for non‑pump stations they default to 0 or blank.
+                num_pumps_tot = res.get(f"num_pumps_{key}", np.nan)
+                num_pumps_a = res.get(f"num_pumps_typeA_{key}", np.nan)
+                num_pumps_b = res.get(f"num_pumps_typeB_{key}", np.nan)
+                speed_agg  = res.get(f"speed_{key}", np.nan)
+                speed_a    = res.get(f"speed_typeA_{key}", np.nan)
+                speed_b    = res.get(f"speed_typeB_{key}", np.nan)
+                eff_agg    = res.get(f"efficiency_{key}", np.nan)
+                eff_a      = res.get(f"efficiency_typeA_{key}", np.nan)
+                eff_b      = res.get(f"efficiency_typeB_{key}", np.nan)
+                tdh_a      = res.get(f"tdh_typeA_{key}", np.nan)
+                tdh_b      = res.get(f"tdh_typeB_{key}", np.nan)
+                reynolds   = res.get(f"reynolds_{key}", np.nan)
+                velocity   = res.get(f"velocity_{key}", np.nan)
+                # Build the summary row matching the order of `params`
                 summary[nm] = [
-                    segment_flows[idx],
-                    pumpflow,
+                    segment_flows[idx],                  # Pipeline Flow
+                    pumpflow,                            # Pump Flow
                     res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
-                    dra_cost,
-                    station_ppm.get(key, np.nan),
-                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
-                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
-                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,                   
-
+                    dra_cost,                            # DRA cost computed above
+                    station_ppm.get(key, np.nan),        # DRA PPM
+                    int(num_pumps_tot) if num_pumps_tot is not None else np.nan,           # No. of Pumps (total)
+                    int(num_pumps_a) if num_pumps_a is not None else np.nan,               # No. of Pumps A
+                    int(num_pumps_b) if num_pumps_b is not None else np.nan,               # No. of Pumps B
+                    speed_agg,                           # Pump Speed (aggregated)
+                    speed_a,                             # Pump Speed A
+                    speed_b,                             # Pump Speed B
+                    eff_agg,                             # Pump Eff (aggregated)
+                    eff_a,                               # Pump Eff A
+                    eff_b,                               # Pump Eff B
+                    tdh_a,                               # TDH A
+                    tdh_b,                               # TDH B
+                    reynolds,                            # Reynolds No.
                     f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
-
-                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-                    
+                    velocity,                            # Velocity
                     f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
-
                     f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
-
                     f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
-
                     res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
                 ]
     
