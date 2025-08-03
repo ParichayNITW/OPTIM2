@@ -328,9 +328,11 @@ def solve_pipeline(
                 dr_frac = 0.0
             friction_head_i = friction_head * (1 - dr_frac)
             required_head = friction_head_i + static_diff[i]
-            # Compute available head
+            # Compute available head and initialise cost components
             available_head = 0.0
             station_cost = 0.0
+            power_cost_i = 0.0
+            dra_cost_i = 0.0
             # Check if station has pumps
             if stn.get('is_pump', False):
                 if i == origin_index:
@@ -346,10 +348,10 @@ def solve_pipeline(
                         if sfc1 not in (None, 0.0):
                             fuel_per_kWh = (sfc1 * 1.34102) / 820.0
                             power_kW = (rho_i * flow_i * 9.81 * headA) / (3600.0 * 1000.0 * effA) * numA
-                            station_cost += power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                            power_cost_i += power_kW * 24.0 * fuel_per_kWh * Price_HSD
                         else:
                             power_kW = (rho_i * flow_i * 9.81 * headA) / (3600.0 * 1000.0 * effA) * numA
-                            station_cost += power_kW * 24.0 * rate1
+                            power_cost_i += power_kW * 24.0 * rate1
                     # Type B pumps
                     if numB > 0:
                         headB, effB = pump_head_eff(
@@ -359,10 +361,10 @@ def solve_pipeline(
                         if sfc2 not in (None, 0.0):
                             fuel_per_kWh = (sfc2 * 1.34102) / 820.0
                             power_kW = (rho_i * flow_i * 9.81 * headB) / (3600.0 * 1000.0 * effB) * numB
-                            station_cost += power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                            power_cost_i += power_kW * 24.0 * fuel_per_kWh * Price_HSD
                         else:
                             power_kW = (rho_i * flow_i * 9.81 * headB) / (3600.0 * 1000.0 * effB) * numB
-                            station_cost += power_kW * 24.0 * rate2
+                            power_cost_i += power_kW * 24.0 * rate2
                 else:
                     num, rpm_i, dra_val = config[i]
                     if num > 0:
@@ -380,13 +382,13 @@ def solve_pipeline(
                         if downstream_sfc[i] not in (None, 0.0):
                             fuel_per_kWh = (downstream_sfc[i] * 1.34102) / 820.0
                             power_kW = (rho_i * flow_i * 9.81 * head_i) / (3600.0 * 1000.0 * eff_i) * num
-                            station_cost += power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                            power_cost_i += power_kW * 24.0 * fuel_per_kWh * Price_HSD
                         else:
                             power_kW = (rho_i * flow_i * 9.81 * head_i) / (3600.0 * 1000.0 * eff_i) * num
-                            station_cost += power_kW * 24.0 * downstream_rate[i]
+                            power_cost_i += power_kW * 24.0 * downstream_rate[i]
                 # DRA cost for this station
-                dra_cost = dra_val * (flow_i * 1000.0 * 24.0 / 1e6) * RateDRA
-                station_cost += dra_cost
+                dra_cost_i = dra_val * (flow_i * 1000.0 * 24.0 / 1e6) * RateDRA
+                station_cost = power_cost_i + dra_cost_i
             # Check feasibility
             if available_head < required_head - 1e-6:
                 feasible = False
@@ -406,9 +408,23 @@ def solve_pipeline(
                     results[f"speed_{name}"] = max(rpmA, rpmB) if (numA + numB) > 0 else 0.0
                     results[f"speed_typeA_{name}"] = rpmA if numA > 0 else 0.0
                     results[f"speed_typeB_{name}"] = rpmB if numB > 0 else 0.0
-                    results[f"efficiency_{name}"] = 0.0
-                    results[f"efficiency_typeA_{name}"] = 0.0
-                    results[f"efficiency_typeB_{name}"] = 0.0
+                    # Compute aggregated efficiency for display (average across all running pumps)
+                    effs = []
+                    if numA > 0:
+                        # Recompute efficiency for reporting
+                        headA_tmp, effA_tmp = pump_head_eff(
+                            A1, B1, C1, P1, Q1c, R1c, S1c, T1, DOL1, rpmA, flow_i
+                        )
+                        effs.extend([effA_tmp] * numA)
+                    if numB > 0:
+                        headB_tmp, effB_tmp = pump_head_eff(
+                            A2, B2, C2, P2, Q2c, R2c, S2c, T2, DOL2, rpmB, flow_i
+                        )
+                        effs.extend([effB_tmp] * numB)
+                    avg_efficiency = (sum(effs) / len(effs)) if effs else 0.0
+                    results[f"efficiency_{name}"] = avg_efficiency * 100.0
+                    results[f"efficiency_typeA_{name}"] = (effA_tmp * 100.0) if numA > 0 else 0.0
+                    results[f"efficiency_typeB_{name}"] = (effB_tmp * 100.0) if numB > 0 else 0.0
                     # TDH per pump approximated as available_head / (numA + numB)
                     tdh_per_pump = available_head / (numA + numB) if (numA + numB) > 0 else 0.0
                     results[f"tdh_{name}"] = tdh_per_pump
@@ -422,9 +438,15 @@ def solve_pipeline(
                     results[f"speed_{name}"] = rpm_i if num > 0 else 0.0
                     results[f"speed_typeA_{name}"] = rpm_i if num > 0 else 0.0
                     results[f"speed_typeB_{name}"] = 0.0
-                    results[f"efficiency_{name}"] = 0.0
-                    results[f"efficiency_typeA_{name}"] = 0.0
-                    results[f"efficiency_typeB_{name}"] = 0.0
+                    # Efficiency reporting for downstream pumps
+                    if num > 0:
+                        results[f"efficiency_{name}"] = eff_i * 100.0
+                        results[f"efficiency_typeA_{name}"] = eff_i * 100.0
+                        results[f"efficiency_typeB_{name}"] = 0.0
+                    else:
+                        results[f"efficiency_{name}"] = 0.0
+                        results[f"efficiency_typeA_{name}"] = 0.0
+                        results[f"efficiency_typeB_{name}"] = 0.0
                     tdh_per_pump = available_head / num if num > 0 else 0.0
                     results[f"tdh_{name}"] = tdh_per_pump
                     results[f"tdh_typeA_{name}"] = tdh_per_pump if num > 0 else 0.0
@@ -444,6 +466,9 @@ def solve_pipeline(
             results[f"sdh_{name}"] = required_head + residual_prev  # approximate SDH
             results[f"maop_{name}"] = float('inf')  # not evaluated
             results[f"drag_reduction_{name}"] = dr_frac * 100.0
+            # Store cost components
+            results[f"power_cost_{name}"] = power_cost_i
+            results[f"dra_cost_{name}"] = dra_cost_i
         if not feasible:
             return float('inf'), {}
         return total_cost, results
