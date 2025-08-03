@@ -932,8 +932,12 @@ if not auto_batch:
     
             params = [
                 "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
-                "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
+                "DRA PPM", "No. of Pumps", "No. of Pumps A", "No. of Pumps B",
+                "Pump Speed (rpm)", "Pump Speed A (rpm)", "Pump Speed B (rpm)",
+                "Pump Eff (%)", "Pump Eff A (%)", "Pump Eff B (%)",
+                "TDH (m)", "TDH A (m)", "TDH B (m)",
+                "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)",
+                "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
             ]
             summary = {"Parameters": params}
     
@@ -965,28 +969,55 @@ if not auto_batch:
                 maop_m = res.get(f"maop_{key}", 0.0)
                 maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
                                                 
+                # Retrieve pump type specific details
+                total_pumps = res.get(f"num_pumps_{key}", np.nan)
+                numA = res.get(f"num_pumps_typeA_{key}", np.nan)
+                numB = res.get(f"num_pumps_typeB_{key}", np.nan)
+                speed_tot = res.get(f"speed_{key}", np.nan)
+                speedA = res.get(f"speed_typeA_{key}", np.nan)
+                speedB = res.get(f"speed_typeB_{key}", np.nan)
+                eff_tot = res.get(f"efficiency_{key}", np.nan)
+                effA = res.get(f"efficiency_typeA_{key}", np.nan)
+                effB = res.get(f"efficiency_typeB_{key}", np.nan)
+                tdh_tot = res.get(f"tdh_{key}", np.nan)
+                tdhA = res.get(f"tdh_typeA_{key}", np.nan)
+                tdhB = res.get(f"tdh_typeB_{key}", np.nan)
                 summary[nm] = [
-                    segment_flows[idx],
-                    pumpflow,
-                    res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
-                    dra_cost,
-                    station_ppm.get(key, np.nan),
-                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
-                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
-                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,                   
+                        segment_flows[idx],
+                        pumpflow,
+                        res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                        dra_cost,
+                        station_ppm.get(key, np.nan),
+                        # Number of pumps (total, A, B)
+                        total_pumps if total_pumps is not None else np.nan,
+                        numA if numA is not None else np.nan,
+                        numB if numB is not None else np.nan,
+                        # Speeds (aggregated, A, B)
+                        speed_tot if speed_tot is not None else np.nan,
+                        speedA if speedA is not None else np.nan,
+                        speedB if speedB is not None else np.nan,
+                        # Efficiencies (aggregated, A, B)
+                        eff_tot if eff_tot is not None else np.nan,
+                        effA if effA is not None else np.nan,
+                        effB if effB is not None else np.nan,
+                        # Total Dynamic Head (aggregated, A, B)
+                        tdh_tot if tdh_tot is not None else np.nan,
+                        tdhA if tdhA is not None else np.nan,
+                        tdhB if tdhB is not None else np.nan,
+                        # Reynolds number
+                        res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
 
-                    f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
+                        f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
 
-                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-                    
-                    f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
+                        res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
 
-                    f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
+                        f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
 
-                    f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
+                        f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
 
-                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                        f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
+
+                        res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -995,8 +1026,10 @@ if not auto_batch:
             #for col in df_sum.columns:
                 #if col not in ["Parameters", "No. of Pumps"]:
                     #df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-            if "No. of Pumps" in df_sum.columns:
-                df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
+            # Convert pump count columns to integers for display
+            for col_name in ["No. of Pumps", "No. of Pumps A", "No. of Pumps B"]:
+                if col_name in df_sum.columns:
+                    df_sum[col_name] = pd.to_numeric(df_sum[col_name], errors='coerce').fillna(0).astype(int)
     
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
