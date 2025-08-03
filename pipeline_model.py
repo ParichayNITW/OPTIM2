@@ -722,6 +722,24 @@ def solve_pipeline(
                 result[f"friction_{nm}"] = f[i]
                 result[f"sdh_{nm}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
                 result[f"maop_{nm}"] = maop_dict[i]
+                # Provide efficiency polynomial coefficients for plotting (type A for origin)
+                # Efficiency is computed as P*Q^4 + Q*Q^3 + R*Q^2 + S*Q + T
+                if i == originating_pump_index:
+                    # Use type A coefficients
+                    P1 = stn0.get('P1', 0.0); Q1 = stn0.get('Q1', 0.0)
+                    R1c = stn0.get('R1', 0.0); S1c = stn0.get('S1', 0.0); T1c = stn0.get('T1', 0.0)
+                    result[f"coef_P_{nm}"] = float(P1)
+                    result[f"coef_Q_{nm}"] = float(Q1)
+                    result[f"coef_R_{nm}"] = float(R1c)
+                    result[f"coef_S_{nm}"] = float(S1c)
+                    result[f"coef_T_{nm}"] = float(T1c)
+                else:
+                    # Non-origin pump: use station's Pcoef, Qcoef, etc.
+                    result[f"coef_P_{nm}"] = float(model.Pcoef[i]) if i in pump_indices else 0.0
+                    result[f"coef_Q_{nm}"] = float(model.Qcoef[i]) if i in pump_indices else 0.0
+                    result[f"coef_R_{nm}"] = float(model.Rcoef[i]) if i in pump_indices else 0.0
+                    result[f"coef_S_{nm}"] = float(model.Scoef[i]) if i in pump_indices else 0.0
+                    result[f"coef_T_{nm}"] = float(model.Tcoef[i]) if i in pump_indices else 0.0
                 # Provide pump curve coefficients and base RPM/DOL for plotting on the frontend
                 # Use Type A pump coefficients for the origin station
                 stn0 = stations[i - 1]
