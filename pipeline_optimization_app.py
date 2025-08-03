@@ -802,12 +802,27 @@ if not auto_batch:
                         # --- Type A Inputs ---
                         dfhA = st.session_state.get(f"head_data_A_{idx}")
                         dfeA = st.session_state.get(f"eff_data_A_{idx}")
-                        maxA = st.number_input(f"Max Pumps at Origin (Type A)", min_value=0, max_value=3, value=stn.get('max_pumps_typeA', 0), key=f"maxA{idx}")
-                        minrpmA = st.number_input(f"Min RPM (Type A)", min_value=100, max_value=6000, value=int(stn.get('MinRPM1', 1000)), key=f"minrpmA{idx}")
-                        dolA = st.number_input(f"DOL RPM (Type A)", min_value=100, max_value=6000, value=int(stn.get('DOL1', 1500)), key=f"dolA{idx}")
-                        sfcA = st.number_input(f"SFC (Type A) (leave 0 for electric)", value=float(stn.get('sfc1', 0.0)), key=f"sfcA{idx}")
-                        rateA = st.number_input(f"Electric Rate (Type A) (leave 0 for diesel)", value=float(stn.get('rate1', 0.0)), key=f"rateA{idx}")
-            
+                        maxA = st.number_input(
+                            f"Max Pumps at Origin (Type A)", min_value=0, max_value=3,
+                            value=stn.get('max_pumps_typeA', 0), key=f"run_maxA_{idx}"
+                        )
+                        minrpmA = st.number_input(
+                            f"Min RPM (Type A)", min_value=100, max_value=6000,
+                            value=int(stn.get('MinRPM1', 1000)), key=f"run_minrpmA_{idx}"
+                        )
+                        dolA = st.number_input(
+                            f"DOL RPM (Type A)", min_value=100, max_value=6000,
+                            value=int(stn.get('DOL1', 1500)), key=f"run_dolA_{idx}"
+                        )
+                        sfcA = st.number_input(
+                            f"SFC (Type A) (leave 0 for electric)",
+                            value=float(stn.get('sfc1', 0.0)), key=f"run_sfcA_{idx}"
+                        )
+                        rateA = st.number_input(
+                            f"Electric Rate (Type A) (leave 0 for diesel)",
+                            value=float(stn.get('rate1', 0.0)), key=f"run_rateA_{idx}"
+                        )
+
                         if dfhA is not None and dfeA is not None and len(dfhA) >= 3 and len(dfeA) >= 5:
                             QhA = dfhA.iloc[:, 0].values; HhA = dfhA.iloc[:, 1].values
                             coeffA = np.polyfit(QhA, HhA, 2)
@@ -818,22 +833,37 @@ if not auto_batch:
                         else:
                             stn['A1'], stn['B1'], stn['C1'] = 0, 0, 0
                             stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = 0, 0, 0, 0, 0
-            
+
                         stn['max_pumps_typeA'] = maxA
                         stn['MinRPM1'] = minrpmA
                         stn['DOL1'] = dolA
                         stn['sfc1'] = sfcA
                         stn['rate1'] = rateA
-            
+
                         # --- Type B Inputs ---
                         dfhB = st.session_state.get(f"head_data_B_{idx}")
                         dfeB = st.session_state.get(f"eff_data_B_{idx}")
-                        maxB = st.number_input(f"Max Pumps at Origin (Type B)", min_value=0, max_value=3, value=stn.get('max_pumps_typeB', 0), key=f"maxB{idx}")
-                        minrpmB = st.number_input(f"Min RPM (Type B)", min_value=100, max_value=6000, value=int(stn.get('MinRPM2', 1000)), key=f"minrpmB{idx}")
-                        dolB = st.number_input(f"DOL RPM (Type B)", min_value=100, max_value=6000, value=int(stn.get('DOL2', 1500)), key=f"dolB{idx}")
-                        sfcB = st.number_input(f"SFC (Type B) (leave 0 for electric)", value=float(stn.get('sfc2', 0.0)), key=f"sfcB{idx}")
-                        rateB = st.number_input(f"Electric Rate (Type B) (leave 0 for diesel)", value=float(stn.get('rate2', 0.0)), key=f"rateB{idx}")
-            
+                        maxB = st.number_input(
+                            f"Max Pumps at Origin (Type B)", min_value=0, max_value=3,
+                            value=stn.get('max_pumps_typeB', 0), key=f"run_maxB_{idx}"
+                        )
+                        minrpmB = st.number_input(
+                            f"Min RPM (Type B)", min_value=100, max_value=6000,
+                            value=int(stn.get('MinRPM2', 1000)), key=f"run_minrpmB_{idx}"
+                        )
+                        dolB = st.number_input(
+                            f"DOL RPM (Type B)", min_value=100, max_value=6000,
+                            value=int(stn.get('DOL2', 1500)), key=f"run_dolB_{idx}"
+                        )
+                        sfcB = st.number_input(
+                            f"SFC (Type B) (leave 0 for electric)",
+                            value=float(stn.get('sfc2', 0.0)), key=f"run_sfcB_{idx}"
+                        )
+                        rateB = st.number_input(
+                            f"Electric Rate (Type B) (leave 0 for diesel)",
+                            value=float(stn.get('rate2', 0.0)), key=f"run_rateB_{idx}"
+                        )
+
                         if dfhB is not None and dfeB is not None and len(dfhB) >= 3 and len(dfeB) >= 5:
                             QhB = dfhB.iloc[:, 0].values; HhB = dfhB.iloc[:, 1].values
                             coeffB = np.polyfit(QhB, HhB, 2)
@@ -844,13 +874,13 @@ if not auto_batch:
                         else:
                             stn['A2'], stn['B2'], stn['C2'] = 0, 0, 0
                             stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = 0, 0, 0, 0, 0
-            
+
                         stn['max_pumps_typeB'] = maxB
                         stn['MinRPM2'] = minrpmB
                         stn['DOL2'] = dolB
                         stn['sfc2'] = sfcB
                         stn['rate2'] = rateB
-            
+
                         # --- Validation ---
                         if (maxA == 0 or stn['A1'] == 0) and (maxB == 0 or stn['A2'] == 0):
                             st.error("At least one pump type (A or B) with valid curves must be provided at the origin station.")
@@ -870,7 +900,7 @@ if not auto_batch:
                         Ee = dfe.iloc[:, 1].values
                         coeff_e = np.polyfit(Qe, Ee, 4)
                         stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
-            
+
                 # ========== No change needed for peaks, just keep this after each station ==========
                 peaks_df = st.session_state.get(f"peak_data_{idx}")
                 peaks_list = []
@@ -879,7 +909,7 @@ if not auto_batch:
                         try:
                             loc = float(row["Location (km)"])
                             elev_pk = float(row["Elevation (m)"])
-                        except:
+                        except Exception:
                             continue
                         if loc < 0 or loc > stn['L']:
                             st.error(f"Station {idx}: Peak location must be between 0 and segment length.")
@@ -892,12 +922,16 @@ if not auto_batch:
 
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
+            res = solve_pipeline(
+                stations_data, term_data, FLOW, kv_list, rho_list, RateDRA,
+                Price_HSD, linefill_df.to_dict()
+            )
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+
 
 if not auto_batch:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
