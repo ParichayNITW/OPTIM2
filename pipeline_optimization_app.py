@@ -931,29 +931,9 @@ if not auto_batch:
                 station_ppm[key] = ppm
     
             params = [
-                "Pipeline Flow (m³/hr)",
-                "Pump Flow (m³/hr)",
-                "Power+Fuel Cost (INR/day)",
-                "DRA Cost (INR/day)",
-                "DRA PPM",
-                "No. of Pumps",
-                "No. of Pumps A",
-                "No. of Pumps B",
-                "Pump Speed (rpm)",
-                "Pump Speed A (rpm)",
-                "Pump Speed B (rpm)",
-                "Pump Eff (%)",
-                "Pump Eff A (%)",
-                "Pump Eff B (%)",
-                "Reynolds No.",
-                "Head Loss (m)",
-                "Vel (m/s)",
-                "Residual Head (m)",
-                "SDH (m)",
-                "MAOP (m)",
-                "Drag Reduction (%)",
-                "TDH A (m)",
-                "TDH B (m)"
+                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
+                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
+                "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
             ]
             summary = {"Parameters": params}
     
@@ -985,49 +965,28 @@ if not auto_batch:
                 maop_m = res.get(f"maop_{key}", 0.0)
                 maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
                                                 
-                # aggregated and type‑specific pump values
-                num_pumps_tot_val = res.get(f"num_pumps_{key}", np.nan)
-                num_pumps_tot = int(num_pumps_tot_val) if (num_pumps_tot_val is not None and not pd.isna(num_pumps_tot_val)) else np.nan
-                num_pumps_a_val = res.get(f"num_pumps_typeA_{key}", np.nan)
-                num_pumps_a = int(num_pumps_a_val) if (num_pumps_a_val is not None and not pd.isna(num_pumps_a_val)) else np.nan
-                num_pumps_b_val = res.get(f"num_pumps_typeB_{key}", np.nan)
-                num_pumps_b = int(num_pumps_b_val) if (num_pumps_b_val is not None and not pd.isna(num_pumps_b_val)) else np.nan
-
-                speed_tot = res.get(f"speed_{key}", np.nan)
-                speed_a = res.get(f"speed_typeA_{key}", np.nan)
-                speed_b = res.get(f"speed_typeB_{key}", np.nan)
-
-                eff_tot = res.get(f"efficiency_{key}", np.nan)
-                eff_a = res.get(f"efficiency_typeA_{key}", np.nan)
-                eff_b = res.get(f"efficiency_typeB_{key}", np.nan)
-
-                tdh_a = res.get(f"tdh_typeA_{key}", np.nan)
-                tdh_b = res.get(f"tdh_typeB_{key}", np.nan)
-
                 summary[nm] = [
                     segment_flows[idx],
                     pumpflow,
                     res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
                     dra_cost,
                     station_ppm.get(key, np.nan),
-                    num_pumps_tot,
-                    num_pumps_a,
-                    num_pumps_b,
-                    speed_tot,
-                    speed_a,
-                    speed_b,
-                    eff_tot,
-                    eff_a,
-                    eff_b,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
+                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
+                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
+                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
+                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,                   
+
                     f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
+
                     res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
+                    
                     f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
+
                     f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
+
                     f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
-                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan,
-                    tdh_a,
-                    tdh_b
+
+                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -1038,11 +997,6 @@ if not auto_batch:
                     #df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
             if "No. of Pumps" in df_sum.columns:
                 df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
-                # Also convert type‑specific pump counts to integers when present
-                if "No. of Pumps A" in df_sum.columns:
-                    df_sum["No. of Pumps A"] = pd.to_numeric(df_sum["No. of Pumps A"], errors='coerce').fillna(0).astype(int)
-                if "No. of Pumps B" in df_sum.columns:
-                    df_sum["No. of Pumps B"] = pd.to_numeric(df_sum["No. of Pumps B"], errors='coerce').fillna(0).astype(int)
     
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
@@ -1272,7 +1226,7 @@ if not auto_batch:
             perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
                 "Head Loss", "Velocity & Re", 
                 "Pump Characteristic Curve", "Pump Efficiency Curve",
-                "Pressure vs Pipeline Length", "Power vs Speed/Flow"
+                "Pressure vs Pipeline Length", "Power vs Flow"
             ])
             
             # --- 1. Head Loss ---
@@ -1347,9 +1301,13 @@ if not auto_batch:
                     df_head = st.session_state.get(f"head_data_{i}")
                     if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
                         flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
-                        max_flow = np.max(flow_user)
+                        # Use the larger of the maximum user-provided flow and the pipeline flow
+                        max_flow = float(np.max(flow_user))
+                        max_flow = max(max_flow, st.session_state.get("FLOW", max_flow))
                     else:
-                        max_flow = st.session_state.get("FLOW", 1000.0)
+                        # Default to at least 500 m³/hr to allow head curves beyond the operating point
+                        max_flow = max(st.session_state.get("FLOW", 0.0), 500.0)
+                    # Generate a flow range up to max_flow for plotting head curves
                     flows = np.linspace(0, max_flow, 200)
                     A = res.get(f"coef_A_{key}",0)
                     B = res.get(f"coef_B_{key}",0)
@@ -1403,22 +1361,36 @@ if not auto_batch:
                         flow_min, flow_max = 0.01, FLOW
                         max_user_eff = 100
                     # Polynomial coefficients at DOL (user input speed)
-                    P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
-                    S = stn.get('S', 0); T = stn.get('T', 0)
+                    # Use polynomial coefficients from backend results for efficiency curves
+                        P = res.get(f"coef_P_{key}", 0)
+                        Qc = res.get(f"coef_Q_{key}", 0)
+                        R = res.get(f"coef_R_{key}", 0)
+                        S = res.get(f"coef_S_{key}", 0)
+                        T = res.get(f"coef_T_{key}", 0)
+                        # Fallback: if coefficients from results are zero, use station-defined coefficients
+                        if abs(P) + abs(Qc) + abs(R) + abs(S) + abs(T) < 1e-8:
+                            # For the origin pump, type A efficiency coefficients are P1..T1; otherwise use generic P..T
+                            P = stn.get('P1', stn.get('P', 0))
+                            Qc = stn.get('Q1', stn.get('Q', 0))
+                            R = stn.get('R1', stn.get('R', 0))
+                            S = stn.get('S1', stn.get('S', 0))
+                            T = stn.get('T1', stn.get('T', 0))
                     N_min = int(res.get(f"min_rpm_{key}", 0))
                     N_max = int(res.get(f"dol_{key}", 0))
                     step = max(100, int((N_max-N_min)/4))  # 5 curves max
             
                     fig = go.Figure()
                     for rpm in range(N_min, N_max+1, step):
-                        # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
-                        # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
-                        q_upper = flow_max * (rpm/N_max) if N_max else flow_max
-                        q_lower = flow_min * (rpm/N_max) if N_max else flow_min
-                        flows = np.linspace(q_lower, q_upper, 100)
+                        if rpm == 0:
+                            continue
+                        # Use user-defined flow range up to FLOW for all speeds
+                        # Use the larger of the max user flow and the pipeline flow; ensure at least 500 m³/hr
+                        flow_limit = max(flow_max, st.session_state.get("FLOW", 0.0), 500.0)
+                        flows = np.linspace(0, flow_limit, 100)
                         Q_equiv = flows * N_max / rpm if rpm else flows
                         eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
-                        eff = np.clip(eff, 0, max_user_eff)
+                        # Clip efficiencies between 0 and 100%
+                        eff = np.clip(eff, 0, 100)
                         fig.add_trace(go.Scatter(
                             x=flows, y=eff, mode='lines', name=f"{rpm} rpm",
                             hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %"
@@ -1559,7 +1531,8 @@ if not auto_batch:
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
-                st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
+                # Only display Power vs Flow curves (remove Power vs Speed)
+                st.markdown("<div class='section-title'>Power vs Flow</div>", unsafe_allow_html=True)
                 # Fetch summary DataFrame for pump flows
                 df_summary = st.session_state.get("summary_table", None)
                 if df_summary is not None:
@@ -1583,35 +1556,13 @@ if not auto_batch:
                     N_min = int(res.get(f"min_rpm_{key}", 0))
                     N_max = int(res.get(f"dol_{key}", 0))
                     rho = stn.get('rho', 850)
-                    # --- 1. Power vs Speed (at constant, optimized flow) ---
-                    pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW",1000.0))
-                    # Head and eff at pump_flow, DOL
-                    H = (A*pump_flow**2 + B*pump_flow + C)
-                    eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
-                    eff = max(0.01, eff/100)
-                    P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
-                    speeds = np.arange(N_min, N_max+1, 100)
-                    power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
-                    fig_pwr = go.Figure()
-                    fig_pwr.add_trace(go.Scatter(
-                        x=speeds, y=power_curve, mode='lines+markers',
-                        name="Power vs Speed",
-                        marker_color="#1976D2",
-                        line=dict(width=3),
-                        hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW"
-                    ))
-                    fig_pwr.update_layout(
-                        title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
-                        xaxis_title="Speed (rpm)",
-                        yaxis_title="Power (kW)",
-                        font=dict(size=16),
-                        height=400
-                    )
-                    st.plotly_chart(fig_pwr, use_container_width=True)
-            
-                    # --- 2. Power vs Flow (at DOL only) ---
-                    flows = np.linspace(0.01, 1.2*pump_flow, 100)
-                    H_flows = (A*flows**2 + B*flows + C)  # At DOL
+                    # --- Only Power vs Flow (at DOL only) ---
+                    pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW", 0.0))
+                    # Use the larger of the pump flow and the pipeline flow; ensure at least 500 m³/hr
+                    flow_limit = max(pump_flow, st.session_state.get("FLOW", 0.0), 500.0)
+                    flows = np.linspace(0.0, flow_limit, 100)
+                    # Head and efficiency at each flow at DOL (N_max)
+                    H_flows = (A*flows**2 + B*flows + C)
                     eff_flows = (P4*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T)
                     eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
                     power_flows = (rho * flows * 9.81 * H_flows)/(3600.0*1000*eff_flows)
@@ -1619,7 +1570,7 @@ if not auto_batch:
                     fig_pwr2.add_trace(go.Scatter(
                         x=flows, y=power_flows, mode='lines+markers',
                         name="Power vs Flow",
-                        marker_color="#D84315",
+                        marker_color="#1976D2",
                         line=dict(width=3),
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW"
                     ))
