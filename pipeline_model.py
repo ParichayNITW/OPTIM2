@@ -426,7 +426,7 @@ def solve_pipeline(
             # Equivalent flow (dimensionless).  Avoid conditional on rpm_A by relying on
             # variable bounds (MinRPM1 > 0).  The division yields a Pyomo expression.
             # Equivalent flow per pump: divide station flow by the total number of running pumps
-            Q_equiv_A = pump_flow_i * dol_A / (rpm_A * (model.NOP_A_origin + model.NOP_B_origin))
+            Q_equiv_A = pump_flow_i * dol_A / rpm_A
             A1 = stn0.get('A1', 0.0); B1 = stn0.get('B1', 0.0); C1 = stn0.get('C1', 0.0)
             P1 = stn0.get('P1', 0.0); Q1 = stn0.get('Q1', 0.0); R1 = stn0.get('R1', 0.0);
             S1 = stn0.get('S1', 0.0); T1 = stn0.get('T1', 0.0)
@@ -439,7 +439,7 @@ def solve_pipeline(
             # Type B
             rpm_B = model.RPM_B_origin
             dol_B = float(stn0.get('DOL2', 1))
-            Q_equiv_B = pump_flow_i * dol_B / (rpm_B * (model.NOP_A_origin + model.NOP_B_origin))
+            Q_equiv_B = pump_flow_i * dol_B / rpm_B
             A2 = stn0.get('A2', 0.0); B2 = stn0.get('B2', 0.0); C2 = stn0.get('C2', 0.0)
             P2 = stn0.get('P2', 0.0); Q2 = stn0.get('Q2', 0.0); R2 = stn0.get('R2', 0.0);
             S2 = stn0.get('S2', 0.0); T2 = stn0.get('T2', 0.0)
@@ -616,13 +616,11 @@ def solve_pipeline(
             # Compute on the fly using selected RPMs
             stn0 = stn
             pump_flow_i = float(segment_flows[i])
-            # Flow per pump if multiple pumps are running
-            total_pumps = numA + numB if (numA + numB) > 0 else 1
-            flow_per_pump = pump_flow_i / total_pumps
             # Type A
             if numA > 0:
                 dol_A = float(stn0.get('DOL1', 1))
-                Q_equiv_A = (flow_per_pump * dol_A / rpmA) if rpmA != 0 else 1.0
+                # Equivalent flow based on full station flow (as in original model)
+                Q_equiv_A = (pump_flow_i * dol_A / rpmA) if rpmA != 0 else 1.0
                 H_DOL_A = stn0.get('A1', 0.0) * Q_equiv_A ** 2 + stn0.get('B1', 0.0) * Q_equiv_A + stn0.get('C1', 0.0)
                 tdhA = H_DOL_A * (rpmA / dol_A) ** 2
                 effA = (stn0.get('P1', 0.0) * Q_equiv_A ** 4 + stn0.get('Q1', 0.0) * Q_equiv_A ** 3 +
@@ -632,7 +630,7 @@ def solve_pipeline(
             # Type B
             if numB > 0:
                 dol_B = float(stn0.get('DOL2', 1))
-                Q_equiv_B = (flow_per_pump * dol_B / rpmB) if rpmB != 0 else 1.0
+                Q_equiv_B = (pump_flow_i * dol_B / rpmB) if rpmB != 0 else 1.0
                 H_DOL_B = stn0.get('A2', 0.0) * Q_equiv_B ** 2 + stn0.get('B2', 0.0) * Q_equiv_B + stn0.get('C2', 0.0)
                 tdhB = H_DOL_B * (rpmB / dol_B) ** 2
                 effB = (stn0.get('P2', 0.0) * Q_equiv_B ** 4 + stn0.get('Q2', 0.0) * Q_equiv_B ** 3 +
@@ -688,8 +686,8 @@ def solve_pipeline(
             if total_pumps > 0:
                 avg_speed = ((numA * rpmA) + (numB * rpmB)) / total_pumps
                 avg_eff   = ((numA * effA) + (numB * effB)) / total_pumps
-                # Compute weighted average head based on pump curve values
-                avg_tdh = ((numA * tdhA) + (numB * tdhB)) / total_pumps
+                # Weighted average TDH based on pump curve values
+                avg_tdh   = ((numA * tdhA) + (numB * tdhB)) / total_pumps
             else:
                 avg_speed = 0.0
                 avg_eff = 0.0
