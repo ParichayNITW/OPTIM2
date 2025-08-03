@@ -583,7 +583,15 @@ def solve_pipeline(
     # -------------------------------------------------------------------------
     result = {}
     for i, stn in enumerate(stations, start=1):
-        name = stn['name'].strip().lower().replace(' ', '_')
+        # Use a lowercase key for internal consistency but also preserve the original
+        # capitalization/spacing for front-end compatibility.  Many front-end
+        # components expect keys like "num_pumps_Haldia" (capitalised) rather than
+        # "num_pumps_haldia".  We therefore construct two name variants: a
+        # lowercase version with underscores (``lc_name``) and a preserved
+        # version with spaces replaced by underscores (``orig_name``).  All
+        # results will be stored under both keys to ensure compatibility.
+        lc_name = stn['name'].strip().lower().replace(' ', '_')
+        orig_name = stn['name'].strip().replace(' ', '_')
         inflow = segment_flows[i - 1]
         outflow = segment_flows[i]
         pump_flow = outflow if stn.get('is_pump', False) else 0.0
@@ -667,28 +675,46 @@ def solve_pipeline(
             # Head loss, residual head
             head_loss = float(pyo.value(model.SDH[i] - (model.RH[i + 1] + (model.z[i + 1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i + 1].value is not None else 0.0
             res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
-            # Pack results
-            result[f"pipeline_flow_{name}"] = outflow
-            result[f"pipeline_flow_in_{name}"] = inflow
-            result[f"pump_flow_{name}"] = pump_flow
-            result[f"num_pumps_typeA_{name}"] = numA
-            result[f"num_pumps_typeB_{name}"] = numB
-            result[f"speed_typeA_{name}"] = rpmA
-            result[f"speed_typeB_{name}"] = rpmB
-            result[f"efficiency_typeA_{name}"] = effA
-            result[f"efficiency_typeB_{name}"] = effB
-            result[f"power_cost_{name}"] = power_cost
-            result[f"dra_cost_{name}"] = dra_cost_i
-            result[f"dra_ppm_{name}"] = dra_ppm
-            result[f"drag_reduction_{name}"] = dra_perc
-            result[f"head_loss_{name}"] = head_loss
-            result[f"residual_head_{name}"] = res_head
-            result[f"velocity_{name}"] = v[i]; result[f"reynolds_{name}"] = Re[i]; result[f"friction_{name}"] = f[i]
-            result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-            result[f"maop_{name}"] = maop_dict[i]
-            # Additional reporting for origin pump type coefficients
-            result[f"tdh_typeA_{name}"] = tdhA
-            result[f"tdh_typeB_{name}"] = tdhB
+            # Aggregate pump counts and weighted averages for speed, efficiency and TDH
+            total_pumps = numA + numB
+            if total_pumps > 0:
+                avg_speed = ((numA * rpmA) + (numB * rpmB)) / total_pumps
+                avg_eff   = ((numA * effA) + (numB * effB)) / total_pumps
+                avg_tdh   = ((numA * tdhA) + (numB * tdhB)) / total_pumps
+            else:
+                avg_speed = 0.0
+                avg_eff = 0.0
+                avg_tdh = 0.0
+            # Pack results for both lowercase and original names
+            for nm in (lc_name, orig_name):
+                result[f"pipeline_flow_{nm}"] = outflow
+                result[f"pipeline_flow_in_{nm}"] = inflow
+                result[f"pump_flow_{nm}"] = pump_flow
+                # Report total pumps for compatibility with front-end
+                result[f"num_pumps_{nm}"] = total_pumps
+                result[f"speed_{nm}"] = avg_speed
+                result[f"efficiency_{nm}"] = avg_eff
+                result[f"tdh_{nm}"] = avg_tdh
+                # Also report type-specific details
+                result[f"num_pumps_typeA_{nm}"] = numA
+                result[f"num_pumps_typeB_{nm}"] = numB
+                result[f"speed_typeA_{nm}"] = rpmA
+                result[f"speed_typeB_{nm}"] = rpmB
+                result[f"efficiency_typeA_{nm}"] = effA
+                result[f"efficiency_typeB_{nm}"] = effB
+                result[f"tdh_typeA_{nm}"] = tdhA
+                result[f"tdh_typeB_{nm}"] = tdhB
+                result[f"power_cost_{nm}"] = power_cost
+                result[f"dra_cost_{nm}"] = dra_cost_i
+                result[f"dra_ppm_{nm}"] = dra_ppm
+                result[f"drag_reduction_{nm}"] = dra_perc
+                result[f"head_loss_{nm}"] = head_loss
+                result[f"residual_head_{nm}"] = res_head
+                result[f"velocity_{nm}"] = v[i]
+                result[f"reynolds_{nm}"] = Re[i]
+                result[f"friction_{nm}"] = f[i]
+                result[f"sdh_{nm}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
+                result[f"maop_{nm}"] = maop_dict[i]
         elif i in pump_indices:
             # Non-origin pump station
             num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
@@ -734,63 +760,72 @@ def solve_pipeline(
             dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i].expr is not None else 0.0
             head_loss = float(pyo.value(model.SDH[i] - (model.RH[i + 1] + (model.z[i + 1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i + 1].value is not None else 0.0
             res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
-            result[f"pipeline_flow_{name}"] = outflow
-            result[f"pipeline_flow_in_{name}"] = inflow
-            result[f"pump_flow_{name}"] = pump_flow
-            result[f"num_pumps_{name}"] = num_pumps
-            result[f"speed_{name}"] = rpm_val
-            result[f"efficiency_{name}"] = eff
-            result[f"power_cost_{name}"] = power_cost
-            result[f"dra_cost_{name}"] = dra_cost_i
-            result[f"dra_ppm_{name}"] = dra_ppm
-            result[f"drag_reduction_{name}"] = dra_perc
-            result[f"head_loss_{name}"] = head_loss
-            result[f"residual_head_{name}"] = res_head
-            result[f"velocity_{name}"] = v[i]; result[f"reynolds_{name}"] = Re[i]; result[f"friction_{name}"] = f[i]
-            result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-            result[f"maop_{name}"] = maop_dict[i]
-            result[f"tdh_{name}"] = tdh_val
+            # Pack results for both lowercase and original names
+            for nm in (lc_name, orig_name):
+                result[f"pipeline_flow_{nm}"] = outflow
+                result[f"pipeline_flow_in_{nm}"] = inflow
+                result[f"pump_flow_{nm}"] = pump_flow
+                result[f"num_pumps_{nm}"] = num_pumps
+                result[f"speed_{nm}"] = rpm_val
+                result[f"efficiency_{nm}"] = eff
+                result[f"power_cost_{nm}"] = power_cost
+                result[f"dra_cost_{nm}"] = dra_cost_i
+                result[f"dra_ppm_{nm}"] = dra_ppm
+                result[f"drag_reduction_{nm}"] = dra_perc
+                result[f"head_loss_{nm}"] = head_loss
+                result[f"residual_head_{nm}"] = res_head
+                result[f"velocity_{nm}"] = v[i]
+                result[f"reynolds_{nm}"] = Re[i]
+                result[f"friction_{nm}"] = f[i]
+                result[f"sdh_{nm}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
+                result[f"maop_{nm}"] = maop_dict[i]
+                result[f"tdh_{nm}"] = tdh_val
         else:
             # Non-pump station
-            result[f"pipeline_flow_{name}"] = outflow
-            result[f"pipeline_flow_in_{name}"] = inflow
-            result[f"pump_flow_{name}"] = 0.0
-            result[f"num_pumps_{name}"] = 0
-            result[f"speed_{name}"] = 0.0
-            result[f"efficiency_{name}"] = 0.0
-            result[f"power_cost_{name}"] = 0.0
-            result[f"dra_cost_{name}"] = 0.0
-            result[f"dra_ppm_{name}"] = 0.0
-            result[f"drag_reduction_{name}"] = 0.0
             # Head loss on a non-pump segment is the friction head (positive)
             head_loss = float(pyo.value(model.SDH[i] - (model.RH[i + 1] + (model.z[i + 1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i + 1].value is not None else 0.0
             res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
-            result[f"head_loss_{name}"] = head_loss
-            result[f"residual_head_{name}"] = res_head
-            result[f"velocity_{name}"] = v[i]; result[f"reynolds_{name}"] = Re[i]; result[f"friction_{name}"] = f[i]
-            result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
-            result[f"maop_{name}"] = maop_dict[i]
+            # Pack results for both lowercase and original names
+            for nm in (lc_name, orig_name):
+                result[f"pipeline_flow_{nm}"] = outflow
+                result[f"pipeline_flow_in_{nm}"] = inflow
+                result[f"pump_flow_{nm}"] = 0.0
+                result[f"num_pumps_{nm}"] = 0
+                result[f"speed_{nm}"] = 0.0
+                result[f"efficiency_{nm}"] = 0.0
+                result[f"power_cost_{nm}"] = 0.0
+                result[f"dra_cost_{nm}"] = 0.0
+                result[f"dra_ppm_{nm}"] = 0.0
+                result[f"drag_reduction_{nm}"] = 0.0
+                result[f"head_loss_{nm}"] = head_loss
+                result[f"residual_head_{nm}"] = res_head
+                result[f"velocity_{nm}"] = v[i]
+                result[f"reynolds_{nm}"] = Re[i]
+                result[f"friction_{nm}"] = f[i]
+                result[f"sdh_{nm}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
+                result[f"maop_{nm}"] = maop_dict[i]
 
     # Terminal node results
-    term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
-    result.update({
-        f"pipeline_flow_{term_name}": segment_flows[-1],
-        f"pipeline_flow_in_{term_name}": segment_flows[-2],
-        f"pump_flow_{term_name}": 0.0,
-        f"speed_{term_name}": 0.0,
-        f"num_pumps_{term_name}": 0,
-        f"efficiency_{term_name}": 0.0,
-        f"power_cost_{term_name}": 0.0,
-        f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"drag_reduction_{term_name}": 0.0,
-        f"head_loss_{term_name}": 0.0,
-        f"velocity_{term_name}": 0.0,
-        f"reynolds_{term_name}": 0.0,
-        f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": 0.0,
-        f"residual_head_{term_name}": float(pyo.value(model.RH[N + 1])) if model.RH[N + 1].value is not None else 0.0,
-    })
+    # Report terminal (node N+1) results for both lowercase and original names
+    term_lc_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
+    term_orig_name = terminal.get('name', 'terminal').strip().replace(' ', '_')
+    for nm in (term_lc_name, term_orig_name):
+        result[f"pipeline_flow_{nm}"] = segment_flows[-1]
+        result[f"pipeline_flow_in_{nm}"] = segment_flows[-2]
+        result[f"pump_flow_{nm}"] = 0.0
+        result[f"speed_{nm}"] = 0.0
+        result[f"num_pumps_{nm}"] = 0
+        result[f"efficiency_{nm}"] = 0.0
+        result[f"power_cost_{nm}"] = 0.0
+        result[f"dra_cost_{nm}"] = 0.0
+        result[f"dra_ppm_{nm}"] = 0.0
+        result[f"drag_reduction_{nm}"] = 0.0
+        result[f"head_loss_{nm}"] = 0.0
+        result[f"velocity_{nm}"] = 0.0
+        result[f"reynolds_{nm}"] = 0.0
+        result[f"friction_{nm}"] = 0.0
+        result[f"sdh_{nm}"] = 0.0
+        result[f"residual_head_{nm}"] = float(pyo.value(model.RH[N + 1])) if model.RH[N + 1].value is not None else 0.0
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result['error'] = False
     return result
