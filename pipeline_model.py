@@ -423,29 +423,30 @@ def solve_pipeline(
             # Type A
             rpm_A = model.RPM_A_origin
             dol_A = float(stn0.get('DOL1', 1))
-            rpm_A_val = rpm_A
-            Q_equiv_A = pump_flow_i * dol_A / rpm_A_val if rpm_A_val != 0 else 1.0
+            # Equivalent flow (dimensionless).  Avoid conditional on rpm_A by relying on
+            # variable bounds (MinRPM1 > 0).  The division yields a Pyomo expression.
+            Q_equiv_A = pump_flow_i * dol_A / rpm_A
             A1 = stn0.get('A1', 0.0); B1 = stn0.get('B1', 0.0); C1 = stn0.get('C1', 0.0)
             P1 = stn0.get('P1', 0.0); Q1 = stn0.get('Q1', 0.0); R1 = stn0.get('R1', 0.0);
             S1 = stn0.get('S1', 0.0); T1 = stn0.get('T1', 0.0)
+            # Dynamic head and efficiency expressions for type A
             H_DOL_A = A1 * Q_equiv_A ** 2 + B1 * Q_equiv_A + C1
-            TDH_A = H_DOL_A * (rpm_A_val / dol_A) ** 2
+            TDH_A = H_DOL_A * (rpm_A / dol_A) ** 2
             EFF_A = (P1 * Q_equiv_A ** 4 + Q1 * Q_equiv_A ** 3 + R1 * Q_equiv_A ** 2 + S1 * Q_equiv_A + T1) / 100.0
             model.TDH_A_origin = pyo.Expression(expr=TDH_A)
-            model.EFF_A_origin = pyo.Expression(expr=max(0.01, EFF_A))
+            model.EFF_A_origin = pyo.Expression(expr=EFF_A)
             # Type B
             rpm_B = model.RPM_B_origin
             dol_B = float(stn0.get('DOL2', 1))
-            rpm_B_val = rpm_B
-            Q_equiv_B = pump_flow_i * dol_B / rpm_B_val if rpm_B_val != 0 else 1.0
+            Q_equiv_B = pump_flow_i * dol_B / rpm_B
             A2 = stn0.get('A2', 0.0); B2 = stn0.get('B2', 0.0); C2 = stn0.get('C2', 0.0)
             P2 = stn0.get('P2', 0.0); Q2 = stn0.get('Q2', 0.0); R2 = stn0.get('R2', 0.0);
             S2 = stn0.get('S2', 0.0); T2 = stn0.get('T2', 0.0)
             H_DOL_B = A2 * Q_equiv_B ** 2 + B2 * Q_equiv_B + C2
-            TDH_B = H_DOL_B * (rpm_B_val / dol_B) ** 2
+            TDH_B = H_DOL_B * (rpm_B / dol_B) ** 2
             EFF_B = (P2 * Q_equiv_B ** 4 + Q2 * Q_equiv_B ** 3 + R2 * Q_equiv_B ** 2 + S2 * Q_equiv_B + T2) / 100.0
             model.TDH_B_origin = pyo.Expression(expr=TDH_B)
-            model.EFF_B_origin = pyo.Expression(expr=max(0.01, EFF_B))
+            model.EFF_B_origin = pyo.Expression(expr=EFF_B)
             # For origin, we don't populate TDH/EFFP dictionary
         elif i in pump_indices:
             pump_flow_i = float(segment_flows[i])
