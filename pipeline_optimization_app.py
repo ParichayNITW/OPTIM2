@@ -1,4 +1,5 @@
 
+
 import os
 import streamlit as st
 import pandas as pd
@@ -930,28 +931,24 @@ if not auto_batch:
                 ppm = get_ppm_for_dr(viscosity, dr_use)
                 station_ppm[key] = ppm
     
-            params = [
-                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-                "DRA PPM", "No. of Pumps", "No. of Pumps A", "No. of Pumps B",
-                "Pump Speed (rpm)", "Pump Speed A (rpm)", "Pump Speed B (rpm)",
-                "Pump Eff (%)", "Pump Eff A (%)", "Pump Eff B (%)",
-                "TDH (m)", "TDH A (m)", "TDH B (m)",
-                "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)",
-                "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
-            ]
+                # Columns for the optimisation summary.  The enumerative backend does not
+                # return Reynolds number, velocity or MAOP fields, so we drop those
+                # parameters here.  Head loss is displayed only in metres.
+                params = [
+                    "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
+                    "DRA PPM", "No. of Pumps", "No. of Pumps A", "No. of Pumps B",
+                    "Pump Speed (rpm)", "Pump Speed A (rpm)", "Pump Speed B (rpm)",
+                    "Pump Eff (%)", "Pump Eff A (%)", "Pump Eff B (%)",
+                    "TDH (m)", "TDH A (m)", "TDH B (m)",
+                    "Head Loss (m)", "Residual Head (m)", "SDH (m)", "Drag Reduction (%)"
+                ]
             summary = {"Parameters": params}
     
             for idx, nm in enumerate(names):
                 key = nm.lower().replace(' ','_')
                 # For DRA cost at each station, use hydraulically-correct flow
-                if key in station_ppm:
-                    dra_cost = (
-                        station_ppm[key]
-                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                        * st.session_state["RateDRA"]
-                    )
-                else:
-                    dra_cost = 0.0
+                # DRA cost is provided by the enumerative backend; fall back to 0 if missing
+                dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
     
                 # For numeric columns, always use np.nan if not available
                 pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
@@ -985,7 +982,7 @@ if not auto_batch:
                 summary[nm] = [
                         segment_flows[idx],
                         pumpflow,
-                        res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                        float(res.get(f"power_cost_{key}", 0.0) or 0.0),
                         dra_cost,
                         station_ppm.get(key, np.nan),
                         # Number of pumps (total, A, B)
@@ -1004,20 +1001,14 @@ if not auto_batch:
                         tdh_tot if tdh_tot is not None else np.nan,
                         tdhA if tdhA is not None else np.nan,
                         tdhB if tdhB is not None else np.nan,
-                        # Reynolds number
-                        res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
-
-                        f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
-
-                        res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-
-                        f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
-
-                        f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
-
-                        f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
-
-                        res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                        # Head loss (m) only
+                        f"{head_loss_m:.2f}" if head_loss_m is not None else "",
+                        # Residual head (m) only
+                        f"{residual_m:.2f}" if residual_m is not None else "",
+                        # SDH (m) only
+                        f"{sdh_m:.2f}" if sdh_m is not None else "",
+                        # Drag reduction (%)
+                        res.get(f"drag_reduction_{key}", 0.0) if res.get(f"drag_reduction_{key}", 0.0) is not None else np.nan
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -1040,12 +1031,8 @@ if not auto_batch:
             for idx, stn in enumerate(stations_data):
                 key = stn['name'].lower().replace(' ', '_')
                 power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
-                dra_cost = (
-                    station_ppm.get(key, 0.0)
-                    * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                    * st.session_state["RateDRA"]
-                )
-                total_cost += power_cost + dra_cost
+                dra_cost_val = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
+                total_cost += power_cost + dra_cost_val
             
             total_pumps = 0
             effs = []
@@ -1107,17 +1094,8 @@ if not auto_batch:
     
             # --- Compute power and DRA costs just as in summary ---
             power_costs = [float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys]
-            dra_costs = []
-            for idx, key in enumerate(keys):
-                if key in station_ppm:
-                    dra_cost = (
-                        station_ppm[key]
-                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                        * st.session_state["RateDRA"]
-                    )
-                else:
-                    dra_cost = 0.0
-                dra_costs.append(dra_cost)
+            # DRA costs provided directly by the enumerative backend
+            dra_costs = [float(res.get(f"dra_cost_{k}", 0.0) or 0.0) for k in keys]
             total_costs = [p + d for p, d in zip(power_costs, dra_costs)]
     
             df_cost = pd.DataFrame({
