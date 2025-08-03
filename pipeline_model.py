@@ -724,6 +724,19 @@ def solve_pipeline(
                 result[f"friction_{nm}"] = f[i]
                 result[f"sdh_{nm}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
                 result[f"maop_{nm}"] = maop_dict[i]
+                # Provide pump curve coefficients and base RPM/DOL for plotting on the frontend
+                # Use Type A pump coefficients for the origin station
+                stn0 = stations[i - 1]
+                A1 = stn0.get('A1', 0.0)
+                B1 = stn0.get('B1', 0.0)
+                C1 = stn0.get('C1', 0.0)
+                dol1 = stn0.get('DOL1', stn0.get('DOL', 0.0))
+                minrpm1 = stn0.get('MinRPM1', stn0.get('MinRPM', 0.0))
+                result[f"coef_A_{nm}"] = float(A1)
+                result[f"coef_B_{nm}"] = float(B1)
+                result[f"coef_C_{nm}"] = float(C1)
+                result[f"dol_{nm}"]    = float(dol1)
+                result[f"min_rpm_{nm}"] = float(minrpm1)
         elif i in pump_indices:
             # Non-origin pump station
             num_pumps = int(pyo.value(model.NOP[i])) if model.NOP[i].value is not None else 0
