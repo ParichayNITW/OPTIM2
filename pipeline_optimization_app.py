@@ -930,9 +930,6 @@ if not auto_batch:
                 ppm = get_ppm_for_dr(viscosity, dr_use)
                 station_ppm[key] = ppm
     
-            # Define summary parameter rows.  In addition to aggregated pump metrics we
-            # include pump‑type‑specific details (A and B) for number of pumps, speed,
-            # efficiency and TDH so that the summary tab shows which pumps are running.
             params = [
                 "Pipeline Flow (m³/hr)",
                 "Pump Flow (m³/hr)",
@@ -948,15 +945,15 @@ if not auto_batch:
                 "Pump Eff (%)",
                 "Pump Eff A (%)",
                 "Pump Eff B (%)",
-                "TDH A (m)",
-                "TDH B (m)",
                 "Reynolds No.",
                 "Head Loss (m)",
                 "Vel (m/s)",
                 "Residual Head (m)",
                 "SDH (m)",
                 "MAOP (m)",
-                "Drag Reduction (%)"
+                "Drag Reduction (%)",
+                "TDH A (m)",
+                "TDH B (m)"
             ]
             summary = {"Parameters": params}
     
@@ -988,46 +985,49 @@ if not auto_batch:
                 maop_m = res.get(f"maop_{key}", 0.0)
                 maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
                                                 
-                # Gather pump‑specific metrics for station `key`.  Backend returns these keys for
-                # the originating pump station; for non‑pump stations they default to 0 or blank.
-                num_pumps_tot = res.get(f"num_pumps_{key}", np.nan)
-                num_pumps_a = res.get(f"num_pumps_typeA_{key}", np.nan)
-                num_pumps_b = res.get(f"num_pumps_typeB_{key}", np.nan)
-                speed_agg  = res.get(f"speed_{key}", np.nan)
-                speed_a    = res.get(f"speed_typeA_{key}", np.nan)
-                speed_b    = res.get(f"speed_typeB_{key}", np.nan)
-                eff_agg    = res.get(f"efficiency_{key}", np.nan)
-                eff_a      = res.get(f"efficiency_typeA_{key}", np.nan)
-                eff_b      = res.get(f"efficiency_typeB_{key}", np.nan)
-                tdh_a      = res.get(f"tdh_typeA_{key}", np.nan)
-                tdh_b      = res.get(f"tdh_typeB_{key}", np.nan)
-                reynolds   = res.get(f"reynolds_{key}", np.nan)
-                velocity   = res.get(f"velocity_{key}", np.nan)
-                # Build the summary row matching the order of `params`
+                # aggregated and type‑specific pump values
+                num_pumps_tot_val = res.get(f"num_pumps_{key}", np.nan)
+                num_pumps_tot = int(num_pumps_tot_val) if (num_pumps_tot_val is not None and not pd.isna(num_pumps_tot_val)) else np.nan
+                num_pumps_a_val = res.get(f"num_pumps_typeA_{key}", np.nan)
+                num_pumps_a = int(num_pumps_a_val) if (num_pumps_a_val is not None and not pd.isna(num_pumps_a_val)) else np.nan
+                num_pumps_b_val = res.get(f"num_pumps_typeB_{key}", np.nan)
+                num_pumps_b = int(num_pumps_b_val) if (num_pumps_b_val is not None and not pd.isna(num_pumps_b_val)) else np.nan
+
+                speed_tot = res.get(f"speed_{key}", np.nan)
+                speed_a = res.get(f"speed_typeA_{key}", np.nan)
+                speed_b = res.get(f"speed_typeB_{key}", np.nan)
+
+                eff_tot = res.get(f"efficiency_{key}", np.nan)
+                eff_a = res.get(f"efficiency_typeA_{key}", np.nan)
+                eff_b = res.get(f"efficiency_typeB_{key}", np.nan)
+
+                tdh_a = res.get(f"tdh_typeA_{key}", np.nan)
+                tdh_b = res.get(f"tdh_typeB_{key}", np.nan)
+
                 summary[nm] = [
-                    segment_flows[idx],                  # Pipeline Flow
-                    pumpflow,                            # Pump Flow
+                    segment_flows[idx],
+                    pumpflow,
                     res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
-                    dra_cost,                            # DRA cost computed above
-                    station_ppm.get(key, np.nan),        # DRA PPM
-                    int(num_pumps_tot) if num_pumps_tot is not None else np.nan,           # No. of Pumps (total)
-                    int(num_pumps_a) if num_pumps_a is not None else np.nan,               # No. of Pumps A
-                    int(num_pumps_b) if num_pumps_b is not None else np.nan,               # No. of Pumps B
-                    speed_agg,                           # Pump Speed (aggregated)
-                    speed_a,                             # Pump Speed A
-                    speed_b,                             # Pump Speed B
-                    eff_agg,                             # Pump Eff (aggregated)
-                    eff_a,                               # Pump Eff A
-                    eff_b,                               # Pump Eff B
-                    tdh_a,                               # TDH A
-                    tdh_b,                               # TDH B
-                    reynolds,                            # Reynolds No.
+                    dra_cost,
+                    station_ppm.get(key, np.nan),
+                    num_pumps_tot,
+                    num_pumps_a,
+                    num_pumps_b,
+                    speed_tot,
+                    speed_a,
+                    speed_b,
+                    eff_tot,
+                    eff_a,
+                    eff_b,
+                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
                     f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
-                    velocity,                            # Velocity
+                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
                     f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
                     f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
                     f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
-                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan,
+                    tdh_a,
+                    tdh_b
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -1038,6 +1038,11 @@ if not auto_batch:
                     #df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
             if "No. of Pumps" in df_sum.columns:
                 df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
+                # Also convert type‑specific pump counts to integers when present
+                if "No. of Pumps A" in df_sum.columns:
+                    df_sum["No. of Pumps A"] = pd.to_numeric(df_sum["No. of Pumps A"], errors='coerce').fillna(0).astype(int)
+                if "No. of Pumps B" in df_sum.columns:
+                    df_sum["No. of Pumps B"] = pd.to_numeric(df_sum["No. of Pumps B"], errors='coerce').fillna(0).astype(int)
     
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
