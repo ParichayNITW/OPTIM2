@@ -476,7 +476,14 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             result[f"drag_reduction_{name}"] = dra_perc
             result[f"dra_ppm_{name}"] = dra_ppm
             result[f"dra_cost_{name}"] = dra_cost_i
-            result[f"head_loss_{name}"] = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
+            # Compute friction head loss for the segment using the Darcy–Weisbach formula and
+            # adjust for any drag reducing additive (DRA) injected at this station.  The
+            # variable ``friction_loss0`` holds the nominal friction loss with no DRA.  If a
+            # drag reduction percentage is specified at this station, the head loss is
+            # reduced accordingly.
+            head_loss_no_dra = friction_loss0[i]
+            head_loss_adj = head_loss_no_dra * (1.0 - dra_perc / 100.0)
+            result[f"head_loss_{name}"] = head_loss_adj
             result[f"residual_head_{name}"] = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
             result[f"velocity_{name}"] = v[i]
             result[f"reynolds_{name}"] = Re[i]
@@ -519,7 +526,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             result[f"dra_cost_{name}"] = dra_cost_i
             result[f"dra_ppm_{name}"] = dra_ppm
             result[f"drag_reduction_{name}"] = dra_perc
-            result[f"head_loss_{name}"] = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
+            # Compute friction head loss adjusted for any drag reduction at this pump station
+            head_loss_no_dra = friction_loss0[i]
+            head_loss_adj = head_loss_no_dra * (1.0 - dra_perc / 100.0)
+            result[f"head_loss_{name}"] = head_loss_adj
             result[f"residual_head_{name}"] = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
             result[f"velocity_{name}"] = v[i]; result[f"reynolds_{name}"] = Re[i]; result[f"friction_{name}"] = f[i]
             result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
@@ -536,7 +546,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             result[f"dra_cost_{name}"] = 0.0
             result[f"dra_ppm_{name}"] = 0.0
             result[f"drag_reduction_{name}"] = 0.0
-            result[f"head_loss_{name}"] = 0.0
+            # For segments with no pump or drag reduction, the head loss equals the nominal friction loss
+            result[f"head_loss_{name}"] = friction_loss0[i]
             result[f"residual_head_{name}"] = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
             result[f"velocity_{name}"] = v[i]; result[f"reynolds_{name}"] = Re[i]; result[f"friction_{name}"] = f[i]
             result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
