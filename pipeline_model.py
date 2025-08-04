@@ -5,7 +5,7 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
 # DRA curve files
 DRA_CSV_FILES = {
@@ -25,32 +25,59 @@ for cst, fname in DRA_CSV_FILES.items():
         DRA_CURVE_DATA[cst] = None
 
 def get_ppm_breakpoints(visc):
+    # Get list of all cst values for which CSVs are loaded
     cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
     visc = float(visc)
     if not cst_list:
         return [0], [0]
+    
+    # If visc is below or equal to lowest, use that
     if visc <= cst_list[0]:
         df = DRA_CURVE_DATA[cst_list[0]]
+    # If visc is above or equal to highest, use that
     elif visc >= cst_list[-1]:
         df = DRA_CURVE_DATA[cst_list[-1]]
     else:
+        # Check if visc matches any CSV exactly
+        for c in cst_list:
+            if abs(visc - c) < 1e-6:
+                df = DRA_CURVE_DATA[c]
+                x = df['%Drag Reduction'].values
+                y = df['PPM'].values
+                unique_x, unique_indices = np.unique(x, return_index=True)
+                unique_y = y[unique_indices]
+                return list(unique_x), list(unique_y)
+        # Otherwise, find the lower and upper bracketing values
         lower = max([c for c in cst_list if c <= visc])
         upper = min([c for c in cst_list if c >= visc])
+        if abs(upper - lower) < 1e-6:
+            # Avoid division by zero, just use one
+            df = DRA_CURVE_DATA[lower]
+            x = df['%Drag Reduction'].values
+            y = df['PPM'].values
+            unique_x, unique_indices = np.unique(x, return_index=True)
+            unique_y = y[unique_indices]
+            return list(unique_x), list(unique_y)
+        # Now interpolate between lower and upper
         df_lower = DRA_CURVE_DATA[lower]
         df_upper = DRA_CURVE_DATA[upper]
         x_lower, y_lower = df_lower['%Drag Reduction'].values, df_lower['PPM'].values
         x_upper, y_upper = df_upper['%Drag Reduction'].values, df_upper['PPM'].values
         dr_points = np.unique(np.concatenate((x_lower, x_upper)))
-        ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
-                     np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
+        # Interpolate the PPM values for each drag reduction point
+        ppm_lower_interp = np.interp(dr_points, x_lower, y_lower)
+        ppm_upper_interp = np.interp(dr_points, x_upper, y_upper)
+        ppm_points = ppm_lower_interp * (upper-visc)/(upper-lower) + ppm_upper_interp * (visc-lower)/(upper-lower)
         unique_dr, unique_indices = np.unique(dr_points, return_index=True)
         unique_ppm = ppm_points[unique_indices]
         return list(unique_dr), list(unique_ppm)
+    # Default fallback for single df
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
-    return list(unique_x), list(unique_y)
+    return list(unique_x), unique_y
+
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     RPM_STEP = 100  # RPM step
@@ -332,7 +359,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # Solve
-    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
+    results = SolverManagerFactory('neos').solve(model, solver='bonmin', tee=False)
     status = results.solver.status
     term = results.solver.termination_condition
     if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
