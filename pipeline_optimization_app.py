@@ -629,7 +629,8 @@ if auto_batch:
         import pandas as pd
         import numpy as np
         with st.spinner("Running batch optimization..."):
-            stations_data = st.session_state.stations
+            import copy
+            stations_data = copy.deepcopy(st.session_state.stations)
             term_data = {
                 "name": st.session_state.get("terminal_name", "Terminal"),
                 "elev": st.session_state.get("terminal_elev", 0.0),
@@ -643,7 +644,24 @@ if auto_batch:
             try:
                 # Ensure pump coefficients are updated for all stations
                 for idx, stn in enumerate(stations_data, start=1):
-                    if stn.get('is_pump', False):
+                    if stn.get('pump_types'):
+                        for ptype in ['A', 'B']:
+                            pdata = stn['pump_types'].get(ptype)
+                            if not pdata:
+                                continue
+                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            if dfh is not None and len(dfh) >= 3:
+                                Qh = dfh.iloc[:, 0].values
+                                Hh = dfh.iloc[:, 1].values
+                                coeff = np.polyfit(Qh, Hh, 2)
+                                pdata['A'], pdata['B'], pdata['C'] = [float(c) for c in coeff]
+                            if dfe is not None and len(dfe) >= 5:
+                                Qe = dfe.iloc[:, 0].values
+                                Ee = dfe.iloc[:, 1].values
+                                coeff_e = np.polyfit(Qe, Ee, 4)
+                                pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
+                    elif stn.get('is_pump', False):
                         dfh = st.session_state.get(f"head_data_{idx}")
                         dfe = st.session_state.get(f"eff_data_{idx}")
                         if dfh is None and "head_data" in stn:
@@ -654,7 +672,7 @@ if auto_batch:
                             Qh = dfh.iloc[:, 0].values
                             Hh = dfh.iloc[:, 1].values
                             coeff = np.polyfit(Qh, Hh, 2)
-                            stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                            stn['A'], stn['B'], stn['C'] = [float(c) for c in coeff]
                         if dfe is not None and len(dfe) >= 5:
                             Qe = dfe.iloc[:, 0].values
                             Ee = dfe.iloc[:, 1].values
@@ -1389,7 +1407,7 @@ if not auto_batch:
                         flow_max = float(np.max(flow_user))
                         max_user_eff = float(np.max(eff_user))
                     else:
-                        flow_min, flow_max = 0.01, FLOW
+                        flow_min, flow_max = 0.0, FLOW
                         max_user_eff = 100
                     # Polynomial coefficients at DOL (user input speed)
                     P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
@@ -1403,8 +1421,7 @@ if not auto_batch:
                         # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
                         # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
                         q_upper = flow_max * (rpm/N_max) if N_max else flow_max
-                        q_lower = flow_min * (rpm/N_max) if N_max else flow_min
-                        flows = np.linspace(q_lower, q_upper, 100)
+                        flows = np.linspace(0, q_upper, 100)
                         Q_equiv = flows * N_max / rpm if rpm else flows
                         eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
                         eff = np.clip(eff, 0, max_user_eff)
@@ -1597,27 +1614,35 @@ if not auto_batch:
                         height=400
                     )
                     st.plotly_chart(fig_pwr, use_container_width=True)
-            
-                    # --- 2. Power vs Flow (at DOL only) ---
-                    flows = np.linspace(0.01, 1.2*pump_flow, 100)
-                    H_flows = (A*flows**2 + B*flows + C)  # At DOL
-                    eff_flows = (P4*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T)
-                    eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
-                    power_flows = (rho * flows * 9.81 * H_flows)/(3600.0*1000*eff_flows)
+
+                    # --- 2. Power vs Flow (various speeds) ---
+                    df_head = st.session_state.get(f"head_data_{i}")
+                    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                        flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
+                        flow_max = float(np.max(flow_user))
+                    else:
+                        flow_max = pump_flow
+                    step = max(100, int((N_max - N_min)/4)) if N_max > N_min else 100
                     fig_pwr2 = go.Figure()
-                    fig_pwr2.add_trace(go.Scatter(
-                        x=flows, y=power_flows, mode='lines+markers',
-                        name="Power vs Flow",
-                        marker_color="#D84315",
-                        line=dict(width=3),
-                        hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW"
-                    ))
+                    for rpm in range(N_min, N_max+1, step):
+                        q_upper = flow_max * (rpm/N_max) if N_max else flow_max
+                        flows = np.linspace(0, q_upper, 100)
+                        Q_equiv = flows * N_max / rpm if rpm else flows
+                        H_DOL = A*Q_equiv**2 + B*Q_equiv + C
+                        H = H_DOL * (rpm/N_max)**2 if N_max else H_DOL
+                        eff_flows = (P4*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
+                        eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
+                        power_flows = (rho * flows * 9.81 * H)/(3600.0*1000*eff_flows)
+                        fig_pwr2.add_trace(go.Scatter(
+                            x=flows, y=power_flows, mode='lines', name=f"{rpm} rpm",
+                            hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW",
+                        ))
                     fig_pwr2.update_layout(
-                        title=f"Power vs Flow (at DOL: {N_max} rpm): {stn['name']}",
+                        title=f"Power vs Flow at Various Speeds: {stn['name']}",
                         xaxis_title="Flow (m³/hr)",
                         yaxis_title="Power (kW)",
                         font=dict(size=16),
-                        height=400
+                        height=400,
                     )
                     st.plotly_chart(fig_pwr2, use_container_width=True)
     
@@ -1815,6 +1840,40 @@ if not auto_batch:
                                 hoverinfo="skip"
                             ))
     
+                    # Optimized pump combination curve
+                    base = stn['name'].split('_')[0]
+                    combo_units = [s for s in stations_data if s.get('is_pump', False) and s['name'].startswith(base)]
+                    if len(combo_units) > 1:
+                        head_combo = np.zeros_like(flows)
+                        for unit in combo_units:
+                            ukey = unit['name'].lower().replace(' ', '_')
+                            rpm_u = res.get(f"speed_{ukey}", N_max)
+                            A_u = res.get(f"coef_A_{ukey}", 0)
+                            B_u = res.get(f"coef_B_{ukey}", 0)
+                            C_u = res.get(f"coef_C_{ukey}", 0)
+                            Nmax_u = res.get(f"dol_{ukey}", N_max)
+                            Q_equiv = flows * Nmax_u / rpm_u if rpm_u else flows
+                            H_DOL = A_u*Q_equiv**2 + B_u*Q_equiv + C_u
+                            H_u = H_DOL * (rpm_u/Nmax_u)**2 if Nmax_u else H_DOL
+                            head_combo += H_u
+                        fig.add_trace(go.Scatter(
+                            x=flows, y=head_combo, mode='lines',
+                            line=dict(color='black', width=4, dash='dash'),
+                            name='Optimized Combo',
+                        ))
+                    else:
+                        speed_opt = res.get(f"speed_{key}", N_max)
+                        nopt = int(res.get(f"num_pumps_{key}", 1))
+                        Q_equiv = flows * N_max / speed_opt if speed_opt else flows
+                        H_DOL = A*Q_equiv**2 + B*Q_equiv + C
+                        H_opt = H_DOL * (speed_opt/N_max)**2 if N_max else H_DOL
+                        head_combo = nopt * H_opt
+                        fig.add_trace(go.Scatter(
+                            x=flows, y=head_combo, mode='lines',
+                            line=dict(color='black', width=4, dash='dash'),
+                            name=f'Optimized {nopt} pump{"s" if nopt>1 else ""}',
+                        ))
+
                 # -------- Layout Polish: Bright, Vivid, Clean --------
                 fig.update_layout(
                     title=f"<b style='color:#222'>Pump-System Curves: {stn['name']}</b>",
@@ -1827,7 +1886,7 @@ if not auto_batch:
                     plot_bgcolor="#fffdf9",
                     xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
                     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
-                    hovermode="closest"
+                    hovermode="closest",
                 )
                 st.plotly_chart(fig, use_container_width=True)
     
@@ -1891,22 +1950,22 @@ if not auto_batch:
                 opt_ppm = get_ppm_for_dr(viscosity, dr_opt)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
-                    x=percent_dr,
-                    y=ppm_vals,
+                    x=ppm_vals,
+                    y=percent_dr,
                     mode='lines+markers',
                     name=curve_label
                 ))
                 fig.add_trace(go.Scatter(
-                    x=[dr_opt], y=[opt_ppm],
+                    x=[opt_ppm], y=[dr_opt],
                     mode='markers',
                     marker=dict(size=12, color='red', symbol='diamond'),
-                    name="Optimized Point"
+                    name="Optimized Point",
                 ))
                 fig.update_layout(
                     title=f"DRA Curve for {stn['name']} (Viscosity: {viscosity:.2f} cSt)",
-                    xaxis_title="% Drag Reduction",
-                    yaxis_title="PPM",
-                    legend=dict(orientation="h", y=-0.2)
+                    xaxis_title="PPM",
+                    yaxis_title="% Drag Reduction",
+                    legend=dict(orientation="h", y=-0.2),
                 )
                 st.plotly_chart(fig, use_container_width=True)
             else:
@@ -2099,64 +2158,64 @@ if not auto_batch:
             st.info("Run optimization to enable 3D Pressure Profile.")
         else:
             # Gather data
-            res = st.session_state["last_res"]
-            stations_data = st.session_state["last_stations_data"]
-            terminal = st.session_state["last_term_data"]
-    
             # ---- 1. Gather all points: stations and peaks ----
+            res = st.session_state['last_res']
+            stations_exp = st.session_state['last_stations_data']
+            stations_phys = st.session_state['stations']
+            terminal = st.session_state['last_term_data']
+
             chainages = [0]
             elevs = []
             rh = []
             names = []
             mesh_x, mesh_y, mesh_z, mesh_text, mesh_color = [], [], [], [], []
             peak_x, peak_y, peak_z, peak_label = [], [], [], []
-    
-            # Stations (include terminal as last "station")
-            for i, stn in enumerate(stations_data):
-                chainages.append(chainages[-1] + stn.get("L", 0.0))
-                elevs.append(stn["elev"])
-                key = stn["name"].lower().replace(" ", "_")
-                rh_val = res.get(f"residual_head_{key}", 0.0)
+
+            for i, stn in enumerate(stations_phys):
+                chainages.append(chainages[-1] + stn.get('L', 0.0))
+                elevs.append(stn['elev'])
+                base = stn['name']
+                base_key = base.lower().replace(' ', '_')
+                if stn.get('pump_types'):
+                    candidates = [s['name'].lower().replace(' ', '_') for s in stations_exp if s['name'].startswith(base)]
+                    key = candidates[-1] if candidates else base_key
+                else:
+                    key = base_key
+                rh_val = res.get(f'residual_head_{key}', 0.0)
                 rh.append(rh_val)
-                names.append(stn["name"])
-                mesh_x.append(chainages[-1])
-                mesh_y.append(stn["elev"])
+                names.append(base)
+                mesh_x.append(chainages[i])
+                mesh_y.append(stn['elev'])
                 mesh_z.append(rh_val)
-                mesh_text.append(stn["name"])
+                mesh_text.append(base)
                 mesh_color.append(rh_val)
-                # Peaks for this station
                 if 'peaks' in stn and stn['peaks']:
                     for pk in stn['peaks']:
-                        # pk['loc'] = distance from upstream station start (km)
-                        peak_x_val = chainages[-2] + pk.get('loc', 0)
+                        peak_x_val = chainages[i] + pk.get('loc', 0)
                         py = pk.get('elev', stn['elev'])
-                        pz = rh_val  # Assume RH at station for peak (or interpolate as needed)
+                        pz = rh_val
                         mesh_x.append(peak_x_val)
                         mesh_y.append(py)
                         mesh_z.append(pz)
-                        mesh_text.append("Peak")
+                        mesh_text.append('Peak')
                         mesh_color.append(pz)
-                        # Separate for special peak markers
                         peak_x.append(peak_x_val)
                         peak_y.append(py)
                         peak_z.append(pz)
-                        peak_label.append(f"Peak @ {stn['name']}")
-    
-    
-            # Add terminal
-            terminal_chainage = chainages[-1] + terminal.get("L", 0.0)
+                        peak_label.append(f'Peak @ {base}')
+
+            terminal_chainage = chainages[-1]
+            key_term = terminal['name'].lower().replace(' ', '_')
+            rh_term = res.get(f'residual_head_{key_term}', 0.0)
             mesh_x.append(terminal_chainage)
-            mesh_y.append(terminal["elev"])
-            key_term = terminal["name"].lower().replace(" ", "_")
-            rh_term = res.get(f"residual_head_{key_term}", 0.0)
+            mesh_y.append(terminal['elev'])
             mesh_z.append(rh_term)
-            mesh_text.append(terminal["name"])
+            mesh_text.append(terminal['name'])
             mesh_color.append(rh_term)
-            names.append(terminal["name"])
-            elevs.append(terminal["elev"])
+            names.append(terminal['name'])
+            elevs.append(terminal['elev'])
             rh.append(rh_term)
-            chainages.append(terminal_chainage)
-    
+
             # ---- 2. 3D mesh surface using station & peak points ----
             fig3d = go.Figure()
     
@@ -2173,7 +2232,7 @@ if not auto_batch:
     
             # 2.2 Stations: Big colored spheres, labeled
             fig3d.add_trace(go.Scatter3d(
-                x=[chainages[i+1] for i in range(len(stations_data))],
+                x=chainages[:-1],
                 y=elevs[:-1],
                 z=rh[:-1],
                 mode='markers+text',
@@ -2208,7 +2267,7 @@ if not auto_batch:
     
             # 2.5 Connecting line (stations+terminal): Show pressure path
             fig3d.add_trace(go.Scatter3d(
-                x=[chainages[i+1] for i in range(len(stations_data)+1)],
+                x=chainages,
                 y=elevs,
                 z=rh,
                 mode='lines',
@@ -2386,7 +2445,6 @@ if not auto_batch:
         fig = px.line(x=pvals, y=yvals, markers=True,
             labels={"x": param, "y": output},
             title=f"{output} vs {param} (Sensitivity)")
-        st.plotly_chart(fig, use_container_width=True)
         df_sens = pd.DataFrame({param: pvals, output: yvals})
         st.dataframe(df_sens, use_container_width=True, hide_index=True)
         st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
