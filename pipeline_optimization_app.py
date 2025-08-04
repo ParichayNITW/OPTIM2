@@ -1481,6 +1481,7 @@ if not auto_batch:
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
+                Re_safe = np.clip(Re_vals, 1.0, None) 
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 # Professional gradient: from blue to red
@@ -1593,6 +1594,7 @@ if not auto_batch:
                 for idx, dra in enumerate(system_dra_steps):
                     v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
                     Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
+                    Re_safe = np.clip(Re_vals, 1.0, None)
                     f_vals = np.where(Re_vals>0,
                         0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                     DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
