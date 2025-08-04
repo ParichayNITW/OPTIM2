@@ -5,7 +5,7 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
 
 # DRA curve files
 DRA_CSV_FILES = {
@@ -53,6 +53,52 @@ def get_ppm_breakpoints(visc):
     return list(unique_x), list(unique_y)
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
+    import numpy as np
+    import pandas as pd
+
+    def safe_polyfit(x, y, degree):
+        if len(x) >= degree + 1:
+            return np.polyfit(x, y, degree)
+        else:
+            return [0] * (degree + 1)
+
+    # ---- ALWAYS FIT COEFFICIENTS FRESH FROM DATA ----
+    for idx, stn in enumerate(stations):
+        # HEAD CURVE FIT (Quadratic)
+        head_df = None
+        if "head_data" in stn and stn["head_data"] is not None:
+            if isinstance(stn["head_data"], pd.DataFrame):
+                head_df = stn["head_data"]
+            elif isinstance(stn["head_data"], list):
+                head_df = pd.DataFrame(stn["head_data"])
+            elif isinstance(stn["head_data"], dict):
+                head_df = pd.DataFrame(stn["head_data"])
+        if head_df is not None and len(head_df) >= 3:
+            x = head_df.iloc[:,0].values
+            y = head_df.iloc[:,1].values
+            A, B, C = safe_polyfit(x, y, 2)
+            stn['A'] = float(A)
+            stn['B'] = float(B)
+            stn['C'] = float(C)
+        # EFFICIENCY CURVE FIT (Quartic)
+        eff_df = None
+        if "eff_data" in stn and stn["eff_data"] is not None:
+            if isinstance(stn["eff_data"], pd.DataFrame):
+                eff_df = stn["eff_data"]
+            elif isinstance(stn["eff_data"], list):
+                eff_df = pd.DataFrame(stn["eff_data"])
+            elif isinstance(stn["eff_data"], dict):
+                eff_df = pd.DataFrame(stn["eff_data"])
+        if eff_df is not None and len(eff_df) >= 5:
+            x = eff_df.iloc[:,0].values
+            y = eff_df.iloc[:,1].values
+            P, Q, R, S, T = safe_polyfit(x, y, 4)
+            stn['P'] = float(P)
+            stn['Q'] = float(Q)
+            stn['R'] = float(R)
+            stn['S'] = float(S)
+            stn['T'] = float(T)
+    # ---- END COEFFICIENT FIT BLOCK ----
     RPM_STEP = 100  # RPM step
     DRA_STEP = 5    # DRA step
 
@@ -217,12 +263,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
     for j in range(2, N+2):
-        if j == N+1:
-            # Terminal node: use user-entered value
-            model.RH[j].setlb(terminal.get('min_residual', 50.0))
-        else:
-            model.RH[j].setlb(50.0)
-
+        model.RH[j].setlb(50.0)
 
     g = 9.81
     v = {}; Re = {}; f = {}
@@ -435,8 +476,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         result[f"friction_{name}"] = fric
         result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
         result[f"maop_{name}"] = maop_dict[i]
-        result[f"density_{name}"] = rho_dict[i]
-
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(model.A[i])
             result[f"coef_B_{name}"] = float(model.B[i])
@@ -463,7 +502,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         f"friction_{term_name}": 0.0,
         f"sdh_{term_name}": 0.0,
         f"residual_head_{term_name}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
-        f"density_{term_name}": rho_dict.get(N, list(rho_dict.values())[-1]),
     })
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result["error"] = False
