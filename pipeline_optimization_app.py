@@ -867,12 +867,18 @@ if not auto_batch:
                 )
 
             import copy
-            st.session_state["last_res"] = copy.deepcopy(res)
-            st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
-            st.session_state["last_term_data"] = copy.deepcopy(term_data)
-            st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-        # --- CRUCIAL LINE TO FORCE UI REFRESH ---
-        st.rerun()
+            if not res or res.get("error"):
+                msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
+                st.error(msg)
+                for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
+                    st.session_state.pop(k, None)
+            else:
+                st.session_state["last_res"] = copy.deepcopy(res)
+                st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
+                st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+                # --- CRUCIAL LINE TO FORCE UI REFRESH ---
+                st.rerun()
 
 
 if not auto_batch:
