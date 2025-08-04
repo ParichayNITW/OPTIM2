@@ -817,6 +817,8 @@ if not auto_batch:
                 if stn.get('is_pump', False):
                     if idx == 1 and 'pump_types' in stn:
                         for ptype in ['A', 'B']:
+                            if ptype not in stn['pump_types']:
+                                continue
                             dfh = st.session_state.get(f"head_data_{idx}{ptype}")
                             dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
                             stn['pump_types'][ptype]['head_data'] = dfh
