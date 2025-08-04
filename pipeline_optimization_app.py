@@ -1,4 +1,3 @@
-
 import os
 import streamlit as st
 import pandas as pd
@@ -174,24 +173,17 @@ def restore_case_dict(loaded_data):
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    for i, stn in enumerate(st.session_state.get('stations', []), start=1):
-        if stn.get('is_pump', False):
-            if i == 1:
-                # Restore all four tables for origin (Type A and B)
-                for key in ["head_data_A", "eff_data_A", "head_data_B", "eff_data_B"]:
-                    tbl = loaded_data.get(f"{key}_{i}", None)
-                    if tbl is not None:
-                        st.session_state[f"{key}_{i}"] = pd.DataFrame(tbl)
-            else:
-                # Restore for others (single pump type)
-                for key in ["head_data", "eff_data"]:
-                    tbl = loaded_data.get(f"{key}_{i}", None)
-                    if tbl is not None:
-                        st.session_state[f"{key}_{i}"] = pd.DataFrame(tbl)
-        # Restore peaks
-        peak_data = loaded_data.get(f"peak_data_{i}", None)
+    for i in range(len(st.session_state['stations'])):
+        head_data = loaded_data.get(f"head_data_{i+1}", None)
+        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
+        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+        if head_data is not None:
+            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
+        if eff_data is not None:
+            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
-            st.session_state[f"peak_data_{i}"] = pd.DataFrame(peak_data)
+            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     loaded_data = json.load(uploaded_case)
@@ -322,114 +314,38 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                if idx == 1 and stn['is_pump']:
-                    # ---- Pump Type A ----
-                    st.markdown("#### Enter Data for Pump Type A (Origin Only)")
-                    key_head_A = f"head_data_A_{idx}"
-                    if key_head_A in st.session_state and isinstance(st.session_state[key_head_A], pd.DataFrame):
-                        df_head_A = st.session_state[key_head_A]
-                    else:
-                        df_head_A = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                    df_head_A = st.data_editor(df_head_A, num_rows="dynamic", key=f"headA{idx}")
-                    st.session_state[key_head_A] = df_head_A
-                
-                    key_eff_A = f"eff_data_A_{idx}"
-                    if key_eff_A in st.session_state and isinstance(st.session_state[key_eff_A], pd.DataFrame):
-                        df_eff_A = st.session_state[key_eff_A]
-                    else:
-                        df_eff_A = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                    df_eff_A = st.data_editor(df_eff_A, num_rows="dynamic", key=f"effA{idx}")
-                    st.session_state[key_eff_A] = df_eff_A
-                
-                    # Type A - Parameters
-                    pcolA1, pcolA2, pcolA3 = st.columns(3)
-                    with pcolA1:
-                        stn['MinRPM1'] = st.number_input("Min RPM (Type A)", value=stn.get('MinRPM1', 1000.0), key=f"minrpmA{idx}")
-                        stn['DOL1'] = st.number_input("Rated RPM (Type A)", value=stn.get('DOL1', 1500.0), key=f"dolA{idx}")
-                    with pcolA2:
-                        stn['max_pumps_typeA'] = st.number_input("Max Pumps Type A", min_value=0, value=stn.get('max_pumps_typeA', 2), key=f"mpumpsA_{idx}")
-                        stn['power_typeA'] = st.selectbox("Power Source (Type A)", ["Grid", "Diesel"],
-                                                          index=0 if stn.get('power_typeA', "Grid")=="Grid" else 1, key=f"ptypeA{idx}")
-                    with pcolA3:
-                        if stn['power_typeA']=="Grid":
-                            stn['rate1'] = st.number_input("Elec Rate (Type A) (INR/kWh)", value=stn.get('rate1',9.0), key=f"rateA{idx}")
-                            stn['sfc1'] = 0.0
-                        else:
-                            stn['sfc1'] = st.number_input("SFC (Type A) (gm/bhp·hr)", value=stn.get('sfc1',150.0), key=f"sfcA{idx}")
-                            stn['rate1'] = 0.0
-                
-                    st.markdown("---")
-                    # ---- Pump Type B ----
-                    st.markdown("#### Enter Data for Pump Type B (Origin Only)")
-                    key_head_B = f"head_data_B_{idx}"
-                    if key_head_B in st.session_state and isinstance(st.session_state[key_head_B], pd.DataFrame):
-                        df_head_B = st.session_state[key_head_B]
-                    else:
-                        df_head_B = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                    df_head_B = st.data_editor(df_head_B, num_rows="dynamic", key=f"headB{idx}")
-                    st.session_state[key_head_B] = df_head_B
-                
-                    key_eff_B = f"eff_data_B_{idx}"
-                    if key_eff_B in st.session_state and isinstance(st.session_state[key_eff_B], pd.DataFrame):
-                        df_eff_B = st.session_state[key_eff_B]
-                    else:
-                        df_eff_B = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                    df_eff_B = st.data_editor(df_eff_B, num_rows="dynamic", key=f"effB{idx}")
-                    st.session_state[key_eff_B] = df_eff_B
-                
-                    pcolB1, pcolB2, pcolB3 = st.columns(3)
-                    with pcolB1:
-                        stn['MinRPM2'] = st.number_input("Min RPM (Type B)", value=stn.get('MinRPM2', 1000.0), key=f"minrpmB{idx}")
-                        stn['DOL2'] = st.number_input("Rated RPM (Type B)", value=stn.get('DOL2', 1500.0), key=f"dolB{idx}")
-                    with pcolB2:
-                        stn['max_pumps_typeB'] = st.number_input("Max Pumps Type B", min_value=0, value=stn.get('max_pumps_typeB', 2), key=f"mpumpsB_{idx}")
-                        stn['power_typeB'] = st.selectbox("Power Source (Type B)", ["Grid", "Diesel"],
-                                                          index=0 if stn.get('power_typeB', "Grid")=="Grid" else 1, key=f"ptypeB{idx}")
-                    with pcolB3:
-                        if stn['power_typeB']=="Grid":
-                            stn['rate2'] = st.number_input("Elec Rate (Type B) (INR/kWh)", value=stn.get('rate2',9.0), key=f"rateB{idx}")
-                            stn['sfc2'] = 0.0
-                        else:
-                            stn['sfc2'] = st.number_input("SFC (Type B) (gm/bhp·hr)", value=stn.get('sfc2',150.0), key=f"sfcB{idx}")
-                            stn['rate2'] = 0.0
-
+                key_head = f"head_data_{idx}"
+                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                    df_head = st.session_state[key_head]
                 else:
-                    # Existing code for all other stations (one pump type only)
-                    # ... (PASTE YOUR OLD LOGIC HERE)
-                    key_head = f"head_data_{idx}"
-                    if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                        df_head = st.session_state[key_head]
+                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                st.session_state[key_head] = df_head
+
+                key_eff = f"eff_data_{idx}"
+                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                    df_eff = st.session_state[key_eff]
+                else:
+                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                st.session_state[key_eff] = df_eff
+
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                with pcol2:
+                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                with pcol3:
+                    if stn['power_type']=="Grid":
+                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                        stn['sfc'] = 0.0
                     else:
-                        df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                    st.session_state[key_head] = df_head
-        
-                    key_eff = f"eff_data_{idx}"
-                    if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                        df_eff = st.session_state[key_eff]
-                    else:
-                        df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                    st.session_state[key_eff] = df_eff
-        
-                    pcol1, pcol2, pcol3 = st.columns(3)
-                    with pcol1:
-                        stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                        stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                    with pcol2:
-                        stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps_{idx}_other")
-                        stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                         index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                    with pcol3:
-                        if stn['power_type']=="Grid":
-                            stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                            stn['sfc'] = 0.0
-                        else:
-                            stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                            stn['rate'] = 0.0
+                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                        stn['rate'] = 0.0
             else:
                 st.info("Not a pumping station. No pump data required.")
-
 
         with tabs[1]:
             key_peak = f"peak_data_{idx}"
@@ -447,7 +363,7 @@ terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("ter
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
 def get_full_case_dict():
-    data = {
+    return {
         "stations": st.session_state.get('stations', []),
         "terminal": {
             "name": st.session_state.get('terminal_name', 'Terminal'),
@@ -457,28 +373,29 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
-        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records")
+        "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
+        **{
+            f"head_data_{i+1}": (
+                st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
+            )
+            for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"eff_data_{i+1}": (
+                st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
+            )
+            for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"peak_data_{i+1}": (
+                st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
+            )
+            for i in range(len(st.session_state.get('stations', [])))
+        }
     }
-    # Add pump data tables for each station
-    for i, stn in enumerate(st.session_state.get('stations', []), start=1):
-        if stn.get('is_pump', False):
-            if i == 1:
-                # Origin station: Type A and B
-                for key, suffix in [("head_data_A", "A"), ("eff_data_A", "A"), ("head_data_B", "B"), ("eff_data_B", "B")]:
-                    df = st.session_state.get(f"{key}_{i}")
-                    if isinstance(df, pd.DataFrame):
-                        data[f"{key}_{i}"] = df.to_dict(orient="records")
-            else:
-                # All other pump stations
-                for key in ["head_data", "eff_data"]:
-                    df = st.session_state.get(f"{key}_{i}")
-                    if isinstance(df, pd.DataFrame):
-                        data[f"{key}_{i}"] = df.to_dict(orient="records")
-        # Save peaks
-        df_peak = st.session_state.get(f"peak_data_{i}")
-        if isinstance(df_peak, pd.DataFrame):
-            data[f"peak_data_{i}"] = df_peak.to_dict(orient="records")
-    return data
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
@@ -799,60 +716,17 @@ if not auto_batch:
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
-                    if idx == 1:
-                        # --- Type A Inputs ---
-                        dfhA = st.session_state.get(f"head_data_A_{idx}")
-                        dfeA = st.session_state.get(f"eff_data_A_{idx}")
-                        if dfhA is not None and dfeA is not None and len(dfhA) >= 3 and len(dfeA) >= 5:
-                            QhA = dfhA.iloc[:, 0].values
-                            HhA = dfhA.iloc[:, 1].values
-                            coeffA = np.polyfit(QhA, HhA, 2)
-                            QeA = dfeA.iloc[:, 0].values
-                            EeA = dfeA.iloc[:, 1].values
-                            coeff_eA = np.polyfit(QeA, EeA, 4)
-                            stn['A1'], stn['B1'], stn['C1'] = coeffA[0], coeffA[1], coeffA[2]
-                            stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = coeff_eA
-                        else:
-                            stn['A1'], stn['B1'], stn['C1'] = 0, 0, 0
-                            stn['P1'], stn['Q1'], stn['R1'], stn['S1'], stn['T1'] = 0, 0, 0, 0, 0
-
-                        # --- Type B Inputs ---
-                        dfhB = st.session_state.get(f"head_data_B_{idx}")
-                        dfeB = st.session_state.get(f"eff_data_B_{idx}")
-                        if dfhB is not None and dfeB is not None and len(dfhB) >= 3 and len(dfeB) >= 5:
-                            QhB = dfhB.iloc[:, 0].values
-                            HhB = dfhB.iloc[:, 1].values
-                            coeffB = np.polyfit(QhB, HhB, 2)
-                            QeB = dfeB.iloc[:, 0].values
-                            EeB = dfeB.iloc[:, 1].values
-                            coeff_eB = np.polyfit(QeB, EeB, 4)
-                            stn['A2'], stn['B2'], stn['C2'] = coeffB[0], coeffB[1], coeffB[2]
-                            stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = coeff_eB
-                        else:
-                            stn['A2'], stn['B2'], stn['C2'] = 0, 0, 0
-                            stn['P2'], stn['Q2'], stn['R2'], stn['S2'], stn['T2'] = 0, 0, 0, 0, 0
-
-                        # --- Validation ---
-                        if (stn['A1'] == 0) and (stn['A2'] == 0):
-                            st.error("At least one pump type (A or B) with valid curves must be provided at the origin station.")
-                            st.stop()
-                    else:
-                        # ----------- All Other Pump Stations (Single Type Only) -----------
-                        dfh = st.session_state.get(f"head_data_{idx}")
-                        dfe = st.session_state.get(f"eff_data_{idx}")
-                        if dfh is None or dfe is None or len(dfh) < 3 or len(dfe) < 5:
-                            st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
-                            st.stop()
-                        Qh = dfh.iloc[:, 0].values
-                        Hh = dfh.iloc[:, 1].values
-                        coeff = np.polyfit(Qh, Hh, 2)
-                        stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
-                        Qe = dfe.iloc[:, 0].values
-                        Ee = dfe.iloc[:, 1].values
-                        coeff_e = np.polyfit(Qe, Ee, 4)
-                        stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
-
-                # ========== Peaks Data ================
+                    dfh = st.session_state.get(f"head_data_{idx}")
+                    dfe = st.session_state.get(f"eff_data_{idx}")
+                    if dfh is None or dfe is None or len(dfh)<3 or len(dfe)<5:
+                        st.error(f"Station {idx}: At least 3 points for flow-head and 5 for flow-eff are required.")
+                        st.stop()
+                    Qh = dfh.iloc[:,0].values; Hh = dfh.iloc[:,1].values
+                    coeff = np.polyfit(Qh, Hh, 2)
+                    stn['A'], stn['B'], stn['C'] = coeff[0], coeff[1], coeff[2]
+                    Qe = dfe.iloc[:,0].values; Ee = dfe.iloc[:,1].values
+                    coeff_e = np.polyfit(Qe, Ee, 4)
+                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = coeff_e
                 peaks_df = st.session_state.get(f"peak_data_{idx}")
                 peaks_list = []
                 if peaks_df is not None:
@@ -862,7 +736,7 @@ if not auto_batch:
                             elev_pk = float(row["Elevation (m)"])
                         except:
                             continue
-                        if loc < 0 or loc > stn['L']:
+                        if loc<0 or loc>stn['L']:
                             st.error(f"Station {idx}: Peak location must be between 0 and segment length.")
                             st.stop()
                         if elev_pk < stn['elev']:
@@ -870,20 +744,14 @@ if not auto_batch:
                             st.stop()
                         peaks_list.append({'loc': loc, 'elev': elev_pk})
                 stn['peaks'] = peaks_list
-
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
             kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-            res = solve_pipeline(
-                stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict()
-            )
+            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, linefill_df.to_dict())
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
             st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-
-
-
 
 if not auto_batch:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
@@ -932,12 +800,8 @@ if not auto_batch:
     
             params = [
                 "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-                "DRA PPM", "No. of Pumps", "No. of Pumps A", "No. of Pumps B",
-                "Pump Speed (rpm)", "Pump Speed A (rpm)", "Pump Speed B (rpm)",
-                "Pump Eff (%)", "Pump Eff A (%)", "Pump Eff B (%)",
-                "TDH (m)", "TDH A (m)", "TDH B (m)",
-                "Reynolds No.", "Head Loss (m)", "Vel (m/s)", "Residual Head (m)",
-                "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
+                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
+                "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
             ]
             summary = {"Parameters": params}
     
@@ -969,55 +833,28 @@ if not auto_batch:
                 maop_m = res.get(f"maop_{key}", 0.0)
                 maop_kgcm2 = maop_m * density / 10000 if maop_m is not None and density is not None else None
                                                 
-                # Retrieve pump type specific details
-                total_pumps = res.get(f"num_pumps_{key}", np.nan)
-                numA = res.get(f"num_pumps_typeA_{key}", np.nan)
-                numB = res.get(f"num_pumps_typeB_{key}", np.nan)
-                speed_tot = res.get(f"speed_{key}", np.nan)
-                speedA = res.get(f"speed_typeA_{key}", np.nan)
-                speedB = res.get(f"speed_typeB_{key}", np.nan)
-                eff_tot = res.get(f"efficiency_{key}", np.nan)
-                effA = res.get(f"efficiency_typeA_{key}", np.nan)
-                effB = res.get(f"efficiency_typeB_{key}", np.nan)
-                tdh_tot = res.get(f"tdh_{key}", np.nan)
-                tdhA = res.get(f"tdh_typeA_{key}", np.nan)
-                tdhB = res.get(f"tdh_typeB_{key}", np.nan)
                 summary[nm] = [
-                        segment_flows[idx],
-                        pumpflow,
-                        res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
-                        dra_cost,
-                        station_ppm.get(key, np.nan),
-                        # Number of pumps (total, A, B)
-                        total_pumps if total_pumps is not None else np.nan,
-                        numA if numA is not None else np.nan,
-                        numB if numB is not None else np.nan,
-                        # Speeds (aggregated, A, B)
-                        speed_tot if speed_tot is not None else np.nan,
-                        speedA if speedA is not None else np.nan,
-                        speedB if speedB is not None else np.nan,
-                        # Efficiencies (aggregated, A, B)
-                        eff_tot if eff_tot is not None else np.nan,
-                        effA if effA is not None else np.nan,
-                        effB if effB is not None else np.nan,
-                        # Total Dynamic Head (aggregated, A, B)
-                        tdh_tot if tdh_tot is not None else np.nan,
-                        tdhA if tdhA is not None else np.nan,
-                        tdhB if tdhB is not None else np.nan,
-                        # Reynolds number
-                        res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
+                    segment_flows[idx],
+                    pumpflow,
+                    res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                    dra_cost,
+                    station_ppm.get(key, np.nan),
+                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
+                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
+                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
+                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,                   
 
-                        f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
+                    f"{head_loss_m:.2f} m ({head_loss_kgcm2:.2f} kg/cm²)" if head_loss_kgcm2 is not None else "",
 
-                        res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
+                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
+                    
+                    f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
 
-                        f"{residual_m:.2f} m ({residual_kgcm2:.2f} kg/cm²)" if residual_kgcm2 is not None else "",
+                    f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
 
-                        f"{sdh_m:.2f} m ({sdh_kgcm2:.2f} kg/cm²)" if sdh_kgcm2 is not None else "",
+                    f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
 
-                        f"{maop_m:.2f} m ({maop_kgcm2:.2f} kg/cm²)" if maop_kgcm2 is not None else "",
-
-                        res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -1026,10 +863,8 @@ if not auto_batch:
             #for col in df_sum.columns:
                 #if col not in ["Parameters", "No. of Pumps"]:
                     #df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-            # Convert pump count columns to integers for display
-            for col_name in ["No. of Pumps", "No. of Pumps A", "No. of Pumps B"]:
-                if col_name in df_sum.columns:
-                    df_sum[col_name] = pd.to_numeric(df_sum[col_name], errors='coerce').fillna(0).astype(int)
+            if "No. of Pumps" in df_sum.columns:
+                df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
     
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
@@ -1259,7 +1094,7 @@ if not auto_batch:
             perf_tab, head_tab, char_tab, eff_tab, press_tab, power_tab = st.tabs([
                 "Head Loss", "Velocity & Re", 
                 "Pump Characteristic Curve", "Pump Efficiency Curve",
-                "Pressure vs Pipeline Length", "Power vs Flow"
+                "Pressure vs Pipeline Length", "Power vs Speed/Flow"
             ])
             
             # --- 1. Head Loss ---
@@ -1334,13 +1169,9 @@ if not auto_batch:
                     df_head = st.session_state.get(f"head_data_{i}")
                     if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
                         flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
-                        # Use the larger of the maximum user-provided flow and the pipeline flow
-                        max_flow = float(np.max(flow_user))
-                        max_flow = max(max_flow, st.session_state.get("FLOW", max_flow))
+                        max_flow = np.max(flow_user)
                     else:
-                        # Default to at least 500 m³/hr to allow head curves beyond the operating point
-                        max_flow = max(st.session_state.get("FLOW", 0.0), 500.0)
-                    # Generate a flow range up to max_flow for plotting head curves
+                        max_flow = st.session_state.get("FLOW", 1000.0)
                     flows = np.linspace(0, max_flow, 200)
                     A = res.get(f"coef_A_{key}",0)
                     B = res.get(f"coef_B_{key}",0)
@@ -1394,36 +1225,22 @@ if not auto_batch:
                         flow_min, flow_max = 0.01, FLOW
                         max_user_eff = 100
                     # Polynomial coefficients at DOL (user input speed)
-                    # Use polynomial coefficients from backend results for efficiency curves
-                        P = res.get(f"coef_P_{key}", 0)
-                        Qc = res.get(f"coef_Q_{key}", 0)
-                        R = res.get(f"coef_R_{key}", 0)
-                        S = res.get(f"coef_S_{key}", 0)
-                        T = res.get(f"coef_T_{key}", 0)
-                        # Fallback: if coefficients from results are zero, use station-defined coefficients
-                        if abs(P) + abs(Qc) + abs(R) + abs(S) + abs(T) < 1e-8:
-                            # For the origin pump, type A efficiency coefficients are P1..T1; otherwise use generic P..T
-                            P = stn.get('P1', stn.get('P', 0))
-                            Qc = stn.get('Q1', stn.get('Q', 0))
-                            R = stn.get('R1', stn.get('R', 0))
-                            S = stn.get('S1', stn.get('S', 0))
-                            T = stn.get('T1', stn.get('T', 0))
+                    P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
+                    S = stn.get('S', 0); T = stn.get('T', 0)
                     N_min = int(res.get(f"min_rpm_{key}", 0))
                     N_max = int(res.get(f"dol_{key}", 0))
                     step = max(100, int((N_max-N_min)/4))  # 5 curves max
             
                     fig = go.Figure()
                     for rpm in range(N_min, N_max+1, step):
-                        if rpm == 0:
-                            continue
-                        # Use user-defined flow range up to FLOW for all speeds
-                        # Use the larger of the max user flow and the pipeline flow; ensure at least 500 m³/hr
-                        flow_limit = max(flow_max, st.session_state.get("FLOW", 0.0), 500.0)
-                        flows = np.linspace(0, flow_limit, 100)
+                        # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
+                        # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
+                        q_upper = flow_max * (rpm/N_max) if N_max else flow_max
+                        q_lower = flow_min * (rpm/N_max) if N_max else flow_min
+                        flows = np.linspace(q_lower, q_upper, 100)
                         Q_equiv = flows * N_max / rpm if rpm else flows
                         eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
-                        # Clip efficiencies between 0 and 100%
-                        eff = np.clip(eff, 0, 100)
+                        eff = np.clip(eff, 0, max_user_eff)
                         fig.add_trace(go.Scatter(
                             x=flows, y=eff, mode='lines', name=f"{rpm} rpm",
                             hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %"
@@ -1564,8 +1381,7 @@ if not auto_batch:
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
-                # Only display Power vs Flow curves (remove Power vs Speed)
-                st.markdown("<div class='section-title'>Power vs Flow</div>", unsafe_allow_html=True)
+                st.markdown("<div class='section-title'>Power vs Speed & Power vs Flow</div>", unsafe_allow_html=True)
                 # Fetch summary DataFrame for pump flows
                 df_summary = st.session_state.get("summary_table", None)
                 if df_summary is not None:
@@ -1589,13 +1405,35 @@ if not auto_batch:
                     N_min = int(res.get(f"min_rpm_{key}", 0))
                     N_max = int(res.get(f"dol_{key}", 0))
                     rho = stn.get('rho', 850)
-                    # --- Only Power vs Flow (at DOL only) ---
-                    pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW", 0.0))
-                    # Use the larger of the pump flow and the pipeline flow; ensure at least 500 m³/hr
-                    flow_limit = max(pump_flow, st.session_state.get("FLOW", 0.0), 500.0)
-                    flows = np.linspace(0.0, flow_limit, 100)
-                    # Head and efficiency at each flow at DOL (N_max)
-                    H_flows = (A*flows**2 + B*flows + C)
+                    # --- 1. Power vs Speed (at constant, optimized flow) ---
+                    pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW",1000.0))
+                    # Head and eff at pump_flow, DOL
+                    H = (A*pump_flow**2 + B*pump_flow + C)
+                    eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
+                    eff = max(0.01, eff/100)
+                    P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
+                    speeds = np.arange(N_min, N_max+1, 100)
+                    power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
+                    fig_pwr = go.Figure()
+                    fig_pwr.add_trace(go.Scatter(
+                        x=speeds, y=power_curve, mode='lines+markers',
+                        name="Power vs Speed",
+                        marker_color="#1976D2",
+                        line=dict(width=3),
+                        hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW"
+                    ))
+                    fig_pwr.update_layout(
+                        title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
+                        xaxis_title="Speed (rpm)",
+                        yaxis_title="Power (kW)",
+                        font=dict(size=16),
+                        height=400
+                    )
+                    st.plotly_chart(fig_pwr, use_container_width=True)
+            
+                    # --- 2. Power vs Flow (at DOL only) ---
+                    flows = np.linspace(0.01, 1.2*pump_flow, 100)
+                    H_flows = (A*flows**2 + B*flows + C)  # At DOL
                     eff_flows = (P4*flows**4 + Qc*flows**3 + R*flows**2 + S*flows + T)
                     eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
                     power_flows = (rho * flows * 9.81 * H_flows)/(3600.0*1000*eff_flows)
@@ -1603,7 +1441,7 @@ if not auto_batch:
                     fig_pwr2.add_trace(go.Scatter(
                         x=flows, y=power_flows, mode='lines+markers',
                         name="Power vs Flow",
-                        marker_color="#1976D2",
+                        marker_color="#D84315",
                         line=dict(width=3),
                         hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW"
                     ))
@@ -1643,7 +1481,6 @@ if not auto_batch:
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                Re_safe = np.clip(Re_vals, 1.0, None) 
                 f_vals = np.where(Re_vals>0,
                                   0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                 # Professional gradient: from blue to red
@@ -1756,7 +1593,6 @@ if not auto_batch:
                 for idx, dra in enumerate(system_dra_steps):
                     v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
                     Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                    Re_safe = np.clip(Re_vals, 1.0, None)
                     f_vals = np.where(Re_vals>0,
                         0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
                     DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
