@@ -93,35 +93,40 @@ for cst, fname in DRA_CSV_FILES.items():
         DRA_CURVE_DATA[cst] = None
 
 def get_ppm_for_dr(visc, dr, dra_curve_data=DRA_CURVE_DATA):
+    """Interpolate PPM for a given drag reduction and viscosity."""
+
     cst_list = sorted(dra_curve_data.keys())
     visc = float(visc)
-    # --- New: always round to nearest 0.5 ppm ---
+
     def round_ppm(val, step=0.5):
         return round(val / step) * step
+
     if visc <= cst_list[0]:
         df = dra_curve_data[cst_list[0]]
         return round_ppm(_ppm_from_df(df, dr))
-    elif visc >= cst_list[-1]:
+    if visc >= cst_list[-1]:
         df = dra_curve_data[cst_list[-1]]
         return round_ppm(_ppm_from_df(df, dr))
-    else:
-        lower = max([c for c in cst_list if c <= visc])
-        upper = min([c for c in cst_list if c >= visc])
-        df_lower = dra_curve_data[lower]
-        df_upper = dra_curve_data[upper]
-        ppm_lower = _ppm_from_df(df_lower, dr)
-        ppm_upper = _ppm_from_df(df_upper, dr)
-        ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
-        return round_ppm(ppm_interp)
+    lower = max([c for c in cst_list if c <= visc])
+    upper = min([c for c in cst_list if c >= visc])
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
+    ppm_lower = _ppm_from_df(df_lower, dr)
+    ppm_upper = _ppm_from_df(df_upper, dr)
+    ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+    return round_ppm(ppm_interp)
+
+
 def _ppm_from_df(df, dr):
+    """Return PPM for ``dr`` using the breakpoints in ``df``."""
+
     x = df['%Drag Reduction'].values
     y = df['PPM'].values
     if dr <= x[0]:
         return y[0]
-    elif dr >= x[-1]:
+    if dr >= x[-1]:
         return y[-1]
-    else:
-        return np.interp(dr, x, y)
+    return np.interp(dr, x, y)
 
 # --- User Login Logic ---
 
@@ -164,6 +169,8 @@ else:
 
 # ==== 1. EARLY LOAD/RESTORE BLOCK ====
 def restore_case_dict(loaded_data):
+    """Populate ``st.session_state`` from a saved case dictionary."""
+
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
@@ -445,6 +452,8 @@ terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("ter
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
 def get_full_case_dict():
+    """Collect the complete case description from ``st.session_state``."""
+
     import numpy as np
     import pandas as pd
 
@@ -549,6 +558,8 @@ st.sidebar.download_button(
 )
 
 def map_linefill_to_segments(linefill_df, stations):
+    """Map linefill properties onto each pipeline segment."""
+
     cumlen = [0]
     for stn in stations:
         cumlen.append(cumlen[-1] + stn["L"])
@@ -570,17 +581,29 @@ def map_linefill_to_segments(linefill_df, stations):
     return viscs, dens
 
 def fmt_pressure(res, key_m, key_kg):
+    """Format pressure values stored in metres and kg/cm²."""
+
     m = res.get(key_m, 0.0) or 0.0
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
+    """Wrapper around :mod:`pipeline_model` to allow hot-reloading."""
+
     import pipeline_model
     import importlib
+
     importlib.reload(pipeline_model)
-    if stations and stations[0].get('pump_types'):
-        return pipeline_model.solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
-    return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
+    try:
+        if stations and stations[0].get('pump_types'):
+            return pipeline_model.solve_pipeline_multi_origin(
+                stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
+            )
+        return pipeline_model.solve_pipeline(
+            stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
+        )
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        return {"error": True, "message": str(exc)}
 
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
