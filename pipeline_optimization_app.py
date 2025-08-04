@@ -183,6 +183,19 @@ def restore_case_dict(loaded_data):
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
             st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+    # Handle pump type data for originating station
+    headA = loaded_data.get("head_data_1A", None)
+    effA = loaded_data.get("eff_data_1A", None)
+    headB = loaded_data.get("head_data_1B", None)
+    effB = loaded_data.get("eff_data_1B", None)
+    if headA is not None:
+        st.session_state["head_data_1A"] = pd.DataFrame(headA)
+    if effA is not None:
+        st.session_state["eff_data_1A"] = pd.DataFrame(effA)
+    if headB is not None:
+        st.session_state["head_data_1B"] = pd.DataFrame(headB)
+    if effB is not None:
+        st.session_state["eff_data_1B"] = pd.DataFrame(effB)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -314,36 +327,85 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                key_head = f"head_data_{idx}"
-                if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
-                    df_head = st.session_state[key_head]
-                else:
-                    df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
-                st.session_state[key_head] = df_head
+                if idx == 1:
+                    stn.setdefault('pump_types', {})
+                    pump_tabs = st.tabs(["Type A", "Type B"])
+                    for tab_idx, ptype in enumerate(['A', 'B']):
+                        with pump_tabs[tab_idx]:
+                            key_head = f"head_data_{idx}{ptype}"
+                            if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                                df_head = st.session_state[key_head]
+                            else:
+                                df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                            df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}{ptype}")
+                            st.session_state[key_head] = df_head
 
-                key_eff = f"eff_data_{idx}"
-                if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
-                    df_eff = st.session_state[key_eff]
-                else:
-                    df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
-                st.session_state[key_eff] = df_eff
+                            key_eff = f"eff_data_{idx}{ptype}"
+                            if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                                df_eff = st.session_state[key_eff]
+                            else:
+                                df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                            df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}{ptype}")
+                            st.session_state[key_eff] = df_eff
 
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                    index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                with pcol2:
-                    stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                    stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                with pcol3:
-                    if stn['power_type']=="Grid":
-                        stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                        stn['sfc'] = 0.0
+                            pcol1, pcol2, pcol3 = st.columns(3)
+                            with pcol1:
+                                ptype_sel = st.selectbox(
+                                    "Power Source", ["Grid", "Diesel"],
+                                    index=0 if stn.get('pump_types', {}).get(ptype, {}).get('power_type', 'Grid') == "Grid" else 1,
+                                    key=f"ptype{idx}{ptype}"
+                                )
+                            with pcol2:
+                                minrpm = st.number_input("Min RPM", value=stn.get('pump_types', {}).get(ptype, {}).get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
+                                dol = st.number_input("Rated RPM", value=stn.get('pump_types', {}).get(ptype, {}).get('DOL', 1500.0), key=f"dol{idx}{ptype}")
+                            with pcol3:
+                                if ptype_sel == "Grid":
+                                    rate = st.number_input("Elec Rate (INR/kWh)", value=stn.get('pump_types', {}).get(ptype, {}).get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                    sfc = 0.0
+                                else:
+                                    sfc = st.number_input("SFC (gm/bhp·hr)", value=stn.get('pump_types', {}).get(ptype, {}).get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                    rate = 0.0
+
+                            stn['pump_types'][ptype] = {
+                                'head_data': df_head,
+                                'eff_data': df_eff,
+                                'power_type': ptype_sel,
+                                'MinRPM': minrpm,
+                                'DOL': dol,
+                                'rate': rate,
+                                'sfc': sfc
+                            }
+                else:
+                    key_head = f"head_data_{idx}"
+                    if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
+                        df_head = st.session_state[key_head]
                     else:
-                        stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                        stn['rate'] = 0.0
+                        df_head = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                    df_head = st.data_editor(df_head, num_rows="dynamic", key=f"head{idx}")
+                    st.session_state[key_head] = df_head
+
+                    key_eff = f"eff_data_{idx}"
+                    if key_eff in st.session_state and isinstance(st.session_state[key_eff], pd.DataFrame):
+                        df_eff = st.session_state[key_eff]
+                    else:
+                        df_eff = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                    df_eff = st.data_editor(df_eff, num_rows="dynamic", key=f"eff{idx}")
+                    st.session_state[key_eff] = df_eff
+
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    with pcol1:
+                        stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
+                                                        index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
+                    with pcol2:
+                        stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
+                        stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
+                    with pcol3:
+                        if stn['power_type']=="Grid":
+                            stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
+                            stn['sfc'] = 0.0
+                        else:
+                            stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
+                            stn['rate'] = 0.0
             else:
                 st.info("Not a pumping station. No pump data required.")
 
@@ -368,22 +430,45 @@ def get_full_case_dict():
 
     for idx, stn in enumerate(st.session_state.get('stations', []), start=1):
         if stn.get('is_pump', False):
-            dfh = st.session_state.get(f"head_data_{idx}")
-            dfe = st.session_state.get(f"eff_data_{idx}")
-            if dfh is None and "head_data" in stn:
-                dfh = pd.DataFrame(stn["head_data"])
-            if dfe is None and "eff_data" in stn:
-                dfe = pd.DataFrame(stn["eff_data"])
-            if dfh is not None and len(dfh) >= 3:
-                Qh = dfh.iloc[:, 0].values
-                Hh = dfh.iloc[:, 1].values
-                coeff = np.polyfit(Qh, Hh, 2)
-                stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-            if dfe is not None and len(dfe) >= 5:
-                Qe = dfe.iloc[:, 0].values
-                Ee = dfe.iloc[:, 1].values
-                coeff_e = np.polyfit(Qe, Ee, 4)
-                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+            if idx == 1 and 'pump_types' in stn:
+                for ptype in ['A', 'B']:
+                    pdata = stn['pump_types'].get(ptype, {})
+                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                    if dfh is None and pdata.get('head_data') is not None:
+                        dfh = pd.DataFrame(pdata['head_data'])
+                    if dfe is None and pdata.get('eff_data') is not None:
+                        dfe = pd.DataFrame(pdata['eff_data'])
+                    if dfh is not None and len(dfh) >= 3:
+                        Qh = dfh.iloc[:, 0].values
+                        Hh = dfh.iloc[:, 1].values
+                        coeff = np.polyfit(Qh, Hh, 2)
+                        pdata['A'], pdata['B'], pdata['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                    if dfe is not None and len(dfe) >= 5:
+                        Qe = dfe.iloc[:, 0].values
+                        Ee = dfe.iloc[:, 1].values
+                        coeff_e = np.polyfit(Qe, Ee, 4)
+                        pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
+                    pdata['head_data'] = dfh.to_dict(orient="records") if isinstance(dfh, pd.DataFrame) else None
+                    pdata['eff_data'] = dfe.to_dict(orient="records") if isinstance(dfe, pd.DataFrame) else None
+                    stn['pump_types'][ptype] = pdata
+            else:
+                dfh = st.session_state.get(f"head_data_{idx}")
+                dfe = st.session_state.get(f"eff_data_{idx}")
+                if dfh is None and "head_data" in stn:
+                    dfh = pd.DataFrame(stn["head_data"])
+                if dfe is None and "eff_data" in stn:
+                    dfe = pd.DataFrame(stn["eff_data"])
+                if dfh is not None and len(dfh) >= 3:
+                    Qh = dfh.iloc[:, 0].values
+                    Hh = dfh.iloc[:, 1].values
+                    coeff = np.polyfit(Qh, Hh, 2)
+                    stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                if dfe is not None and len(dfe) >= 5:
+                    Qe = dfe.iloc[:, 0].values
+                    Ee = dfe.iloc[:, 1].values
+                    coeff_e = np.polyfit(Qe, Ee, 4)
+                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
     return {
         "stations": st.session_state.get('stations', []),
@@ -404,11 +489,25 @@ def get_full_case_dict():
             for i in range(len(st.session_state.get('stations', [])))
         },
         **{
+            f"head_data_{1}{ptype}": (
+                st.session_state.get(f"head_data_{1}{ptype}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"head_data_{1}{ptype}"), pd.DataFrame) else None
+            )
+            for ptype in ['A', 'B']
+        },
+        **{
             f"eff_data_{i+1}": (
                 st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
                 if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
             )
             for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"eff_data_{1}{ptype}": (
+                st.session_state.get(f"eff_data_{1}{ptype}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"eff_data_{1}{ptype}"), pd.DataFrame) else None
+            )
+            for ptype in ['A', 'B']
         },
         **{
             f"peak_data_{i+1}": (
@@ -453,6 +552,8 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     import pipeline_model
     import importlib
     importlib.reload(pipeline_model)
+    if stations and stations[0].get('pump_types'):
+        return pipeline_model.solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
     return pipeline_model.solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
 
 # ==== Batch Linefill Scenario Analysis ====
@@ -714,39 +815,60 @@ if not auto_batch:
     
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
-                    dfh = st.session_state.get(f"head_data_{idx}")
-                    dfe = st.session_state.get(f"eff_data_{idx}")
-                    if dfh is None and "head_data" in stn:
-                        dfh = pd.DataFrame(stn["head_data"])
-                    if dfe is None and "eff_data" in stn:
-                        dfe = pd.DataFrame(stn["eff_data"])
-                    if dfh is not None and len(dfh) >= 3:
-                        Qh = dfh.iloc[:, 0].values
-                        Hh = dfh.iloc[:, 1].values
-                        coeff = np.polyfit(Qh, Hh, 2)
-                        stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                    if dfe is not None and len(dfe) >= 5:
-                        Qe = dfe.iloc[:, 0].values
-                        Ee = dfe.iloc[:, 1].values
-                        coeff_e = np.polyfit(Qe, Ee, 4)
-                        stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+                    if idx == 1 and 'pump_types' in stn:
+                        for ptype in ['A', 'B']:
+                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            stn['pump_types'][ptype]['head_data'] = dfh
+                            stn['pump_types'][ptype]['eff_data'] = dfe
+                    else:
+                        dfh = st.session_state.get(f"head_data_{idx}")
+                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        if dfh is None and "head_data" in stn:
+                            dfh = pd.DataFrame(stn["head_data"])
+                        if dfe is None and "eff_data" in stn:
+                            dfe = pd.DataFrame(stn["eff_data"])
+                        if dfh is not None and len(dfh) >= 3:
+                            Qh = dfh.iloc[:, 0].values
+                            Hh = dfh.iloc[:, 1].values
+                            coeff = np.polyfit(Qh, Hh, 2)
+                            stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                        if dfe is not None and len(dfe) >= 5:
+                            Qe = dfe.iloc[:, 0].values
+                            Ee = dfe.iloc[:, 1].values
+                            coeff_e = np.polyfit(Qe, Ee, 4)
+                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
-    
-            # Now call solve_pipeline
-            res = solve_pipeline(
-                stations_data,
-                term_data,
-                FLOW,
-                kv_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                linefill_df.to_dict()
-            )
+
+            import pipeline_model
+            import importlib
+            importlib.reload(pipeline_model)
+            if stations_data and stations_data[0].get('pump_types'):
+                res = pipeline_model.solve_pipeline_multi_origin(
+                    stations_data,
+                    term_data,
+                    FLOW,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    linefill_df.to_dict()
+                )
+            else:
+                res = pipeline_model.solve_pipeline(
+                    stations_data,
+                    term_data,
+                    FLOW,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    linefill_df.to_dict()
+                )
 
             import copy
             st.session_state["last_res"] = copy.deepcopy(res)
-            st.session_state["last_stations_data"] = copy.deepcopy(stations_data)
+            st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
             st.session_state["last_term_data"] = copy.deepcopy(term_data)
             st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
         # --- CRUCIAL LINE TO FORCE UI REFRESH ---

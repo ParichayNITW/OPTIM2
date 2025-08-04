@@ -70,49 +70,83 @@ def generate_origin_combinations(max_pumps=2, max_total=3):
     return combos
 
 def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
+    """Enumerate pump combinations at the originating station and choose least-cost."""
     origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
     origin_station = stations[origin_index]
     pump_types = origin_station.get('pump_types', {})
     combos = generate_origin_combinations(max_pumps=2, max_total=3)
+
     best_result = None
     best_cost = float('inf')
+    best_stations = None
 
     for (numA, numB) in combos:
-        stations_combo = copy.deepcopy(stations)
-        stn = stations_combo[origin_index]
-        dol_A, dol_B = pump_types['A']['DOL'], pump_types['B']['DOL']
-        minrpm_A, minrpm_B = pump_types['A']['MinRPM'], pump_types['B']['MinRPM']
-        # Affinity law transforms (at DOL as fitted)
-        A_a, B_a, C_a = transform_head_coeffs(*pump_types['A']['head_coeffs'], dol_A, dol_A)
-        A_b, B_b, C_b = transform_head_coeffs(*pump_types['B']['head_coeffs'], dol_B, dol_B)
-        P_a, Q_a, R_a, S_a, T_a = transform_eff_coeffs(*pump_types['A']['eff_coeffs'], dol_A, dol_A)
-        P_b, Q_b, R_b, S_b, T_b = transform_eff_coeffs(*pump_types['B']['eff_coeffs'], dol_B, dol_B)
+        if numA + numB == 0:
+            continue
 
-        stn['A'] = A_a * numA + A_b * numB
-        stn['B'] = B_a * numA + B_b * numB
-        stn['C'] = C_a * numA + C_b * numB
-        stn['P'] = P_a * numA + P_b * numB
-        stn['Q'] = Q_a * numA + Q_b * numB
-        stn['R'] = R_a * numA + R_b * numB
-        stn['S'] = S_a * numA + S_b * numB
-        stn['T'] = T_a * numA + T_b * numB
+        # Build expanded station list with individual pumps in series
+        stations_combo = []
+        kv_combo = []
+        rho_combo = []
 
-        stn['min_rpm'] = min(minrpm_A, minrpm_B)
-        stn['DOL'] = max(dol_A, dol_B)
-        stn['max_pumps'] = numA + numB
+        name_base = origin_station['name']
+        order = [('A', numA), ('B', numB)]
+        pump_units = []
+        for ptype, count in order:
+            pdata = pump_types.get(ptype)
+            for n in range(count):
+                unit = {
+                    'name': f"{name_base}_{ptype}{n+1}",
+                    'elev': origin_station.get('elev', 0.0),
+                    'D': origin_station.get('D'),
+                    't': origin_station.get('t'),
+                    'SMYS': origin_station.get('SMYS'),
+                    'rough': origin_station.get('rough'),
+                    'L': 0.0,
+                    'is_pump': True,
+                    'head_data': pdata.get('head_data'),
+                    'eff_data': pdata.get('eff_data'),
+                    'power_type': pdata.get('power_type', 'Grid'),
+                    'rate': pdata.get('rate', 0.0),
+                    'sfc': pdata.get('sfc', 0.0),
+                    'MinRPM': pdata.get('MinRPM', 0.0),
+                    'DOL': pdata.get('DOL', 0.0),
+                    'max_pumps': 1,
+                    'min_pumps': 1,
+                    'delivery': 0.0,
+                    'supply': 0.0,
+                    'max_dr': 0.0,
+                }
+                pump_units.append(unit)
+                kv_combo.append(KV_list[0])
+                rho_combo.append(rho_list[0])
 
-        if 'sfc' in pump_types['A']:
-            stn['sfc'] = pump_types['A']['sfc']
-        if 'rate' in pump_types['A']:
-            stn['rate'] = pump_types['A']['rate']
+        if not pump_units:
+            continue
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
+        # Assign origin-specific data to the first and last pumps
+        pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
+        pump_units[0]['supply'] = origin_station.get('supply', 0.0)
+        pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
+        pump_units[-1]['L'] = origin_station.get('L', 0.0)
+        pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
+
+        stations_combo.extend(pump_units)
+        stations_combo.extend(copy.deepcopy(stations[origin_index+1:]))
+        kv_combo.extend(KV_list[1:])
+        rho_combo.extend(rho_list[1:])
+
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
         if not result.get("error", True):
             cost = result.get("total_cost", float('inf'))
             if cost < best_cost:
                 best_cost = cost
                 best_result = result
+                best_stations = stations_combo
                 best_result['pump_combo'] = {'A': numA, 'B': numB}
+
+    if best_result is not None:
+        best_result['stations_used'] = best_stations
     return best_result
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
@@ -280,19 +314,12 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         raise ValueError("No originating pump station found in input!")
     
     def nop_bounds(m, j):
-        # j is the station index in model.pump_stations
-        lb = 1 if j == originating_pump_index else 0
-        ub = stations[j-1].get('max_pumps', 2)
+        st = stations[j-1]
+        lb = st.get('min_pumps', 1 if j == originating_pump_index else 0)
+        ub = st.get('max_pumps', 2)
         return (lb, ub)
     model.NOP = pyo.Var(model.pump_stations, domain=pyo.NonNegativeIntegers,
                         bounds=nop_bounds, initialize=1)
-    
-    # <<< ADD THIS NEW BLOCK >>>
-    # This constraint ensures that the originating pump station always has at least 1 pump running
-    def min_pump_origin_rule(m):
-        return m.NOP[originating_pump_index] >= 1
-    model.min_pump_origin = pyo.Constraint(rule=min_pump_origin_rule)
-    # <<< END OF NEW BLOCK >>>
 
     # ---- RPM selection via binaries ----
     model.rpm_bin = pyo.Var(
