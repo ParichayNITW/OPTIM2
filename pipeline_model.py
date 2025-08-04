@@ -81,6 +81,11 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
     best_stations = None
 
     for (numA, numB) in combos:
+        # Skip combinations requiring a pump type that isn't defined
+        if numA > 0 and ('A' not in pump_types or pump_types.get('A') is None):
+            continue
+        if numB > 0 and ('B' not in pump_types or pump_types.get('B') is None):
+            continue
         if numA + numB == 0:
             continue
 
@@ -92,8 +97,12 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
         name_base = origin_station['name']
         order = [('A', numA), ('B', numB)]
         pump_units = []
+        valid = True
         for ptype, count in order:
             pdata = pump_types.get(ptype)
+            if count > 0 and not pdata:
+                valid = False
+                break
             for n in range(count):
                 unit = {
                     'name': f"{name_base}_{ptype}{n+1}",
@@ -121,7 +130,7 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
                 kv_combo.append(KV_list[0])
                 rho_combo.append(rho_list[0])
 
-        if not pump_units:
+        if not valid or not pump_units:
             continue
 
         # Assign origin-specific data to the first and last pumps
