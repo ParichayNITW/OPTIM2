@@ -4,6 +4,7 @@ from pyomo.opt import SolverManagerFactory
 from math import log10, pi
 import pandas as pd
 import numpy as np
+import copy
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
@@ -51,6 +52,68 @@ def get_ppm_breakpoints(visc):
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
+
+# --- Affinity transforms for head and efficiency ---
+def transform_head_coeffs(A, B, C, N, N0):
+    return A, B * (N / N0), C * (N / N0) ** 2
+
+def transform_eff_coeffs(P, Q, R, S, T, N, N0):
+    k = N0 / N
+    return P * k**4, Q * k**3, R * k**2, S * k, T
+
+def generate_origin_combinations(max_pumps=2, max_total=3):
+    combos = []
+    for a in range(max_pumps + 1):
+        for b in range(max_pumps + 1):
+            if 1 <= a + b <= max_total:
+                combos.append((a, b))
+    return combos
+
+def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
+    origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
+    origin_station = stations[origin_index]
+    pump_types = origin_station.get('pump_types', {})
+    combos = generate_origin_combinations(max_pumps=2, max_total=3)
+    best_result = None
+    best_cost = float('inf')
+
+    for (numA, numB) in combos:
+        stations_combo = copy.deepcopy(stations)
+        stn = stations_combo[origin_index]
+        dol_A, dol_B = pump_types['A']['DOL'], pump_types['B']['DOL']
+        minrpm_A, minrpm_B = pump_types['A']['MinRPM'], pump_types['B']['MinRPM']
+        # Affinity law transforms (at DOL as fitted)
+        A_a, B_a, C_a = transform_head_coeffs(*pump_types['A']['head_coeffs'], dol_A, dol_A)
+        A_b, B_b, C_b = transform_head_coeffs(*pump_types['B']['head_coeffs'], dol_B, dol_B)
+        P_a, Q_a, R_a, S_a, T_a = transform_eff_coeffs(*pump_types['A']['eff_coeffs'], dol_A, dol_A)
+        P_b, Q_b, R_b, S_b, T_b = transform_eff_coeffs(*pump_types['B']['eff_coeffs'], dol_B, dol_B)
+
+        stn['A'] = A_a * numA + A_b * numB
+        stn['B'] = B_a * numA + B_b * numB
+        stn['C'] = C_a * numA + C_b * numB
+        stn['P'] = P_a * numA + P_b * numB
+        stn['Q'] = Q_a * numA + Q_b * numB
+        stn['R'] = R_a * numA + R_b * numB
+        stn['S'] = S_a * numA + S_b * numB
+        stn['T'] = T_a * numA + T_b * numB
+
+        stn['min_rpm'] = min(minrpm_A, minrpm_B)
+        stn['DOL'] = max(dol_A, dol_B)
+        stn['max_pumps'] = numA + numB
+
+        if 'sfc' in pump_types['A']:
+            stn['sfc'] = pump_types['A']['sfc']
+        if 'rate' in pump_types['A']:
+            stn['rate'] = pump_types['A']['rate']
+
+        result = solve_pipeline(stations_combo, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict)
+        if not result.get("error", True):
+            cost = result.get("total_cost", float('inf'))
+            if cost < best_cost:
+                best_cost = cost
+                best_result = result
+                best_result['pump_combo'] = {'A': numA, 'B': numB}
+    return best_result
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
     import numpy as np
