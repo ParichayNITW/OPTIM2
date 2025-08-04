@@ -145,8 +145,13 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
                 best_stations = stations_combo
                 best_result['pump_combo'] = {'A': numA, 'B': numB}
 
-    if best_result is not None:
-        best_result['stations_used'] = best_stations
+    if best_result is None:
+        return {
+            "error": True,
+            "message": "No feasible pump combination found for originating station."
+        }
+
+    best_result['stations_used'] = best_stations
     return best_result
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
