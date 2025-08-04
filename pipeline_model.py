@@ -5,7 +5,7 @@ from math import log10, pi
 import pandas as pd
 import numpy as np
 
-os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'youremail@example.com')
+os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal.com')
 
 # DRA curve files
 DRA_CSV_FILES = {
