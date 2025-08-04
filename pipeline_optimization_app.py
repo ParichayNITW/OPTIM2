@@ -332,6 +332,25 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     pump_tabs = st.tabs(["Type A", "Type B"])
                     for tab_idx, ptype in enumerate(['A', 'B']):
                         with pump_tabs[tab_idx]:
+                            pdata = stn.get('pump_types', {}).get(ptype, {})
+                            enabled = st.checkbox(
+                                f"Use Pump Type {ptype}",
+                                value=pdata.get('available', 0) > 0,
+                                key=f"enable{idx}{ptype}"
+                            )
+                            avail = st.number_input(
+                                "Available Pumps",
+                                min_value=0,
+                                max_value=2,
+                                step=1,
+                                value=int(pdata.get('available', 0)),
+                                key=f"avail{idx}{ptype}"
+                            )
+                            if not enabled or avail == 0:
+                                st.info("Pump type disabled")
+                                stn.setdefault('pump_types', {})[ptype] = {'available': 0}
+                                continue
+
                             key_head = f"head_data_{idx}{ptype}"
                             if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
                                 df_head = st.session_state[key_head]
@@ -352,28 +371,29 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             with pcol1:
                                 ptype_sel = st.selectbox(
                                     "Power Source", ["Grid", "Diesel"],
-                                    index=0 if stn.get('pump_types', {}).get(ptype, {}).get('power_type', 'Grid') == "Grid" else 1,
+                                    index=0 if pdata.get('power_type', 'Grid') == "Grid" else 1,
                                     key=f"ptype{idx}{ptype}"
                                 )
                             with pcol2:
-                                minrpm = st.number_input("Min RPM", value=stn.get('pump_types', {}).get(ptype, {}).get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
-                                dol = st.number_input("Rated RPM", value=stn.get('pump_types', {}).get(ptype, {}).get('DOL', 1500.0), key=f"dol{idx}{ptype}")
+                                minrpm = st.number_input("Min RPM", value=pdata.get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
+                                dol = st.number_input("Rated RPM", value=pdata.get('DOL', 1500.0), key=f"dol{idx}{ptype}")
                             with pcol3:
                                 if ptype_sel == "Grid":
-                                    rate = st.number_input("Elec Rate (INR/kWh)", value=stn.get('pump_types', {}).get(ptype, {}).get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                    rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
                                     sfc = 0.0
                                 else:
-                                    sfc = st.number_input("SFC (gm/bhp·hr)", value=stn.get('pump_types', {}).get(ptype, {}).get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                    sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
                                     rate = 0.0
 
-                            stn['pump_types'][ptype] = {
+                            stn.setdefault('pump_types', {})[ptype] = {
                                 'head_data': df_head,
                                 'eff_data': df_eff,
                                 'power_type': ptype_sel,
                                 'MinRPM': minrpm,
                                 'DOL': dol,
                                 'rate': rate,
-                                'sfc': sfc
+                                'sfc': sfc,
+                                'available': avail
                             }
                 else:
                     key_head = f"head_data_{idx}"
@@ -451,6 +471,7 @@ def get_full_case_dict():
                         pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
                     pdata['head_data'] = dfh.to_dict(orient="records") if isinstance(dfh, pd.DataFrame) else None
                     pdata['eff_data'] = dfe.to_dict(orient="records") if isinstance(dfe, pd.DataFrame) else None
+                    pdata['available'] = pdata.get('available', 0)
                     stn['pump_types'][ptype] = pdata
             else:
                 dfh = st.session_state.get(f"head_data_{idx}")
@@ -548,6 +569,11 @@ def map_linefill_to_segments(linefill_df, stations):
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
 
+def fmt_pressure(res, key_m, key_kg):
+    m = res.get(key_m, 0.0) or 0.0
+    kg = res.get(key_kg, 0.0) or 0.0
+    return f"{m:.2f} m / {kg:.2f} kg/cm²"
+
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
     import pipeline_model
     import importlib
@@ -627,8 +653,8 @@ if auto_batch:
                         key = stn['name'].lower().replace(' ', '_')
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                         row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
-                        row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
-                        row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                        row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
+                        row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                         row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                         row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
@@ -647,8 +673,8 @@ if auto_batch:
                         key = stn['name'].lower().replace(' ', '_')
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                         row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
-                        row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
-                        row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                        row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
+                        row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                         row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                         row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
@@ -678,8 +704,8 @@ if auto_batch:
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
-                            row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
-                            row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                            row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                             row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
@@ -702,8 +728,8 @@ if auto_batch:
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
-                            row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
-                            row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                            row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                             row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
@@ -740,8 +766,8 @@ if auto_batch:
                                 key = stn['name'].lower().replace(' ', '_')
                                 row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                                 row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
-                                row[f"SDH {stn['name']}"] = res.get(f"sdh_{key}", "")
-                                row[f"RH {stn['name']}"] = res.get(f"residual_head_{key}", "")
+                                row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
+                                row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                                 row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
                                 row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                                 row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
@@ -818,6 +844,8 @@ if not auto_batch:
                     if idx == 1 and 'pump_types' in stn:
                         for ptype in ['A', 'B']:
                             if ptype not in stn['pump_types']:
+                                continue
+                            if stn['pump_types'][ptype].get('available', 0) == 0:
                                 continue
                             dfh = st.session_state.get(f"head_data_{idx}{ptype}")
                             dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
@@ -929,9 +957,13 @@ if not auto_batch:
                 station_ppm[key] = ppm
     
             params = [
-                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)", 
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.", 
-                "Head Loss (m)", "Vel (m/s)", "Residual Head (m)", "SDH (m)", "MAOP (m)", "Drag Reduction (%)"
+                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
+                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.",
+                "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
+                "Residual Head (m)", "Residual Head (kg/cm²)",
+                "SDH (m)", "SDH (kg/cm²)",
+                "MAOP (m)", "MAOP (kg/cm²)",
+                "Drag Reduction (%)"
             ]
             summary = {"Parameters": params}
     
@@ -960,10 +992,14 @@ if not auto_batch:
                     res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
                     res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
                     res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
+                    res.get(f"head_loss_kgcm2_{key}",0.0) if res.get(f"head_loss_kgcm2_{key}",0.0) is not None else np.nan,
                     res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
                     res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
+                    res.get(f"rh_kgcm2_{key}",0.0) if res.get(f"rh_kgcm2_{key}",0.0) is not None else np.nan,
                     res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
+                    res.get(f"sdh_kgcm2_{key}",0.0) if res.get(f"sdh_kgcm2_{key}",0.0) is not None else np.nan,
                     res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
+                    res.get(f"maop_kgcm2_{key}",0.0) if res.get(f"maop_kgcm2_{key}",0.0) is not None else np.nan,
                     res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
                 ]
     
@@ -971,10 +1007,8 @@ if not auto_batch:
     
             # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
             for col in df_sum.columns:
-                if col not in ["Parameters", "No. of Pumps"]:
-                    df_sum[col] = df_sum[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-            if "No. of Pumps" in df_sum.columns:
-                df_sum["No. of Pumps"] = pd.to_numeric(df_sum["No. of Pumps"], errors='coerce').fillna(0).astype(int)
+                if col != "Parameters":
+                    df_sum[col] = df_sum[col].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
     
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)

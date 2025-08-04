@@ -61,11 +61,12 @@ def transform_eff_coeffs(P, Q, R, S, T, N, N0):
     k = N0 / N
     return P * k**4, Q * k**3, R * k**2, S * k, T
 
-def generate_origin_combinations(max_pumps=2, max_total=3):
+def generate_origin_combinations(maxA=2, maxB=2):
+    """Return all pump count combinations within the available limits."""
     combos = []
-    for a in range(max_pumps + 1):
-        for b in range(max_pumps + 1):
-            if 1 <= a + b <= max_total:
+    for a in range(maxA + 1):
+        for b in range(maxB + 1):
+            if a + b > 0:
                 combos.append((a, b))
     return combos
 
@@ -74,7 +75,9 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
     origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
     origin_station = stations[origin_index]
     pump_types = origin_station.get('pump_types', {})
-    combos = generate_origin_combinations(max_pumps=2, max_total=3)
+    maxA = pump_types.get('A', {}).get('available', 0)
+    maxB = pump_types.get('B', {}).get('available', 0)
+    combos = generate_origin_combinations(maxA, maxB)
 
     best_result = None
     best_cost = float('inf')
@@ -82,11 +85,9 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
 
     for (numA, numB) in combos:
         # Skip combinations requiring a pump type that isn't defined
-        if numA > 0 and ('A' not in pump_types or pump_types.get('A') is None):
+        if numA > 0 and (pump_types.get('A') is None or pump_types.get('A', {}).get('available', 0) < numA):
             continue
-        if numB > 0 and ('B' not in pump_types or pump_types.get('B') is None):
-            continue
-        if numA + numB == 0:
+        if numB > 0 and (pump_types.get('B') is None or pump_types.get('B', {}).get('available', 0) < numB):
             continue
 
         # Build expanded station list with individual pumps in series
@@ -561,7 +562,15 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         drag_red = dra_perc
         head_loss = float(pyo.value(model.SDH[i] - (model.RH[i+1] + (model.z[i+1] - model.z[i])))) if model.SDH[i].value is not None and model.RH[i+1].value is not None else 0.0
         res_head = float(pyo.value(model.RH[i])) if model.RH[i].value is not None else 0.0
+        sdh_val = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
+        if i != originating_pump_index and stn.get('is_pump', False) and num_pumps == 0:
+            sdh_val = res_head
+        rho_i = rho_dict[i]
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
+        head_loss_kg = head_loss * rho_i / 10000.0
+        rh_kg = res_head * rho_i / 10000.0
+        sdh_kg = sdh_val * rho_i / 10000.0
+        maop_kg = maop_dict[i] * rho_i / 10000.0
 
         result[f"pipeline_flow_{name}"] = outflow
         result[f"pipeline_flow_in_{name}"] = inflow
@@ -574,12 +583,16 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         result[f"dra_ppm_{name}"] = dra_ppm
         result[f"drag_reduction_{name}"] = drag_red
         result[f"head_loss_{name}"] = head_loss
+        result[f"head_loss_kgcm2_{name}"] = head_loss_kg
         result[f"residual_head_{name}"] = res_head
+        result[f"rh_kgcm2_{name}"] = rh_kg
         result[f"velocity_{name}"] = velocity
         result[f"reynolds_{name}"] = reynolds
         result[f"friction_{name}"] = fric
-        result[f"sdh_{name}"] = float(pyo.value(model.SDH[i])) if model.SDH[i].value is not None else 0.0
+        result[f"sdh_{name}"] = sdh_val
+        result[f"sdh_kgcm2_{name}"] = sdh_kg
         result[f"maop_{name}"] = maop_dict[i]
+        result[f"maop_kgcm2_{name}"] = maop_kg
         if i in pump_indices:
             result[f"coef_A_{name}"] = float(model.A[i])
             result[f"coef_B_{name}"] = float(model.B[i])
@@ -607,6 +620,9 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
         f"sdh_{term_name}": 0.0,
         f"residual_head_{term_name}": float(pyo.value(model.RH[N+1])) if model.RH[N+1].value is not None else 0.0,
     })
+    term_rh = result[f"residual_head_{term_name}"]
+    rho_term = rho_dict[N]
+    result[f"rh_kgcm2_{term_name}"] = term_rh * rho_term / 10000.0
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result["error"] = False
     return result
