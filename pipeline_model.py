@@ -1,10 +1,23 @@
+"""Core optimisation routines for Pipeline Optima.
+
+This module contains the mathematical model for the pipeline optimisation
+problem along with helper utilities.  The previous iterations of the project
+grew organically and a number of small helper functions were scattered across
+the file.  This refactor consolidates common conversions, documents the public
+functions and removes unused code so the module is easier to reason about and
+extend.
+"""
+
+from __future__ import annotations
+
 import os
+from math import log10, pi
+
+import copy
+import numpy as np
+import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
-from math import log10, pi
-import pandas as pd
-import numpy as np
-import copy
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
@@ -25,11 +38,39 @@ for cst, fname in DRA_CSV_FILES.items():
     else:
         DRA_CURVE_DATA[cst] = None
 
-def get_ppm_breakpoints(visc):
+
+def head_to_kgcm2(head_m: float, rho: float) -> float:
+    """Convert a head value in metres to kg/cm².
+
+    Parameters
+    ----------
+    head_m: float
+        Head value expressed in metres.
+    rho: float
+        Density of the fluid in kg/m³.
+    """
+
+    return head_m * rho / 10000.0
+
+def get_ppm_breakpoints(visc: float) -> tuple[list[float], list[float]]:
+    """Return drag-reduction/PPM breakpoints for ``visc``.
+
+    Parameters
+    ----------
+    visc:
+        Fluid viscosity in cSt.
+
+    Returns
+    -------
+    tuple[list[float], list[float]]
+        Matching lists of drag-reduction percentages and PPM values suitable
+        for a :class:`pyomo.environ.Piecewise` definition.
+    """
+
     cst_list = sorted([c for c in DRA_CURVE_DATA.keys() if DRA_CURVE_DATA[c] is not None])
     visc = float(visc)
     if not cst_list:
-        return [0], [0]
+        return [0.0], [0.0]
     if visc <= cst_list[0]:
         df = DRA_CURVE_DATA[cst_list[0]]
     elif visc >= cst_list[-1]:
@@ -42,8 +83,8 @@ def get_ppm_breakpoints(visc):
         x_lower, y_lower = df_lower['%Drag Reduction'].values, df_lower['PPM'].values
         x_upper, y_upper = df_upper['%Drag Reduction'].values, df_upper['PPM'].values
         dr_points = np.unique(np.concatenate((x_lower, x_upper)))
-        ppm_points = np.interp(dr_points, x_lower, y_lower)*(upper-visc)/(upper-lower) + \
-                     np.interp(dr_points, x_upper, y_upper)*(visc-lower)/(upper-lower)
+        ppm_points = np.interp(dr_points, x_lower, y_lower) * (upper - visc) / (upper - lower) + \
+                     np.interp(dr_points, x_upper, y_upper) * (visc - lower) / (upper - lower)
         unique_dr, unique_indices = np.unique(dr_points, return_index=True)
         unique_ppm = ppm_points[unique_indices]
         return list(unique_dr), list(unique_ppm)
@@ -53,57 +94,59 @@ def get_ppm_breakpoints(visc):
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
 
-# --- Affinity transforms for head and efficiency ---
-def transform_head_coeffs(A, B, C, N, N0):
-    return A, B * (N / N0), C * (N / N0) ** 2
+def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int, int]]:
+    """Return all feasible pump count combinations for the origin station.
 
-def transform_eff_coeffs(P, Q, R, S, T, N, N0):
-    k = N0 / N
-    return P * k**4, Q * k**3, R * k**2, S * k, T
+    The combinations are sorted by the total number of pumps so that smaller
+    configurations are tried first during optimisation.
+    """
 
-def generate_origin_combinations(maxA=2, maxB=2):
-    """Return all pump count combinations within the available limits."""
-    combos = []
-    for a in range(maxA + 1):
-        for b in range(maxB + 1):
-            if a + b > 0:
-                combos.append((a, b))
-    return combos
+    combos = [
+        (a, b)
+        for a in range(maxA + 1)
+        for b in range(maxB + 1)
+        if a + b > 0
+    ]
+    return sorted(combos, key=lambda x: (x[0] + x[1], x))
 
-def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
-    """Enumerate pump combinations at the originating station and choose least-cost."""
+def solve_pipeline_multi_origin(
+    stations: list[dict],
+    terminal: dict,
+    FLOW: float,
+    KV_list: list[float],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    linefill_dict: dict | None = None,
+) -> dict:
+    """Enumerate pump combinations at the origin and select the least cost."""
+
     origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
     origin_station = stations[origin_index]
     pump_types = origin_station.get('pump_types', {})
-    maxA = pump_types.get('A', {}).get('available', 0)
-    maxB = pump_types.get('B', {}).get('available', 0)
-    combos = generate_origin_combinations(maxA, maxB)
+    combos = generate_origin_combinations(
+        pump_types.get('A', {}).get('available', 0),
+        pump_types.get('B', {}).get('available', 0),
+    )
 
     best_result = None
     best_cost = float('inf')
     best_stations = None
 
-    for (numA, numB) in combos:
-        # Skip combinations requiring a pump type that isn't defined
-        if numA > 0 and (pump_types.get('A') is None or pump_types.get('A', {}).get('available', 0) < numA):
+    for numA, numB in combos:
+        if numA > 0 and not pump_types.get('A'):
             continue
-        if numB > 0 and (pump_types.get('B') is None or pump_types.get('B', {}).get('available', 0) < numB):
+        if numB > 0 and not pump_types.get('B'):
             continue
 
-        # Build expanded station list with individual pumps in series
-        stations_combo = []
-        kv_combo = []
-        rho_combo = []
+        stations_combo: list[dict] = []
+        kv_combo: list[float] = []
+        rho_combo: list[float] = []
 
         name_base = origin_station['name']
-        order = [('A', numA), ('B', numB)]
         pump_units = []
-        valid = True
-        for ptype, count in order:
+        for ptype, count in [('A', numA), ('B', numB)]:
             pdata = pump_types.get(ptype)
-            if count > 0 and not pdata:
-                valid = False
-                break
             for n in range(count):
                 unit = {
                     'name': f"{name_base}_{ptype}{n+1}",
@@ -114,13 +157,13 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
                     'rough': origin_station.get('rough'),
                     'L': 0.0,
                     'is_pump': True,
-                    'head_data': pdata.get('head_data'),
-                    'eff_data': pdata.get('eff_data'),
-                    'power_type': pdata.get('power_type', 'Grid'),
-                    'rate': pdata.get('rate', 0.0),
-                    'sfc': pdata.get('sfc', 0.0),
-                    'MinRPM': pdata.get('MinRPM', 0.0),
-                    'DOL': pdata.get('DOL', 0.0),
+                    'head_data': pdata.get('head_data') if pdata else None,
+                    'eff_data': pdata.get('eff_data') if pdata else None,
+                    'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
+                    'rate': pdata.get('rate', 0.0) if pdata else 0.0,
+                    'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
+                    'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
+                    'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
                     'max_pumps': 1,
                     'min_pumps': 1,
                     'delivery': 0.0,
@@ -131,10 +174,9 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
                 kv_combo.append(KV_list[0])
                 rho_combo.append(rho_list[0])
 
-        if not valid or not pump_units:
+        if not pump_units:
             continue
 
-        # Assign origin-specific data to the first and last pumps
         pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
         pump_units[0]['supply'] = origin_station.get('supply', 0.0)
         pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
@@ -142,29 +184,41 @@ def solve_pipeline_multi_origin(stations, terminal, FLOW, KV_list, rho_list, Rat
         pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
 
         stations_combo.extend(pump_units)
-        stations_combo.extend(copy.deepcopy(stations[origin_index+1:]))
+        stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
         kv_combo.extend(KV_list[1:])
         rho_combo.extend(rho_list[1:])
 
         result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
-        if not result.get("error", True):
-            cost = result.get("total_cost", float('inf'))
-            if cost < best_cost:
-                best_cost = cost
-                best_result = result
-                best_stations = stations_combo
-                best_result['pump_combo'] = {'A': numA, 'B': numB}
+        if result.get("error"):
+            continue
+        cost = result.get("total_cost", float('inf'))
+        if cost < best_cost:
+            best_cost = cost
+            best_result = result
+            best_stations = stations_combo
+            best_result['pump_combo'] = {'A': numA, 'B': numB}
 
     if best_result is None:
         return {
             "error": True,
-            "message": "No feasible pump combination found for originating station."
+            "message": "No feasible pump combination found for originating station.",
         }
 
     best_result['stations_used'] = best_stations
     return best_result
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict=None):
+def solve_pipeline(
+    stations: list[dict],
+    terminal: dict,
+    FLOW: float,
+    KV_list: list[float],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    linefill_dict: dict | None = None,
+) -> dict:
+    """Solve the pipeline optimisation for a fixed station configuration."""
+
     import numpy as np
     import pandas as pd
 
@@ -526,7 +580,6 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             dra_ppm = float(pyo.value(model.PPM[i])) if model.PPM[i].value is not None else 0.0
             dra_cost_i = float(pyo.value(model.dra_cost[i])) if model.dra_cost[i].expr is not None else 0.0
         
-            # >>> INSERT THIS BLOCK HERE <<<
             # If optimizer turned off all pumps, zero all reporting values:
             if num_pumps == 0:
                 rpm_val = 0.0
@@ -567,10 +620,10 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             sdh_val = res_head
         rho_i = rho_dict[i]
         velocity = v[i]; reynolds = Re[i]; fric = f[i]
-        head_loss_kg = head_loss * rho_i / 10000.0
-        rh_kg = res_head * rho_i / 10000.0
-        sdh_kg = sdh_val * rho_i / 10000.0
-        maop_kg = maop_dict[i] * rho_i / 10000.0
+        head_loss_kg = head_to_kgcm2(head_loss, rho_i)
+        rh_kg = head_to_kgcm2(res_head, rho_i)
+        sdh_kg = head_to_kgcm2(sdh_val, rho_i)
+        maop_kg = head_to_kgcm2(maop_dict[i], rho_i)
 
         result[f"pipeline_flow_{name}"] = outflow
         result[f"pipeline_flow_in_{name}"] = inflow
@@ -622,7 +675,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     })
     term_rh = result[f"residual_head_{term_name}"]
     rho_term = rho_dict[N]
-    result[f"rh_kgcm2_{term_name}"] = term_rh * rho_term / 10000.0
+    result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(term_rh, rho_term)
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result["error"] = False
     return result
