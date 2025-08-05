@@ -419,10 +419,13 @@ def solve_pipeline(
         return m.DR_var[i] == sum(allowed_dras[i][j] * m.dra_bin[i, j] for j in range(len(allowed_dras[i])))
     model.dra_value = pyo.Constraint(model.pump_stations, rule=dra_value_rule)
 
-    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=50)
+    # Residual head constraints
+    term_min = terminal.get('min_residual', 50.0)
+    model.RH = pyo.Var(model.Nodes, domain=pyo.NonNegativeReals, initialize=term_min)
     model.RH[1].fix(stations[0].get('min_residual', 50.0))
-    for j in range(2, N+2):
+    for j in range(2, N+1):
         model.RH[j].setlb(50.0)
+    model.RH[N+1].setlb(term_min)
 
     g = 9.81
     v = {}; Re = {}; f = {}
