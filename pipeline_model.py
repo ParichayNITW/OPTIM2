@@ -163,9 +163,10 @@ def solve_pipeline_multi_origin(
         pump_units = []
         for ptype, count in [('A', numA), ('B', numB)]:
             pdata = pump_types.get(ptype)
+            label = pdata.get('name', ptype) if pdata else ptype
             for n in range(count):
                 unit = {
-                    'name': f"{name_base}_{ptype}{n+1}",
+                    'name': f"{name_base}_{label}{n+1}",
                     'elev': origin_station.get('elev', 0.0),
                     'D': origin_station.get('D'),
                     't': origin_station.get('t'),
@@ -219,7 +220,12 @@ def solve_pipeline_multi_origin(
             best_cost = cost
             best_result = result
             best_stations = stations_combo
-            best_result['pump_combo'] = {'A': numA, 'B': numB}
+            combo_names = {}
+            if numA:
+                combo_names[pump_types.get('A', {}).get('name', 'A')] = numA
+            if numB:
+                combo_names[pump_types.get('B', {}).get('name', 'B')] = numB
+            best_result['pump_combo'] = combo_names
 
     if best_result is None:
         return {
