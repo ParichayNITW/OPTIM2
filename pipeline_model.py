@@ -545,7 +545,7 @@ def solve_pipeline(
     )
     status = results.solver.status
     term = results.solver.termination_condition
-    if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
+    if (status != pyo.SolverStatus.ok) or (term != pyo.TerminationCondition.optimal):
         return {
             "error": True,
             "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
