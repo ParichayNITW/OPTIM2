@@ -1673,8 +1673,12 @@ if not auto_batch:
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
                 Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                f_vals = np.where(Re_vals>0,
-                                  0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                Re_safe = np.where(Re_vals > 0, Re_vals, np.inf)
+                f_vals = np.where(
+                    Re_vals > 0,
+                    0.25 / (np.log10(rough/d_inner_i/3.7 + 5.74/(Re_safe**0.9))**2),
+                    0.0,
+                )
                 # Professional gradient: from blue to red
                 n_curves = (max_dr // 5) + 1
                 color_palette = [
@@ -1785,8 +1789,12 @@ if not auto_batch:
                 for idx, dra in enumerate(system_dra_steps):
                     v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
                     Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                    f_vals = np.where(Re_vals>0,
-                        0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                    Re_safe = np.where(Re_vals > 0, Re_vals, np.inf)
+                    f_vals = np.where(
+                        Re_vals > 0,
+                        0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_safe**0.9))**2),
+                        0.0,
+                    )
                     DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = max(0, current_elev) + DH
                     SDH_vals = np.clip(SDH_vals, 0, None)
