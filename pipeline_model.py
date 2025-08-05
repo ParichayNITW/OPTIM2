@@ -134,6 +134,17 @@ def solve_pipeline_multi_origin(
         pump_types.get('B', {}).get('available', 0),
     )
 
+    # Pre- and post-origin segments stay untouched; only the origin station is expanded
+    pre_stations = copy.deepcopy(stations[:origin_index])
+    post_stations = copy.deepcopy(stations[origin_index + 1:])
+    pre_kv = KV_list[:origin_index]
+    post_kv = KV_list[origin_index + 1:]
+    pre_rho = rho_list[:origin_index]
+    post_rho = rho_list[origin_index + 1:]
+
+    pump_visc = KV_list[origin_index]
+    pump_rho = rho_list[origin_index]
+
     best_result = None
     best_cost = float('inf')
     best_stations = None
@@ -176,22 +187,29 @@ def solve_pipeline_multi_origin(
                     'max_dr': 0.0,
                 }
                 pump_units.append(unit)
-                kv_combo.append(KV_list[0])
-                rho_combo.append(rho_list[0])
 
         if not pump_units:
             continue
 
+        # Attach origin-station data to the first/last units
         pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
         pump_units[0]['supply'] = origin_station.get('supply', 0.0)
         pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
         pump_units[-1]['L'] = origin_station.get('L', 0.0)
         pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
 
+        # Assemble full station list and corresponding property vectors
+        stations_combo.extend(pre_stations)
         stations_combo.extend(pump_units)
-        stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
-        kv_combo.extend(KV_list[1:])
-        rho_combo.extend(rho_list[1:])
+        stations_combo.extend(post_stations)
+
+        kv_combo.extend(pre_kv)
+        kv_combo.extend([pump_visc] * len(pump_units))
+        kv_combo.extend(post_kv)
+
+        rho_combo.extend(pre_rho)
+        rho_combo.extend([pump_rho] * len(pump_units))
+        rho_combo.extend(post_rho)
 
         result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
         if result.get("error"):
