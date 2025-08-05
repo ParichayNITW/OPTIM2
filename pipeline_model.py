@@ -18,8 +18,13 @@ import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
+import logging
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
+
+# Suppress verbose Pyomo warnings so infeasible runs don't flood the UI
+logging.getLogger('pyomo.core').setLevel(logging.ERROR)
+logging.getLogger('pyomo.solvers').setLevel(logging.ERROR)
 
 # DRA curve files
 DRA_CSV_FILES = {
