@@ -534,8 +534,10 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost_i
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # Solve
-    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
+    # Solve without auto-loading so infeasible runs don't emit warnings
+    results = SolverManagerFactory('neos').solve(
+        model, solver='couenne', tee=False, load_solutions=False
+    )
     status = results.solver.status
     term = results.solver.termination_condition
     if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
