@@ -906,7 +906,7 @@ else:
 
 
 
-if not auto_batch:
+if not auto_batch: 
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
     run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -914,26 +914,36 @@ if not auto_batch:
         with st.spinner("Solving optimization..."):
             try:
                 stations_data = st.session_state.stations
-                term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-                # Always ensure linefill_df, kv_list, rho_list are defined!
+                term_data = {
+                    "name": terminal_name,
+                    "elev": terminal_elev,
+                    "min_residual": terminal_head
+                }
+                # Get fluid properties for each segment
                 linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
                 kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+                RateDRA = st.session_state["RateDRA"]
+                Price_HSD = st.session_state["Price_HSD"]
+                FLOW = st.session_state["FLOW"]
 
                 import pandas as pd
                 import numpy as np
 
+                # --- Ensure pump data is up-to-date from session_state ---
                 for idx, stn in enumerate(stations_data, start=1):
                     if stn.get('is_pump', False):
                         if idx == 1 and 'pump_types' in stn:
                             for ptype in ['A', 'B']:
-                                if ptype not in stn['pump_types']:
-                                    continue
-                                if stn['pump_types'][ptype].get('available', 0) == 0:
+                                pdata = stn['pump_types'].get(ptype, {})
+                                if not pdata or pdata.get('available', 0) == 0:
                                     continue
                                 dfh = st.session_state.get(f"head_data_{idx}{ptype}")
                                 dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
-                                stn['pump_types'][ptype]['head_data'] = dfh
-                                stn['pump_types'][ptype]['eff_data'] = dfe
+                                if isinstance(dfh, pd.DataFrame):
+                                    pdata['head_data'] = dfh
+                                if isinstance(dfe, pd.DataFrame):
+                                    pdata['eff_data'] = dfe
+                                stn['pump_types'][ptype] = pdata
                         else:
                             dfh = st.session_state.get(f"head_data_{idx}")
                             dfe = st.session_state.get(f"eff_data_{idx}")
@@ -952,6 +962,7 @@ if not auto_batch:
                                 coeff_e = np.polyfit(Qe, Ee, 4)
                                 stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
+                # --- Call the pipeline solver ---
                 res = solve_pipeline(
                     stations_data,
                     term_data,
@@ -962,8 +973,9 @@ if not auto_batch:
                     Price_HSD,
                     linefill_df.to_dict(),
                 )
-            except Exception as exc:  # pragma: no cover - show front-end error
+            except Exception as exc:
                 st.error(f"Optimization failed: {exc}")
+                # Clear previous results if failed
                 for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
                     st.session_state.pop(k, None)
             else:
@@ -978,8 +990,9 @@ if not auto_batch:
                     st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
                     st.session_state["last_term_data"] = copy.deepcopy(term_data)
                     st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-                    # --- CRUCIAL LINE TO FORCE UI REFRESH ---
+                    # --- CRUCIAL: refresh UI to show results ---
                     st.rerun()
+
 
 
 if not auto_batch:
