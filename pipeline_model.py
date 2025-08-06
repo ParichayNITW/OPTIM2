@@ -114,6 +114,8 @@ def solve_pipeline(
     residual = stations[0].get('min_residual', 50.0)
     result = {}
     total_cost = 0.0
+    last_maop_head = 0.0
+    last_maop_kg = 0.0
 
     default_t = 0.007
     default_e = 0.00004
@@ -127,9 +129,19 @@ def solve_pipeline(
         if 'D' in stn:
             thickness = stn.get('t', default_t)
             d_inner = stn['D'] - 2 * thickness
+            outer_d = stn['D']
         else:
             d_inner = stn.get('d', 0.7)
+            outer_d = stn.get('d', 0.7)
+            thickness = stn.get('t', default_t)
         rough = stn.get('rough', default_e)
+
+        # Maximum allowable operating pressure (Barlow's formula)
+        SMYS = stn.get('SMYS', 52000.0)  # psi
+        design_factor = 0.72
+        maop_psi = 2 * SMYS * design_factor * (thickness / outer_d) if outer_d > 0 else 0.0
+        maop_kgcm2 = maop_psi * 0.0703069
+        maop_head = maop_kgcm2 * 10000.0 / rho if rho > 0 else 0.0
 
         # Evaluate options
         if stn.get('is_pump', False):
@@ -193,11 +205,18 @@ def solve_pipeline(
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(best['head_loss'], rho)
             result[f"residual_head_{name}"] = residual
             result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
+            sdh_val = residual + best['tdh']
+            result[f"sdh_{name}"] = sdh_val
+            result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(sdh_val, rho)
+            result[f"maop_{name}"] = maop_head
+            result[f"maop_kgcm2_{name}"] = maop_kgcm2
             result[f"velocity_{name}"] = best['v']
             result[f"reynolds_{name}"] = best['Re']
             result[f"friction_{name}"] = best['f']
             total_cost += best['cost']
             residual = best['residual_next']
+            last_maop_head = maop_head
+            last_maop_kg = maop_kgcm2
         else:
             head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, 0.0)
             elev_i = stn.get('elev', 0.0)
@@ -220,10 +239,16 @@ def solve_pipeline(
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(head_loss, rho)
             result[f"residual_head_{name}"] = residual
             result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
+            result[f"sdh_{name}"] = residual  # no pump, SDH equals RH
+            result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
+            result[f"maop_{name}"] = maop_head
+            result[f"maop_kgcm2_{name}"] = maop_kgcm2
             result[f"velocity_{name}"] = v
             result[f"reynolds_{name}"] = Re
             result[f"friction_{name}"] = f
             residual = residual_next
+            last_maop_head = maop_head
+            last_maop_kg = maop_kgcm2
 
     # Terminal summary
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
@@ -242,11 +267,14 @@ def solve_pipeline(
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
         f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": 0.0,
+        f"sdh_{term_name}": residual,
         f"residual_head_{term_name}": residual,
     })
     rho_term = rho_list[-1]
     result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
+    result[f"sdh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
+    result[f"maop_{term_name}"] = last_maop_head
+    result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
     result['error'] = False
     return result
