@@ -208,15 +208,11 @@ def solve_pipeline(
             sdh_val = residual + best['tdh']
             result[f"sdh_{name}"] = sdh_val
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(sdh_val, rho)
-            result[f"maop_{name}"] = maop_head
-            result[f"maop_kgcm2_{name}"] = maop_kgcm2
-            result[f"velocity_{name}"] = best['v']
-            result[f"reynolds_{name}"] = best['Re']
-            result[f"friction_{name}"] = best['f']
-            total_cost += best['cost']
-            residual = best['residual_next']
-            last_maop_head = maop_head
-            last_maop_kg = maop_kgcm2
+            v = best['v']
+            Re = best['Re']
+            f = best['f']
+            cost = best['cost']
+            residual_next = best['residual_next']
         else:
             head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, 0.0)
             elev_i = stn.get('elev', 0.0)
@@ -224,7 +220,6 @@ def solve_pipeline(
             residual_next = residual - head_loss - (elev_next - elev_i)
             if residual_next < stn.get('min_residual', 50.0):
                 return {"error": True, "message": f"Residual head below minimum after {stn['name']}"}
-            name = stn['name'].strip().lower().replace(' ', '_')
             result[f"pipeline_flow_{name}"] = flow
             result[f"pipeline_flow_in_{name}"] = segment_flows[i - 1]
             result[f"pump_flow_{name}"] = 0.0
@@ -241,14 +236,17 @@ def solve_pipeline(
             result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
             result[f"sdh_{name}"] = residual  # no pump, SDH equals RH
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
-            result[f"maop_{name}"] = maop_head
-            result[f"maop_kgcm2_{name}"] = maop_kgcm2
-            result[f"velocity_{name}"] = v
-            result[f"reynolds_{name}"] = Re
-            result[f"friction_{name}"] = f
-            residual = residual_next
-            last_maop_head = maop_head
-            last_maop_kg = maop_kgcm2
+            cost = 0.0
+        result[f"rho_{name}"] = rho
+        result[f"maop_{name}"] = maop_head
+        result[f"maop_kgcm2_{name}"] = maop_kgcm2
+        result[f"velocity_{name}"] = v
+        result[f"reynolds_{name}"] = Re
+        result[f"friction_{name}"] = f
+        total_cost += cost
+        residual = residual_next
+        last_maop_head = maop_head
+        last_maop_kg = maop_kgcm2
 
     # Terminal summary
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
@@ -267,12 +265,13 @@ def solve_pipeline(
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
         f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": residual,
+        f"sdh_{term_name}": 0.0,
         f"residual_head_{term_name}": residual,
     })
     rho_term = rho_list[-1]
     result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
-    result[f"sdh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
+    result[f"sdh_kgcm2_{term_name}"] = 0.0
+    result[f"rho_{term_name}"] = rho_term
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
