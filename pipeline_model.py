@@ -324,7 +324,14 @@ def solve_pipeline_multi_origin(
         except Exception as exc:  # pragma: no cover - defensive
             result = {"error": True, "message": str(exc)}
         if result.get("error"):
-            attempts.append({"A": numA, "B": numB, "message": result.get("message", "")})
+            msg = result.get("message", "")
+            attempts.append({"A": numA, "B": numB, "message": msg})
+            if msg.startswith("NEOS solver error"):
+                return {
+                    "error": True,
+                    "message": msg,
+                    "attempted_combos": attempts,
+                }
             continue
 
         cost = result.get("total_cost", float('inf'))
@@ -697,6 +704,20 @@ def solve_pipeline(
             "error": True,
             "message": "NEOS server unreachable. Check your internet connection and try again later.",
         }
+    def _local_fallback():
+        stream = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+                local = pyo.SolverFactory('ipopt')
+                return local.solve(
+                    model,
+                    tee=False,
+                    load_solutions=False,
+                    options={'max_cpu_time': solver_timeout},
+                )
+        except Exception:  # pragma: no cover - local solver unavailable
+            return stream.getvalue().strip()
+
     results = None
     solver_error = None
     for attempt in range(solver_retries + 1):
@@ -720,10 +741,22 @@ def solve_pipeline(
                 msg = "NEOS solver error: Problem executing an event. No results are available."
                 if solver_error and "no options line found" not in solver_error.lower():
                     msg = f"NEOS solver error: {solver_error.strip().splitlines()[-1]}"
-                return {
-                    "error": True,
-                    "message": msg,
-                }
+                fallback = _local_fallback()
+                if isinstance(fallback, str) and fallback:
+                    msg = f"{msg} (local solver failed: {fallback.splitlines()[-1]})"
+                    return {
+                        "error": True,
+                        "message": msg,
+                    }
+                elif isinstance(fallback, str):
+                    return {
+                        "error": True,
+                        "message": msg,
+                    }
+                else:
+                    results = fallback
+                    solver_error = None
+                    break
 
     status = results.solver.status
     term = results.solver.termination_condition
