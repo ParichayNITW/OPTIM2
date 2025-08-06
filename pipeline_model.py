@@ -47,6 +47,47 @@ for cst, fname in DRA_CSV_FILES.items():
         DRA_CURVE_DATA[cst] = None
 
 
+def _ppm_from_df(df: pd.DataFrame, dr: float) -> float:
+    """Return the PPM value corresponding to ``dr`` using breakpoints ``df``."""
+
+    if df is None or df.empty:
+        return 0.0
+    x = df["%Drag Reduction"].values
+    y = df["PPM"].values
+    if dr <= x[0]:
+        return float(y[0])
+    if dr >= x[-1]:
+        return float(y[-1])
+    return float(np.interp(dr, x, y))
+
+
+def get_ppm_for_dr(visc: float, dr: float) -> float:
+    """Interpolate PPM for a given drag reduction ``dr`` and viscosity ``visc``."""
+
+    try:
+        visc = float(visc)
+    except (TypeError, ValueError):
+        visc = float("nan")
+    if not DRA_CURVE_DATA or np.isnan(visc) or dr <= 0:
+        return 0.0
+    cst_list = sorted([c for c in DRA_CURVE_DATA if DRA_CURVE_DATA[c] is not None])
+    valid_lower = [c for c in cst_list if c <= visc]
+    valid_upper = [c for c in cst_list if c >= visc]
+    if not valid_lower or not valid_upper:
+        if not cst_list:
+            return 0.0
+        nearest = cst_list[0] if visc < cst_list[0] else cst_list[-1]
+        return _ppm_from_df(DRA_CURVE_DATA.get(nearest), dr)
+    lower = max(valid_lower)
+    upper = min(valid_upper)
+    if lower == upper:
+        return _ppm_from_df(DRA_CURVE_DATA[lower], dr)
+    ppm_lower = _ppm_from_df(DRA_CURVE_DATA[lower], dr)
+    ppm_upper = _ppm_from_df(DRA_CURVE_DATA[upper], dr)
+    ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+    return float(round(ppm_interp / 0.5) * 0.5)
+
+
 def _neos_available(host: str = "neos-server.org", port: int = 3333, timeout: int = 5) -> bool:
     """Return ``True`` if the NEOS server appears reachable.
 

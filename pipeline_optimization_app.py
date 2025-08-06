@@ -73,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
-from front_utils import get_ppm_for_dr, map_linefill_to_segments
+from pipeline_model import get_ppm_for_dr
 
 # --- User Login Logic ---
 
