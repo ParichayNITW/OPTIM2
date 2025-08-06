@@ -212,7 +212,19 @@ def solve_pipeline_multi_origin(
         rho_combo.extend([pump_rho] * len(pump_units))
         rho_combo.extend(post_rho)
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
+        try:
+            result = solve_pipeline(
+                stations_combo,
+                terminal,
+                FLOW,
+                kv_combo,
+                rho_combo,
+                RateDRA,
+                Price_HSD,
+                linefill_dict,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            result = {"error": True, "message": str(exc)}
         if result.get("error"):
             continue
         cost = result.get("total_cost", float('inf'))
