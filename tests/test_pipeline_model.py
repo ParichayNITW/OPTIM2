@@ -207,6 +207,9 @@ def test_propagates_common_failure_message(monkeypatch):
 
     assert result["error"] is True
     assert result["message"] == "NEOS offline"
+    attempts = result.get("attempted_combos", [])
+    assert len(attempts) == 8
+    assert all(a.get("message") == "NEOS offline" for a in attempts)
 
 
 def test_generate_origin_combinations_respects_max_total_and_casts():
