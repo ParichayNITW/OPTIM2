@@ -1,4 +1,6 @@
 import os
+import sys
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,6 +11,13 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
+
+# Ensure local modules are importable when the app is run from an arbitrary
+# working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from dra_utils import (
     get_ppm_for_dr,
     DRA_CURVE_DATA,
