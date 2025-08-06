@@ -94,6 +94,64 @@ def get_ppm_breakpoints(visc: float) -> tuple[list[float], list[float]]:
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
 
+
+def _ppm_from_df(df: pd.DataFrame, dr: float) -> float:
+    """Return the PPM value for ``dr`` using breakpoints in ``df``."""
+
+    x = df['%Drag Reduction'].values
+    y = df['PPM'].values
+    if dr <= x[0]:
+        return float(y[0])
+    if dr >= x[-1]:
+        return float(y[-1])
+    return float(np.interp(dr, x, y))
+
+
+def get_ppm_for_dr(visc: float, dr: float,
+                   dra_curve_data: dict[int, pd.DataFrame] = DRA_CURVE_DATA) -> float:
+    """Interpolate PPM for a given drag reduction and viscosity.
+
+    Parameters
+    ----------
+    visc: float
+        Fluid viscosity in cSt.
+    dr: float
+        Required drag reduction percentage.
+    dra_curve_data: dict[int, :class:`pandas.DataFrame`]
+        Mapping of viscosity to DRA curve data.  Defaults to the module level
+        :data:`DRA_CURVE_DATA` loaded from CSV files.
+
+    Returns
+    -------
+    float
+        Interpolated PPM value rounded to the nearest 0.5.
+    """
+
+    cst_list = sorted([c for c in dra_curve_data.keys() if dra_curve_data[c] is not None])
+    if not cst_list:
+        return 0.0
+
+    visc = float(visc)
+
+    def round_ppm(val: float, step: float = 0.5) -> float:
+        return round(val / step) * step
+
+    if visc <= cst_list[0]:
+        df = dra_curve_data[cst_list[0]]
+        return round_ppm(_ppm_from_df(df, dr))
+    if visc >= cst_list[-1]:
+        df = dra_curve_data[cst_list[-1]]
+        return round_ppm(_ppm_from_df(df, dr))
+
+    lower = max(c for c in cst_list if c <= visc)
+    upper = min(c for c in cst_list if c >= visc)
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
+    ppm_lower = _ppm_from_df(df_lower, dr)
+    ppm_upper = _ppm_from_df(df_upper, dr)
+    ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+    return round_ppm(ppm_interp)
+
 def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int, int]]:
     """Return all feasible pump count combinations for the origin station.
 
