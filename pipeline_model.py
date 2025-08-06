@@ -31,6 +31,13 @@ logging.getLogger('pyomo.solvers').setLevel(logging.ERROR)
 
 # DRA curve files
 DRA_CSV_FILES = {
+    1: "1 cst.csv",
+    2: "2 cst.csv",
+    2.5: "2.5 cst.csv",
+    3: "3 cst.csv",
+    3.5: "3.5 cst.csv",
+    4: "4 cst.csv",
+    4.5: "4.5 cst.csv",
     10: "10 cst.csv",
     15: "15 cst.csv",
     20: "20 cst.csv",
