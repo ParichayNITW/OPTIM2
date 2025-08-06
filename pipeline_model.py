@@ -23,6 +23,13 @@ os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gm
 
 # DRA curve files
 DRA_CSV_FILES = {
+    4.5: "4.5 cst.csv",
+    4: "4 cst.csv",
+    3.5: "3.5 cst.csv",
+    3: "3 cst.csv",
+    2.5: "2.5 cst.csv",
+    2: "2 cst.csv",
+    1: "1 cst.csv",
     10: "10 cst.csv",
     15: "15 cst.csv",
     20: "20 cst.csv",
