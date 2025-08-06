@@ -146,8 +146,8 @@ def solve_pipeline_multi_origin(
     pump_rho = rho_list[origin_index]
 
     best_result = None
-    best_cost = float('inf')
     best_stations = None
+    evaluated = []
 
     for numA, numB in combos:
         if numA > 0 and not pump_types.get('A'):
@@ -227,17 +227,18 @@ def solve_pipeline_multi_origin(
             result = {"error": True, "message": str(exc)}
         if result.get("error"):
             continue
+
         cost = result.get("total_cost", float('inf'))
-        if cost < best_cost:
-            best_cost = cost
-            best_result = result
-            best_stations = stations_combo
-            combo_names = {}
-            if numA:
-                combo_names[pump_types.get('A', {}).get('name', 'A')] = numA
-            if numB:
-                combo_names[pump_types.get('B', {}).get('name', 'B')] = numB
-            best_result['pump_combo'] = combo_names
+        combo_names = {}
+        if numA:
+            combo_names[pump_types.get('A', {}).get('name', 'A')] = numA
+        if numB:
+            combo_names[pump_types.get('B', {}).get('name', 'B')] = numB
+        evaluated.append((cost, result, stations_combo, combo_names))
+
+    if evaluated:
+        _, best_result, best_stations, combo_names = min(evaluated, key=lambda x: x[0])
+        best_result['pump_combo'] = combo_names
 
     if best_result is None:
         return {
