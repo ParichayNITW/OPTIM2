@@ -170,6 +170,7 @@ def solve_pipeline_multi_origin(
     best_result = None
     best_stations = None
     evaluated = []
+    attempts: list[dict] = []
 
     for numA, numB in combos:
         if numA > 0 and not pump_types.get('A'):
@@ -249,6 +250,7 @@ def solve_pipeline_multi_origin(
         except Exception as exc:  # pragma: no cover - defensive
             result = {"error": True, "message": str(exc)}
         if result.get("error"):
+            attempts.append({"A": numA, "B": numB, "message": result.get("message", "")})
             continue
 
         cost = result.get("total_cost", float('inf'))
@@ -262,11 +264,14 @@ def solve_pipeline_multi_origin(
     if evaluated:
         _, best_result, best_stations, combo_names = min(evaluated, key=lambda x: x[0])
         best_result['pump_combo'] = combo_names
+        if attempts:
+            best_result['attempted_combos'] = attempts
 
     if best_result is None:
         return {
             "error": True,
             "message": "No feasible pump combination found for originating station.",
+            "attempted_combos": attempts,
         }
 
     best_result['stations_used'] = best_stations

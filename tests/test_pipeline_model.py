@@ -179,3 +179,8 @@ def test_no_feasible_combination_returns_error(monkeypatch):
 
     assert result["error"] is True
     assert "No feasible pump combination" in result["message"]
+    attempts = {(c["A"], c["B"]) for c in result.get("attempted_combos", [])}
+    expected = {
+        (1, 0), (0, 1), (2, 0), (1, 1), (0, 2), (2, 1), (1, 2), (2, 2)
+    }
+    assert attempts == expected
