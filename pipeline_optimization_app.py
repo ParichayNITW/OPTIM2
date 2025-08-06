@@ -566,7 +566,16 @@ st.subheader("Batch Linefill Scenario Analysis")
 auto_batch = st.checkbox("Run Auto Linefill Generator (Batch Interface Scenarios)")
 
 if auto_batch:
+    if not st.session_state.get('stations'):
+        st.info("Define pipeline stations above to enable batch optimisation.")
+        st.stop()
     total_length = sum(stn["L"] for stn in st.session_state.stations)
+    FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="batch_flow")
+    RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="batch_dra")
+    Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
+    st.session_state["FLOW"] = FLOW
+    st.session_state["RateDRA"] = RateDRA
+    st.session_state["Price_HSD"] = Price_HSD
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
     product_table = st.data_editor(
         pd.DataFrame({
@@ -1942,19 +1951,24 @@ if not auto_batch:
         FLOW = st.session_state.get("FLOW", 1000.0)
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
-        key = stations_data[0]['name'].lower().replace(' ', '_')
-    
-        speed_opt = float(last_res.get(f"speed_{key}", 1500.0))
+
+        pump_idx = next((i for i,s in enumerate(stations_data) if s.get('is_pump', False)), None)
+        if pump_idx is None:
+            st.warning("No pump station available for 3D analysis.")
+            st.stop()
+        stn = stations_data[pump_idx]
+        key = stn['name'].lower().replace(' ', '_')
+
+        speed_opt = float(last_res.get(f"speed_{key}", stn.get('DOL', 0)))
         dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
         nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
         flow_opt = FLOW
-    
+
         delta_speed = 150
         delta_dra = 10
         delta_nop = 1
         delta_flow = 150
         N = 9
-        stn = stations_data[0]
         N_min = int(stn.get('MinRPM', 1000))
         N_max = int(stn.get('DOL', 1500))
         DRA_max = int(stn.get('max_dr', 40))
@@ -1993,7 +2007,7 @@ if not auto_batch:
         DOL = float(stn.get('DOL', N_max))
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-        rho = rho_list[0]
+        rho = rho_list[pump_idx]
         rate = stn.get('rate', 9.0)
         g = 9.81
     
@@ -2008,7 +2022,7 @@ if not auto_batch:
             d_inner = stn['D'] - 2*stn['t']
             rough = stn['rough']
             L_seg = stn['L']
-            visc = kv_list[0]
+            visc = kv_list[pump_idx]
             v = q/3600.0/(np.pi*(d_inner**2)/4)
             Re = v*d_inner/(visc*1e-6) if visc > 0 else 0
             if Re > 0:
@@ -2020,7 +2034,7 @@ if not auto_batch:
             
         dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
         dr_max = stn.get('max_dr', 0.0)
-        viscosity = kv_list[0]
+        viscosity = kv_list[pump_idx]
         dr_use = min(dr_opt, dr_max)
         ppm_value = get_ppm_for_dr(viscosity, dr_use)
     
@@ -2407,6 +2421,7 @@ if not auto_batch:
             labels={"x": param, "y": output},
             title=f"{output} vs {param} (Sensitivity)")
         df_sens = pd.DataFrame({param: pvals, output: yvals})
+        st.plotly_chart(fig, use_container_width=True)
         st.dataframe(df_sens, use_container_width=True, hide_index=True)
         st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
     
