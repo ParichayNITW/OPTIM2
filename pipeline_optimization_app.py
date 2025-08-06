@@ -9,9 +9,8 @@ import hashlib
 import uuid
 import json
 from plotly.colors import qualitative
-from pipeline_model import (
+from dra_utils import (
     get_ppm_for_dr,
-    DRA_CSV_FILES,
     DRA_CURVE_DATA,
 )
 
