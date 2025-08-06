@@ -208,6 +208,17 @@ def solve_pipeline(
             sdh_val = residual + best['tdh']
             result[f"sdh_{name}"] = sdh_val
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(sdh_val, rho)
+            # expose pump coefficients and speed limits for plotting
+            result[f"coef_A_{name}"] = float(stn.get('A', 0.0))
+            result[f"coef_B_{name}"] = float(stn.get('B', 0.0))
+            result[f"coef_C_{name}"] = float(stn.get('C', 0.0))
+            result[f"coef_P_{name}"] = float(stn.get('P', 0.0))
+            result[f"coef_Q_{name}"] = float(stn.get('Q', 0.0))
+            result[f"coef_R_{name}"] = float(stn.get('R', 0.0))
+            result[f"coef_S_{name}"] = float(stn.get('S', 0.0))
+            result[f"coef_T_{name}"] = float(stn.get('T', 0.0))
+            result[f"min_rpm_{name}"] = int(stn.get('MinRPM', 0))
+            result[f"dol_{name}"] = int(stn.get('DOL', 0))
             v = best['v']
             Re = best['Re']
             f = best['f']
@@ -236,6 +247,16 @@ def solve_pipeline(
             result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
             result[f"sdh_{name}"] = residual  # no pump, SDH equals RH
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
+            result[f"coef_A_{name}"] = 0.0
+            result[f"coef_B_{name}"] = 0.0
+            result[f"coef_C_{name}"] = 0.0
+            result[f"coef_P_{name}"] = 0.0
+            result[f"coef_Q_{name}"] = 0.0
+            result[f"coef_R_{name}"] = 0.0
+            result[f"coef_S_{name}"] = 0.0
+            result[f"coef_T_{name}"] = 0.0
+            result[f"min_rpm_{name}"] = 0
+            result[f"dol_{name}"] = 0
             cost = 0.0
         result[f"rho_{name}"] = rho
         result[f"maop_{name}"] = maop_head
