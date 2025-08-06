@@ -192,10 +192,10 @@ def solve_pipeline_multi_origin(
         if not pump_units:
             continue
 
-        # Attach origin-station data to the first/last units
-        pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
-        pump_units[0]['supply'] = origin_station.get('supply', 0.0)
+        # Attach origin-station data: deliveries occur after the last pump
         pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
+        pump_units[-1]['delivery'] = origin_station.get('delivery', 0.0)
+        pump_units[-1]['supply'] = origin_station.get('supply', 0.0)
         pump_units[-1]['L'] = origin_station.get('L', 0.0)
         pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
 
@@ -331,6 +331,12 @@ def solve_pipeline(
         supply = float(stn.get('supply', 0.0))
         prev_flow = segment_flows[-1]
         out_flow = prev_flow - delivery + supply
+        if out_flow < -1e-6:
+            name = stn.get('name', '?')
+            raise ValueError(
+                f"Negative downstream flow after station {name}: "
+                f"{prev_flow} - {delivery} + {supply} = {out_flow}"
+            )
         segment_flows.append(out_flow)
 
     # Pipeline and pump parameters
