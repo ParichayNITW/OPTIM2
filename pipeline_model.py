@@ -19,9 +19,24 @@ import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 
-from dra_utils import DRA_CSV_FILES, DRA_CURVE_DATA, get_ppm_for_dr
-
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
+
+# DRA curve files
+DRA_CSV_FILES = {
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv"
+}
+DRA_CURVE_DATA = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
+        DRA_CURVE_DATA[cst] = pd.read_csv(fname)
+    else:
+        DRA_CURVE_DATA[cst] = None
 
 
 def head_to_kgcm2(head_m: float, rho: float) -> float:
@@ -78,6 +93,7 @@ def get_ppm_breakpoints(visc: float) -> tuple[list[float], list[float]]:
     unique_x, unique_indices = np.unique(x, return_index=True)
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
+
 def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int, int]]:
     """Return all feasible pump count combinations for the origin station.
 
