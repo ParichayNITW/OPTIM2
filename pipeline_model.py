@@ -144,6 +144,7 @@ def solve_pipeline_multi_origin(
     RateDRA: float,
     Price_HSD: float,
     linefill_dict: dict | None = None,
+    solver_timeout: float = 600,
 ) -> dict:
     """Enumerate pump combinations at the origin and select the least cost."""
 
@@ -243,6 +244,7 @@ def solve_pipeline_multi_origin(
                 RateDRA,
                 Price_HSD,
                 linefill_dict,
+                solver_timeout=solver_timeout,
             )
         except Exception as exc:  # pragma: no cover - defensive
             result = {"error": True, "message": str(exc)}
@@ -279,6 +281,7 @@ def solve_pipeline(
     RateDRA: float,
     Price_HSD: float,
     linefill_dict: dict | None = None,
+    solver_timeout: float = 600,
 ) -> dict:
     """Solve the pipeline optimisation for a fixed station configuration."""
 
@@ -611,7 +614,11 @@ def solve_pipeline(
         }
     try:
         results = SolverManagerFactory('neos').solve(
-            model, solver='couenne', tee=False, load_solutions=False
+            model,
+            solver='couenne',
+            tee=False,
+            load_solutions=False,
+            options={'timelimit': solver_timeout},
         )
     except Exception as exc:  # pragma: no cover - network failure path
         return {
@@ -621,6 +628,13 @@ def solve_pipeline(
 
     status = results.solver.status
     term = results.solver.termination_condition
+    if term == pyo.TerminationCondition.maxTimeLimit:
+        return {
+            "error": True,
+            "message": f"Optimization exceeded time limit of {solver_timeout} seconds.",
+            "termination_condition": str(term),
+            "solver_status": str(status),
+        }
     if (status != pyo.SolverStatus.ok) or (term != pyo.TerminationCondition.optimal):
         return {
             "error": True,

@@ -58,7 +58,7 @@ def test_enumerates_combinations_and_selects_min_cost(monkeypatch):
 
     combos = set()
 
-    def fake_solver(stations_combo, terminal, FLOW, kv, rho, RateDRA, Price_HSD, linefill):
+    def fake_solver(stations_combo, terminal, FLOW, kv, rho, RateDRA, Price_HSD, linefill, **kwargs):
         numA = sum(1 for s in stations_combo if s.get('is_pump') and 'Alpha' in s['name'])
         numB = sum(1 for s in stations_combo if s.get('is_pump') and 'Beta' in s['name'])
         combos.add((numA, numB))
@@ -97,7 +97,7 @@ def test_only_type_a(monkeypatch):
 
     combos = set()
 
-    def fake_solver(stations_combo, terminal, FLOW, kv, rho, RateDRA, Price_HSD, linefill):
+    def fake_solver(stations_combo, terminal, FLOW, kv, rho, RateDRA, Price_HSD, linefill, **kwargs):
         numA = sum(1 for s in stations_combo if s.get('is_pump'))
         combos.add((numA, 0))
         return {
@@ -131,7 +131,7 @@ def test_only_type_b(monkeypatch):
 
     combos = set()
 
-    def fake_solver(stations_combo, terminal, FLOW, kv, rho, RateDRA, Price_HSD, linefill):
+    def fake_solver(stations_combo, terminal, FLOW, kv, rho, RateDRA, Price_HSD, linefill, **kwargs):
         numB = sum(1 for s in stations_combo if s.get('is_pump'))
         combos.add((0, numB))
         return {
