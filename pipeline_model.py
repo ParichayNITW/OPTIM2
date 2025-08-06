@@ -14,20 +14,12 @@ import os
 from math import log10, pi
 
 import copy
-import io
-import contextlib
 import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
-import logging
-import socket
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
-
-# Suppress verbose Pyomo warnings so infeasible runs don't flood the UI
-logging.getLogger('pyomo.core').setLevel(logging.ERROR)
-logging.getLogger('pyomo.solvers').setLevel(logging.ERROR)
 
 # DRA curve files
 DRA_CSV_FILES = {
@@ -45,26 +37,6 @@ for cst, fname in DRA_CSV_FILES.items():
         DRA_CURVE_DATA[cst] = pd.read_csv(fname)
     else:
         DRA_CURVE_DATA[cst] = None
-
-
-def _neos_available(host: str = "neos-server.org", port: int = 3333, timeout: int = 5) -> bool:
-    """Return ``True`` if the NEOS server appears reachable.
-
-    Parameters
-    ----------
-    host: str
-        Hostname of the NEOS server.
-    port: int
-        Port number for the NEOS XML-RPC interface.
-    timeout: int
-        Connection timeout in seconds.
-    """
-
-    try:
-        with socket.create_connection((host, port), timeout):
-            return True
-    except OSError:
-        return False
 
 
 def head_to_kgcm2(head_m: float, rho: float) -> float:
@@ -146,7 +118,6 @@ def solve_pipeline_multi_origin(
     RateDRA: float,
     Price_HSD: float,
     linefill_dict: dict | None = None,
-    solver_timeout: float = 600,
 ) -> dict:
     """Enumerate pump combinations at the origin and select the least cost."""
 
@@ -158,21 +129,9 @@ def solve_pipeline_multi_origin(
         pump_types.get('B', {}).get('available', 0),
     )
 
-    # Pre- and post-origin segments stay untouched; only the origin station is expanded
-    pre_stations = copy.deepcopy(stations[:origin_index])
-    post_stations = copy.deepcopy(stations[origin_index + 1:])
-    pre_kv = KV_list[:origin_index]
-    post_kv = KV_list[origin_index + 1:]
-    pre_rho = rho_list[:origin_index]
-    post_rho = rho_list[origin_index + 1:]
-
-    pump_visc = KV_list[origin_index]
-    pump_rho = rho_list[origin_index]
-
     best_result = None
+    best_cost = float('inf')
     best_stations = None
-    evaluated = []
-    attempts: list[dict] = []
 
     for numA, numB in combos:
         if numA > 0 and not pump_types.get('A'):
@@ -188,10 +147,9 @@ def solve_pipeline_multi_origin(
         pump_units = []
         for ptype, count in [('A', numA), ('B', numB)]:
             pdata = pump_types.get(ptype)
-            label = pdata.get('name', ptype) if pdata else ptype
             for n in range(count):
                 unit = {
-                    'name': f"{name_base}_{label}{n+1}",
+                    'name': f"{name_base}_{ptype}{n+1}",
                     'elev': origin_station.get('elev', 0.0),
                     'D': origin_station.get('D'),
                     't': origin_station.get('t'),
@@ -213,67 +171,37 @@ def solve_pipeline_multi_origin(
                     'max_dr': 0.0,
                 }
                 pump_units.append(unit)
+                kv_combo.append(KV_list[0])
+                rho_combo.append(rho_list[0])
 
         if not pump_units:
             continue
 
-        # Attach origin-station data: deliveries occur after the last pump
+        pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
+        pump_units[0]['supply'] = origin_station.get('supply', 0.0)
         pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
-        pump_units[-1]['delivery'] = origin_station.get('delivery', 0.0)
-        pump_units[-1]['supply'] = origin_station.get('supply', 0.0)
         pump_units[-1]['L'] = origin_station.get('L', 0.0)
         pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
 
-        # Assemble full station list and corresponding property vectors
-        stations_combo.extend(pre_stations)
         stations_combo.extend(pump_units)
-        stations_combo.extend(post_stations)
+        stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
+        kv_combo.extend(KV_list[1:])
+        rho_combo.extend(rho_list[1:])
 
-        kv_combo.extend(pre_kv)
-        kv_combo.extend([pump_visc] * len(pump_units))
-        kv_combo.extend(post_kv)
-
-        rho_combo.extend(pre_rho)
-        rho_combo.extend([pump_rho] * len(pump_units))
-        rho_combo.extend(post_rho)
-
-        try:
-            result = solve_pipeline(
-                stations_combo,
-                terminal,
-                FLOW,
-                kv_combo,
-                rho_combo,
-                RateDRA,
-                Price_HSD,
-                linefill_dict,
-                solver_timeout=solver_timeout,
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            result = {"error": True, "message": str(exc)}
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
         if result.get("error"):
-            attempts.append({"A": numA, "B": numB, "message": result.get("message", "")})
             continue
-
         cost = result.get("total_cost", float('inf'))
-        combo_names = {}
-        if numA:
-            combo_names[pump_types.get('A', {}).get('name', 'A')] = numA
-        if numB:
-            combo_names[pump_types.get('B', {}).get('name', 'B')] = numB
-        evaluated.append((cost, result, stations_combo, combo_names))
-
-    if evaluated:
-        _, best_result, best_stations, combo_names = min(evaluated, key=lambda x: x[0])
-        best_result['pump_combo'] = combo_names
-        if attempts:
-            best_result['attempted_combos'] = attempts
+        if cost < best_cost:
+            best_cost = cost
+            best_result = result
+            best_stations = stations_combo
+            best_result['pump_combo'] = {'A': numA, 'B': numB}
 
     if best_result is None:
         return {
             "error": True,
             "message": "No feasible pump combination found for originating station.",
-            "attempted_combos": attempts,
         }
 
     best_result['stations_used'] = best_stations
@@ -288,7 +216,6 @@ def solve_pipeline(
     RateDRA: float,
     Price_HSD: float,
     linefill_dict: dict | None = None,
-    solver_timeout: float = 600,
 ) -> dict:
     """Solve the pipeline optimisation for a fixed station configuration."""
 
@@ -362,12 +289,6 @@ def solve_pipeline(
         supply = float(stn.get('supply', 0.0))
         prev_flow = segment_flows[-1]
         out_flow = prev_flow - delivery + supply
-        if out_flow < -1e-6:
-            name = stn.get('name', '?')
-            raise ValueError(
-                f"Negative downstream flow after station {name}: "
-                f"{prev_flow} - {delivery} + {supply} = {out_flow}"
-            )
         segment_flows.append(out_flow)
 
     # Pipeline and pump parameters
@@ -613,40 +534,11 @@ def solve_pipeline(
         total_cost += power_cost + dra_cost_i
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
-    # Solve without auto-loading so infeasible runs don't emit warnings
-    if not _neos_available():
-        return {
-            "error": True,
-            "message": "NEOS server unreachable. Check your internet connection and try again later.",
-        }
-    stream = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(stream):
-            results = SolverManagerFactory('neos').solve(
-                model,
-                solver='couenne',
-                tee=False,
-                load_solutions=False,
-                options={'timelimit': solver_timeout},
-            )
-    except Exception as exc:  # pragma: no cover - network failure path
-        output = stream.getvalue().strip()
-        return {
-            "error": True,
-            "message": f"NEOS solver error: {exc}",
-            "solver_output": output,
-        }
-
+    # Solve
+    results = SolverManagerFactory('neos').solve(model, solver='couenne', tee=False)
     status = results.solver.status
     term = results.solver.termination_condition
-    if term == pyo.TerminationCondition.maxTimeLimit:
-        return {
-            "error": True,
-            "message": f"Optimization exceeded time limit of {solver_timeout} seconds.",
-            "termination_condition": str(term),
-            "solver_status": str(status),
-        }
-    if (status != pyo.SolverStatus.ok) or (term != pyo.TerminationCondition.optimal):
+    if (status != pyo.SolverStatus.ok) or (term not in [pyo.TerminationCondition.optimal, pyo.TerminationCondition.feasible]):
         return {
             "error": True,
             "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
