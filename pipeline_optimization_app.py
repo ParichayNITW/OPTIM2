@@ -140,7 +140,7 @@ def check_login():
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
-        if st.button("Login"):
+        if st.button("Login", key="loginbtn"):
             if username in users and hash_pwd(password) == users[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
@@ -157,7 +157,7 @@ def check_login():
         )
         st.stop()
     with st.sidebar:
-        if st.button("Logout"):
+        if st.button("Logout", key="logoutbtn"):
             st.session_state.authenticated = False
             st.rerun()
 check_login()
@@ -255,7 +255,7 @@ with st.sidebar:
             'delivery': 0.0,
             'supply': 0.0
         }]
-    if add_col.button("➕ Add Station"):
+    if add_col.button("➕ Add Station", key="add_station_btn"):
         n = len(st.session_state.get('stations',[])) + 1
         default = {
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -268,7 +268,7 @@ with st.sidebar:
             'supply': 0.0
         }
         st.session_state.stations.append(default)
-    if rem_col.button("🗑️ Remove Station"):
+    if rem_col.button("🗑️ Remove Station", key="remove_station_btn"):
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
@@ -565,7 +565,8 @@ st.sidebar.download_button(
     label="💾 Save Case",
     data=json.dumps(case_data, indent=2),
     file_name="pipeline_case.json",
-    mime="application/json"
+    mime="application/json",
+    key="save_case_btn"
 )
 
 def map_linefill_to_segments(linefill_df, stations):
@@ -866,7 +867,12 @@ if auto_batch:
     if 'batch_df' in st.session_state:
         df_batch = st.session_state['batch_df']
         st.dataframe(df_batch, use_container_width=True)
-        st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
+        st.download_button(
+            "Download Batch Results",
+            df_batch.to_csv(index=False),
+            file_name="batch_results.csv",
+            key="download_batch_results_btn"
+        )
         if len(df_batch) > 0:
             pc_cols = []
             for c in df_batch.columns:
@@ -1086,7 +1092,12 @@ if not auto_batch:
     
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
-            st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+            st.download_button(
+                "📥 Download CSV",
+                df_sum.to_csv(index=False).encode(),
+                file_name="results.csv",
+                key="download_results_csv_btn"
+            )
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
@@ -1280,11 +1291,12 @@ if not auto_batch:
                     df_cost_fmt[c] = df_cost_fmt[c].apply(lambda x: f"{x:.2f}")
             st.markdown("#### Tabular Cost Summary")
             st.dataframe(df_cost_fmt, use_container_width=True, hide_index=True)
-    
+
             st.download_button(
                 "📥 Download Station Cost (CSV)",
                 df_cost.to_csv(index=False).encode(),
-                file_name="station_cost.csv"
+                file_name="station_cost.csv",
+                key="download_station_cost_btn"
             )
     
             # --- KPI highlights ---
@@ -2488,7 +2500,12 @@ if not auto_batch:
             title=f"{output} vs {param} (Sensitivity)")
         df_sens = pd.DataFrame({param: pvals, output: yvals})
         st.dataframe(df_sens, use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
+        st.download_button(
+            "Download CSV",
+            df_sens.to_csv(index=False).encode(),
+            file_name="sensitivity.csv",
+            key="download_sensitivity_btn"
+        )
     
     
     
