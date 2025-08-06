@@ -567,6 +567,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
 
     importlib.reload(pipeline_model)
     solver_timeout = st.session_state.get("neos_timeout", 300)
+    solver_retries = st.session_state.get("neos_retries", 2)
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.solve_pipeline_multi_origin(
@@ -579,6 +580,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
                 Price_HSD,
                 linefill_dict,
                 solver_timeout=solver_timeout,
+                solver_retries=solver_retries,
             )
         return pipeline_model.solve_pipeline(
             stations,
@@ -590,6 +592,7 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
             Price_HSD,
             linefill_dict,
             solver_timeout=solver_timeout,
+            solver_retries=solver_retries,
         )
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
