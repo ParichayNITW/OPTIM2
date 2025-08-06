@@ -1562,25 +1562,27 @@ if not auto_batch:
                     eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
                     eff = max(0.01, eff/100)
                     P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
-                    speeds = np.arange(N_min, N_max+1, 100)
-                    power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
-                    fig_pwr = go.Figure()
-                    fig_pwr.add_trace(go.Scatter(
-                        x=speeds, y=power_curve, mode='lines+markers',
-                        name="Power vs Speed",
-                        marker_color="#1976D2",
-                        line=dict(width=3),
-                        hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW"
-                    ))
-                    fig_pwr.update_layout(
-                        title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
-                        xaxis_title="Speed (rpm)",
-                        yaxis_title="Power (kW)",
-                        font=dict(size=16),
-                        height=400
-                    )
-                    st.plotly_chart(fig_pwr, use_container_width=True)
-
+                    if N_max > 0:
+                        speeds = np.arange(N_min, N_max+1, 100)
+                        power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
+                        fig_pwr = go.Figure()
+                        fig_pwr.add_trace(go.Scatter(
+                            x=speeds, y=power_curve, mode='lines+markers',
+                            name="Power vs Speed",
+                            marker_color="#1976D2",
+                            line=dict(width=3),
+                            hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW",
+                        ))
+                        fig_pwr.update_layout(
+                            title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
+                            xaxis_title="Speed (rpm)",
+                            yaxis_title="Power (kW)",
+                            font=dict(size=16),
+                            height=400
+                        )
+                        st.plotly_chart(fig_pwr, use_container_width=True)
+                    else:
+                        st.warning("DOL speed not specified; skipping Power vs Speed plot.")
                     # --- 2. Power vs Flow (various speeds) ---
                     df_head = st.session_state.get(f"head_data_{i}")
                     if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
@@ -1640,9 +1642,14 @@ if not auto_batch:
                 visc = kv_list[i-1]
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
-                Re_vals = v_vals * d_inner_i / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                f_vals = np.where(Re_vals>0,
-                                  0.25/(np.log10(rough/d_inner_i/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                if visc > 0:
+                    Re_vals = v_vals * d_inner_i / (visc*1e-6)
+                    Re_pow = np.where(Re_vals>0, Re_vals**0.9, np.inf)
+                    term = rough/d_inner_i/3.7 + 5.74/Re_pow
+                    f_vals = np.where(Re_vals>0, 0.25/(np.log10(term)**2), 0.0)
+                else:
+                    Re_vals = np.zeros_like(v_vals)
+                    f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
                 n_curves = (max_dr // 5) + 1
                 color_palette = [
@@ -1752,9 +1759,14 @@ if not auto_batch:
                 n_dra = len(system_dra_steps)
                 for idx, dra in enumerate(system_dra_steps):
                     v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
-                    Re_vals = v_vals * d_inner / (visc*1e-6) if visc > 0 else np.zeros_like(v_vals)
-                    f_vals = np.where(Re_vals>0,
-                        0.25/(np.log10(rough/d_inner/3.7 + 5.74/(Re_vals**0.9))**2), 0.0)
+                    if visc > 0:
+                        Re_vals = v_vals * d_inner / (visc*1e-6)
+                        Re_pow = np.where(Re_vals>0, Re_vals**0.9, np.inf)
+                        term = rough/d_inner/3.7 + 5.74/Re_pow
+                        f_vals = np.where(Re_vals>0, 0.25/(np.log10(term)**2), 0.0)
+                    else:
+                        Re_vals = np.zeros_like(v_vals)
+                        f_vals = np.zeros_like(v_vals)
                     DH = f_vals * ((total_length*1000.0)/d_inner) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = max(0, current_elev) + DH
                     SDH_vals = np.clip(SDH_vals, 0, None)
