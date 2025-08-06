@@ -1320,15 +1320,17 @@ if not auto_batch:
                     if N_max == 0:
                         st.warning(f"Pump DOL (max RPM) not set for {stn['name']} — cannot plot characteristic curves.")
                         continue
-                    step = max(100, int((N_max-N_min)/5)) if N_max > N_min else 100
+                    rpm_vals = list(range(N_min, N_max+1, 100))
+                    if rpm_vals and rpm_vals[-1] != N_max:
+                        rpm_vals.append(N_max)
                     fig = go.Figure()
-                    for rpm in range(N_min, N_max+1, step):
+                    for rpm in rpm_vals:
                         if rpm == 0:
                             continue
                         Q_at_rpm = flows
-                        Q_equiv_DOL = Q_at_rpm * N_max / rpm
+                        Q_equiv_DOL = Q_at_rpm * N_max / rpm if rpm else Q_at_rpm
                         H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
-                        H = H_DOL * (rpm/N_max)**2
+                        H = H_DOL * (rpm/N_max)**2 if N_max else H_DOL
                         valid = H >= 0
                         fig.add_trace(go.Scatter(
                             x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
@@ -1368,12 +1370,11 @@ if not auto_batch:
                     S = stn.get('S', 0); T = stn.get('T', 0)
                     N_min = int(res.get(f"min_rpm_{key}", 0))
                     N_max = int(res.get(f"dol_{key}", 0))
-                    step = max(100, int((N_max-N_min)/4))  # 5 curves max
-            
+                    rpm_vals = list(range(N_min, N_max+1, 100))
+                    if rpm_vals and rpm_vals[-1] != N_max:
+                        rpm_vals.append(N_max)
                     fig = go.Figure()
-                    for rpm in range(N_min, N_max+1, step):
-                        # For each rpm, limit flows such that equivalent flow at DOL ≤ max user flow
-                        # Q_at_this_rpm * (DOL/rpm) ≤ flow_max  =>  Q_at_this_rpm ≤ flow_max * (rpm/DOL)
+                    for rpm in rpm_vals:
                         q_upper = flow_max * (rpm/N_max) if N_max else flow_max
                         flows = np.linspace(0, q_upper, 100)
                         Q_equiv = flows * N_max / rpm if rpm else flows
@@ -1409,25 +1410,27 @@ if not auto_batch:
                 names = [s['name'] for s in stations_data] + [terminal["name"]]
                 keys = [n.lower().replace(' ', '_') for n in names]
             
-                # Elevation profile (stations + peaks)
+                # Elevation profile (stations + peaks) converted to kg/cm²
                 elev_x, elev_y = [], []
                 for i, stn in enumerate(stations_data):
+                    rho_i = res.get(f"rho_{keys[i]}", 850.0)
                     elev_x.append(lengths[i])
-                    elev_y.append(stn['elev'])
+                    elev_y.append(stn['elev'] * rho_i / 10000.0)
                     if 'peaks' in stn and stn['peaks']:
                         for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                             pk_x = lengths[i] + pk['loc']
                             elev_x.append(pk_x)
-                            elev_y.append(pk['elev'])
+                            elev_y.append(pk['elev'] * rho_i / 10000.0)
+                rho_term = res.get(f"rho_{keys[-1]}", 850.0)
                 elev_x.append(lengths[-1])
-                elev_y.append(terminal['elev'])
-            
-                # RH and SDH at stations/terminal
-                rh_list = [res.get(f"residual_head_{k}", 0.0) for k in keys]
-                sdh_list = [res.get(f"sdh_{k}", 0.0) for k in keys]
-            
-                # MAOP: single line at max MAOP value across all segments (flat, not stepped)
-                maop_val = max([res.get(f"maop_{k}", 850.0) for k in keys[:-1]] + [850.0])
+                elev_y.append(terminal['elev'] * rho_term / 10000.0)
+
+                # RH and SDH at stations/terminal in kg/cm²
+                rh_list = [res.get(f"rh_kgcm2_{k}", 0.0) for k in keys]
+                sdh_list = [res.get(f"sdh_kgcm2_{k}", 0.0) for k in keys]
+
+                # MAOP: single line at max MAOP value across all segments (flat)
+                maop_val = max([res.get(f"maop_kgcm2_{k}", 85.0) for k in keys[:-1]] + [85.0])
                 maop_x = [lengths[0], lengths[-1]]
                 maop_y = [maop_val, maop_val]
             
@@ -1504,7 +1507,7 @@ if not auto_batch:
                 fig.update_layout(
                     title="Pipeline Hydraulics Profile: Pressure Optimization & Elevation",
                     xaxis_title="Pipeline Length (km)",
-                    yaxis_title="Elevation / Pressure Head (m)",
+                    yaxis_title="Elevation / Pressure (kg/cm²)",
                     font=dict(size=15, family="Segoe UI, Arial"),
                     legend=dict(font=dict(size=12), bgcolor="rgba(255,255,255,0.95)", bordercolor="#bbb", borderwidth=1, x=0.78, y=0.98),
                     height=560,
@@ -1576,9 +1579,11 @@ if not auto_batch:
                         flow_max = float(np.max(flow_user))
                     else:
                         flow_max = pump_flow
-                    step = max(100, int((N_max - N_min)/4)) if N_max > N_min else 100
+                    rpm_vals = list(range(N_min, N_max+1, 100))
+                    if rpm_vals and rpm_vals[-1] != N_max:
+                        rpm_vals.append(N_max)
                     fig_pwr2 = go.Figure()
-                    for rpm in range(N_min, N_max+1, step):
+                    for rpm in rpm_vals:
                         q_upper = flow_max * (rpm/N_max) if N_max else flow_max
                         flows = np.linspace(0, q_upper, 100)
                         Q_equiv = flows * N_max / rpm if rpm else flows
@@ -1780,7 +1785,9 @@ if not auto_batch:
                             else:
                                 blend = 0.5
                             color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
-                            H_pump = npump * ((A * flows**2 + B * flows + C) * (rpm / N_max) ** 2 if N_max else np.zeros_like(flows))
+                            Q_equiv = flows * N_max / rpm if rpm else flows
+                            H_DOL = A*Q_equiv**2 + B*Q_equiv + C
+                            H_pump = npump * (H_DOL * (rpm/N_max)**2 if N_max else H_DOL)
                             H_pump = np.clip(H_pump, 0, None)
                             label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
                             showlegend = (idx == 0 or idx == n_rpms-1)
