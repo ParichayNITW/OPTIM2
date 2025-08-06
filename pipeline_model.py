@@ -22,6 +22,7 @@ import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 import logging
 import socket
+import time
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
@@ -209,6 +210,7 @@ def solve_pipeline_multi_origin(
     Price_HSD: float,
     linefill_dict: dict | None = None,
     solver_timeout: float = 600,
+    solver_retries: int = 2,
 ) -> dict:
     """Enumerate pump combinations at the origin and select the least cost."""
 
@@ -317,6 +319,7 @@ def solve_pipeline_multi_origin(
                 Price_HSD,
                 linefill_dict,
                 solver_timeout=solver_timeout,
+                solver_retries=solver_retries,
             )
         except Exception as exc:  # pragma: no cover - defensive
             result = {"error": True, "message": str(exc)}
@@ -363,6 +366,7 @@ def solve_pipeline(
     Price_HSD: float,
     linefill_dict: dict | None = None,
     solver_timeout: float = 600,
+    solver_retries: int = 2,
 ) -> dict:
     """Solve the pipeline optimisation for a fixed station configuration."""
 
@@ -693,28 +697,33 @@ def solve_pipeline(
             "error": True,
             "message": "NEOS server unreachable. Check your internet connection and try again later.",
         }
-    stream = io.StringIO()
-    try:
-        # Capture both stdout and stderr so parse errors from NEOS do not
-        # leak stack traces to the caller.  Any messages returned by the
-        # remote solver are consolidated into ``solver_output``.
-        with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
-            results = SolverManagerFactory('neos').solve(
-                model,
-                solver='couenne',
-                tee=False,
-                load_solutions=False,
-                options={'timelimit': solver_timeout},
-            )
-    except Exception as exc:  # pragma: no cover - network failure path
-        output = stream.getvalue().strip()
-        msg = "NEOS solver error: Problem executing an event. No results are available."
-        if output and "no options line found" not in output.lower():
-            msg = f"NEOS solver error: {output.strip().splitlines()[-1]}"
-        return {
-            "error": True,
-            "message": msg,
-        }
+    results = None
+    solver_error = None
+    for attempt in range(solver_retries + 1):
+        stream = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+                results = SolverManagerFactory('neos').solve(
+                    model,
+                    solver='couenne',
+                    tee=False,
+                    load_solutions=False,
+                    options={'timelimit': solver_timeout},
+                )
+            solver_error = None
+            break
+        except Exception:  # pragma: no cover - network failure path
+            solver_error = stream.getvalue().strip()
+            if attempt < solver_retries:
+                time.sleep(1)
+            else:
+                msg = "NEOS solver error: Problem executing an event. No results are available."
+                if solver_error and "no options line found" not in solver_error.lower():
+                    msg = f"NEOS solver error: {solver_error.strip().splitlines()[-1]}"
+                return {
+                    "error": True,
+                    "message": msg,
+                }
 
     status = results.solver.status
     term = results.solver.termination_condition
