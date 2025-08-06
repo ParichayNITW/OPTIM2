@@ -31,13 +31,6 @@ logging.getLogger('pyomo.solvers').setLevel(logging.ERROR)
 
 # DRA curve files
 DRA_CSV_FILES = {
-    1: "1 cst.csv",
-    2: "2 cst.csv",
-    2.5: "2.5 cst.csv",
-    3: "3 cst.csv",
-    3.5: "3.5 cst.csv",
-    4: "4 cst.csv",
-    4.5: "4.5 cst.csv",
     10: "10 cst.csv",
     15: "15 cst.csv",
     20: "20 cst.csv",
@@ -715,10 +708,12 @@ def solve_pipeline(
             )
     except Exception as exc:  # pragma: no cover - network failure path
         output = stream.getvalue().strip()
+        msg = "NEOS solver error: Problem executing an event. No results are available."
+        if output and "no options line found" not in output.lower():
+            msg = f"NEOS solver error: {output.strip().splitlines()[-1]}"
         return {
             "error": True,
-            "message": f"NEOS solver error: {exc}",
-            "solver_output": output,
+            "message": msg,
         }
 
     status = results.solver.status
