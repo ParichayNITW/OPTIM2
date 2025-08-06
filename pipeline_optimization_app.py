@@ -937,7 +937,7 @@ if not auto_batch:
 
             import copy
             if not res or res.get("error"):
-                msg = res.get("message") or "Optimization failed"
+                msg = (res or {}).get("message") or "Optimization failed"
                 st.error(msg)
                 for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
                     st.session_state.pop(k, None)
