@@ -682,13 +682,25 @@ def solve_pipeline(
             "termination_condition": str(term),
             "solver_status": str(status),
         }
-    if (status != pyo.SolverStatus.ok) or (term != pyo.TerminationCondition.optimal):
-        return {
-            "error": True,
-            "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
-            "termination_condition": str(term),
-            "solver_status": str(status)
-        }
+
+    warning = None
+    if (status != pyo.SolverStatus.ok) or (
+        term not in (pyo.TerminationCondition.optimal, pyo.TerminationCondition.locallyOptimal)
+    ):
+        # If NEOS returned a solution despite a non-optimal termination
+        # condition, attempt to load it and flag the result so the caller
+        # can decide whether to accept it.  This mirrors Couenne's
+        # behaviour where a feasible (but not proven global) solution may
+        # still be useful.
+        if not results.solution:
+            return {
+                "error": True,
+                "message": f"Optimization failed: {term}. Please check your input values and relax constraints if necessary.",
+                "termination_condition": str(term),
+                "solver_status": str(status),
+            }
+        warning = f"Solver termination: {term}"
+
     model.solutions.load_from(results)
 
     # Collect results
@@ -825,4 +837,6 @@ def solve_pipeline(
     result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(term_rh, rho_term)
     result['total_cost'] = float(pyo.value(model.Obj)) if model.Obj is not None else 0.0
     result["error"] = False
+    if warning is not None:
+        result["warning"] = warning
     return result
