@@ -191,7 +191,7 @@ def test_generate_origin_combinations_respects_max_total_and_casts():
     assert combos == [(0, 1), (1, 0), (0, 2), (1, 1), (2, 0), (0, 3), (1, 2), (2, 1)]
 
 
-def test_solver_failure_returns_error(monkeypatch):
+def test_solver_failure_returns_error(monkeypatch, capsys):
     station = {
         'name': 'Origin',
         'D': 0.5,
@@ -211,7 +211,9 @@ def test_solver_failure_returns_error(monkeypatch):
 
     class DummyManager:
         def solve(self, *args, **kwargs):
-            raise ValueError("no Options line found")
+            print('neo stdout')
+            print('neo stderr', file=sys.stderr)
+            raise ValueError('no Options line found')
 
     monkeypatch.setattr(pm, 'SolverManagerFactory', lambda *args, **kwargs: DummyManager())
     monkeypatch.setattr(pm, '_neos_available', lambda: True)
@@ -226,6 +228,10 @@ def test_solver_failure_returns_error(monkeypatch):
         Price_HSD=1.0,
     )
 
+    out, err = capsys.readouterr()
+    assert out == ''
+    assert err == ''
     assert res['error'] is True
     assert 'no Options line found' in res['message']
-    assert 'solver_output' in res
+    assert 'neo stdout' in res['solver_output']
+    assert 'neo stderr' in res['solver_output']

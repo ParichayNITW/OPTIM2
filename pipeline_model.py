@@ -649,7 +649,10 @@ def solve_pipeline(
         }
     stream = io.StringIO()
     try:
-        with contextlib.redirect_stdout(stream):
+        # Capture both stdout and stderr so parse errors from NEOS do not
+        # leak stack traces to the caller.  Any messages returned by the
+        # remote solver are consolidated into ``solver_output``.
+        with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             results = SolverManagerFactory('neos').solve(
                 model,
                 solver='couenne',
