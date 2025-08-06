@@ -708,10 +708,12 @@ def solve_pipeline(
             )
     except Exception as exc:  # pragma: no cover - network failure path
         output = stream.getvalue().strip()
+        msg = "NEOS solver error: Problem executing an event. No results are available."
+        if output and "no options line found" not in output.lower():
+            msg = f"NEOS solver error: {output.strip().splitlines()[-1]}"
         return {
             "error": True,
-            "message": f"NEOS solver error: {exc}",
-            "solver_output": output,
+            "message": msg,
         }
 
     status = results.solver.status
