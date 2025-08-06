@@ -19,6 +19,7 @@ import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverManagerFactory
 import logging
+import socket
 
 os.environ['NEOS_EMAIL'] = os.environ.get('NEOS_EMAIL', 'parichay.nitwarangal@gmail.com')
 
@@ -42,6 +43,26 @@ for cst, fname in DRA_CSV_FILES.items():
         DRA_CURVE_DATA[cst] = pd.read_csv(fname)
     else:
         DRA_CURVE_DATA[cst] = None
+
+
+def _neos_available(host: str = "neos-server.org", port: int = 3333, timeout: int = 5) -> bool:
+    """Return ``True`` if the NEOS server appears reachable.
+
+    Parameters
+    ----------
+    host: str
+        Hostname of the NEOS server.
+    port: int
+        Port number for the NEOS XML-RPC interface.
+    timeout: int
+        Connection timeout in seconds.
+    """
+
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except OSError:
+        return False
 
 
 def head_to_kgcm2(head_m: float, rho: float) -> float:
@@ -583,9 +604,21 @@ def solve_pipeline(
     model.Obj = pyo.Objective(expr=total_cost, sense=pyo.minimize)
 
     # Solve without auto-loading so infeasible runs don't emit warnings
-    results = SolverManagerFactory('neos').solve(
-        model, solver='couenne', tee=False, load_solutions=False
-    )
+    if not _neos_available():
+        return {
+            "error": True,
+            "message": "NEOS server unreachable. Check your internet connection and try again later.",
+        }
+    try:
+        results = SolverManagerFactory('neos').solve(
+            model, solver='couenne', tee=False, load_solutions=False
+        )
+    except Exception as exc:  # pragma: no cover - network failure path
+        return {
+            "error": True,
+            "message": f"Failed to contact NEOS solver: {exc}",
+        }
+
     status = results.solver.status
     term = results.solver.termination_condition
     if (status != pyo.SolverStatus.ok) or (term != pyo.TerminationCondition.optimal):
