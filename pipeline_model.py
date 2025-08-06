@@ -298,9 +298,14 @@ def solve_pipeline_multi_origin(
             best_result['attempted_combos'] = attempts
 
     if best_result is None:
+        message = "No feasible pump combination found for originating station."
+        if attempts:
+            msgs = {a.get("message") for a in attempts if a.get("message")}
+            if len(msgs) == 1:
+                message = msgs.pop()
         return {
             "error": True,
-            "message": "No feasible pump combination found for originating station.",
+            "message": message,
             "attempted_combos": attempts,
         }
 

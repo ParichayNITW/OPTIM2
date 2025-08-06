@@ -186,6 +186,29 @@ def test_no_feasible_combination_returns_error(monkeypatch):
     assert attempts == expected
 
 
+def test_propagates_common_failure_message(monkeypatch):
+    origin = _base_origin_station()
+    stations = [origin, _downstream_station()]
+
+    def failing_solver(*args, **kwargs):
+        return {"error": True, "message": "NEOS offline"}
+
+    monkeypatch.setattr(pm, "solve_pipeline", failing_solver)
+
+    result = pm.solve_pipeline_multi_origin(
+        stations,
+        terminal={},
+        FLOW=100.0,
+        KV_list=[1.0, 1.0],
+        rho_list=[1000.0, 1000.0],
+        RateDRA=0.0,
+        Price_HSD=1.0,
+    )
+
+    assert result["error"] is True
+    assert result["message"] == "NEOS offline"
+
+
 def test_generate_origin_combinations_respects_max_total_and_casts():
     combos = pm.generate_origin_combinations(2.0, 3.0, max_total=3)
     assert combos == [(0, 1), (1, 0), (0, 2), (1, 1), (2, 0), (0, 3), (1, 2), (2, 1)]

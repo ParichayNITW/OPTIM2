@@ -977,6 +977,8 @@ if not auto_batch:
                 if not res or res.get("error"):
                     msg = (res or {}).get("message") or "Optimization failed"
                     st.error(msg)
+                    if res and res.get("attempted_combos"):
+                        st.json(res["attempted_combos"])
                     for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
                         st.session_state.pop(k, None)
                 else:
