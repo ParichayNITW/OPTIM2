@@ -14,6 +14,8 @@ import os
 from math import log10, pi
 
 import copy
+import io
+import contextlib
 import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
@@ -617,18 +619,22 @@ def solve_pipeline(
             "error": True,
             "message": "NEOS server unreachable. Check your internet connection and try again later.",
         }
+    stream = io.StringIO()
     try:
-        results = SolverManagerFactory('neos').solve(
-            model,
-            solver='couenne',
-            tee=False,
-            load_solutions=False,
-            options={'timelimit': solver_timeout},
-        )
+        with contextlib.redirect_stdout(stream):
+            results = SolverManagerFactory('neos').solve(
+                model,
+                solver='couenne',
+                tee=False,
+                load_solutions=False,
+                options={'timelimit': solver_timeout},
+            )
     except Exception as exc:  # pragma: no cover - network failure path
+        output = stream.getvalue().strip()
         return {
             "error": True,
-            "message": f"Failed to contact NEOS solver: {exc}",
+            "message": f"NEOS solver error: {exc}",
+            "solver_output": output,
         }
 
     status = results.solver.status

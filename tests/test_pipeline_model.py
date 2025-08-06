@@ -184,3 +184,43 @@ def test_no_feasible_combination_returns_error(monkeypatch):
         (1, 0), (0, 1), (2, 0), (1, 1), (0, 2), (2, 1), (1, 2), (2, 2)
     }
     assert attempts == expected
+
+
+def test_solver_failure_returns_error(monkeypatch):
+    station = {
+        'name': 'Origin',
+        'D': 0.5,
+        't': 0.01,
+        'rough': 0.000045,
+        'L': 10.0,
+        'is_pump': True,
+        'head_data': [[0, 100], [1, 100], [2, 100]],
+        'eff_data': [[0, 1], [1, 1], [2, 1], [3, 1], [4, 1]],
+        'MinRPM': 1000,
+        'DOL': 2000,
+        'pump_types': {"A": {"available": 1, "name": "A", "head_data": [[0,100],[1,100],[2,100]],
+                              "eff_data": [[0,1],[1,1],[2,1],[3,1],[4,1]], "power_type":"Grid", "rate":1.0,
+                              "sfc":0.0, "MinRPM":1000, "DOL":2000}}
+    }
+    terminal = {'name': 'T', 'min_residual': 50.0}
+
+    class DummyManager:
+        def solve(self, *args, **kwargs):
+            raise ValueError("no Options line found")
+
+    monkeypatch.setattr(pm, 'SolverManagerFactory', lambda *args, **kwargs: DummyManager())
+    monkeypatch.setattr(pm, '_neos_available', lambda: True)
+
+    res = pm.solve_pipeline(
+        [station],
+        terminal,
+        FLOW=100.0,
+        KV_list=[1.0],
+        rho_list=[1000.0],
+        RateDRA=0.0,
+        Price_HSD=1.0,
+    )
+
+    assert res['error'] is True
+    assert 'no Options line found' in res['message']
+    assert 'solver_output' in res
