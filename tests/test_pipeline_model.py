@@ -156,3 +156,26 @@ def test_only_type_b(monkeypatch):
     assert result['pump_combo'] == {'Beta': 1}
     assert result['head_total'] == 90.0
     assert result['eff_list'] == [0.9]
+
+
+def test_no_feasible_combination_returns_error(monkeypatch):
+    origin = _base_origin_station()
+    stations = [origin, _downstream_station()]
+
+    def failing_solver(*args, **kwargs):
+        return {"error": True}
+
+    monkeypatch.setattr(pm, "solve_pipeline", failing_solver)
+
+    result = pm.solve_pipeline_multi_origin(
+        stations,
+        terminal={},
+        FLOW=100.0,
+        KV_list=[1.0, 1.0],
+        rho_list=[1000.0, 1000.0],
+        RateDRA=0.0,
+        Price_HSD=1.0,
+    )
+
+    assert result["error"] is True
+    assert "No feasible pump combination" in result["message"]
