@@ -569,16 +569,29 @@ st.sidebar.download_button(
 )
 
 def map_linefill_to_segments(linefill_df, stations):
-    """Map linefill properties onto each pipeline segment."""
+    """Map linefill properties onto each pipeline segment.
+
+    The original helper expected ``linefill_df`` to contain at least one
+    row.  When a user cleared the linefill table the function raised an
+    ``IndexError`` which in turn caused the Streamlit interface to abort
+    without displaying any error.  To make the application robust we now
+    guard against empty data and fall back to sensible defaults.
+    """
 
     cumlen = [0]
     for stn in stations:
         cumlen.append(cumlen[-1] + stn["L"])
+
+    # If no linefill data are provided, assume uniform properties
+    if linefill_df is None or linefill_df.empty:
+        default_visc = 1.0
+        default_den = 800.0
+        return [default_visc] * len(stations), [default_den] * len(stations)
+
     viscs = []
     dens = []
     for i in range(len(stations)):
         seg_start = cumlen[i]
-        seg_end = cumlen[i+1]
         found = False
         for _, row in linefill_df.iterrows():
             if row["Start (km)"] <= seg_start < row["End (km)"]:
@@ -882,72 +895,74 @@ if not auto_batch:
     st.markdown("</div>", unsafe_allow_html=True)
     if run:
         with st.spinner("Solving optimization..."):
-            stations_data = st.session_state.stations
-            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-            # Always ensure linefill_df, kv_list, rho_list are defined!
-            linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+            try:
+                stations_data = st.session_state.stations
+                term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+                # Always ensure linefill_df, kv_list, rho_list are defined!
+                linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+                kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
 
-            
-            # ------------- ADD THIS BLOCK -------------
-            import pandas as pd
-            import numpy as np
-    
-            for idx, stn in enumerate(stations_data, start=1):
-                if stn.get('is_pump', False):
-                    if idx == 1 and 'pump_types' in stn:
-                        for ptype in ['A', 'B']:
-                            if ptype not in stn['pump_types']:
-                                continue
-                            if stn['pump_types'][ptype].get('available', 0) == 0:
-                                continue
-                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
-                            stn['pump_types'][ptype]['head_data'] = dfh
-                            stn['pump_types'][ptype]['eff_data'] = dfe
-                    else:
-                        dfh = st.session_state.get(f"head_data_{idx}")
-                        dfe = st.session_state.get(f"eff_data_{idx}")
-                        if dfh is None and "head_data" in stn:
-                            dfh = pd.DataFrame(stn["head_data"])
-                        if dfe is None and "eff_data" in stn:
-                            dfe = pd.DataFrame(stn["eff_data"])
-                        if dfh is not None and len(dfh) >= 3:
-                            Qh = dfh.iloc[:, 0].values
-                            Hh = dfh.iloc[:, 1].values
-                            coeff = np.polyfit(Qh, Hh, 2)
-                            stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                        if dfe is not None and len(dfe) >= 5:
-                            Qe = dfe.iloc[:, 0].values
-                            Ee = dfe.iloc[:, 1].values
-                            coeff_e = np.polyfit(Qe, Ee, 4)
-                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
-            # ------------- END OF BLOCK -------------
+                import pandas as pd
+                import numpy as np
 
-            res = solve_pipeline(
-                stations_data,
-                term_data,
-                FLOW,
-                kv_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                linefill_df.to_dict(),
-            )
+                for idx, stn in enumerate(stations_data, start=1):
+                    if stn.get('is_pump', False):
+                        if idx == 1 and 'pump_types' in stn:
+                            for ptype in ['A', 'B']:
+                                if ptype not in stn['pump_types']:
+                                    continue
+                                if stn['pump_types'][ptype].get('available', 0) == 0:
+                                    continue
+                                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                                stn['pump_types'][ptype]['head_data'] = dfh
+                                stn['pump_types'][ptype]['eff_data'] = dfe
+                        else:
+                            dfh = st.session_state.get(f"head_data_{idx}")
+                            dfe = st.session_state.get(f"eff_data_{idx}")
+                            if dfh is None and "head_data" in stn:
+                                dfh = pd.DataFrame(stn["head_data"])
+                            if dfe is None and "eff_data" in stn:
+                                dfe = pd.DataFrame(stn["eff_data"])
+                            if dfh is not None and len(dfh) >= 3:
+                                Qh = dfh.iloc[:, 0].values
+                                Hh = dfh.iloc[:, 1].values
+                                coeff = np.polyfit(Qh, Hh, 2)
+                                stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                            if dfe is not None and len(dfe) >= 5:
+                                Qe = dfe.iloc[:, 0].values
+                                Ee = dfe.iloc[:, 1].values
+                                coeff_e = np.polyfit(Qe, Ee, 4)
+                                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
-            import copy
-            if not res or res.get("error"):
-                msg = (res or {}).get("message") or "Optimization failed"
-                st.error(msg)
+                res = solve_pipeline(
+                    stations_data,
+                    term_data,
+                    FLOW,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    linefill_df.to_dict(),
+                )
+            except Exception as exc:  # pragma: no cover - show front-end error
+                st.error(f"Optimization failed: {exc}")
                 for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
                     st.session_state.pop(k, None)
             else:
-                st.session_state["last_res"] = copy.deepcopy(res)
-                st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
-                st.session_state["last_term_data"] = copy.deepcopy(term_data)
-                st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-                # --- CRUCIAL LINE TO FORCE UI REFRESH ---
-                st.rerun()
+                import copy
+                if not res or res.get("error"):
+                    msg = (res or {}).get("message") or "Optimization failed"
+                    st.error(msg)
+                    for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
+                        st.session_state.pop(k, None)
+                else:
+                    st.session_state["last_res"] = copy.deepcopy(res)
+                    st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
+                    st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                    st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+                    # --- CRUCIAL LINE TO FORCE UI REFRESH ---
+                    st.rerun()
 
 
 if not auto_batch:
