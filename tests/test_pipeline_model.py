@@ -186,6 +186,11 @@ def test_no_feasible_combination_returns_error(monkeypatch):
     assert attempts == expected
 
 
+def test_generate_origin_combinations_respects_max_total_and_casts():
+    combos = pm.generate_origin_combinations(2.0, 3.0, max_total=3)
+    assert combos == [(0, 1), (1, 0), (0, 2), (1, 1), (2, 0), (0, 3), (1, 2), (2, 1)]
+
+
 def test_solver_failure_returns_error(monkeypatch):
     station = {
         'name': 'Origin',

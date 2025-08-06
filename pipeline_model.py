@@ -122,19 +122,40 @@ def get_ppm_breakpoints(visc: float) -> tuple[list[float], list[float]]:
     unique_y = y[unique_indices]
     return list(unique_x), list(unique_y)
 
-def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int, int]]:
+def generate_origin_combinations(
+    maxA: int = 2,
+    maxB: int = 2,
+    max_total: int | None = None,
+) -> list[tuple[int, int]]:
     """Return all feasible pump count combinations for the origin station.
 
-    The combinations are sorted by the total number of pumps so that smaller
-    configurations are tried first during optimisation.
+    Parameters
+    ----------
+    maxA, maxB:
+        Maximum available pumps of type ``A`` and ``B``.
+    max_total:
+        Optional upper bound on the total number of pumps to consider.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        Sorted list of ``(numA, numB)`` tuples.
     """
 
-    combos = [
-        (a, b)
-        for a in range(maxA + 1)
-        for b in range(maxB + 1)
-        if a + b > 0
-    ]
+    maxA = int(maxA)
+    maxB = int(maxB)
+    if max_total is not None:
+        max_total = int(max_total)
+
+    combos = []
+    for a in range(maxA + 1):
+        for b in range(maxB + 1):
+            if a + b == 0:
+                continue
+            if max_total is not None and a + b > max_total:
+                continue
+            combos.append((a, b))
+
     return sorted(combos, key=lambda x: (x[0] + x[1], x))
 
 def solve_pipeline_multi_origin(
@@ -156,7 +177,14 @@ def solve_pipeline_multi_origin(
     combos = generate_origin_combinations(
         pump_types.get('A', {}).get('available', 0),
         pump_types.get('B', {}).get('available', 0),
+        origin_station.get('max_pumps')
     )
+
+    if not combos:
+        return {
+            "error": True,
+            "message": "No pump types enabled at origin station.",
+        }
 
     # Pre- and post-origin segments stay untouched; only the origin station is expanded
     pre_stations = copy.deepcopy(stations[:origin_index])
