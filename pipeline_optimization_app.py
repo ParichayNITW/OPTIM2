@@ -99,7 +99,7 @@ def check_login():
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
-        if st.button("Login"):
+        if st.button("Login", key="login_btn"):
             if username in users and hash_pwd(password) == users[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
@@ -116,7 +116,7 @@ def check_login():
         )
         st.stop()
     with st.sidebar:
-        if st.button("Logout"):
+        if st.button("Logout", key="logout_btn"):
             st.session_state.authenticated = False
             st.rerun()
 check_login()
