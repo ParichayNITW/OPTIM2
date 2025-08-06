@@ -121,11 +121,6 @@ def check_login():
             st.rerun()
 check_login()
 
-if 'NEOS_EMAIL' in st.secrets:
-    os.environ['NEOS_EMAIL'] = st.secrets['NEOS_EMAIL']
-else:
-    st.error("🛑 Please set NEOS_EMAIL in Streamlit secrets.")
-
 # ==== 1. EARLY LOAD/RESTORE BLOCK ====
 def restore_case_dict(loaded_data):
     """Populate ``st.session_state`` from a saved case dictionary."""
