@@ -254,7 +254,7 @@ def solve_pipeline(
         prev_flow = segment_flows[-1]
         segment_flows.append(prev_flow - delivery + supply)
 
-    residual = stations[0].get('min_residual', 50.0)
+    residual = terminal.get('min_residual', 0.0)
     result = {}
     total_cost = 0.0
     last_maop_head = 0.0
@@ -263,11 +263,12 @@ def solve_pipeline(
     default_t = 0.007
     default_e = 0.00004
 
-    for i, stn in enumerate(stations, start=1):
+    for idx in range(N, 0, -1):
+        stn = stations[idx - 1]
         name = stn['name'].strip().lower().replace(' ', '_')
-        flow = segment_flows[i]
-        kv = KV_list[i - 1]
-        rho = rho_list[i - 1]
+        flow = segment_flows[idx]
+        kv = KV_list[idx - 1]
+        rho = rho_list[idx - 1]
 
         L = stn.get('L', 0.0)
         if 'D' in stn:
@@ -287,7 +288,9 @@ def solve_pipeline(
         maop_kgcm2 = maop_psi * 0.0703069
         maop_head = maop_kgcm2 * 10000.0 / rho if rho > 0 else 0.0
 
-        # Evaluate options
+        elev_i = stn.get('elev', 0.0)
+        elev_next = terminal.get('elev', 0.0) if idx == N else stations[idx].get('elev', 0.0)
+
         if stn.get('is_pump', False):
             min_p = stn.get('min_pumps', 1)
             max_p = stn.get('max_pumps', 2)
@@ -303,13 +306,13 @@ def solve_pipeline(
                     if flow > max_flow_total:
                         continue
                 head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
+                residual_start = residual + head_loss + (elev_next - elev_i)
+                required_tdh = max(residual_start - stn.get('min_residual', 50.0), 0.0)
                 tdh, eff = _pump_head(stn, flow, rpm, nop)
-                if tdh <= 0:
+                if tdh + 1e-6 < required_tdh:
                     continue
-                elev_i = stn.get('elev', 0.0)
-                elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
-                residual_next = residual + tdh - head_loss - (elev_next - elev_i)
-                if residual_next < stn.get('min_residual', 50.0):
+                residual_up = residual_start - tdh
+                if residual_up + 1e-6 < stn.get('min_residual', 50.0):
                     continue
                 eff = max(eff, 1e-6)
                 hydraulic_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0)
@@ -327,14 +330,11 @@ def solve_pipeline(
                 ppm = max(get_ppm_for_dr(kv, dra), 0.0)
                 dra_cost = ppm * (flow * 1000.0 * hours / 1e6) * RateDRA
                 cost = power_cost + dra_cost
-                if cost < 0:
-                    continue
                 if best is None or cost < best['cost']:
                     best = {
                         'nop': nop,
                         'rpm': rpm,
                         'dra': dra,
-                        'residual_next': residual_next,
                         'head_loss': head_loss,
                         'v': v,
                         'Re': Re,
@@ -348,12 +348,14 @@ def solve_pipeline(
                         'motor_kw': motor_kW,
                         'energy_kwh': motor_kW * hours,
                         'cost': cost,
+                        'residual_up': residual_up,
+                        'residual_start': residual_start,
                     }
             if best is None:
                 return {"error": True, "message": f"No feasible operating point for {stn['name']}."}
-            # Record
+            residual = best['residual_up']
             result[f"pipeline_flow_{name}"] = flow
-            result[f"pipeline_flow_in_{name}"] = segment_flows[i - 1]
+            result[f"pipeline_flow_in_{name}"] = segment_flows[idx - 1]
             result[f"pump_flow_{name}"] = flow
             result[f"num_pumps_{name}"] = best['nop']
             result[f"speed_{name}"] = best['rpm']
@@ -369,10 +371,9 @@ def solve_pipeline(
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(best['head_loss'], rho)
             result[f"residual_head_{name}"] = residual
             result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
-            sdh_val = residual + best['tdh']
+            sdh_val = best['residual_start']
             result[f"sdh_{name}"] = sdh_val
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(sdh_val, rho)
-            # expose pump coefficients and speed limits for plotting
             result[f"coef_A_{name}"] = float(stn.get('A', 0.0))
             result[f"coef_B_{name}"] = float(stn.get('B', 0.0))
             result[f"coef_C_{name}"] = float(stn.get('C', 0.0))
@@ -383,20 +384,15 @@ def solve_pipeline(
             result[f"coef_T_{name}"] = float(stn.get('T', 0.0))
             result[f"min_rpm_{name}"] = int(stn.get('MinRPM', 0))
             result[f"dol_{name}"] = int(stn.get('DOL', 0))
-            v = best['v']
-            Re = best['Re']
-            f = best['f']
-            cost = best['cost']
-            residual_next = best['residual_next']
+            v = best['v']; Re = best['Re']; f = best['f']; cost = best['cost']
         else:
             head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, 0.0)
-            elev_i = stn.get('elev', 0.0)
-            elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
-            residual_next = residual - head_loss - (elev_next - elev_i)
-            if residual_next < stn.get('min_residual', 50.0):
+            residual_start = residual + head_loss + (elev_next - elev_i)
+            if residual_start < stn.get('min_residual', 50.0):
                 return {"error": True, "message": f"Residual head below minimum after {stn['name']}"}
+            residual = residual_start
             result[f"pipeline_flow_{name}"] = flow
-            result[f"pipeline_flow_in_{name}"] = segment_flows[i - 1]
+            result[f"pipeline_flow_in_{name}"] = segment_flows[idx - 1]
             result[f"pump_flow_{name}"] = 0.0
             result[f"num_pumps_{name}"] = 0
             result[f"speed_{name}"] = 0.0
@@ -412,7 +408,7 @@ def solve_pipeline(
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(head_loss, rho)
             result[f"residual_head_{name}"] = residual
             result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
-            result[f"sdh_{name}"] = residual  # no pump, SDH equals RH
+            result[f"sdh_{name}"] = residual
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
             result[f"coef_A_{name}"] = 0.0
             result[f"coef_B_{name}"] = 0.0
@@ -425,6 +421,7 @@ def solve_pipeline(
             result[f"min_rpm_{name}"] = 0
             result[f"dol_{name}"] = 0
             cost = 0.0
+
         result[f"rho_{name}"] = rho
         result[f"maop_{name}"] = maop_head
         result[f"maop_kgcm2_{name}"] = maop_kgcm2
@@ -432,12 +429,12 @@ def solve_pipeline(
         result[f"reynolds_{name}"] = Re
         result[f"friction_{name}"] = f
         total_cost += cost
-        residual = residual_next
-        last_maop_head = maop_head
-        last_maop_kg = maop_kgcm2
+        if idx == N:
+            last_maop_head = maop_head
+            last_maop_kg = maop_kgcm2
 
-    # Terminal summary
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
+    term_residual = terminal.get('min_residual', 0.0)
     result.update({
         f"pipeline_flow_{term_name}": segment_flows[-1],
         f"pipeline_flow_in_{term_name}": segment_flows[-2],
@@ -457,10 +454,10 @@ def solve_pipeline(
         f"reynolds_{term_name}": 0.0,
         f"friction_{term_name}": 0.0,
         f"sdh_{term_name}": 0.0,
-        f"residual_head_{term_name}": residual,
+        f"residual_head_{term_name}": term_residual,
     })
     rho_term = rho_list[-1]
-    result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
+    result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(term_residual, rho_term)
     result[f"sdh_kgcm2_{term_name}"] = 0.0
     result[f"rho_{term_name}"] = rho_term
     result[f"maop_{term_name}"] = last_maop_head
