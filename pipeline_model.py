@@ -321,11 +321,15 @@ def solve_pipeline(
                         continue
                 head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
                 residual_start = residual + head_loss + (elev_next - elev_i)
-                required_tdh = max(stn.get('min_residual', 50.0) - residual_start, 0.0)
+                # ``residual_start`` represents the discharge head (SDH) needed at
+                # this station to meet the downstream requirements.  The pump adds
+                # ``tdh`` head so the suction head upstream of the pumps is
+                # ``residual_start - tdh``.  This upstream residual must not fall
+                # below the station's minimum residual requirement.
                 tdh, eff = _pump_head(stn, flow, rpm, nop)
-                if tdh + 1e-6 < required_tdh:
+                residual_up = residual_start - tdh
+                if residual_up + 1e-6 < stn.get('min_residual', 50.0):
                     continue
-                residual_up = residual_start + tdh
                 eff = max(eff, 1e-6)
                 hydraulic_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0)
                 bkw = hydraulic_kW / (eff / 100.0) if rpm > 0 else 0.0
