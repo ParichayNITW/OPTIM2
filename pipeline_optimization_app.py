@@ -542,12 +542,19 @@ def fmt_pressure(res, key_m, key_kg):
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
 def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
-    """Wrapper around :mod:`pipeline_model` to allow hot-reloading."""
+    """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
     import pipeline_model
     import importlib
+    import copy
 
     importlib.reload(pipeline_model)
+
+    stations = copy.deepcopy(stations)
+    first_pump = next((s for s in stations if s.get('is_pump')), None)
+    if first_pump and first_pump.get('min_pumps', 0) < 1:
+        first_pump['min_pumps'] = 1
+
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.solve_pipeline_multi_origin(
@@ -1008,7 +1015,19 @@ if not auto_batch:
                 ]
     
             df_sum = pd.DataFrame(summary)
-    
+
+            # Remove pump station columns where no pumps are operating
+            drop_cols = []
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ', '_')
+                if stn.get('is_pump', False) and int(res.get(f"num_pumps_{key}", 0)) == 0:
+                    drop_cols.append(stn['name'])
+            if drop_cols:
+                df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
+
+            # Store numeric summary for later use before formatting
+            st.session_state["summary_table"] = df_sum.copy()
+
             # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
             for col in df_sum.columns:
                 if col != "Parameters":
