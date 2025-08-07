@@ -22,6 +22,8 @@ from dra_utils import (
     get_ppm_for_dr,
     DRA_CURVE_DATA,
 )
+# Import the backend once so repeated calls don't re-execute module level code
+import pipeline_model
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
@@ -116,7 +118,9 @@ def check_login():
         )
         st.stop()
     with st.sidebar:
-        if st.button("Logout", key="logout_btn"):
+        # Use a unique key to avoid clashes if other modules define their own
+        # logout buttons during development reloads.
+        if st.button("Logout", key="main_logout_btn"):
             st.session_state.authenticated = False
             st.rerun()
 check_login()
@@ -625,12 +629,8 @@ def solve_pipeline(
     linefill,
     hours,
 ):
-    """Wrapper around :mod:`pipeline_model` to allow hot-reloading."""
+    """Wrapper around :mod:`pipeline_model` backend."""
 
-    import pipeline_model
-    import importlib
-
-    importlib.reload(pipeline_model)
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.solve_pipeline_multi_origin(
@@ -671,10 +671,6 @@ def optimise_throughput(
 ):
     """Wrapper around :func:`pipeline_model.optimise_throughput`."""
 
-    import pipeline_model
-    import importlib
-
-    importlib.reload(pipeline_model)
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.optimise_throughput_multi_origin(
@@ -703,11 +699,6 @@ def optimise_throughput(
 
 def optimise_pumping_plan(stations, terminal, linefill, plan, RateDRA, Price_HSD):
     """Wrapper around :func:`pipeline_model.optimise_pumping_plan`."""
-
-    import pipeline_model
-    import importlib
-
-    importlib.reload(pipeline_model)
     try:
         return pipeline_model.optimise_pumping_plan(
             stations,
