@@ -10,7 +10,6 @@ solver is available.
 from __future__ import annotations
 
 from math import log10, pi
-from itertools import product
 import copy
 
 from dra_utils import get_ppm_for_dr
@@ -120,6 +119,7 @@ def solve_pipeline(
     default_t = 0.007
     default_e = 0.00004
 
+    origin_enforced = False
     for i, stn in enumerate(stations, start=1):
         flow = segment_flows[i]
         kv = KV_list[i - 1]
@@ -145,48 +145,61 @@ def solve_pipeline(
 
         # Evaluate options
         if stn.get('is_pump', False):
-            min_p = stn.get('min_pumps', 1)
+            min_p = stn.get('min_pumps', 0)
+            if not origin_enforced:
+                min_p = max(1, min_p)
+                origin_enforced = True
             max_p = stn.get('max_pumps', 2)
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
             dra_vals = _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
             best = None
-            for nop, rpm, dra in product(range(min_p, max_p + 1), rpm_vals, dra_vals):
-                head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
-                tdh, eff = _pump_head(stn, flow, rpm, nop)
-                elev_i = stn.get('elev', 0.0)
-                elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
-                residual_next = residual + tdh - head_loss - (elev_next - elev_i)
-                if residual_next < stn.get('min_residual', 50.0):
-                    continue
-                eff = max(eff, 1e-6)
-                power_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0) * 0.95) if rpm > 0 else 0.0
-                if stn.get('sfc', 0):
-                    sfc_val = stn['sfc']
-                    fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                    power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
-                else:
-                    rate = stn.get('rate', 0.0)
-                    power_cost = power_kW * 24.0 * rate
-                ppm = get_ppm_for_dr(kv, dra)
-                dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA
-                cost = power_cost + dra_cost
-                if best is None or cost < best['cost']:
-                    best = {
-                        'nop': nop,
-                        'rpm': rpm,
-                        'dra': dra,
-                        'residual_next': residual_next,
-                        'head_loss': head_loss,
-                        'v': v,
-                        'Re': Re,
-                        'f': f,
-                        'tdh': tdh,
-                        'eff': eff,
-                        'power_cost': power_cost,
-                        'dra_cost': dra_cost,
-                        'dra_ppm': ppm,
-                        'cost': cost,
-                    }
+            for nop in range(min_p, max_p + 1):
+                rpm_opts = [0] if nop == 0 else rpm_vals
+                dra_opts = [0] if nop == 0 else dra_vals
+                for rpm in rpm_opts:
+                    for dra in dra_opts:
+                        head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
+                        if nop > 0:
+                            tdh, eff = _pump_head(stn, flow, rpm, nop)
+                        else:
+                            tdh, eff = 0.0, 0.0
+                        elev_i = stn.get('elev', 0.0)
+                        elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
+                        residual_next = residual + tdh - head_loss - (elev_next - elev_i)
+                        if residual_next < stn.get('min_residual', 50.0):
+                            continue
+                        eff = max(eff, 1e-6) if nop > 0 else 0.0
+                        if nop > 0 and rpm > 0:
+                            power_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0) * 0.95)
+                        else:
+                            power_kW = 0.0
+                        if stn.get('sfc', 0) and power_kW > 0:
+                            sfc_val = stn['sfc']
+                            fuel_per_kWh = (sfc_val * 1.34102) / 820.0
+                            power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                        else:
+                            rate = stn.get('rate', 0.0)
+                            power_cost = power_kW * 24.0 * rate
+                        ppm = get_ppm_for_dr(kv, dra) if nop > 0 else 0.0
+                        dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA if nop > 0 else 0.0
+                        cost = power_cost + dra_cost
+                        if best is None or cost < best['cost']:
+                            best = {
+                                'nop': nop,
+                                'rpm': rpm,
+                                'dra': dra,
+                                'residual_next': residual_next,
+                                'head_loss': head_loss,
+                                'v': v,
+                                'Re': Re,
+                                'f': f,
+                                'tdh': tdh,
+                                'eff': eff,
+                                'power_cost': power_cost,
+                                'dra_cost': dra_cost,
+                                'dra_ppm': ppm,
+                                'cost': cost,
+                            }
             if best is None:
                 return {"error": True, "message": f"No feasible operating point for {stn['name']}."}
             # Record
