@@ -99,31 +99,47 @@ def _downstream_requirement(
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
-    This scans ahead through consecutive non-pump stations and accumulates the
-    head and elevation losses so that the current station guarantees the first
-    downstream pump (or terminal) can meet its residual-head target.
+    The previous implementation only accumulated losses across consecutive
+    non-pump stations.  When multiple pump stations appear in sequence (e.g. to
+    represent different pump types at an origin), upstream pumps were unaware of
+    the downstream pressure requirement and the solver could deem a feasible
+    configuration infeasible.  This version performs a backward recursion over
+    *all* downstream stations, subtracting the maximum head each pump can
+    deliver and adding line/elevation losses for every segment.  The returned
+    value is therefore the minimum residual needed after station ``idx`` so that
+    the terminal residual head constraint can still be met.
     """
 
+    from functools import lru_cache
+
     N = len(stations)
-    if idx >= N - 1:
-        return terminal.get('min_residual', 0.0)
-    req = stations[idx + 1].get('min_residual', terminal.get('min_residual', 0.0))
-    j = idx + 1
-    while j < N and not stations[j].get('is_pump', False):
-        stn = stations[j]
+
+    @lru_cache(None)
+    def req_entry(i: int) -> float:
+        if i >= N:
+            return terminal.get('min_residual', 0.0)
+        stn = stations[i]
+        kv = KV_list[i]
         L = stn.get('L', 0.0)
-        thickness = stn.get('t', 0.007)
+        t = stn.get('t', 0.007)
         if 'D' in stn:
-            d_inner = stn['D'] - 2 * thickness
+            d_inner = stn['D'] - 2 * t
         else:
-            d_inner = stn.get('d', 0.7)
+            d_inner = stn.get('d', 0.7) - 2 * t
         rough = stn.get('rough', 0.00004)
-        kv = KV_list[j]
         head_loss, *_ = _segment_hydraulics(FLOW, L, d_inner, rough, kv, 0.0)
-        elev_next = terminal.get('elev', 0.0) if j + 1 == N else stations[j + 1].get('elev', 0.0)
-        req += head_loss + (elev_next - stn.get('elev', 0.0))
-        j += 1
-    return req
+        elev_i = stn.get('elev', 0.0)
+        elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
+        downstream = req_entry(i + 1)
+        req = downstream + head_loss + (elev_next - elev_i)
+        if stn.get('is_pump', False):
+            rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
+            nop_max = stn.get('max_pumps', 0)
+            tdh_max, _ = _pump_head(stn, FLOW, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
+            req -= tdh_max
+        return max(req, stn.get('min_residual', 0.0))
+
+    return req_entry(idx + 1)
 
 
 # ---------------------------------------------------------------------------
