@@ -945,13 +945,19 @@ if not auto_batch:
                 segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
                 pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
 
-            # Determine which stations are actually running
+            # Determine which stations to display.  Pump stations that are not
+            # running (``num_pumps == 0``) should be hidden, but pipeline
+            # segments and the terminal (which naturally have zero pumps)
+            # should still appear in the summary.
             active_indices = []
             for idx, nm in enumerate(names):
                 key = nm.lower().replace(' ', '_')
                 npump_val = res.get(f"num_pumps_{key}", 0)
                 npump = int(npump_val) if pd.notna(npump_val) else 0
-                if npump > 0:
+                is_pump = False
+                if idx < len(stations_data):
+                    is_pump = stations_data[idx].get('is_pump', False)
+                if npump > 0 or not is_pump:
                     active_indices.append(idx)
                 
             # DRA/PPM summary and table columns as before
