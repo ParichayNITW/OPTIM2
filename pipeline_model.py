@@ -435,15 +435,16 @@ def optimise_throughput(
 ) -> dict:
     """Enumerate operating hours to satisfy a daily throughput target.
 
-    The search explores constant-flow operation for blocks of 4 hours up to a
+    The search explores constant-flow operation for blocks of 3 hours up to a
     maximum of 24 hours.  For each candidate duration the corresponding flow
     rate is computed and :func:`solve_pipeline` is invoked.  The least-cost
-    feasible schedule is returned.
+    feasible schedule is returned along with a simple 3‑hour schedule showing
+    the pump settings for each station.
     """
 
     best_res = None
     best_cost = float('inf')
-    for hrs in range(4, 25, 4):
+    for hrs in range(3, 25, 3):
         flow = throughput_m3_day / hrs if hrs > 0 else 0.0
         res = solve_pipeline(
             stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
@@ -456,6 +457,21 @@ def optimise_throughput(
             best_res = res
     if best_res is None:
         return {"error": True, "message": "No feasible operating schedule found."}
+
+    # Build a 3-hourly schedule for reporting
+    blocks = int(best_res.get('operating_hours', 0) // 3)
+    flow = best_res.get('opt_flow', 0.0)
+    schedule: list[dict] = []
+    st_keys = [s['name'].strip().lower().replace(' ', '_') for s in stations]
+    for b in range(blocks):
+        entry = {'block': b + 1, 'duration_h': 3, 'flow_m3h': flow}
+        for key in st_keys:
+            entry[f'speed_{key}'] = best_res.get(f'speed_{key}', 0.0)
+            entry[f'dra_ppm_{key}'] = best_res.get(f'dra_ppm_{key}', 0.0)
+            entry[f'num_pumps_{key}'] = best_res.get(f'num_pumps_{key}', 0)
+        schedule.append(entry)
+    best_res['schedule'] = schedule
+
     return best_res
 
 
@@ -473,7 +489,7 @@ def optimise_throughput_multi_origin(
 
     best_res = None
     best_cost = float('inf')
-    for hrs in range(4, 25, 4):
+    for hrs in range(3, 25, 3):
         flow = throughput_m3_day / hrs if hrs > 0 else 0.0
         res = solve_pipeline_multi_origin(
             stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
@@ -486,4 +502,20 @@ def optimise_throughput_multi_origin(
             best_res = res
     if best_res is None:
         return {"error": True, "message": "No feasible operating schedule found."}
+
+    # Attach 3-hour schedule based on stations actually used
+    blocks = int(best_res.get('operating_hours', 0) // 3)
+    flow = best_res.get('opt_flow', 0.0)
+    schedule: list[dict] = []
+    st_list = best_res.get('stations_used', stations)
+    st_keys = [s['name'].strip().lower().replace(' ', '_') for s in st_list if s.get('is_pump', False)]
+    for b in range(blocks):
+        entry = {'block': b + 1, 'duration_h': 3, 'flow_m3h': flow}
+        for key in st_keys:
+            entry[f'speed_{key}'] = best_res.get(f'speed_{key}', 0.0)
+            entry[f'dra_ppm_{key}'] = best_res.get(f'dra_ppm_{key}', 0.0)
+            entry[f'num_pumps_{key}'] = best_res.get(f'num_pumps_{key}', 0)
+        schedule.append(entry)
+    best_res['schedule'] = schedule
+
     return best_res
