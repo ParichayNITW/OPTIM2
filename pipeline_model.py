@@ -100,8 +100,17 @@ def solve_pipeline(
     RateDRA: float,
     Price_HSD: float,
     linefill_dict: dict | None = None,
+    hours: float = 24.0,
 ) -> dict:
-    """Greedy search over pump settings to minimise operating cost."""
+    """Greedy search over pump settings to minimise operating cost.
+
+    Parameters
+    ----------
+    hours: float
+        Duration (in hours) for which the pipeline operates at the supplied
+        flow rate.  Defaults to 24 to mimic continuous daily operation but can
+        be lowered when the optimiser is driven by a daily throughput target.
+    """
 
     N = len(stations)
     segment_flows = [float(FLOW)]
@@ -163,12 +172,12 @@ def solve_pipeline(
                 if stn.get('sfc', 0):
                     sfc_val = stn['sfc']
                     fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                    power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                    power_cost = power_kW * hours * fuel_per_kWh * Price_HSD
                 else:
                     rate = stn.get('rate', 0.0)
-                    power_cost = power_kW * 24.0 * rate
+                    power_cost = power_kW * hours * rate
                 ppm = get_ppm_for_dr(kv, dra)
-                dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA
+                dra_cost = ppm * (flow * 1000.0 * hours / 1e6) * RateDRA
                 cost = power_cost + dra_cost
                 if best is None or cost < best['cost']:
                     best = {
@@ -296,6 +305,8 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
+    result['operating_hours'] = hours
+    result['opt_flow'] = FLOW
     result['error'] = False
     return result
 
@@ -309,8 +320,13 @@ def solve_pipeline_multi_origin(
     RateDRA: float,
     Price_HSD: float,
     linefill_dict: dict | None = None,
+    hours: float = 24.0,
 ) -> dict:
-    """Enumerate pump type combinations at the origin and call ``solve_pipeline``."""
+    """Enumerate pump type combinations at the origin and call ``solve_pipeline``.
+
+    The ``hours`` parameter is forwarded to :func:`solve_pipeline` so that cost
+    calculations reflect the actual operating duration.
+    """
 
     origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
     origin_station = stations[origin_index]
@@ -387,7 +403,7 @@ def solve_pipeline_multi_origin(
         kv_combo.extend(KV_list[1:])
         rho_combo.extend(rho_list[1:])
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, hours)
         if result.get("error"):
             continue
         cost = result.get("total_cost", float('inf'))
@@ -405,3 +421,69 @@ def solve_pipeline_multi_origin(
 
     best_result['stations_used'] = best_stations
     return best_result
+
+
+def optimise_throughput(
+    stations: list[dict],
+    terminal: dict,
+    throughput_m3_day: float,
+    KV_list: list[float],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    linefill_dict: dict | None = None,
+) -> dict:
+    """Enumerate operating hours to satisfy a daily throughput target.
+
+    The search explores constant-flow operation for blocks of 4 hours up to a
+    maximum of 24 hours.  For each candidate duration the corresponding flow
+    rate is computed and :func:`solve_pipeline` is invoked.  The least-cost
+    feasible schedule is returned.
+    """
+
+    best_res = None
+    best_cost = float('inf')
+    for hrs in range(4, 25, 4):
+        flow = throughput_m3_day / hrs if hrs > 0 else 0.0
+        res = solve_pipeline(
+            stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
+        )
+        if res.get("error"):
+            continue
+        cost = res.get("total_cost", float('inf'))
+        if cost < best_cost:
+            best_cost = cost
+            best_res = res
+    if best_res is None:
+        return {"error": True, "message": "No feasible operating schedule found."}
+    return best_res
+
+
+def optimise_throughput_multi_origin(
+    stations: list[dict],
+    terminal: dict,
+    throughput_m3_day: float,
+    KV_list: list[float],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    linefill_dict: dict | None = None,
+) -> dict:
+    """Throughput optimisation wrapper for multi-origin pipelines."""
+
+    best_res = None
+    best_cost = float('inf')
+    for hrs in range(4, 25, 4):
+        flow = throughput_m3_day / hrs if hrs > 0 else 0.0
+        res = solve_pipeline_multi_origin(
+            stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
+        )
+        if res.get("error"):
+            continue
+        cost = res.get("total_cost", float('inf'))
+        if cost < best_cost:
+            best_cost = cost
+            best_res = res
+    if best_res is None:
+        return {"error": True, "message": "No feasible operating schedule found."}
+    return best_res
