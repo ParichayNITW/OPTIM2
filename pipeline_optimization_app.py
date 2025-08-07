@@ -181,8 +181,10 @@ with st.sidebar:
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         flow_mode = st.radio(
             "Specify flow by",
-            ["Flow rate (m³/hr)", "Throughput per day (m³/day)"],
-            index=0 if st.session_state.get("flow_mode", "Flow rate (m³/hr)") == "Flow rate (m³/hr)" else 1,
+            ["Flow rate (m³/hr)", "Throughput per day (m³/day)", "Pumping plan"],
+            index=["Flow rate (m³/hr)", "Throughput per day (m³/day)", "Pumping plan"].index(
+                st.session_state.get("flow_mode", "Flow rate (m³/hr)")
+            ),
             key="flow_mode_radio",
         )
         st.session_state["flow_mode"] = flow_mode
@@ -194,7 +196,7 @@ with st.sidebar:
             )
             st.session_state["FLOW"] = FLOW
             st.session_state["THROUGHPUT"] = FLOW * 24.0
-        else:
+        elif flow_mode == "Throughput per day (m³/day)":
             THR = st.number_input(
                 "Throughput (m³/day)",
                 value=st.session_state.get("THROUGHPUT", 24000.0),
@@ -203,6 +205,24 @@ with st.sidebar:
             st.session_state["THROUGHPUT"] = THR
             # Derive nominal flow for other UI parts
             st.session_state["FLOW"] = THR / 24.0 if THR else 0.0
+        else:
+            plan_json = st.text_area(
+                "Pumping plan JSON",
+                value=st.session_state.get("plan_json", "[]"),
+            )
+            linefill_json = st.text_area(
+                "Linefill at 07:00 JSON",
+                value=st.session_state.get("linefill_json", "[]"),
+            )
+            st.session_state["plan_json"] = plan_json
+            st.session_state["linefill_json"] = linefill_json
+            try:
+                plan_list = json.loads(plan_json) if plan_json else []
+                throughput = sum(p.get("volume", 0.0) for p in plan_list)
+            except Exception:
+                throughput = 0.0
+            st.session_state["THROUGHPUT"] = throughput
+            st.session_state["FLOW"] = throughput / 24.0 if throughput else 0.0
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
         st.session_state["RateDRA"] = RateDRA
@@ -655,6 +675,26 @@ def optimise_throughput(
     except Exception as exc:
         return {"error": True, "message": str(exc)}
 
+
+def optimise_pumping_plan(stations, terminal, linefill, plan, RateDRA, Price_HSD):
+    """Wrapper around :func:`pipeline_model.optimise_pumping_plan`."""
+
+    import pipeline_model
+    import importlib
+
+    importlib.reload(pipeline_model)
+    try:
+        return pipeline_model.optimise_pumping_plan(
+            stations,
+            terminal,
+            linefill,
+            plan,
+            RateDRA,
+            Price_HSD,
+        )
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        return {"error": True, "message": str(exc)}
+
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
 st.subheader("Batch Linefill Scenario Analysis")
@@ -987,6 +1027,24 @@ if not auto_batch:
                 if not res.get("error"):
                     st.session_state["FLOW"] = res.get("opt_flow", st.session_state.get("FLOW", 0.0))
                     st.session_state["operating_hours"] = res.get("operating_hours", 24.0)
+            elif flow_mode == "Pumping plan":
+                try:
+                    plan_list = json.loads(st.session_state.get("plan_json", "[]"))
+                    linefill_list = json.loads(st.session_state.get("linefill_json", "[]"))
+                except Exception:
+                    st.error("Invalid JSON for plan or linefill")
+                    st.stop()
+                res = optimise_pumping_plan(
+                    stations_data,
+                    term_data,
+                    linefill_list,
+                    plan_list,
+                    RateDRA,
+                    Price_HSD,
+                )
+                if not res.get("error"):
+                    st.session_state["FLOW"] = res.get("opt_flow", st.session_state.get("FLOW", 0.0))
+                    st.session_state["operating_hours"] = res.get("operating_hours", 24.0)
             else:
                 hours = st.session_state.get("operating_hours", 24.0)
                 res = solve_pipeline(
@@ -1092,6 +1150,9 @@ if not auto_batch:
                 summary[nm] = [
                     segment_flows[idx],
                     pumpflow,
+                    res.get(f"bkw_{key}",0.0) if res.get(f"bkw_{key}",0.0) is not None else np.nan,
+                    res.get(f"motor_kw_{key}",0.0) if res.get(f"motor_kw_{key}",0.0) is not None else np.nan,
+                    res.get(f"kwh_{key}",0.0) if res.get(f"kwh_{key}",0.0) is not None else np.nan,
                     res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
                     dra_cost,
                     station_ppm.get(key, np.nan),
@@ -1124,7 +1185,7 @@ if not auto_batch:
 
             if res.get("schedule"):
                 sched_df = pd.DataFrame(res["schedule"])
-                st.markdown("<div class='section-title'>3 hour Operating Schedule</div>", unsafe_allow_html=True)
+                st.markdown("<div class='section-title'>2 hour Operating Schedule</div>", unsafe_allow_html=True)
                 st.dataframe(sched_df, use_container_width=True, hide_index=True)
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
