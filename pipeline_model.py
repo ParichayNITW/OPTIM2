@@ -87,6 +87,46 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
 
 
 # ---------------------------------------------------------------------------
+# Downstream requirements
+# ---------------------------------------------------------------------------
+
+def _downstream_requirement(
+    stations: list[dict],
+    idx: int,
+    terminal: dict,
+    FLOW: float,
+    KV_list: list[float],
+) -> float:
+    """Return minimum residual head needed immediately after station ``idx``.
+
+    This scans ahead through consecutive non-pump stations and accumulates the
+    head and elevation losses so that the current station guarantees the first
+    downstream pump (or terminal) can meet its residual-head target.
+    """
+
+    N = len(stations)
+    if idx >= N - 1:
+        return terminal.get('min_residual', 0.0)
+    req = stations[idx + 1].get('min_residual', terminal.get('min_residual', 0.0))
+    j = idx + 1
+    while j < N and not stations[j].get('is_pump', False):
+        stn = stations[j]
+        L = stn.get('L', 0.0)
+        thickness = stn.get('t', 0.007)
+        if 'D' in stn:
+            d_inner = stn['D'] - 2 * thickness
+        else:
+            d_inner = stn.get('d', 0.7)
+        rough = stn.get('rough', 0.00004)
+        kv = KV_list[j]
+        head_loss, *_ = _segment_hydraulics(FLOW, L, d_inner, rough, kv, 0.0)
+        elev_next = terminal.get('elev', 0.0) if j + 1 == N else stations[j + 1].get('elev', 0.0)
+        req += head_loss + (elev_next - stn.get('elev', 0.0))
+        j += 1
+    return req
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -126,10 +166,7 @@ def solve_pipeline(
         kv = KV_list[i - 1]
         rho = rho_list[i - 1]
 
-        if i == N:
-            min_residual_next = terminal.get('min_residual', 0.0)
-        else:
-            min_residual_next = stations[i].get('min_residual', 0.0)
+        min_residual_next = _downstream_requirement(stations, i - 1, terminal, FLOW, KV_list)
 
         L = stn.get('L', 0.0)
         if 'D' in stn:
