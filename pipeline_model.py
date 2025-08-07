@@ -12,6 +12,7 @@ from __future__ import annotations
 from math import log10, pi
 from itertools import product
 import copy
+import numpy as np
 
 from dra_utils import get_ppm_for_dr
 
@@ -67,6 +68,33 @@ def _segment_hydraulics(flow_m3h: float, L: float, d_inner: float, rough: float,
         f = 0.0
     head_loss = f * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g)) * (1 - dra_perc / 100.0)
     return head_loss, v, Re, f
+
+
+def _pump_bep(stn: dict) -> float:
+    """Return the best efficiency flow at DOL for the pump.
+
+    The efficiency curve is defined by a 4th order polynomial in flow ``Q``.
+    We compute the real positive root of its derivative that yields the maximum
+    efficiency. If coefficients are missing the function returns 0.0 so no
+    additional flow constraint is applied.
+    """
+    P = stn.get('P', 0.0)
+    Q = stn.get('Q', 0.0)
+    R = stn.get('R', 0.0)
+    S = stn.get('S', 0.0)
+    # derivative: 4P Q^3 + 3Q Q^2 + 2R Q + S = 0
+    coeffs = [4 * P, 3 * Q, 2 * R, S]
+    if all(abs(c) < 1e-12 for c in coeffs):
+        return 0.0
+    roots = np.roots(coeffs)
+    roots = [r.real for r in roots if abs(r.imag) < 1e-6 and r.real > 0]
+    if not roots:
+        return 0.0
+    # select root giving maximum efficiency
+    T = stn.get('T', 0.0)
+    eff = lambda q: P * q ** 4 + Q * q ** 3 + R * q ** 2 + S * q + T
+    best_q = max(roots, key=lambda r: eff(r))
+    return float(best_q)
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
@@ -158,10 +186,19 @@ def solve_pipeline(
             max_p = stn.get('max_pumps', 2)
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
             dra_vals = _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
+            bep_dol = _pump_bep(stn)
             best = None
             for nop, rpm, dra in product(range(min_p, max_p + 1), rpm_vals, dra_vals):
+                # enforce flow limit of 120% of BEP for each pump
+                dol = stn.get('DOL', rpm)
+                if bep_dol > 0:
+                    max_flow_total = 1.2 * bep_dol * rpm / dol * nop
+                    if flow > max_flow_total:
+                        continue
                 head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
                 tdh, eff = _pump_head(stn, flow, rpm, nop)
+                if tdh <= 0:
+                    continue
                 elev_i = stn.get('elev', 0.0)
                 elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
                 residual_next = residual + tdh - head_loss - (elev_next - elev_i)
@@ -169,6 +206,8 @@ def solve_pipeline(
                     continue
                 eff = max(eff, 1e-6)
                 power_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0) * 0.95) if rpm > 0 else 0.0
+                if power_kW < 0:
+                    continue
                 if stn.get('sfc', 0):
                     sfc_val = stn['sfc']
                     fuel_per_kWh = (sfc_val * 1.34102) / 820.0
@@ -176,9 +215,11 @@ def solve_pipeline(
                 else:
                     rate = stn.get('rate', 0.0)
                     power_cost = power_kW * hours * rate
-                ppm = get_ppm_for_dr(kv, dra)
+                ppm = max(get_ppm_for_dr(kv, dra), 0.0)
                 dra_cost = ppm * (flow * 1000.0 * hours / 1e6) * RateDRA
                 cost = power_cost + dra_cost
+                if cost < 0:
+                    continue
                 if best is None or cost < best['cost']:
                     best = {
                         'nop': nop,
