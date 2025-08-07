@@ -1128,30 +1128,39 @@ if not auto_batch:
             res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
-            names = [s['name'] for s in stations_data] + [terminal_name]
-    
+
+            # Filter out pump stations that are not operating
+            display_indices: list[int] = []
+            for i, stn in enumerate(stations_data):
+                key = stn["name"].lower().replace(" ", "_")
+                if not stn.get("is_pump", False) or res.get(f"num_pumps_{key}", 0) > 0:
+                    display_indices.append(i)
+
+            display_names = [stations_data[i]["name"] for i in display_indices]
+            names = display_names + [terminal_name]
+
             # --- Use flows from backend output only ---
-            segment_flows = []
-            pump_flows = []
+            segment_flows: list[float] = []
+            pump_flows: list[float] = []
             for nm in names:
-                key = nm.lower().replace(' ', '_')
+                key = nm.lower().replace(" ", "_")
                 segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
                 pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
-                
+
             # DRA/PPM summary and table columns as before
-            station_dr_capped = {}
-            station_ppm = {}
+            station_dr_capped: dict[str, float] = {}
+            station_ppm: dict[str, float] = {}
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-            for idx, stn in enumerate(stations_data, start=1):
-                key = stn['name'].lower().replace(' ', '_')
+            kv_all, _ = map_linefill_to_segments(linefill_df, stations_data)
+            for idx in display_indices:
+                stn = stations_data[idx]
+                key = stn["name"].lower().replace(" ", "_")
                 dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-                dr_max = stn.get('max_dr', 0.0)
-                viscosity = kv_list[idx-1]
+                dr_max = stn.get("max_dr", 0.0)
+                viscosity = kv_all[idx]
                 dr_use = min(dr_opt, dr_max)
                 station_dr_capped[key] = dr_use
-                ppm = get_ppm_for_dr(viscosity, dr_use)
-            station_ppm[key] = ppm
+                station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
 
             params = [
                 "Pipeline Flow (m³/hr)",
@@ -1183,42 +1192,39 @@ if not auto_batch:
 
             HOURS = st.session_state.get("operating_hours", 24.0)
             for idx, nm in enumerate(names):
-                key = nm.lower().replace(' ','_')
-                # For DRA cost at each station, use hydraulically-correct flow
+                key = nm.lower().replace(" ", "_")
+                dra_cost = 0.0
                 if key in station_ppm:
                     dra_cost = (
                         station_ppm[key]
                         * (segment_flows[idx] * 1000.0 * HOURS / 1e6)
                         * st.session_state["RateDRA"]
                     )
-                else:
-                    dra_cost = 0.0
-    
-                # For numeric columns, always use np.nan if not available
+
                 pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
                 summary[nm] = [
                     segment_flows[idx],
                     pumpflow,
-                    res.get(f"bkw_{key}",0.0) if res.get(f"bkw_{key}",0.0) is not None else np.nan,
-                    res.get(f"motor_kw_{key}",0.0) if res.get(f"motor_kw_{key}",0.0) is not None else np.nan,
-                    res.get(f"kwh_{key}",0.0) if res.get(f"kwh_{key}",0.0) is not None else np.nan,
-                    res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                    res.get(f"bkw_{key}", 0.0) if res.get(f"bkw_{key}", 0.0) is not None else np.nan,
+                    res.get(f"motor_kw_{key}", 0.0) if res.get(f"motor_kw_{key}", 0.0) is not None else np.nan,
+                    res.get(f"kwh_{key}", 0.0) if res.get(f"kwh_{key}", 0.0) is not None else np.nan,
+                    res.get(f"power_cost_{key}", 0.0) if res.get(f"power_cost_{key}", 0.0) is not None else np.nan,
                     dra_cost,
                     station_ppm.get(key, np.nan),
-                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
-                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
-                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
-                    res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
-                    res.get(f"head_loss_kgcm2_{key}",0.0) if res.get(f"head_loss_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-                    res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
-                    res.get(f"rh_kgcm2_{key}",0.0) if res.get(f"rh_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
-                    res.get(f"sdh_kgcm2_{key}",0.0) if res.get(f"sdh_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
-                    res.get(f"maop_kgcm2_{key}",0.0) if res.get(f"maop_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                    int(res.get(f"num_pumps_{key}", 0)) if res.get(f"num_pumps_{key}", 0) is not None else np.nan,
+                    res.get(f"speed_{key}", 0.0) if res.get(f"speed_{key}", 0.0) is not None else np.nan,
+                    res.get(f"efficiency_{key}", 0.0) if res.get(f"efficiency_{key}", 0.0) is not None else np.nan,
+                    res.get(f"reynolds_{key}", 0.0) if res.get(f"reynolds_{key}", 0.0) is not None else np.nan,
+                    res.get(f"head_loss_{key}", 0.0) if res.get(f"head_loss_{key}", 0.0) is not None else np.nan,
+                    res.get(f"head_loss_kgcm2_{key}", 0.0) if res.get(f"head_loss_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"velocity_{key}", 0.0) if res.get(f"velocity_{key}", 0.0) is not None else np.nan,
+                    res.get(f"residual_head_{key}", 0.0) if res.get(f"residual_head_{key}", 0.0) is not None else np.nan,
+                    res.get(f"rh_kgcm2_{key}", 0.0) if res.get(f"rh_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"sdh_{key}", 0.0) if res.get(f"sdh_{key}", 0.0) is not None else np.nan,
+                    res.get(f"sdh_kgcm2_{key}", 0.0) if res.get(f"sdh_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"maop_{key}", 0.0) if res.get(f"maop_{key}", 0.0) is not None else np.nan,
+                    res.get(f"maop_kgcm2_{key}", 0.0) if res.get(f"maop_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"drag_reduction_{key}", 0.0) if res.get(f"drag_reduction_{key}", 0.0) is not None else np.nan,
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -1239,8 +1245,9 @@ if not auto_batch:
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
-            for idx, stn in enumerate(stations_data):
-                key = stn['name'].lower().replace(' ', '_')
+            for idx, stn_idx in enumerate(display_indices):
+                stn = stations_data[stn_idx]
+                key = stn["name"].lower().replace(" ", "_")
                 power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
                 dra_cost = (
                     station_ppm.get(key, 0.0)
