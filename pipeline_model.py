@@ -264,6 +264,7 @@ def solve_pipeline(
     default_e = 0.00004
 
     for i, stn in enumerate(stations, start=1):
+        name = stn['name'].strip().lower().replace(' ', '_')
         flow = segment_flows[i]
         kv = KV_list[i - 1]
         rho = rho_list[i - 1]
@@ -351,7 +352,6 @@ def solve_pipeline(
             if best is None:
                 return {"error": True, "message": f"No feasible operating point for {stn['name']}."}
             # Record
-            name = stn['name'].strip().lower().replace(' ', '_')
             result[f"pipeline_flow_{name}"] = flow
             result[f"pipeline_flow_in_{name}"] = segment_flows[i - 1]
             result[f"pump_flow_{name}"] = flow
@@ -573,12 +573,65 @@ def solve_pipeline_multi_origin(
             best_result = result
             best_stations = stations_combo
             best_result['pump_combo'] = {'A': numA, 'B': numB}
+            best_result['origin_unit_keys'] = [
+                u['name'].lower().replace(' ', '_') for u in pump_units
+            ]
 
     if best_result is None:
         return {
             "error": True,
             "message": "No feasible pump combination found for originating station.",
         }
+
+    base_key = origin_station['name'].lower().replace(' ', '_')
+    unit_keys = best_result.get('origin_unit_keys', [])
+
+    if unit_keys:
+        # Aggregate cost and power metrics across all origin pump units
+        sum_fields = ['power_cost', 'dra_cost', 'bkw', 'motor_kw', 'kwh']
+        for field in sum_fields:
+            best_result[f"{field}_{base_key}"] = sum(
+                best_result.get(f"{field}_{k}", 0.0) for k in unit_keys
+            )
+
+        best_result[f"num_pumps_{base_key}"] = sum(
+            best_result.get(f"num_pumps_{k}", 0) for k in unit_keys
+        )
+
+        speeds = [best_result.get(f"speed_{k}", 0.0) for k in unit_keys]
+        effs = [best_result.get(f"efficiency_{k}", 0.0) for k in unit_keys]
+        best_result[f"speed_{base_key}"] = max(speeds) if speeds else 0.0
+        best_result[f"efficiency_{base_key}"] = (
+            sum(effs) / len(effs) if effs else 0.0
+        )
+
+        first_key = unit_keys[0]
+        last_key = unit_keys[-1]
+
+        # Propagate pipeline flow information from the first pump unit
+        for fld in ['pipeline_flow', 'pipeline_flow_in', 'pump_flow']:
+            best_result[f"{fld}_{base_key}"] = best_result.get(
+                f"{fld}_{first_key}", 0.0
+            )
+
+        # Use downstream values from the last unit for hydraulic outputs
+        copy_fields = [
+            'head_loss',
+            'head_loss_kgcm2',
+            'velocity',
+            'reynolds',
+            'friction',
+            'residual_head',
+            'rh_kgcm2',
+            'sdh',
+            'sdh_kgcm2',
+            'maop',
+            'maop_kgcm2',
+        ]
+        for fld in copy_fields:
+            best_result[f"{fld}_{base_key}"] = best_result.get(
+                f"{fld}_{last_key}", 0.0
+            )
 
     best_result['stations_used'] = best_stations
     return best_result
