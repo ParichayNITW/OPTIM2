@@ -1154,15 +1154,29 @@ if not auto_batch:
                 station_ppm[key] = ppm
     
             params = [
-                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.",
-                "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
-                "Residual Head (m)", "Residual Head (kg/cm²)",
-                "SDH (m)", "SDH (kg/cm²)",
-                "MAOP (m)", "MAOP (kg/cm²)",
+                "Pipeline Flow (m³/hr)",
+                "Pump Flow (m³/hr)",
+                "Pump BKW (kW)",
+                "Motor Input (kW)",
+                "Energy (kWh/day)",
+                "Power+Fuel Cost (INR/day)",
+                "DRA Cost (INR/day)",
+                "DRA PPM",
+                "No. of Pumps",
+                "Pump Speed (rpm)",
+                "Pump Eff (%)",
+                "Reynolds No.",
+                "Head Loss (m)",
+                "Head Loss (kg/cm²)",
+                "Vel (m/s)",
+                "Residual Head (m)",
+                "Residual Head (kg/cm²)",
+                "SDH (m)",
+                "SDH (kg/cm²)",
+                "MAOP (m)",
+                "MAOP (kg/cm²)",
                 "Drag Reduction (%)"
             ]
-            summary = {"Parameters": params}
     
             HOURS = st.session_state.get("operating_hours", 24.0)
             for idx, nm in enumerate(names):
