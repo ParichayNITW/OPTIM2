@@ -22,6 +22,8 @@ from dra_utils import (
     get_ppm_for_dr,
     DRA_CURVE_DATA,
 )
+# Import the backend once so repeated calls don't re-execute module level code
+import pipeline_model
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
@@ -116,7 +118,9 @@ def check_login():
         )
         st.stop()
     with st.sidebar:
-        if st.button("Logout", key="logout_btn"):
+        # Use a unique key to avoid clashes if other modules define their own
+        # logout buttons during development reloads.
+        if st.button("Logout", key="main_logout_btn"):
             st.session_state.authenticated = False
             st.rerun()
 check_login()
@@ -130,10 +134,17 @@ def restore_case_dict(loaded_data):
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
     st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
+    st.session_state['THROUGHPUT'] = loaded_data.get('THROUGHPUT', st.session_state['FLOW'] * 24.0)
+    st.session_state['flow_mode'] = loaded_data.get('flow_mode', 'Flow rate (m³/hr)')
+    st.session_state['operating_hours'] = loaded_data.get('operating_hours', 24.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+    if "pumping_plan" in loaded_data and loaded_data["pumping_plan"]:
+        st.session_state["plan_df"] = pd.DataFrame(loaded_data["pumping_plan"])
+    if "linefill_plan" in loaded_data and loaded_data["linefill_plan"]:
+        st.session_state["linefill_plan_df"] = pd.DataFrame(loaded_data["linefill_plan"])
     for i in range(len(st.session_state['stations'])):
         head_data = loaded_data.get(f"head_data_{i+1}", None)
         eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
@@ -176,25 +187,86 @@ if st.session_state.get("should_rerun", False):
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
+        flow_mode = st.radio(
+            "Specify flow by",
+            ["Flow rate (m³/hr)", "Throughput per day (m³/day)", "Pumping plan"],
+            index=["Flow rate (m³/hr)", "Throughput per day (m³/day)", "Pumping plan"].index(
+                st.session_state.get("flow_mode", "Flow rate (m³/hr)")
+            ),
+            key="flow_mode_radio",
+        )
+        st.session_state["flow_mode"] = flow_mode
+        if flow_mode == "Flow rate (m³/hr)":
+            FLOW = st.number_input(
+                "Flow rate (m³/hr)",
+                value=st.session_state.get("FLOW", 1000.0),
+                step=10.0,
+            )
+            st.session_state["FLOW"] = FLOW
+            st.session_state["THROUGHPUT"] = FLOW * 24.0
+        elif flow_mode == "Throughput per day (m³/day)":
+            THR = st.number_input(
+                "Throughput (m³/day)",
+                value=st.session_state.get("THROUGHPUT", 24000.0),
+                step=100.0,
+            )
+            st.session_state["THROUGHPUT"] = THR
+            # Derive nominal flow for other UI parts
+            st.session_state["FLOW"] = THR / 24.0 if THR else 0.0
+        else:
+            st.markdown("### Daily Pumping Plan")
+            if "plan_df" not in st.session_state:
+                st.session_state["plan_df"] = pd.DataFrame({
+                    "Volume (m³)": [1000.0],
+                    "Viscosity (cSt)": [10.0],
+                    "Density (kg/m³)": [850.0],
+                })
+            st.session_state["plan_df"] = st.data_editor(
+                st.session_state["plan_df"],
+                num_rows="dynamic", key="plan_editor"
+            )
+
+            st.markdown("### Linefill at 07:00 Hrs")
+            if "linefill_plan_df" not in st.session_state:
+                st.session_state["linefill_plan_df"] = pd.DataFrame({
+                    "Volume (m³)": [5000.0],
+                    "Viscosity (cSt)": [10.0],
+                    "Density (kg/m³)": [850.0],
+                })
+            st.session_state["linefill_plan_df"] = st.data_editor(
+                st.session_state["linefill_plan_df"],
+                num_rows="dynamic", key="linefill_plan_editor"
+            )
+
+            plan_list = [
+                {
+                    "volume": row["Volume (m³)"],
+                    "kv": row["Viscosity (cSt)"],
+                    "rho": row["Density (kg/m³)"],
+                }
+                for _, row in st.session_state["plan_df"].iterrows()
+            ]
+            throughput = sum(p["volume"] for p in plan_list)
+            st.session_state["THROUGHPUT"] = throughput
+            st.session_state["FLOW"] = throughput / 24.0 if throughput else 0.0
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
-        st.session_state["FLOW"] = FLOW
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
 
-    st.subheader("Linefill Profile (7:00 Hrs)")
-    if "linefill_df" not in st.session_state:
-        st.session_state["linefill_df"] = pd.DataFrame({
-            "Start (km)": [0.0],
-            "End (km)": [100.0],
-            "Viscosity (cSt)": [10.0],
-            "Density (kg/m³)": [850.0]
-        })
-    st.session_state["linefill_df"] = st.data_editor(
-        st.session_state["linefill_df"],
-        num_rows="dynamic", key="linefill_editor"
-    )
+    if flow_mode != "Pumping plan":
+        st.subheader("Linefill Profile (7:00 Hrs)")
+        if "linefill_df" not in st.session_state:
+            st.session_state["linefill_df"] = pd.DataFrame({
+                "Start (km)": [0.0],
+                "End (km)": [100.0],
+                "Viscosity (cSt)": [10.0],
+                "Density (kg/m³)": [850.0]
+            })
+        st.session_state["linefill_df"] = st.data_editor(
+            st.session_state["linefill_df"],
+            num_rows="dynamic", key="linefill_editor"
+        )
 
     st.subheader("Stations")
     add_col, rem_col = st.columns(2)
@@ -462,9 +534,14 @@ def get_full_case_dict():
             "min_residual": st.session_state.get('terminal_head', 50.0)
         },
         "FLOW": st.session_state.get('FLOW', 1000.0),
+        "THROUGHPUT": st.session_state.get('THROUGHPUT', st.session_state.get('FLOW', 0.0) * 24.0),
+        "flow_mode": st.session_state.get('flow_mode', 'Flow rate (m³/hr)'),
+        "operating_hours": st.session_state.get('operating_hours', 24.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
+        "pumping_plan": st.session_state.get('plan_df', pd.DataFrame()).to_dict(orient="records"),
+        "linefill_plan": st.session_state.get('linefill_plan_df', pd.DataFrame()).to_dict(orient="records"),
         **{
             f"head_data_{i+1}": (
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
@@ -541,20 +618,95 @@ def fmt_pressure(res, key_m, key_kg):
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
-    """Wrapper around :mod:`pipeline_model` to allow hot-reloading."""
+def solve_pipeline(
+    stations,
+    terminal,
+    FLOW,
+    KV_list,
+    rho_list,
+    RateDRA,
+    Price_HSD,
+    linefill,
+    hours,
+):
+    """Wrapper around :mod:`pipeline_model` backend."""
 
-    import pipeline_model
-    import importlib
-
-    importlib.reload(pipeline_model)
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.solve_pipeline_multi_origin(
-                stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                linefill,
+                hours,
             )
         return pipeline_model.solve_pipeline(
-            stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            linefill,
+            hours,
+        )
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        return {"error": True, "message": str(exc)}
+
+
+def optimise_throughput(
+    stations,
+    terminal,
+    throughput,
+    KV_list,
+    rho_list,
+    RateDRA,
+    Price_HSD,
+    linefill,
+):
+    """Wrapper around :func:`pipeline_model.optimise_throughput`."""
+
+    try:
+        if stations and stations[0].get('pump_types'):
+            return pipeline_model.optimise_throughput_multi_origin(
+                stations,
+                terminal,
+                throughput,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                linefill,
+            )
+        return pipeline_model.optimise_throughput(
+            stations,
+            terminal,
+            throughput,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            linefill,
+        )
+    except Exception as exc:
+        return {"error": True, "message": str(exc)}
+
+
+def optimise_pumping_plan(stations, terminal, linefill, plan, RateDRA, Price_HSD):
+    """Wrapper around :func:`pipeline_model.optimise_pumping_plan`."""
+    try:
+        return pipeline_model.optimise_pumping_plan(
+            stations,
+            terminal,
+            linefill,
+            plan,
+            RateDRA,
+            Price_HSD,
         )
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
@@ -602,6 +754,7 @@ if auto_batch:
             FLOW = st.session_state.get("FLOW", 1000.0)
             RateDRA = st.session_state.get("RateDRA", 500.0)
             Price_HSD = st.session_state.get("Price_HSD", 70.0)
+            HOURS = st.session_state.get("operating_hours", 24.0)
             result_rows = []
             segs = int(100 // step_size)
             try:
@@ -651,7 +804,7 @@ if auto_batch:
                         prod_row = product_table.iloc[0]
                         kv_list.append(prod_row["Viscosity (cSt)"])
                         rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {}, HOURS)
                     row = {"Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
@@ -671,7 +824,7 @@ if auto_batch:
                         prod_row = product_table.iloc[1]
                         kv_list.append(prod_row["Viscosity (cSt)"])
                         rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {}, HOURS)
                     row = {"Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
@@ -702,7 +855,7 @@ if auto_batch:
                                 prod_row = product_table.iloc[1]
                             kv_list.append(prod_row["Viscosity (cSt)"])
                             rho_list.append(prod_row["Density (kg/m³)"])
-                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {}, HOURS)
                         row = {"Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}"}
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
@@ -727,7 +880,7 @@ if auto_batch:
                         scenario_labels = ["0%"] * 3
                         scenario_labels[first] = "100%"
                         row = {"Scenario": f"{scenario_labels[0]} {product_table.iloc[0]['Product']}, {scenario_labels[1]} {product_table.iloc[1]['Product']}, {scenario_labels[2]} {product_table.iloc[2]['Product']}"}
-                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {}, HOURS)
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -765,7 +918,7 @@ if auto_batch:
                             row = {
                                 "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
                             }
-                            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {}, HOURS)
                             for idx, stn in enumerate(stations_data, start=1):
                                 key = stn['name'].lower().replace(' ', '_')
                                 row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -835,8 +988,13 @@ if not auto_batch:
             stations_data = st.session_state.stations
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             # Always ensure linefill_df, kv_list, rho_list are defined!
-            linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+            flow_mode = st.session_state.get("flow_mode", "Flow rate (m³/hr)")
+            if flow_mode == "Pumping plan":
+                linefill_df = st.session_state.get("linefill_plan_df", pd.DataFrame())
+                kv_list, rho_list = [], []
+            else:
+                linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+                kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
 
             
             # ------------- ADD THIS BLOCK -------------
@@ -874,22 +1032,54 @@ if not auto_batch:
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
 
-            import pipeline_model
-            import importlib
-            importlib.reload(pipeline_model)
-            if stations_data and stations_data[0].get('pump_types'):
-                res = pipeline_model.solve_pipeline_multi_origin(
+            if flow_mode == "Throughput per day (m³/day)":
+                throughput = st.session_state.get("THROUGHPUT", 0.0)
+                res = optimise_throughput(
                     stations_data,
                     term_data,
-                    FLOW,
+                    throughput,
                     kv_list,
                     rho_list,
                     RateDRA,
                     Price_HSD,
-                    linefill_df.to_dict()
+                    linefill_df.to_dict("records"),
                 )
+                if not res.get("error"):
+                    st.session_state["FLOW"] = res.get("opt_flow", st.session_state.get("FLOW", 0.0))
+                    st.session_state["operating_hours"] = res.get("operating_hours", 24.0)
+            elif flow_mode == "Pumping plan":
+                plan_df = st.session_state.get("plan_df", pd.DataFrame())
+                linefill_plan_df = st.session_state.get("linefill_plan_df", pd.DataFrame())
+                plan_list = [
+                    {
+                        "volume": row["Volume (m³)"],
+                        "kv": row["Viscosity (cSt)"],
+                        "rho": row["Density (kg/m³)"],
+                    }
+                    for _, row in plan_df.iterrows()
+                ]
+                linefill_list = [
+                    {
+                        "volume": row["Volume (m³)"],
+                        "kv": row["Viscosity (cSt)"],
+                        "rho": row["Density (kg/m³)"],
+                    }
+                    for _, row in linefill_plan_df.iterrows()
+                ]
+                res = optimise_pumping_plan(
+                    stations_data,
+                    term_data,
+                    linefill_list,
+                    plan_list,
+                    RateDRA,
+                    Price_HSD,
+                )
+                if not res.get("error"):
+                    st.session_state["FLOW"] = res.get("opt_flow", st.session_state.get("FLOW", 0.0))
+                    st.session_state["operating_hours"] = res.get("operating_hours", 24.0)
             else:
-                res = pipeline_model.solve_pipeline(
+                hours = st.session_state.get("operating_hours", 24.0)
+                res = solve_pipeline(
                     stations_data,
                     term_data,
                     FLOW,
@@ -897,8 +1087,11 @@ if not auto_batch:
                     rho_list,
                     RateDRA,
                     Price_HSD,
-                    linefill_df.to_dict()
+                    linefill_df.to_dict("records"),
+                    hours,
                 )
+                if not res.get("error"):
+                    st.session_state["operating_hours"] = hours
 
             import copy
             if not res or res.get("error"):
@@ -935,101 +1128,103 @@ if not auto_batch:
             res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
-            names = [s['name'] for s in stations_data] + [terminal_name]
-    
+
+            # Filter out pump stations that are not operating
+            display_indices: list[int] = []
+            for i, stn in enumerate(stations_data):
+                key = stn["name"].lower().replace(" ", "_")
+                if not stn.get("is_pump", False) or res.get(f"num_pumps_{key}", 0) > 0:
+                    display_indices.append(i)
+
+            display_names = [stations_data[i]["name"] for i in display_indices]
+            names = display_names + [terminal_name]
+
             # --- Use flows from backend output only ---
-            segment_flows = []
-            pump_flows = []
+            segment_flows: list[float] = []
+            pump_flows: list[float] = []
             for nm in names:
-                key = nm.lower().replace(' ', '_')
+                key = nm.lower().replace(" ", "_")
                 segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
                 pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
 
-            # Determine which stations to display.  Pump stations that are not
-            # running (``num_pumps == 0``) should be hidden, but pipeline
-            # segments and the terminal (which naturally have zero pumps)
-            # should still appear in the summary.
-            active_indices = []
-            for idx, nm in enumerate(names):
-                key = nm.lower().replace(' ', '_')
-                npump_val = res.get(f"num_pumps_{key}", 0)
-                npump = int(npump_val) if pd.notna(npump_val) else 0
-                is_pump = False
-                if idx < len(stations_data):
-                    is_pump = stations_data[idx].get('is_pump', False)
-                if npump > 0 or not is_pump:
-                    active_indices.append(idx)
-                
             # DRA/PPM summary and table columns as before
-            station_dr_capped = {}
-            station_ppm = {}
+            station_dr_capped: dict[str, float] = {}
+            station_ppm: dict[str, float] = {}
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-            for idx, stn in enumerate(stations_data, start=1):
-                key = stn['name'].lower().replace(' ', '_')
+            kv_all, _ = map_linefill_to_segments(linefill_df, stations_data)
+            for idx in display_indices:
+                stn = stations_data[idx]
+                key = stn["name"].lower().replace(" ", "_")
                 dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-                dr_max = stn.get('max_dr', 0.0)
-                viscosity = kv_list[idx-1]
+                dr_max = stn.get("max_dr", 0.0)
+                viscosity = kv_all[idx]
                 dr_use = min(dr_opt, dr_max)
                 station_dr_capped[key] = dr_use
-                ppm = get_ppm_for_dr(viscosity, dr_use)
-                station_ppm[key] = ppm
-    
+                station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+
             params = [
-                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.",
-                "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
-                "Residual Head (m)", "Residual Head (kg/cm²)",
-                "SDH (m)", "SDH (kg/cm²)",
-                "MAOP (m)", "MAOP (kg/cm²)",
+                "Pipeline Flow (m³/hr)",
+                "Pump Flow (m³/hr)",
+                "Pump BKW (kW)",
+                "Motor Input (kW)",
+                "Energy (kWh/day)",
+                "Power+Fuel Cost (INR/day)",
+                "DRA Cost (INR/day)",
+                "DRA PPM",
+                "No. of Pumps",
+                "Pump Speed (rpm)",
+                "Pump Eff (%)",
+                "Reynolds No.",
+                "Head Loss (m)",
+                "Head Loss (kg/cm²)",
+                "Vel (m/s)",
+                "Residual Head (m)",
+                "Residual Head (kg/cm²)",
+                "SDH (m)",
+                "SDH (kg/cm²)",
+                "MAOP (m)",
+                "MAOP (kg/cm²)",
                 "Drag Reduction (%)"
             ]
-            summary = {"Parameters": params}
-    
-            for idx in active_indices:
-                nm = names[idx]
-                key = nm.lower().replace(' ','_')
-                flow_val = segment_flows[idx]
-                flow = flow_val if not pd.isna(flow_val) else 0.0
+
+            # Initialize summary table
+            summary: dict[str, list] = {"Parameters": params}
+
+            HOURS = st.session_state.get("operating_hours", 24.0)
+            for idx, nm in enumerate(names):
+                key = nm.lower().replace(" ", "_")
+                dra_cost = 0.0
                 if key in station_ppm:
                     dra_cost = (
                         station_ppm[key]
-                        * (flow * 1000.0 * 24.0 / 1e6)
+                        * (segment_flows[idx] * 1000.0 * HOURS / 1e6)
                         * st.session_state["RateDRA"]
                     )
-                else:
-                    dra_cost = 0.0
 
                 pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
-                power_val = res.get(f"power_cost_{key}", 0.0)
-                power_cost = power_val if pd.notna(power_val) else np.nan
-                npump_val = res.get(f"num_pumps_{key}", 0)
-                npump = int(npump_val) if pd.notna(npump_val) else np.nan
-                speed_val = res.get(f"speed_{key}",0.0)
-                speed = speed_val if pd.notna(speed_val) else np.nan
-                eff_val = res.get(f"efficiency_{key}",0.0)
-                eff = eff_val if pd.notna(eff_val) else np.nan
-
                 summary[nm] = [
-                    flow_val,
+                    segment_flows[idx],
                     pumpflow,
-                    power_cost,
+                    res.get(f"bkw_{key}", 0.0) if res.get(f"bkw_{key}", 0.0) is not None else np.nan,
+                    res.get(f"motor_kw_{key}", 0.0) if res.get(f"motor_kw_{key}", 0.0) is not None else np.nan,
+                    res.get(f"kwh_{key}", 0.0) if res.get(f"kwh_{key}", 0.0) is not None else np.nan,
+                    res.get(f"power_cost_{key}", 0.0) if res.get(f"power_cost_{key}", 0.0) is not None else np.nan,
                     dra_cost,
                     station_ppm.get(key, np.nan),
-                    npump,
-                    speed,
-                    eff,
-                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
-                    res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
-                    res.get(f"head_loss_kgcm2_{key}",0.0) if res.get(f"head_loss_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
-                    res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
-                    res.get(f"rh_kgcm2_{key}",0.0) if res.get(f"rh_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
-                    res.get(f"sdh_kgcm2_{key}",0.0) if res.get(f"sdh_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
-                    res.get(f"maop_kgcm2_{key}",0.0) if res.get(f"maop_kgcm2_{key}",0.0) is not None else np.nan,
-                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                    int(res.get(f"num_pumps_{key}", 0)) if res.get(f"num_pumps_{key}", 0) is not None else np.nan,
+                    res.get(f"speed_{key}", 0.0) if res.get(f"speed_{key}", 0.0) is not None else np.nan,
+                    res.get(f"efficiency_{key}", 0.0) if res.get(f"efficiency_{key}", 0.0) is not None else np.nan,
+                    res.get(f"reynolds_{key}", 0.0) if res.get(f"reynolds_{key}", 0.0) is not None else np.nan,
+                    res.get(f"head_loss_{key}", 0.0) if res.get(f"head_loss_{key}", 0.0) is not None else np.nan,
+                    res.get(f"head_loss_kgcm2_{key}", 0.0) if res.get(f"head_loss_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"velocity_{key}", 0.0) if res.get(f"velocity_{key}", 0.0) is not None else np.nan,
+                    res.get(f"residual_head_{key}", 0.0) if res.get(f"residual_head_{key}", 0.0) is not None else np.nan,
+                    res.get(f"rh_kgcm2_{key}", 0.0) if res.get(f"rh_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"sdh_{key}", 0.0) if res.get(f"sdh_{key}", 0.0) is not None else np.nan,
+                    res.get(f"sdh_kgcm2_{key}", 0.0) if res.get(f"sdh_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"maop_{key}", 0.0) if res.get(f"maop_{key}", 0.0) is not None else np.nan,
+                    res.get(f"maop_kgcm2_{key}", 0.0) if res.get(f"maop_kgcm2_{key}", 0.0) is not None else np.nan,
+                    res.get(f"drag_reduction_{key}", 0.0) if res.get(f"drag_reduction_{key}", 0.0) is not None else np.nan,
                 ]
     
             df_sum = pd.DataFrame(summary)
@@ -1042,36 +1237,35 @@ if not auto_batch:
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+
+            if res.get("schedule"):
+                sched_df = pd.DataFrame(res["schedule"])
+                st.markdown("<div class='section-title'>2 hour Operating Schedule</div>", unsafe_allow_html=True)
+                st.dataframe(sched_df, use_container_width=True, hide_index=True)
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
-            for idx in active_indices:
-                nm = names[idx]
-                key = nm.lower().replace(' ', '_')
-                power_val = res.get(f"power_cost_{key}", 0.0)
-                power_cost = float(power_val) if pd.notna(power_val) else 0.0
-                flow_val = segment_flows[idx]
-                flow = flow_val if not pd.isna(flow_val) else 0.0
+            for idx, stn_idx in enumerate(display_indices):
+                stn = stations_data[stn_idx]
+                key = stn["name"].lower().replace(" ", "_")
+                power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
                 dra_cost = (
                     station_ppm.get(key, 0.0)
-                    * (flow * 1000.0 * 24.0 / 1e6)
+                    * (segment_flows[idx] * 1000.0 * HOURS / 1e6)
                     * st.session_state["RateDRA"]
                 )
                 total_cost += power_cost + dra_cost
-
+            
             total_pumps = 0
             effs = []
             speeds = []
-            for nm in names:
-                key = nm.lower().replace(' ','_')
-                npump_val = res.get(f"num_pumps_{key}", 0)
-                npump = int(npump_val) if pd.notna(npump_val) else 0
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ','_')
+                npump = int(res.get(f"num_pumps_{key}", 0))
                 if npump > 0:
                     total_pumps += npump
-                    eff_val = res.get(f"efficiency_{key}", 0.0)
-                    eff = float(eff_val) if pd.notna(eff_val) else 0.0
-                    speed_val = res.get(f"speed_{key}", 0.0)
-                    speed = float(speed_val) if pd.notna(speed_val) else 0.0
+                    eff = float(res.get(f"efficiency_{key}", 0.0))
+                    speed = float(res.get(f"speed_{key}", 0.0))
                     for _ in range(npump):
                         effs.append(eff)
                         speeds.append(speed)
@@ -1080,12 +1274,14 @@ if not auto_batch:
             
             st.markdown(
                 f"""<br>
-                <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
+                <div style='font-size:1.1em;'>
+                <b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
+                <b>Operating Hours:</b> {HOURS:.1f} h/day<br>
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
                 <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
                 """,
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
     
     # ---- Tab 2: Cost Breakdown ----
@@ -1123,11 +1319,12 @@ if not auto_batch:
             # --- Compute power and DRA costs just as in summary ---
             power_costs = [float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys]
             dra_costs = []
+            HOURS = st.session_state.get("operating_hours", 24.0)
             for idx, key in enumerate(keys):
                 if key in station_ppm:
                     dra_cost = (
                         station_ppm[key]
-                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                        * (segment_flows[idx] * 1000.0 * HOURS / 1e6)
                         * st.session_state["RateDRA"]
                     )
                 else:
@@ -2082,10 +2279,11 @@ if not auto_batch:
         dr_use = min(dr_opt, dr_max)
         ppm_value = get_ppm_for_dr(viscosity, dr_use)
     
+        HOURS = st.session_state.get("operating_hours", 24.0)
         def get_total_cost(q, n, d, npump):
             local_ppm = get_ppm_for_dr(viscosity, d)
             pcost = get_power_cost(q, n, d, npump)
-            dracost = local_ppm * (q * 1000.0 * 24.0 / 1e6) * RateDRA
+            dracost = local_ppm * (q * 1000.0 * HOURS / 1e6) * RateDRA
             return pcost + dracost
     
         for i in range(Xv.shape[0]):
@@ -2372,6 +2570,7 @@ if not auto_batch:
         FLOW = st.session_state["FLOW"]
         RateDRA = st.session_state["RateDRA"]
         Price_HSD = st.session_state["Price_HSD"]
+        HOURS = st.session_state.get("operating_hours", 24.0)
         linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
         N = 10  # number of points
         if param == "Flowrate (m³/hr)":
@@ -2397,6 +2596,7 @@ if not auto_batch:
         # Iterate and re-solve (uses your backend and always uses *actual* pipeline logic)
         st.info("Running sensitivity... This may take a few seconds per parameter.")
         progress = st.progress(0)
+        HOURS = st.session_state.get("operating_hours", 24.0)
         for i, val in enumerate(pvals):
             # Clone all input parameters for each run
             stations_data = [dict(s) for s in st.session_state['stations']]
@@ -2425,7 +2625,7 @@ if not auto_batch:
             elif param == "DRA Cost (INR/L)":
                 this_RateDRA = val
             # --- Run solver (always backend) ---
-            resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict())
+            resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict("records"), HOURS)
             # Extract output metric:
             # Consistent with Summary tab (use only computed data!)
             total_cost = power_cost = dra_cost = rh = eff = 0
@@ -2438,7 +2638,7 @@ if not auto_batch:
                 dr_use = min(dr_opt, dr_max)
                 ppm = get_ppm_for_dr(viscosity, dr_use)
                 seg_flow = resi.get(f"pipeline_flow_{key}", this_FLOW)
-                dra_cost_i = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * this_RateDRA
+                dra_cost_i = ppm * (seg_flow * 1000.0 * HOURS / 1e6) * this_RateDRA
                 power_cost_i = float(resi.get(f"power_cost_{key}", 0.0) or 0.0)
                 eff_i = float(resi.get(f"efficiency_{key}", 100.0))
                 rh_i = float(resi.get(f"residual_head_{key}", 0.0))
@@ -2517,6 +2717,7 @@ if not auto_batch:
         max_velocity = 0
         FLOW = st.session_state.get("FLOW", 1000.0)
         RateDRA = st.session_state.get("RateDRA", 500.0)
+        HOURS = st.session_state.get("operating_hours", 24.0)
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         for idx, stn in enumerate(stations_data):
@@ -2527,11 +2728,11 @@ if not auto_batch:
             dr_use = min(dr_opt, dr_max)
             ppm = get_ppm_for_dr(viscosity, dr_use)
             seg_flow = res.get(f"pipeline_flow_{key}", FLOW)
-            dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
+            dra_cost = ppm * (seg_flow * 1000.0 * HOURS / 1e6) * RateDRA
             power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
             velocity = res.get(f"velocity_{key}", 0.0) or 0.0
             total_cost += dra_cost + power_cost
-            total_pumped += seg_flow * 24.0
+            total_pumped += seg_flow * HOURS
             total_power += power_cost
             eff = float(res.get(f"efficiency_{key}", 100.0))
             if stn.get('is_pump', False):
@@ -2540,7 +2741,7 @@ if not auto_batch:
         # Derived KPIs for benchmarking
         my_cost_per_km = total_cost / (total_length if total_length else 1)
         my_avg_eff = np.mean(effs) if effs else 0
-        my_spec_energy = (total_power / (FLOW*24.0)) if (FLOW > 0) else 0
+        my_spec_energy = (total_power / (FLOW*HOURS)) if (FLOW > 0) else 0
         comp = {
             "Total Cost per km (INR/day/km)": my_cost_per_km,
             "Pump Efficiency (%)": my_avg_eff,
@@ -2585,7 +2786,7 @@ if not auto_batch:
         new_FLOW = FLOW * (1 + flow_change / 100)
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         # --- Re-solve with new parameters ---
-        res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict())
+        res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict("records"), HOURS)
         # Compute original and new total cost for 365 days
         total_cost, new_cost = 0, 0
         for idx, stn in enumerate(stations_data):
@@ -2596,14 +2797,14 @@ if not auto_batch:
             dr_use = min(dr_opt, dr_max)
             ppm = get_ppm_for_dr(viscosity, dr_use)
             seg_flow = st.session_state["last_res"].get(f"pipeline_flow_{key}", FLOW)
-            dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
+            dra_cost = ppm * (seg_flow * 1000.0 * HOURS / 1e6) * RateDRA
             power_cost = float(st.session_state["last_res"].get(f"power_cost_{key}", 0.0) or 0.0)
             total_cost += dra_cost + power_cost
             # NEW:
             dr_opt2 = res2.get(f"drag_reduction_{key}", 0.0)
             seg_flow2 = res2.get(f"pipeline_flow_{key}", new_FLOW)
             ppm2 = get_ppm_for_dr(viscosity, min(dr_opt2, dr_max))
-            dra_cost2 = ppm2 * (seg_flow2 * 1000.0 * 24.0 / 1e6) * new_RateDRA
+            dra_cost2 = ppm2 * (seg_flow2 * 1000.0 * HOURS / 1e6) * new_RateDRA
             power_cost2 = float(res2.get(f"power_cost_{key}", 0.0) or 0.0)
             new_cost += dra_cost2 + power_cost2
         annual_savings = (total_cost - new_cost) * 365.0
