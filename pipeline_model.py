@@ -26,14 +26,20 @@ def head_to_kgcm2(head_m: float, rho: float) -> float:
 
 
 def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int, int]]:
-    """Return all feasible pump count combinations for the origin station."""
-    combos = [
-        (a, b)
-        for a in range(maxA + 1)
-        for b in range(maxB + 1)
-        if a + b > 0
-    ]
-    return sorted(combos, key=lambda x: (x[0] + x[1], x))
+    """Return pump count combinations for the origin station.
+
+    The simplified search treats pump stations as using a single pump type at a
+    time (all type A or all type B).  Mixed type operation is ignored to keep
+    the solver lightweight and deterministic.
+    """
+    combos: list[tuple[int, int]] = []
+    for a in range(1, maxA + 1):
+        combos.append((a, 0))
+    for b in range(1, maxB + 1):
+        combos.append((0, b))
+    if not combos:
+        combos.append((1, 0))  # fall back to a single pump if nothing specified
+    return combos
 
 # ---------------------------------------------------------------------------
 # Core calculations
@@ -98,14 +104,22 @@ def _pump_bep(stn: dict) -> float:
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
-    """Return (tdh, efficiency) for ``stn`` at ``rpm`` and ``nop`` pumps."""
+    """Return (tdh, efficiency) for ``stn`` at ``rpm`` with ``nop`` pumps.
+
+    ``flow_m3h`` is the total station flow. For stations running multiple pumps
+    in parallel the flow through each individual pump is the total flow divided
+    by ``nop``.  The head developed by the station is the same as that produced
+    by a single pump operating at that per‑pump flow; additional pumps increase
+    capacity but do not multiply head.
+    """
     dol = stn.get('DOL', rpm)
-    Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
+    flow_per = flow_m3h / nop if nop > 0 else flow_m3h
+    Q_equiv = flow_per * dol / rpm if rpm > 0 else flow_per
     A = stn.get('A', 0.0)
     B = stn.get('B', 0.0)
     C = stn.get('C', 0.0)
     tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
-    tdh = tdh_single * (rpm / dol) ** 2 * nop
+    tdh = tdh_single * (rpm / dol) ** 2
     P = stn.get('P', 0.0)
     Q = stn.get('Q', 0.0)
     R = stn.get('R', 0.0)
@@ -302,18 +316,16 @@ def solve_pipeline(
                 # enforce flow limit of 120% of BEP for each pump
                 dol = stn.get('DOL', rpm)
                 if bep_dol > 0:
-                    max_flow_total = 1.2 * bep_dol * rpm / dol * nop
+                    max_flow_total = 1.2 * bep_dol * rpm / dol
                     if flow > max_flow_total:
                         continue
                 head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
                 residual_start = residual + head_loss + (elev_next - elev_i)
-                required_tdh = max(residual_start - stn.get('min_residual', 50.0), 0.0)
+                required_tdh = max(stn.get('min_residual', 50.0) - residual_start, 0.0)
                 tdh, eff = _pump_head(stn, flow, rpm, nop)
                 if tdh + 1e-6 < required_tdh:
                     continue
-                residual_up = residual_start - tdh
-                if residual_up + 1e-6 < stn.get('min_residual', 50.0):
-                    continue
+                residual_up = residual_start + tdh
                 eff = max(eff, 1e-6)
                 hydraulic_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0)
                 bkw = hydraulic_kW / (eff / 100.0) if rpm > 0 else 0.0
@@ -496,141 +508,38 @@ def solve_pipeline_multi_origin(
 
     best_result = None
     best_cost = float('inf')
-    best_stations = None
 
     for numA, numB in combos:
-        if numA > 0 and not pump_types.get('A'):
+        stn_copy = copy.deepcopy(stations)
+        base = copy.deepcopy(origin_station)
+        if numA > 0:
+            pdata = pump_types.get('A')
+            if not pdata:
+                continue
+            base.update({k: pdata.get(k, base.get(k)) for k in ['A','B','C','P','Q','R','S','T','power_type','rate','sfc','MinRPM','DOL','max_dr']})
+            base['max_pumps'] = numA
+            base['min_pumps'] = 1
+        else:
+            pdata = pump_types.get('B')
+            if not pdata:
+                continue
+            base.update({k: pdata.get(k, base.get(k)) for k in ['A','B','C','P','Q','R','S','T','power_type','rate','sfc','MinRPM','DOL','max_dr']})
+            base['max_pumps'] = numB
+            base['min_pumps'] = 1
+
+        stn_copy[origin_index] = base
+        res = solve_pipeline(stn_copy, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill, hours)
+        if res.get('error'):
             continue
-        if numB > 0 and not pump_types.get('B'):
-            continue
-
-        stations_combo: list[dict] = []
-        kv_combo: list[float] = []
-        rho_combo: list[float] = []
-
-        name_base = origin_station['name']
-        pump_units = []
-        for ptype, count in [('A', numA), ('B', numB)]:
-            pdata = pump_types.get(ptype)
-            for n in range(count):
-                unit = {
-                    'name': f"{name_base}_{ptype}{n + 1}",
-                    'elev': origin_station.get('elev', 0.0),
-                    'D': origin_station.get('D'),
-                    't': origin_station.get('t'),
-                    'SMYS': origin_station.get('SMYS'),
-                    'rough': origin_station.get('rough'),
-                    'L': 0.0,
-                    'is_pump': True,
-                    'head_data': pdata.get('head_data') if pdata else None,
-                    'eff_data': pdata.get('eff_data') if pdata else None,
-                    'A': pdata.get('A', 0.0) if pdata else 0.0,
-                    'B': pdata.get('B', 0.0) if pdata else 0.0,
-                    'C': pdata.get('C', 0.0) if pdata else 0.0,
-                    'P': pdata.get('P', 0.0) if pdata else 0.0,
-                    'Q': pdata.get('Q', 0.0) if pdata else 0.0,
-                    'R': pdata.get('R', 0.0) if pdata else 0.0,
-                    'S': pdata.get('S', 0.0) if pdata else 0.0,
-                    'T': pdata.get('T', 0.0) if pdata else 0.0,
-                    'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
-                    'rate': pdata.get('rate', 0.0) if pdata else 0.0,
-                    'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
-                    'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
-                    'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
-                    'max_pumps': 1,
-                    'min_pumps': 1,
-                    'delivery': 0.0,
-                    'supply': 0.0,
-                    'max_dr': 0.0,
-                }
-                pump_units.append(unit)
-                kv_combo.append(KV_list[0])
-                rho_combo.append(rho_list[0])
-
-        if not pump_units:
-            continue
-
-        pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
-        pump_units[0]['supply'] = origin_station.get('supply', 0.0)
-        pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
-        pump_units[-1]['L'] = origin_station.get('L', 0.0)
-        pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
-
-        stations_combo.extend(pump_units)
-        stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
-        kv_combo.extend(KV_list[1:])
-        rho_combo.extend(rho_list[1:])
-
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill, hours)
-        if result.get("error"):
-            continue
-        cost = result.get("total_cost", float('inf'))
+        cost = res.get('total_cost', float('inf'))
         if cost < best_cost:
             best_cost = cost
-            best_result = result
-            best_stations = stations_combo
+            best_result = res
             best_result['pump_combo'] = {'A': numA, 'B': numB}
-            best_result['origin_unit_keys'] = [
-                u['name'].lower().replace(' ', '_') for u in pump_units
-            ]
 
     if best_result is None:
-        return {
-            "error": True,
-            "message": "No feasible pump combination found for originating station.",
-        }
+        return {"error": True, "message": "No feasible pump combination found for originating station."}
 
-    base_key = origin_station['name'].lower().replace(' ', '_')
-    unit_keys = best_result.get('origin_unit_keys', [])
-
-    if unit_keys:
-        # Aggregate cost and power metrics across all origin pump units
-        sum_fields = ['power_cost', 'dra_cost', 'bkw', 'motor_kw', 'kwh']
-        for field in sum_fields:
-            best_result[f"{field}_{base_key}"] = sum(
-                best_result.get(f"{field}_{k}", 0.0) for k in unit_keys
-            )
-
-        best_result[f"num_pumps_{base_key}"] = sum(
-            best_result.get(f"num_pumps_{k}", 0) for k in unit_keys
-        )
-
-        speeds = [best_result.get(f"speed_{k}", 0.0) for k in unit_keys]
-        effs = [best_result.get(f"efficiency_{k}", 0.0) for k in unit_keys]
-        best_result[f"speed_{base_key}"] = max(speeds) if speeds else 0.0
-        best_result[f"efficiency_{base_key}"] = (
-            sum(effs) / len(effs) if effs else 0.0
-        )
-
-        first_key = unit_keys[0]
-        last_key = unit_keys[-1]
-
-        # Propagate pipeline flow information from the first pump unit
-        for fld in ['pipeline_flow', 'pipeline_flow_in', 'pump_flow']:
-            best_result[f"{fld}_{base_key}"] = best_result.get(
-                f"{fld}_{first_key}", 0.0
-            )
-
-        # Use downstream values from the last unit for hydraulic outputs
-        copy_fields = [
-            'head_loss',
-            'head_loss_kgcm2',
-            'velocity',
-            'reynolds',
-            'friction',
-            'residual_head',
-            'rh_kgcm2',
-            'sdh',
-            'sdh_kgcm2',
-            'maop',
-            'maop_kgcm2',
-        ]
-        for fld in copy_fields:
-            best_result[f"{fld}_{base_key}"] = best_result.get(
-                f"{fld}_{last_key}", 0.0
-            )
-
-    best_result['stations_used'] = best_stations
     return best_result
 
 
