@@ -951,6 +951,21 @@ if not auto_batch:
                 key = nm.lower().replace(' ', '_')
                 segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
                 pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
+
+            # Determine which stations to display.  Pump stations that are not
+            # running (``num_pumps == 0``) should be hidden, but pipeline
+            # segments and the terminal (which naturally have zero pumps)
+            # should still appear in the summary.
+            active_indices = []
+            for idx, nm in enumerate(names):
+                key = nm.lower().replace(' ', '_')
+                npump_val = res.get(f"num_pumps_{key}", 0)
+                npump = int(npump_val) if pd.notna(npump_val) else 0
+                is_pump = False
+                if idx < len(stations_data):
+                    is_pump = stations_data[idx].get('is_pump', False)
+                if npump > 0 or not is_pump:
+                    active_indices.append(idx)
                 
             # DRA/PPM summary and table columns as before
             station_dr_capped = {}
@@ -978,29 +993,39 @@ if not auto_batch:
             ]
             summary = {"Parameters": params}
     
-            for idx, nm in enumerate(names):
+            for idx in active_indices:
+                nm = names[idx]
                 key = nm.lower().replace(' ','_')
-                # For DRA cost at each station, use hydraulically-correct flow
+                flow_val = segment_flows[idx]
+                flow = flow_val if not pd.isna(flow_val) else 0.0
                 if key in station_ppm:
                     dra_cost = (
                         station_ppm[key]
-                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                        * (flow * 1000.0 * 24.0 / 1e6)
                         * st.session_state["RateDRA"]
                     )
                 else:
                     dra_cost = 0.0
-    
-                # For numeric columns, always use np.nan if not available
+
                 pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
+                power_val = res.get(f"power_cost_{key}", 0.0)
+                power_cost = power_val if pd.notna(power_val) else np.nan
+                npump_val = res.get(f"num_pumps_{key}", 0)
+                npump = int(npump_val) if pd.notna(npump_val) else np.nan
+                speed_val = res.get(f"speed_{key}",0.0)
+                speed = speed_val if pd.notna(speed_val) else np.nan
+                eff_val = res.get(f"efficiency_{key}",0.0)
+                eff = eff_val if pd.notna(eff_val) else np.nan
+
                 summary[nm] = [
-                    segment_flows[idx],
+                    flow_val,
                     pumpflow,
-                    res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                    power_cost,
                     dra_cost,
                     station_ppm.get(key, np.nan),
-                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
-                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
-                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
+                    npump,
+                    speed,
+                    eff,
                     res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
                     res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
                     res.get(f"head_loss_kgcm2_{key}",0.0) if res.get(f"head_loss_kgcm2_{key}",0.0) is not None else np.nan,
@@ -1039,26 +1064,33 @@ if not auto_batch:
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
-            for idx, stn in enumerate(stations_data):
-                key = stn['name'].lower().replace(' ', '_')
-                power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+            for idx in active_indices:
+                nm = names[idx]
+                key = nm.lower().replace(' ', '_')
+                power_val = res.get(f"power_cost_{key}", 0.0)
+                power_cost = float(power_val) if pd.notna(power_val) else 0.0
+                flow_val = segment_flows[idx]
+                flow = flow_val if not pd.isna(flow_val) else 0.0
                 dra_cost = (
                     station_ppm.get(key, 0.0)
-                    * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                    * (flow * 1000.0 * 24.0 / 1e6)
                     * st.session_state["RateDRA"]
                 )
                 total_cost += power_cost + dra_cost
-            
+
             total_pumps = 0
             effs = []
             speeds = []
-            for stn in stations_data:
-                key = stn['name'].lower().replace(' ','_')
-                npump = int(res.get(f"num_pumps_{key}", 0))
+            for nm in names:
+                key = nm.lower().replace(' ','_')
+                npump_val = res.get(f"num_pumps_{key}", 0)
+                npump = int(npump_val) if pd.notna(npump_val) else 0
                 if npump > 0:
                     total_pumps += npump
-                    eff = float(res.get(f"efficiency_{key}", 0.0))
-                    speed = float(res.get(f"speed_{key}", 0.0))
+                    eff_val = res.get(f"efficiency_{key}", 0.0)
+                    eff = float(eff_val) if pd.notna(eff_val) else 0.0
+                    speed_val = res.get(f"speed_{key}", 0.0)
+                    speed = float(speed_val) if pd.notna(speed_val) else 0.0
                     for _ in range(npump):
                         effs.append(eff)
                         speeds.append(speed)
