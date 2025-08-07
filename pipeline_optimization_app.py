@@ -1121,6 +1121,11 @@ if not auto_batch:
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+
+            if res.get("schedule"):
+                sched_df = pd.DataFrame(res["schedule"])
+                st.markdown("<div class='section-title'>3 hour Operating Schedule</div>", unsafe_allow_html=True)
+                st.dataframe(sched_df, use_container_width=True, hide_index=True)
     
             # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
             total_cost = 0.0
