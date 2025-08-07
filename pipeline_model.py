@@ -771,6 +771,7 @@ def optimise_pumping_plan(
     throughput = sum(p.get('volume', 0.0) for p in plan)
     best = None
     best_cost = float('inf')
+    last_err = None
     for hrs in range(2, 25, 2):
         flow = throughput / hrs if hrs > 0 else 0.0
         res = simulate_pumping_plan(
@@ -785,12 +786,13 @@ def optimise_pumping_plan(
             total_hours=float(hrs),
         )
         if res.get('error'):
+            last_err = res.get('message')
             continue
         cost = res.get('total_cost', float('inf'))
         if cost < best_cost:
             best_cost = cost
             best = res
     if best is None:
-        return {'error': True, 'message': 'No feasible operating schedule found.'}
+        return {'error': True, 'message': last_err or 'No feasible operating schedule found.'}
     return best
 
