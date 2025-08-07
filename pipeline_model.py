@@ -116,6 +116,112 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
 
 
 # ---------------------------------------------------------------------------
+# Product movement utilities
+# ---------------------------------------------------------------------------
+
+def _segment_volumes(stations: list[dict]) -> list[tuple[float, float]]:
+    """Return cumulative volume ranges for each pipeline segment.
+
+    Each entry is a ``(start, end)`` pair representing the volume window (m³)
+    occupied by the segment between station ``i-1`` and ``i``.  The start of the
+    first segment is 0 and the end of the last segment equals the total linefill
+    capacity.
+    """
+
+    ranges = []
+    cum = 0.0
+    default_t = 0.007
+    for stn in stations:
+        L = float(stn.get('L', 0.0)) * 1000.0  # km -> m
+        if 'D' in stn:
+            d_inner = stn['D'] - 2 * stn.get('t', default_t)
+        else:
+            d_inner = stn.get('d', 0.7)
+        area = pi * d_inner ** 2 / 4.0
+        vol = area * L
+        start = cum
+        cum += vol
+        ranges.append((start, cum))
+    return ranges
+
+
+def _property_at_volume(slugs: list[dict], vol: float) -> tuple[float, float]:
+    """Return (kv, rho) for the product occupying volume ``vol``."""
+    for slug in slugs:
+        if slug['start'] <= vol < slug['end']:
+            return slug['kv'], slug['rho']
+    # fallback to last slug if volume slightly exceeds due to rounding
+    last = slugs[-1]
+    return last['kv'], last['rho']
+
+
+def _properties_from_slugs(slugs: list[dict], seg_ranges: list[tuple[float, float]]) -> tuple[list[float], list[float]]:
+    """Return viscosity and density lists for each pipeline segment."""
+    kv_list = []
+    rho_list = []
+    for start, end in seg_ranges:
+        mid = (start + end) / 2.0
+        kv, rho = _property_at_volume(slugs, mid)
+        kv_list.append(kv)
+        rho_list.append(rho)
+    return kv_list, rho_list
+
+
+def _advance_slugs(slugs: list[dict], pumped_vol: float, plan: list[dict], capacity: float) -> list[dict]:
+    """Shift slugs downstream by ``pumped_vol`` and insert new product.
+
+    ``plan`` is modified in place to remove pumped volume.
+    """
+
+    # Shift existing slugs downstream
+    for slug in slugs:
+        slug['start'] += pumped_vol
+        slug['end'] += pumped_vol
+
+    # Insert new volume at the start from the pumping plan
+    volume_remaining = pumped_vol
+    new_slugs = []
+    offset = 0.0
+    while volume_remaining > 0 and plan:
+        prod = plan[0]
+        take = min(prod['volume'], volume_remaining)
+        new_slugs.append({
+            'start': offset,
+            'end': offset + take,
+            'kv': prod['kv'],
+            'rho': prod['rho'],
+        })
+        offset += take
+        volume_remaining -= take
+        prod['volume'] -= take
+        if prod['volume'] <= 1e-9:
+            plan.pop(0)
+
+    slugs = new_slugs + slugs
+
+    # Remove slugs that have exited the pipeline and trim the last one
+    kept: list[dict] = []
+    for slug in slugs:
+        if slug['start'] >= capacity:
+            continue
+        if slug['end'] > capacity:
+            slug['end'] = capacity
+        kept.append(slug)
+
+    # Merge adjacent slugs with identical properties
+    merged: list[dict] = []
+    for slug in kept:
+        if merged and merged[-1]['kv'] == slug['kv'] and merged[-1]['rho'] == slug['rho'] and abs(merged[-1]['end'] - slug['start']) < 1e-9:
+            merged[-1]['end'] = slug['end']
+        else:
+            merged.append(slug)
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -205,16 +311,18 @@ def solve_pipeline(
                 if residual_next < stn.get('min_residual', 50.0):
                     continue
                 eff = max(eff, 1e-6)
-                power_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0) * 0.95) if rpm > 0 else 0.0
-                if power_kW < 0:
+                hydraulic_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0)
+                bkw = hydraulic_kW / (eff / 100.0) if rpm > 0 else 0.0
+                motor_kW = bkw / 0.95
+                if motor_kW < 0:
                     continue
                 if stn.get('sfc', 0):
                     sfc_val = stn['sfc']
                     fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                    power_cost = power_kW * hours * fuel_per_kWh * Price_HSD
+                    power_cost = motor_kW * hours * fuel_per_kWh * Price_HSD
                 else:
                     rate = stn.get('rate', 0.0)
-                    power_cost = power_kW * hours * rate
+                    power_cost = motor_kW * hours * rate
                 ppm = max(get_ppm_for_dr(kv, dra), 0.0)
                 dra_cost = ppm * (flow * 1000.0 * hours / 1e6) * RateDRA
                 cost = power_cost + dra_cost
@@ -235,6 +343,9 @@ def solve_pipeline(
                         'power_cost': power_cost,
                         'dra_cost': dra_cost,
                         'dra_ppm': ppm,
+                        'bkw': bkw,
+                        'motor_kw': motor_kW,
+                        'energy_kwh': motor_kW * hours,
                         'cost': cost,
                     }
             if best is None:
@@ -251,6 +362,9 @@ def solve_pipeline(
             result[f"dra_cost_{name}"] = best['dra_cost']
             result[f"dra_ppm_{name}"] = best['dra_ppm']
             result[f"drag_reduction_{name}"] = best['dra']
+            result[f"bkw_{name}"] = best['bkw']
+            result[f"motor_kw_{name}"] = best['motor_kw']
+            result[f"kwh_{name}"] = best['energy_kwh']
             result[f"head_loss_{name}"] = best['head_loss']
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(best['head_loss'], rho)
             result[f"residual_head_{name}"] = residual
@@ -291,6 +405,9 @@ def solve_pipeline(
             result[f"dra_cost_{name}"] = 0.0
             result[f"dra_ppm_{name}"] = 0.0
             result[f"drag_reduction_{name}"] = 0.0
+            result[f"bkw_{name}"] = 0.0
+            result[f"motor_kw_{name}"] = 0.0
+            result[f"kwh_{name}"] = 0.0
             result[f"head_loss_{name}"] = head_loss
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(head_loss, rho)
             result[f"residual_head_{name}"] = residual
@@ -332,6 +449,9 @@ def solve_pipeline(
         f"dra_cost_{term_name}": 0.0,
         f"dra_ppm_{term_name}": 0.0,
         f"drag_reduction_{term_name}": 0.0,
+        f"bkw_{term_name}": 0.0,
+        f"motor_kw_{term_name}": 0.0,
+        f"kwh_{term_name}": 0.0,
         f"head_loss_{term_name}": 0.0,
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
@@ -476,16 +596,16 @@ def optimise_throughput(
 ) -> dict:
     """Enumerate operating hours to satisfy a daily throughput target.
 
-    The search explores constant-flow operation for blocks of 3 hours up to a
+    The search explores constant-flow operation for blocks of 2 hours up to a
     maximum of 24 hours.  For each candidate duration the corresponding flow
     rate is computed and :func:`solve_pipeline` is invoked.  The least-cost
-    feasible schedule is returned along with a simple 3‑hour schedule showing
+    feasible schedule is returned along with a simple 2‑hour schedule showing
     the pump settings for each station.
     """
 
     best_res = None
     best_cost = float('inf')
-    for hrs in range(3, 25, 3):
+    for hrs in range(2, 25, 2):
         flow = throughput_m3_day / hrs if hrs > 0 else 0.0
         res = solve_pipeline(
             stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
@@ -500,16 +620,19 @@ def optimise_throughput(
         return {"error": True, "message": "No feasible operating schedule found."}
 
     # Build a 3-hourly schedule for reporting
-    blocks = int(best_res.get('operating_hours', 0) // 3)
+    blocks = int(best_res.get('operating_hours', 0) // 2)
     flow = best_res.get('opt_flow', 0.0)
     schedule: list[dict] = []
     st_keys = [s['name'].strip().lower().replace(' ', '_') for s in stations]
     for b in range(blocks):
-        entry = {'block': b + 1, 'duration_h': 3, 'flow_m3h': flow}
+        entry = {'block': b + 1, 'duration_h': 2, 'flow_m3h': flow}
         for key in st_keys:
             entry[f'speed_{key}'] = best_res.get(f'speed_{key}', 0.0)
             entry[f'dra_ppm_{key}'] = best_res.get(f'dra_ppm_{key}', 0.0)
             entry[f'num_pumps_{key}'] = best_res.get(f'num_pumps_{key}', 0)
+            entry[f'bkw_{key}'] = best_res.get(f'bkw_{key}', 0.0)
+            entry[f'motor_kw_{key}'] = best_res.get(f'motor_kw_{key}', 0.0)
+            entry[f'kwh_{key}'] = best_res.get(f'kwh_{key}', 0.0)
         schedule.append(entry)
     best_res['schedule'] = schedule
 
@@ -530,7 +653,7 @@ def optimise_throughput_multi_origin(
 
     best_res = None
     best_cost = float('inf')
-    for hrs in range(3, 25, 3):
+    for hrs in range(2, 25, 2):
         flow = throughput_m3_day / hrs if hrs > 0 else 0.0
         res = solve_pipeline_multi_origin(
             stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
@@ -544,19 +667,130 @@ def optimise_throughput_multi_origin(
     if best_res is None:
         return {"error": True, "message": "No feasible operating schedule found."}
 
-    # Attach 3-hour schedule based on stations actually used
-    blocks = int(best_res.get('operating_hours', 0) // 3)
+    # Attach 2-hour schedule based on stations actually used
+    blocks = int(best_res.get('operating_hours', 0) // 2)
     flow = best_res.get('opt_flow', 0.0)
     schedule: list[dict] = []
     st_list = best_res.get('stations_used', stations)
     st_keys = [s['name'].strip().lower().replace(' ', '_') for s in st_list if s.get('is_pump', False)]
     for b in range(blocks):
-        entry = {'block': b + 1, 'duration_h': 3, 'flow_m3h': flow}
+        entry = {'block': b + 1, 'duration_h': 2, 'flow_m3h': flow}
         for key in st_keys:
             entry[f'speed_{key}'] = best_res.get(f'speed_{key}', 0.0)
             entry[f'dra_ppm_{key}'] = best_res.get(f'dra_ppm_{key}', 0.0)
             entry[f'num_pumps_{key}'] = best_res.get(f'num_pumps_{key}', 0)
+            entry[f'bkw_{key}'] = best_res.get(f'bkw_{key}', 0.0)
+            entry[f'motor_kw_{key}'] = best_res.get(f'motor_kw_{key}', 0.0)
+            entry[f'kwh_{key}'] = best_res.get(f'kwh_{key}', 0.0)
         schedule.append(entry)
     best_res['schedule'] = schedule
 
     return best_res
+
+
+def simulate_pumping_plan(
+    stations: list[dict],
+    terminal: dict,
+    flow_m3h: float,
+    linefill: list[dict],
+    plan: list[dict],
+    RateDRA: float,
+    Price_HSD: float,
+    step_hours: float = 2.0,
+    total_hours: float = 24.0,
+) -> dict:
+    """Simulate product movement and evaluate cost for a pumping plan.
+
+    ``linefill`` and ``plan`` are lists of dictionaries with keys ``volume``
+    (m³), ``kv`` (cSt) and ``rho`` (kg/m³).  The plan is modified during the
+    simulation so callers should pass a copy if values are reused.
+    """
+
+    seg_ranges = _segment_volumes(stations)
+    capacity = seg_ranges[-1][1] if seg_ranges else 0.0
+
+    # Build initial slug list from linefill
+    slugs: list[dict] = []
+    start = 0.0
+    for p in linefill:
+        vol = float(p.get('volume', 0.0))
+        slugs.append({'start': start, 'end': start + vol, 'kv': p.get('kv', 1.0), 'rho': p.get('rho', 800.0)})
+        start += vol
+    if start < capacity:
+        # fill any remaining volume with the last known product
+        if slugs:
+            last = slugs[-1]
+            slugs.append({'start': start, 'end': capacity, 'kv': last['kv'], 'rho': last['rho']})
+        else:
+            slugs.append({'start': 0.0, 'end': capacity, 'kv': plan[0]['kv'], 'rho': plan[0]['rho']})
+
+    total_cost = 0.0
+    schedule: list[dict] = []
+    steps = int(total_hours // step_hours)
+    for step in range(steps):
+        kv_list, rho_list = _properties_from_slugs(slugs, seg_ranges)
+        res = solve_pipeline(stations, terminal, flow_m3h, kv_list, rho_list, RateDRA, Price_HSD, None, step_hours)
+        if res.get('error'):
+            return res
+        total_cost += res.get('total_cost', 0.0)
+
+        entry = {'block': step + 1, 'duration_h': step_hours, 'flow_m3h': flow_m3h}
+        for stn in stations:
+            key = stn['name'].strip().lower().replace(' ', '_')
+            if stn.get('is_pump'):
+                entry[f'speed_{key}'] = res.get(f'speed_{key}', 0.0)
+                entry[f'dra_ppm_{key}'] = res.get(f'dra_ppm_{key}', 0.0)
+                entry[f'num_pumps_{key}'] = res.get(f'num_pumps_{key}', 0)
+                entry[f'bkw_{key}'] = res.get(f'bkw_{key}', 0.0)
+                entry[f'motor_kw_{key}'] = res.get(f'motor_kw_{key}', 0.0)
+                entry[f'kwh_{key}'] = res.get(f'kwh_{key}', 0.0)
+        schedule.append(entry)
+
+        pumped_vol = flow_m3h * step_hours
+        slugs = _advance_slugs(slugs, pumped_vol, plan, capacity)
+
+    return {
+        'error': False,
+        'total_cost': total_cost,
+        'schedule': schedule,
+        'operating_hours': steps * step_hours,
+        'opt_flow': flow_m3h,
+    }
+
+
+def optimise_pumping_plan(
+    stations: list[dict],
+    terminal: dict,
+    linefill: list[dict],
+    plan: list[dict],
+    RateDRA: float,
+    Price_HSD: float,
+) -> dict:
+    """Optimise flow rate and hours for a given pumping plan."""
+
+    throughput = sum(p.get('volume', 0.0) for p in plan)
+    best = None
+    best_cost = float('inf')
+    for hrs in range(2, 25, 2):
+        flow = throughput / hrs if hrs > 0 else 0.0
+        res = simulate_pumping_plan(
+            stations,
+            terminal,
+            flow,
+            [dict(p) for p in linefill],
+            [dict(p) for p in plan],
+            RateDRA,
+            Price_HSD,
+            step_hours=2.0,
+            total_hours=float(hrs),
+        )
+        if res.get('error'):
+            continue
+        cost = res.get('total_cost', float('inf'))
+        if cost < best_cost:
+            best_cost = cost
+            best = res
+    if best is None:
+        return {'error': True, 'message': 'No feasible operating schedule found.'}
+    return best
+
