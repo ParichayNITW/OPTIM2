@@ -366,6 +366,12 @@ def solve_pipeline(
             if best is None:
                 return {"error": True, "message": f"No feasible operating point for {stn['name']}."}
             residual = best['residual_up']
+            # Display the user-entered minimum residual at the originating station
+            display_residual = (
+                stn.get('min_residual', residual)
+                if idx == 1
+                else residual
+            )
             result[f"pipeline_flow_{name}"] = flow
             result[f"pipeline_flow_in_{name}"] = segment_flows[idx - 1]
             result[f"pump_flow_{name}"] = flow
@@ -381,8 +387,8 @@ def solve_pipeline(
             result[f"kwh_{name}"] = best['energy_kwh']
             result[f"head_loss_{name}"] = best['head_loss']
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(best['head_loss'], rho)
-            result[f"residual_head_{name}"] = residual
-            result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
+            result[f"residual_head_{name}"] = display_residual
+            result[f"rh_kgcm2_{name}"] = head_to_kgcm2(display_residual, rho)
             sdh_val = best['residual_start']
             result[f"sdh_{name}"] = sdh_val
             result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(sdh_val, rho)
@@ -403,6 +409,11 @@ def solve_pipeline(
             if residual_start < stn.get('min_residual', 50.0):
                 return {"error": True, "message": f"Residual head below minimum after {stn['name']}"}
             residual = residual_start
+            display_residual = (
+                stn.get('min_residual', residual)
+                if idx == 1
+                else residual
+            )
             result[f"pipeline_flow_{name}"] = flow
             result[f"pipeline_flow_in_{name}"] = segment_flows[idx - 1]
             result[f"pump_flow_{name}"] = 0.0
@@ -418,10 +429,10 @@ def solve_pipeline(
             result[f"kwh_{name}"] = 0.0
             result[f"head_loss_{name}"] = head_loss
             result[f"head_loss_kgcm2_{name}"] = head_to_kgcm2(head_loss, rho)
-            result[f"residual_head_{name}"] = residual
-            result[f"rh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
-            result[f"sdh_{name}"] = residual
-            result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(residual, rho)
+            result[f"residual_head_{name}"] = display_residual
+            result[f"rh_kgcm2_{name}"] = head_to_kgcm2(display_residual, rho)
+            result[f"sdh_{name}"] = display_residual
+            result[f"sdh_kgcm2_{name}"] = head_to_kgcm2(display_residual, rho)
             result[f"coef_A_{name}"] = 0.0
             result[f"coef_B_{name}"] = 0.0
             result[f"coef_C_{name}"] = 0.0
