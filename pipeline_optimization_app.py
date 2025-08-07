@@ -137,6 +137,10 @@ def restore_case_dict(loaded_data):
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+    if "pumping_plan" in loaded_data and loaded_data["pumping_plan"]:
+        st.session_state["plan_df"] = pd.DataFrame(loaded_data["pumping_plan"])
+    if "linefill_plan" in loaded_data and loaded_data["linefill_plan"]:
+        st.session_state["linefill_plan_df"] = pd.DataFrame(loaded_data["linefill_plan"])
     for i in range(len(st.session_state['stations'])):
         head_data = loaded_data.get(f"head_data_{i+1}", None)
         eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
@@ -206,21 +210,39 @@ with st.sidebar:
             # Derive nominal flow for other UI parts
             st.session_state["FLOW"] = THR / 24.0 if THR else 0.0
         else:
-            plan_json = st.text_area(
-                "Pumping plan JSON",
-                value=st.session_state.get("plan_json", "[]"),
+            st.markdown("### Daily Pumping Plan")
+            if "plan_df" not in st.session_state:
+                st.session_state["plan_df"] = pd.DataFrame({
+                    "Volume (m³)": [1000.0],
+                    "Viscosity (cSt)": [10.0],
+                    "Density (kg/m³)": [850.0],
+                })
+            st.session_state["plan_df"] = st.data_editor(
+                st.session_state["plan_df"],
+                num_rows="dynamic", key="plan_editor"
             )
-            linefill_json = st.text_area(
-                "Linefill at 07:00 JSON",
-                value=st.session_state.get("linefill_json", "[]"),
+
+            st.markdown("### Linefill at 07:00 Hrs")
+            if "linefill_plan_df" not in st.session_state:
+                st.session_state["linefill_plan_df"] = pd.DataFrame({
+                    "Volume (m³)": [5000.0],
+                    "Viscosity (cSt)": [10.0],
+                    "Density (kg/m³)": [850.0],
+                })
+            st.session_state["linefill_plan_df"] = st.data_editor(
+                st.session_state["linefill_plan_df"],
+                num_rows="dynamic", key="linefill_plan_editor"
             )
-            st.session_state["plan_json"] = plan_json
-            st.session_state["linefill_json"] = linefill_json
-            try:
-                plan_list = json.loads(plan_json) if plan_json else []
-                throughput = sum(p.get("volume", 0.0) for p in plan_list)
-            except Exception:
-                throughput = 0.0
+
+            plan_list = [
+                {
+                    "volume": row["Volume (m³)"],
+                    "kv": row["Viscosity (cSt)"],
+                    "rho": row["Density (kg/m³)"],
+                }
+                for _, row in st.session_state["plan_df"].iterrows()
+            ]
+            throughput = sum(p["volume"] for p in plan_list)
             st.session_state["THROUGHPUT"] = throughput
             st.session_state["FLOW"] = throughput / 24.0 if throughput else 0.0
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
@@ -228,18 +250,19 @@ with st.sidebar:
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
 
-    st.subheader("Linefill Profile (7:00 Hrs)")
-    if "linefill_df" not in st.session_state:
-        st.session_state["linefill_df"] = pd.DataFrame({
-            "Start (km)": [0.0],
-            "End (km)": [100.0],
-            "Viscosity (cSt)": [10.0],
-            "Density (kg/m³)": [850.0]
-        })
-    st.session_state["linefill_df"] = st.data_editor(
-        st.session_state["linefill_df"],
-        num_rows="dynamic", key="linefill_editor"
-    )
+    if flow_mode != "Pumping plan":
+        st.subheader("Linefill Profile (7:00 Hrs)")
+        if "linefill_df" not in st.session_state:
+            st.session_state["linefill_df"] = pd.DataFrame({
+                "Start (km)": [0.0],
+                "End (km)": [100.0],
+                "Viscosity (cSt)": [10.0],
+                "Density (kg/m³)": [850.0]
+            })
+        st.session_state["linefill_df"] = st.data_editor(
+            st.session_state["linefill_df"],
+            num_rows="dynamic", key="linefill_editor"
+        )
 
     st.subheader("Stations")
     add_col, rem_col = st.columns(2)
@@ -513,6 +536,8 @@ def get_full_case_dict():
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
+        "pumping_plan": st.session_state.get('plan_df', pd.DataFrame()).to_dict(orient="records"),
+        "linefill_plan": st.session_state.get('linefill_plan_df', pd.DataFrame()).to_dict(orient="records"),
         **{
             f"head_data_{i+1}": (
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
@@ -597,7 +622,7 @@ def solve_pipeline(
     rho_list,
     RateDRA,
     Price_HSD,
-    linefill_dict,
+    linefill,
     hours,
 ):
     """Wrapper around :mod:`pipeline_model` to allow hot-reloading."""
@@ -616,7 +641,7 @@ def solve_pipeline(
                 rho_list,
                 RateDRA,
                 Price_HSD,
-                linefill_dict,
+                linefill,
                 hours,
             )
         return pipeline_model.solve_pipeline(
@@ -627,7 +652,7 @@ def solve_pipeline(
             rho_list,
             RateDRA,
             Price_HSD,
-            linefill_dict,
+            linefill,
             hours,
         )
     except Exception as exc:  # pragma: no cover - diagnostic path
@@ -642,7 +667,7 @@ def optimise_throughput(
     rho_list,
     RateDRA,
     Price_HSD,
-    linefill_dict,
+    linefill,
 ):
     """Wrapper around :func:`pipeline_model.optimise_throughput`."""
 
@@ -660,7 +685,7 @@ def optimise_throughput(
                 rho_list,
                 RateDRA,
                 Price_HSD,
-                linefill_dict,
+                linefill,
             )
         return pipeline_model.optimise_throughput(
             stations,
@@ -670,7 +695,7 @@ def optimise_throughput(
             rho_list,
             RateDRA,
             Price_HSD,
-            linefill_dict,
+            linefill,
         )
     except Exception as exc:
         return {"error": True, "message": str(exc)}
@@ -972,8 +997,13 @@ if not auto_batch:
             stations_data = st.session_state.stations
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             # Always ensure linefill_df, kv_list, rho_list are defined!
-            linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+            flow_mode = st.session_state.get("flow_mode", "Flow rate (m³/hr)")
+            if flow_mode == "Pumping plan":
+                linefill_df = st.session_state.get("linefill_plan_df", pd.DataFrame())
+                kv_list, rho_list = [], []
+            else:
+                linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+                kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
 
             
             # ------------- ADD THIS BLOCK -------------
@@ -1011,7 +1041,6 @@ if not auto_batch:
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
 
-            flow_mode = st.session_state.get("flow_mode", "Flow rate (m³/hr)")
             if flow_mode == "Throughput per day (m³/day)":
                 throughput = st.session_state.get("THROUGHPUT", 0.0)
                 res = optimise_throughput(
@@ -1022,18 +1051,30 @@ if not auto_batch:
                     rho_list,
                     RateDRA,
                     Price_HSD,
-                    linefill_df.to_dict(),
+                    linefill_df.to_dict("records"),
                 )
                 if not res.get("error"):
                     st.session_state["FLOW"] = res.get("opt_flow", st.session_state.get("FLOW", 0.0))
                     st.session_state["operating_hours"] = res.get("operating_hours", 24.0)
             elif flow_mode == "Pumping plan":
-                try:
-                    plan_list = json.loads(st.session_state.get("plan_json", "[]"))
-                    linefill_list = json.loads(st.session_state.get("linefill_json", "[]"))
-                except Exception:
-                    st.error("Invalid JSON for plan or linefill")
-                    st.stop()
+                plan_df = st.session_state.get("plan_df", pd.DataFrame())
+                linefill_plan_df = st.session_state.get("linefill_plan_df", pd.DataFrame())
+                plan_list = [
+                    {
+                        "volume": row["Volume (m³)"],
+                        "kv": row["Viscosity (cSt)"],
+                        "rho": row["Density (kg/m³)"],
+                    }
+                    for _, row in plan_df.iterrows()
+                ]
+                linefill_list = [
+                    {
+                        "volume": row["Volume (m³)"],
+                        "kv": row["Viscosity (cSt)"],
+                        "rho": row["Density (kg/m³)"],
+                    }
+                    for _, row in linefill_plan_df.iterrows()
+                ]
                 res = optimise_pumping_plan(
                     stations_data,
                     term_data,
@@ -1055,7 +1096,7 @@ if not auto_batch:
                     rho_list,
                     RateDRA,
                     Price_HSD,
-                    linefill_df.to_dict(),
+                    linefill_df.to_dict("records"),
                     hours,
                 )
                 if not res.get("error"):
@@ -2569,7 +2610,7 @@ if not auto_batch:
             elif param == "DRA Cost (INR/L)":
                 this_RateDRA = val
             # --- Run solver (always backend) ---
-            resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict(), HOURS)
+            resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict("records"), HOURS)
             # Extract output metric:
             # Consistent with Summary tab (use only computed data!)
             total_cost = power_cost = dra_cost = rh = eff = 0
@@ -2730,7 +2771,7 @@ if not auto_batch:
         new_FLOW = FLOW * (1 + flow_change / 100)
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         # --- Re-solve with new parameters ---
-        res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict(), HOURS)
+        res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict("records"), HOURS)
         # Compute original and new total cost for 365 days
         total_cost, new_cost = 0, 0
         for idx, stn in enumerate(stations_data):

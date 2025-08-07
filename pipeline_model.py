@@ -233,7 +233,7 @@ def solve_pipeline(
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
-    linefill_dict: dict | None = None,
+    linefill: list[dict] | None = None,
     hours: float = 24.0,
 ) -> dict:
     """Greedy search over pump settings to minimise operating cost.
@@ -480,7 +480,7 @@ def solve_pipeline_multi_origin(
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
-    linefill_dict: dict | None = None,
+    linefill: list[dict] | None = None,
     hours: float = 24.0,
 ) -> dict:
     """Enumerate pump type combinations at the origin and call ``solve_pipeline``.
@@ -564,7 +564,7 @@ def solve_pipeline_multi_origin(
         kv_combo.extend(KV_list[1:])
         rho_combo.extend(rho_list[1:])
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, hours)
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill, hours)
         if result.get("error"):
             continue
         cost = result.get("total_cost", float('inf'))
@@ -592,7 +592,7 @@ def optimise_throughput(
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
-    linefill_dict: dict | None = None,
+    linefill: list[dict] | None = None,
 ) -> dict:
     """Enumerate operating hours to satisfy a daily throughput target.
 
@@ -608,7 +608,7 @@ def optimise_throughput(
     for hrs in range(2, 25, 2):
         flow = throughput_m3_day / hrs if hrs > 0 else 0.0
         res = solve_pipeline(
-            stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
+            stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill, hrs
         )
         if res.get("error"):
             continue
@@ -647,7 +647,7 @@ def optimise_throughput_multi_origin(
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
-    linefill_dict: dict | None = None,
+    linefill: list[dict] | None = None,
 ) -> dict:
     """Throughput optimisation wrapper for multi-origin pipelines."""
 
@@ -656,7 +656,7 @@ def optimise_throughput_multi_origin(
     for hrs in range(2, 25, 2):
         flow = throughput_m3_day / hrs if hrs > 0 else 0.0
         res = solve_pipeline_multi_origin(
-            stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict, hrs
+            stations, terminal, flow, KV_list, rho_list, RateDRA, Price_HSD, linefill, hrs
         )
         if res.get("error"):
             continue
