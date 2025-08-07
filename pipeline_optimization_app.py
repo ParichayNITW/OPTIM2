@@ -969,8 +969,8 @@ if not auto_batch:
     
             params = [
                 "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
-                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Reynolds No.",
-                "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
+                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
+                "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
                 "Residual Head (m)", "Residual Head (kg/cm²)",
                 "SDH (m)", "SDH (kg/cm²)",
                 "MAOP (m)", "MAOP (kg/cm²)",
@@ -1001,6 +1001,8 @@ if not auto_batch:
                     int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
                     res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
                     res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
+                    res.get(f"pump_bkw_{key}",0.0) if res.get(f"pump_bkw_{key}",0.0) is not None else np.nan,
+                    res.get(f"motor_kw_{key}",0.0) if res.get(f"motor_kw_{key}",0.0) is not None else np.nan,
                     res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
                     res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
                     res.get(f"head_loss_kgcm2_{key}",0.0) if res.get(f"head_loss_kgcm2_{key}",0.0) is not None else np.nan,
@@ -1037,18 +1039,8 @@ if not auto_batch:
             st.dataframe(df_sum, use_container_width=True, hide_index=True)
             st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
     
-            # --- Recompute total optimized cost (Power+Fuel + DRA) for all stations ---
-            total_cost = 0.0
-            for idx, stn in enumerate(stations_data):
-                key = stn['name'].lower().replace(' ', '_')
-                power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
-                dra_cost = (
-                    station_ppm.get(key, 0.0)
-                    * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
-                    * st.session_state["RateDRA"]
-                )
-                total_cost += power_cost + dra_cost
-            
+            # --- Aggregate counts for display ---
+            total_cost = float(res.get("total_cost", 0.0))
             total_pumps = 0
             effs = []
             speeds = []
