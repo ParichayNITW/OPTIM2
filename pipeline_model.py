@@ -121,9 +121,15 @@ def solve_pipeline(
 
     origin_enforced = False
     for i, stn in enumerate(stations, start=1):
+        name = stn['name'].strip().lower().replace(' ', '_')
         flow = segment_flows[i]
         kv = KV_list[i - 1]
         rho = rho_list[i - 1]
+
+        if i == N:
+            min_residual_next = terminal.get('min_residual', 0.0)
+        else:
+            min_residual_next = stations[i].get('min_residual', 0.0)
 
         L = stn.get('L', 0.0)
         if 'D' in stn:
@@ -166,20 +172,23 @@ def solve_pipeline(
                         elev_i = stn.get('elev', 0.0)
                         elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
                         residual_next = residual + tdh - head_loss - (elev_next - elev_i)
-                        if residual_next < stn.get('min_residual', 50.0):
+                        if residual_next < min_residual_next:
                             continue
                         eff = max(eff, 1e-6) if nop > 0 else 0.0
                         if nop > 0 and rpm > 0:
-                            power_kW = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0) * 0.95)
+                            pump_bkw_total = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
+                            pump_bkw = pump_bkw_total / nop
+                            motor_kw_total = pump_bkw_total / 0.95
+                            motor_kw = motor_kw_total / nop
                         else:
-                            power_kW = 0.0
-                        if stn.get('sfc', 0) and power_kW > 0:
+                            pump_bkw = motor_kw = motor_kw_total = 0.0
+                        if stn.get('sfc', 0) and motor_kw_total > 0:
                             sfc_val = stn['sfc']
                             fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                            power_cost = power_kW * 24.0 * fuel_per_kWh * Price_HSD
+                            power_cost = motor_kw_total * 24.0 * fuel_per_kWh * Price_HSD
                         else:
                             rate = stn.get('rate', 0.0)
-                            power_cost = power_kW * 24.0 * rate
+                            power_cost = motor_kw_total * 24.0 * rate
                         ppm = get_ppm_for_dr(kv, dra) if nop > 0 else 0.0
                         dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA if nop > 0 else 0.0
                         cost = power_cost + dra_cost
@@ -195,6 +204,8 @@ def solve_pipeline(
                                 'f': f,
                                 'tdh': tdh,
                                 'eff': eff,
+                                'pump_bkw': pump_bkw,
+                                'motor_kw': motor_kw,
                                 'power_cost': power_cost,
                                 'dra_cost': dra_cost,
                                 'dra_ppm': ppm,
@@ -210,6 +221,8 @@ def solve_pipeline(
             result[f"num_pumps_{name}"] = best['nop']
             result[f"speed_{name}"] = best['rpm']
             result[f"efficiency_{name}"] = best['eff']
+            result[f"pump_bkw_{name}"] = best['pump_bkw']
+            result[f"motor_kw_{name}"] = best['motor_kw']
             result[f"power_cost_{name}"] = best['power_cost']
             result[f"dra_cost_{name}"] = best['dra_cost']
             result[f"dra_ppm_{name}"] = best['dra_ppm']
@@ -242,7 +255,7 @@ def solve_pipeline(
             elev_i = stn.get('elev', 0.0)
             elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
             residual_next = residual - head_loss - (elev_next - elev_i)
-            if residual_next < stn.get('min_residual', 50.0):
+            if residual_next < min_residual_next:
                 return {"error": True, "message": f"Residual head below minimum after {stn['name']}"}
             result[f"pipeline_flow_{name}"] = flow
             result[f"pipeline_flow_in_{name}"] = segment_flows[i - 1]
@@ -250,6 +263,8 @@ def solve_pipeline(
             result[f"num_pumps_{name}"] = 0
             result[f"speed_{name}"] = 0.0
             result[f"efficiency_{name}"] = 0.0
+            result[f"pump_bkw_{name}"] = 0.0
+            result[f"motor_kw_{name}"] = 0.0
             result[f"power_cost_{name}"] = 0.0
             result[f"dra_cost_{name}"] = 0.0
             result[f"dra_ppm_{name}"] = 0.0
@@ -291,6 +306,8 @@ def solve_pipeline(
         f"speed_{term_name}": 0.0,
         f"num_pumps_{term_name}": 0,
         f"efficiency_{term_name}": 0.0,
+        f"pump_bkw_{term_name}": 0.0,
+        f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
         f"dra_cost_{term_name}": 0.0,
         f"dra_ppm_{term_name}": 0.0,
