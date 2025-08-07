@@ -120,7 +120,10 @@ def _downstream_requirement(
             return terminal.get('min_residual', 0.0)
         stn = stations[i]
         kv = KV_list[i]
-        flow = segment_flows[i]
+        # ``segment_flows`` holds the flow rate *after* each station;
+        # use the downstream value so losses reflect the correct
+        # segment flow between station ``i`` and ``i+1``.
+        flow = segment_flows[i + 1]
         L = stn.get('L', 0.0)
         t = stn.get('t', 0.007)
         if 'D' in stn:
@@ -384,8 +387,15 @@ def solve_pipeline(
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         states = new_states
 
-    # Pick lowest-cost end state
-    best_state = min(states.values(), key=lambda x: x['cost'])
+    # Pick lowest-cost end state and, among equal-cost candidates,
+    # prefer the one whose terminal residual head is closest to the
+    # user-specified minimum.  This avoids unnecessarily high
+    # pressures at the terminal which would otherwise waste energy.
+    term_req = terminal.get('min_residual', 0.0)
+    best_state = min(
+        states.values(),
+        key=lambda x: (x['cost'], x['residual'] - term_req),
+    )
     result: dict = {}
     for rec in best_state['records']:
         result.update(rec)
