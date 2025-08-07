@@ -1151,8 +1151,8 @@ if not auto_batch:
                 dr_use = min(dr_opt, dr_max)
                 station_dr_capped[key] = dr_use
                 ppm = get_ppm_for_dr(viscosity, dr_use)
-                station_ppm[key] = ppm
-    
+            station_ppm[key] = ppm
+
             params = [
                 "Pipeline Flow (m³/hr)",
                 "Pump Flow (m³/hr)",
@@ -1177,7 +1177,10 @@ if not auto_batch:
                 "MAOP (kg/cm²)",
                 "Drag Reduction (%)"
             ]
-    
+
+            # Initialize summary table
+            summary: dict[str, list] = {"Parameters": params}
+
             HOURS = st.session_state.get("operating_hours", 24.0)
             for idx, nm in enumerate(names):
                 key = nm.lower().replace(' ','_')
