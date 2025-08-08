@@ -131,7 +131,8 @@ def _downstream_requirement(
         else:
             d_inner = stn.get('d', 0.7) - 2 * t
         rough = stn.get('rough', 0.00004)
-        head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, 0.0)
+        dra_down = stn.get('max_dr', 0.0)
+        head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down)
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
         downstream = req_entry(i + 1)
@@ -219,7 +220,7 @@ def solve_pipeline(
             dra_vals = _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
-                dra_opts = [0] if nop == 0 else dra_vals
+                dra_opts = dra_vals
                 for rpm in rpm_opts:
                     for dra in dra_opts:
                         head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
@@ -242,8 +243,8 @@ def solve_pipeline(
                         else:
                             rate = stn.get('rate', 0.0)
                             power_cost = motor_kw_total * 24.0 * rate
-                        ppm = get_ppm_for_dr(kv, dra) if nop > 0 else 0.0
-                        dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA if nop > 0 else 0.0
+                        ppm = get_ppm_for_dr(kv, dra) if dra > 0 else 0.0
+                        dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA if dra > 0 else 0.0
                         cost = power_cost + dra_cost
                         opts.append({
                             'nop': nop,

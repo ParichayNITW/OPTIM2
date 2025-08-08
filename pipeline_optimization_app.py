@@ -1022,8 +1022,9 @@ if not auto_batch:
             drop_cols = []
             for stn in stations_data:
                 key = stn['name'].lower().replace(' ', '_')
-                if stn.get('is_pump', False) and int(res.get(f"num_pumps_{key}", 0)) == 0:
-                    drop_cols.append(stn['name'])
+                if stn.get('is_pump', False):
+                    if int(res.get(f"num_pumps_{key}", 0)) == 0 and float(res.get(f"drag_reduction_{key}", 0)) == 0:
+                        drop_cols.append(stn['name'])
             if drop_cols:
                 df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
 
