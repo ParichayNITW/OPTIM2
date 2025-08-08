@@ -191,6 +191,17 @@ def solve_pipeline(
     returned."""
 
     N = len(stations)
+
+    # ✅ Guard against misaligned inputs (prevents IndexError later)
+    if not (len(KV_list) == N and len(rho_list) == N):
+        return {
+            "error": True,
+            "message": (
+                f"Internal length mismatch: stations={N}, "
+                f"KV_list={len(KV_list)}, rho_list={len(rho_list)}. "
+                "Please report this; it should never happen."
+            ),
+        }
     segment_flows = [float(FLOW)]
     for stn in stations:
         delivery = float(stn.get('delivery', 0.0))
