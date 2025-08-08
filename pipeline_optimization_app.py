@@ -2,6 +2,20 @@ import os
 import sys
 from pathlib import Path
 import streamlit as st
+
+# --- SAFE DEFAULTS (session state guards) ---
+if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
+    st.session_state["stations"] = []
+if "FLOW" not in st.session_state:
+    st.session_state["FLOW"] = 1000.0
+if "op_mode" not in st.session_state:
+    st.session_state["op_mode"] = "Flow rate"
+if "terminal_name" not in st.session_state:
+    st.session_state["terminal_name"] = "Terminal"
+if "terminal_elev" not in st.session_state:
+    st.session_state["terminal_elev"] = 0.0
+if "terminal_head" not in st.session_state:
+    st.session_state["terminal_head"] = 10.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
