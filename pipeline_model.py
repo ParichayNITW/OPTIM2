@@ -239,7 +239,8 @@ def solve_pipeline(
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
-            dra_vals = _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
+            fixed_dr = stn.get('fixed_dra_perc', None)
+            dra_vals = [int(round(fixed_dr))] if (fixed_dr is not None) else _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
                 dra_opts = dra_vals
