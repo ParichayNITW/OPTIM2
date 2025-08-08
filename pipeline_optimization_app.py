@@ -183,7 +183,7 @@ with st.sidebar:
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
 
-    st.subheader("Linefill Profile (7:00 Hrs)")
+    st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
         st.session_state["linefill_df"] = pd.DataFrame({
             "Start (km)": [0.0],
@@ -191,10 +191,48 @@ with st.sidebar:
             "Viscosity (cSt)": [10.0],
             "Density (kg/m³)": [850.0]
         })
-    st.session_state["linefill_df"] = st.data_editor(
-        st.session_state["linefill_df"],
-        num_rows="dynamic", key="linefill_editor"
+mode = st.radio("Choose input mode", ["Flow rate", "Pumping Schedule"], horizontal=True, key="op_mode")
+
+if mode == "Flow rate":
+    # Flow rate is already captured as FLOW above.
+    st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
+    if "linefill_vol_df" not in st.session_state:
+        st.session_state["linefill_vol_df"] = pd.DataFrame({
+            "Product": ["Product-1"],
+            "Volume (m³)": [50000.0],
+            "Viscosity (cSt)": [5.0],
+            "Density (kg/m³)": [810.0]
+        })
+    st.session_state["linefill_vol_df"] = st.data_editor(
+        st.session_state["linefill_vol_df"],
+        num_rows="dynamic", key="linefill_vol_editor"
     )
+else:
+    st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
+    if "linefill_vol_df" not in st.session_state:
+        st.session_state["linefill_vol_df"] = pd.DataFrame({
+            "Product": ["Product-1","Product-2","Product-3"],
+            "Volume (m³)": [50000.0, 40000.0, 15000.0],
+            "Viscosity (cSt)": [5.0, 12.0, 15.0],
+            "Density (kg/m³)": [810.0, 825.0, 865.0]
+        })
+    st.session_state["linefill_vol_df"] = st.data_editor(
+        st.session_state["linefill_vol_df"],
+        num_rows="dynamic", key="linefill_vol_editor"
+    )
+    st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
+    if "day_plan_df" not in st.session_state:
+        st.session_state["day_plan_df"] = pd.DataFrame({
+            "Product": ["Product-4","Product-5","Product-6","Product-7"],
+            "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
+            "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
+            "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0]
+        })
+    st.session_state["day_plan_df"] = st.data_editor(
+        st.session_state["day_plan_df"],
+        num_rows="dynamic", key="day_plan_editor"
+    )
+
 
     st.subheader("Stations")
     add_col, rem_col = st.columns(2)
@@ -533,6 +571,126 @@ def map_linefill_to_segments(linefill_df, stations):
             viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     return viscs, dens
+
+# ==== NEW: Volumetric linefill helpers ====
+def pipe_cross_section_area_m2(stations: list[dict]) -> float:
+    """Return pipe internal cross-sectional area (m²) using the first station's D/t."""
+    if not stations:
+        return 0.0
+    D = float(stations[0].get("D", 0.711))
+    t = float(stations[0].get("t", 0.007))
+    d_inner = max(D - 2.0*t, 0.0)
+    return float((pi * d_inner**2) / 4.0)
+
+def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) -> tuple[list[float], list[float]]:
+    """Convert a volumetric linefill table [Volume (m3), Visc, Density] to segment KV/rho.
+
+    Assumes uniform diameter along the pipeline (uses first station D & t).
+    """
+    A = pipe_cross_section_area_m2(stations)
+    if A <= 0:
+        raise ValueError("Invalid pipe area (check D and t).")
+
+    # Compute lengths occupied by each batch
+    # Expected columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³)
+    batches = []
+    for _, r in vol_table.iterrows():
+        vol = float(r.get("Volume (m³)", 0.0) or r.get("Volume", 0.0) or 0.0)
+        if vol <= 0:
+            continue
+        length_km = (vol / A) / 1000.0  # m / 1000 => km
+        visc = float(r.get("Viscosity (cSt)", 0.0))
+        dens = float(r.get("Density (kg/m³)", 0.0))
+        batches.append({"len_km": length_km, "kv": visc, "rho": dens})
+
+    # Map to segments (each station defines a segment length L)
+    seg_kv, seg_rho = [], []
+    seg_lengths = [s.get("L", 0.0) for s in stations]
+    i_batch = 0
+    remaining = batches[0]["len_km"] if batches else 0.0
+    kv_cur = batches[0]["kv"] if batches else 0.0
+    rho_cur = batches[0]["rho"] if batches else 0.0
+
+    for L in seg_lengths:
+        need = L
+        # Consume from batches until we cover this segment upstream-to-downstream
+        while need > 1e-9:
+            if remaining <= 1e-9:
+                i_batch += 1
+                if i_batch >= len(batches):
+                    # If we ran out, extend with last known properties
+                    remaining = need
+                    # kv_cur, rho_cur unchanged
+                else:
+                    remaining = batches[i_batch]["len_km"]
+                    kv_cur = batches[i_batch]["kv"]
+                    rho_cur = batches[i_batch]["rho"]
+            take = min(need, remaining)
+            # For per-segment properties, use the property of the upstream-most fluid in the segment.
+            # (Piecewise mixing could be done, but you asked to keep other logic unchanged.)
+            # So we only need the first batch's kv/rho per segment.
+            if need == L:
+                seg_kv.append(kv_cur)
+                seg_rho.append(rho_cur)
+            need -= take
+            remaining -= take
+
+    return seg_kv, seg_rho
+
+
+def shift_vol_linefill(vol_table: pd.DataFrame, pumped_m3: float, day_plan: pd.DataFrame | None) -> pd.DataFrame:
+    """Shift the volumetric linefill forward by `pumped_m3` and append from pumping plan.
+
+    `vol_table` and `day_plan` both have columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³).
+    """
+    vol_table = vol_table.copy()
+    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
+    remaining = pumped_m3
+    # Pop from the head
+    i = 0
+    while remaining > 1e-9 and i < len(vol_table):
+        v = vol_table.at[i, "Volume (m³)"]
+        take = min(v, remaining)
+        v_new = v - take
+        vol_table.at[i, "Volume (m³)"] = v_new
+        remaining -= take
+        if v_new <= 1e-9:
+            i += 1
+    # Drop fully consumed
+    vol_table = vol_table.iloc[i:].reset_index(drop=True)
+
+    # Append from day plan if provided
+    if day_plan is not None and remaining > -1e-9:
+        for _, r in day_plan.iterrows():
+            vol_table = pd.concat([vol_table, pd.DataFrame([{
+                "Product": r.get("Product", ""),
+                "Volume (m³)": float(r.get("Volume (m³)", 0.0)),
+                "Viscosity (cSt)": float(r.get("Viscosity (cSt)", 0.0)),
+                "Density (kg/m³)": float(r.get("Density (kg/m³)", 0.0)),
+            }])], ignore_index=True)
+    return vol_table
+
+
+# Persisted DRA lock from 07:00 run
+def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
+    """Freeze per-station DRA (as %DR) based on ppm chosen at 07:00 for each station.
+
+    Uses inverse interpolation to compute %DR that corresponds to the chosen PPM at the station's viscosity.
+    """
+    from dra_utils import get_dr_for_ppm
+    new_stations = []
+    for idx, stn in enumerate(stations, start=1):
+        key = stn['name'].lower().replace(' ', '_')
+        ppm = float(res.get(f"dra_ppm_{key}", 0.0) or 0.0)
+        stn2 = dict(stn)
+        if ppm > 0.0:
+            kv = float(kv_list[idx-1] if idx-1 < len(kv_list) else kv_list[-1])
+            dr_fixed = get_dr_for_ppm(kv, ppm)
+            stn2['fixed_dra_perc'] = float(dr_fixed)
+            # Ensure max_dr allows this value
+            stn2['max_dr'] = max(float(stn2.get('max_dr', 0.0)), float(dr_fixed))
+        new_stations.append(stn2)
+    return new_stations
 
 def fmt_pressure(res, key_m, key_kg):
     """Format pressure values stored in metres and kg/cm²."""
@@ -920,6 +1078,98 @@ if not auto_batch:
                 st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
                 # --- CRUCIAL LINE TO FORCE UI REFRESH ---
                 st.rerun()
+
+    st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
+    run_day = st.button("🕒 Run Daily Schedule (07:00→23:00, every 2h)", key="run_day_btn", type="secondary")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if run_day:
+        with st.spinner("Running 9 optimizations (07:00 to 23:00)..."):
+            import copy
+            from dra_utils import get_ppm_for_dr
+            stations_base = copy.deepcopy(st.session_state.stations)
+            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+
+            # Prepare initial volumetric linefill
+            vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
+            if vol_df is None or len(vol_df)==0:
+                st.error("Please enter linefill (volumetric) data.")
+                st.stop()
+
+            # Determine FLOW for this mode
+            if st.session_state.get("op_mode") == "Pumping Schedule":
+                plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
+                daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
+                FLOW_sched = daily_m3 / 24.0
+            else:
+                plan_df = None
+                FLOW_sched = st.session_state.get("FLOW", 1000.0)
+
+            # Helper to compute segment kv/rho from volumetric table
+            def kv_rho_from_vol(vol_df_now):
+                return map_vol_linefill_to_segments(vol_df_now, stations_base)
+
+            # Time points
+            hours = [7,9,11,13,15,17,19,21,23]
+            reports = []
+            dra_locked = False
+            dra_baseline_ppm = {}  # per-station ppm at 07:00
+
+            current_vol = vol_df.copy()
+
+            for ti, hr in enumerate(hours):
+                kv_list, rho_list = kv_rho_from_vol(current_vol)
+                # For later time steps (after first), lock DRA per station as per 07:00 ppm
+                stns_run = copy.deepcopy(stations_base)
+                if dra_locked:
+                    stns_run = lock_dra_in_stations_from_result(stns_run, reports[0]["result"], kv_list)
+
+                res = solve_pipeline(
+                    stns_run, term_data, FLOW_sched, kv_list, rho_list,
+                    RateDRA, Price_HSD, current_vol.to_dict()
+                )
+
+                if res.get("error"):
+                    st.error(f"Optimization failed at {hr:02d}:00 -> {res.get('message','')}")
+                    st.stop()
+
+                # Capture per-station outputs and total cost
+                row = {"Time": f"{hr:02d}:00", "Total Cost (INR/day)": res.get("total_cost", 0.0)}
+                # store result for later reference
+                reports.append({"time": hr, "result": res})
+
+                # After first run (07:00), lock DRA for subsequent runs
+                if ti == 0:
+                    dra_locked = True
+
+                # If using Pumping Schedule, shift linefill by pumped volume in 2 hours and append plan once
+                if st.session_state.get("op_mode") == "Pumping Schedule" and ti < len(hours)-1:
+                    pumped_2h = (FLOW_sched) * 2.0  # m3 in 2 hours
+                    current_vol = shift_vol_linefill(current_vol, pumped_2h, plan_df if ti==0 else None)
+
+            # Build a consolidated table
+            # We'll extract a few key outputs per station
+            stations_used = reports[-1]["result"].get("stations_used", stations_base)
+            names = [s['name'] for s in stations_used] + [term_data["name"]]
+            keys = [n.lower().replace(' ', '_') for n in names]
+
+            out_rows = []
+            for rec in reports:
+                res = rec["result"]
+                hr = rec["time"]
+                row = {"Time": f"{hr:02d}:00", "Total Cost (INR/day)": float(res.get("total_cost",0.0))}
+                for s in stations_used:
+                    key = s['name'].lower().replace(' ', '_')
+                    row[f"Num Pumps {s['name']}"] = res.get(f"num_pumps_{key}", "")
+                    row[f"Speed {s['name']}"] = res.get(f"speed_{key}", "")
+                    row[f"DRA PPM {s['name']}"] = res.get(f"dra_ppm_{key}", "")
+                out_rows.append(row)
+
+            import pandas as pd
+            df_day = pd.DataFrame(out_rows)
+            st.dataframe(df_day, use_container_width=True)
+            st.download_button("Download 2-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
+
 
 
 if not auto_batch:
