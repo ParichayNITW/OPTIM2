@@ -14,8 +14,9 @@ import copy
 
 from dra_utils import get_ppm_for_dr
 
+
 # ---------------------------------------------------------------------------
-# Helper utilities
+# Utilities
 # ---------------------------------------------------------------------------
 
 def head_to_kgcm2(head_m: float, rho: float) -> float:
@@ -32,6 +33,7 @@ def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int
         if a + b > 0
     ]
     return sorted(combos, key=lambda x: (x[0] + x[1], x))
+
 
 # ---------------------------------------------------------------------------
 # Core calculations
@@ -54,12 +56,19 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
 
 def _segment_hydraulics(flow_m3h: float, L: float, d_inner: float, rough: float,
                         kv: float, dra_perc: float) -> tuple[float, float, float, float]:
-    """Return (head_loss, velocity, reynolds, friction_factor)."""
+    """Return (head_loss, velocity, reynolds, friction_factor) with DRA applied to friction.
+
+    DRA is modeled as reducing the Darcy friction factor: f' = f * (1 - DR),
+    where DR = dra_perc/100 clipped to [0, 0.95]. This is closer to practice
+    than scaling the entire head-loss term.
+    """
     g = 9.81
     flow_m3s = flow_m3h / 3600.0
     area = pi * d_inner ** 2 / 4.0
     v = flow_m3s / area if area > 0 else 0.0
     Re = v * d_inner / (kv * 1e-6) if kv > 0 else 0.0
+
+    # Base friction factor (no DRA)
     if Re > 0:
         if Re < 4000:
             f = 64.0 / Re
@@ -68,8 +77,13 @@ def _segment_hydraulics(flow_m3h: float, L: float, d_inner: float, rough: float,
             f = 0.25 / (log10(arg) ** 2) if arg > 0 else 0.0
     else:
         f = 0.0
-    head_loss = f * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g)) * (1 - dra_perc / 100.0)
-    return head_loss, v, Re, f
+
+    # Apply drag reduction to friction factor (clip DR to prevent negative f)
+    DR = max(0.0, min(dra_perc / 100.0, 0.95))
+    f_eff = f * (1.0 - DR)
+
+    head_loss = f_eff * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g))
+    return head_loss, v, Re, f_eff
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
@@ -103,15 +117,9 @@ def _downstream_requirement(
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
-    The previous implementation only accumulated losses across consecutive
-    non-pump stations.  When multiple pump stations appear in sequence (e.g. to
-    represent different pump types at an origin), upstream pumps were unaware of
-    the downstream pressure requirement and the solver could deem a feasible
-    configuration infeasible.  This version performs a backward recursion over
-    *all* downstream stations, subtracting the maximum head each pump can
-    deliver and adding line/elevation losses for every segment.  The returned
-    value is therefore the minimum residual needed after station ``idx`` so that
-    the terminal residual head constraint can still be met.
+    This version is conservative and **does not** subtract any hypothetical
+    downstream pump head. It accumulates only hydraulic losses, elevation
+    changes, and peak constraints, plus the terminal residual requirement.
     """
 
     from functools import lru_cache
@@ -121,56 +129,50 @@ def _downstream_requirement(
     @lru_cache(None)
     def req_entry(i: int) -> float:
         if i >= N:
-            return terminal.get('min_residual', 0.0)
+            return float(terminal.get('min_residual', 0.0))
+
         stn = stations[i]
         kv = KV_list[i]
-        # ``segment_flows`` holds the flow rate *after* each station;
-        # use the downstream value so losses reflect the correct
-        # segment flow between station ``i`` and ``i+1``.
-        flow = segment_flows[i + 1]
+        flow = segment_flows[i]  # flow after station i
         L = stn.get('L', 0.0)
-        t = stn.get('t', 0.007)
-        if 'D' in stn:
-            d_inner = stn['D'] - 2 * t
-        else:
-            d_inner = stn.get('d', 0.7) - 2 * t
+        thickness = stn.get('t', 0.007 if 'D' in stn or 'd' in stn else 0.007)
+        d_inner = (stn.get('D', stn.get('d', 0.7)) - 2 * thickness)
         rough = stn.get('rough', 0.00004)
-        dra_down = stn.get('max_dr', 0.0)
+        dra_down = 0.0  # requirement shouldn't assume DRA downstream
 
-        head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down)
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
+
+        # Base requirement from next station
         downstream = req_entry(i + 1)
+
+        # Loss and elevation requirement across this segment
+        head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down)
         req = downstream + head_loss + (elev_next - elev_i)
 
-        # Check intermediate peaks within this segment.  Each peak requires enough
-        # upstream pressure to maintain at least 25 m of residual head at the peak
-        # itself.  Use the maximum requirement among all peaks and the downstream
-        # station.
+        # Intermediate peak checks with configurable margin
+        peak_margin = stn.get('peak_margin', 25.0)
         peak_req = 0.0
-        for peak in stn.get('peaks', []) or []:
+        for peak in (stn.get('peaks', []) or []):
             dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
             elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
             if dist is None or elev_peak is None:
                 continue
-            head_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner, rough, kv, dra_down)
-            req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
+            head_to_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner, rough, kv, dra_down)
+            req_peak = head_to_peak + (float(elev_peak) - elev_i) + float(peak_margin)
             if req_peak > peak_req:
                 peak_req = req_peak
+
         req = max(req, peak_req)
 
-        if stn.get('is_pump', False):
-            rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
-            nop_max = stn.get('max_pumps', 0)
-            tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
-            req -= tdh_max
-        return max(req, stn.get('min_residual', 0.0))
+        # Do NOT subtract any downstream pump capability
+        return max(req, float(stn.get('min_residual', 0.0)))
 
     return req_entry(idx + 1)
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Solver
 # ---------------------------------------------------------------------------
 
 def solve_pipeline(
@@ -246,6 +248,10 @@ def solve_pipeline(
                 for rpm in rpm_opts:
                     for dra in dra_opts:
                         head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, dra)
+                        # Velocity cap enforcement (default 3 m/s if not provided)
+                        v_max = float(stn.get('v_max', 3.0))
+                        if v_max > 0 and v > v_max:
+                            continue
                         if nop > 0 and rpm > 0:
                             tdh, eff = _pump_head(stn, flow, rpm, nop)
                         else:
@@ -266,8 +272,7 @@ def solve_pipeline(
                             rate = stn.get('rate', 0.0)
                             power_cost = motor_kw_total * 24.0 * rate
                         ppm = get_ppm_for_dr(kv, dra) if dra > 0 else 0.0
-                        dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA if dra > 0 else 0.0
-                        cost = power_cost + dra_cost
+                        dra_cost = (ppm / 1e6) * flow * 24.0 * RateDRA if dra > 0 else 0.0
                         opts.append({
                             'nop': nop,
                             'rpm': rpm,
@@ -279,7 +284,7 @@ def solve_pipeline(
                             'power_cost': power_cost,
                             'dra_cost': dra_cost,
                             'dra_ppm': ppm,
-                            'cost': cost,
+                            'cost': power_cost + dra_cost,
                             'head_loss': head_loss,
                             'v': v,
                             'Re': Re,
@@ -314,10 +319,14 @@ def solve_pipeline(
             'rho': rho,
             'maop_head': maop_head,
             'maop_kgcm2': maop_kgcm2,
+            'maop_margin': float(stn.get('maop_margin', 0.0)),
             'elev_delta': elev_delta,
             'min_residual_next': min_residual_next,
             'options': opts,
-            'is_pump': stn.get('is_pump', False),
+            'is_pump': bool(stn.get('is_pump', False)),
+            'L': L,
+            'd_inner': d_inner,
+            'rough': rough,
             'coef_A': float(stn.get('A', 0.0)),
             'coef_B': float(stn.get('B', 0.0)),
             'coef_C': float(stn.get('C', 0.0)),
@@ -332,13 +341,24 @@ def solve_pipeline(
 
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
-    states: dict[float, dict] = {round(init_residual, 2): {'cost': 0.0, 'residual': init_residual, 'records': [], 'last_maop': 0.0, 'last_maop_kg': 0.0}}
+    states: dict[float, dict] = {
+        round(init_residual, 2): {
+            'cost': 0.0,
+            'residual': init_residual,
+            'records': [],
+            'last_maop': 0.0,
+            'last_maop_kg': 0.0
+        }
+    }
 
     for stn_data in station_opts:
         new_states: dict[float, dict] = {}
         for state in states.values():
             for opt in stn_data['options']:
                 sdh = state['residual'] + opt['tdh']
+                # MAOP enforcement (sdh must not exceed MAOP - margin)
+                if stn_data['maop_head'] > 0 and sdh > (stn_data['maop_head'] - stn_data.get('maop_margin', 0.0)):
+                    continue
                 residual_next = sdh - opt['head_loss'] - stn_data['elev_delta']
                 if residual_next < stn_data['min_residual_next']:
                     continue
@@ -357,44 +377,17 @@ def solve_pipeline(
                     f"velocity_{stn_data['name']}": opt['v'],
                     f"reynolds_{stn_data['name']}": opt['Re'],
                     f"friction_{stn_data['name']}": opt['f'],
-                    f"coef_A_{stn_data['name']}": stn_data['coef_A'],
-                    f"coef_B_{stn_data['name']}": stn_data['coef_B'],
-                    f"coef_C_{stn_data['name']}": stn_data['coef_C'],
-                    f"coef_P_{stn_data['name']}": stn_data['coef_P'],
-                    f"coef_Q_{stn_data['name']}": stn_data['coef_Q'],
-                    f"coef_R_{stn_data['name']}": stn_data['coef_R'],
-                    f"coef_S_{stn_data['name']}": stn_data['coef_S'],
-                    f"coef_T_{stn_data['name']}": stn_data['coef_T'],
-                    f"min_rpm_{stn_data['name']}": stn_data['min_rpm'],
-                    f"dol_{stn_data['name']}": stn_data['dol'],
+                    f"num_pumps_{stn_data['name']}": opt['nop'],
+                    f"speed_{stn_data['name']}": opt['rpm'],
+                    f"pump_flow_{stn_data['name']}": stn_data['flow'] if opt['nop'] > 0 else 0.0,
+                    f"efficiency_{stn_data['name']}": opt['eff'],
+                    f"pump_bkw_{stn_data['name']}": opt['pump_bkw'],
+                    f"motor_kw_{stn_data['name']}": opt['motor_kw'],
+                    f"power_cost_{stn_data['name']}": opt['power_cost'],
+                    f"dra_cost_{stn_data['name']}": opt['dra_cost'],
+                    f"dra_ppm_{stn_data['name']}": opt['dra_ppm'],
+                    f"drag_reduction_{stn_data['name']}": opt['dra'],
                 }
-                if stn_data['is_pump']:
-                    record.update({
-                        f"pump_flow_{stn_data['name']}": stn_data['flow'],
-                        f"num_pumps_{stn_data['name']}": opt['nop'],
-                        f"speed_{stn_data['name']}": opt['rpm'],
-                        f"efficiency_{stn_data['name']}": opt['eff'],
-                        f"pump_bkw_{stn_data['name']}": opt['pump_bkw'],
-                        f"motor_kw_{stn_data['name']}": opt['motor_kw'],
-                        f"power_cost_{stn_data['name']}": opt['power_cost'],
-                        f"dra_cost_{stn_data['name']}": opt['dra_cost'],
-                        f"dra_ppm_{stn_data['name']}": opt['dra_ppm'],
-                        f"drag_reduction_{stn_data['name']}": opt['dra'],
-                    })
-                else:
-                    record.update({
-                        f"pump_flow_{stn_data['name']}": 0.0,
-                        f"num_pumps_{stn_data['name']}": 0,
-                        f"speed_{stn_data['name']}": 0.0,
-                        f"efficiency_{stn_data['name']}": 0.0,
-                        f"pump_bkw_{stn_data['name']}": 0.0,
-                        f"motor_kw_{stn_data['name']}": 0.0,
-                        f"power_cost_{stn_data['name']}": 0.0,
-                        f"dra_cost_{stn_data['name']}": 0.0,
-                        f"dra_ppm_{stn_data['name']}": 0.0,
-                        f"drag_reduction_{stn_data['name']}": 0.0,
-                    })
-
                 new_cost = state['cost'] + opt['cost']
                 bucket = round(residual_next, RESIDUAL_ROUND)
                 new_record_list = state['records'] + [record]
@@ -446,19 +439,20 @@ def solve_pipeline(
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
         f"friction_{term_name}": 0.0,
-        f"sdh_{term_name}": 0.0,
         f"residual_head_{term_name}": residual,
+        f"rh_kgcm2_{term_name}": head_to_kgcm2(residual, rho_list[-1]),
+        f"sdh_{term_name}": residual,
+        f"sdh_kgcm2_{term_name}": head_to_kgcm2(residual, rho_list[-1]),
+        "total_cost": total_cost,
+        "last_maop": last_maop_head,
+        "last_maop_kgcm2": last_maop_kg,
     })
-    rho_term = rho_list[-1]
-    result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
-    result[f"sdh_kgcm2_{term_name}"] = 0.0
-    result[f"rho_{term_name}"] = rho_term
-    result[f"maop_{term_name}"] = last_maop_head
-    result[f"maop_kgcm2_{term_name}"] = last_maop_kg
-    result['total_cost'] = total_cost
-    result['error'] = False
     return result
 
+
+# ---------------------------------------------------------------------------
+# Multi-origin (A/B types at origin) wrapper
+# ---------------------------------------------------------------------------
 
 def solve_pipeline_multi_origin(
     stations: list[dict],
@@ -476,71 +470,50 @@ def solve_pipeline_multi_origin(
     origin_station = stations[origin_index]
     pump_types = origin_station.get('pump_types', {})
     combos = generate_origin_combinations(
-        pump_types.get('A', {}).get('available', 0),
-        pump_types.get('B', {}).get('available', 0),
+        pump_types.get('A', {}).get('available', 2),
+        pump_types.get('B', {}).get('available', 2),
     )
 
-    best_result = None
     best_cost = float('inf')
+    best_result = None
     best_stations = None
 
-    for numA, numB in combos:
-        if numA > 0 and not pump_types.get('A'):
-            continue
-        if numB > 0 and not pump_types.get('B'):
+    for (numA, numB) in combos:
+        if numA + numB < 1:
             continue
 
-        stations_combo: list[dict] = []
-        kv_combo: list[float] = []
-        rho_combo: list[float] = []
+        stations_combo = []
+        kv_combo = []
+        rho_combo = []
 
-        name_base = origin_station['name']
+        # Expand origin into virtual serial units of A then B (L = 0 except final)
         pump_units = []
-        for ptype, count in [('A', numA), ('B', numB)]:
-            pdata = pump_types.get(ptype)
-            for n in range(count):
-                unit = {
-                    'name': f"{name_base}_{ptype}{n + 1}",
-                    'elev': origin_station.get('elev', 0.0),
-                    'D': origin_station.get('D'),
-                    't': origin_station.get('t'),
-                    'SMYS': origin_station.get('SMYS'),
-                    'rough': origin_station.get('rough'),
-                    'L': 0.0,
-                    'is_pump': True,
-                    'head_data': pdata.get('head_data') if pdata else None,
-                    'eff_data': pdata.get('eff_data') if pdata else None,
-                    'A': pdata.get('A', 0.0) if pdata else 0.0,
-                    'B': pdata.get('B', 0.0) if pdata else 0.0,
-                    'C': pdata.get('C', 0.0) if pdata else 0.0,
-                    'P': pdata.get('P', 0.0) if pdata else 0.0,
-                    'Q': pdata.get('Q', 0.0) if pdata else 0.0,
-                    'R': pdata.get('R', 0.0) if pdata else 0.0,
-                    'S': pdata.get('S', 0.0) if pdata else 0.0,
-                    'T': pdata.get('T', 0.0) if pdata else 0.0,
-                    'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
-                    'rate': pdata.get('rate', 0.0) if pdata else 0.0,
-                    'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
-                    'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
-                    'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
-                    'max_pumps': 1,
-                    'min_pumps': 1,
-                    'delivery': 0.0,
-                    'supply': 0.0,
-                    'max_dr': 0.0,
-                }
+        for label, count in (('A', numA), ('B', numB)):
+            for _ in range(count):
+                unit = copy.deepcopy(origin_station)
+                unit['name'] = f"{origin_station['name']}_{label}"
+                unit['is_pump'] = True
+                unit['L'] = 0.0
+                unit['max_dr'] = origin_station.get('max_dr', 0.0)
+                # Adopt that type's curve
+                if label in pump_types:
+                    curve = pump_types[label]
+                    unit.update({
+                        'A': curve.get('A', unit.get('A', 0.0)),
+                        'B': curve.get('B', unit.get('B', 0.0)),
+                        'C': curve.get('C', unit.get('C', 0.0)),
+                        'P': curve.get('P', unit.get('P', 0.0)),
+                        'Q': curve.get('Q', unit.get('Q', 0.0)),
+                        'R': curve.get('R', unit.get('R', 0.0)),
+                        'S': curve.get('S', unit.get('S', 0.0)),
+                        'T': curve.get('T', unit.get('T', 0.0)),
+                    })
                 pump_units.append(unit)
-                kv_combo.append(KV_list[0])
-                rho_combo.append(rho_list[0])
 
-        if not pump_units:
-            continue
-
-        pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
-        pump_units[0]['supply'] = origin_station.get('supply', 0.0)
-        pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
-        pump_units[-1]['L'] = origin_station.get('L', 0.0)
-        pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
+        # The final origin segment takes the original distance
+        if pump_units:
+            pump_units[-1]['L'] = origin_station.get('L', 0.0)
+            pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
 
         stations_combo.extend(pump_units)
         stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
