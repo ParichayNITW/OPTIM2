@@ -39,6 +39,10 @@ def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int
 
 RPM_STEP = 100
 DRA_STEP = 5
+# Residual head precision (decimal places) used when bucketing states during the
+# dynamic-programming search.  Using a modest precision keeps the state space
+# tractable while still providing near-global optimality.
+RESIDUAL_ROUND = 1
 
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
@@ -132,11 +136,29 @@ def _downstream_requirement(
             d_inner = stn.get('d', 0.7) - 2 * t
         rough = stn.get('rough', 0.00004)
         dra_down = stn.get('max_dr', 0.0)
+
         head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down)
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
         downstream = req_entry(i + 1)
         req = downstream + head_loss + (elev_next - elev_i)
+
+        # Check intermediate peaks within this segment.  Each peak requires enough
+        # upstream pressure to maintain at least 25 m of residual head at the peak
+        # itself.  Use the maximum requirement among all peaks and the downstream
+        # station.
+        peak_req = 0.0
+        for peak in stn.get('peaks', []) or []:
+            dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
+            elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
+            if dist is None or elev_peak is None:
+                continue
+            head_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner, rough, kv, dra_down)
+            req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
+            if req_peak > peak_req:
+                peak_req = req_peak
+        req = max(req, peak_req)
+
         if stn.get('is_pump', False):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
@@ -374,7 +396,7 @@ def solve_pipeline(
                     })
 
                 new_cost = state['cost'] + opt['cost']
-                bucket = round(residual_next, 2)
+                bucket = round(residual_next, RESIDUAL_ROUND)
                 new_record_list = state['records'] + [record]
                 if bucket not in new_states or new_cost < new_states[bucket]['cost']:
                     new_states[bucket] = {
