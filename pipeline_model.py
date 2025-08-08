@@ -475,9 +475,17 @@ def solve_pipeline_multi_origin(
     Price_HSD: float,
     linefill_dict: dict | None = None,
 ) -> dict:
-    """Enumerate pump type combinations at the origin and call ``solve_pipeline``."""
+    """Enumerate pump type combinations at the origin (A/B) and call solve_pipeline.
+    Robustly expands KV_list/rho_list to match the virtual pump units so the indices
+    stay aligned in downstream computations.
+    """
 
-    origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
+    # Find the first pump station treated as the origin for A/B mixing
+    try:
+        origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
+    except StopIteration:
+        return {"error": True, "message": "No pump station found to act as origin."}
+
     origin_station = stations[origin_index]
     pump_types = origin_station.get('pump_types', {})
     combos = generate_origin_combinations(
@@ -493,20 +501,19 @@ def solve_pipeline_multi_origin(
         if numA + numB < 1:
             continue
 
-        stations_combo = []
-        kv_combo = []
-        rho_combo = []
+        # --- Build the expanded station list ---
+        prefix = copy.deepcopy(stations[:origin_index])         # stations before origin
+        suffix = copy.deepcopy(stations[origin_index + 1:])     # stations after origin
 
-        # Expand origin into virtual serial units of A then B (L = 0 except final)
         pump_units = []
         for label, count in (('A', numA), ('B', numB)):
             for _ in range(count):
                 unit = copy.deepcopy(origin_station)
                 unit['name'] = f"{origin_station['name']}_{label}"
                 unit['is_pump'] = True
-                unit['L'] = 0.0
+                unit['L'] = 0.0  # virtual serial unit (no extra length)
                 unit['max_dr'] = origin_station.get('max_dr', 0.0)
-                # Adopt that type's curve
+                # adopt that type's curve if provided
                 if label in pump_types:
                     curve = pump_types[label]
                     unit.update({
@@ -521,19 +528,50 @@ def solve_pipeline_multi_origin(
                     })
                 pump_units.append(unit)
 
-        # The final origin segment takes the original distance
+        # The final pump unit inherits the actual origin segment length
         if pump_units:
             pump_units[-1]['L'] = origin_station.get('L', 0.0)
-            pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
 
-        stations_combo.extend(pump_units)
-        stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
-        kv_combo.extend(KV_list[1:])
-        rho_combo.extend(rho_list[1:])
+        stations_combo = prefix + pump_units + suffix
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict)
+        # --- Build KV/rho arrays with matching length ---
+        kv_combo = []
+        rho_combo = []
+
+        # Prefix properties unchanged
+        kv_combo.extend(KV_list[:origin_index])
+        rho_combo.extend(rho_list[:origin_index])
+
+        # Origin properties replicated for each virtual unit
+        if not KV_list or not rho_list:
+            return {"error": True, "message": "KV_list or rho_list is empty."}
+        kv_origin = KV_list[origin_index]
+        rho_origin = rho_list[origin_index]
+        kv_combo.extend([kv_origin] * len(pump_units))
+        rho_combo.extend([rho_origin] * len(pump_units))
+
+        # Suffix properties unchanged
+        kv_combo.extend(KV_list[origin_index + 1:])
+        rho_combo.extend(rho_list[origin_index + 1:])
+
+        # Safety check: everything must align
+        if not (len(stations_combo) == len(kv_combo) == len(rho_combo)):
+            return {
+                "error": True,
+                "message": (
+                    "Internal alignment error in multi-origin expansion: "
+                    f"stations={len(stations_combo)} KV={len(kv_combo)} rho={len(rho_combo)}"
+                ),
+            }
+
+        # Solve for this combination
+        result = solve_pipeline(
+            stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict
+        )
         if result.get("error"):
+            # try other combinations if this one is infeasible
             continue
+
         cost = result.get("total_cost", float('inf'))
         if cost < best_cost:
             best_cost = cost
