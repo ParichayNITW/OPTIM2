@@ -16,6 +16,13 @@ import pandas as pd
 
 # Mapping of viscosity (cSt) to CSV file name
 DRA_CSV_FILES: Dict[int, str] = {
+    1: "1 cst.csv",
+    2: "2 cst.csv",
+    2.5: "2.5 cst.csv",
+    3: "3 cst.csv",
+    3.5: "3.5 cst.csv",
+    4: "4 cst.csv",
+    4.5: "4.5 cst.csv",
     10: "10 cst.csv",
     15: "15 cst.csv",
     20: "20 cst.csv",
