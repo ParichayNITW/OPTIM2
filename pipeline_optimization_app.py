@@ -1160,7 +1160,7 @@ if not auto_batch:
                 st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
-    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="secondary")
+    run_day = st.button("Run Pumping Schedule Optimizer", key="run_day_btn", type="secondary")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
