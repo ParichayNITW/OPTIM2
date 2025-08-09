@@ -648,12 +648,17 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
                     kv_cur = batches[i_batch]["kv"]
                     rho_cur = batches[i_batch]["rho"]
             take = min(need, remaining)
-            # For per-segment properties, use the property of the upstream-most fluid in the segment.
-            # (Piecewise mixing could be done, but you asked to keep other logic unchanged.)
-            # So we only need the first batch's kv/rho per segment.
+            # Compute length-weighted averages across the segment
+            # Accumulate partial contribution
             if need == L:
-                seg_kv.append(kv_cur)
-                seg_rho.append(rho_cur)
+                seg_kv.append(0.0)
+                seg_rho.append(0.0)
+                acc_len = 0.0
+            # Update running weighted sums
+            idx = len(seg_kv)-1
+            seg_kv[idx] = (seg_kv[idx]*acc_len + kv_cur*take) / (acc_len + take) if (acc_len + take) > 0 else kv_cur
+            seg_rho[idx] = (seg_rho[idx]*acc_len + rho_cur*take) / (acc_len + take) if (acc_len + take) > 0 else rho_cur
+            acc_len += take
             need -= take
             remaining -= take
 
