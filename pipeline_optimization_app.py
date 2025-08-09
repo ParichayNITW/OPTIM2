@@ -210,78 +210,48 @@ with st.sidebar:
             "Viscosity (cSt)": [10.0],
             "Density (kg/m³)": [850.0]
         })
-mode = st.radio("Choose input mode", ["Flow rate", "Pumping Schedule"], horizontal=True, key="op_mode")
+    mode = st.radio("Choose input mode", ["Flow rate", "Pumping Schedule"], horizontal=True, key="op_mode")
 
-if mode == "Flow rate":
-    # Flow rate is already captured as FLOW above.
-    st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
-    if "linefill_vol_df" not in st.session_state:
-        st.session_state["linefill_vol_df"] = pd.DataFrame({
-            "Product": ["Product-1"],
-            "Volume (m³)": [50000.0],
-            "Viscosity (cSt)": [5.0],
-            "Density (kg/m³)": [810.0]
-        })
-    st.session_state["linefill_vol_df"] = st.data_editor(
-        st.session_state["linefill_vol_df"],
-        num_rows="dynamic", key="linefill_vol_editor"
-    )
-else:
-    st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
-    if "linefill_vol_df" not in st.session_state:
-        st.session_state["linefill_vol_df"] = pd.DataFrame({
-            "Product": ["Product-1","Product-2","Product-3"],
-            "Volume (m³)": [50000.0, 40000.0, 15000.0],
-            "Viscosity (cSt)": [5.0, 12.0, 15.0],
-            "Density (kg/m³)": [810.0, 825.0, 865.0]
-        })
-    st.session_state["linefill_vol_df"] = st.data_editor(
-        st.session_state["linefill_vol_df"],
-        num_rows="dynamic", key="linefill_vol_editor"
-    )
-    st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
-    if "day_plan_df" not in st.session_state:
-        st.session_state["day_plan_df"] = pd.DataFrame({
-            "Product": ["Product-4","Product-5","Product-6","Product-7"],
-            "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
-            "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
-            "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0]
-        })
-    st.session_state["day_plan_df"] = st.data_editor(
-        st.session_state["day_plan_df"],
-        num_rows="dynamic", key="day_plan_editor"
-    )
+    if mode == "Flow rate":
+        # Flow rate is already captured as FLOW above.
+        st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
+        if "linefill_vol_df" not in st.session_state:
+            st.session_state["linefill_vol_df"] = pd.DataFrame({
+                "Product": ["Product-1"],
+                "Volume (m³)": [50000.0],
+                "Viscosity (cSt)": [5.0],
+                "Density (kg/m³)": [810.0]
+            })
+        st.session_state["linefill_vol_df"] = st.data_editor(
+            st.session_state["linefill_vol_df"],
+            num_rows="dynamic", key="linefill_vol_editor"
+        )
+    else:
+        st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
+        if "linefill_vol_df" not in st.session_state:
+            st.session_state["linefill_vol_df"] = pd.DataFrame({
+                "Product": ["Product-1","Product-2","Product-3"],
+                "Volume (m³)": [50000.0, 40000.0, 15000.0],
+                "Viscosity (cSt)": [5.0, 12.0, 15.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0]
+            })
+        st.session_state["linefill_vol_df"] = st.data_editor(
+            st.session_state["linefill_vol_df"],
+            num_rows="dynamic", key="linefill_vol_editor"
+        )
+        st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
+        if "day_plan_df" not in st.session_state:
+            st.session_state["day_plan_df"] = pd.DataFrame({
+                "Product": ["Product-4","Product-5","Product-6","Product-7"],
+                "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
+                "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
+                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0]
+            })
+        st.session_state["day_plan_df"] = st.data_editor(
+            st.session_state["day_plan_df"],
+            num_rows="dynamic", key="day_plan_editor"
+        )
 
-
-    st.subheader("Stations")
-    add_col, rem_col = st.columns(2)
-    if "stations" not in st.session_state:
-        st.session_state["stations"] = [{
-            'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-            'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-            'max_dr': 0.0,
-            'delivery': 0.0,
-            'supply': 0.0
-        }]
-    if add_col.button("➕ Add Station"):
-        n = len(st.session_state.get('stations',[])) + 1
-        default = {
-            'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-            'min_residual': 50.0, 'is_pump': False,
-            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': 0.0,
-            'delivery': 0.0,
-            'supply': 0.0
-        }
-        st.session_state.stations.append(default)
-    if rem_col.button("🗑️ Remove Station"):
-        if st.session_state.get('stations'):
-            st.session_state.stations.pop()
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
@@ -318,6 +288,37 @@ st.markdown(
     unsafe_allow_html=True
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
+
+st.subheader("Stations")
+add_col, rem_col = st.columns(2)
+if "stations" not in st.session_state:
+    st.session_state["stations"] = [{
+        'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+        'min_residual': 50.0, 'is_pump': False,
+        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+        'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
+        'max_dr': 0.0,
+        'delivery': 0.0,
+        'supply': 0.0
+    }]
+if add_col.button("➕ Add Station"):
+    n = len(st.session_state.get('stations',[])) + 1
+    default = {
+        'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+        'min_residual': 50.0, 'is_pump': False,
+        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+        'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
+        'max_dr': 0.0,
+        'delivery': 0.0,
+        'supply': 0.0
+    }
+    st.session_state.stations.append(default)
+if rem_col.button("🗑️ Remove Station"):
+    if st.session_state.get('stations'):
+        st.session_state.stations.pop()
+
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
     with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
@@ -729,6 +730,7 @@ def solve_pipeline(
     linefill_dict,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
+    hours: float = 24.0,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -759,6 +761,7 @@ def solve_pipeline(
                 linefill_dict,
                 dra_reach_km,
                 mop_kgcm2,
+                hours,
             )
         return pipeline_model.solve_pipeline(
             stations,
@@ -771,6 +774,7 @@ def solve_pipeline(
             linefill_dict,
             dra_reach_km,
             mop_kgcm2,
+            hours,
         )
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
@@ -1168,6 +1172,7 @@ if not auto_batch:
             reports = []
             linefill_snaps = []
             dra_reach_km = 0.0
+            total_length = sum(stn.get('L', 0.0) for stn in stations_base)
 
             current_vol = vol_df.copy()
 
@@ -1177,7 +1182,8 @@ if not auto_batch:
 
                 res = solve_pipeline(
                     stns_run, term_data, FLOW_sched, kv_list, rho_list,
-                    RateDRA, Price_HSD, current_vol.to_dict(), dra_reach_km, st.session_state.get("MOP_kgcm2")
+                    RateDRA, Price_HSD, current_vol.to_dict(), dra_reach_km,
+                    st.session_state.get("MOP_kgcm2"), hours=4.0
                 )
 
                 if res.get("error"):
@@ -1194,10 +1200,11 @@ if not auto_batch:
                     key0 = stations_base[0]['name'].lower().replace(' ', '_')
                     vel0 = float(res.get(f"velocity_{key0}", 0.0))
                     ppm0 = float(res.get(f"dra_ppm_{key0}", 0.0))
+                    travel_km = vel0 * 4.0 * 3600.0 / 1000.0
                     if ppm0 > 0:
-                        dra_reach_km += vel0 * 4.0 * 3600.0 / 1000.0
+                        dra_reach_km = min(total_length, dra_reach_km + travel_km)
                     else:
-                        dra_reach_km = 0.0
+                        dra_reach_km = max(0.0, dra_reach_km - travel_km)
 
             # Build a consolidated table
             # We'll extract a few key outputs per station
@@ -1206,10 +1213,13 @@ if not auto_batch:
             keys = [n.lower().replace(' ', '_') for n in names]
 
             out_rows = []
+            summaries = []
             for rec in reports:
                 res = rec["result"]
                 hr = rec["time"]
-                row = {"Time": f"{hr:02d}:00", "Total Cost (INR/day)": float(res.get("total_cost",0.0))}
+                cost = float(res.get("total_cost", 0.0))
+                summaries.append(f"{hr:02d}:00 → Global minimum cost: {cost:,.2f} INR")
+                row = {"Time": f"{hr:02d}:00", "Total Cost (INR/4h)": cost}
                 for s in stations_used:
                     key = s['name'].lower().replace(' ', '_')
                     row[f"Num Pumps {s['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -1219,6 +1229,8 @@ if not auto_batch:
 
             import pandas as pd
             df_day = pd.DataFrame(out_rows)
+            for msg in summaries:
+                st.write(msg)
             st.dataframe(df_day, use_container_width=True)
             st.download_button("Download 4-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
 
