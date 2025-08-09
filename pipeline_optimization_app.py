@@ -16,6 +16,8 @@ if "terminal_elev" not in st.session_state:
     st.session_state["terminal_elev"] = 0.0
 if "terminal_head" not in st.session_state:
     st.session_state["terminal_head"] = 10.0
+if "MOP_kgcm2" not in st.session_state:
+    st.session_state["MOP_kgcm2"] = 100.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -24,6 +26,7 @@ from math import pi
 import hashlib
 import uuid
 import json
+import copy
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -193,9 +196,11 @@ with st.sidebar:
         FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
         Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
+        MOP_val   = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0)
         st.session_state["FLOW"] = FLOW
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
+        st.session_state["MOP_kgcm2"] = MOP_val
 
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
@@ -723,6 +728,7 @@ def solve_pipeline(
     Price_HSD,
     linefill_dict,
     dra_reach_km: float = 0.0,
+    mop_kgcm2: float | None = None,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -737,6 +743,9 @@ def solve_pipeline(
     if first_pump and first_pump.get('min_pumps', 0) < 1:
         first_pump['min_pumps'] = 1
 
+    if mop_kgcm2 is None:
+        mop_kgcm2 = st.session_state.get("MOP_kgcm2")
+
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.solve_pipeline_multi_origin(
@@ -749,6 +758,7 @@ def solve_pipeline(
                 Price_HSD,
                 linefill_dict,
                 dra_reach_km,
+                mop_kgcm2,
             )
         return pipeline_model.solve_pipeline(
             stations,
@@ -760,6 +770,7 @@ def solve_pipeline(
             Price_HSD,
             linefill_dict,
             dra_reach_km,
+            mop_kgcm2,
         )
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
@@ -1091,7 +1102,9 @@ if not auto_batch:
                     rho_list,
                     RateDRA,
                     Price_HSD,
-                    linefill_df.to_dict()
+                    linefill_df.to_dict(),
+                    dra_reach_km=0.0,
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
                 )
             else:
                 res = pipeline_model.solve_pipeline(
@@ -1102,7 +1115,9 @@ if not auto_batch:
                     rho_list,
                     RateDRA,
                     Price_HSD,
-                    linefill_df.to_dict()
+                    linefill_df.to_dict(),
+                    dra_reach_km=0.0,
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
                 )
 
             import copy
@@ -1120,11 +1135,11 @@ if not auto_batch:
                 st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
-    run_day = st.button("🕒 Run Daily Schedule (07:00→23:00, every 2h)", key="run_day_btn", type="secondary")
+    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="secondary")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
-        with st.spinner("Running 9 optimizations (07:00 to 23:00)..."):
+        with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.stations)
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
@@ -1149,42 +1164,40 @@ if not auto_batch:
                 return map_vol_linefill_to_segments(vol_df_now, stations_base)
 
             # Time points
-            hours = [7,9,11,13,15,17,19,21,23]
+            hours = [7,11,15,19,23,27]
             reports = []
-            dra_locked = False
-            dra_baseline_ppm = {}  # per-station ppm at 07:00
+            linefill_snaps = []
+            dra_reach_km = 0.0
 
             current_vol = vol_df.copy()
 
             for ti, hr in enumerate(hours):
                 kv_list, rho_list = kv_rho_from_vol(current_vol)
-                # For later time steps (after first), lock DRA per station as per 07:00 ppm
                 stns_run = copy.deepcopy(stations_base)
-                if dra_locked:
-                    stns_run = lock_dra_in_stations_from_result(stns_run, reports[0]["result"], kv_list)
 
                 res = solve_pipeline(
                     stns_run, term_data, FLOW_sched, kv_list, rho_list,
-                    RateDRA, Price_HSD, current_vol.to_dict()
+                    RateDRA, Price_HSD, current_vol.to_dict(), dra_reach_km, st.session_state.get("MOP_kgcm2")
                 )
 
                 if res.get("error"):
-                    st.error(f"Optimization failed at {hr:02d}:00 -> {res.get('message','')}")
+                    st.error(f"Optimization failed at {hr%24:02d}:00 -> {res.get('message','')}")
                     st.stop()
 
-                # Capture per-station outputs and total cost
-                row = {"Time": f"{hr:02d}:00", "Total Cost (INR/day)": res.get("total_cost", 0.0)}
-                # store result for later reference
-                reports.append({"time": hr, "result": res})
+                reports.append({"time": hr%24, "result": res})
+                linefill_snaps.append(current_vol.copy())
 
-                # After first run (07:00), lock DRA for subsequent runs
-                if ti == 0:
-                    dra_locked = True
-
-                # If using Pumping Schedule, shift linefill by pumped volume in 2 hours and append plan once
-                if st.session_state.get("op_mode") == "Pumping Schedule" and ti < len(hours)-1:
-                    pumped_2h = (FLOW_sched) * 2.0  # m3 in 2 hours
-                    current_vol = shift_vol_linefill(current_vol, pumped_2h, plan_df if ti==0 else None)
+                if ti < len(hours)-1:
+                    if st.session_state.get("op_mode") == "Pumping Schedule":
+                        pumped = FLOW_sched * 4.0
+                        current_vol = shift_vol_linefill(current_vol, pumped, plan_df if ti==0 else None)
+                    key0 = stations_base[0]['name'].lower().replace(' ', '_')
+                    vel0 = float(res.get(f"velocity_{key0}", 0.0))
+                    ppm0 = float(res.get(f"dra_ppm_{key0}", 0.0))
+                    if ppm0 > 0:
+                        dra_reach_km += vel0 * 4.0 * 3600.0 / 1000.0
+                    else:
+                        dra_reach_km = 0.0
 
             # Build a consolidated table
             # We'll extract a few key outputs per station
@@ -1207,7 +1220,16 @@ if not auto_batch:
             import pandas as pd
             df_day = pd.DataFrame(out_rows)
             st.dataframe(df_day, use_container_width=True)
-            st.download_button("Download 2-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
+            st.download_button("Download 4-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
+
+            for idx, df_line in enumerate(linefill_snaps):
+                hr = hours[idx] % 24
+                st.download_button(
+                    f"Linefill {hr:02d}:00",
+                    df_line.to_csv(index=False),
+                    file_name=f"linefill_{hr:02d}.csv",
+                    key=f"lf_{idx}",
+                )
 
 
 

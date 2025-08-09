@@ -209,6 +209,7 @@ def solve_pipeline(
     Price_HSD: float,
     linefill_dict: dict | None = None,
     dra_reach_km: float = 0.0,
+    mop_kgcm2: float | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.  This replaces the previous greedy approach and
@@ -253,6 +254,8 @@ def solve_pipeline(
         design_factor = 0.72
         maop_psi = 2 * SMYS * design_factor * (thickness / outer_d) if outer_d > 0 else 0.0
         maop_kgcm2 = maop_psi * 0.0703069
+        if mop_kgcm2 is not None:
+            maop_kgcm2 = min(maop_kgcm2, float(mop_kgcm2))
         maop_head = maop_kgcm2 * 10000.0 / rho if rho > 0 else 0.0
 
         elev_i = stn.get('elev', 0.0)
@@ -371,6 +374,8 @@ def solve_pipeline(
         for state in states.values():
             for opt in stn_data['options']:
                 sdh = state['residual'] + opt['tdh']
+                if sdh > stn_data['maop_head']:
+                    continue
                 residual_next = sdh - opt['head_loss'] - stn_data['elev_delta']
                 if residual_next < stn_data['min_residual_next']:
                     continue
@@ -502,6 +507,7 @@ def solve_pipeline_multi_origin(
     Price_HSD: float,
     linefill_dict: dict | None = None,
     dra_reach_km: float = 0.0,
+    mop_kgcm2: float | None = None,
 ) -> dict:
     """Enumerate pump type combinations at the origin and call ``solve_pipeline``."""
 
@@ -580,7 +586,7 @@ def solve_pipeline_multi_origin(
         kv_combo.extend(KV_list[1:])
         rho_combo.extend(rho_list[1:])
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km)
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2)
         if result.get("error"):
             continue
         cost = result.get("total_cost", float('inf'))
