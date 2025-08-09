@@ -228,7 +228,7 @@ def solve_pipeline(
     default_t = 0.007
     default_e = 0.00004
 
-    # Pre-compute option lists for each station
+    # Pre-compute static data for each station; head losses depend on DRA reach
     station_opts = []
     origin_enforced = False
     cum_dist = 0.0
@@ -280,13 +280,8 @@ def solve_pipeline(
             dra_vals = [int(round(fixed_dr))] if (fixed_dr is not None) else _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
-                dra_opts = dra_vals
                 for rpm in rpm_opts:
-                    for dra in dra_opts:
-                        reach = dra_reach_km + travel_km if dra > 0 else dra_reach_km
-                        dra_len_here = max(0.0, min(L, reach - cum_dist))
-                        effective_dra = dra if dra_len_here > 0 else 0.0
-                        head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, effective_dra, dra_len_here)
+                    for dra in dra_vals:
                         if nop > 0 and rpm > 0:
                             tdh, eff = _pump_head(stn, flow, rpm, nop)
                         else:
@@ -313,6 +308,7 @@ def solve_pipeline(
                             'nop': nop,
                             'rpm': rpm,
                             'dra': dra,
+                            'travel_km': travel_km if dra > 0 else 0.0,
                             'tdh': tdh,
                             'eff': eff,
                             'pump_bkw': pump_bkw,
@@ -321,17 +317,13 @@ def solve_pipeline(
                             'dra_cost': dra_cost,
                             'dra_ppm': ppm,
                             'cost': cost,
-                            'head_loss': head_loss,
-                            'v': v,
-                            'Re': Re,
-                            'f': f,
                         })
         else:
-            head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, 0.0, 0.0)
             opts.append({
                 'nop': 0,
                 'rpm': 0,
                 'dra': 0,
+                'travel_km': 0.0,
                 'tdh': 0.0,
                 'eff': 0.0,
                 'pump_bkw': 0.0,
@@ -340,10 +332,6 @@ def solve_pipeline(
                 'dra_cost': 0.0,
                 'dra_ppm': 0.0,
                 'cost': 0.0,
-                'head_loss': head_loss,
-                'v': v,
-                'Re': Re,
-                'f': f,
             })
 
         station_opts.append({
@@ -353,10 +341,14 @@ def solve_pipeline(
             'flow_in': segment_flows[i - 1],
             'kv': kv,
             'rho': rho,
-            'maop_head': maop_head,
-            'maop_kgcm2': maop_kgcm2,
+            'L': L,
+            'd_inner': d_inner,
+            'rough': rough,
+            'cum_dist': cum_dist,
             'elev_delta': elev_delta,
             'min_residual_next': min_residual_next,
+            'maop_head': maop_head,
+            'maop_kgcm2': maop_kgcm2,
             'options': opts,
             'is_pump': stn.get('is_pump', False),
             'coef_A': float(stn.get('A', 0.0)),
@@ -373,23 +365,47 @@ def solve_pipeline(
         cum_dist += L
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
-    states: dict[float, dict] = {round(init_residual, 2): {'cost': 0.0, 'residual': init_residual, 'records': [], 'last_maop': 0.0, 'last_maop_kg': 0.0}}
+    states: dict[float, dict] = {
+        round(init_residual, 2): {
+            'cost': 0.0,
+            'residual': init_residual,
+            'records': [],
+            'last_maop': 0.0,
+            'last_maop_kg': 0.0,
+            'reach': dra_reach_km,
+        }
+    }
 
     for stn_data in station_opts:
         new_states: dict[float, dict] = {}
         for state in states.values():
             for opt in stn_data['options']:
+                reach_prev = state.get('reach', 0.0)
+                reach_after = reach_prev
+                if opt['dra'] > 0:
+                    reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
+                dra_len_here = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
+                effective_dra = opt['dra'] if dra_len_here > 0 else 0.0
+                head_loss, v, Re, f = _segment_hydraulics(
+                    stn_data['flow'],
+                    stn_data['L'],
+                    stn_data['d_inner'],
+                    stn_data['rough'],
+                    stn_data['kv'],
+                    effective_dra,
+                    dra_len_here,
+                )
                 sdh = state['residual'] + opt['tdh']
                 if sdh > stn_data['maop_head']:
                     continue
-                residual_next = sdh - opt['head_loss'] - stn_data['elev_delta']
+                residual_next = sdh - head_loss - stn_data['elev_delta']
                 if residual_next < stn_data['min_residual_next']:
                     continue
                 record = {
                     f"pipeline_flow_{stn_data['name']}": stn_data['flow'],
                     f"pipeline_flow_in_{stn_data['name']}": stn_data['flow_in'],
-                    f"head_loss_{stn_data['name']}": opt['head_loss'],
-                    f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(opt['head_loss'], stn_data['rho']),
+                    f"head_loss_{stn_data['name']}": head_loss,
+                    f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(head_loss, stn_data['rho']),
                     f"residual_head_{stn_data['name']}": state['residual'],
                     f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
                     f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
@@ -397,9 +413,9 @@ def solve_pipeline(
                     f"rho_{stn_data['name']}": stn_data['rho'],
                     f"maop_{stn_data['name']}": stn_data['maop_head'],
                     f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
-                    f"velocity_{stn_data['name']}": opt['v'],
-                    f"reynolds_{stn_data['name']}": opt['Re'],
-                    f"friction_{stn_data['name']}": opt['f'],
+                    f"velocity_{stn_data['name']}": v,
+                    f"reynolds_{stn_data['name']}": Re,
+                    f"friction_{stn_data['name']}": f,
                     f"coef_A_{stn_data['name']}": stn_data['coef_A'],
                     f"coef_B_{stn_data['name']}": stn_data['coef_B'],
                     f"coef_C_{stn_data['name']}": stn_data['coef_C'],
@@ -448,6 +464,7 @@ def solve_pipeline(
                         'records': new_record_list,
                         'last_maop': stn_data['maop_head'],
                         'last_maop_kg': stn_data['maop_kgcm2'],
+                        'reach': reach_after,
                     }
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
@@ -499,6 +516,7 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
+    result['dra_front_km'] = best_state.get('reach', 0.0)
     result['error'] = False
     return result
 
