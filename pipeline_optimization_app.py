@@ -658,37 +658,56 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
     return seg_kv, seg_rho
 
 
-def shift_vol_linefill(vol_table: pd.DataFrame, pumped_m3: float, day_plan: pd.DataFrame | None) -> pd.DataFrame:
-    """Shift the volumetric linefill forward by `pumped_m3` and append from pumping plan.
+def shift_vol_linefill(
+    vol_table: pd.DataFrame,
+    pumped_m3: float,
+    day_plan: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
 
-    `vol_table` and `day_plan` both have columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³).
+    Fluid is removed from the terminal end of ``vol_table`` and the same volume
+    is injected at the origin from ``day_plan`` if provided.  The updated
+    ``vol_table`` and the (possibly shortened) ``day_plan`` are returned.
     """
+
+    # Remove delivered volume from downstream end
     vol_table = vol_table.copy()
     vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
     remaining = pumped_m3
-    # Pop from the head
-    i = 0
-    while remaining > 1e-9 and i < len(vol_table):
-        v = vol_table.at[i, "Volume (m³)"]
+    idx = len(vol_table) - 1
+    while remaining > 1e-9 and idx >= 0:
+        v = vol_table.at[idx, "Volume (m³)"]
         take = min(v, remaining)
-        v_new = v - take
-        vol_table.at[i, "Volume (m³)"] = v_new
+        vol_table.at[idx, "Volume (m³)"] = v - take
         remaining -= take
-        if v_new <= 1e-9:
-            i += 1
-    # Drop fully consumed
-    vol_table = vol_table.iloc[i:].reset_index(drop=True)
+        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
+            vol_table = vol_table.drop(index=idx)
+        idx -= 1
+    vol_table = vol_table.reset_index(drop=True)
 
-    # Append from day plan if provided
-    if day_plan is not None and remaining > -1e-9:
-        for _, r in day_plan.iterrows():
-            vol_table = pd.concat([vol_table, pd.DataFrame([{
-                "Product": r.get("Product", ""),
-                "Volume (m³)": float(r.get("Volume (m³)", 0.0)),
-                "Viscosity (cSt)": float(r.get("Viscosity (cSt)", 0.0)),
-                "Density (kg/m³)": float(r.get("Density (kg/m³)", 0.0)),
-            }])], ignore_index=True)
-    return vol_table
+    # Inject new product at upstream end according to day plan
+    if day_plan is not None:
+        day_plan = day_plan.copy()
+        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
+        added = pumped_m3
+        j = 0
+        while added > 1e-9 and j < len(day_plan):
+            v = day_plan.at[j, "Volume (m³)"]
+            take = min(v, added)
+            batch = {
+                "Product": day_plan.at[j, "Product"],
+                "Volume (m³)": take,
+                "Viscosity (cSt)": day_plan.at[j, "Viscosity (cSt)"],
+                "Density (kg/m³)": day_plan.at[j, "Density (kg/m³)"],
+            }
+            vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
+            day_plan.at[j, "Volume (m³)"] = v - take
+            added -= take
+            if day_plan.at[j, "Volume (m³)"] <= 1e-9:
+                j += 1
+        day_plan = day_plan.iloc[j:].reset_index(drop=True)
+
+    return vol_table, day_plan
 
 
 # Persisted DRA lock from 07:00 run
@@ -1196,7 +1215,7 @@ if not auto_batch:
                 if ti < len(hours)-1:
                     if st.session_state.get("op_mode") == "Pumping Schedule":
                         pumped = FLOW_sched * 4.0
-                        current_vol = shift_vol_linefill(current_vol, pumped, plan_df if ti==0 else None)
+                        current_vol, plan_df = shift_vol_linefill(current_vol, pumped, plan_df)
                     key0 = stations_base[0]['name'].lower().replace(' ', '_')
                     vel0 = float(res.get(f"velocity_{key0}", 0.0))
                     ppm0 = float(res.get(f"dra_ppm_{key0}", 0.0))
