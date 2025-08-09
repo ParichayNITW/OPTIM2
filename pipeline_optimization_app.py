@@ -713,7 +713,17 @@ def fmt_pressure(res, key_m, key_kg):
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
-def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict):
+def solve_pipeline(
+    stations,
+    terminal,
+    FLOW,
+    KV_list,
+    rho_list,
+    RateDRA,
+    Price_HSD,
+    linefill_dict,
+    dra_reach_km: float = 0.0,
+):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
     import pipeline_model
@@ -730,10 +740,26 @@ def solve_pipeline(stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_H
     try:
         if stations and stations[0].get('pump_types'):
             return pipeline_model.solve_pipeline_multi_origin(
-                stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                linefill_dict,
+                dra_reach_km,
             )
         return pipeline_model.solve_pipeline(
-            stations, terminal, FLOW, KV_list, rho_list, RateDRA, Price_HSD, linefill_dict
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            linefill_dict,
+            dra_reach_km,
         )
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
