@@ -290,7 +290,6 @@ st.markdown(
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
 st.subheader("Stations")
-add_col, rem_col = st.columns(2)
 if "stations" not in st.session_state:
     st.session_state["stations"] = [{
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -302,22 +301,25 @@ if "stations" not in st.session_state:
         'delivery': 0.0,
         'supply': 0.0
     }]
-if add_col.button("➕ Add Station"):
-    n = len(st.session_state.get('stations',[])) + 1
-    default = {
-        'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
-        'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
-        'min_residual': 50.0, 'is_pump': False,
-        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
-        'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-        'max_dr': 0.0,
-        'delivery': 0.0,
-        'supply': 0.0
-    }
-    st.session_state.stations.append(default)
-if rem_col.button("🗑️ Remove Station"):
-    if st.session_state.get('stations'):
-        st.session_state.stations.pop()
+with st.sidebar:
+    st.markdown("### Stations")
+    add_col, rem_col = st.columns(2)
+    if add_col.button("➕ Add Station", key="add_station"):
+        n = len(st.session_state.get('stations', [])) + 1
+        default = {
+            'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
+            'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
+            'min_residual': 50.0, 'is_pump': False,
+            'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+            'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
+            'max_dr': 0.0,
+            'delivery': 0.0,
+            'supply': 0.0
+        }
+        st.session_state.stations.append(default)
+    if rem_col.button("🗑️ Remove Station", key="rem_station"):
+        if st.session_state.get('stations'):
+            st.session_state.stations.pop()
 
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
@@ -1190,8 +1192,8 @@ if not auto_batch:
             hours = [7,11,15,19,23,27]
             reports = []
             linefill_snaps = []
-            dra_reach_km = 0.0
             total_length = sum(stn.get('L', 0.0) for stn in stations_base)
+            dra_reach_km = 0.0
 
             current_vol = vol_df.copy()
 
@@ -1216,51 +1218,47 @@ if not auto_batch:
                     if st.session_state.get("op_mode") == "Pumping Schedule":
                         pumped = FLOW_sched * 4.0
                         current_vol, plan_df = shift_vol_linefill(current_vol, pumped, plan_df)
-                    key0 = stations_base[0]['name'].lower().replace(' ', '_')
-                    vel0 = float(res.get(f"velocity_{key0}", 0.0))
-                    ppm0 = float(res.get(f"dra_ppm_{key0}", 0.0))
-                    travel_km = vel0 * 4.0 * 3600.0 / 1000.0
-                    if ppm0 > 0:
-                        dra_reach_km = min(total_length, dra_reach_km + travel_km)
-                    else:
-                        dra_reach_km = max(0.0, dra_reach_km - travel_km)
+                    dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
 
             # Build a consolidated table
             # We'll extract a few key outputs per station
             stations_used = reports[-1]["result"].get("stations_used", stations_base)
-            names = [s['name'] for s in stations_used] + [term_data["name"]]
+            names = [s['name'] for s in stations_used]
             keys = [n.lower().replace(' ', '_') for n in names]
 
             out_rows = []
-            summaries = []
             for rec in reports:
                 res = rec["result"]
                 hr = rec["time"]
-                cost = float(res.get("total_cost", 0.0))
-                summaries.append(f"{hr:02d}:00 → Global minimum cost: {cost:,.2f} INR")
-                row = {"Time": f"{hr:02d}:00", "Total Cost (INR/4h)": cost}
+                power_total = sum(float(res.get(f"power_cost_{k}", 0.0)) for k in keys)
+                dra_total = sum(float(res.get(f"dra_cost_{k}", 0.0)) for k in keys)
+                cost = power_total + dra_total
+                row = {
+                    "Time": f"{hr:02d}:00",
+                    "Power & Fuel Cost (INR)": power_total,
+                    "DRA Cost (INR)": dra_total,
+                    "Total cost in 4 hours operation (INR)": cost,
+                }
                 for s in stations_used:
                     key = s['name'].lower().replace(' ', '_')
-                    row[f"Num Pumps {s['name']}"] = res.get(f"num_pumps_{key}", "")
-                    row[f"Speed {s['name']}"] = res.get(f"speed_{key}", "")
-                    row[f"DRA PPM {s['name']}"] = res.get(f"dra_ppm_{key}", "")
+                    row[f"Num Pumps {s['name']}"] = res.get(f"num_pumps_{key}", 0.0)
+                    row[f"Speed {s['name']}"] = res.get(f"speed_{key}", 0.0)
+                    row[f"DRA PPM {s['name']}"] = res.get(f"dra_ppm_{key}", 0.0)
                 out_rows.append(row)
 
             import pandas as pd
-            df_day = pd.DataFrame(out_rows)
-            for msg in summaries:
-                st.write(msg)
+            df_day = pd.DataFrame(out_rows).fillna(0.0)
             st.dataframe(df_day, use_container_width=True)
             st.download_button("Download 4-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
 
+            combined = []
             for idx, df_line in enumerate(linefill_snaps):
                 hr = hours[idx] % 24
-                st.download_button(
-                    f"Linefill {hr:02d}:00",
-                    df_line.to_csv(index=False),
-                    file_name=f"linefill_{hr:02d}.csv",
-                    key=f"lf_{idx}",
-                )
+                temp = df_line.copy()
+                temp['Time'] = f"{hr:02d}:00"
+                combined.append(temp)
+            lf_all = pd.concat(combined, ignore_index=True)
+            st.download_button("Download Linefill Snapshots", lf_all.to_csv(index=False), file_name="linefill_snapshots.csv")
 
 
 
