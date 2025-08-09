@@ -1258,7 +1258,7 @@ if not auto_batch:
                 temp['Time'] = f"{hr:02d}:00"
                 combined.append(temp)
             lf_all = pd.concat(combined, ignore_index=True)
-            st.download_button("Download Linefill Snapshots", lf_all.to_csv(index=False), file_name="linefill_snapshots.csv")
+            st.download_button("Download Dynamic Linefill data", lf_all.to_csv(index=False), file_name="Dynamic_Linefill.csv")
 
 
 
