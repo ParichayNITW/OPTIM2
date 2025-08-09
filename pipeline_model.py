@@ -210,6 +210,7 @@ def solve_pipeline(
     linefill_dict: dict | None = None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
+    hours: float = 24.0,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.  This replaces the previous greedy approach and
@@ -296,12 +297,12 @@ def solve_pipeline(
                         if stn.get('sfc', 0) and motor_kw_total > 0:
                             sfc_val = stn['sfc']
                             fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                            power_cost = motor_kw_total * 24.0 * fuel_per_kWh * Price_HSD
+                            power_cost = motor_kw_total * hours * fuel_per_kWh * Price_HSD
                         else:
                             rate = stn.get('rate', 0.0)
-                            power_cost = motor_kw_total * 24.0 * rate
+                            power_cost = motor_kw_total * hours * rate
                         ppm = get_ppm_for_dr(kv, dra) if dra > 0 else 0.0
-                        dra_cost = ppm * (flow * 1000.0 * 24.0 / 1e6) * RateDRA if dra > 0 else 0.0
+                        dra_cost = ppm * (flow * 1000.0 * hours / 1e6) * RateDRA if dra > 0 else 0.0
                         cost = power_cost + dra_cost
                         opts.append({
                             'nop': nop,
@@ -508,6 +509,7 @@ def solve_pipeline_multi_origin(
     linefill_dict: dict | None = None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
+    hours: float = 24.0,
 ) -> dict:
     """Enumerate pump type combinations at the origin and call ``solve_pipeline``."""
 
@@ -586,7 +588,7 @@ def solve_pipeline_multi_origin(
         kv_combo.extend(KV_list[1:])
         rho_combo.extend(rho_list[1:])
 
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2)
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
         if result.get("error"):
             continue
         cost = result.get("total_cost", float('inf'))
