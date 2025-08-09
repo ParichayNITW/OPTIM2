@@ -132,3 +132,11 @@ def get_dr_for_ppm(
     dr_upper = _dr_from_df(df_upper, ppm)
     dr_interp = np.interp(visc, [lower, upper], [dr_lower, dr_upper])
     return float(dr_interp)
+
+
+__all__ = [
+    "DRA_CSV_FILES",
+    "DRA_CURVE_DATA",
+    "get_ppm_for_dr",
+    "get_dr_for_ppm",
+]

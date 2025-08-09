@@ -1126,7 +1126,6 @@ if not auto_batch:
     if run_day:
         with st.spinner("Running 9 optimizations (07:00 to 23:00)..."):
             import copy
-            from dra_utils import get_ppm_for_dr
             stations_base = copy.deepcopy(st.session_state.stations)
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
 
