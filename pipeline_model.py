@@ -264,7 +264,10 @@ def solve_pipeline(
         elev_delta = elev_next - elev_i
 
         opts = []
-        dra_len_here = max(0.0, min(L, dra_reach_km - cum_dist))
+        flow_m3s = flow / 3600.0
+        area = pi * d_inner ** 2 / 4.0
+        v_nom = flow_m3s / area if area > 0 else 0.0
+        travel_km = v_nom * hours * 3600.0 / 1000.0
 
         if stn.get('is_pump', False):
             min_p = stn.get('min_pumps', 0)
@@ -280,6 +283,8 @@ def solve_pipeline(
                 dra_opts = dra_vals
                 for rpm in rpm_opts:
                     for dra in dra_opts:
+                        reach = dra_reach_km + travel_km if dra > 0 else dra_reach_km
+                        dra_len_here = max(0.0, min(L, reach - cum_dist))
                         effective_dra = dra if dra_len_here > 0 else 0.0
                         head_loss, v, Re, f = _segment_hydraulics(flow, L, d_inner, rough, kv, effective_dra, dra_len_here)
                         if nop > 0 and rpm > 0:
