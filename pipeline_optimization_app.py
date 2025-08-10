@@ -874,6 +874,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     count_a = pump_combo.get('A', 0)
     count_b = pump_combo.get('B', 0)
 
+    unit_keys_a = [k for k in origin_unit_keys if '_a' in k]
+    unit_keys_b = [k for k in origin_unit_keys if '_b' in k]
+
     if origin_unit_keys:
         nop = _agg(origin_unit_keys, 'num_pumps')
         power_total = _agg(origin_unit_keys, 'power_cost')
@@ -884,7 +887,11 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pump Flow (m³/hr)': _agg(origin_unit_keys, 'pump_flow', op='avg'),
             'No. of Pumps': nop,
             'Type A Pumps': count_a,
+            'Type A Speed (rpm)': _agg(unit_keys_a or origin_unit_keys if count_a and not unit_keys_a else [], 'speed', op='avg'),
+            'Type A Efficiency (%)': _agg(unit_keys_a or origin_unit_keys if count_a and not unit_keys_a else [], 'efficiency', op='avg'),
             'Type B Pumps': count_b,
+            'Type B Speed (rpm)': _agg(unit_keys_b or origin_unit_keys if count_b and not unit_keys_b else [], 'speed', op='avg'),
+            'Type B Efficiency (%)': _agg(unit_keys_b or origin_unit_keys if count_b and not unit_keys_b else [], 'efficiency', op='avg'),
             'Type of Pump': pump_type_str,
             'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
             'Pump Efficiency (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
@@ -920,7 +927,11 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'No. of Pumps': nop,
             'Type A Pumps': 0,
+            'Type A Speed (rpm)': 0.0,
+            'Type A Efficiency (%)': 0.0,
             'Type B Pumps': 0,
+            'Type B Speed (rpm)': 0.0,
+            'Type B Efficiency (%)': 0.0,
             'Type of Pump': '',
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Efficiency (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
@@ -1283,7 +1294,11 @@ if auto_batch:
     if 'batch_df' in st.session_state:
         df_batch = st.session_state['batch_df']
         st.dataframe(df_batch, use_container_width=True)
-        st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
+        st.download_button(
+            "Download Batch Results",
+            df_batch.round(2).to_csv(index=False, float_format="%.2f"),
+            file_name="batch_results.csv",
+        )
         if len(df_batch) > 0:
             pc_cols = []
             for c in df_batch.columns:
@@ -1482,7 +1497,8 @@ if not auto_batch:
             df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
             col_order = [
                 "Time", "Station", "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)",
-                "No. of Pumps", "Type A Pumps", "Type B Pumps", "Type of Pump",
+                "No. of Pumps", "Type A Pumps", "Type A Speed (rpm)", "Type A Efficiency (%)",
+                "Type B Pumps", "Type B Speed (rpm)", "Type B Efficiency (%)", "Type of Pump",
                 "Pump Speed (rpm)", "Pump Efficiency (%)", "Pump BKW (kW)",
                 "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
                 "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)",
@@ -1566,6 +1582,20 @@ if not auto_batch:
                 "DRA Cost (INR)",
                 "Total Cost (INR)",
             ]
+            styled_day = df_day.style.format(precision=2).background_gradient(
+                subset=cost_cols, cmap="Blues"
+            )
+            st.markdown(
+                "<div class='section-title'>Station-wise Details (4h Intervals)</div>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(styled_day, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download Station Details",
+                df_day.to_csv(index=False, float_format="%.2f"),
+                file_name="daily_station_details.csv",
+            )
+
             agg = df_day.groupby("Station")[cost_cols].sum().reset_index().round(2)
             styled_cost = agg.style.format({c: "{:.2f}" for c in cost_cols}).background_gradient(
                 subset=cost_cols, cmap="Greens"
@@ -1786,10 +1816,10 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
                     df_cost_fmt[c] = df_cost_fmt[c].apply(lambda x: f"{x:.2f}")
             st.markdown("#### Tabular Cost Summary")
             st.dataframe(df_cost_fmt, use_container_width=True, hide_index=True)
-    
+
             st.download_button(
                 "📥 Download Station Cost (CSV)",
-                df_cost.to_csv(index=False).encode(),
+                df_cost.round(2).to_csv(index=False, float_format="%.2f").encode(),
                 file_name="station_cost.csv"
             )
     
@@ -3004,7 +3034,11 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
         df_sens = pd.DataFrame({param: pvals, output: yvals})
         st.plotly_chart(fig, use_container_width=True)
         st.dataframe(df_sens, use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
+        st.download_button(
+            "Download CSV",
+            df_sens.round(2).to_csv(index=False, float_format="%.2f").encode(),
+            file_name="sensitivity.csv",
+        )
     
     
     
