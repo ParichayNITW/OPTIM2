@@ -817,12 +817,16 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     if pump_combo.get('B', 0) > 0:
         types.append('Type B')
     pump_type_str = '+'.join(types)
+    count_a = pump_combo.get('A', 0)
+    count_b = pump_combo.get('B', 0)
 
     if origin_unit_keys:
         row = {
             'Station': origin_name,
             'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
             'No. of Pumps': _agg(origin_unit_keys, 'num_pumps'),
+            'Type A Pumps': count_a,
+            'Type B Pumps': count_b,
             'Type of Pump': pump_type_str,
             'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
             'Pump Efficiency (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
@@ -840,6 +844,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Station': stn['name'],
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'No. of Pumps': float(res.get(f"num_pumps_{key}", 0) or 0),
+            'Type A Pumps': 0,
+            'Type B Pumps': 0,
             'Type of Pump': '',
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Efficiency (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
@@ -1286,7 +1292,7 @@ if not auto_batch:
                 st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
-    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="secondary")
+    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
@@ -1366,11 +1372,19 @@ if not auto_batch:
                 df_int.insert(0, "Time", f"{hr:02d}:00")
                 station_tables.append(df_int)
             df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+            col_order = [
+                "Time", "Station", "Pipeline Flow (m³/hr)", "No. of Pumps",
+                "Type A Pumps", "Type B Pumps", "Type of Pump", "Pump Speed (rpm)",
+                "Pump Efficiency (%)", "Pump BKW (kW)", "DRA PPM",
+                "Power & Fuel Cost (INR)", "DRA Cost (INR)", "Total Cost (INR)"
+            ]
+            df_day = df_day.reindex(columns=col_order)
 
             num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
             styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
                 subset=num_cols, cmap="Blues"
             )
+            st.markdown("<div class='section-title'>Daily Schedule Results</div>", unsafe_allow_html=True)
             st.dataframe(styled, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download 4-hourly Results",
@@ -1390,6 +1404,13 @@ if not auto_batch:
                 lf_all.to_csv(index=False, float_format="%.2f"),
                 file_name="linefill_snapshots.csv",
             )
+
+            if reports:
+                final_res = reports[-1]["result"]
+                st.session_state["last_res"] = copy.deepcopy(final_res)
+                st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
+                st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                st.session_state["last_linefill"] = copy.deepcopy(linefill_snaps[-1])
 
 
 
