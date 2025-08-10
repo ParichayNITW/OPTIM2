@@ -1341,7 +1341,7 @@ if not auto_batch:
                 linefill_df.to_dict(),
                 dra_reach_km=0.0,
                 mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                hours=4.0,
+                hours=24.0 if st.session_state.get("op_mode") == "Flow rate" else 4.0,
             )
 
             import copy
@@ -1452,6 +1452,17 @@ if not auto_batch:
             ]
             df_day = df_day.reindex(columns=col_order)
 
+            summary_tables = []
+            for idx, rec in enumerate(reports):
+                res = rec["result"]
+                lf = linefill_snaps[idx]
+                df_sum = build_summary_dataframe(res, stations_base, lf, drop_unused=False)
+                df_sum.set_index("Parameters", inplace=True)
+                time_label = f"{rec['time']:02d}:00"
+                df_sum.columns = pd.MultiIndex.from_product([[time_label], df_sum.columns])
+                summary_tables.append(df_sum)
+            df_sum_all = pd.concat(summary_tables, axis=1).reset_index()
+
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
                 hr = hours[idx] % 24
@@ -1467,7 +1478,8 @@ if not auto_batch:
                 st.session_state["day_hours"] = hours
                 st.session_state["day_stations"] = copy.deepcopy(stations_base)
                 st.session_state["day_term_data"] = copy.deepcopy(term_data)
-                st.session_state["daily_df_day"] = df_day
+                st.session_state["daily_station_df"] = df_day
+                st.session_state["daily_summary_df"] = df_sum_all
                 st.session_state["daily_linefill_all"] = lf_all
                 st.session_state["detail_time_idx"] = 0
                 update_detail_time()
@@ -1477,17 +1489,19 @@ if not auto_batch:
 
     # --- Persisted daily schedule display and time selection ---
     mode = st.session_state.get("op_mode")
-    if mode == "Pumping Schedule" and "daily_df_day" in st.session_state:
-        df_day = st.session_state["daily_df_day"]
-        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
-        styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
-            subset=num_cols, cmap="Blues"
-        )
+    if mode == "Pumping Schedule" and "daily_summary_df" in st.session_state:
+        df_sum = st.session_state["daily_summary_df"]
+        styled = df_sum.style.format(precision=2)
         st.markdown("<div class='section-title'>Daily Schedule Results</div>", unsafe_allow_html=True)
         st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        flat_df = df_sum.copy()
+        flat_df.columns = [
+            col if isinstance(col, str) else f"{col[0]}_{col[1]}" for col in flat_df.columns
+        ]
         st.download_button(
             "Download 4-hourly Results",
-            df_day.to_csv(index=False, float_format="%.2f"),
+            flat_df.to_csv(index=False, float_format="%.2f"),
             file_name="daily_schedule_results.csv",
         )
 
@@ -1499,29 +1513,30 @@ if not auto_batch:
                 file_name="linefill_snapshots.csv",
             )
 
-        # --- Station-wise cost summary ---
-        cost_cols = [
-            "Power & Fuel Cost (INR)",
-            "DRA Cost (INR)",
-            "Total Cost (INR)",
-        ]
-        agg = df_day.groupby("Station")[cost_cols].sum().reset_index().round(2)
-        styled_cost = agg.style.format({c: "{:.2f}" for c in cost_cols}).background_gradient(
-            subset=cost_cols, cmap="Greens"
-        )
-        st.markdown(
-            "<div class='section-title'>Station-wise Cost Summary</div>",
-            unsafe_allow_html=True,
-        )
-        st.dataframe(styled_cost, use_container_width=True, hide_index=True)
+        df_day = st.session_state.get("daily_station_df")
+        if df_day is not None:
+            cost_cols = [
+                "Power & Fuel Cost (INR)",
+                "DRA Cost (INR)",
+                "Total Cost (INR)",
+            ]
+            agg = df_day.groupby("Station")[cost_cols].sum().reset_index().round(2)
+            styled_cost = agg.style.format({c: "{:.2f}" for c in cost_cols}).background_gradient(
+                subset=cost_cols, cmap="Greens"
+            )
+            st.markdown(
+                "<div class='section-title'>Station-wise Cost Summary</div>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(styled_cost, use_container_width=True, hide_index=True)
 
-        total_power = agg["Power & Fuel Cost (INR)"].sum()
-        total_dra = agg["DRA Cost (INR)"].sum()
-        total_cost = agg["Total Cost (INR)"].sum()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Power & Fuel Cost (INR)", f"{total_power:,.2f}")
-        c2.metric("Total DRA Cost (INR)", f"{total_dra:,.2f}")
-        c3.metric("Total Cost (INR)", f"{total_cost:,.2f}")
+            total_power = agg["Power & Fuel Cost (INR)"].sum()
+            total_dra = agg["DRA Cost (INR)"].sum()
+            total_cost = agg["Total Cost (INR)"].sum()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Power & Fuel Cost (INR)", f"{total_power:,.2f}")
+            c2.metric("Total DRA Cost (INR)", f"{total_dra:,.2f}")
+            c3.metric("Total Cost (INR)", f"{total_cost:,.2f}")
 
 
 if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
