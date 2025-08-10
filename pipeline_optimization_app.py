@@ -1432,6 +1432,7 @@ if not auto_batch:
                 st.session_state["daily_linefill_all"] = lf_all
                 st.session_state["detail_time_idx"] = 0
                 update_detail_time()
+                st.rerun()
 
 
 
