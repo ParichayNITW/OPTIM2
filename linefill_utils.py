@@ -1,47 +1,86 @@
+"""Utility functions for handling pipeline linefill tables.
+
+Provides helpers to translate volume based linefill information into
+length-wise positions along the pipeline and to update the linefill after a
+certain throughput has been delivered.
+"""
 
 from __future__ import annotations
 
 from math import pi
 from typing import List, Dict
-import pandas as pd
+
 
 def linefill_lengths(linefill: List[Dict], diameter: float) -> List[Dict]:
-    A = (pi * diameter**2) / 4.0
-    out = []; acc = 0.0
-    for batch in linefill:
-        vol = float(batch.get("volume", 0.0))
-        L_km = (vol / max(A, 1e-9)) / 1000.0
-        acc += L_km
-        b = dict(batch); b['length_km'] = L_km; b['cum_length_km'] = acc
-        out.append(b)
-    return out
+    """Return length information for each product batch in ``linefill``.
 
-def shift_vol_linefill(vol_table: pd.DataFrame, pumped_m3: float, day_plan: pd.DataFrame | None):
-    vol_table = vol_table.copy()
-    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
-    take = pumped_m3
-    i = len(vol_table) - 1
-    while i >= 0 and take > 0:
-        have = float(vol_table.at[i, "Volume (m³)"])
-        rem = max(have - take, 0.0)
-        take -= (have - rem)
-        vol_table.at[i, "Volume (m³)"] = rem
-        if rem <= 1e-9: vol_table = vol_table.drop(index=vol_table.index[i])
-        i -= 1
-    vol_table.reset_index(drop=True, inplace=True)
+    Parameters
+    ----------
+    linefill:
+        List of dictionaries each describing a batch with keys ``volume``
+        (m³) along with optional ``product``, ``viscosity`` and ``density``.
+        The first element is assumed to be the batch closest to the
+        originating station.
+    diameter:
+        Inner diameter of the pipeline in metres.
 
-    if day_plan is not None:
-        day_plan = day_plan.copy()
-        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
-        add = pumped_m3
-        while add > 0 and len(day_plan) > 0:
-            head = day_plan.iloc[0].to_dict()
-            vol = float(head.get("Volume (m³)", 0.0))
-            take = min(vol, add)
-            new_b = dict(head); new_b["Volume (m³)"] = take
-            vol_table = pd.concat([pd.DataFrame([new_b]), vol_table], ignore_index=True)
-            day_plan.at[0, "Volume (m³)"] = vol - take
-            if day_plan.at[0, "Volume (m³)"] <= 1e-9:
-                day_plan = day_plan.iloc[1:].reset_index(drop=True)
-            add -= take
-    return vol_table, day_plan
+    Returns
+    -------
+    List[Dict]
+        ``linefill`` augmented with ``length_km`` plus ``length_km_start`` and
+        ``length_km_end`` giving the occupied interval measured from the
+        origin.
+    """
+    if diameter <= 0:
+        raise ValueError("Pipe diameter must be positive")
+    area = pi * (diameter ** 2) / 4.0
+    result = []
+    cum_len = 0.0
+    for entry in linefill:
+        vol = float(entry.get("volume", 0.0))
+        length_km = vol / area / 1000.0
+        new_entry = entry.copy()
+        new_entry.update(
+            {
+                "length_km": length_km,
+                "length_km_start": cum_len,
+                "length_km_end": cum_len + length_km,
+            }
+        )
+        result.append(new_entry)
+        cum_len += length_km
+    return result
+
+
+def advance_linefill(linefill: List[Dict], schedule: List[Dict], delivered: float) -> List[Dict]:
+    """Update ``linefill`` after ``delivered`` m³ has left the pipeline.
+
+    The same volume is injected at the origin according to ``schedule``.  Both
+    ``linefill`` and ``schedule`` are modified in-place and the updated
+    ``linefill`` is returned for convenience.
+    """
+    remaining = delivered
+    # Remove delivered volume from the terminal side (end of list)
+    while remaining > 0 and linefill:
+        tail = linefill[-1]
+        vol = float(tail.get("volume", 0.0))
+        if vol > remaining:
+            tail["volume"] = vol - remaining
+            remaining = 0
+        else:
+            remaining -= vol
+            linefill.pop()
+    # Inject new product batches at the origin side (front of list)
+    added = delivered
+    while added > 0 and schedule:
+        head = schedule[0]
+        vol = float(head.get("volume", 0.0))
+        take = min(vol, added)
+        new_batch = head.copy()
+        new_batch["volume"] = take
+        linefill.insert(0, new_batch)
+        head["volume"] = vol - take
+        if head["volume"] <= 0:
+            schedule.pop(0)
+        added -= take
+    return linefill
