@@ -818,10 +818,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     pump_combo = res.get('pump_combo', {})
     types = []
     if pump_combo.get('A', 0) > 0:
-        types.append('Type A')
+        types.append(f"Type A - {pump_combo['A']}")
     if pump_combo.get('B', 0) > 0:
-        types.append('Type B')
-    pump_type_str = '+'.join(types)
+        types.append(f"Type B - {pump_combo['B']}")
+    pump_type_str = ', '.join(types)
 
     if origin_unit_keys:
         row = {
@@ -1355,15 +1355,13 @@ if not auto_batch:
             current_vol = vol_df.copy()
 
             for ti, hr in enumerate(hours):
+                pumped_tmp = FLOW_sched * 4.0
+                future_vol, future_plan = shift_vol_linefill(
+                    current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
+                )
                 # Determine worst-case fluid properties over this 4h window
                 kv_now, rho_now = kv_rho_from_vol(current_vol)
-                kv_next, rho_next = kv_now, rho_now
-                if st.session_state.get("op_mode") == "Pumping Schedule":
-                    pumped_tmp = FLOW_sched * 4.0
-                    future_vol, _ = shift_vol_linefill(
-                        current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
-                    )
-                    kv_next, rho_next = kv_rho_from_vol(future_vol)
+                kv_next, rho_next = kv_rho_from_vol(future_vol)
                 kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
                 rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
@@ -1383,9 +1381,7 @@ if not auto_batch:
                 linefill_snaps.append(current_vol.copy())
 
                 if ti < len(hours)-1:
-                    if st.session_state.get("op_mode") == "Pumping Schedule":
-                        pumped = FLOW_sched * 4.0
-                        current_vol, plan_df = shift_vol_linefill(current_vol, pumped, plan_df)
+                    current_vol, plan_df = future_vol, future_plan
                     dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
 
             # Build a consolidated station-wise table
