@@ -1115,35 +1115,19 @@ if not auto_batch:
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
 
-            import pipeline_model
-            import importlib
-            importlib.reload(pipeline_model)
-            if stations_data and stations_data[0].get('pump_types'):
-                res = pipeline_model.solve_pipeline_multi_origin(
-                    stations_data,
-                    term_data,
-                    FLOW,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    linefill_df.to_dict(),
-                    dra_reach_km=0.0,
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                )
-            else:
-                res = pipeline_model.solve_pipeline(
-                    stations_data,
-                    term_data,
-                    FLOW,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    linefill_df.to_dict(),
-                    dra_reach_km=0.0,
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                )
+            res = solve_pipeline(
+                stations_data,
+                term_data,
+                FLOW,
+                kv_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                linefill_df.to_dict(),
+                dra_reach_km=0.0,
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                hours=4.0,
+            )
 
             import copy
             if not res or res.get("error"):
@@ -1198,7 +1182,18 @@ if not auto_batch:
             current_vol = vol_df.copy()
 
             for ti, hr in enumerate(hours):
-                kv_list, rho_list = kv_rho_from_vol(current_vol)
+                # Determine worst-case fluid properties over this 4h window
+                kv_now, rho_now = kv_rho_from_vol(current_vol)
+                kv_next, rho_next = kv_now, rho_now
+                if st.session_state.get("op_mode") == "Pumping Schedule":
+                    pumped_tmp = FLOW_sched * 4.0
+                    future_vol, _ = shift_vol_linefill(
+                        current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
+                    )
+                    kv_next, rho_next = kv_rho_from_vol(future_vol)
+                kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
+                rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
+
                 stns_run = copy.deepcopy(stations_base)
 
                 res = solve_pipeline(
