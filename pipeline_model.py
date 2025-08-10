@@ -10,8 +10,6 @@ solver is available.
 from __future__ import annotations
 
 from math import log10, pi
-import math
-import sys
 import copy
 
 from dra_utils import get_ppm_for_dr
@@ -76,17 +74,11 @@ def _segment_hydraulics(
     area = pi * d_inner ** 2 / 4.0
     v = flow_m3s / area if area > 0 else 0.0
     Re = v * d_inner / (kv * 1e-6) if kv > 0 else 0.0
-    # Churchill (1977) explicit friction factor correlation (all Re)
-    if Re > 0 and d_inner > 0:
-        rr = abs(rough / d_inner) if d_inner > 0 else 0.0
-        try:
-            termA = (2.457 * math.log((7.0/Re)**0.9 + 0.27*rr))**16
-            termB = (37530.0/Re)**16
-            denom = (termA + termB)**1.5
-            inv = ((8.0/Re)**12 + (1.0/denom))
-            f = 8.0 * (inv ** (1.0/12.0))
-        except ValueError:
-            arg = (rr / 3.7) + (5.74 / (Re ** 0.9))
+    if Re > 0:
+        if Re < 4000:
+            f = 64.0 / Re
+        else:
+            arg = (rough / d_inner / 3.7) + (5.74 / (Re ** 0.9))
             f = 0.25 / (log10(arg) ** 2) if arg > 0 else 0.0
     else:
         f = 0.0
@@ -294,9 +286,7 @@ def solve_pipeline(
                             tdh, eff = _pump_head(stn, flow, rpm, nop)
                         else:
                             tdh, eff = 0.0, 0.0
-                        eff_min = float(stn.get('eff_min', 5.0))
-                        eff_max = float(stn.get('eff_max', 90.0))
-                        eff = max(min(eff, eff_max), eff_min) if nop > 0 else 0.0
+                        eff = max(eff, 1e-6) if nop > 0 else 0.0
                         if nop > 0 and rpm > 0:
                             pump_bkw_total = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
                             pump_bkw = pump_bkw_total / nop
@@ -376,7 +366,7 @@ def solve_pipeline(
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
     states: dict[float, dict] = {
-        round(init_residual, RESIDUAL_ROUND): {
+        round(init_residual, 2): {
             'cost': 0.0,
             'residual': init_residual,
             'records': [],
@@ -408,22 +398,6 @@ def solve_pipeline(
                 sdh = state['residual'] + opt['tdh']
                 if sdh > stn_data['maop_head']:
                     continue
-                        # Extra MAOP check at intermediate peaks:
-                if stn_data.get('peaks'):
-                    skip_opt = False
-                    for peak in (stn_data.get('peaks') or []):
-                        dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
-                        elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
-                        try:
-                            dist = float(dist); elev_peak = float(elev_peak)
-                        except Exception:
-                            continue
-                        head_to_peak, *_ = _segment_hydraulics(stn_data['flow'], dist, stn_data['d_inner'], stn_data['rough'], stn_data['kv'], effective_dra, dra_len_here)
-                        sdh_at_peak = sdh - head_to_peak - (elev_peak - stn_data['elev'])
-                        if sdh_at_peak > stn_data['maop_head']:
-                            skip_opt = True; break
-                    if skip_opt:
-                        continue
                 residual_next = sdh - head_loss - stn_data['elev_delta']
                 if residual_next < stn_data['min_residual_next']:
                     continue
@@ -637,8 +611,7 @@ def solve_pipeline_multi_origin(
         kv_combo.extend(KV_list[1:])
         rho_combo.extend(rho_list[1:])
 
-        _solve_pipeline = getattr(sys.modules[__name__], 'solve_pipeline')
-        result = _solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
         if result.get("error"):
             continue
         cost = result.get("total_cost", float('inf'))
