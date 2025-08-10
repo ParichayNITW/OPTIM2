@@ -660,6 +660,25 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
     return seg_kv, seg_rho
 
 
+def segment_props_from_linefill(
+    linefill_df: pd.DataFrame | None, stations: list[dict]
+) -> tuple[list[float], list[float]]:
+    """Return per-segment viscosity and density derived from ``linefill_df``.
+
+    The helper accepts either a length-based linefill (with ``Start (km)`` and
+    ``End (km)`` columns) or a volumetric linefill table with ``Volume (m³)``.
+    If ``linefill_df`` is ``None`` or empty, zeros are returned.
+    """
+
+    if linefill_df is None or linefill_df.empty:
+        return [0.0] * len(stations), [0.0] * len(stations)
+
+    if "Start (km)" in linefill_df.columns:
+        return map_linefill_to_segments(linefill_df, stations)
+
+    return map_vol_linefill_to_segments(linefill_df, stations)
+
+
 def shift_vol_linefill(
     vol_table: pd.DataFrame,
     pumped_m3: float,
@@ -716,13 +735,7 @@ def shift_vol_linefill(
 def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: pd.DataFrame | None, drop_unused: bool = True) -> pd.DataFrame:
     """Create station-wise summary table matching the Optimization Results view."""
 
-    if linefill_df is not None and len(linefill_df):
-        if "Start (km)" in linefill_df.columns:
-            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-        else:
-            kv_list, _ = map_vol_linefill_to_segments(linefill_df, stations_data)
-    else:
-        kv_list = [0.0] * len(stations_data)
+    kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
 
     names = [s['name'] for s in stations_data]
     keys = [n.lower().replace(' ', '_') for n in names]
@@ -1225,7 +1238,7 @@ if not auto_batch:
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             # Always ensure linefill_df, kv_list, rho_list are defined!
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+            kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
 
             
             # ------------- ADD THIS BLOCK -------------
@@ -2043,7 +2056,7 @@ if not auto_batch:
                 L_seg = stn['L']
                 elev_i = stn['elev']
                 max_dr = int(stn.get('max_dr', 40))
-                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
                 visc = kv_list[i-1]
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
@@ -2153,7 +2166,7 @@ if not auto_batch:
                 d_inner = stn['D'] - 2*stn['t']
                 rough = stn['rough']
                 linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
                 visc = kv_list[stn_idx]
     
                 # --------- Begin Figure ---------
@@ -2288,7 +2301,7 @@ if not auto_batch:
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+        kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
         st.markdown("<div class='section-title'>DRA Curve (PPM vs %Drag Reduction) for Each Station</div>", unsafe_allow_html=True)
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
@@ -2423,7 +2436,7 @@ if not auto_batch:
         S = stn.get('S', 0); T = stn.get('T', 0)
         DOL = float(stn.get('DOL', N_max))
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
         rho = rho_list[pump_idx]
         rate = stn.get('rate', 9.0)
         g = 9.81
@@ -2774,7 +2787,7 @@ if not auto_batch:
             # Clone all input parameters for each run
             stations_data = [dict(s) for s in st.session_state['stations']]
             term_data = dict(st.session_state["last_term_data"])
-            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+            kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
             this_FLOW = FLOW
             this_RateDRA = RateDRA
             this_Price_HSD = Price_HSD
@@ -2785,7 +2798,7 @@ if not auto_batch:
             elif param == "Viscosity (cSt)":
                 # Set all segments to this value for test
                 this_linefill_df["Viscosity (cSt)"] = val
-                kv_list, rho_list = map_linefill_to_segments(this_linefill_df, stations_data)
+                kv_list, rho_list = segment_props_from_linefill(this_linefill_df, stations_data)
             elif param == "Drag Reduction (%)":
                 # Set all max_dr to >= val; force first pump station's drag reduction to val
                 for stn in stations_data:
@@ -2884,7 +2897,7 @@ if not auto_batch:
         FLOW = st.session_state.get("FLOW", 1000.0)
         RateDRA = st.session_state.get("RateDRA", 500.0)
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
         for idx, stn in enumerate(stations_data):
             key = stn['name'].lower().replace(' ', '_')
             dr_opt = res.get(f"drag_reduction_{key}", 0.0)
@@ -2949,7 +2962,7 @@ if not auto_batch:
                     pass  # For simplicity, only factor in to total efficiency calculation below
         new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
         new_FLOW = FLOW * (1 + flow_change / 100)
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
         # --- Re-solve with new parameters ---
         res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict())
         # Compute original and new total cost for 365 days
