@@ -648,35 +648,21 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
                     kv_cur = batches[i_batch]["kv"]
                     rho_cur = batches[i_batch]["rho"]
             take = min(need, remaining)
-            # For per-segment properties, use the property of the upstream-most fluid in the segment.
-            # (Piecewise mixing could be done, but you asked to keep other logic unchanged.)
-            # So we only need the first batch's kv/rho per segment.
+            # Compute length-weighted averages across the segment
+            # Accumulate partial contribution
             if need == L:
-                seg_kv.append(kv_cur)
-                seg_rho.append(rho_cur)
+                seg_kv.append(0.0)
+                seg_rho.append(0.0)
+                acc_len = 0.0
+            # Update running weighted sums
+            idx = len(seg_kv)-1
+            seg_kv[idx] = (seg_kv[idx]*acc_len + kv_cur*take) / (acc_len + take) if (acc_len + take) > 0 else kv_cur
+            seg_rho[idx] = (seg_rho[idx]*acc_len + rho_cur*take) / (acc_len + take) if (acc_len + take) > 0 else rho_cur
+            acc_len += take
             need -= take
             remaining -= take
 
     return seg_kv, seg_rho
-
-
-def segment_props_from_linefill(
-    linefill_df: pd.DataFrame | None, stations: list[dict]
-) -> tuple[list[float], list[float]]:
-    """Return per-segment viscosity and density derived from ``linefill_df``.
-
-    The helper accepts either a length-based linefill (with ``Start (km)`` and
-    ``End (km)`` columns) or a volumetric linefill table with ``Volume (m³)``.
-    If ``linefill_df`` is ``None`` or empty, zeros are returned.
-    """
-
-    if linefill_df is None or linefill_df.empty:
-        return [0.0] * len(stations), [0.0] * len(stations)
-
-    if "Start (km)" in linefill_df.columns:
-        return map_linefill_to_segments(linefill_df, stations)
-
-    return map_vol_linefill_to_segments(linefill_df, stations)
 
 
 def shift_vol_linefill(
@@ -730,243 +716,6 @@ def shift_vol_linefill(
 
     return vol_table, day_plan
 
-
-# Build a summary dataframe from solver results
-def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: pd.DataFrame | None, drop_unused: bool = True) -> pd.DataFrame:
-    """Create station-wise summary table matching the Optimization Results view."""
-
-    kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
-
-    names = [s['name'] for s in stations_data]
-    keys = [n.lower().replace(' ', '_') for n in names]
-
-    # Aggregate per-unit results for an origin station defined with pump_types so
-    # downstream summary rows report combined metrics for the original name.
-    res = dict(res)
-    if stations_data and stations_data[0].get('pump_types'):
-        origin_base = keys[0]
-        unit_keys = []
-        for k in list(res.keys()):
-            if not k.startswith('pipeline_flow_'):
-                continue
-            suffix = k[len('pipeline_flow_'):]
-            if suffix == origin_base or suffix.startswith(origin_base + '_'):
-                unit_keys.append(suffix)
-        if unit_keys:
-            def _agg(field: str, op: str = 'sum') -> float:
-                vals = [float(res.get(f"{field}_{uk}", 0.0) or 0.0) for uk in unit_keys]
-                if not vals:
-                    return 0.0
-                return float(np.mean(vals)) if op == 'avg' else float(np.sum(vals))
-
-            res[f'pipeline_flow_{origin_base}'] = _agg('pipeline_flow', 'avg')
-            res[f'pump_flow_{origin_base}'] = _agg('pump_flow', 'avg')
-            res[f'num_pumps_{origin_base}'] = _agg('num_pumps')
-            res[f'speed_{origin_base}'] = _agg('speed', 'avg')
-            res[f'efficiency_{origin_base}'] = _agg('efficiency', 'avg')
-            res[f'pump_bkw_{origin_base}'] = _agg('pump_bkw', 'avg')
-            res[f'motor_kw_{origin_base}'] = _agg('motor_kw', 'avg')
-            res[f'power_cost_{origin_base}'] = _agg('power_cost')
-            res[f'dra_cost_{origin_base}'] = _agg('dra_cost')
-            res[f'reynolds_{origin_base}'] = _agg('reynolds', 'avg')
-            res[f'head_loss_{origin_base}'] = _agg('head_loss', 'avg')
-            res[f'head_loss_kgcm2_{origin_base}'] = _agg('head_loss_kgcm2', 'avg')
-            res[f'velocity_{origin_base}'] = _agg('velocity', 'avg')
-            res[f'residual_head_{origin_base}'] = _agg('residual_head', 'avg')
-            res[f'rh_kgcm2_{origin_base}'] = _agg('rh_kgcm2', 'avg')
-            res[f'sdh_{origin_base}'] = _agg('sdh', 'avg')
-            res[f'sdh_kgcm2_{origin_base}'] = _agg('sdh_kgcm2', 'avg')
-            res[f'maop_{origin_base}'] = _agg('maop', 'avg')
-            res[f'maop_kgcm2_{origin_base}'] = _agg('maop_kgcm2', 'avg')
-            res[f'drag_reduction_{origin_base}'] = _agg('drag_reduction', 'avg')
-            res[f'dra_ppm_{origin_base}'] = _agg('dra_ppm', 'avg')
-
-    station_ppm = {}
-    for idx, stn in enumerate(stations_data):
-        key = keys[idx]
-        dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-        dr_max = stn.get('max_dr', 0.0)
-        viscosity = kv_list[idx] if idx < len(kv_list) else 0.0
-        dr_use = min(dr_opt, dr_max)
-        station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
-
-    segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
-    pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
-
-    params = [
-        "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power & Fuel Cost (INR)", "DRA Cost (INR)",
-        "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
-        "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
-        "Residual Head (m)", "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
-        "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
-    ]
-    summary = {"Parameters": params}
-
-    for idx, nm in enumerate(names):
-        key = keys[idx]
-        summary[nm] = [
-            segment_flows[idx],
-            pump_flows[idx] if idx < len(pump_flows) and not pd.isna(pump_flows[idx]) else np.nan,
-            res.get(f"power_cost_{key}", 0.0),
-            res.get(f"dra_cost_{key}", 0.0),
-            station_ppm.get(key, np.nan),
-            int(res.get(f"num_pumps_{key}", 0)),
-            res.get(f"speed_{key}", 0.0),
-            res.get(f"efficiency_{key}", 0.0),
-            res.get(f"pump_bkw_{key}", 0.0),
-            res.get(f"motor_kw_{key}", 0.0),
-            res.get(f"reynolds_{key}", 0.0),
-            res.get(f"head_loss_{key}", 0.0),
-            res.get(f"head_loss_kgcm2_{key}", 0.0),
-            res.get(f"velocity_{key}", 0.0),
-            res.get(f"residual_head_{key}", 0.0),
-            res.get(f"rh_kgcm2_{key}", 0.0),
-            res.get(f"sdh_{key}", 0.0),
-            res.get(f"sdh_kgcm2_{key}", 0.0),
-            res.get(f"maop_{key}", 0.0),
-            res.get(f"maop_kgcm2_{key}", 0.0),
-            res.get(f"drag_reduction_{key}", 0.0),
-        ]
-
-    df_sum = pd.DataFrame(summary)
-    if drop_unused:
-        drop_cols = []
-        for stn in stations_data:
-            key = stn['name'].lower().replace(' ', '_')
-            if stn.get('is_pump', False):
-                if int(res.get(f"num_pumps_{key}", 0)) == 0 and float(res.get(f"drag_reduction_{key}", 0)) == 0:
-                    drop_cols.append(stn['name'])
-        if drop_cols:
-            df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
-    return df_sum.round(2)
-
-
-def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
-    """Return per-station details used in daily schedule output."""
-
-    rows: list[dict] = []
-
-    origin_name = base_stations[0]['name'] if base_stations else ''
-    origin_key_base = origin_name.lower().replace(' ', '_')
-    origin_unit_keys: list[str] = []
-    for k in res.keys():
-        if not k.startswith('pipeline_flow_'):
-            continue
-        suffix = k[len('pipeline_flow_'):]
-        if suffix == origin_key_base or suffix.startswith(origin_key_base + '_'):
-            origin_unit_keys.append(suffix)
-    if not origin_unit_keys and origin_key_base:
-        origin_unit_keys = [origin_key_base]
-
-    def _agg(keys: list[str], fld: str, op: str = 'sum'):
-        vals = [float(res.get(f"{fld}_{k}", 0.0) or 0.0) for k in keys]
-        if not vals:
-            return 0.0
-        return float(np.mean(vals)) if op == 'avg' else float(np.sum(vals))
-
-    pump_combo = res.get('pump_combo', {})
-    types = []
-    if pump_combo.get('A', 0) > 0:
-        types.append('Type A')
-    if pump_combo.get('B', 0) > 0:
-        types.append('Type B')
-    pump_type_str = '+'.join(types)
-    count_a = pump_combo.get('A', 0)
-    count_b = pump_combo.get('B', 0)
-
-    if origin_unit_keys:
-        nop = _agg(origin_unit_keys, 'num_pumps')
-        power_total = _agg(origin_unit_keys, 'power_cost')
-        dra_total = _agg(origin_unit_keys, 'dra_cost')
-        row = {
-            'Station': origin_name,
-            'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
-            'Pump Flow (m³/hr)': _agg(origin_unit_keys, 'pump_flow', op='avg'),
-            'No. of Pumps': nop,
-            'Type A Pumps': count_a,
-            'Type B Pumps': count_b,
-            'Type of Pump': pump_type_str,
-            'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
-            'Pump Efficiency (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
-            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw', op='avg'),
-            'Motor Input (kW)': _agg(origin_unit_keys, 'motor_kw', op='avg'),
-            'Reynolds No.': _agg(origin_unit_keys, 'reynolds', op='avg'),
-            'Head Loss (m)': _agg(origin_unit_keys, 'head_loss', op='avg'),
-            'Head Loss (kg/cm²)': _agg(origin_unit_keys, 'head_loss_kgcm2', op='avg'),
-            'Vel (m/s)': _agg(origin_unit_keys, 'velocity', op='avg'),
-            'Residual Head (m)': _agg(origin_unit_keys, 'residual_head', op='avg'),
-            'Residual Head (kg/cm²)': _agg(origin_unit_keys, 'rh_kgcm2', op='avg'),
-            'SDH (m)': _agg(origin_unit_keys, 'sdh', op='avg'),
-            'SDH (kg/cm²)': _agg(origin_unit_keys, 'sdh_kgcm2', op='avg'),
-            'MAOP (m)': _agg(origin_unit_keys, 'maop', op='avg'),
-            'MAOP (kg/cm²)': _agg(origin_unit_keys, 'maop_kgcm2', op='avg'),
-            'Drag Reduction (%)': _agg(origin_unit_keys, 'drag_reduction', op='avg'),
-            'DRA PPM': _agg(origin_unit_keys, 'dra_ppm', op='avg'),
-            'Power Cost per Pump (INR)': power_total / nop if nop else 0.0,
-            'Power & Fuel Cost (INR)': power_total,
-            'DRA Cost (INR)': dra_total,
-        }
-        row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
-        rows.append(row)
-
-    for stn in base_stations[1:]:
-        key = stn['name'].lower().replace(' ', '_')
-        nop = float(res.get(f"num_pumps_{key}", 0) or 0)
-        power_total = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
-        dra_total = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
-        row = {
-            'Station': stn['name'],
-            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
-            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
-            'No. of Pumps': nop,
-            'Type A Pumps': 0,
-            'Type B Pumps': 0,
-            'Type of Pump': '',
-            'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
-            'Pump Efficiency (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
-            'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
-            'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
-            'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
-            'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
-            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
-            'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
-            'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
-            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
-            'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
-            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
-            'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
-            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
-            'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
-            'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
-            'Power Cost per Pump (INR)': power_total / nop if nop else 0.0,
-            'Power & Fuel Cost (INR)': power_total,
-            'DRA Cost (INR)': dra_total,
-        }
-        row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-    return df.round(2)
-
-
-def update_detail_time() -> None:
-    """Update cached optimisation results for the selected daily interval."""
-
-    idx = int(st.session_state.get("detail_time_idx", 0))
-    reports = st.session_state.get("day_reports", [])
-    linefills = st.session_state.get("day_linefills", [])
-    if not reports or idx >= len(reports):
-        return
-
-    st.session_state["last_res"] = copy.deepcopy(reports[idx]["result"])
-    st.session_state["last_stations_data"] = copy.deepcopy(
-        st.session_state.get("day_stations", [])
-    )
-    st.session_state["last_term_data"] = copy.deepcopy(
-        st.session_state.get("day_term_data", {})
-    )
-    if idx < len(linefills):
-        st.session_state["last_linefill"] = copy.deepcopy(linefills[idx])
 
 # Persisted DRA lock from 07:00 run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
@@ -1333,7 +1082,7 @@ if not auto_batch:
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             # Always ensure linefill_df, kv_list, rho_list are defined!
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-            kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
+            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
 
             
             # ------------- ADD THIS BLOCK -------------
@@ -1371,19 +1120,35 @@ if not auto_batch:
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
 
-            res = solve_pipeline(
-                stations_data,
-                term_data,
-                FLOW,
-                kv_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                linefill_df.to_dict(),
-                dra_reach_km=0.0,
-                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                hours=24.0 if st.session_state.get("op_mode") == "Flow rate" else 4.0,
-            )
+            import pipeline_model
+            import importlib
+            importlib.reload(pipeline_model)
+            if stations_data and stations_data[0].get('pump_types'):
+                res = pipeline_model.solve_pipeline_multi_origin(
+                    stations_data,
+                    term_data,
+                    FLOW,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    linefill_df.to_dict(),
+                    dra_reach_km=0.0,
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                )
+            else:
+                res = pipeline_model.solve_pipeline(
+                    stations_data,
+                    term_data,
+                    FLOW,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    linefill_df.to_dict(),
+                    dra_reach_km=0.0,
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                )
 
             import copy
             if not res or res.get("error"):
@@ -1400,7 +1165,7 @@ if not auto_batch:
                 st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
-    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="primary")
+    run_day = st.button("Run Pumping Schedule Optimizer", key="run_day_btn", type="secondary")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
@@ -1438,18 +1203,7 @@ if not auto_batch:
             current_vol = vol_df.copy()
 
             for ti, hr in enumerate(hours):
-                # Determine worst-case fluid properties over this 4h window
-                kv_now, rho_now = kv_rho_from_vol(current_vol)
-                kv_next, rho_next = kv_now, rho_now
-                if st.session_state.get("op_mode") == "Pumping Schedule":
-                    pumped_tmp = FLOW_sched * 4.0
-                    future_vol, _ = shift_vol_linefill(
-                        current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
-                    )
-                    kv_next, rho_next = kv_rho_from_vol(future_vol)
-                kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
-                rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
-
+                kv_list, rho_list = kv_rho_from_vol(current_vol)
                 stns_run = copy.deepcopy(stations_base)
 
                 res = solve_pipeline(
@@ -1471,47 +1225,36 @@ if not auto_batch:
                         current_vol, plan_df = shift_vol_linefill(current_vol, pumped, plan_df)
                     dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
 
-            # Build a consolidated station-wise table
-            station_tables = []
+            # Build a consolidated table
+            # We'll extract a few key outputs per station
+            stations_used = reports[-1]["result"].get("stations_used", stations_base)
+            names = [s['name'] for s in stations_used]
+            keys = [n.lower().replace(' ', '_') for n in names]
+
+            out_rows = []
             for rec in reports:
                 res = rec["result"]
                 hr = rec["time"]
-                df_int = build_station_table(res, stations_base)
-                df_int.insert(0, "Time", f"{hr:02d}:00")
-                station_tables.append(df_int)
-            df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
-            col_order = [
-                "Time", "Station", "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)",
-                "No. of Pumps", "Type A Pumps", "Type B Pumps", "Type of Pump",
-                "Pump Speed (rpm)", "Pump Efficiency (%)", "Pump BKW (kW)",
-                "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
-                "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)",
-                "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
-                "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)", "DRA PPM",
-                "Power Cost per Pump (INR)", "Power & Fuel Cost (INR)",
-                "DRA Cost (INR)", "Total Cost (INR)"
-            ]
-            df_day = df_day.reindex(columns=col_order)
+                power_total = sum(float(res.get(f"power_cost_{k}", 0.0)) for k in keys)
+                dra_total = sum(float(res.get(f"dra_cost_{k}", 0.0)) for k in keys)
+                cost = power_total + dra_total
+                row = {
+                    "Time": f"{hr:02d}:00",
+                    "Power & Fuel Cost (INR)": power_total,
+                    "DRA Cost (INR)": dra_total,
+                    "Total cost in 4 hours operation (INR)": cost,
+                }
+                for s in stations_used:
+                    key = s['name'].lower().replace(' ', '_')
+                    row[f"Num Pumps {s['name']}"] = res.get(f"num_pumps_{key}", 0.0)
+                    row[f"Speed {s['name']}"] = res.get(f"speed_{key}", 0.0)
+                    row[f"DRA PPM {s['name']}"] = res.get(f"dra_ppm_{key}", 0.0)
+                out_rows.append(row)
 
-            summary_tables: list[pd.DataFrame] = []
-            for idx, rec in enumerate(reports):
-                res = rec["result"]
-                lf = linefill_snaps[idx]
-                df_sum = build_summary_dataframe(
-                    res, stations_base, lf, drop_unused=False
-                )
-                df_sum.set_index("Parameters", inplace=True)
-                time_label = f"{rec['time']:02d}:00"
-                df_sum.columns = pd.MultiIndex.from_product(
-                    [[time_label], df_sum.columns]
-                )
-                summary_tables.append(df_sum)
-
-            df_sum_all = pd.concat(summary_tables, axis=1).reset_index()
-            df_sum_all = df_sum_all.fillna(0.0).round(2)
-            df_sum_all.columns = [
-                c if isinstance(c, str) else f"{c[0]} - {c[1]}" for c in df_sum_all.columns
-            ]
+            import pandas as pd
+            df_day = pd.DataFrame(out_rows).fillna(0.0)
+            st.dataframe(df_day, use_container_width=True)
+            st.download_button("Download 4-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
 
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
@@ -1519,73 +1262,12 @@ if not auto_batch:
                 temp = df_line.copy()
                 temp['Time'] = f"{hr:02d}:00"
                 combined.append(temp)
-            lf_all = pd.concat(combined, ignore_index=True).round(2)
-
-            if reports:
-                # Persist results for later display and tab switching
-                st.session_state["day_reports"] = reports
-                st.session_state["day_linefills"] = linefill_snaps
-                st.session_state["day_hours"] = hours
-                st.session_state["day_stations"] = copy.deepcopy(stations_base)
-                st.session_state["day_term_data"] = copy.deepcopy(term_data)
-                st.session_state["daily_station_df"] = df_day
-                st.session_state["daily_summary_df"] = df_sum_all
-                st.session_state["daily_linefill_all"] = lf_all
-                st.session_state["detail_time_idx"] = 0
-                update_detail_time()
-                st.rerun()
+            lf_all = pd.concat(combined, ignore_index=True)
+            st.download_button("Download Dynamic Linefill data", lf_all.to_csv(index=False), file_name="Dynamic_Linefill.csv")
 
 
 
-    # --- Persisted daily schedule display and time selection ---
-    mode = st.session_state.get("op_mode")
-    if mode == "Pumping Schedule" and "daily_summary_df" in st.session_state:
-        df_sum = st.session_state["daily_summary_df"]
-        styled = df_sum.style.format(precision=2)
-        st.markdown("<div class='section-title'>Daily Schedule Results</div>", unsafe_allow_html=True)
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-
-        st.download_button(
-            "Download 4-hourly Results",
-            df_sum.to_csv(index=False, float_format="%.2f"),
-            file_name="daily_schedule_results.csv",
-        )
-
-        lf_all = st.session_state.get("daily_linefill_all")
-        if lf_all is not None:
-            st.download_button(
-                "Download Linefill Snapshots",
-                lf_all.to_csv(index=False, float_format="%.2f"),
-                file_name="linefill_snapshots.csv",
-            )
-
-        df_day = st.session_state.get("daily_station_df")
-        if df_day is not None:
-            cost_cols = [
-                "Power & Fuel Cost (INR)",
-                "DRA Cost (INR)",
-                "Total Cost (INR)",
-            ]
-            agg = df_day.groupby("Station")[cost_cols].sum().reset_index().round(2)
-            styled_cost = agg.style.format({c: "{:.2f}" for c in cost_cols}).background_gradient(
-                subset=cost_cols, cmap="Greens"
-            )
-            st.markdown(
-                "<div class='section-title'>Station-wise Cost Summary</div>",
-                unsafe_allow_html=True,
-            )
-            st.dataframe(styled_cost, use_container_width=True, hide_index=True)
-
-            total_power = agg["Power & Fuel Cost (INR)"].sum()
-            total_dra = agg["DRA Cost (INR)"].sum()
-            total_cost = agg["Total Cost (INR)"].sum()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Power & Fuel Cost (INR)", f"{total_power:,.2f}")
-            c2.metric("Total DRA Cost (INR)", f"{total_dra:,.2f}")
-            c3.metric("Total Cost (INR)", f"{total_cost:,.2f}")
-
-
-if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
+if not auto_batch:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
@@ -1615,22 +1297,93 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
                 segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
                 pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
                 
+            # DRA/PPM summary and table columns as before
+            station_dr_capped = {}
+            station_ppm = {}
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-            names = [s['name'] for s in stations_data]
-            keys = [n.lower().replace(' ', '_') for n in names]
-            df_sum = build_summary_dataframe(res, stations_data, linefill_df)
+            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+            for idx, stn in enumerate(stations_data, start=1):
+                key = stn['name'].lower().replace(' ', '_')
+                dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+                dr_max = stn.get('max_dr', 0.0)
+                viscosity = kv_list[idx-1]
+                dr_use = min(dr_opt, dr_max)
+                station_dr_capped[key] = dr_use
+                ppm = get_ppm_for_dr(viscosity, dr_use)
+                station_ppm[key] = ppm
+    
+            params = [
+                "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power+Fuel Cost (INR/day)", "DRA Cost (INR/day)",
+                "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
+                "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
+                "Residual Head (m)", "Residual Head (kg/cm²)",
+                "SDH (m)", "SDH (kg/cm²)",
+                "MAOP (m)", "MAOP (kg/cm²)",
+                "Drag Reduction (%)"
+            ]
+            summary = {"Parameters": params}
+    
+            for idx, nm in enumerate(names):
+                key = nm.lower().replace(' ','_')
+                # For DRA cost at each station, use hydraulically-correct flow
+                if key in station_ppm:
+                    dra_cost = (
+                        station_ppm[key]
+                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                        * st.session_state["RateDRA"]
+                    )
+                else:
+                    dra_cost = 0.0
+    
+                # For numeric columns, always use np.nan if not available
+                pumpflow = pump_flows[idx] if (idx < len(pump_flows) and not pd.isna(pump_flows[idx])) else np.nan
+                summary[nm] = [
+                    segment_flows[idx],
+                    pumpflow,
+                    res.get(f"power_cost_{key}",0.0) if res.get(f"power_cost_{key}",0.0) is not None else np.nan,
+                    dra_cost,
+                    station_ppm.get(key, np.nan),
+                    int(res.get(f"num_pumps_{key}",0)) if res.get(f"num_pumps_{key}",0) is not None else np.nan,
+                    res.get(f"speed_{key}",0.0) if res.get(f"speed_{key}",0.0) is not None else np.nan,
+                    res.get(f"efficiency_{key}",0.0) if res.get(f"efficiency_{key}",0.0) is not None else np.nan,
+                    res.get(f"pump_bkw_{key}",0.0) if res.get(f"pump_bkw_{key}",0.0) is not None else np.nan,
+                    res.get(f"motor_kw_{key}",0.0) if res.get(f"motor_kw_{key}",0.0) is not None else np.nan,
+                    res.get(f"reynolds_{key}",0.0) if res.get(f"reynolds_{key}",0.0) is not None else np.nan,
+                    res.get(f"head_loss_{key}",0.0) if res.get(f"head_loss_{key}",0.0) is not None else np.nan,
+                    res.get(f"head_loss_kgcm2_{key}",0.0) if res.get(f"head_loss_kgcm2_{key}",0.0) is not None else np.nan,
+                    res.get(f"velocity_{key}",0.0) if res.get(f"velocity_{key}",0.0) is not None else np.nan,
+                    res.get(f"residual_head_{key}",0.0) if res.get(f"residual_head_{key}",0.0) is not None else np.nan,
+                    res.get(f"rh_kgcm2_{key}",0.0) if res.get(f"rh_kgcm2_{key}",0.0) is not None else np.nan,
+                    res.get(f"sdh_{key}",0.0) if res.get(f"sdh_{key}",0.0) is not None else np.nan,
+                    res.get(f"sdh_kgcm2_{key}",0.0) if res.get(f"sdh_kgcm2_{key}",0.0) is not None else np.nan,
+                    res.get(f"maop_{key}",0.0) if res.get(f"maop_{key}",0.0) is not None else np.nan,
+                    res.get(f"maop_kgcm2_{key}",0.0) if res.get(f"maop_kgcm2_{key}",0.0) is not None else np.nan,
+                    res.get(f"drag_reduction_{key}",0.0) if res.get(f"drag_reduction_{key}",0.0) is not None else np.nan
+                ]
+    
+            df_sum = pd.DataFrame(summary)
+
+            # Remove pump station columns where no pumps are operating
+            drop_cols = []
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ', '_')
+                if stn.get('is_pump', False):
+                    if int(res.get(f"num_pumps_{key}", 0)) == 0 and float(res.get(f"drag_reduction_{key}", 0)) == 0:
+                        drop_cols.append(stn['name'])
+            if drop_cols:
+                df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
+
+            # Store numeric summary for later use before formatting
             st.session_state["summary_table"] = df_sum.copy()
-            df_display = df_sum.fillna(0.0).copy()
-            for col in df_display.columns:
+
+            # --- ENFORCE ALL NUMBERS AS STRINGS WITH TWO DECIMALS FOR DISPLAY ---
+            for col in df_sum.columns:
                 if col != "Parameters":
-                    df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
+                    df_sum[col] = df_sum[col].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+    
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
-            st.download_button(
-                "📥 Download CSV",
-                df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
-                file_name="results.csv",
-            )
+            st.dataframe(df_sum, use_container_width=True, hide_index=True)
+            st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
     
             # --- Aggregate counts for display ---
             total_cost = float(res.get("total_cost", 0.0))
@@ -1652,7 +1405,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             
             st.markdown(
                 f"""<br>
-                <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
+                <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR/day<br>
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
                 <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
@@ -1675,40 +1428,68 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             names = [s['name'] for s in stations_data] + [terminal_name]
             keys = [n.lower().replace(' ', '_') for n in names]
     
+            # --- Recompute hydraulically correct segment flows and DRA cost for every station ---
+            segment_flows = []
+            for key in keys:
+                segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
+            
+            # --- Get DRA PPM values as in Tab 1 ---
+            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+            station_ppm = {}
+            for idx, stn in enumerate(stations_data, start=1):
+                key = stn['name'].lower().replace(' ', '_')
+                dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+                dr_max = stn.get('max_dr', 0.0)
+                viscosity = kv_list[idx-1]
+                dr_use = min(dr_opt, dr_max)
+                station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+    
+            # --- Compute power and DRA costs just as in summary ---
             power_costs = [float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys]
-            dra_costs = [float(res.get(f"dra_cost_{k}", 0.0) or 0.0) for k in keys]
+            dra_costs = []
+            for idx, key in enumerate(keys):
+                if key in station_ppm:
+                    dra_cost = (
+                        station_ppm[key]
+                        * (segment_flows[idx] * 1000.0 * 24.0 / 1e6)
+                        * st.session_state["RateDRA"]
+                    )
+                else:
+                    dra_cost = 0.0
+                dra_costs.append(dra_cost)
             total_costs = [p + d for p, d in zip(power_costs, dra_costs)]
-
+    
             df_cost = pd.DataFrame({
                 "Station": names,
-                "Power & Fuel Cost (INR)": power_costs,
-                "DRA Cost (INR)": dra_costs,
-                "Total Cost (INR)": total_costs,
+                "Power+Fuel Cost (INR/day)": power_costs,
+                "DRA Cost (INR/day)": dra_costs,
+                "Total Cost (INR/day)": total_costs,
             })
     
             # --- Grouped bar chart (side by side) for Power+Fuel and DRA ---
             fig_grouped = go.Figure()
             fig_grouped.add_trace(go.Bar(
                 x=df_cost["Station"],
-                y=df_cost["Power & Fuel Cost (INR)"],
+                y=df_cost["Power+Fuel Cost (INR/day)"],
                 name="Power+Fuel",
                 marker_color="#1976D2",
-                text=[f"{x:.2f}" for x in df_cost["Power & Fuel Cost (INR)"]],
+                text=[f"{x:.2f}" for x in df_cost["Power+Fuel Cost (INR/day)"]],
                 textposition='outside'
             ))
             fig_grouped.add_trace(go.Bar(
                 x=df_cost["Station"],
-                y=df_cost["DRA Cost (INR)"],
+                y=df_cost["DRA Cost (INR/day)"],
                 name="DRA",
                 marker_color="#FFA726",
-                text=[f"{x:.2f}" for x in df_cost["DRA Cost (INR)"]],
+                text=[f"{x:.2f}" for x in df_cost["DRA Cost (INR/day)"]],
                 textposition='outside'
             ))
             fig_grouped.update_layout(
                 barmode='group',
-                title="Station 4h Cost: Power & Fuel and DRA",
+                title="Station Daily Cost: Power+Fuel and DRA",
                 xaxis_title="Station",
-                yaxis_title="Cost (INR)",
+                yaxis_title="Cost (INR/day)",
                 font=dict(size=16),
                 legend=dict(font=dict(size=14)),
                 height=430,
@@ -1721,15 +1502,15 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             fig_dra = px.bar(
                 df_cost,
                 x="Station",
-                y="DRA Cost (INR)",
-                text="DRA Cost (INR)",
-                color="DRA Cost (INR)",
+                y="DRA Cost (INR/day)",
+                text="DRA Cost (INR/day)",
+                color="DRA Cost (INR/day)",
                 color_continuous_scale=px.colors.sequential.YlOrBr,
                 height=320,
             )
             fig_dra.update_traces(texttemplate="%{text:.2f}", textposition='outside')
             fig_dra.update_layout(
-                yaxis_title="DRA Cost (INR)",
+                yaxis_title="DRA Cost (INR/day)",
                 showlegend=False,
                 margin=dict(l=0, r=0, t=30, b=0)
             )
@@ -1739,7 +1520,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             st.markdown("#### Cost Contribution by Station")
             fig_pie = px.pie(
                 df_cost,
-                values="Total Cost (INR)",
+                values="Total Cost (INR/day)",
                 names="Station",
                 color_discrete_sequence=px.colors.sequential.RdBu,
                 hole=0.38
@@ -1773,7 +1554,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
                 fig_line.update_layout(
                     title="Total Cost vs. Distance",
                     xaxis_title="Cumulative Distance (km)",
-                    yaxis_title="Cost (INR)",
+                    yaxis_title="Cost (INR/day)",
                     font=dict(size=15),
                     height=350
                 )
@@ -1796,8 +1577,8 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             # --- KPI highlights ---
             st.markdown(
                 f"""<br>
-                <div style='font-size:1.1em;'><b>Total Operating Cost:</b> {sum(total_costs):,.2f} INR<br>
-                <b>Maximum Station Cost:</b> {max(total_costs):,.2f} INR ({df_cost.loc[df_cost['Total Cost (INR)'].idxmax(), 'Station']})</div>
+                <div style='font-size:1.1em;'><b>Total Operating Cost:</b> {sum(total_costs):,.2f} INR/day<br>
+                <b>Maximum Station Cost:</b> {max(total_costs):,.2f} INR/day ({df_cost.loc[df_cost['Total Cost (INR/day)'].idxmax(), 'Station']})</div>
                 """,
                 unsafe_allow_html=True
             )
@@ -2214,7 +1995,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
                 L_seg = stn['L']
                 elev_i = stn['elev']
                 max_dr = int(stn.get('max_dr', 40))
-                kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
+                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[i-1]
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
@@ -2324,7 +2105,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
                 d_inner = stn['D'] - 2*stn['t']
                 rough = stn['rough']
                 linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-                kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
+                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[stn_idx]
     
                 # --------- Begin Figure ---------
@@ -2459,7 +2240,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, _ = segment_props_from_linefill(linefill_df, stations_data)
+        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         st.markdown("<div class='section-title'>DRA Curve (PPM vs %Drag Reduction) for Each Station</div>", unsafe_allow_html=True)
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
@@ -2594,7 +2375,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
         S = stn.get('S', 0); T = stn.get('T', 0)
         DOL = float(stn.get('DOL', N_max))
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         rho = rho_list[pump_idx]
         rate = stn.get('rate', 9.0)
         g = 9.81
@@ -2653,10 +2434,10 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             "Head": "Z: Head (m)",
             "Efficiency": "Z: Efficiency (%)",
             "SystemHead": "Z: System Head (m)",
-            "PowerCost": "Z: Power Cost (INR)",
+            "PowerCost": "Z: Power Cost (INR/day)",
             "DRA": "Y: DRA (%)",
             "NOP": "X: No. of Pumps",
-            "TotalCost": "Z: Total Cost (INR)",
+            "TotalCost": "Z: Total Cost (INR/day)",
         }
         label_map = {
             "Head vs Flow vs Speed": ["Flow", "Speed", "Head"],
@@ -2909,7 +2690,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Diesel Price (INR/L)", "DRA Cost (INR/L)"
         ])
         output = st.selectbox("Output metric", [
-            "Total Cost (INR)", "Power Cost (INR)", "DRA Cost (INR)",
+            "Total Cost (INR/day)", "Power Cost (INR/day)", "DRA Cost (INR/day)",
             "Residual Head (m)", "Pump Efficiency (%)"
         ])
         # Define range
@@ -2945,7 +2726,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             # Clone all input parameters for each run
             stations_data = [dict(s) for s in st.session_state['stations']]
             term_data = dict(st.session_state["last_term_data"])
-            kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
+            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
             this_FLOW = FLOW
             this_RateDRA = RateDRA
             this_Price_HSD = Price_HSD
@@ -2956,7 +2737,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             elif param == "Viscosity (cSt)":
                 # Set all segments to this value for test
                 this_linefill_df["Viscosity (cSt)"] = val
-                kv_list, rho_list = segment_props_from_linefill(this_linefill_df, stations_data)
+                kv_list, rho_list = map_linefill_to_segments(this_linefill_df, stations_data)
             elif param == "Drag Reduction (%)":
                 # Set all max_dr to >= val; force first pump station's drag reduction to val
                 for stn in stations_data:
@@ -2975,21 +2756,28 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
             total_cost = power_cost = dra_cost = rh = eff = 0
             for idx, stn in enumerate(stations_data):
                 key = stn['name'].lower().replace(' ', '_')
-                dra_cost_i = float(resi.get(f"dra_cost_{key}", 0.0) or 0.0)
+                # DRA
+                dr_opt = resi.get(f"drag_reduction_{key}", 0.0)
+                dr_max = stn.get('max_dr', 0.0)
+                viscosity = kv_list[idx]
+                dr_use = min(dr_opt, dr_max)
+                ppm = get_ppm_for_dr(viscosity, dr_use)
+                seg_flow = resi.get(f"pipeline_flow_{key}", this_FLOW)
+                dra_cost_i = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * this_RateDRA
                 power_cost_i = float(resi.get(f"power_cost_{key}", 0.0) or 0.0)
                 eff_i = float(resi.get(f"efficiency_{key}", 100.0))
                 rh_i = float(resi.get(f"residual_head_{key}", 0.0))
                 total_cost += dra_cost_i + power_cost_i
                 dra_cost += dra_cost_i
                 power_cost += power_cost_i
-                if eff_i < eff or idx == 0: eff = eff_i
-                if rh_i < rh or idx == 0: rh = rh_i
+                if eff_i < eff or i == 0: eff = eff_i
+                if rh_i < rh or i == 0: rh = rh_i
             # Choose output
-            if output == "Total Cost (INR)":
+            if output == "Total Cost (INR/day)":
                 yvals.append(total_cost)
-            elif output == "Power Cost (INR)":
+            elif output == "Power Cost (INR/day)":
                 yvals.append(power_cost)
-            elif output == "DRA Cost (INR)":
+            elif output == "DRA Cost (INR/day)":
                 yvals.append(dra_cost)
             elif output == "Residual Head (m)":
                 yvals.append(rh)
@@ -3055,7 +2843,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
         FLOW = st.session_state.get("FLOW", 1000.0)
         RateDRA = st.session_state.get("RateDRA", 500.0)
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         for idx, stn in enumerate(stations_data):
             key = stn['name'].lower().replace(' ', '_')
             dr_opt = res.get(f"drag_reduction_{key}", 0.0)
@@ -3120,7 +2908,7 @@ if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
                     pass  # For simplicity, only factor in to total efficiency calculation below
         new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
         new_FLOW = FLOW * (1 + flow_change / 100)
-        kv_list, rho_list = segment_props_from_linefill(linefill_df, stations_data)
+        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         # --- Re-solve with new parameters ---
         res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict())
         # Compute original and new total cost for 365 days
