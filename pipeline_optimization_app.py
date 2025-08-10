@@ -834,38 +834,72 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     count_b = pump_combo.get('B', 0)
 
     if origin_unit_keys:
+        nop = _agg(origin_unit_keys, 'num_pumps')
+        power_total = _agg(origin_unit_keys, 'power_cost')
+        dra_total = _agg(origin_unit_keys, 'dra_cost')
         row = {
             'Station': origin_name,
             'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
-            'No. of Pumps': _agg(origin_unit_keys, 'num_pumps'),
+            'Pump Flow (m³/hr)': _agg(origin_unit_keys, 'pump_flow', op='avg'),
+            'No. of Pumps': nop,
             'Type A Pumps': count_a,
             'Type B Pumps': count_b,
             'Type of Pump': pump_type_str,
             'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
             'Pump Efficiency (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
-            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw'),
+            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw', op='avg'),
+            'Motor Input (kW)': _agg(origin_unit_keys, 'motor_kw', op='avg'),
+            'Reynolds No.': _agg(origin_unit_keys, 'reynolds', op='avg'),
+            'Head Loss (m)': _agg(origin_unit_keys, 'head_loss', op='avg'),
+            'Head Loss (kg/cm²)': _agg(origin_unit_keys, 'head_loss_kgcm2', op='avg'),
+            'Vel (m/s)': _agg(origin_unit_keys, 'velocity', op='avg'),
+            'Residual Head (m)': _agg(origin_unit_keys, 'residual_head', op='avg'),
+            'Residual Head (kg/cm²)': _agg(origin_unit_keys, 'rh_kgcm2', op='avg'),
+            'SDH (m)': _agg(origin_unit_keys, 'sdh', op='avg'),
+            'SDH (kg/cm²)': _agg(origin_unit_keys, 'sdh_kgcm2', op='avg'),
+            'MAOP (m)': _agg(origin_unit_keys, 'maop', op='avg'),
+            'MAOP (kg/cm²)': _agg(origin_unit_keys, 'maop_kgcm2', op='avg'),
+            'Drag Reduction (%)': _agg(origin_unit_keys, 'drag_reduction', op='avg'),
             'DRA PPM': _agg(origin_unit_keys, 'dra_ppm', op='avg'),
-            'Power & Fuel Cost (INR)': _agg(origin_unit_keys, 'power_cost'),
-            'DRA Cost (INR)': _agg(origin_unit_keys, 'dra_cost'),
+            'Power Cost per Pump (INR)': power_total / nop if nop else 0.0,
+            'Power & Fuel Cost (INR)': power_total,
+            'DRA Cost (INR)': dra_total,
         }
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
         rows.append(row)
 
     for stn in base_stations[1:]:
         key = stn['name'].lower().replace(' ', '_')
+        nop = float(res.get(f"num_pumps_{key}", 0) or 0)
+        power_total = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+        dra_total = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
         row = {
             'Station': stn['name'],
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
-            'No. of Pumps': float(res.get(f"num_pumps_{key}", 0) or 0),
+            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
+            'No. of Pumps': nop,
             'Type A Pumps': 0,
             'Type B Pumps': 0,
             'Type of Pump': '',
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Efficiency (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
+            'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
+            'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
+            'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
+            'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
+            'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+            'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
+            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
+            'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
+            'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
             'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
-            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
-            'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
+            'Power Cost per Pump (INR)': power_total / nop if nop else 0.0,
+            'Power & Fuel Cost (INR)': power_total,
+            'DRA Cost (INR)': dra_total,
         }
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
         rows.append(row)
@@ -1406,10 +1440,15 @@ if not auto_batch:
                 station_tables.append(df_int)
             df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
             col_order = [
-                "Time", "Station", "Pipeline Flow (m³/hr)", "No. of Pumps",
-                "Type A Pumps", "Type B Pumps", "Type of Pump", "Pump Speed (rpm)",
-                "Pump Efficiency (%)", "Pump BKW (kW)", "DRA PPM",
-                "Power & Fuel Cost (INR)", "DRA Cost (INR)", "Total Cost (INR)"
+                "Time", "Station", "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)",
+                "No. of Pumps", "Type A Pumps", "Type B Pumps", "Type of Pump",
+                "Pump Speed (rpm)", "Pump Efficiency (%)", "Pump BKW (kW)",
+                "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
+                "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)",
+                "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
+                "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)", "DRA PPM",
+                "Power Cost per Pump (INR)", "Power & Fuel Cost (INR)",
+                "DRA Cost (INR)", "Total Cost (INR)"
             ]
             df_day = df_day.reindex(columns=col_order)
 
@@ -1437,7 +1476,8 @@ if not auto_batch:
 
 
     # --- Persisted daily schedule display and time selection ---
-    if "daily_df_day" in st.session_state:
+    mode = st.session_state.get("op_mode")
+    if mode == "Pumping Schedule" and "daily_df_day" in st.session_state:
         df_day = st.session_state["daily_df_day"]
         num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
         styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
@@ -1484,7 +1524,7 @@ if not auto_batch:
         c3.metric("Total Cost (INR)", f"{total_cost:,.2f}")
 
 
-if not auto_batch:
+if not auto_batch and st.session_state.get("op_mode") == "Flow rate":
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
