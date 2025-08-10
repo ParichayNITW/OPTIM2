@@ -1474,7 +1474,7 @@ if not auto_batch:
             )
 
 
-if not auto_batch:
+if (not auto_batch) or ("last_res" in st.session_state):
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
