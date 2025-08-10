@@ -648,17 +648,12 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
                     kv_cur = batches[i_batch]["kv"]
                     rho_cur = batches[i_batch]["rho"]
             take = min(need, remaining)
-            # Compute length-weighted averages across the segment
-            # Accumulate partial contribution
+            # For per-segment properties, use the property of the upstream-most fluid in the segment.
+            # (Piecewise mixing could be done, but you asked to keep other logic unchanged.)
+            # So we only need the first batch's kv/rho per segment.
             if need == L:
-                seg_kv.append(0.0)
-                seg_rho.append(0.0)
-                acc_len = 0.0
-            # Update running weighted sums
-            idx = len(seg_kv)-1
-            seg_kv[idx] = (seg_kv[idx]*acc_len + kv_cur*take) / (acc_len + take) if (acc_len + take) > 0 else kv_cur
-            seg_rho[idx] = (seg_rho[idx]*acc_len + rho_cur*take) / (acc_len + take) if (acc_len + take) > 0 else rho_cur
-            acc_len += take
+                seg_kv.append(kv_cur)
+                seg_rho.append(rho_cur)
             need -= take
             remaining -= take
 
@@ -1165,7 +1160,7 @@ if not auto_batch:
                 st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
-    run_day = st.button("Run Pumping Schedule Optimizer", key="run_day_btn", type="secondary")
+    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="secondary")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
@@ -1263,7 +1258,7 @@ if not auto_batch:
                 temp['Time'] = f"{hr:02d}:00"
                 combined.append(temp)
             lf_all = pd.concat(combined, ignore_index=True)
-            st.download_button("Download Dynamic Linefill data", lf_all.to_csv(index=False), file_name="Dynamic_Linefill.csv")
+            st.download_button("Download Linefill Snapshots", lf_all.to_csv(index=False), file_name="linefill_snapshots.csv")
 
 
 
