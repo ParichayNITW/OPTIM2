@@ -1452,16 +1452,25 @@ if not auto_batch:
             ]
             df_day = df_day.reindex(columns=col_order)
 
-            summary_tables = []
+            summary_tables: list[pd.DataFrame] = []
             for idx, rec in enumerate(reports):
                 res = rec["result"]
                 lf = linefill_snaps[idx]
-                df_sum = build_summary_dataframe(res, stations_base, lf, drop_unused=False)
+                df_sum = build_summary_dataframe(
+                    res, stations_base, lf, drop_unused=False
+                )
                 df_sum.set_index("Parameters", inplace=True)
                 time_label = f"{rec['time']:02d}:00"
-                df_sum.columns = pd.MultiIndex.from_product([[time_label], df_sum.columns])
+                df_sum.columns = pd.MultiIndex.from_product(
+                    [[time_label], df_sum.columns]
+                )
                 summary_tables.append(df_sum)
+
             df_sum_all = pd.concat(summary_tables, axis=1).reset_index()
+            df_sum_all = df_sum_all.fillna(0.0).round(2)
+            df_sum_all.columns = [
+                c if isinstance(c, str) else f"{c[0]} - {c[1]}" for c in df_sum_all.columns
+            ]
 
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
@@ -1495,13 +1504,9 @@ if not auto_batch:
         st.markdown("<div class='section-title'>Daily Schedule Results</div>", unsafe_allow_html=True)
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
-        flat_df = df_sum.copy()
-        flat_df.columns = [
-            col if isinstance(col, str) else f"{col[0]}_{col[1]}" for col in flat_df.columns
-        ]
         st.download_button(
             "Download 4-hourly Results",
-            flat_df.to_csv(index=False, float_format="%.2f"),
+            df_sum.to_csv(index=False, float_format="%.2f"),
             file_name="daily_schedule_results.csv",
         )
 
