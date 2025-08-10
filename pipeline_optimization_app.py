@@ -788,7 +788,12 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
 
 def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
-    """Return per-station details used in daily schedule output."""
+    """Return per-station details used in daily schedule output.
+
+    The daily schedule view should mirror the Optimization Results summary.
+    Hence this helper builds a row for each station containing every
+    parameter displayed in the summary tab.
+    """
 
     rows: list[dict] = []
 
@@ -821,15 +826,28 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     if origin_unit_keys:
         row = {
             'Station': origin_name,
-            'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
-            'No. of Pumps': _agg(origin_unit_keys, 'num_pumps'),
             'Type of Pump': pump_type_str,
-            'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
-            'Pump Efficiency (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
-            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw'),
-            'DRA PPM': _agg(origin_unit_keys, 'dra_ppm', op='avg'),
+            'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
+            'Pump Flow (m³/hr)': _agg(origin_unit_keys, 'pump_flow', op='avg'),
             'Power & Fuel Cost (INR)': _agg(origin_unit_keys, 'power_cost'),
             'DRA Cost (INR)': _agg(origin_unit_keys, 'dra_cost'),
+            'DRA PPM': _agg(origin_unit_keys, 'dra_ppm', op='avg'),
+            'No. of Pumps': _agg(origin_unit_keys, 'num_pumps'),
+            'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
+            'Pump Eff (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
+            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw'),
+            'Motor Input (kW)': _agg(origin_unit_keys, 'motor_kw'),
+            'Reynolds No.': _agg(origin_unit_keys, 'reynolds', op='avg'),
+            'Head Loss (m)': _agg(origin_unit_keys, 'head_loss'),
+            'Head Loss (kg/cm²)': _agg(origin_unit_keys, 'head_loss_kgcm2'),
+            'Vel (m/s)': _agg(origin_unit_keys, 'velocity', op='avg'),
+            'Residual Head (m)': _agg(origin_unit_keys, 'residual_head'),
+            'Residual Head (kg/cm²)': _agg(origin_unit_keys, 'rh_kgcm2'),
+            'SDH (m)': _agg(origin_unit_keys, 'sdh'),
+            'SDH (kg/cm²)': _agg(origin_unit_keys, 'sdh_kgcm2'),
+            'MAOP (m)': _agg(origin_unit_keys, 'maop'),
+            'MAOP (kg/cm²)': _agg(origin_unit_keys, 'maop_kgcm2'),
+            'Drag Reduction (%)': _agg(origin_unit_keys, 'drag_reduction', op='avg'),
         }
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
         rows.append(row)
@@ -838,15 +856,28 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         key = stn['name'].lower().replace(' ', '_')
         row = {
             'Station': stn['name'],
-            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
-            'No. of Pumps': float(res.get(f"num_pumps_{key}", 0) or 0),
             'Type of Pump': '',
-            'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
-            'Pump Efficiency (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
-            'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
-            'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
+            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
+            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
+            'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
+            'No. of Pumps': float(res.get(f"num_pumps_{key}", 0) or 0),
+            'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
+            'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
+            'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
+            'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
+            'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
+            'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
+            'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
+            'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+            'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
+            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
+            'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
+            'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
         }
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
         rows.append(row)
@@ -1268,7 +1299,7 @@ if not auto_batch:
                 linefill_df.to_dict(),
                 dra_reach_km=0.0,
                 mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                hours=4.0,
+                hours=24.0,
             )
 
             import copy
@@ -1286,7 +1317,7 @@ if not auto_batch:
                 st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
-    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="secondary")
+    run_day = st.button("🕒 Run Daily Schedule (07:00→03:00, every 4h)", key="run_day_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
@@ -1514,7 +1545,7 @@ if not auto_batch:
             ))
             fig_grouped.update_layout(
                 barmode='group',
-                title="Station 4h Cost: Power & Fuel and DRA",
+                title="Station 24h Cost: Power & Fuel and DRA",
                 xaxis_title="Station",
                 yaxis_title="Cost (INR)",
                 font=dict(size=16),
