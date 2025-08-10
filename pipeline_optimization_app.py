@@ -133,7 +133,7 @@ def check_login():
         )
         st.stop()
     with st.sidebar:
-        if st.button("Logout", key="main_logout_btn"):
+        if st.button("Logout", key="sidebar_logout_btn"):
             st.session_state.authenticated = False
             st.rerun()
 check_login()
