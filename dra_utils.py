@@ -1,86 +1,142 @@
-"""Utility functions for handling pipeline linefill tables.
 
-Provides helpers to translate volume based linefill information into
-length-wise positions along the pipeline and to update the linefill after a
-certain throughput has been delivered.
+"""Drag reducer (DRA) helper utilities.
+
+Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
 """
 
 from __future__ import annotations
 
-from math import pi
-from typing import List, Dict
+import os
+from typing import Dict, Tuple
+
+import numpy as np
+import pandas as pd
+
+# Mapping of viscosity (cSt) to CSV file name
+DRA_CSV_FILES: Dict[float, str] = {
+    1: "1 cst.csv",
+    2: "2 cst.csv",
+    2.5: "2.5 cst.csv",
+    3: "3 cst.csv",
+    3.5: "3.5 cst.csv",
+    4: "4 cst.csv",
+    4.5: "4.5 cst.csv",
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv",
+}
+
+# Load the drag-reducer curves lazily at import time
+DRA_CURVE_DATA: Dict[float, pd.DataFrame | None] = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
+        try:
+            df = pd.read_csv(fname)
+            # Ensure required columns exist
+            if "%Drag Reduction" in df.columns and "PPM" in df.columns:
+                df = df[["%Drag Reduction", "PPM"]].dropna().sort_values("%Drag Reduction")
+                DRA_CURVE_DATA[cst] = df.reset_index(drop=True)
+            else:
+                DRA_CURVE_DATA[cst] = None
+        except Exception:
+            DRA_CURVE_DATA[cst] = None
+    else:
+        DRA_CURVE_DATA[cst] = None
 
 
-def linefill_lengths(linefill: List[Dict], diameter: float) -> List[Dict]:
-    """Return length information for each product batch in ``linefill``.
+def _ppm_from_df(df: pd.DataFrame, dr: float) -> float:
+    """Return the PPM value for ``dr`` using breakpoints in ``df``."""
+    x = df['%Drag Reduction'].values.astype(float)
+    y = df['PPM'].values.astype(float)
+    if dr <= x[0]:
+        return float(y[0])
+    if dr >= x[-1]:
+        return float(y[-1])
+    return float(np.interp(dr, x, y))
 
-    Parameters
-    ----------
-    linefill:
-        List of dictionaries each describing a batch with keys ``volume``
-        (m³) along with optional ``product``, ``viscosity`` and ``density``.
-        The first element is assumed to be the batch closest to the
-        originating station.
-    diameter:
-        Inner diameter of the pipeline in metres.
 
-    Returns
-    -------
-    List[Dict]
-        ``linefill`` augmented with ``length_km`` plus ``length_km_start`` and
-        ``length_km_end`` giving the occupied interval measured from the
-        origin.
+def _dr_from_df(df: pd.DataFrame, ppm: float) -> float:
+    """Return %Drag Reduction for a given ``ppm`` by inverse interpolation of ``df``."""
+    x = df['%Drag Reduction'].values.astype(float)
+    y = df['PPM'].values.astype(float)
+    if ppm <= y[0]:
+        return float(x[0])
+    if ppm >= y[-1]:
+        return float(x[-1])
+    # Interpolate inverse: x(y)
+    return float(np.interp(ppm, y, x))
+
+
+def _nearest_bounds(visc: float, data: Dict[float, pd.DataFrame | None]) -> Tuple[float, float]:
+    cst_list = sorted([c for c in data.keys() if data[c] is not None])
+    if not cst_list:
+        return (visc, visc)
+    if visc <= cst_list[0]:
+        return (cst_list[0], cst_list[0])
+    if visc >= cst_list[-1]:
+        return (cst_list[-1], cst_list[-1])
+    lower = max(c for c in cst_list if c <= visc)
+    upper = min(c for c in cst_list if c >= visc)
+    return (lower, upper)
+
+
+def get_ppm_for_dr(
+    visc: float,
+    dr: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = DRA_CURVE_DATA,
+) -> float:
+    """Interpolate PPM for a given drag reduction and viscosity.
+
+    Returns the PPM value rounded to the nearest 0.5.
     """
-    if diameter <= 0:
-        raise ValueError("Pipe diameter must be positive")
-    area = pi * (diameter ** 2) / 4.0
-    result = []
-    cum_len = 0.0
-    for entry in linefill:
-        vol = float(entry.get("volume", 0.0))
-        length_km = vol / area / 1000.0
-        new_entry = entry.copy()
-        new_entry.update(
-            {
-                "length_km": length_km,
-                "length_km_start": cum_len,
-                "length_km_end": cum_len + length_km,
-            }
-        )
-        result.append(new_entry)
-        cum_len += length_km
-    return result
+    visc = float(visc)
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
+        return 0.0
+
+    def round_ppm(val: float, step: float = 0.5) -> float:
+        return round(val / step) * step
+
+    if lower == upper:
+        return round_ppm(_ppm_from_df(dra_curve_data[lower], dr))
+
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
+    ppm_lower = _ppm_from_df(df_lower, dr)
+    ppm_upper = _ppm_from_df(df_upper, dr)
+    ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+    return round_ppm(float(ppm_interp))
 
 
-def advance_linefill(linefill: List[Dict], schedule: List[Dict], delivered: float) -> List[Dict]:
-    """Update ``linefill`` after ``delivered`` m³ has left the pipeline.
+def get_dr_for_ppm(
+    visc: float,
+    ppm: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = DRA_CURVE_DATA,
+) -> float:
+    """Inverse: interpolate %Drag Reduction for a given PPM and viscosity."""
+    visc = float(visc)
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
+        return 0.0
 
-    The same volume is injected at the origin according to ``schedule``.  Both
-    ``linefill`` and ``schedule`` are modified in-place and the updated
-    ``linefill`` is returned for convenience.
-    """
-    remaining = delivered
-    # Remove delivered volume from the terminal side (end of list)
-    while remaining > 0 and linefill:
-        tail = linefill[-1]
-        vol = float(tail.get("volume", 0.0))
-        if vol > remaining:
-            tail["volume"] = vol - remaining
-            remaining = 0
-        else:
-            remaining -= vol
-            linefill.pop()
-    # Inject new product batches at the origin side (front of list)
-    added = delivered
-    while added > 0 and schedule:
-        head = schedule[0]
-        vol = float(head.get("volume", 0.0))
-        take = min(vol, added)
-        new_batch = head.copy()
-        new_batch["volume"] = take
-        linefill.insert(0, new_batch)
-        head["volume"] = vol - take
-        if head["volume"] <= 0:
-            schedule.pop(0)
-        added -= take
-    return linefill
+    if lower == upper:
+        return _dr_from_df(dra_curve_data[lower], ppm)
+
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
+    dr_lower = _dr_from_df(df_lower, ppm)
+    dr_upper = _dr_from_df(df_upper, ppm)
+    dr_interp = np.interp(visc, [lower, upper], [dr_lower, dr_upper])
+    return float(dr_interp)
+
+
+__all__ = [
+    "DRA_CSV_FILES",
+    "DRA_CURVE_DATA",
+    "get_ppm_for_dr",
+    "get_dr_for_ppm",
+]
