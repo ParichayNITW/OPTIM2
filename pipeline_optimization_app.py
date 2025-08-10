@@ -788,75 +788,36 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
 
 def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
-    """Return per-station details used in daily schedule output.
+    """Return per-station details used in the daily schedule table.
 
-    The daily schedule view should mirror the Optimization Results summary.
-    Hence this helper builds a row for each station containing every
-    parameter displayed in the summary tab.
+    The function iterates over the stations used in the optimisation (including
+    individual pump units at the origin) and pulls the corresponding values from
+    ``res``.  No aggregation is performed so the hydraulic linkage between
+    pumps and stations (RH -> SDH propagation) is preserved.
     """
 
     rows: list[dict] = []
-
+    stations_seq = res.get('stations_used') or base_stations
     origin_name = base_stations[0]['name'] if base_stations else ''
-    origin_key_base = origin_name.lower().replace(' ', '_')
-    origin_unit_keys: list[str] = []
-    for k in res.keys():
-        if not k.startswith('pipeline_flow_'):
+
+    for idx, stn in enumerate(stations_seq):
+        name = stn['name'] if isinstance(stn, dict) else str(stn)
+        key = name.lower().replace(' ', '_')
+        if f"pipeline_flow_{key}" not in res:
             continue
-        suffix = k[len('pipeline_flow_'):]
-        if suffix == origin_key_base or suffix.startswith(origin_key_base + '_'):
-            origin_unit_keys.append(suffix)
-    if not origin_unit_keys and origin_key_base:
-        origin_unit_keys = [origin_key_base]
 
-    def _agg(keys: list[str], fld: str, op: str = 'sum'):
-        vals = [float(res.get(f"{fld}_{k}", 0.0) or 0.0) for k in keys]
-        if not vals:
-            return 0.0
-        return float(np.mean(vals)) if op == 'avg' else float(np.sum(vals))
+        # Display handling for origin pump types
+        station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
+        pump_type = ''
+        if origin_name and name != origin_name and name.startswith(origin_name):
+            suffix = name[len(origin_name):].lstrip('_')
+            if suffix:
+                pump_type = f"Type {suffix[0]} - {suffix[1:]}"
+            station_display = origin_name
 
-    pump_combo = res.get('pump_combo', {})
-    types = []
-    if pump_combo.get('A', 0) > 0:
-        types.append(f"Type A - {pump_combo['A']}")
-    if pump_combo.get('B', 0) > 0:
-        types.append(f"Type B - {pump_combo['B']}")
-    pump_type_str = ', '.join(types)
-
-    if origin_unit_keys:
         row = {
-            'Station': origin_name,
-            'Type of Pump': pump_type_str,
-            'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
-            'Pump Flow (m³/hr)': _agg(origin_unit_keys, 'pump_flow', op='avg'),
-            'Power & Fuel Cost (INR)': _agg(origin_unit_keys, 'power_cost'),
-            'DRA Cost (INR)': _agg(origin_unit_keys, 'dra_cost'),
-            'DRA PPM': _agg(origin_unit_keys, 'dra_ppm', op='avg'),
-            'No. of Pumps': _agg(origin_unit_keys, 'num_pumps'),
-            'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
-            'Pump Eff (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
-            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw'),
-            'Motor Input (kW)': _agg(origin_unit_keys, 'motor_kw'),
-            'Reynolds No.': _agg(origin_unit_keys, 'reynolds', op='avg'),
-            'Head Loss (m)': _agg(origin_unit_keys, 'head_loss'),
-            'Head Loss (kg/cm²)': _agg(origin_unit_keys, 'head_loss_kgcm2'),
-            'Vel (m/s)': _agg(origin_unit_keys, 'velocity', op='avg'),
-            'Residual Head (m)': _agg(origin_unit_keys, 'residual_head'),
-            'Residual Head (kg/cm²)': _agg(origin_unit_keys, 'rh_kgcm2'),
-            'SDH (m)': _agg(origin_unit_keys, 'sdh'),
-            'SDH (kg/cm²)': _agg(origin_unit_keys, 'sdh_kgcm2'),
-            'MAOP (m)': _agg(origin_unit_keys, 'maop'),
-            'MAOP (kg/cm²)': _agg(origin_unit_keys, 'maop_kgcm2'),
-            'Drag Reduction (%)': _agg(origin_unit_keys, 'drag_reduction', op='avg'),
-        }
-        row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
-        rows.append(row)
-
-    for stn in base_stations[1:]:
-        key = stn['name'].lower().replace(' ', '_')
-        row = {
-            'Station': stn['name'],
-            'Type of Pump': '',
+            'Station': station_display,
+            'Type of Pump': pump_type,
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
@@ -879,7 +840,17 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
         }
+
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
+
+        # Available suction head only needs to be reported at the origin suction
+        if idx == 0:
+            row['Available Suction Head (m)'] = row['Residual Head (m)']
+            row['Available Suction Head (kg/cm²)'] = row['Residual Head (kg/cm²)']
+        else:
+            row['Available Suction Head (m)'] = np.nan
+            row['Available Suction Head (kg/cm²)'] = np.nan
+
         rows.append(row)
 
     df = pd.DataFrame(rows)
