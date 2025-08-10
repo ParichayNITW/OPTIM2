@@ -1393,18 +1393,6 @@ if not auto_batch:
             ]
             df_day = df_day.reindex(columns=col_order)
 
-            num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
-            styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
-                subset=num_cols, cmap="Blues"
-            )
-            st.markdown("<div class='section-title'>Daily Schedule Results</div>", unsafe_allow_html=True)
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download 4-hourly Results",
-                df_day.to_csv(index=False, float_format="%.2f"),
-                file_name="daily_schedule_results.csv",
-            )
-
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
                 hr = hours[idx] % 24
@@ -1412,19 +1400,60 @@ if not auto_batch:
                 temp['Time'] = f"{hr:02d}:00"
                 combined.append(temp)
             lf_all = pd.concat(combined, ignore_index=True).round(2)
+
+            if reports:
+                # Persist results for later display and tab switching
+                st.session_state["day_reports"] = reports
+                st.session_state["day_linefills"] = linefill_snaps
+                st.session_state["day_hours"] = hours
+                st.session_state["day_stations"] = copy.deepcopy(stations_base)
+                st.session_state["day_term_data"] = copy.deepcopy(term_data)
+                st.session_state["daily_df_day"] = df_day
+                st.session_state["daily_linefill_all"] = lf_all
+                st.session_state["daily_selected_idx"] = 0
+                # Default detailed view to first interval (07:00)
+                st.session_state["last_res"] = copy.deepcopy(reports[0]["result"])
+                st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
+                st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                st.session_state["last_linefill"] = copy.deepcopy(linefill_snaps[0])
+
+
+
+    # --- Persisted daily schedule display and time selection ---
+    if "daily_df_day" in st.session_state:
+        df_day = st.session_state["daily_df_day"]
+        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
+        styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
+            subset=num_cols, cmap="Blues"
+        )
+        st.markdown("<div class='section-title'>Daily Schedule Results</div>", unsafe_allow_html=True)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download 4-hourly Results",
+            df_day.to_csv(index=False, float_format="%.2f"),
+            file_name="daily_schedule_results.csv",
+        )
+
+        lf_all = st.session_state.get("daily_linefill_all")
+        if lf_all is not None:
             st.download_button(
                 "Download Linefill Snapshots",
                 lf_all.to_csv(index=False, float_format="%.2f"),
                 file_name="linefill_snapshots.csv",
             )
 
-            if reports:
-                final_res = reports[-1]["result"]
-                st.session_state["last_res"] = copy.deepcopy(final_res)
-                st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
-                st.session_state["last_term_data"] = copy.deepcopy(term_data)
-                st.session_state["last_linefill"] = copy.deepcopy(linefill_snaps[-1])
-
+        hours = st.session_state.get("day_hours", [])
+        labels = [f"{h%24:02d}:00" for h in hours]
+        sel_idx = st.session_state.get("daily_selected_idx", 0)
+        if labels:
+            choice = st.selectbox("Select Time for Detailed Results", labels, index=sel_idx)
+            idx = labels.index(choice)
+            st.session_state["daily_selected_idx"] = idx
+            rec = st.session_state["day_reports"][idx]
+            st.session_state["last_res"] = copy.deepcopy(rec["result"])
+            st.session_state["last_stations_data"] = copy.deepcopy(st.session_state["day_stations"])
+            st.session_state["last_term_data"] = copy.deepcopy(st.session_state["day_term_data"])
+            st.session_state["last_linefill"] = copy.deepcopy(st.session_state["day_linefills"][idx])
 
 
 if not auto_batch:
