@@ -967,6 +967,8 @@ def update_detail_time() -> None:
     )
     if idx < len(linefills):
         st.session_state["last_linefill"] = copy.deepcopy(linefills[idx])
+    # Trigger a rerun so UI reflects newly loaded results immediately
+    st.rerun()
 
 # Persisted DRA lock from 07:00 run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
