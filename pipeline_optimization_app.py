@@ -740,6 +740,47 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
     names = [s['name'] for s in stations_data]
     keys = [n.lower().replace(' ', '_') for n in names]
 
+    # Aggregate per-unit results for an origin station defined with pump_types so
+    # downstream summary rows report combined metrics for the original name.
+    res = dict(res)
+    if stations_data and stations_data[0].get('pump_types'):
+        origin_base = keys[0]
+        unit_keys = []
+        for k in list(res.keys()):
+            if not k.startswith('pipeline_flow_'):
+                continue
+            suffix = k[len('pipeline_flow_'):]
+            if suffix == origin_base or suffix.startswith(origin_base + '_'):
+                unit_keys.append(suffix)
+        if unit_keys:
+            def _agg(field: str, op: str = 'sum') -> float:
+                vals = [float(res.get(f"{field}_{uk}", 0.0) or 0.0) for uk in unit_keys]
+                if not vals:
+                    return 0.0
+                return float(np.mean(vals)) if op == 'avg' else float(np.sum(vals))
+
+            res[f'pipeline_flow_{origin_base}'] = _agg('pipeline_flow', 'avg')
+            res[f'pump_flow_{origin_base}'] = _agg('pump_flow', 'avg')
+            res[f'num_pumps_{origin_base}'] = _agg('num_pumps')
+            res[f'speed_{origin_base}'] = _agg('speed', 'avg')
+            res[f'efficiency_{origin_base}'] = _agg('efficiency', 'avg')
+            res[f'pump_bkw_{origin_base}'] = _agg('pump_bkw', 'avg')
+            res[f'motor_kw_{origin_base}'] = _agg('motor_kw', 'avg')
+            res[f'power_cost_{origin_base}'] = _agg('power_cost')
+            res[f'dra_cost_{origin_base}'] = _agg('dra_cost')
+            res[f'reynolds_{origin_base}'] = _agg('reynolds', 'avg')
+            res[f'head_loss_{origin_base}'] = _agg('head_loss', 'avg')
+            res[f'head_loss_kgcm2_{origin_base}'] = _agg('head_loss_kgcm2', 'avg')
+            res[f'velocity_{origin_base}'] = _agg('velocity', 'avg')
+            res[f'residual_head_{origin_base}'] = _agg('residual_head', 'avg')
+            res[f'rh_kgcm2_{origin_base}'] = _agg('rh_kgcm2', 'avg')
+            res[f'sdh_{origin_base}'] = _agg('sdh', 'avg')
+            res[f'sdh_kgcm2_{origin_base}'] = _agg('sdh_kgcm2', 'avg')
+            res[f'maop_{origin_base}'] = _agg('maop', 'avg')
+            res[f'maop_kgcm2_{origin_base}'] = _agg('maop_kgcm2', 'avg')
+            res[f'drag_reduction_{origin_base}'] = _agg('drag_reduction', 'avg')
+            res[f'dra_ppm_{origin_base}'] = _agg('dra_ppm', 'avg')
+
     station_ppm = {}
     for idx, stn in enumerate(stations_data):
         key = keys[idx]
