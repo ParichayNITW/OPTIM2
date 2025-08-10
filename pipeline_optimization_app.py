@@ -1115,35 +1115,19 @@ if not auto_batch:
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
 
-            import pipeline_model
-            import importlib
-            importlib.reload(pipeline_model)
-            if stations_data and stations_data[0].get('pump_types'):
-                res = pipeline_model.solve_pipeline_multi_origin(
-                    stations_data,
-                    term_data,
-                    FLOW,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    linefill_df.to_dict(),
-                    dra_reach_km=0.0,
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                )
-            else:
-                res = pipeline_model.solve_pipeline(
-                    stations_data,
-                    term_data,
-                    FLOW,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    linefill_df.to_dict(),
-                    dra_reach_km=0.0,
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                )
+            res = solve_pipeline(
+                stations_data,
+                term_data,
+                FLOW,
+                kv_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                linefill_df.to_dict(),
+                dra_reach_km=0.0,
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                hours=4.0,
+            )
 
             import copy
             if not res or res.get("error"):
