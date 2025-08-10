@@ -784,7 +784,75 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
                     drop_cols.append(stn['name'])
         if drop_cols:
             df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
-    return df_sum
+    return df_sum.round(2)
+
+
+def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
+    """Return per-station details used in daily schedule output."""
+
+    rows: list[dict] = []
+
+    origin_name = base_stations[0]['name'] if base_stations else ''
+    origin_key_base = origin_name.lower().replace(' ', '_')
+    origin_unit_keys: list[str] = []
+    for k in res.keys():
+        if not k.startswith('pipeline_flow_'):
+            continue
+        suffix = k[len('pipeline_flow_'):]
+        if suffix == origin_key_base or suffix.startswith(origin_key_base + '_'):
+            origin_unit_keys.append(suffix)
+    if not origin_unit_keys and origin_key_base:
+        origin_unit_keys = [origin_key_base]
+
+    def _agg(keys: list[str], fld: str, op: str = 'sum'):
+        vals = [float(res.get(f"{fld}_{k}", 0.0) or 0.0) for k in keys]
+        if not vals:
+            return 0.0
+        return float(np.mean(vals)) if op == 'avg' else float(np.sum(vals))
+
+    pump_combo = res.get('pump_combo', {})
+    types = []
+    if pump_combo.get('A', 0) > 0:
+        types.append('Type A')
+    if pump_combo.get('B', 0) > 0:
+        types.append('Type B')
+    pump_type_str = '+'.join(types)
+
+    if origin_unit_keys:
+        row = {
+            'Station': origin_name,
+            'Pipeline Flow (m³/hr)': _agg(origin_unit_keys, 'pipeline_flow', op='avg'),
+            'No. of Pumps': _agg(origin_unit_keys, 'num_pumps'),
+            'Type of Pump': pump_type_str,
+            'Pump Speed (rpm)': _agg(origin_unit_keys, 'speed', op='avg'),
+            'Pump Efficiency (%)': _agg(origin_unit_keys, 'efficiency', op='avg'),
+            'Pump BKW (kW)': _agg(origin_unit_keys, 'pump_bkw'),
+            'DRA PPM': _agg(origin_unit_keys, 'dra_ppm', op='avg'),
+            'Power & Fuel Cost (INR)': _agg(origin_unit_keys, 'power_cost'),
+            'DRA Cost (INR)': _agg(origin_unit_keys, 'dra_cost'),
+        }
+        row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
+        rows.append(row)
+
+    for stn in base_stations[1:]:
+        key = stn['name'].lower().replace(' ', '_')
+        row = {
+            'Station': stn['name'],
+            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
+            'No. of Pumps': float(res.get(f"num_pumps_{key}", 0) or 0),
+            'Type of Pump': '',
+            'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
+            'Pump Efficiency (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
+            'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
+            'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
+            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
+            'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
+        }
+        row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return df.round(2)
 
 # Persisted DRA lock from 07:00 run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
@@ -1289,23 +1357,26 @@ if not auto_batch:
                         current_vol, plan_df = shift_vol_linefill(current_vol, pumped, plan_df)
                     dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
 
-            # Build a consolidated table
-            # We'll extract a few key outputs per station
-            stations_used = reports[-1]["result"].get("stations_used", stations_base)
-            summary_tables = []
-            for rec, lf_df in zip(reports, linefill_snaps):
+            # Build a consolidated station-wise table
+            station_tables = []
+            for rec in reports:
                 res = rec["result"]
                 hr = rec["time"]
-                df_int = build_summary_dataframe(res, stations_used, lf_df, drop_unused=False)
+                df_int = build_station_table(res, stations_base)
                 df_int.insert(0, "Time", f"{hr:02d}:00")
-                summary_tables.append(df_int)
-            df_day = pd.concat(summary_tables, ignore_index=True).fillna(0.0)
-            df_display = df_day.copy()
-            for col in df_display.columns:
-                if col not in ("Time", "Parameters"):
-                    df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
-            st.download_button("Download 4-hourly Results", df_day.to_csv(index=False), file_name="daily_schedule_results.csv")
+                station_tables.append(df_int)
+            df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+
+            num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
+            styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
+                subset=num_cols, cmap="Blues"
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download 4-hourly Results",
+                df_day.to_csv(index=False, float_format="%.2f"),
+                file_name="daily_schedule_results.csv",
+            )
 
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
@@ -1313,8 +1384,12 @@ if not auto_batch:
                 temp = df_line.copy()
                 temp['Time'] = f"{hr:02d}:00"
                 combined.append(temp)
-            lf_all = pd.concat(combined, ignore_index=True)
-            st.download_button("Download Linefill Snapshots", lf_all.to_csv(index=False), file_name="linefill_snapshots.csv")
+            lf_all = pd.concat(combined, ignore_index=True).round(2)
+            st.download_button(
+                "Download Linefill Snapshots",
+                lf_all.to_csv(index=False, float_format="%.2f"),
+                file_name="linefill_snapshots.csv",
+            )
 
 
 
@@ -1359,7 +1434,11 @@ if not auto_batch:
                     df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_display, use_container_width=True, hide_index=True)
-            st.download_button("📥 Download CSV", df_sum.to_csv(index=False).encode(), file_name="results.csv")
+            st.download_button(
+                "📥 Download CSV",
+                df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
+                file_name="results.csv",
+            )
     
             # --- Aggregate counts for display ---
             total_cost = float(res.get("total_cost", 0.0))
