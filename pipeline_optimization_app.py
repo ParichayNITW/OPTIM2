@@ -1444,16 +1444,24 @@ if not auto_batch:
 
         hours = st.session_state.get("day_hours", [])
         labels = [f"{h%24:02d}:00" for h in hours]
-        sel_idx = st.session_state.get("daily_selected_idx", 0)
         if labels:
-            choice = st.selectbox("Select Time for Detailed Results", labels, index=sel_idx)
+            if "daily_selected_idx" not in st.session_state:
+                st.session_state["daily_selected_idx"] = 0
+            choice = st.selectbox(
+                "Select Time for Detailed Results",
+                labels,
+                index=st.session_state["daily_selected_idx"],
+                key="detail_time",
+            )
             idx = labels.index(choice)
-            st.session_state["daily_selected_idx"] = idx
-            rec = st.session_state["day_reports"][idx]
-            st.session_state["last_res"] = copy.deepcopy(rec["result"])
-            st.session_state["last_stations_data"] = copy.deepcopy(st.session_state["day_stations"])
-            st.session_state["last_term_data"] = copy.deepcopy(st.session_state["day_term_data"])
-            st.session_state["last_linefill"] = copy.deepcopy(st.session_state["day_linefills"][idx])
+            if idx != st.session_state["daily_selected_idx"] or "last_res" not in st.session_state:
+                st.session_state["daily_selected_idx"] = idx
+                rec = st.session_state["day_reports"][idx]
+                st.session_state["last_res"] = copy.deepcopy(rec["result"])
+                st.session_state["last_stations_data"] = copy.deepcopy(st.session_state["day_stations"])
+                st.session_state["last_term_data"] = copy.deepcopy(st.session_state["day_term_data"])
+                st.session_state["last_linefill"] = copy.deepcopy(st.session_state["day_linefills"][idx])
+                st.rerun()
 
 
 if not auto_batch:
