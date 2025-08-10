@@ -1459,17 +1459,29 @@ if not auto_batch:
                 file_name="linefill_snapshots.csv",
             )
 
-        hours = st.session_state.get("day_hours", [])
-        labels = [f"{h%24:02d}:00" for h in hours]
-        if labels:
-            options = list(range(len(labels)))
-            st.selectbox(
-                "Select Time for Detailed Results",
-                options,
-                key="detail_time_idx",
-                format_func=lambda i: labels[i],
-                on_change=update_detail_time,
-            )
+        # --- Station-wise cost summary ---
+        cost_cols = [
+            "Power & Fuel Cost (INR)",
+            "DRA Cost (INR)",
+            "Total Cost (INR)",
+        ]
+        agg = df_day.groupby("Station")[cost_cols].sum().reset_index().round(2)
+        styled_cost = agg.style.format({c: "{:.2f}" for c in cost_cols}).background_gradient(
+            subset=cost_cols, cmap="Greens"
+        )
+        st.markdown(
+            "<div class='section-title'>Station-wise Cost Summary</div>",
+            unsafe_allow_html=True,
+        )
+        st.dataframe(styled_cost, use_container_width=True, hide_index=True)
+
+        total_power = agg["Power & Fuel Cost (INR)"].sum()
+        total_dra = agg["DRA Cost (INR)"].sum()
+        total_cost = agg["Total Cost (INR)"].sum()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Power & Fuel Cost (INR)", f"{total_power:,.2f}")
+        c2.metric("Total DRA Cost (INR)", f"{total_dra:,.2f}")
+        c3.metric("Total Cost (INR)", f"{total_cost:,.2f}")
 
 
 if not auto_batch:
