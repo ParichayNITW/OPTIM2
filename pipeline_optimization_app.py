@@ -873,6 +873,26 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     return df.round(2)
 
+
+def update_detail_time() -> None:
+    """Update cached optimisation results for the selected daily interval."""
+
+    idx = int(st.session_state.get("detail_time_idx", 0))
+    reports = st.session_state.get("day_reports", [])
+    linefills = st.session_state.get("day_linefills", [])
+    if not reports or idx >= len(reports):
+        return
+
+    st.session_state["last_res"] = copy.deepcopy(reports[idx]["result"])
+    st.session_state["last_stations_data"] = copy.deepcopy(
+        st.session_state.get("day_stations", [])
+    )
+    st.session_state["last_term_data"] = copy.deepcopy(
+        st.session_state.get("day_term_data", {})
+    )
+    if idx < len(linefills):
+        st.session_state["last_linefill"] = copy.deepcopy(linefills[idx])
+
 # Persisted DRA lock from 07:00 run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
     """Freeze per-station DRA (as %DR) based on ppm chosen at 07:00 for each station.
@@ -1410,12 +1430,8 @@ if not auto_batch:
                 st.session_state["day_term_data"] = copy.deepcopy(term_data)
                 st.session_state["daily_df_day"] = df_day
                 st.session_state["daily_linefill_all"] = lf_all
-                st.session_state["daily_selected_idx"] = 0
-                # Default detailed view to first interval (07:00)
-                st.session_state["last_res"] = copy.deepcopy(reports[0]["result"])
-                st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
-                st.session_state["last_term_data"] = copy.deepcopy(term_data)
-                st.session_state["last_linefill"] = copy.deepcopy(linefill_snaps[0])
+                st.session_state["detail_time_idx"] = 0
+                update_detail_time()
 
 
 
@@ -1445,23 +1461,14 @@ if not auto_batch:
         hours = st.session_state.get("day_hours", [])
         labels = [f"{h%24:02d}:00" for h in hours]
         if labels:
-            if "daily_selected_idx" not in st.session_state:
-                st.session_state["daily_selected_idx"] = 0
-            choice = st.selectbox(
+            options = list(range(len(labels)))
+            st.selectbox(
                 "Select Time for Detailed Results",
-                labels,
-                index=st.session_state["daily_selected_idx"],
-                key="detail_time",
+                options,
+                key="detail_time_idx",
+                format_func=lambda i: labels[i],
+                on_change=update_detail_time,
             )
-            idx = labels.index(choice)
-            if idx != st.session_state["daily_selected_idx"] or "last_res" not in st.session_state:
-                st.session_state["daily_selected_idx"] = idx
-                rec = st.session_state["day_reports"][idx]
-                st.session_state["last_res"] = copy.deepcopy(rec["result"])
-                st.session_state["last_stations_data"] = copy.deepcopy(st.session_state["day_stations"])
-                st.session_state["last_term_data"] = copy.deepcopy(st.session_state["day_term_data"])
-                st.session_state["last_linefill"] = copy.deepcopy(st.session_state["day_linefills"][idx])
-                st.rerun()
 
 
 if not auto_batch:
