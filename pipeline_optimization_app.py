@@ -1371,7 +1371,7 @@ if not auto_batch:
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
             st.download_button(
-                "Download 4-hourly Results",
+                "Download Dynamic Optimizer Results",
                 df_day.to_csv(index=False, float_format="%.2f"),
                 file_name="daily_schedule_results.csv",
             )
