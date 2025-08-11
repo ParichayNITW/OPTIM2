@@ -1213,7 +1213,7 @@ else:
 
 if not auto_batch:
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-    run = st.button("🚀 Run Optimization", key="runoptbtn", help="Run pipeline optimization.", type="primary")
+    run = st.button("Run state Optimizer", key="runoptbtn", help="Run pipeline optimization.", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
     if run:
         with st.spinner("Solving optimization..."):
