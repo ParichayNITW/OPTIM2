@@ -1384,7 +1384,7 @@ if not auto_batch:
                 combined.append(temp)
             lf_all = pd.concat(combined, ignore_index=True).round(2)
             st.download_button(
-                "Download Linefill Snapshots",
+                "Download Daily Dynamic Linefill Output",
                 lf_all.to_csv(index=False, float_format="%.2f"),
                 file_name="linefill_snapshots.csv",
             )
