@@ -565,6 +565,7 @@ def solve_pipeline_multi_origin(
             for n in range(count):
                 unit = {
                     'name': f"{name_base}_{ptype}{n + 1}",
+                    'pump_name': pdata.get('name', f'Type {ptype}') if pdata else f'Type {ptype}',
                     'elev': origin_station.get('elev', 0.0),
                     'D': origin_station.get('D'),
                     't': origin_station.get('t'),
