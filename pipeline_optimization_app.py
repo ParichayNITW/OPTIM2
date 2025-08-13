@@ -149,6 +149,11 @@ def restore_case_dict(loaded_data):
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+    st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
+    if loaded_data.get("linefill_vol"):
+        st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
+    if loaded_data.get("day_plan"):
+        st.session_state["day_plan_df"] = pd.DataFrame(loaded_data["day_plan"])
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
     for i in range(len(st.session_state['stations'])):
@@ -372,6 +377,12 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 stn.setdefault('pump_types', {})[ptype] = {'available': 0}
                                 continue
 
+                            pump_name = st.text_input(
+                                "Pump Name",
+                                value=pdata.get('name', f'Pump {ptype}'),
+                                key=f"pname{idx}{ptype}"
+                            )
+
                             key_head = f"head_data_{idx}{ptype}"
                             if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
                                 df_head = st.session_state[key_head]
@@ -407,6 +418,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                     rate = 0.0
 
                             stn.setdefault('pump_types', {})[ptype] = {
+                                'name': pump_name,
                                 'head_data': df_head,
                                 'eff_data': df_eff,
                                 'power_type': ptype_sel,
@@ -417,6 +429,11 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 'available': avail
                             }
                 else:
+                    stn['pump_name'] = st.text_input(
+                        "Pump Name",
+                        value=stn.get('pump_name', f'Pump {idx}'),
+                        key=f"pname{idx}"
+                    )
                     key_head = f"head_data_{idx}"
                     if key_head in st.session_state and isinstance(st.session_state[key_head], pd.DataFrame):
                         df_head = st.session_state[key_head]
@@ -524,7 +541,10 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
+        "op_mode": st.session_state.get('op_mode', "Flow rate"),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
+        "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
+        "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
         **{
             f"head_data_{i+1}": (
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
@@ -806,18 +826,14 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if f"pipeline_flow_{key}" not in res:
             continue
 
-        # Display handling for origin pump types
         station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
-        pump_type = ''
+        pump_name = stn.get('pump_name', '') if isinstance(stn, dict) else ''
         if origin_name and name != origin_name and name.startswith(origin_name):
-            suffix = name[len(origin_name):].lstrip('_')
-            if suffix:
-                pump_type = f"Type {suffix[0]} - {suffix[1:]}"
             station_display = origin_name
 
         row = {
             'Station': station_display,
-            'Type of Pump': pump_type,
+            'Pump Name': pump_name,
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
@@ -1365,7 +1381,7 @@ if not auto_batch:
                 station_tables.append(df_int)
             df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Type of Pump"]]
+            num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name"]]
             styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
                 subset=num_cols, cmap="Blues"
             )
