@@ -215,7 +215,7 @@ with st.sidebar:
             "Viscosity (cSt)": [10.0],
             "Density (kg/m³)": [850.0]
         })
-    mode = st.radio("Choose input mode", ["Flow rate", "Pumping Schedule"], horizontal=True, key="op_mode")
+    mode = st.radio("Choose input mode", ["Flow rate", "Daily Pumping Schedule"], horizontal=True, key="op_mode")
 
     if mode == "Flow rate":
         # Flow rate is already captured as FLOW above.
@@ -1320,7 +1320,7 @@ if not auto_batch:
                 st.stop()
 
             # Determine FLOW for this mode
-            if st.session_state.get("op_mode") == "Pumping Schedule":
+            if st.session_state.get("op_mode") == "Daily Pumping Schedule":
                 plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
                 daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
                 FLOW_sched = daily_m3 / 24.0
