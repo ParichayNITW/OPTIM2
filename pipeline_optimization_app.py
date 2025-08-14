@@ -999,18 +999,22 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     """
 
     rows: list[dict] = []
-    stations_seq = res.get('stations_used') or base_stations
+    stations_seq = res.get('stations_used') or []
     origin_name = base_stations[0]['name'] if base_stations else ''
     base_map = {s['name']: s for s in base_stations}
 
-    for idx, stn in enumerate(stations_seq):
+    seen: set[str] = set()
+
+    def add_station(stn):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
+        if name in seen:
+            return
+        seen.add(name)
         key = name.lower().replace(' ', '_')
-        if f"pipeline_flow_{key}" not in res:
-            continue
 
         station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
         base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
+
         pump_list = None
         if isinstance(stn, dict):
             pump_list = stn.get('pump_names') or base_stn.get('pump_names')
@@ -1053,8 +1057,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
 
-        # Available suction head only needs to be reported at the origin suction
-        if idx == 0:
+        if name == origin_name:
             row['Available Suction Head (m)'] = row['Residual Head (m)']
             row['Available Suction Head (kg/cm²)'] = row['Residual Head (kg/cm²)']
         else:
@@ -1062,6 +1065,11 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             row['Available Suction Head (kg/cm²)'] = np.nan
 
         rows.append(row)
+
+    for stn in base_stations:
+        add_station(stn)
+    for stn in stations_seq:
+        add_station(stn)
 
     df = pd.DataFrame(rows)
     return df.round(2)
@@ -1879,7 +1887,7 @@ if not auto_batch:
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
             names = [s['name'] for s in stations_data]
             keys = [n.lower().replace(' ', '_') for n in names]
-            df_sum = build_summary_dataframe(res, stations_data, linefill_df)
+            df_sum = build_summary_dataframe(res, stations_data, linefill_df, drop_unused=False)
             st.session_state["summary_table"] = df_sum.copy()
             df_display = df_sum.fillna(0.0).copy()
             for col in df_display.columns:
