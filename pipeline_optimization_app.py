@@ -20,8 +20,8 @@ if "terminal_head" not in st.session_state:
     st.session_state["terminal_head"] = 10.0
 if "MOP_kgcm2" not in st.session_state:
     st.session_state["MOP_kgcm2"] = 100.0
-if "show_tabs" not in st.session_state:
-    st.session_state["show_tabs"] = False
+if "run_mode" not in st.session_state:
+    st.session_state["run_mode"] = None
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -336,11 +336,6 @@ with st.sidebar:
                 "Viscosity (cSt)": [3.0, 10.0],
                 "Density (kg/m³)": [800.0, 840.0],
             })
-        else:
-            st.session_state["proj_plan_df"] = st.session_state["proj_plan_df"].drop(
-                columns=[c for c in ["Start", "End", "Flow", "Flow (m³/h)"] if c in st.session_state["proj_plan_df"].columns],
-                errors="ignore",
-            )
         proj_df = st.data_editor(
             st.session_state["proj_plan_df"],
             num_rows="dynamic",
@@ -351,10 +346,6 @@ with st.sidebar:
                 "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", format="%.2f"),
                 "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", format="%.2f"),
             },
-        )
-        proj_df = proj_df.drop(
-            columns=[c for c in ["Start", "End", "Flow", "Flow (m³/h)"] if c in proj_df.columns],
-            errors="ignore",
         )
         st.session_state["proj_plan_df"] = proj_df
 
@@ -676,10 +667,6 @@ def get_full_case_dict():
 
     plan_df = st.session_state.get('proj_plan_df', pd.DataFrame())
     if isinstance(plan_df, pd.DataFrame) and len(plan_df):
-        plan_df = plan_df.drop(
-            columns=[c for c in ["Start", "End", "Flow", "Flow (m³/h)"] if c in plan_df.columns],
-            errors="ignore",
-        )
         proj_plan = plan_df.to_dict(orient="records")
     else:
         proj_plan = []
@@ -1488,7 +1475,7 @@ if not auto_batch:
                 st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
                 st.session_state["last_term_data"] = copy.deepcopy(term_data)
                 st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-                st.session_state["show_tabs"] = False
+                st.session_state["run_mode"] = "instantaneous"
                 # --- CRUCIAL LINE TO FORCE UI REFRESH ---
                 st.rerun()
 
@@ -1497,7 +1484,7 @@ if not auto_batch:
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_day:
-        st.session_state["show_tabs"] = False
+        st.session_state["run_mode"] = "daily"
         with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.stations)
@@ -1618,7 +1605,7 @@ if not auto_batch:
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_plan:
-        st.session_state["show_tabs"] = False
+        st.session_state["run_mode"] = "plan"
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
@@ -1760,7 +1747,7 @@ if not auto_batch:
             )
 
 
-if not auto_batch and "last_res" in st.session_state and st.session_state.get("show_tabs", False):
+if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
@@ -3090,7 +3077,6 @@ if not auto_batch and "last_res" in st.session_state and st.session_state.get("s
     with tab_sens:
         st.markdown("<div class='section-title'>Sensitivity Analysis</div>", unsafe_allow_html=True)
         st.write("Analyze how key outputs respond to variations in a parameter. Each run recalculates results based on set pipeline parameter and optimization metric.")
-
         if "last_res" not in st.session_state:
             st.info("Run optimization first to enable sensitivity analysis.")
         else:
@@ -3177,46 +3163,44 @@ if not auto_batch and "last_res" in st.session_state and st.session_state.get("s
                 st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_sens, use_container_width=True, hide_index=True)
                 st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
+
     with tab_bench:
         st.markdown("<div class='section-title'>Benchmarking & Global Standards</div>", unsafe_allow_html=True)
         st.write("Compare pipeline performance with global/ custom benchmarks. Green indicates Pipeline operation match/exceed global standards while red means improvement is needed.")
-
-        b_mode = st.radio("Benchmark Source", ["Global Standards", "Edit Benchmarks", "Upload CSV"])
-        if b_mode == "Global Standards":
-            benchmarks = {
-                "Total Cost per km (INR/day/km)": 12000,
-                "Pump Efficiency (%)": 70,
-                "Specific Energy (kWh/m³)": 0.065,
-                "Max Velocity (m/s)": 2.1
-            }
-            for k, v in benchmarks.items():
-                benchmarks[k] = st.number_input(f"{k}", value=float(v))
-        elif b_mode == "Edit Benchmarks":
-            bdf = pd.DataFrame({
-                "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/m³)", "Max Velocity (m/s)"],
-                "Benchmark Value": [12000, 70, 0.065, 2.1]
-            })
-            bdf = st.data_editor(bdf)
-            benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
-        elif b_mode == "Upload CSV":
-            up = st.file_uploader("Upload Benchmark CSV", type=["csv"])
-            benchmarks = {}
-            if up:
-                bdf = pd.read_csv(up)
-                st.dataframe(bdf)
-                benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
-            if not benchmarks:
-                st.warning("Please upload a CSV with columns [Parameter, Benchmark Value]")
-
         if "last_res" not in st.session_state:
             st.info("Run optimization to show benchmark analysis.")
         else:
+            b_mode = st.radio("Benchmark Source", ["Global Standards", "Edit Benchmarks", "Upload CSV"])
+            if b_mode == "Global Standards":
+                benchmarks = {
+                    "Total Cost per km (INR/day/km)": 12000,
+                    "Pump Efficiency (%)": 70,
+                    "Specific Energy (kWh/m³)": 0.065,
+                    "Max Velocity (m/s)": 2.1
+                }
+                for k, v in benchmarks.items():
+                    benchmarks[k] = st.number_input(f"{k}", value=float(v))
+            elif b_mode == "Edit Benchmarks":
+                bdf = pd.DataFrame({
+                    "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/m³)", "Max Velocity (m/s)"],
+                    "Benchmark Value": [12000, 70, 0.065, 2.1]
+                })
+                bdf = st.data_editor(bdf)
+                benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
+            elif b_mode == "Upload CSV":
+                up = st.file_uploader("Upload Benchmark CSV", type=["csv"])
+                benchmarks = {}
+                if up:
+                    bdf = pd.read_csv(up)
+                    st.dataframe(bdf)
+                    benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
+                if not benchmarks:
+                    st.warning("Please upload a CSV with columns [Parameter, Benchmark Value]")
             if st.button("Run Benchmarking"):
                 res = st.session_state["last_res"]
                 stations_data = st.session_state["last_stations_data"]
                 total_length = sum([s.get("L", 0.0) for s in stations_data])
                 total_cost = 0
-                total_pumped = 0
                 total_power = 0
                 effs = []
                 max_velocity = 0
@@ -3236,12 +3220,12 @@ if not auto_batch and "last_res" in st.session_state and st.session_state.get("s
                     power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
                     velocity = res.get(f"velocity_{key}", 0.0) or 0.0
                     total_cost += dra_cost + power_cost
-                    total_pumped += seg_flow * 24.0
                     total_power += power_cost
                     eff = float(res.get(f"efficiency_{key}", 100.0))
                     if stn.get('is_pump', False):
                         effs.append(eff)
-                    if velocity > max_velocity: max_velocity = velocity
+                    if velocity > max_velocity:
+                        max_velocity = velocity
                 my_cost_per_km = total_cost / (total_length if total_length else 1)
                 my_avg_eff = np.mean(effs) if effs else 0
                 my_spec_energy = (total_power / (FLOW*24.0)) if (FLOW > 0) else 0
@@ -3259,27 +3243,27 @@ if not auto_batch and "last_res" in st.session_state and st.session_state.get("s
                         rows.append((k, f"{v:.2f}", f"{bench:.2f}", status))
                 df_bench = pd.DataFrame(rows, columns=["Parameter", "Pipeline", "Benchmark", "Status"])
                 st.dataframe(df_bench, use_container_width=True, hide_index=True)
+
     with tab_sim:
         st.markdown("<div class='section-title'>Annualized Savings Simulator</div>", unsafe_allow_html=True)
         st.write("Annual savings from efficiency improvements, energy cost and DRA optimizations.")
-
         if "last_res" not in st.session_state:
             st.info("Run optimization first.")
         else:
             FLOW = st.session_state["FLOW"]
             RateDRA = st.session_state["RateDRA"]
             Price_HSD = st.session_state["Price_HSD"]
+            st.write("Adjust improvement assumptions and see the impact over a year.")
             pump_eff_impr = st.slider("Pump Efficiency Improvement (%)", 0, 10, 3)
             dra_cost_impr = st.slider("DRA Price Reduction (%)", 0, 30, 5)
             flow_change = st.slider("Throughput Increase (%)", 0, 30, 0)
             if st.button("Run Savings Simulation"):
+                linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
                 stations_data = [dict(s) for s in st.session_state['stations']]
                 term_data = dict(st.session_state["last_term_data"])
-                linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
                 for stn in stations_data:
-                    if stn.get('is_pump', False):
-                        if "eff_data" in stn and pump_eff_impr > 0:
-                            pass
+                    if stn.get('is_pump', False) and "eff_data" in stn and pump_eff_impr > 0:
+                        pass  # placeholder for efficiency adjustment
                 new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
                 new_FLOW = FLOW * (1 + flow_change / 100)
                 kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
@@ -3304,16 +3288,13 @@ if not auto_batch and "last_res" in st.session_state and st.session_state.get("s
                     new_cost += dra_cost2 + power_cost2
                 annual_savings = (total_cost - new_cost) * 365.0
                 st.markdown(f"""
-        ### <span style="color:#2b9348"><b>Annual Savings: {annual_savings:,.0f} INR/year</b></span>
-        """, unsafe_allow_html=True)
+                ### <span style="color:#2b9348"><b>Annual Savings: {annual_savings:,.0f} INR/year</b></span>
+                """, unsafe_allow_html=True)
                 st.write("Based on selected improvements and model output.")
                 st.info("Calculations are based on optimized values.")
-elif not auto_batch and "last_res" in st.session_state:
-    st.markdown("<div style='text-align:center; margin-top:0.6rem;'>", unsafe_allow_html=True)
-    if st.button("Run Detailed Hydraulic Analysis", key="detail_btn"):
-        st.session_state["show_tabs"] = True
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+
+
+
 
 st.markdown(
     """
