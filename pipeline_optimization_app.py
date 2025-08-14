@@ -308,6 +308,10 @@ with st.sidebar:
                 "Start": [now, now + pd.Timedelta(hours=12)],
                 "End": [now + pd.Timedelta(hours=12), now + pd.Timedelta(hours=24)],
                 "Flow (m³/h)": [1000.0, 800.0],
+                "Product": ["Product-4", "Product-5"],
+                "Volume (m³)": [12000.0, 8000.0],
+                "Viscosity (cSt)": [3.0, 10.0],
+                "Density (kg/m³)": [800.0, 840.0],
             })
         proj_df = st.data_editor(
             st.session_state["proj_plan_df"],
@@ -317,6 +321,10 @@ with st.sidebar:
                 "Start": st.column_config.DatetimeColumn("Start", format="DD/MM/YY HH:mm"),
                 "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm"),
                 "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)", format="%.2f"),
+                "Product": st.column_config.TextColumn("Product"),
+                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)", format="%.2f"),
+                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", format="%.2f"),
+                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", format="%.2f"),
             },
         )
         st.session_state["proj_plan_df"] = proj_df
@@ -1517,7 +1525,10 @@ if not auto_batch:
     if run_plan:
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
-            stations_base = copy.deepcopy(st.session_state.stations)
+            stations_base = copy.deepcopy(st.session_state.get("stations", []))
+            if not stations_base:
+                st.error("Please configure station data before running.")
+                st.stop()
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
 
             vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
@@ -1526,90 +1537,108 @@ if not auto_batch:
                 st.stop()
 
             plan_df = st.session_state.get("proj_plan_df", pd.DataFrame())
-            total_m3 = 0.0
-            if len(plan_df):
-                plan_df = plan_df.copy()
-                plan_df["Start"] = pd.to_datetime(plan_df["Start"])
-                plan_df["End"] = pd.to_datetime(plan_df["End"])
-                plan_df["Duration_hr"] = (
-                    plan_df["End"] - plan_df["Start"]
-                ).dt.total_seconds() / 3600.0
-                total_m3 = (
-                    plan_df["Flow (m³/h)"].astype(float) * plan_df["Duration_hr"]
-                ).sum()
-            days = float(st.session_state.get("planner_days", 1.0))
-            if days <= 0:
-                st.error("Number of days must be positive.")
+            if plan_df is None or len(plan_df) == 0:
+                st.error("Please enter projected pumping plan data.")
                 st.stop()
-            FLOW_dyn = (
-                total_m3 / (days * 24.0)
-                if total_m3 > 0
-                else st.session_state.get("FLOW", 1000.0)
+
+            plan_df = plan_df.copy()
+            plan_df["Start"] = pd.to_datetime(plan_df["Start"])
+            plan_df["End"] = pd.to_datetime(plan_df["End"])
+            plan_df = plan_df.sort_values("Start").reset_index(drop=True)
+
+            current_vol = vol_df.copy()
+            reports = []
+            linefill_snaps = []
+            dra_reach_km = 0.0
+
+            for _, row in plan_df.iterrows():
+                flow = float(row.get("Flow (m³/h)", row.get("Flow", 0.0)) or 0.0)
+                start_ts = row["Start"]
+                end_ts = row["End"]
+                duration_hr = (end_ts - start_ts).total_seconds() / 3600.0
+                if duration_hr <= 0 or flow <= 0:
+                    continue
+                pumped_m3 = float(row.get("Volume (m³)", flow * duration_hr))
+
+                inject = pd.DataFrame([
+                    {
+                        "Product": row.get("Product", ""),
+                        "Volume (m³)": pumped_m3,
+                        "Viscosity (cSt)": row.get("Viscosity (cSt)", 0.0),
+                        "Density (kg/m³)": row.get("Density (kg/m³)", 0.0),
+                    }
+                ])
+
+                try:
+                    kv_now, rho_now = map_vol_linefill_to_segments(current_vol, stations_base)
+                    future_vol, _ = shift_vol_linefill(current_vol.copy(), pumped_m3, inject)
+                    kv_next, rho_next = map_vol_linefill_to_segments(future_vol, stations_base)
+                except ValueError as e:
+                    st.error(str(e))
+                    st.stop()
+
+                kv_run = [max(a, b) for a, b in zip(kv_now, kv_next)]
+                rho_run = [max(a, b) for a, b in zip(rho_now, rho_next)]
+
+                stns_run = copy.deepcopy(stations_base)
+                res = solve_pipeline(
+                    stns_run,
+                    term_data,
+                    flow,
+                    kv_run,
+                    rho_run,
+                    RateDRA,
+                    Price_HSD,
+                    current_vol.to_dict(),
+                    dra_reach_km,
+                    st.session_state.get("MOP_kgcm2"),
+                    hours=duration_hr,
+                )
+                if res.get("error"):
+                    st.error(f"Optimization failed for interval starting {start_ts} -> {res.get('message','')}")
+                    st.stop()
+
+                reports.append({"time": start_ts, "result": res})
+                linefill_snaps.append(current_vol.copy())
+                current_vol = future_vol
+                dra_reach_km = float(res.get("dra_front_km", dra_reach_km))
+
+            if not reports:
+                st.error("No valid intervals in projected plan.")
+                st.stop()
+
+            station_tables = []
+            for rec in reports:
+                res = rec["result"]
+                ts = rec["time"]
+                df_int = build_station_table(res, stations_base)
+                df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
+                station_tables.append(df_int)
+            df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+
+            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name"]]
+            styled = df_plan.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
+                subset=num_cols, cmap="Blues"
             )
-            run_hours = 24.0 * days
-
-            kv_list, rho_list = map_vol_linefill_to_segments(vol_df, stations_base)
-
-            import pandas as pd
-            import numpy as np
-            for idx, stn in enumerate(stations_base, start=1):
-                if stn.get('is_pump', False):
-                    if idx == 1 and 'pump_types' in stn:
-                        for ptype in ['A', 'B']:
-                            if ptype not in stn['pump_types']:
-                                continue
-                            if stn['pump_types'][ptype].get('available', 0) == 0:
-                                continue
-                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
-                            stn['pump_types'][ptype]['head_data'] = dfh
-                            stn['pump_types'][ptype]['eff_data'] = dfe
-                    else:
-                        dfh = st.session_state.get(f"head_data_{idx}")
-                        dfe = st.session_state.get(f"eff_data_{idx}")
-                        if dfh is None and "head_data" in stn:
-                            dfh = pd.DataFrame(stn["head_data"])
-                        if dfe is None and "eff_data" in stn:
-                            dfe = pd.DataFrame(stn["eff_data"])
-                        if dfh is not None and len(dfh) >= 3:
-                            Qh = dfh.iloc[:, 0].values
-                            Hh = dfh.iloc[:, 1].values
-                            coeff = np.polyfit(Qh, Hh, 2)
-                            stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                        if dfe is not None and len(dfe) >= 5:
-                            Qe = dfe.iloc[:, 0].values
-                            Ee = dfe.iloc[:, 1].values
-                            coeff_e = np.polyfit(Qe, Ee, 4)
-                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
-
-            plan_start = plan_df["Start"].min() if len(plan_df) else pd.Timestamp.now()
-            res = solve_pipeline(
-                stations_base,
-                term_data,
-                FLOW_dyn,
-                kv_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                vol_df.to_dict(),
-                dra_reach_km=0.0,
-                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                hours=run_hours,
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download Dynamic Plan Output data",
+                df_plan.to_csv(index=False, float_format="%.2f"),
+                file_name="dynamic_plan_results.csv",
             )
 
-            if not res or res.get("error"):
-                msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
-                st.error(msg)
-                for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
-                    st.session_state.pop(k, None)
-            else:
-                st.session_state["last_res"] = copy.deepcopy(res)
-                st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_base))
-                st.session_state["last_term_data"] = copy.deepcopy(term_data)
-                st.session_state["last_linefill"] = copy.deepcopy(vol_df)
-                st.session_state["last_plan_start"] = plan_start
-                st.session_state["last_plan_hours"] = run_hours
-                st.rerun()
+            combined = []
+            for idx, df_line in enumerate(linefill_snaps):
+                ts = reports[idx]["time"]
+                temp = df_line.copy()
+                temp["Time"] = ts.strftime("%d/%m %H:%M")
+                combined.append(temp)
+            lf_all = pd.concat(combined, ignore_index=True).round(2)
+            st.download_button(
+                "Download Dynamic Linefill Output",
+                lf_all.to_csv(index=False, float_format="%.2f"),
+                file_name="linefill_snapshots.csv",
+            )
 
 
 if not auto_batch:
