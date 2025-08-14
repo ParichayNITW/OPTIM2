@@ -221,9 +221,12 @@ with st.sidebar:
             "Viscosity (cSt)": [10.0],
             "Density (kg/m³)": [850.0]
         })
+    input_modes = ["Flow rate", "Daily Pumping Schedule", "Pumping planner"]
+    if st.session_state.get("op_mode") not in input_modes:
+        st.session_state["op_mode"] = input_modes[0]
     mode = st.radio(
         "Choose input mode",
-        ["Flow rate", "Daily Pumping Schedule", "Pumping planner"],
+        input_modes,
         horizontal=True,
         key="op_mode",
     )
