@@ -639,7 +639,27 @@ st.sidebar.download_button(
 )
 
 def map_linefill_to_segments(linefill_df, stations):
-    """Map linefill properties onto each pipeline segment."""
+    """Map linefill properties onto each pipeline segment.
+
+    Accepts either a tabular linefill with "Start/End (km)" columns or a
+    volumetric table containing "Volume (m³)" information. In the latter case,
+    :func:`map_vol_linefill_to_segments` is used to derive segment properties.
+    """
+
+    if linefill_df is None or len(linefill_df) == 0:
+        return [0.0] * len(stations), [0.0] * len(stations)
+
+    cols = set(linefill_df.columns)
+
+    # If Start/End columns are missing but volumetric info is present,
+    # delegate to volumetric mapper and return directly.
+    if "Start (km)" not in cols or "End (km)" not in cols:
+        if "Volume (m³)" in cols or "Volume" in cols:
+            return map_vol_linefill_to_segments(linefill_df, stations)
+        # Fallback: assume uniform properties from the last row
+        kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
+        rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
+        return [kv] * len(stations), [rho] * len(stations)
 
     cumlen = [0]
     for stn in stations:
@@ -648,7 +668,7 @@ def map_linefill_to_segments(linefill_df, stations):
     dens = []
     for i in range(len(stations)):
         seg_start = cumlen[i]
-        seg_end = cumlen[i+1]
+        seg_end = cumlen[i + 1]
         found = False
         for _, row in linefill_df.iterrows():
             if row["Start (km)"] <= seg_start < row["End (km)"]:
