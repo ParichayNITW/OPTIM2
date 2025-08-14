@@ -23,12 +23,6 @@ if "terminal_head" not in st.session_state:
     st.session_state["terminal_head"] = 10.0
 if "MOP_kgcm2" not in st.session_state:
     st.session_state["MOP_kgcm2"] = 100.0
-if "show_detail_tabs" not in st.session_state:
-    st.session_state["show_detail_tabs"] = False
-if "analysis_time" not in st.session_state:
-    st.session_state["analysis_time"] = None
-if "analysis_time_str" not in st.session_state:
-    st.session_state["analysis_time_str"] = ""
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -247,12 +241,6 @@ with st.sidebar:
     )
     if mode != st.session_state.get("last_mode"):
         st.session_state["last_mode"] = mode
-        st.session_state["show_detail_tabs"] = False
-        st.session_state["analysis_time"] = None
-        st.session_state["analysis_time_str"] = ""
-        st.session_state["analysis_times"] = []
-        st.session_state["analysis_reports"] = {}
-        st.session_state["analysis_linefills"] = {}
 
     if mode == "Flow rate":
         # Flow rate is already captured as FLOW above.
@@ -1591,29 +1579,6 @@ if not auto_batch:
                 if ti < len(hours)-1:
                     current_vol, plan_df = future_vol, future_plan
                     dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
-            # Store results for detailed analysis
-            base_date = pd.Timestamp.today().normalize()
-            analysis_times = []
-            analysis_reports = {}
-            analysis_linefills = {}
-            for idx, rec in enumerate(reports):
-                hr = rec["time"]
-                ts = base_date + pd.Timedelta(hours=hr)
-                analysis_times.append(ts)
-                analysis_reports[ts] = rec["result"]
-                analysis_linefills[ts] = linefill_snaps[idx]
-            st.session_state["analysis_times"] = analysis_times
-            st.session_state["analysis_reports"] = analysis_reports
-            st.session_state["analysis_linefills"] = analysis_linefills
-            st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
-            st.session_state["last_term_data"] = copy.deepcopy(term_data)
-            if analysis_times:
-                first = analysis_times[0]
-                st.session_state["analysis_time"] = first
-                st.session_state["analysis_time_str"] = first.strftime("%d/%m/%y %H:%M")
-                st.session_state["last_res"] = copy.deepcopy(analysis_reports[first])
-                st.session_state["last_linefill"] = copy.deepcopy(analysis_linefills[first])
-
             # Build a consolidated station-wise table
             station_tables = []
             for rec in reports:
@@ -1751,24 +1716,6 @@ if not auto_batch:
             if not reports:
                 st.error("No valid intervals in projected plan.")
                 st.stop()
-            st.session_state["last_plan_start"] = flow_df["Start"].min()
-            st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
-
-            analysis_times = [rec["time"] for rec in reports]
-            analysis_reports = {rec["time"]: rec["result"] for rec in reports}
-            analysis_linefills = {rec["time"]: linefill_snaps[i] for i, rec in enumerate(reports)}
-            st.session_state["analysis_times"] = analysis_times
-            st.session_state["analysis_reports"] = analysis_reports
-            st.session_state["analysis_linefills"] = analysis_linefills
-            st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
-            st.session_state["last_term_data"] = copy.deepcopy(term_data)
-            if analysis_times:
-                first = analysis_times[0]
-                st.session_state["analysis_time"] = first
-                st.session_state["analysis_time_str"] = first.strftime("%d/%m/%y %H:%M")
-                st.session_state["last_res"] = copy.deepcopy(analysis_reports[first])
-                st.session_state["last_linefill"] = copy.deepcopy(analysis_linefills[first])
-
             station_tables = []
             for rec in reports:
                 res = rec["result"]
@@ -1804,41 +1751,7 @@ if not auto_batch:
 
 
 if not auto_batch:
-    show_tabs = True
     if mode in ["Daily Pumping Schedule", "Pumping planner"]:
-        show_tabs = st.session_state.get("show_detail_tabs", False)
-        if not show_tabs:
-            if st.button("Detailed Hydraulic Analysis"):
-                st.session_state["show_detail_tabs"] = True
-                show_tabs = True
-        if show_tabs:
-            options = st.session_state.get("analysis_times", [])
-            if options:
-                labels = [ts.strftime("%d/%m/%y %H:%M") for ts in options]
-                sel_label = st.selectbox(
-                    "Analysis timestamp (DD/MM/YY HH:MM)",
-                    labels,
-                    key="analysis_time_str",
-                )
-                idx = labels.index(sel_label) if sel_label in labels else -1
-                if idx >= 0:
-                    ts_sel = options[idx]
-                    st.session_state["analysis_time"] = ts_sel
-                    reports = st.session_state.get("analysis_reports", {})
-                    linefills = st.session_state.get("analysis_linefills", {})
-                    res_sel = reports.get(ts_sel)
-                    if res_sel is None:
-                        st.warning("Result not available for selected time.")
-                        show_tabs = False
-                    else:
-                        st.session_state["last_res"] = copy.deepcopy(res_sel)
-                        st.session_state["last_linefill"] = copy.deepcopy(linefills.get(ts_sel))
-                else:
-                    show_tabs = False
-            else:
-                st.warning("No analysis timestamps available. Run optimizer first.")
-                show_tabs = False
-    if not show_tabs:
         st.stop()
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
