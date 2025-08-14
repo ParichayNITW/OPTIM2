@@ -10,6 +10,8 @@ if "FLOW" not in st.session_state:
     st.session_state["FLOW"] = 1000.0
 if "op_mode" not in st.session_state:
     st.session_state["op_mode"] = "Flow rate"
+if "planner_days" not in st.session_state:
+    st.session_state["planner_days"] = 1.0
 if "terminal_name" not in st.session_state:
     st.session_state["terminal_name"] = "Terminal"
 if "terminal_elev" not in st.session_state:
@@ -154,6 +156,10 @@ def restore_case_dict(loaded_data):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
     if loaded_data.get("day_plan"):
         st.session_state["day_plan_df"] = pd.DataFrame(loaded_data["day_plan"])
+    if loaded_data.get("proj_plan"):
+        st.session_state["proj_plan_df"] = pd.DataFrame(loaded_data["proj_plan"])
+    if loaded_data.get("planner_days"):
+        st.session_state["planner_days"] = loaded_data["planner_days"]
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
     for i in range(len(st.session_state['stations'])):
@@ -215,7 +221,12 @@ with st.sidebar:
             "Viscosity (cSt)": [10.0],
             "Density (kg/m³)": [850.0]
         })
-    mode = st.radio("Choose input mode", ["Flow rate", "Daily Pumping Schedule"], horizontal=True, key="op_mode")
+    mode = st.radio(
+        "Choose input mode",
+        ["Flow rate", "Daily Pumping Schedule", "Pumping planner"],
+        horizontal=True,
+        key="op_mode",
+    )
 
     if mode == "Flow rate":
         # Flow rate is already captured as FLOW above.
@@ -231,7 +242,7 @@ with st.sidebar:
             st.session_state["linefill_vol_df"],
             num_rows="dynamic", key="linefill_vol_editor"
         )
-    else:
+    elif mode == "Daily Pumping Schedule":
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
@@ -255,6 +266,37 @@ with st.sidebar:
         st.session_state["day_plan_df"] = st.data_editor(
             st.session_state["day_plan_df"],
             num_rows="dynamic", key="day_plan_editor"
+        )
+    else:
+        st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
+        if "linefill_vol_df" not in st.session_state:
+            st.session_state["linefill_vol_df"] = pd.DataFrame({
+                "Product": ["Product-1","Product-2","Product-3"],
+                "Volume (m³)": [50000.0, 40000.0, 15000.0],
+                "Viscosity (cSt)": [5.0, 12.0, 15.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0]
+            })
+        st.session_state["linefill_vol_df"] = st.data_editor(
+            st.session_state["linefill_vol_df"],
+            num_rows="dynamic", key="linefill_vol_editor"
+        )
+        st.session_state["planner_days"] = st.number_input(
+            "Number of days in Projected Pumping Plan",
+            min_value=1.0,
+            step=1.0,
+            value=float(st.session_state.get("planner_days", 1.0)),
+        )
+        st.markdown("**Projected Pumping Plan (Order of Pumping)**")
+        if "proj_plan_df" not in st.session_state:
+            st.session_state["proj_plan_df"] = pd.DataFrame({
+                "Product": ["Product-4","Product-5","Product-6","Product-7"],
+                "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
+                "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
+                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0]
+            })
+        st.session_state["proj_plan_df"] = st.data_editor(
+            st.session_state["proj_plan_df"],
+            num_rows="dynamic", key="proj_plan_editor"
         )
 
 
@@ -545,6 +587,8 @@ def get_full_case_dict():
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
+        "proj_plan": st.session_state.get('proj_plan_df', pd.DataFrame()).to_dict(orient="records"),
+        "planner_days": st.session_state.get('planner_days', 1.0),
         **{
             f"head_data_{i+1}": (
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
@@ -1404,7 +1448,88 @@ if not auto_batch:
                 lf_all.to_csv(index=False, float_format="%.2f"),
                 file_name="linefill_snapshots.csv",
             )
+    st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
+    run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    if run_plan:
+        with st.spinner("Running dynamic pumping plan optimization..."):
+            import copy
+            stations_base = copy.deepcopy(st.session_state.stations)
+            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+
+            vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
+            if vol_df is None or len(vol_df) == 0:
+                st.error("Please enter linefill (volumetric) data.")
+                st.stop()
+
+            plan_df = st.session_state.get("proj_plan_df", pd.DataFrame())
+            total_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
+            days = float(st.session_state.get("planner_days", 1.0))
+            if days <= 0:
+                st.error("Number of days must be positive.")
+                st.stop()
+            FLOW_dyn = total_m3 / days / 24.0 if total_m3 > 0 else st.session_state.get("FLOW", 1000.0)
+
+            kv_list, rho_list = map_vol_linefill_to_segments(vol_df, stations_base)
+
+            import pandas as pd
+            import numpy as np
+            for idx, stn in enumerate(stations_base, start=1):
+                if stn.get('is_pump', False):
+                    if idx == 1 and 'pump_types' in stn:
+                        for ptype in ['A', 'B']:
+                            if ptype not in stn['pump_types']:
+                                continue
+                            if stn['pump_types'][ptype].get('available', 0) == 0:
+                                continue
+                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            stn['pump_types'][ptype]['head_data'] = dfh
+                            stn['pump_types'][ptype]['eff_data'] = dfe
+                    else:
+                        dfh = st.session_state.get(f"head_data_{idx}")
+                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        if dfh is None and "head_data" in stn:
+                            dfh = pd.DataFrame(stn["head_data"])
+                        if dfe is None and "eff_data" in stn:
+                            dfe = pd.DataFrame(stn["eff_data"])
+                        if dfh is not None and len(dfh) >= 3:
+                            Qh = dfh.iloc[:, 0].values
+                            Hh = dfh.iloc[:, 1].values
+                            coeff = np.polyfit(Qh, Hh, 2)
+                            stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                        if dfe is not None and len(dfe) >= 5:
+                            Qe = dfe.iloc[:, 0].values
+                            Ee = dfe.iloc[:, 1].values
+                            coeff_e = np.polyfit(Qe, Ee, 4)
+                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+
+            res = solve_pipeline(
+                stations_base,
+                term_data,
+                FLOW_dyn,
+                kv_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                vol_df.to_dict(),
+                dra_reach_km=0.0,
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                hours=24.0 * days,
+            )
+
+            if not res or res.get("error"):
+                msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
+                st.error(msg)
+                for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
+                    st.session_state.pop(k, None)
+            else:
+                st.session_state["last_res"] = copy.deepcopy(res)
+                st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_base))
+                st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                st.session_state["last_linefill"] = copy.deepcopy(vol_df)
+                st.rerun()
 
 
 if not auto_batch:
