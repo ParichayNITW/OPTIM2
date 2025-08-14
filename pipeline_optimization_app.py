@@ -907,49 +907,57 @@ def shift_vol_linefill(
 
 
 # Build a summary dataframe from solver results
-def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: pd.DataFrame | None, drop_unused: bool = True) -> pd.DataFrame:
-    """Create station-wise summary table matching the Optimization Results view."""
+def build_summary_dataframe(
+    res: dict,
+    stations_data: list[dict],
+    linefill_df: pd.DataFrame | None,
+    drop_unused: bool = True,
+) -> pd.DataFrame:
+    """Create station-wise summary table matching the Optimization Results view.
 
-    if linefill_df is not None and len(linefill_df):
-        if "Start (km)" in linefill_df.columns:
-            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
-        else:
-            kv_list, _ = map_vol_linefill_to_segments(linefill_df, stations_data)
-    else:
-        kv_list = [0.0] * len(stations_data)
+    The earlier implementation re-computed DRA dosage using the linefill table
+    and drag-reduction percentages, which could drift from the values returned
+    by the optimizer and shown in other tables.  To keep the summary consistent
+    with the per-interval station tables and plots, the summary now pulls all
+    fields directly from ``res`` without recalculating them.
+    """
 
-    names = [s['name'] for s in stations_data]
-    keys = [n.lower().replace(' ', '_') for n in names]
-
-    station_ppm = {}
-    for idx, stn in enumerate(stations_data):
-        key = keys[idx]
-        dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-        dr_max = stn.get('max_dr', 0.0)
-        viscosity = kv_list[idx] if idx < len(kv_list) else 0.0
-        dr_use = min(dr_opt, dr_max)
-        station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
-
-    segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
-    pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
+    names = [s["name"] for s in stations_data]
+    keys = [n.lower().replace(" ", "_") for n in names]
 
     params = [
-        "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power & Fuel Cost (INR)", "DRA Cost (INR)",
-        "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
-        "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
-        "Residual Head (m)", "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
-        "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
+        "Pipeline Flow (m³/hr)",
+        "Pump Flow (m³/hr)",
+        "Power & Fuel Cost (INR)",
+        "DRA Cost (INR)",
+        "DRA PPM",
+        "No. of Pumps",
+        "Pump Speed (rpm)",
+        "Pump Eff (%)",
+        "Pump BKW (kW)",
+        "Motor Input (kW)",
+        "Reynolds No.",
+        "Head Loss (m)",
+        "Head Loss (kg/cm²)",
+        "Vel (m/s)",
+        "Residual Head (m)",
+        "Residual Head (kg/cm²)",
+        "SDH (m)",
+        "SDH (kg/cm²)",
+        "MAOP (m)",
+        "MAOP (kg/cm²)",
+        "Drag Reduction (%)",
     ]
     summary = {"Parameters": params}
 
     for idx, nm in enumerate(names):
         key = keys[idx]
         summary[nm] = [
-            segment_flows[idx],
-            pump_flows[idx] if idx < len(pump_flows) and not pd.isna(pump_flows[idx]) else np.nan,
+            res.get(f"pipeline_flow_{key}", np.nan),
+            res.get(f"pump_flow_{key}", np.nan),
             res.get(f"power_cost_{key}", 0.0),
             res.get(f"dra_cost_{key}", 0.0),
-            station_ppm.get(key, np.nan),
+            res.get(f"dra_ppm_{key}", 0.0),
             int(res.get(f"num_pumps_{key}", 0)),
             res.get(f"speed_{key}", 0.0),
             res.get(f"efficiency_{key}", 0.0),
@@ -970,14 +978,14 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
     df_sum = pd.DataFrame(summary)
     if drop_unused:
-        drop_cols = []
+        drop_cols: list[str] = []
         for stn in stations_data:
-            key = stn['name'].lower().replace(' ', '_')
-            if stn.get('is_pump', False):
+            key = stn["name"].lower().replace(" ", "_")
+            if stn.get("is_pump", False):
                 if int(res.get(f"num_pumps_{key}", 0)) == 0 and float(res.get(f"drag_reduction_{key}", 0)) == 0:
-                    drop_cols.append(stn['name'])
+                    drop_cols.append(stn["name"])
         if drop_cols:
-            df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
+            df_sum.drop(columns=drop_cols, inplace=True, errors="ignore")
     return df_sum.round(2)
 
 
