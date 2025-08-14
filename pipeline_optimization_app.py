@@ -243,54 +243,58 @@ with st.sidebar:
                 "Product": ["Product-1"],
                 "Volume (m³)": [50000.0],
                 "Viscosity (cSt)": [5.0],
-                "Density (kg/m³)": [810.0]
+                "Density (kg/m³)": [810.0],
             })
-        st.data_editor(
+        lf_df = st.data_editor(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
-            key="linefill_vol_df",
+            key="linefill_vol_editor",
         )
+        st.session_state["linefill_vol_df"] = lf_df
     elif mode == "Daily Pumping Schedule":
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
-                "Product": ["Product-1","Product-2","Product-3"],
+                "Product": ["Product-1", "Product-2", "Product-3"],
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
-                "Density (kg/m³)": [810.0, 825.0, 865.0]
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
             })
-        st.data_editor(
+        lf_df = st.data_editor(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
-            key="linefill_vol_df",
+            key="linefill_vol_editor",
         )
+        st.session_state["linefill_vol_df"] = lf_df
         st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
         if "day_plan_df" not in st.session_state:
             st.session_state["day_plan_df"] = pd.DataFrame({
-                "Product": ["Product-4","Product-5","Product-6","Product-7"],
+                "Product": ["Product-4", "Product-5", "Product-6", "Product-7"],
                 "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
                 "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
-                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0]
+                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0],
             })
-        st.data_editor(
+        day_df = st.data_editor(
             st.session_state["day_plan_df"],
             num_rows="dynamic",
-            key="day_plan_df",
+            key="day_plan_editor",
         )
+        st.session_state["day_plan_df"] = day_df
     else:
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
-                "Product": ["Product-1","Product-2","Product-3"],
+                "Product": ["Product-1", "Product-2", "Product-3"],
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
-                "Density (kg/m³)": [810.0, 825.0, 865.0]
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
             })
-        st.data_editor(
+        lf_df = st.data_editor(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
-            key="linefill_vol_df",
+            key="linefill_vol_editor",
         )
+        st.session_state["linefill_vol_df"] = lf_df
         st.session_state["planner_days"] = st.number_input(
             "Number of days in Projected Pumping Plan",
             min_value=1.0,
@@ -305,16 +309,17 @@ with st.sidebar:
                 "End": [now + pd.Timedelta(hours=12), now + pd.Timedelta(hours=24)],
                 "Flow (m³/h)": [1000.0, 800.0],
             })
-        st.data_editor(
+        proj_df = st.data_editor(
             st.session_state["proj_plan_df"],
             num_rows="dynamic",
-            key="proj_plan_df",
+            key="proj_plan_editor",
             column_config={
                 "Start": st.column_config.DatetimeColumn("Start", format="DD/MM/YY HH:mm"),
                 "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm"),
                 "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)", format="%.2f"),
             },
         )
+        st.session_state["proj_plan_df"] = proj_df
 
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
@@ -448,8 +453,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             df_head = st.data_editor(
                                 st.session_state[key_head],
                                 num_rows="dynamic",
-                                key=key_head,
+                                key=f"{key_head}_editor",
                             )
+                            st.session_state[key_head] = df_head
 
                             key_eff = f"eff_data_{idx}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
@@ -457,8 +463,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             df_eff = st.data_editor(
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
-                                key=key_eff,
+                                key=f"{key_eff}_editor",
                             )
+                            st.session_state[key_eff] = df_eff
 
                             pcol1, pcol2, pcol3 = st.columns(3)
                             with pcol1:
@@ -501,8 +508,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     df_head = st.data_editor(
                         st.session_state[key_head],
                         num_rows="dynamic",
-                        key=key_head,
+                        key=f"{key_head}_editor",
                     )
+                    st.session_state[key_head] = df_head
 
                     key_eff = f"eff_data_{idx}"
                     if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
@@ -510,8 +518,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     df_eff = st.data_editor(
                         st.session_state[key_eff],
                         num_rows="dynamic",
-                        key=key_eff,
+                        key=f"{key_eff}_editor",
                     )
+                    st.session_state[key_eff] = df_eff
 
                     pcol1, pcol2, pcol3 = st.columns(3)
                     with pcol1:
@@ -537,8 +546,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = st.data_editor(
                 st.session_state[key_peak],
                 num_rows="dynamic",
-                key=key_peak,
+                key=f"{key_peak}_editor",
             )
+            st.session_state[key_peak] = peak_df
 
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
