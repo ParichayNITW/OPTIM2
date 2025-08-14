@@ -157,7 +157,11 @@ def restore_case_dict(loaded_data):
     if loaded_data.get("day_plan"):
         st.session_state["day_plan_df"] = pd.DataFrame(loaded_data["day_plan"])
     if loaded_data.get("proj_plan"):
-        st.session_state["proj_plan_df"] = pd.DataFrame(loaded_data["proj_plan"])
+        df_proj = pd.DataFrame(loaded_data["proj_plan"])
+        for col in ["Start", "End"]:
+            if col in df_proj.columns:
+                df_proj[col] = pd.to_datetime(df_proj[col])
+        st.session_state["proj_plan_df"] = df_proj
     if loaded_data.get("planner_days"):
         st.session_state["planner_days"] = loaded_data["planner_days"]
     if "linefill" in loaded_data and loaded_data["linefill"]:
@@ -291,15 +295,21 @@ with st.sidebar:
         )
         st.markdown("**Projected Pumping Plan (Order of Pumping)**")
         if "proj_plan_df" not in st.session_state:
+            now = pd.Timestamp.now().floor("H")
             st.session_state["proj_plan_df"] = pd.DataFrame({
-                "Product": ["Product-4","Product-5","Product-6","Product-7"],
-                "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
-                "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
-                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0]
+                "Start": [now, now + pd.Timedelta(hours=12)],
+                "End": [now + pd.Timedelta(hours=12), now + pd.Timedelta(hours=24)],
+                "Flow (m³/h)": [1000.0, 800.0],
             })
         st.session_state["proj_plan_df"] = st.data_editor(
             st.session_state["proj_plan_df"],
-            num_rows="dynamic", key="proj_plan_editor"
+            num_rows="dynamic",
+            key="proj_plan_editor",
+            column_config={
+                "Start": st.column_config.DatetimeColumn("Start", format="DD/MM/YY HH:mm"),
+                "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm"),
+                "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)", format="%.2f"),
+            },
         )
 
 
@@ -576,6 +586,16 @@ def get_full_case_dict():
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
+    proj_df = st.session_state.get('proj_plan_df', pd.DataFrame())
+    if isinstance(proj_df, pd.DataFrame) and len(proj_df):
+        proj_df = proj_df.copy()
+        for c in ["Start", "End"]:
+            if c in proj_df.columns:
+                proj_df[c] = pd.to_datetime(proj_df[c]).dt.strftime("%Y-%m-%d %H:%M:%S")
+        proj_plan = proj_df.to_dict(orient="records")
+    else:
+        proj_plan = []
+
     return {
         "stations": st.session_state.get('stations', []),
         "terminal": {
@@ -590,7 +610,7 @@ def get_full_case_dict():
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
-        "proj_plan": st.session_state.get('proj_plan_df', pd.DataFrame()).to_dict(orient="records"),
+        "proj_plan": proj_plan,
         "planner_days": st.session_state.get('planner_days', 1.0),
         **{
             f"head_data_{i+1}": (
@@ -1487,12 +1507,27 @@ if not auto_batch:
                 st.stop()
 
             plan_df = st.session_state.get("proj_plan_df", pd.DataFrame())
-            total_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
+            total_m3 = 0.0
+            if len(plan_df):
+                plan_df = plan_df.copy()
+                plan_df["Start"] = pd.to_datetime(plan_df["Start"])
+                plan_df["End"] = pd.to_datetime(plan_df["End"])
+                plan_df["Duration_hr"] = (
+                    plan_df["End"] - plan_df["Start"]
+                ).dt.total_seconds() / 3600.0
+                total_m3 = (
+                    plan_df["Flow (m³/h)"].astype(float) * plan_df["Duration_hr"]
+                ).sum()
             days = float(st.session_state.get("planner_days", 1.0))
             if days <= 0:
                 st.error("Number of days must be positive.")
                 st.stop()
-            FLOW_dyn = total_m3 / days / 24.0 if total_m3 > 0 else st.session_state.get("FLOW", 1000.0)
+            FLOW_dyn = (
+                total_m3 / (days * 24.0)
+                if total_m3 > 0
+                else st.session_state.get("FLOW", 1000.0)
+            )
+            run_hours = 24.0 * days
 
             kv_list, rho_list = map_vol_linefill_to_segments(vol_df, stations_base)
 
@@ -1528,6 +1563,7 @@ if not auto_batch:
                             coeff_e = np.polyfit(Qe, Ee, 4)
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
+            plan_start = plan_df["Start"].min() if len(plan_df) else pd.Timestamp.now()
             res = solve_pipeline(
                 stations_base,
                 term_data,
@@ -1539,7 +1575,7 @@ if not auto_batch:
                 vol_df.to_dict(),
                 dra_reach_km=0.0,
                 mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                hours=24.0 * days,
+                hours=run_hours,
             )
 
             if not res or res.get("error"):
@@ -1552,6 +1588,8 @@ if not auto_batch:
                 st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_base))
                 st.session_state["last_term_data"] = copy.deepcopy(term_data)
                 st.session_state["last_linefill"] = copy.deepcopy(vol_df)
+                st.session_state["last_plan_start"] = plan_start
+                st.session_state["last_plan_hours"] = run_hours
                 st.rerun()
 
 
@@ -1577,6 +1615,21 @@ if not auto_batch:
             terminal_name = st.session_state["last_term_data"]["name"]
             names = [s['name'] for s in stations_data] + [terminal_name]
     
+            # --- Display plan timing and table if available ---
+            plan_start = st.session_state.get("last_plan_start")
+            plan_hours = st.session_state.get("last_plan_hours")
+            if plan_start is not None and plan_hours:
+                plan_end = plan_start + pd.Timedelta(hours=plan_hours)
+                st.markdown(
+                    f"**Pumping plan duration:** {plan_start.strftime('%d/%m/%y %H:%M')} to {plan_end.strftime('%d/%m/%y %H:%M')}**"
+                )
+                sched_df = st.session_state.get("proj_plan_df", pd.DataFrame()).copy()
+                if not sched_df.empty and "Start" in sched_df and "End" in sched_df:
+                    sched_disp = sched_df.copy()
+                    sched_disp["Start"] = pd.to_datetime(sched_disp["Start"]).dt.strftime("%d/%m/%y %H:%M")
+                    sched_disp["End"] = pd.to_datetime(sched_disp["End"]).dt.strftime("%d/%m/%y %H:%M")
+                    st.dataframe(sched_disp, use_container_width=True)
+
             # --- Use flows from backend output only ---
             segment_flows = []
             pump_flows = []
@@ -1584,7 +1637,7 @@ if not auto_batch:
                 key = nm.lower().replace(' ', '_')
                 segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
                 pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
-                
+
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
             names = [s['name'] for s in stations_data]
             keys = [n.lower().replace(' ', '_') for n in names]
