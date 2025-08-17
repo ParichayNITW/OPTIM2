@@ -48,9 +48,11 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
 RPM_STEP = 100
 DRA_STEP = 5
 # Residual head precision (decimal places) used when bucketing states during the
-# dynamic-programming search.  Using a modest precision keeps the state space
-# tractable while still providing near-global optimality.
-RESIDUAL_ROUND = 1
+# dynamic-programming search.  Rounding to integer metres drastically limits the
+# number of dynamic-programming states that must be explored, which keeps the
+# solver responsive even for large networks while still yielding near-optimal
+# solutions.
+RESIDUAL_ROUND = 0
 
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
@@ -484,7 +486,7 @@ def solve_pipeline(
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
     states: dict[float, dict] = {
-        round(init_residual, 2): {
+        round(init_residual, RESIDUAL_ROUND): {
             'cost': 0.0,
             'residual': init_residual,
             'records': [],
@@ -494,9 +496,15 @@ def solve_pipeline(
         }
     }
 
-    for stn_data in station_opts:
+    best_cost = float('inf')
+    total_stations = len(station_opts)
+    for idx, stn_data in enumerate(station_opts, start=1):
+        if verbose:
+            print(f"Evaluating {stn_data['orig_name']} ({idx}/{total_stations})")
         new_states: dict[float, dict] = {}
         for state in states.values():
+            if state['cost'] >= best_cost:
+                continue
             for opt in stn_data['options']:
                 reach_prev = state.get('reach', 0.0)
                 reach_after = reach_prev
@@ -618,6 +626,8 @@ def solve_pipeline(
                     })
 
                 new_cost = state['cost'] + opt['cost']
+                if new_cost >= best_cost:
+                    continue
                 bucket = round(residual_next, RESIDUAL_ROUND)
                 new_record_list = state['records'] + [record]
                 if bucket not in new_states or new_cost < new_states[bucket]['cost']:
@@ -632,6 +642,7 @@ def solve_pipeline(
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         states = new_states
+        best_cost = min(best_cost, min(s['cost'] for s in states.values()))
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
