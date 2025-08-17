@@ -23,8 +23,8 @@ def head_to_kgcm2(head_m: float, rho: float) -> float:
     return head_m * rho / 10000.0
 
 
-def generate_origin_combinations(maxA: int = 2, maxB: int = 2) -> list[tuple[int, int]]:
-    """Return all feasible pump count combinations for the origin station."""
+def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, int]]:
+    """Return all feasible pump count combinations for two pump types."""
     combos = [
         (a, b)
         for a in range(maxA + 1)
@@ -521,7 +521,7 @@ def solve_pipeline(
     return result
 
 
-def solve_pipeline_multi_origin(
+def solve_pipeline_with_types(
     stations: list[dict],
     terminal: dict,
     FLOW: float,
@@ -534,98 +534,91 @@ def solve_pipeline_multi_origin(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
 ) -> dict:
-    """Enumerate pump type combinations at the origin and call ``solve_pipeline``."""
-
-    origin_index = next(i for i, s in enumerate(stations) if s.get('is_pump', False))
-    origin_station = stations[origin_index]
-    pump_types = origin_station.get('pump_types', {})
-    combos = generate_origin_combinations(
-        pump_types.get('A', {}).get('available', 0),
-        pump_types.get('B', {}).get('available', 0),
-    )
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
     best_result = None
     best_cost = float('inf')
     best_stations = None
+    N = len(stations)
 
-    for numA, numB in combos:
-        if numA > 0 and not pump_types.get('A'):
-            continue
-        if numB > 0 and not pump_types.get('B'):
-            continue
+    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
+        nonlocal best_result, best_cost, best_stations
+        if pos >= N:
+            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+            if result.get("error"):
+                return
+            cost = result.get("total_cost", float('inf'))
+            if cost < best_cost:
+                best_cost = cost
+                best_result = result
+                best_stations = stn_acc
+            return
 
-        stations_combo: list[dict] = []
-        kv_combo: list[float] = []
-        rho_combo: list[float] = []
+        stn = stations[pos]
+        kv = KV_list[pos]
+        rho = rho_list[pos]
 
-        name_base = origin_station['name']
-        pump_units = []
-        for ptype, count in [('A', numA), ('B', numB)]:
-            pdata = pump_types.get(ptype)
-            for n in range(count):
-                unit = {
-                    'name': f"{name_base}_{ptype}{n + 1}",
-                    'pump_name': pdata.get('name', f'Type {ptype}') if pdata else f'Type {ptype}',
-                    'elev': origin_station.get('elev', 0.0),
-                    'D': origin_station.get('D'),
-                    't': origin_station.get('t'),
-                    'SMYS': origin_station.get('SMYS'),
-                    'rough': origin_station.get('rough'),
-                    'L': 0.0,
-                    'is_pump': True,
-                    'head_data': pdata.get('head_data') if pdata else None,
-                    'eff_data': pdata.get('eff_data') if pdata else None,
-                    'A': pdata.get('A', 0.0) if pdata else 0.0,
-                    'B': pdata.get('B', 0.0) if pdata else 0.0,
-                    'C': pdata.get('C', 0.0) if pdata else 0.0,
-                    'P': pdata.get('P', 0.0) if pdata else 0.0,
-                    'Q': pdata.get('Q', 0.0) if pdata else 0.0,
-                    'R': pdata.get('R', 0.0) if pdata else 0.0,
-                    'S': pdata.get('S', 0.0) if pdata else 0.0,
-                    'T': pdata.get('T', 0.0) if pdata else 0.0,
-                    'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
-                    'rate': pdata.get('rate', 0.0) if pdata else 0.0,
-                    'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
-                    'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
-                    'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
-                    'max_pumps': 1,
-                    'min_pumps': 1,
-                    'delivery': 0.0,
-                    'supply': 0.0,
-                    'max_dr': 0.0,
-                }
-                pump_units.append(unit)
-                kv_combo.append(KV_list[0])
-                rho_combo.append(rho_list[0])
+        if stn.get('pump_types'):
+            combos = generate_type_combinations(
+                stn['pump_types'].get('A', {}).get('available', 0),
+                stn['pump_types'].get('B', {}).get('available', 0),
+            )
+            for numA, numB in combos:
+                units: list[dict] = []
+                name_base = stn['name']
+                for ptype, count in [('A', numA), ('B', numB)]:
+                    pdata = stn['pump_types'].get(ptype)
+                    for n in range(count):
+                        unit = {
+                            'name': f"{name_base}_{ptype}{n + 1}",
+                            'pump_name': pdata.get('name', f'Type {ptype}') if pdata else f'Type {ptype}',
+                            'elev': stn.get('elev', 0.0),
+                            'D': stn.get('D'),
+                            't': stn.get('t'),
+                            'SMYS': stn.get('SMYS'),
+                            'rough': stn.get('rough'),
+                            'L': 0.0,
+                            'is_pump': True,
+                            'head_data': pdata.get('head_data') if pdata else None,
+                            'eff_data': pdata.get('eff_data') if pdata else None,
+                            'A': pdata.get('A', 0.0) if pdata else 0.0,
+                            'B': pdata.get('B', 0.0) if pdata else 0.0,
+                            'C': pdata.get('C', 0.0) if pdata else 0.0,
+                            'P': pdata.get('P', 0.0) if pdata else 0.0,
+                            'Q': pdata.get('Q', 0.0) if pdata else 0.0,
+                            'R': pdata.get('R', 0.0) if pdata else 0.0,
+                            'S': pdata.get('S', 0.0) if pdata else 0.0,
+                            'T': pdata.get('T', 0.0) if pdata else 0.0,
+                            'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
+                            'rate': pdata.get('rate', 0.0) if pdata else 0.0,
+                            'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
+                            'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
+                            'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
+                            'max_pumps': 1,
+                            'min_pumps': 1,
+                            'delivery': 0.0,
+                            'supply': 0.0,
+                            'max_dr': 0.0,
+                        }
+                        units.append(unit)
+                if not units:
+                    continue
+                units[0]['delivery'] = stn.get('delivery', 0.0)
+                units[0]['supply'] = stn.get('supply', 0.0)
+                min_res = 50.0 if pos == 0 else 0.0
+                units[0]['min_residual'] = stn.get('min_residual', min_res)
+                units[-1]['L'] = stn.get('L', 0.0)
+                units[-1]['max_dr'] = stn.get('max_dr', 0.0)
+                expand_all(pos + 1, stn_acc + units, kv_acc + [kv] * len(units), rho_acc + [rho] * len(units))
+        else:
+            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
 
-        if not pump_units:
-            continue
-
-        pump_units[0]['delivery'] = origin_station.get('delivery', 0.0)
-        pump_units[0]['supply'] = origin_station.get('supply', 0.0)
-        pump_units[0]['min_residual'] = origin_station.get('min_residual', 50.0)
-        pump_units[-1]['L'] = origin_station.get('L', 0.0)
-        pump_units[-1]['max_dr'] = origin_station.get('max_dr', 0.0)
-
-        stations_combo.extend(pump_units)
-        stations_combo.extend(copy.deepcopy(stations[origin_index + 1:]))
-        kv_combo.extend(KV_list[1:])
-        rho_combo.extend(rho_list[1:])
-
-        result = solve_pipeline(stations_combo, terminal, FLOW, kv_combo, rho_combo, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
-        if result.get("error"):
-            continue
-        cost = result.get("total_cost", float('inf'))
-        if cost < best_cost:
-            best_cost = cost
-            best_result = result
-            best_stations = stations_combo
-            best_result['pump_combo'] = {'A': numA, 'B': numB}
+    expand_all(0, [], [], [])
 
     if best_result is None:
         return {
             "error": True,
-            "message": "No feasible pump combination found for originating station.",
+            "message": "No feasible pump combination found for stations.",
         }
 
     best_result['stations_used'] = best_stations

@@ -445,11 +445,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
             if stn['is_pump']:
-                if idx == 1:
-                    stn.setdefault('pump_types', {})
-                    pump_tabs = st.tabs(["Type A", "Type B"])
-                    for tab_idx, ptype in enumerate(['A', 'B']):
-                        with pump_tabs[tab_idx]:
+                stn.setdefault('pump_types', {})
+                pump_tabs = st.tabs(["Type A", "Type B"])
+                for tab_idx, ptype in enumerate(['A', 'B']):
+                    with pump_tabs[tab_idx]:
                             pdata = stn.get('pump_types', {}).get(ptype, {})
                             enabled = st.checkbox(
                                 f"Use Pump Type {ptype}",
@@ -459,7 +458,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             avail = st.number_input(
                                 "Available Pumps",
                                 min_value=0,
-                                max_value=2,
+                                max_value=3,
                                 step=1,
                                 value=int(pdata.get('available', 0)),
                                 key=f"avail{idx}{ptype}"
@@ -539,53 +538,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         all_names.extend(pn[:avail])
                     stn['pump_names'] = all_names
                     stn['pump_name'] = all_names[0] if all_names else ''
-                else:
-                    names = stn.get('pump_names', [])
-                    if len(names) < stn['max_pumps']:
-                        names += [f'Pump {idx}-{i+1}' for i in range(len(names), stn['max_pumps'])]
-                    for j in range(stn['max_pumps']):
-                        names[j] = st.text_input(
-                            f"Pump {j+1} Name",
-                            value=names[j],
-                            key=f"pname{idx}_{j}"
-                        )
-                    stn['pump_names'] = names
-                    stn['pump_name'] = names[0] if names else ''
-
-                    key_head = f"head_data_{idx}"
-                    if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
-                        st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                    df_head = st.data_editor(
-                        st.session_state[key_head],
-                        num_rows="dynamic",
-                        key=f"{key_head}_editor",
-                    )
-                    st.session_state[key_head] = df_head
-
-                    key_eff = f"eff_data_{idx}"
-                    if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
-                        st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                    df_eff = st.data_editor(
-                        st.session_state[key_eff],
-                        num_rows="dynamic",
-                        key=f"{key_eff}_editor",
-                    )
-                    st.session_state[key_eff] = df_eff
-
-                    pcol1, pcol2, pcol3 = st.columns(3)
-                    with pcol1:
-                        stn['power_type'] = st.selectbox("Power Source", ["Grid", "Diesel"],
-                                                        index=0 if stn['power_type']=="Grid" else 1, key=f"ptype{idx}")
-                    with pcol2:
-                        stn['MinRPM'] = st.number_input("Min RPM", value=stn['MinRPM'], key=f"minrpm{idx}")
-                        stn['DOL'] = st.number_input("Rated RPM", value=stn['DOL'], key=f"dol{idx}")
-                    with pcol3:
-                        if stn['power_type']=="Grid":
-                            stn['rate'] = st.number_input("Elec Rate (INR/kWh)", value=stn.get('rate',9.0), key=f"rate{idx}")
-                            stn['sfc'] = 0.0
-                        else:
-                            stn['sfc'] = st.number_input("SFC (gm/bhp·hr)", value=stn.get('sfc',150.0), key=f"sfc{idx}")
-                            stn['rate'] = 0.0
             else:
                 st.info("Not a pumping station. No pump data required.")
 
@@ -614,7 +566,7 @@ def get_full_case_dict():
 
     for idx, stn in enumerate(st.session_state.get('stations', []), start=1):
         if stn.get('is_pump', False):
-            if idx == 1 and 'pump_types' in stn:
+            if 'pump_types' in stn:
                 for ptype in ['A', 'B']:
                     pdata = stn['pump_types'].get(ptype, {})
                     dfh = st.session_state.get(f"head_data_{idx}{ptype}")
@@ -1105,8 +1057,8 @@ def solve_pipeline(
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
     try:
-        if stations and stations[0].get('pump_types'):
-            return pipeline_model.solve_pipeline_multi_origin(
+        if any(s.get('pump_types') for s in stations):
+            return pipeline_model.solve_pipeline_with_types(
                 stations,
                 terminal,
                 FLOW,
@@ -1421,7 +1373,7 @@ if not auto_batch:
     
             for idx, stn in enumerate(stations_data, start=1):
                 if stn.get('is_pump', False):
-                    if idx == 1 and 'pump_types' in stn:
+                    if 'pump_types' in stn:
                         for ptype in ['A', 'B']:
                             if ptype not in stn['pump_types']:
                                 continue
