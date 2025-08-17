@@ -597,16 +597,30 @@ def get_full_case_dict():
                         dfh = pd.DataFrame(pdata['head_data'])
                     if dfe is None and pdata.get('eff_data') is not None:
                         dfe = pd.DataFrame(pdata['eff_data'])
-                    if dfh is not None and len(dfh) >= 3:
+                    if (
+                        dfh is not None
+                        and len(dfh) >= 3
+                        and not all(k in pdata for k in ('A', 'B', 'C'))
+                    ):
                         Qh = dfh.iloc[:, 0].values
                         Hh = dfh.iloc[:, 1].values
                         coeff = np.polyfit(Qh, Hh, 2)
-                        pdata['A'], pdata['B'], pdata['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                    if dfe is not None and len(dfe) >= 5:
+                        pdata['A'], pdata['B'], pdata['C'] = (
+                            float(coeff[0]),
+                            float(coeff[1]),
+                            float(coeff[2]),
+                        )
+                    if (
+                        dfe is not None
+                        and len(dfe) >= 5
+                        and not all(k in pdata for k in ('P', 'Q', 'R', 'S', 'T'))
+                    ):
                         Qe = dfe.iloc[:, 0].values
                         Ee = dfe.iloc[:, 1].values
                         coeff_e = np.polyfit(Qe, Ee, 4)
-                        pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
+                        pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [
+                            float(c) for c in coeff_e
+                        ]
                     pdata['head_data'] = dfh.to_dict(orient="records") if isinstance(dfh, pd.DataFrame) else None
                     pdata['eff_data'] = dfe.to_dict(orient="records") if isinstance(dfe, pd.DataFrame) else None
                     pdata['available'] = pdata.get('available', 0)
@@ -618,16 +632,30 @@ def get_full_case_dict():
                     dfh = pd.DataFrame(stn["head_data"])
                 if dfe is None and "eff_data" in stn:
                     dfe = pd.DataFrame(stn["eff_data"])
-                if dfh is not None and len(dfh) >= 3:
+                if (
+                    dfh is not None
+                    and len(dfh) >= 3
+                    and not all(k in stn for k in ('A', 'B', 'C'))
+                ):
                     Qh = dfh.iloc[:, 0].values
                     Hh = dfh.iloc[:, 1].values
                     coeff = np.polyfit(Qh, Hh, 2)
-                    stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                if dfe is not None and len(dfe) >= 5:
+                    stn['A'], stn['B'], stn['C'] = (
+                        float(coeff[0]),
+                        float(coeff[1]),
+                        float(coeff[2]),
+                    )
+                if (
+                    dfe is not None
+                    and len(dfe) >= 5
+                    and not all(k in stn for k in ('P', 'Q', 'R', 'S', 'T'))
+                ):
                     Qe = dfe.iloc[:, 0].values
                     Ee = dfe.iloc[:, 1].values
                     coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [
+                        float(c) for c in coeff_e
+                    ]
 
     flow_df = st.session_state.get('proj_flow_df', pd.DataFrame())
     if isinstance(flow_df, pd.DataFrame) and len(flow_df):
@@ -700,11 +728,13 @@ def get_full_case_dict():
     }
 
 
+case_bytes = json.dumps(get_full_case_dict(), indent=2).encode("utf-8")
+
 st.sidebar.download_button(
     label="💾 Save Case",
-    data=json.dumps(get_full_case_dict(), indent=2),
+    data=case_bytes,
     file_name="pipeline_case.json",
-    mime="application/json"
+    mime="application/json",
 )
 
 def map_linefill_to_segments(linefill_df, stations):
