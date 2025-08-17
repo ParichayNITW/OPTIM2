@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from math import log10, pi
 import copy
+from functools import lru_cache
 
 from dra_utils import get_ppm_for_dr
 
@@ -52,6 +53,7 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     return vals
 
 
+@lru_cache(maxsize=None)
 def _segment_hydraulics(
     flow_m3h: float,
     L: float,
@@ -61,7 +63,13 @@ def _segment_hydraulics(
     dra_perc: float,
     dra_length: float | None = None,
 ) -> tuple[float, float, float, float]:
-    """Return (head_loss, velocity, reynolds, friction_factor).
+    """Return ``(head_loss, velocity, reynolds, friction_factor)``.
+
+    This function is performance critical and can be invoked thousands of
+    times during the dynamic-programming search.  Decorating it with
+    :func:`functools.lru_cache` automatically memoises results for unique input
+    combinations, which speeds up the optimisation without altering the
+    computed global minimum.
 
     ``dra_length`` expresses the portion of the segment length ``L`` (in km)
     that experiences drag reduction.  If ``dra_length`` is ``None`` or greater
@@ -108,19 +116,44 @@ def _parallel_segment_hydraulics(
 
     ``main`` and ``loop`` are dictionaries with keys ``L``, ``d_inner``, ``rough``,
     ``dra`` and ``dra_len`` describing each line.  The function returns the common
-    head loss and the (velocity, Re, f, flow) tuples for each path.
+    head loss and the ``(velocity, Re, f, flow)`` tuples for each path.  The
+    heavy lifting is delegated to a memoised helper so repeated evaluations with
+    identical parameters are fast.
     """
 
-    def calc(line_flow: float, data: dict) -> tuple[float, float, float, float]:
-        return _segment_hydraulics(
-            line_flow,
-            data['L'],
-            data['d_inner'],
-            data['rough'],
-            kv,
-            data.get('dra', 0.0),
-            data.get('dra_len'),
-        )
+    return _parallel_segment_hydraulics_cached(
+        flow_m3h,
+        main['L'],
+        main['d_inner'],
+        main['rough'],
+        main.get('dra', 0.0),
+        main.get('dra_len'),
+        loop['L'],
+        loop['d_inner'],
+        loop['rough'],
+        loop.get('dra', 0.0),
+        loop.get('dra_len'),
+        kv,
+    )
+
+
+@lru_cache(maxsize=None)
+def _parallel_segment_hydraulics_cached(
+    flow_m3h: float,
+    main_L: float,
+    main_d: float,
+    main_r: float,
+    main_dra: float,
+    main_dra_len: float | None,
+    loop_L: float,
+    loop_d: float,
+    loop_r: float,
+    loop_dra: float,
+    loop_dra_len: float | None,
+    kv: float,
+) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+    def calc(line_flow: float, L: float, d_inner: float, rough: float, dra: float, dra_len: float | None):
+        return _segment_hydraulics(line_flow, L, d_inner, rough, kv, dra, dra_len)
 
     lo, hi = 0.0, flow_m3h
     best = None
@@ -128,8 +161,8 @@ def _parallel_segment_hydraulics(
         mid = (lo + hi) / 2.0
         q_loop = mid
         q_main = flow_m3h - q_loop
-        hl_main, v_main, Re_main, f_main = calc(q_main, main)
-        hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop)
+        hl_main, v_main, Re_main, f_main = calc(q_main, main_L, main_d, main_r, main_dra, main_dra_len)
+        hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop_L, loop_d, loop_r, loop_dra, loop_dra_len)
         diff = hl_main - hl_loop
         best = (
             hl_main,
