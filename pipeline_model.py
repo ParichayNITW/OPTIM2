@@ -52,6 +52,39 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     return vals
 
 
+def _prune_options(opts: list[dict], limit: int = 80) -> list[dict]:
+    """Return a reduced set of pumping options.
+
+    The full Cartesian enumeration of pump counts, speeds and drag-reduction
+    levels can easily produce hundreds of candidates per station which in turn
+    explodes the dynamic-programming search space.  A simple Pareto-style
+    pruning keeps only the cheapest option for each delivered head bucket while
+    favouring configurations that move the drag-reduction front furthest.  The
+    resulting list is capped to ``limit`` entries to guarantee a finite upper
+    bound on complexity and considerably improve run time for large scenarios
+    like the daily scheduler.
+    """
+
+    buckets: dict[float, list[dict]] = {}
+    for opt in opts:
+        key = round(opt.get("tdh", 0.0), 2)
+        buckets.setdefault(key, []).append(opt)
+
+    pruned: list[dict] = []
+    for key, items in buckets.items():
+        items.sort(key=lambda o: (o["cost"], -o.get("travel_km", 0.0)))
+        best = None
+        for opt in items:
+            if (best is None or opt["cost"] < best["cost"] - 1e-6 or opt.get("travel_km", 0.0) > best.get("travel_km", 0.0)):
+                pruned.append(opt)
+                best = opt
+
+    if len(pruned) > limit:
+        pruned.sort(key=lambda o: o["cost"])
+        pruned = pruned[:limit]
+    return pruned
+
+
 def _segment_hydraulics(
     flow_m3h: float,
     L: float,
@@ -409,6 +442,7 @@ def solve_pipeline(
                 'dra_ppm': 0.0,
                 'cost': 0.0,
             })
+        opts = _prune_options(opts)
 
         station_opts.append({
             'name': name,
