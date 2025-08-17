@@ -298,6 +298,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    verbose: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.  This replaces the previous greedy approach and
@@ -680,6 +681,8 @@ def solve_pipeline(
     result['total_cost'] = total_cost
     result['dra_front_km'] = best_state.get('reach', 0.0)
     result['error'] = False
+    if verbose:
+        print(f"Global minimum total cost: {total_cost:.2f}")
     return result
 
 
@@ -695,6 +698,7 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    verbose: bool = False,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -706,7 +710,20 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+            result = solve_pipeline(
+                stn_acc,
+                terminal,
+                FLOW,
+                kv_acc,
+                rho_acc,
+                RateDRA,
+                Price_HSD,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                False,
+            )
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -795,4 +812,6 @@ def solve_pipeline_with_types(
         }
 
     best_result['stations_used'] = best_stations
+    if verbose:
+        print(f"Global minimum total cost: {best_cost:.2f}")
     return best_result
