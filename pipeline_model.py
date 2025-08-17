@@ -53,16 +53,18 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
 
 
 def _prune_options(opts: list[dict], limit: int = 80) -> list[dict]:
-    """Return a reduced set of pumping options.
+    """Return a reduced set of pumping options using a Pareto frontier.
 
-    The full Cartesian enumeration of pump counts, speeds and drag-reduction
-    levels can easily produce hundreds of candidates per station which in turn
-    explodes the dynamic-programming search space.  A simple Pareto-style
-    pruning keeps only the cheapest option for each delivered head bucket while
-    favouring configurations that move the drag-reduction front furthest.  The
-    resulting list is capped to ``limit`` entries to guarantee a finite upper
-    bound on complexity and considerably improve run time for large scenarios
-    like the daily scheduler.
+    Enumerating every combination of pump count, speed and drag reduction can
+    yield hundreds of options for a single station which quickly makes the
+    global search intractable.  Earlier versions kept only the cheapest option
+    for each total-dynamic-head bucket; however, a slightly more expensive
+    configuration that extends the drag-reduction reach could lead to a lower
+    overall cost once downstream savings are considered.  To avoid discarding
+    such globally optimal candidates, this routine now computes a full Pareto
+    frontier on cost and drag-reduction travel for every head bucket.  All
+    non‑dominated options are retained (subject to the global ``limit``) thus
+    preserving the ability of the dynamic program to find the true minimum.
     """
 
     buckets: dict[float, list[dict]] = {}
@@ -71,16 +73,29 @@ def _prune_options(opts: list[dict], limit: int = 80) -> list[dict]:
         buckets.setdefault(key, []).append(opt)
 
     pruned: list[dict] = []
-    for key, items in buckets.items():
+    for items in buckets.values():
         items.sort(key=lambda o: (o["cost"], -o.get("travel_km", 0.0)))
-        best = None
+        frontier: list[dict] = []
         for opt in items:
-            if (best is None or opt["cost"] < best["cost"] - 1e-6 or opt.get("travel_km", 0.0) > best.get("travel_km", 0.0)):
-                pruned.append(opt)
-                best = opt
+            cost = opt["cost"]
+            travel = opt.get("travel_km", 0.0)
+            dominated = False
+            for other in frontier:
+                if other["cost"] <= cost + 1e-9 and other.get("travel_km", 0.0) >= travel - 1e-9:
+                    dominated = True
+                    break
+            if dominated:
+                continue
+            frontier = [
+                f
+                for f in frontier
+                if not (cost <= f["cost"] + 1e-9 and travel >= f.get("travel_km", 0.0) - 1e-9)
+            ]
+            frontier.append(opt)
+        pruned.extend(frontier)
 
     if len(pruned) > limit:
-        pruned.sort(key=lambda o: o["cost"])
+        pruned.sort(key=lambda o: (o["cost"], -o.get("travel_km", 0.0)))
         pruned = pruned[:limit]
     return pruned
 
