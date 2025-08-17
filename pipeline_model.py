@@ -98,6 +98,53 @@ def _segment_hydraulics(
     return head_loss, v, Re, f
 
 
+def _parallel_segment_hydraulics(
+    flow_m3h: float,
+    main: dict,
+    loop: dict,
+    kv: float,
+) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Split ``flow_m3h`` between ``main`` and ``loop`` so both see the same head loss.
+
+    ``main`` and ``loop`` are dictionaries with keys ``L``, ``d_inner``, ``rough``,
+    ``dra`` and ``dra_len`` describing each line.  The function returns the common
+    head loss and the (velocity, Re, f, flow) tuples for each path.
+    """
+
+    def calc(line_flow: float, data: dict) -> tuple[float, float, float, float]:
+        return _segment_hydraulics(
+            line_flow,
+            data['L'],
+            data['d_inner'],
+            data['rough'],
+            kv,
+            data.get('dra', 0.0),
+            data.get('dra_len'),
+        )
+
+    lo, hi = 0.0, flow_m3h
+    best = None
+    for _ in range(30):
+        mid = (lo + hi) / 2.0
+        q_loop = mid
+        q_main = flow_m3h - q_loop
+        hl_main, v_main, Re_main, f_main = calc(q_main, main)
+        hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop)
+        diff = hl_main - hl_loop
+        best = (
+            hl_main,
+            (v_main, Re_main, f_main, q_main),
+            (v_loop, Re_loop, f_loop, q_loop),
+        )
+        if abs(diff) < 1e-6:
+            break
+        if diff > 0:
+            lo = mid
+        else:
+            hi = mid
+    return best
+
+
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
     """Return (tdh, efficiency) for ``stn`` at ``rpm`` and ``nop`` pumps."""
     dol = stn.get('DOL', rpm)
@@ -259,6 +306,35 @@ def solve_pipeline(
             maop_kgcm2 = min(maop_kgcm2, float(mop_kgcm2))
         maop_head = maop_kgcm2 * 10000.0 / rho if rho > 0 else 0.0
 
+        loop_info = stn.get('loopline')
+        loop_dict = None
+        if loop_info:
+            L_loop = loop_info.get('L', L)
+            if 'D' in loop_info:
+                t_loop = loop_info.get('t', default_t)
+                d_inner_loop = loop_info['D'] - 2 * t_loop
+                outer_loop = loop_info['D']
+            else:
+                d_inner_loop = loop_info.get('d', d_inner)
+                outer_loop = loop_info.get('d', outer_d)
+                t_loop = loop_info.get('t', default_t)
+            rough_loop = loop_info.get('rough', default_e)
+            SMYS_loop = loop_info.get('SMYS', SMYS)
+            maop_psi_loop = 2 * SMYS_loop * design_factor * (t_loop / outer_loop) if outer_loop > 0 else 0.0
+            maop_kg_loop = maop_psi_loop * 0.0703069
+            if mop_kgcm2 is not None:
+                maop_kg_loop = min(maop_kg_loop, float(mop_kgcm2))
+            maop_head_loop = maop_kg_loop * 10000.0 / rho if rho > 0 else 0.0
+            loop_dict = {
+                'name': loop_info.get('name', ''),
+                'L': L_loop,
+                'd_inner': d_inner_loop,
+                'rough': rough_loop,
+                'max_dr': loop_info.get('max_dr', 0.0),
+                'maop_head': maop_head_loop,
+                'maop_kgcm2': maop_kg_loop,
+            }
+
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
         elev_delta = elev_next - elev_i
@@ -349,6 +425,7 @@ def solve_pipeline(
             'min_residual_next': min_residual_next,
             'maop_head': maop_head,
             'maop_kgcm2': maop_kgcm2,
+            'loopline': loop_dict,
             'options': opts,
             'is_pump': stn.get('is_pump', False),
             'coef_A': float(stn.get('A', 0.0)),
@@ -384,19 +461,46 @@ def solve_pipeline(
                 reach_after = reach_prev
                 if opt['dra'] > 0:
                     reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
-                dra_len_here = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
-                effective_dra = opt['dra'] if dra_len_here > 0 else 0.0
-                head_loss, v, Re, f = _segment_hydraulics(
-                    stn_data['flow'],
-                    stn_data['L'],
-                    stn_data['d_inner'],
-                    stn_data['rough'],
-                    stn_data['kv'],
-                    effective_dra,
-                    dra_len_here,
-                )
+                dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
+                eff_dra_main = opt['dra'] if dra_len_main > 0 else 0.0
+                if stn_data.get('loopline'):
+                    loop = stn_data['loopline']
+                    dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
+                    eff_dra_loop = min(opt['dra'], loop.get('max_dr', 0.0)) if dra_len_loop > 0 else 0.0
+                    head_loss, main_stats, loop_stats = _parallel_segment_hydraulics(
+                        stn_data['flow'],
+                        {
+                            'L': stn_data['L'],
+                            'd_inner': stn_data['d_inner'],
+                            'rough': stn_data['rough'],
+                            'dra': eff_dra_main,
+                            'dra_len': dra_len_main,
+                        },
+                        {
+                            'L': loop['L'],
+                            'd_inner': loop['d_inner'],
+                            'rough': loop['rough'],
+                            'dra': eff_dra_loop,
+                            'dra_len': dra_len_loop,
+                        },
+                        stn_data['kv'],
+                    )
+                    v, Re, f, flow_main = main_stats
+                    v_loop, Re_loop, f_loop, flow_loop = loop_stats
+                else:
+                    head_loss, v, Re, f = _segment_hydraulics(
+                        stn_data['flow'],
+                        stn_data['L'],
+                        stn_data['d_inner'],
+                        stn_data['rough'],
+                        stn_data['kv'],
+                        eff_dra_main,
+                        dra_len_main,
+                    )
+                    flow_main = stn_data['flow']
+                    v_loop = Re_loop = f_loop = flow_loop = 0.0
                 sdh = state['residual'] + opt['tdh']
-                if sdh > stn_data['maop_head']:
+                if sdh > stn_data['maop_head'] or (stn_data.get('loopline') and sdh > stn_data['loopline']['maop_head']):
                     continue
                 residual_next = sdh - head_loss - stn_data['elev_delta']
                 if residual_next < stn_data['min_residual_next']:
@@ -404,6 +508,8 @@ def solve_pipeline(
                 record = {
                     f"pipeline_flow_{stn_data['name']}": stn_data['flow'],
                     f"pipeline_flow_in_{stn_data['name']}": stn_data['flow_in'],
+                    f"mainline_flow_{stn_data['name']}": flow_main,
+                    f"loopline_flow_{stn_data['name']}": flow_loop,
                     f"head_loss_{stn_data['name']}": head_loss,
                     f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(head_loss, stn_data['rho']),
                     f"residual_head_{stn_data['name']}": state['residual'],
@@ -427,6 +533,22 @@ def solve_pipeline(
                     f"min_rpm_{stn_data['name']}": stn_data['min_rpm'],
                     f"dol_{stn_data['name']}": stn_data['dol'],
                 }
+                if stn_data.get('loopline'):
+                    record.update({
+                        f"velocity_loop_{stn_data['name']}": v_loop,
+                        f"reynolds_loop_{stn_data['name']}": Re_loop,
+                        f"friction_loop_{stn_data['name']}": f_loop,
+                        f"maop_loop_{stn_data['name']}": stn_data['loopline']['maop_head'],
+                        f"maop_loop_kgcm2_{stn_data['name']}": stn_data['loopline']['maop_kgcm2'],
+                    })
+                else:
+                    record.update({
+                        f"velocity_loop_{stn_data['name']}": 0.0,
+                        f"reynolds_loop_{stn_data['name']}": 0.0,
+                        f"friction_loop_{stn_data['name']}": 0.0,
+                        f"maop_loop_{stn_data['name']}": 0.0,
+                        f"maop_loop_kgcm2_{stn_data['name']}": 0.0,
+                    })
                 if stn_data['is_pump']:
                     record.update({
                         f"pump_flow_{stn_data['name']}": stn_data['flow'],
