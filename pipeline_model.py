@@ -25,12 +25,19 @@ def head_to_kgcm2(head_m: float, rho: float) -> float:
 
 
 def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, int]]:
-    """Return all feasible pump count combinations for two pump types."""
+    """Return all feasible pump count combinations for two pump types.
+
+    ``(0, 0)`` is included so a station may be modelled as idle (no pumps
+    running).  Some operating scenarios require shutting down an intermediate
+    station entirely; excluding this option made the solver report that no
+    feasible pump combination existed even though a solution with the station
+    offline was viable.
+    """
+
     combos = [
         (a, b)
         for a in range(maxA + 1)
         for b in range(maxB + 1)
-        if a + b > 0
     ]
     return sorted(combos, key=lambda x: (x[0] + x[1], x))
 
@@ -757,6 +764,12 @@ def solve_pipeline_with_types(
                         }
                         units.append(unit)
                 if not units:
+                    unit = copy.deepcopy(stn)
+                    unit['is_pump'] = False
+                    min_res = 50.0 if pos == 0 else 0.0
+                    unit['min_residual'] = stn.get('min_residual', min_res)
+                    unit['max_dr'] = stn.get('max_dr', 0.0)
+                    expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
                     continue
                 units[0]['delivery'] = stn.get('delivery', 0.0)
                 units[0]['supply'] = stn.get('supply', 0.0)
@@ -764,7 +777,12 @@ def solve_pipeline_with_types(
                 units[0]['min_residual'] = stn.get('min_residual', min_res)
                 units[-1]['L'] = stn.get('L', 0.0)
                 units[-1]['max_dr'] = stn.get('max_dr', 0.0)
-                expand_all(pos + 1, stn_acc + units, kv_acc + [kv] * len(units), rho_acc + [rho] * len(units))
+                expand_all(
+                    pos + 1,
+                    stn_acc + units,
+                    kv_acc + [kv] * len(units),
+                    rho_acc + [rho] * len(units),
+                )
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
 
