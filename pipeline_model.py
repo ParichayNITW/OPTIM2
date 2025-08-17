@@ -43,6 +43,7 @@ DRA_STEP = 5
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 1
+STATE_LIMIT = 80
 
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
@@ -191,6 +192,33 @@ def _parallel_segment_hydraulics(
         else:
             hi = mid
     return best
+
+
+def _add_state(store: dict[float, list[dict]], bucket: float, state: dict, limit: int = STATE_LIMIT) -> None:
+    """Insert ``state`` into ``store[bucket]`` keeping a Pareto frontier on cost and reach."""
+    lst = store.setdefault(bucket, [])
+    lst.append(state)
+    lst.sort(key=lambda s: (s['cost'], -s.get('reach', 0.0)))
+    frontier: list[dict] = []
+    for st in lst:
+        cost = st['cost']
+        reach = st.get('reach', 0.0)
+        dominated = False
+        for other in frontier:
+            if other['cost'] <= cost + 1e-9 and other.get('reach', 0.0) >= reach - 1e-9:
+                dominated = True
+                break
+        if dominated:
+            continue
+        frontier = [
+            f
+            for f in frontier
+            if not (cost <= f['cost'] + 1e-9 and reach >= f.get('reach', 0.0) - 1e-9)
+        ]
+        frontier.append(st)
+    if len(frontier) > limit:
+        frontier = frontier[:limit]
+    store[bucket] = frontier
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
@@ -491,25 +519,28 @@ def solve_pipeline(
         cum_dist += L
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
-    states: dict[float, dict] = {
-        round(init_residual, 2): {
-            'cost': 0.0,
-            'residual': init_residual,
-            'records': [],
-            'last_maop': 0.0,
-            'last_maop_kg': 0.0,
-            'reach': dra_reach_km,
-        }
+    states: dict[float, list[dict]] = {
+        round(init_residual, 2): [
+            {
+                'cost': 0.0,
+                'residual': init_residual,
+                'records': [],
+                'last_maop': 0.0,
+                'last_maop_kg': 0.0,
+                'reach': dra_reach_km,
+            }
+        ]
     }
 
     for stn_data in station_opts:
-        new_states: dict[float, dict] = {}
-        for state in states.values():
-            for opt in stn_data['options']:
-                reach_prev = state.get('reach', 0.0)
-                reach_after = reach_prev
-                if opt['dra'] > 0:
-                    reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
+        new_states: dict[float, list[dict]] = {}
+        for state_list in states.values():
+            for state in state_list:
+                for opt in stn_data['options']:
+                    reach_prev = state.get('reach', 0.0)
+                    reach_after = reach_prev
+                    if opt['dra'] > 0:
+                        reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
                 dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
                 eff_dra_main = opt['dra'] if dra_len_main > 0 else 0.0
                 if stn_data.get('loopline'):
@@ -628,15 +659,15 @@ def solve_pipeline(
                 new_cost = state['cost'] + opt['cost']
                 bucket = round(residual_next, RESIDUAL_ROUND)
                 new_record_list = state['records'] + [record]
-                if bucket not in new_states or new_cost < new_states[bucket]['cost']:
-                    new_states[bucket] = {
-                        'cost': new_cost,
-                        'residual': residual_next,
-                        'records': new_record_list,
-                        'last_maop': stn_data['maop_head'],
-                        'last_maop_kg': stn_data['maop_kgcm2'],
-                        'reach': reach_after,
-                    }
+                new_state = {
+                    'cost': new_cost,
+                    'residual': residual_next,
+                    'records': new_record_list,
+                    'last_maop': stn_data['maop_head'],
+                    'last_maop_kg': stn_data['maop_kgcm2'],
+                    'reach': reach_after,
+                }
+                _add_state(new_states, bucket, new_state)
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         states = new_states
@@ -646,8 +677,9 @@ def solve_pipeline(
     # user-specified minimum.  This avoids unnecessarily high
     # pressures at the terminal which would otherwise waste energy.
     term_req = terminal.get('min_residual', 0.0)
+    final_states = [s for lst in states.values() for s in lst]
     best_state = min(
-        states.values(),
+        final_states,
         key=lambda x: (x['cost'], x['residual'] - term_req),
     )
     result: dict = {}
