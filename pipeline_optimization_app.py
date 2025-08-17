@@ -1079,20 +1079,6 @@ def solve_pipeline(
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
     try:
-        if any(s.get('pump_types') for s in stations):
-            return pipeline_model.solve_pipeline_with_types(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                linefill_dict,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-            )
         return pipeline_model.solve_pipeline(
             stations,
             terminal,
