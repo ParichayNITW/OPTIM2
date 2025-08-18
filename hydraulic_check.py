@@ -313,7 +313,7 @@ def _plot_curves(
 
 
 def hydraulic_app():
-    st.title("Hydraulic Feasibility Check")
+    st.title("Hydraulic System Analysis")
 
     st.header("Fluid Properties")
     visc = st.number_input("Viscosity (cSt)", value=5.0, step=0.1)
