@@ -184,19 +184,25 @@ def restore_case_dict(loaded_data):
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
             st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
-    # Handle pump type data for originating station
-    headA = loaded_data.get("head_data_1A", None)
-    effA = loaded_data.get("eff_data_1A", None)
-    headB = loaded_data.get("head_data_1B", None)
-    effB = loaded_data.get("eff_data_1B", None)
-    if headA is not None:
-        st.session_state["head_data_1A"] = pd.DataFrame(headA)
-    if effA is not None:
-        st.session_state["eff_data_1A"] = pd.DataFrame(effA)
-    if headB is not None:
-        st.session_state["head_data_1B"] = pd.DataFrame(headB)
-    if effB is not None:
-        st.session_state["eff_data_1B"] = pd.DataFrame(effB)
+# Handle pump type data for originating station
+headA = loaded_data.get("head_data_1A", None)
+effA  = loaded_data.get("eff_data_1A", None)
+peakA = loaded_data.get("peak_data_1A", None)
+headB = loaded_data.get("head_data_1B", None)
+effB  = loaded_data.get("eff_data_1B", None)
+peakB = loaded_data.get("peak_data_1B", None)
+if headA is not None:
+    st.session_state["head_data_1A"] = pd.DataFrame(headA)
+if effA is not None:
+    st.session_state["eff_data_1A"] = pd.DataFrame(effA)
+if peakA is not None:
+    st.session_state["peak_data_1A"] = pd.DataFrame(peakA)
+if headB is not None:
+    st.session_state["head_data_1B"] = pd.DataFrame(headB)
+if effB is not None:
+    st.session_state["eff_data_1B"] = pd.DataFrame(effB)
+if peakB is not None:
+    st.session_state["peak_data_1B"] = pd.DataFrame(peakB)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -662,40 +668,54 @@ def get_full_case_dict():
         "proj_flow": proj_flow,
         "proj_plan": proj_plan,
         "planner_days": st.session_state.get('planner_days', 1.0),
+        # --- Pump curve data ---
         **{
             f"head_data_{i+1}": (
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
+                if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame)
+                else st.session_state.get('stations', [{}])[i].get('head_data') if i < len(st.session_state.get('stations', [])) else None
             )
             for i in range(len(st.session_state.get('stations', [])))
         },
         **{
             f"head_data_{1}{ptype}": (
                 st.session_state.get(f"head_data_{1}{ptype}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"head_data_{1}{ptype}"), pd.DataFrame) else None
+                if isinstance(st.session_state.get(f"head_data_{1}{ptype}"), pd.DataFrame)
+                else st.session_state.get('stations', [{}])[0].get('pump_types', {}).get(ptype, {}).get('head_data')
             )
             for ptype in ['A', 'B']
         },
         **{
             f"eff_data_{i+1}": (
                 st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
+                if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame)
+                else st.session_state.get('stations', [{}])[i].get('eff_data') if i < len(st.session_state.get('stations', [])) else None
             )
             for i in range(len(st.session_state.get('stations', [])))
         },
         **{
             f"eff_data_{1}{ptype}": (
                 st.session_state.get(f"eff_data_{1}{ptype}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"eff_data_{1}{ptype}"), pd.DataFrame) else None
+                if isinstance(st.session_state.get(f"eff_data_{1}{ptype}"), pd.DataFrame)
+                else st.session_state.get('stations', [{}])[0].get('pump_types', {}).get(ptype, {}).get('eff_data')
             )
             for ptype in ['A', 'B']
         },
         **{
             f"peak_data_{i+1}": (
                 st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
+                if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame)
+                else st.session_state.get('stations', [{}])[i].get('peak_data') if i < len(st.session_state.get('stations', [])) else None
             )
             for i in range(len(st.session_state.get('stations', [])))
+        },
+        **{
+            f"peak_data_{1}{ptype}": (
+                st.session_state.get(f"peak_data_{1}{ptype}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"peak_data_{1}{ptype}"), pd.DataFrame)
+                else st.session_state.get('stations', [{}])[0].get('pump_types', {}).get(ptype, {}).get('peak_data')
+            )
+            for ptype in ['A', 'B']
         }
     }
 
