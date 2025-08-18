@@ -43,6 +43,8 @@ DRA_STEP = 5
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 1
+V_MIN = 0.5
+V_MAX = 2.5
 
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
@@ -461,13 +463,37 @@ def solve_pipeline(
                 reach_after = reach_prev
                 if opt['dra'] > 0:
                     reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
+
                 dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
                 eff_dra_main = opt['dra'] if dra_len_main > 0 else 0.0
+                scenarios = []
+                hl_single, v_single, Re_single, f_single = _segment_hydraulics(
+                    stn_data['flow'],
+                    stn_data['L'],
+                    stn_data['d_inner'],
+                    stn_data['rough'],
+                    stn_data['kv'],
+                    eff_dra_main,
+                    dra_len_main,
+                )
+                scenarios.append({
+                    'head_loss': hl_single,
+                    'v': v_single,
+                    'Re': Re_single,
+                    'f': f_single,
+                    'flow_main': stn_data['flow'],
+                    'v_loop': 0.0,
+                    'Re_loop': 0.0,
+                    'f_loop': 0.0,
+                    'flow_loop': 0.0,
+                    'maop_loop': 0.0,
+                    'maop_loop_kg': 0.0,
+                })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
                     dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
                     eff_dra_loop = min(opt['dra'], loop.get('max_dr', 0.0)) if dra_len_loop > 0 else 0.0
-                    head_loss, main_stats, loop_stats = _parallel_segment_hydraulics(
+                    hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                         stn_data['flow'],
                         {
                             'L': stn_data['L'],
@@ -485,109 +511,114 @@ def solve_pipeline(
                         },
                         stn_data['kv'],
                     )
-                    v, Re, f, flow_main = main_stats
-                    v_loop, Re_loop, f_loop, flow_loop = loop_stats
-                else:
-                    head_loss, v, Re, f = _segment_hydraulics(
-                        stn_data['flow'],
-                        stn_data['L'],
-                        stn_data['d_inner'],
-                        stn_data['rough'],
-                        stn_data['kv'],
-                        eff_dra_main,
-                        dra_len_main,
-                    )
-                    flow_main = stn_data['flow']
-                    v_loop = Re_loop = f_loop = flow_loop = 0.0
-                sdh = state['residual'] + opt['tdh']
-                if sdh > stn_data['maop_head'] or (stn_data.get('loopline') and sdh > stn_data['loopline']['maop_head']):
-                    continue
-                residual_next = sdh - head_loss - stn_data['elev_delta']
-                if residual_next < stn_data['min_residual_next']:
-                    continue
-                record = {
-                    f"pipeline_flow_{stn_data['name']}": stn_data['flow'],
-                    f"pipeline_flow_in_{stn_data['name']}": stn_data['flow_in'],
-                    f"mainline_flow_{stn_data['name']}": flow_main,
-                    f"loopline_flow_{stn_data['name']}": flow_loop,
-                    f"head_loss_{stn_data['name']}": head_loss,
-                    f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(head_loss, stn_data['rho']),
-                    f"residual_head_{stn_data['name']}": state['residual'],
-                    f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
-                    f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
-                    f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']),
-                    f"rho_{stn_data['name']}": stn_data['rho'],
-                    f"maop_{stn_data['name']}": stn_data['maop_head'],
-                    f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
-                    f"velocity_{stn_data['name']}": v,
-                    f"reynolds_{stn_data['name']}": Re,
-                    f"friction_{stn_data['name']}": f,
-                    f"coef_A_{stn_data['name']}": stn_data['coef_A'],
-                    f"coef_B_{stn_data['name']}": stn_data['coef_B'],
-                    f"coef_C_{stn_data['name']}": stn_data['coef_C'],
-                    f"coef_P_{stn_data['name']}": stn_data['coef_P'],
-                    f"coef_Q_{stn_data['name']}": stn_data['coef_Q'],
-                    f"coef_R_{stn_data['name']}": stn_data['coef_R'],
-                    f"coef_S_{stn_data['name']}": stn_data['coef_S'],
-                    f"coef_T_{stn_data['name']}": stn_data['coef_T'],
-                    f"min_rpm_{stn_data['name']}": stn_data['min_rpm'],
-                    f"dol_{stn_data['name']}": stn_data['dol'],
-                }
-                if stn_data.get('loopline'):
-                    record.update({
-                        f"velocity_loop_{stn_data['name']}": v_loop,
-                        f"reynolds_loop_{stn_data['name']}": Re_loop,
-                        f"friction_loop_{stn_data['name']}": f_loop,
-                        f"maop_loop_{stn_data['name']}": stn_data['loopline']['maop_head'],
-                        f"maop_loop_kgcm2_{stn_data['name']}": stn_data['loopline']['maop_kgcm2'],
+                    v_m, Re_m, f_m, q_main = main_stats
+                    v_l, Re_l, f_l, q_loop = loop_stats
+                    scenarios.append({
+                        'head_loss': hl_par,
+                        'v': v_m,
+                        'Re': Re_m,
+                        'f': f_m,
+                        'flow_main': q_main,
+                        'v_loop': v_l,
+                        'Re_loop': Re_l,
+                        'f_loop': f_l,
+                        'flow_loop': q_loop,
+                        'maop_loop': loop['maop_head'],
+                        'maop_loop_kg': loop['maop_kgcm2'],
                     })
-                else:
-                    record.update({
-                        f"velocity_loop_{stn_data['name']}": 0.0,
-                        f"reynolds_loop_{stn_data['name']}": 0.0,
-                        f"friction_loop_{stn_data['name']}": 0.0,
-                        f"maop_loop_{stn_data['name']}": 0.0,
-                        f"maop_loop_kgcm2_{stn_data['name']}": 0.0,
-                    })
-                if stn_data['is_pump']:
-                    record.update({
-                        f"pump_flow_{stn_data['name']}": stn_data['flow'],
-                        f"num_pumps_{stn_data['name']}": opt['nop'],
-                        f"speed_{stn_data['name']}": opt['rpm'],
-                        f"efficiency_{stn_data['name']}": opt['eff'],
-                        f"pump_bkw_{stn_data['name']}": opt['pump_bkw'],
-                        f"motor_kw_{stn_data['name']}": opt['motor_kw'],
-                        f"power_cost_{stn_data['name']}": opt['power_cost'],
-                        f"dra_cost_{stn_data['name']}": opt['dra_cost'],
-                        f"dra_ppm_{stn_data['name']}": opt['dra_ppm'],
-                        f"drag_reduction_{stn_data['name']}": opt['dra'],
-                    })
-                else:
-                    record.update({
-                        f"pump_flow_{stn_data['name']}": 0.0,
-                        f"num_pumps_{stn_data['name']}": 0,
-                        f"speed_{stn_data['name']}": 0.0,
-                        f"efficiency_{stn_data['name']}": 0.0,
-                        f"pump_bkw_{stn_data['name']}": 0.0,
-                        f"motor_kw_{stn_data['name']}": 0.0,
-                        f"power_cost_{stn_data['name']}": 0.0,
-                        f"dra_cost_{stn_data['name']}": 0.0,
-                        f"dra_ppm_{stn_data['name']}": 0.0,
-                        f"drag_reduction_{stn_data['name']}": 0.0,
-                    })
-
-                new_cost = state['cost'] + opt['cost']
-                bucket = round(residual_next, RESIDUAL_ROUND)
-                new_record_list = state['records'] + [record]
-                if bucket not in new_states or new_cost < new_states[bucket]['cost']:
-                    new_states[bucket] = {
-                        'cost': new_cost,
-                        'residual': residual_next,
-                        'records': new_record_list,
-                        'last_maop': stn_data['maop_head'],
-                        'last_maop_kg': stn_data['maop_kgcm2'],
-                        'reach': reach_after,
+                for sc in scenarios:
+                    if not (V_MIN <= sc['v'] <= V_MAX):
+                        continue
+                    if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
+                        continue
+                    sdh = state['residual'] + opt['tdh']
+                    if sdh > stn_data['maop_head'] or (sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']):
+                        continue
+                    residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
+                    if residual_next < stn_data['min_residual_next']:
+                        continue
+                    record = {
+                        f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
+                        f"pipeline_flow_in_{stn_data['name']}": stn_data['flow_in'],
+                        f"loopline_flow_{stn_data['name']}": sc['flow_loop'],
+                        f"head_loss_{stn_data['name']}": sc['head_loss'],
+                        f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
+                        f"residual_head_{stn_data['name']}": state['residual'],
+                        f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
+                        f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
+                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']),
+                        f"rho_{stn_data['name']}": stn_data['rho'],
+                        f"maop_{stn_data['name']}": stn_data['maop_head'],
+                        f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
+                        f"velocity_{stn_data['name']}": sc['v'],
+                        f"reynolds_{stn_data['name']}": sc['Re'],
+                        f"friction_{stn_data['name']}": sc['f'],
+                        f"coef_A_{stn_data['name']}": stn_data['coef_A'],
+                        f"coef_B_{stn_data['name']}": stn_data['coef_B'],
+                        f"coef_C_{stn_data['name']}": stn_data['coef_C'],
+                        f"coef_P_{stn_data['name']}": stn_data['coef_P'],
+                        f"coef_Q_{stn_data['name']}": stn_data['coef_Q'],
+                        f"coef_R_{stn_data['name']}": stn_data['coef_R'],
+                        f"coef_S_{stn_data['name']}": stn_data['coef_S'],
+                        f"coef_T_{stn_data['name']}": stn_data['coef_T'],
+                        f"min_rpm_{stn_data['name']}": stn_data['min_rpm'],
+                        f"dol_{stn_data['name']}": stn_data['dol'],
                     }
+                    if sc['flow_loop'] > 0:
+                        record.update({
+                            f"velocity_loop_{stn_data['name']}": sc['v_loop'],
+                            f"reynolds_loop_{stn_data['name']}": sc['Re_loop'],
+                            f"friction_loop_{stn_data['name']}": sc['f_loop'],
+                            f"maop_loop_{stn_data['name']}": sc['maop_loop'],
+                            f"maop_loop_kgcm2_{stn_data['name']}": sc['maop_loop_kg'],
+                        })
+                    else:
+                        record.update({
+                            f"velocity_loop_{stn_data['name']}": 0.0,
+                            f"reynolds_loop_{stn_data['name']}": 0.0,
+                            f"friction_loop_{stn_data['name']}": 0.0,
+                            f"maop_loop_{stn_data['name']}": 0.0,
+                            f"maop_loop_kgcm2_{stn_data['name']}": 0.0,
+                        })
+                    if stn_data['is_pump']:
+                        record.update({
+                            f"pump_flow_{stn_data['name']}": stn_data['flow'],
+                            f"num_pumps_{stn_data['name']}": opt['nop'],
+                            f"speed_{stn_data['name']}": opt['rpm'],
+                            f"efficiency_{stn_data['name']}": opt['eff'],
+                            f"pump_bkw_{stn_data['name']}": opt['pump_bkw'],
+                            f"motor_kw_{stn_data['name']}": opt['motor_kw'],
+                            f"power_cost_{stn_data['name']}": opt['power_cost'],
+                            f"dra_cost_{stn_data['name']}": opt['dra_cost'],
+                            f"dra_ppm_{stn_data['name']}": opt['dra_ppm'],
+                            f"drag_reduction_{stn_data['name']}": opt['dra'],
+                        })
+                    else:
+                        record.update({
+                            f"pump_flow_{stn_data['name']}": 0.0,
+                            f"num_pumps_{stn_data['name']}": 0,
+                            f"speed_{stn_data['name']}": 0.0,
+                            f"efficiency_{stn_data['name']}": 0.0,
+                            f"pump_bkw_{stn_data['name']}": 0.0,
+                            f"motor_kw_{stn_data['name']}": 0.0,
+                            f"power_cost_{stn_data['name']}": 0.0,
+                            f"dra_cost_{stn_data['name']}": 0.0,
+                            f"dra_ppm_{stn_data['name']}": 0.0,
+                            f"drag_reduction_{stn_data['name']}": 0.0,
+                        })
+                    new_cost = state['cost'] + opt['cost']
+                    bucket = round(residual_next, RESIDUAL_ROUND)
+                    new_record_list = state['records'] + [record]
+                    if bucket not in new_states or new_cost < new_states[bucket]['cost']:
+                        new_states[bucket] = {
+                            'cost': new_cost,
+                            'residual': residual_next,
+                            'records': new_record_list,
+                            'last_maop': stn_data['maop_head'],
+                            'last_maop_kg': stn_data['maop_kgcm2'],
+                            'reach': reach_after,
+                        }
+
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         states = new_states
