@@ -30,10 +30,6 @@ from math import pi
 import hashlib
 import uuid
 import json
-try:
-    import orjson
-except ModuleNotFoundError:  # pragma: no cover - optional speedup
-    orjson = None
 import copy
 from plotly.colors import qualitative
 
@@ -601,30 +597,16 @@ def get_full_case_dict():
                         dfh = pd.DataFrame(pdata['head_data'])
                     if dfe is None and pdata.get('eff_data') is not None:
                         dfe = pd.DataFrame(pdata['eff_data'])
-                    if (
-                        dfh is not None
-                        and len(dfh) >= 3
-                        and not all(k in pdata for k in ('A', 'B', 'C'))
-                    ):
+                    if dfh is not None and len(dfh) >= 3:
                         Qh = dfh.iloc[:, 0].values
                         Hh = dfh.iloc[:, 1].values
                         coeff = np.polyfit(Qh, Hh, 2)
-                        pdata['A'], pdata['B'], pdata['C'] = (
-                            float(coeff[0]),
-                            float(coeff[1]),
-                            float(coeff[2]),
-                        )
-                    if (
-                        dfe is not None
-                        and len(dfe) >= 5
-                        and not all(k in pdata for k in ('P', 'Q', 'R', 'S', 'T'))
-                    ):
+                        pdata['A'], pdata['B'], pdata['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                    if dfe is not None and len(dfe) >= 5:
                         Qe = dfe.iloc[:, 0].values
                         Ee = dfe.iloc[:, 1].values
                         coeff_e = np.polyfit(Qe, Ee, 4)
-                        pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [
-                            float(c) for c in coeff_e
-                        ]
+                        pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
                     pdata['head_data'] = dfh.to_dict(orient="records") if isinstance(dfh, pd.DataFrame) else None
                     pdata['eff_data'] = dfe.to_dict(orient="records") if isinstance(dfe, pd.DataFrame) else None
                     pdata['available'] = pdata.get('available', 0)
@@ -636,30 +618,16 @@ def get_full_case_dict():
                     dfh = pd.DataFrame(stn["head_data"])
                 if dfe is None and "eff_data" in stn:
                     dfe = pd.DataFrame(stn["eff_data"])
-                if (
-                    dfh is not None
-                    and len(dfh) >= 3
-                    and not all(k in stn for k in ('A', 'B', 'C'))
-                ):
+                if dfh is not None and len(dfh) >= 3:
                     Qh = dfh.iloc[:, 0].values
                     Hh = dfh.iloc[:, 1].values
                     coeff = np.polyfit(Qh, Hh, 2)
-                    stn['A'], stn['B'], stn['C'] = (
-                        float(coeff[0]),
-                        float(coeff[1]),
-                        float(coeff[2]),
-                    )
-                if (
-                    dfe is not None
-                    and len(dfe) >= 5
-                    and not all(k in stn for k in ('P', 'Q', 'R', 'S', 'T'))
-                ):
+                    stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                if dfe is not None and len(dfe) >= 5:
                     Qe = dfe.iloc[:, 0].values
                     Ee = dfe.iloc[:, 1].values
                     coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [
-                        float(c) for c in coeff_e
-                    ]
+                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
     flow_df = st.session_state.get('proj_flow_df', pd.DataFrame())
     if isinstance(flow_df, pd.DataFrame) and len(flow_df):
@@ -732,21 +700,12 @@ def get_full_case_dict():
     }
 
 
-# Encode the full case dictionary using a fast encoder when available.
-# ``orjson`` is used if installed; otherwise Python's ``json`` module
-# serializes with compact separators to reduce payload size. This keeps the
-# save operation responsive even for very large cases.
-def get_case_bytes():
-    case_dict = get_full_case_dict()
-    if orjson is not None:
-        return orjson.dumps(case_dict)
-    return json.dumps(case_dict, separators=(",", ":")).encode("utf-8")
-
+case_data = get_full_case_dict()
 st.sidebar.download_button(
     label="💾 Save Case",
-    data=get_case_bytes(),
+    data=json.dumps(case_data, indent=2),
     file_name="pipeline_case.json",
-    mime="application/json",
+    mime="application/json"
 )
 
 def map_linefill_to_segments(linefill_df, stations):
