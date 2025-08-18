@@ -3215,7 +3215,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     viscosity = kv_list[idx]
                     dr_use = min(dr_opt, dr_max)
                     ppm = get_ppm_for_dr(viscosity, dr_use)
-                    seg_flow = res.get(f"pipeline_flow_{key}", FLOW)
+                    seg_flow = res.get(f"pump_flow_{key}", res.get(f"pipeline_flow_{key}", FLOW))
                     dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
                     power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
                     velocity = res.get(f"velocity_{key}", 0.0) or 0.0
@@ -3276,12 +3276,15 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     viscosity = kv_list[idx]
                     dr_use = min(dr_opt, dr_max)
                     ppm = get_ppm_for_dr(viscosity, dr_use)
-                    seg_flow = st.session_state["last_res"].get(f"pipeline_flow_{key}", FLOW)
+                    seg_flow = st.session_state["last_res"].get(
+                        f"pump_flow_{key}",
+                        st.session_state["last_res"].get(f"pipeline_flow_{key}", FLOW),
+                    )
                     dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
                     power_cost = float(st.session_state["last_res"].get(f"power_cost_{key}", 0.0) or 0.0)
                     total_cost += dra_cost + power_cost
                     dr_opt2 = res2.get(f"drag_reduction_{key}", 0.0)
-                    seg_flow2 = res2.get(f"pipeline_flow_{key}", new_FLOW)
+                    seg_flow2 = res2.get(f"pump_flow_{key}", res2.get(f"pipeline_flow_{key}", new_FLOW))
                     ppm2 = get_ppm_for_dr(viscosity, min(dr_opt2, dr_max))
                     dra_cost2 = ppm2 * (seg_flow2 * 1000.0 * 24.0 / 1e6) * new_RateDRA
                     power_cost2 = float(res2.get(f"power_cost_{key}", 0.0) or 0.0)
