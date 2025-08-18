@@ -731,6 +731,8 @@ def solve_pipeline_with_types(
                 units[0]['min_residual'] = stn.get('min_residual', min_res)
                 units[-1]['L'] = stn.get('L', 0.0)
                 units[-1]['max_dr'] = stn.get('max_dr', 0.0)
+                if stn.get('loopline'):
+                    units[-1]['loopline'] = copy.deepcopy(stn['loopline'])
                 expand_all(pos + 1, stn_acc + units, kv_acc + [kv] * len(units), rho_acc + [rho] * len(units))
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
