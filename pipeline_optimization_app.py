@@ -30,6 +30,10 @@ from math import pi
 import hashlib
 import uuid
 import json
+try:
+    import orjson
+except ModuleNotFoundError:  # pragma: no cover - optional speedup
+    orjson = None
 import copy
 from plotly.colors import qualitative
 
@@ -728,11 +732,19 @@ def get_full_case_dict():
     }
 
 
-case_bytes = json.dumps(get_full_case_dict(), indent=2).encode("utf-8")
+# Encode the full case dictionary using a fast encoder when available.
+# ``orjson`` is used if installed; otherwise Python's ``json`` module
+# serializes with compact separators to reduce payload size. This keeps the
+# save operation responsive even for very large cases.
+def get_case_bytes():
+    case_dict = get_full_case_dict()
+    if orjson is not None:
+        return orjson.dumps(case_dict)
+    return json.dumps(case_dict, separators=(",", ":")).encode("utf-8")
 
 st.sidebar.download_button(
     label="💾 Save Case",
-    data=case_bytes,
+    data=get_case_bytes(),
     file_name="pipeline_case.json",
     mime="application/json",
 )
