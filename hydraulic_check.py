@@ -5,6 +5,9 @@ import altair as alt
 
 from pipeline_model import _segment_hydraulics, head_to_kgcm2
 
+# Hide Vega action buttons on all Altair charts
+alt.renderers.set_embed_options(actions=False)
+
 # Default pump curve data at rated speed
 DEFAULT_PUMP_CURVE = {
     "A": {
@@ -215,8 +218,8 @@ def _plot_curves(
     kv: float,
     dra: float,
 ):
-    qmin, qmax = _flow_limits(combo, pump_curve)
-    flows = np.linspace(qmin, qmax, 100)
+    _, qmax = _flow_limits(combo, pump_curve)
+    flows = np.linspace(0, qmax, 100)
     pump_heads = []
     sys_heads = []
     peak_heads = []
@@ -235,37 +238,59 @@ def _plot_curves(
         peak_heads.append(peak)
         term_heads.append(term)
 
+    max_head = max(pump_heads + sys_heads)
     df1 = pd.DataFrame({"Flow": flows, "Pump Discharge Head": pump_heads, "System Head Required": sys_heads})
     aor_min, aor_max = _aor_limits(combo, pump_curve)
-    rect = alt.Chart(
-        pd.DataFrame({
-            "Flow_start": [aor_min],
-            "Flow_end": [aor_max],
-            "Head_start": [0],
-            "Head_end": [max(pump_heads + sys_heads)],
-        })
-    ).mark_rect(opacity=0.1, color="green").encode(
+    band_df = pd.DataFrame({
+        "Flow_start": [aor_min],
+        "Flow_end": [aor_max],
+        "Head_start": [0],
+        "Head_end": [max_head],
+        "Curve": ["Within AOR"],
+    })
+    color_scale = alt.Scale(
+        domain=["Pump Discharge Head", "System Head Required", "Within AOR"],
+        range=["#1f77b4", "#d62728", "#90ee90"],
+    )
+    rect = alt.Chart(band_df).mark_rect(opacity=0.1).encode(
         x="Flow_start",
         x2="Flow_end",
         y="Head_start",
         y2="Head_end",
+        color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")),
     )
-    chart1 = (
+    lines = (
         alt.Chart(df1.melt("Flow", var_name="Curve", value_name="Head"))
         .mark_line()
-        .encode(x="Flow", y="Head", color="Curve")
+        .encode(
+            x=alt.X("Flow", title="Flow (m3/h)"),
+            y=alt.Y("Head", title="Head (m)", scale=alt.Scale(domain=(0, max_head))),
+            color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")),
+        )
     )
-    st.altair_chart(rect + chart1, use_container_width=True)
+    st.altair_chart(rect + lines, use_container_width=True)
 
     df2 = pd.DataFrame({"Flow": flows, "Peak Head": peak_heads, "Terminal Head": term_heads})
     data2 = df2.melt("Flow", var_name="Location", value_name="Head")
-    chart2 = alt.Chart(data2).mark_line().encode(x="Flow", y="Head", color="Location")
-    rules = alt.Chart(
-        pd.DataFrame({
-            "Head": [pipe["peak_min"], pipe["terminal_min"]],
-            "Location": ["Peak Minimum", "Terminal Minimum"],
-        })
-    ).mark_rule(strokeDash=[4, 4]).encode(y="Head", color="Location")
+    chart2 = (
+        alt.Chart(data2)
+        .mark_line()
+        .encode(
+            x=alt.X("Flow", title="Flow (m3/h)"),
+            y=alt.Y("Head", title="Head (m)", scale=alt.Scale(domain=(0, None))),
+            color=alt.Color("Location", legend=alt.Legend(title="")),
+        )
+    )
+    rules = (
+        alt.Chart(
+            pd.DataFrame({
+                "Head": [pipe["peak_min"], pipe["terminal_min"]],
+                "Location": ["Peak Minimum", "Terminal Minimum"],
+            })
+        )
+        .mark_rule(strokeDash=[4, 4])
+        .encode(y="Head", color="Location")
+    )
     st.altair_chart(chart2 + rules, use_container_width=True)
 
 
@@ -361,15 +386,42 @@ def hydraulic_app():
         )
         if df.empty:
             st.warning("No feasible pump combinations found.")
+            st.session_state.pop("hydraulic_results", None)
         else:
-            st.dataframe(df)
-            choice = st.selectbox("Select combination for curves", df["Combination"])
-            if choice:
-                rpm_sel = float(df.loc[df["Combination"] == choice, "RPM"].iloc[0])
-                in_aor = bool(df.loc[df["Combination"] == choice, "Within AOR"].iloc[0])
-                if not in_aor:
-                    st.warning("Operating point lies outside AOR range.")
-                _plot_curves(combos[choice], rpm_sel, pipe, pump_curve, dol_speed, visc, dra)
+            st.session_state["hydraulic_results"] = {
+                "df": df,
+                "combos": combos,
+                "pipe": pipe,
+                "pump_curve": pump_curve,
+                "dol_speed": dol_speed,
+                "kv": visc,
+                "dra": dra,
+            }
+            st.session_state.pop("combo_choice", None)
+
+    results = st.session_state.get("hydraulic_results")
+    if results:
+        df = results["df"]
+        st.dataframe(df)
+        choice = st.selectbox(
+            "Select combination for curves",
+            df["Combination"],
+            key="combo_choice",
+        )
+        if choice:
+            rpm_sel = float(df.loc[df["Combination"] == choice, "RPM"].iloc[0])
+            in_aor = bool(df.loc[df["Combination"] == choice, "Within AOR"].iloc[0])
+            if not in_aor:
+                st.warning("Operating point lies outside AOR range.")
+            _plot_curves(
+                results["combos"][choice],
+                rpm_sel,
+                results["pipe"],
+                results["pump_curve"],
+                results["dol_speed"],
+                results["kv"],
+                results["dra"],
+            )
 
 
 __all__ = ["hydraulic_app", "analyze_all_combinations", "DEFAULT_PUMP_CURVE"]
