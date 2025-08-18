@@ -1588,6 +1588,17 @@ if not auto_batch:
                 file_name="daily_schedule_results.csv",
             )
 
+            # Display total cost per time slice and global sum
+            cost_rows = [
+                {"Time": f"{rec['time']:02d}:00", "Total Cost (INR)": rec["result"].get("total_cost", 0.0)}
+                for rec in reports
+            ]
+            df_cost = pd.DataFrame(cost_rows).round(2)
+            st.dataframe(df_cost, use_container_width=True, hide_index=True)
+            st.markdown(
+                f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+            )
+
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
                 hr = hours[idx] % 24
@@ -1731,6 +1742,20 @@ if not auto_batch:
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
                 file_name="dynamic_plan_results.csv",
+            )
+
+            # Display total cost per interval and overall sum
+            cost_rows = [
+                {
+                    "Time": rec["time"].strftime("%d/%m %H:%M"),
+                    "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+                }
+                for rec in reports
+            ]
+            df_cost = pd.DataFrame(cost_rows).round(2)
+            st.dataframe(df_cost, use_container_width=True, hide_index=True)
+            st.markdown(
+                f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
             )
 
             combined = []
