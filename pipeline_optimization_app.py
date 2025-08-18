@@ -142,6 +142,15 @@ def check_login():
             st.rerun()
 check_login()
 
+if st.sidebar.button("Hydraulic feasibility check"):
+    st.session_state["run_mode"] = "hydraulic"
+    st.rerun()
+
+if st.session_state.get("run_mode") == "hydraulic":
+    from hydraulic_check import hydraulic_app
+    hydraulic_app()
+    st.stop()
+
 # ==== 1. EARLY LOAD/RESTORE BLOCK ====
 def restore_case_dict(loaded_data):
     """Populate ``st.session_state`` from a saved case dictionary."""
