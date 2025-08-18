@@ -217,13 +217,14 @@ def _plot_curves(
     dol_speed: dict,
     kv: float,
     dra: float,
+    rho: float,
 ):
     _, qmax = _flow_limits(combo, pump_curve)
     flows = np.linspace(0, qmax, 100)
-    pump_heads = []
-    sys_heads = []
-    peak_heads = []
-    term_heads = []
+    pump_heads: list[float] = []
+    sys_heads: list[float] = []
+    peak_heads: list[float] = []
+    term_heads: list[float] = []
     for q in flows:
         hp = _combo_head(q, rpm, combo, pump_curve, dol_speed)
         sdh = pipe["suction_head"] + hp
@@ -235,10 +236,11 @@ def _plot_curves(
         req_term = pipe["suction_head"] + (pipe["terminal_elev"] - pipe["start_elev"]) + pipe["terminal_min"] + hl_total
         pump_heads.append(sdh)
         sys_heads.append(max(req_peak, req_term))
-        peak_heads.append(peak)
-        term_heads.append(term)
-
-    max_head = max(pump_heads + sys_heads)
+        peak_heads.append(max(0.0, peak))
+        term_heads.append(max(0.0, term))
+        
+    head_mop = pipe["mop"] * 10000.0 / rho if rho > 0 else 0.0
+    max_head = max(pump_heads + sys_heads + [head_mop])
     df1 = pd.DataFrame({"Flow": flows, "Pump Discharge Head": pump_heads, "System Head Required": sys_heads})
     aor_min, aor_max = _aor_limits(combo, pump_curve)
     band_df = pd.DataFrame({
@@ -249,8 +251,8 @@ def _plot_curves(
         "Curve": ["Within AOR"],
     })
     color_scale = alt.Scale(
-        domain=["Pump Discharge Head", "System Head Required", "Within AOR"],
-        range=["#1f77b4", "#d62728", "#90ee90"],
+        domain=["Pump Discharge Head", "System Head Required", "Within AOR", "MOP"],
+        range=["#1f77b4", "#d62728", "#90ee90", "#9467bd"],
     )
     rect = alt.Chart(band_df).mark_rect(opacity=0.1).encode(
         x="Flow_start",
@@ -268,16 +270,22 @@ def _plot_curves(
             color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")),
         )
     )
-    st.altair_chart(rect + lines, use_container_width=True)
+    mop_line = (
+        alt.Chart(pd.DataFrame({"Head": [head_mop], "Curve": ["MOP"]}))
+        .mark_rule()
+        .encode(y="Head", color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")))
+    )
+    st.altair_chart(rect + lines + mop_line, use_container_width=True)
 
     df2 = pd.DataFrame({"Flow": flows, "Peak Head": peak_heads, "Terminal Head": term_heads})
     data2 = df2.melt("Flow", var_name="Location", value_name="Head")
+    max_head2 = max(peak_heads + term_heads + [pipe["peak_min"], pipe["terminal_min"]])
     chart2 = (
         alt.Chart(data2)
         .mark_line()
         .encode(
             x=alt.X("Flow", title="Flow (m3/h)"),
-            y=alt.Y("Head", title="Head (m)", scale=alt.Scale(domain=(0, None))),
+            y=alt.Y("Head", title="Head (m)", scale=alt.Scale(domain=(0, max_head2))),
             color=alt.Color("Location", legend=alt.Legend(title="")),
         )
     )
@@ -396,6 +404,7 @@ def hydraulic_app():
                 "dol_speed": dol_speed,
                 "kv": visc,
                 "dra": dra,
+                "rho": rho,
             }
             st.session_state.pop("combo_choice", None)
 
@@ -421,6 +430,7 @@ def hydraulic_app():
                 results["dol_speed"],
                 results["kv"],
                 results["dra"],
+                results["rho"],
             )
 
 
