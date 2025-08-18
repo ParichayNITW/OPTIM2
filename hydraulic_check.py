@@ -275,7 +275,12 @@ def _plot_curves(
         .mark_rule()
         .encode(y="Head", color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")))
     )
-    st.altair_chart(rect + lines + mop_line, use_container_width=True)
+    chart1 = (rect + lines + mop_line).properties(
+        height=350,
+        padding={"bottom": 40},
+        usermeta={"embedOptions": {"actions": False}},
+    )
+    st.altair_chart(chart1, use_container_width=True, theme=None)
 
     df2 = pd.DataFrame({"Flow": flows, "Peak Head": peak_heads, "Terminal Head": term_heads})
     data2 = df2.melt("Flow", var_name="Location", value_name="Head")
@@ -299,7 +304,12 @@ def _plot_curves(
         .mark_rule(strokeDash=[4, 4])
         .encode(y="Head", color="Location")
     )
-    st.altair_chart(chart2 + rules, use_container_width=True)
+    chart2_full = (chart2 + rules).properties(
+        height=350,
+        padding={"bottom": 40},
+        usermeta={"embedOptions": {"actions": False}},
+    )
+    st.altair_chart(chart2_full, use_container_width=True, theme=None)
 
 
 def hydraulic_app():
