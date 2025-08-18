@@ -146,7 +146,7 @@ def check_login():
             st.rerun()
 check_login()
 
-if st.sidebar.button("Hydraulic feasibility check"):
+if st.sidebar.button("Hydraulic System analysis"):
     st.session_state["run_mode"] = "hydraulic"
     st.rerun()
 
