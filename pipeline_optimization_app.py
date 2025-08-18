@@ -917,10 +917,11 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
 
     segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
+    loop_flows = [res.get(f"loopline_flow_{k}", np.nan) for k in keys]
     pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
 
     params = [
-        "Pipeline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power & Fuel Cost (INR)", "DRA Cost (INR)",
+        "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power & Fuel Cost (INR)", "DRA Cost (INR)",
         "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
         "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
         "Residual Head (m)", "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
@@ -932,6 +933,7 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         key = keys[idx]
         summary[nm] = [
             segment_flows[idx],
+            loop_flows[idx],
             pump_flows[idx] if idx < len(pump_flows) and not pd.isna(pump_flows[idx]) else np.nan,
             res.get(f"power_cost_{key}", 0.0),
             res.get(f"dra_cost_{key}", 0.0),
@@ -1007,6 +1009,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Station': station_display,
             'Pump Name': pump_name,
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
+            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
