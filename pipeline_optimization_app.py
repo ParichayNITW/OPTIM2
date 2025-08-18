@@ -184,19 +184,14 @@ def restore_case_dict(loaded_data):
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
             st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
-    # Handle pump type data for originating station
-    headA = loaded_data.get("head_data_1A", None)
-    effA = loaded_data.get("eff_data_1A", None)
-    headB = loaded_data.get("head_data_1B", None)
-    effB = loaded_data.get("eff_data_1B", None)
-    if headA is not None:
-        st.session_state["head_data_1A"] = pd.DataFrame(headA)
-    if effA is not None:
-        st.session_state["eff_data_1A"] = pd.DataFrame(effA)
-    if headB is not None:
-        st.session_state["head_data_1B"] = pd.DataFrame(headB)
-    if effB is not None:
-        st.session_state["eff_data_1B"] = pd.DataFrame(effB)
+
+        for ptype in ['A', 'B']:
+            head_key = loaded_data.get(f"head_data_{i+1}{ptype}")
+            eff_key = loaded_data.get(f"eff_data_{i+1}{ptype}")
+            if head_key is not None:
+                st.session_state[f"head_data_{i+1}{ptype}"] = pd.DataFrame(head_key)
+            if eff_key is not None:
+                st.session_state[f"eff_data_{i+1}{ptype}"] = pd.DataFrame(eff_key)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -645,6 +640,7 @@ def get_full_case_dict():
     else:
         proj_plan = []
 
+    num_stations = len(st.session_state.get('stations', []))
     return {
         "stations": st.session_state.get('stations', []),
         "terminal": {
@@ -667,35 +663,37 @@ def get_full_case_dict():
                 st.session_state.get(f"head_data_{i+1}").to_dict(orient="records")
                 if isinstance(st.session_state.get(f"head_data_{i+1}"), pd.DataFrame) else None
             )
-            for i in range(len(st.session_state.get('stations', [])))
-        },
-        **{
-            f"head_data_{1}{ptype}": (
-                st.session_state.get(f"head_data_{1}{ptype}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"head_data_{1}{ptype}"), pd.DataFrame) else None
-            )
-            for ptype in ['A', 'B']
+            for i in range(num_stations)
         },
         **{
             f"eff_data_{i+1}": (
                 st.session_state.get(f"eff_data_{i+1}").to_dict(orient="records")
                 if isinstance(st.session_state.get(f"eff_data_{i+1}"), pd.DataFrame) else None
             )
-            for i in range(len(st.session_state.get('stations', [])))
-        },
-        **{
-            f"eff_data_{1}{ptype}": (
-                st.session_state.get(f"eff_data_{1}{ptype}").to_dict(orient="records")
-                if isinstance(st.session_state.get(f"eff_data_{1}{ptype}"), pd.DataFrame) else None
-            )
-            for ptype in ['A', 'B']
+            for i in range(num_stations)
         },
         **{
             f"peak_data_{i+1}": (
                 st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
                 if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame) else None
             )
-            for i in range(len(st.session_state.get('stations', [])))
+            for i in range(num_stations)
+        },
+        **{
+            f"head_data_{i+1}{ptype}": (
+                st.session_state.get(f"head_data_{i+1}{ptype}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"head_data_{i+1}{ptype}"), pd.DataFrame) else None
+            )
+            for i in range(num_stations)
+            for ptype in ['A', 'B']
+        },
+        **{
+            f"eff_data_{i+1}{ptype}": (
+                st.session_state.get(f"eff_data_{i+1}{ptype}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"eff_data_{i+1}{ptype}"), pd.DataFrame) else None
+            )
+            for i in range(num_stations)
+            for ptype in ['A', 'B']
         }
     }
 
