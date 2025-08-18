@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 from pipeline_model import _segment_hydraulics, head_to_kgcm2
 
-# Pump curve data at DOL speed (2970 RPM)
-PUMP_CURVE = {
+# Default pump curve data at DOL speed (2970 RPM)
+DEFAULT_PUMP_CURVE = {
     "A": {
         "flow": np.array([0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1687], dtype=float),
         "head": np.array([430, 423, 417, 407, 395, 380, 355, 325, 290, 245], dtype=float),
@@ -18,22 +19,10 @@ PUMP_CURVE = {
     },
 }
 
-DOL_SPEED = 2970.0
-SUCTION_HEAD = 60.0  # m
-START_ELEV = 3.6
-PEAK_ELEV = 267.0
-TERMINAL_ELEV = 46.0
-PEAK_MIN = 15.0
-TERMINAL_MIN = 50.0
-MOP_KGCM2 = 60.0
-L1 = 370.0
-L2 = 130.0
-DIAM_INNER = 0.762 - 2 * 0.00792
-ROUGHNESS = 45e-6
 
 
-def _interp_head(pump_type: str, flow: float) -> float:
-    data = PUMP_CURVE[pump_type]
+def _interp_head(pump_type: str, flow: float, pump_curve: dict) -> float:
+    data = pump_curve[pump_type]
     flows = data["flow"]
     heads = data["head"]
     if flow <= flows[0]:
@@ -43,35 +32,35 @@ def _interp_head(pump_type: str, flow: float) -> float:
     return float(np.interp(flow, flows, heads))
 
 
-def _single_pump_head(pump_type: str, flow: float, rpm: float) -> float:
-    q_equiv = flow * DOL_SPEED / rpm if rpm > 0 else flow
-    head_dol = _interp_head(pump_type, q_equiv)
-    return head_dol * (rpm / DOL_SPEED) ** 2
+def _single_pump_head(pump_type: str, flow: float, rpm: float, pump_curve: dict, dol_speed: float) -> float:
+    q_equiv = flow * dol_speed / rpm if rpm > 0 else flow
+    head_dol = _interp_head(pump_type, q_equiv, pump_curve)
+    return head_dol * (rpm / dol_speed) ** 2
 
 
-def _group_head(flow: float, pump_type: str, rpm: float, count: int, arrangement: str) -> float:
+def _group_head(flow: float, pump_type: str, rpm: float, count: int, arrangement: str, pump_curve: dict, dol_speed: float) -> float:
     if count <= 0:
         return 0.0
     if arrangement == "parallel" and count > 1:
         per_flow = flow / count
-        return _single_pump_head(pump_type, per_flow, rpm)
-    return _single_pump_head(pump_type, flow, rpm) * count
+        return _single_pump_head(pump_type, per_flow, rpm, pump_curve, dol_speed)
+    return _single_pump_head(pump_type, flow, rpm, pump_curve, dol_speed) * count
 
 
-def _combo_head(flow: float, rpm: float, combo: dict) -> float:
+def _combo_head(flow: float, rpm: float, combo: dict, pump_curve: dict, dol_speed: float) -> float:
     head = 0.0
-    head += _group_head(flow, "A", rpm, combo.get("A", 0), combo.get("arrA", "series"))
-    head += _group_head(flow, "B", rpm, combo.get("B", 0), combo.get("arrB", "series"))
+    head += _group_head(flow, "A", rpm, combo.get("A", 0), combo.get("arrA", "series"), pump_curve, dol_speed)
+    head += _group_head(flow, "B", rpm, combo.get("B", 0), combo.get("arrB", "series"), pump_curve, dol_speed)
     return head
 
 
-def _flow_limits(combo: dict) -> tuple[float, float]:
+def _flow_limits(combo: dict, pump_curve: dict) -> tuple[float, float]:
     ranges = []
     for ptype in ["A", "B"]:
         cnt = combo.get(ptype, 0)
         if cnt <= 0:
             continue
-        min_f, max_f = PUMP_CURVE[ptype]["range"]
+        min_f, max_f = pump_curve[ptype]["range"]
         arr = combo.get(f"arr{ptype}", "series")
         if arr == "parallel" and cnt > 1:
             ranges.append((cnt * min_f, cnt * max_f))
@@ -82,22 +71,22 @@ def _flow_limits(combo: dict) -> tuple[float, float]:
     return max(r[0] for r in ranges), min(r[1] for r in ranges)
 
 
-def _evaluate(combo: dict, rpm: float, rho: float, kv: float, dra: float):
-    qmin, qmax = _flow_limits(combo)
+def _evaluate(combo: dict, rpm: float, rho: float, kv: float, dra: float, pipe: dict, pump_curve: dict, dol_speed: float):
+    qmin, qmax = _flow_limits(combo, pump_curve)
     if qmax <= qmin:
         return None
     flows = np.linspace(qmin, qmax, 50)
     best = None
     for q in flows:
-        hp = _combo_head(q, rpm, combo)
-        sdh = SUCTION_HEAD + hp
-        hl1, *_ = _segment_hydraulics(q, L1, DIAM_INNER, ROUGHNESS, kv, dra)
-        hl2, *_ = _segment_hydraulics(q, L2, DIAM_INNER, ROUGHNESS, kv, dra)
-        peak_head = sdh - hl1 - (PEAK_ELEV - START_ELEV)
-        term_head = peak_head - hl2 - (TERMINAL_ELEV - PEAK_ELEV)
-        if peak_head >= PEAK_MIN and term_head >= TERMINAL_MIN:
+        hp = _combo_head(q, rpm, combo, pump_curve, dol_speed)
+        sdh = pipe["suction_head"] + hp
+        hl1, *_ = _segment_hydraulics(q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra)
+        hl_total, *_ = _segment_hydraulics(q, pipe["total_length"], pipe["diam_inner"], pipe["roughness"], kv, dra)
+        peak_head = sdh - hl1 - (pipe["peak_elev"] - pipe["start_elev"])
+        term_head = sdh - hl_total - (pipe["terminal_elev"] - pipe["start_elev"])
+        if peak_head >= pipe["peak_min"] and term_head >= pipe["terminal_min"]:
             press = head_to_kgcm2(sdh, rho)
-            if press <= MOP_KGCM2:
+            if press <= pipe["mop"]:
                 best = (q, sdh, peak_head, term_head)
     if best is None:
         return None
@@ -121,10 +110,10 @@ def _combo_label(a: int, arrA: str, b: int, arrB: str) -> str:
     return " + ".join(parts)
 
 
-def _generate_combos():
+def _generate_combos(max_a: int, max_b: int):
     combos = []
-    for a in range(0, 5):
-        for b in range(0, 3):
+    for a in range(0, max_a + 1):
+        for b in range(0, max_b + 1):
             if a == 0 and b == 0:
                 continue
             arrA_list = ["series", "parallel"] if a > 1 else ["series"]
@@ -141,30 +130,159 @@ def _generate_combos():
     return combos
 
 
-def analyze_all_combinations(visc: float, rho: float, dra: float) -> pd.DataFrame:
-    rpm_list = list(range(2000, int(DOL_SPEED) + 1, 100))
+def analyze_all_combinations(
+    visc: float,
+    rho: float,
+    dra: float,
+    pipe: dict,
+    pump_curve: dict,
+    dol_speed: float,
+    max_a: int = 4,
+    max_b: int = 4,
+    min_rpm: float = 2000.0,
+    return_specs: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, dict]:
+    rpm_list = list(range(int(min_rpm), int(dol_speed) + 1, 100))
     records = []
-    for combo in _generate_combos():
+    combo_map = {}
+    for combo in _generate_combos(max_a, max_b):
         best = None
         for rpm in rpm_list:
-            res = _evaluate(combo, rpm, rho, visc, dra)
+            res = _evaluate(combo, rpm, rho, visc, dra, pipe, pump_curve, dol_speed)
             if res and (best is None or res["Flow (m3/hr)"] > best["Flow (m3/hr)"]):
                 best = res
         if best:
             records.append(best)
-    return pd.DataFrame(records)
+            combo_map[combo["name"]] = combo
+    df = pd.DataFrame(records)
+    if return_specs:
+        return df, combo_map
+    return df
+
+
+def _plot_curves(combo: dict, rpm: float, pipe: dict, pump_curve: dict, dol_speed: float, kv: float, dra: float):
+    qmin, qmax = _flow_limits(combo, pump_curve)
+    flows = np.linspace(qmin, qmax, 100)
+    pump_heads = []
+    sys_heads = []
+    peak_heads = []
+    term_heads = []
+    for q in flows:
+        hp = _combo_head(q, rpm, combo, pump_curve, dol_speed)
+        sdh = pipe["suction_head"] + hp
+        hl1, *_ = _segment_hydraulics(q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra)
+        hl_total, *_ = _segment_hydraulics(q, pipe["total_length"], pipe["diam_inner"], pipe["roughness"], kv, dra)
+        peak = sdh - hl1 - (pipe["peak_elev"] - pipe["start_elev"])
+        term = sdh - hl_total - (pipe["terminal_elev"] - pipe["start_elev"])
+        req_peak = pipe["suction_head"] + (pipe["peak_elev"] - pipe["start_elev"]) + pipe["peak_min"] + hl1
+        req_term = pipe["suction_head"] + (pipe["terminal_elev"] - pipe["start_elev"]) + pipe["terminal_min"] + hl_total
+        pump_heads.append(sdh)
+        sys_heads.append(max(req_peak, req_term))
+        peak_heads.append(peak)
+        term_heads.append(term)
+
+    df1 = pd.DataFrame({"Flow": flows, "Pump Discharge Head": pump_heads, "System Head Required": sys_heads})
+    chart1 = (
+        alt.Chart(df1.melt("Flow", var_name="Curve", value_name="Head"))
+        .mark_line()
+        .encode(x="Flow", y="Head", color="Curve")
+    )
+    st.altair_chart(chart1, use_container_width=True)
+
+    df2 = pd.DataFrame({"Flow": flows, "Peak Head": peak_heads, "Terminal Head": term_heads})
+    data2 = df2.melt("Flow", var_name="Location", value_name="Head")
+    chart2 = alt.Chart(data2).mark_line().encode(x="Flow", y="Head", color="Location")
+    rules = alt.Chart(
+        pd.DataFrame({
+            "Head": [pipe["peak_min"], pipe["terminal_min"]],
+            "Location": ["Peak Minimum", "Terminal Minimum"],
+        })
+    ).mark_rule(strokeDash=[4, 4]).encode(y="Head", color="Location")
+    st.altair_chart(chart2 + rules, use_container_width=True)
 
 
 def hydraulic_app():
     st.title("Hydraulic Feasibility Check")
+
+    st.header("Fluid Properties")
     visc = st.number_input("Viscosity (cSt)", value=5.0, step=0.1)
     rho = st.number_input("Density (kg/m³)", value=820.0, step=1.0)
     dra = st.slider("Drag Reduction (%)", 0, 35, 0)
+
+    st.header("Pipeline Parameters")
+    suction_head = st.number_input("Suction head at origin (m)", value=60.0)
+    total_length = st.number_input("Total pipeline length (km)", value=500.0)
+    peak_location = st.number_input("Peak location from origin (km)", value=370.0)
+    start_elev = st.number_input("Start elevation (m)", value=3.6)
+    peak_elev = st.number_input("Peak elevation (m)", value=267.0)
+    terminal_elev = st.number_input("Terminal elevation (m)", value=46.0)
+    peak_min = st.number_input("Minimum head at peak (m)", value=15.0)
+    terminal_min = st.number_input("Minimum terminal head (m)", value=50.0)
+    mop = st.number_input("Maximum operating pressure (kg/cm²)", value=60.0)
+    od = st.number_input("Pipeline outer diameter (m)", value=0.762, format="%.5f")
+    wt = st.number_input("Wall thickness (m)", value=0.00792, format="%.5f")
+    diam_inner = od - 2 * wt
+    roughness = st.number_input("Pipe roughness (microns)", value=45.0) * 1e-6
+
+    st.header("Pump Parameters")
+    dol_speed = st.number_input("Rated speed (RPM)", value=2970.0)
+    min_rpm = st.number_input("Minimum speed (RPM)", value=2000.0)
+    max_a = st.number_input("Max number of Type-A pumps", min_value=0, max_value=4, value=4)
+    max_b = st.number_input("Max number of Type-B pumps", min_value=0, max_value=4, value=2)
+    rangeA_min = st.number_input("Type A min flow (m³/h)", value=563.0)
+    rangeA_max = st.number_input("Type A max flow (m³/h)", value=1687.0)
+    rangeB_min = st.number_input("Type B min flow (m³/h)", value=616.0)
+    rangeB_max = st.number_input("Type B max flow (m³/h)", value=1900.0)
+    curveA = st.file_uploader("Type A pump curve CSV", type="csv", key="curveA")
+    curveB = st.file_uploader("Type B pump curve CSV", type="csv", key="curveB")
+
+    pump_curve = {ptype: {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in data.items()} for ptype, data in DEFAULT_PUMP_CURVE.items()}
+    pump_curve["A"]["range"] = (rangeA_min, rangeA_max)
+    pump_curve["B"]["range"] = (rangeB_min, rangeB_max)
+    if curveA is not None:
+        dfA = pd.read_csv(curveA)
+        pump_curve["A"]["flow"] = dfA.iloc[:, 0].to_numpy(dtype=float)
+        pump_curve["A"]["head"] = dfA.iloc[:, 1].to_numpy(dtype=float)
+    if curveB is not None:
+        dfB = pd.read_csv(curveB)
+        pump_curve["B"]["flow"] = dfB.iloc[:, 0].to_numpy(dtype=float)
+        pump_curve["B"]["head"] = dfB.iloc[:, 1].to_numpy(dtype=float)
+
+    pipe = {
+        "suction_head": suction_head,
+        "start_elev": start_elev,
+        "peak_elev": peak_elev,
+        "terminal_elev": terminal_elev,
+        "peak_min": peak_min,
+        "terminal_min": terminal_min,
+        "mop": mop,
+        "total_length": total_length,
+        "peak_location": peak_location,
+        "diam_inner": diam_inner,
+        "roughness": roughness,
+    }
+
     if st.button("Run hydraulic analysis"):
-        df = analyze_all_combinations(visc, rho, dra)
+        df, combos = analyze_all_combinations(
+            visc,
+            rho,
+            dra,
+            pipe,
+            pump_curve,
+            dol_speed,
+            max_a=max_a,
+            max_b=max_b,
+            min_rpm=min_rpm,
+            return_specs=True,
+        )
         if df.empty:
             st.warning("No feasible pump combinations found.")
         else:
             st.dataframe(df)
+            choice = st.selectbox("Select combination for curves", df["Combination"])
+            if choice:
+                rpm_sel = float(df.loc[df["Combination"] == choice, "RPM"].iloc[0])
+                _plot_curves(combos[choice], rpm_sel, pipe, pump_curve, dol_speed, visc, dra)
 
-__all__ = ["hydraulic_app", "analyze_all_combinations"]
+
+__all__ = ["hydraulic_app", "analyze_all_combinations", "DEFAULT_PUMP_CURVE"]
