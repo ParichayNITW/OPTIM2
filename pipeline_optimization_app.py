@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import streamlit as st
+import altair as alt
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -38,6 +39,9 @@ from plotly.colors import qualitative
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Hide Vega action buttons globally
+alt.renderers.set_embed_options(actions=False)
 
 from dra_utils import (
     get_ppm_for_dr,
