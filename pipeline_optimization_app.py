@@ -184,25 +184,26 @@ def restore_case_dict(loaded_data):
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
             st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
-# Handle pump type data for originating station
-headA = loaded_data.get("head_data_1A", None)
-effA  = loaded_data.get("eff_data_1A", None)
-peakA = loaded_data.get("peak_data_1A", None)
-headB = loaded_data.get("head_data_1B", None)
-effB  = loaded_data.get("eff_data_1B", None)
-peakB = loaded_data.get("peak_data_1B", None)
-if headA is not None:
-    st.session_state["head_data_1A"] = pd.DataFrame(headA)
-if effA is not None:
-    st.session_state["eff_data_1A"] = pd.DataFrame(effA)
-if peakA is not None:
-    st.session_state["peak_data_1A"] = pd.DataFrame(peakA)
-if headB is not None:
-    st.session_state["head_data_1B"] = pd.DataFrame(headB)
-if effB is not None:
-    st.session_state["eff_data_1B"] = pd.DataFrame(effB)
-if peakB is not None:
-    st.session_state["peak_data_1B"] = pd.DataFrame(peakB)
+
+    # Handle pump type data for originating station
+    headA = loaded_data.get("head_data_1A", None)
+    effA  = loaded_data.get("eff_data_1A", None)
+    peakA = loaded_data.get("peak_data_1A", None)
+    headB = loaded_data.get("head_data_1B", None)
+    effB  = loaded_data.get("eff_data_1B", None)
+    peakB = loaded_data.get("peak_data_1B", None)
+    if headA is not None:
+        st.session_state["head_data_1A"] = pd.DataFrame(headA)
+    if effA is not None:
+        st.session_state["eff_data_1A"] = pd.DataFrame(effA)
+    if peakA is not None:
+        st.session_state["peak_data_1A"] = pd.DataFrame(peakA)
+    if headB is not None:
+        st.session_state["head_data_1B"] = pd.DataFrame(headB)
+    if effB is not None:
+        st.session_state["eff_data_1B"] = pd.DataFrame(effB)
+    if peakB is not None:
+        st.session_state["peak_data_1B"] = pd.DataFrame(peakB)
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -1489,7 +1490,7 @@ if not auto_batch:
                         avail = int(pdata.get('available', 0))
                         names = pdata.get('names', [])
                         if len(names) < avail:
-                            names += [f"Pump {len(names)+i+1}" for i in range(avail - len(names))]
+                            names += [f"Pump {len(names_all)+i+1}" for i in range(avail - len(names))]
                         names_all.extend(names[:avail])
                     stn['pump_names'] = names_all
                     if names_all:
@@ -1610,7 +1611,7 @@ if not auto_batch:
                         avail = int(pdata.get('available', 0))
                         names = pdata.get('names', [])
                         if len(names) < avail:
-                            names += [f"Pump {len(names)+i+1}" for i in range(avail - len(names))]
+                            names += [f"Pump {len(names_all)+i+1}" for i in range(avail - len(names))]
                         names_all.extend(names[:avail])
                     stn['pump_names'] = names_all
                     if names_all:
