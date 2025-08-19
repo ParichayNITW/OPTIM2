@@ -383,15 +383,27 @@ def hydraulic_app():
     rangeA_max = st.number_input("Type A AOR Max Flow (m³/h)", value=1687.0)
     rangeB_min = st.number_input("Type B MCSF Flow (m³/h)", value=616.0)
     rangeB_max = st.number_input("Type B AOR Max Flow (m³/h)", value=1900.0)
+    st.subheader("Type A Pump Flow-Head Curve")
     curveA_df = st.data_editor(
         pd.DataFrame({"Flow": DEFAULT_PUMP_CURVE["A"]["flow"], "Head": DEFAULT_PUMP_CURVE["A"]["head"]}),
         num_rows="dynamic",
         key="curveA",
+        use_container_width=True,
+        column_config={
+            "Flow": st.column_config.NumberColumn("Flow (m³/h)", format="%.1f"),
+            "Head": st.column_config.NumberColumn("Head (m)", format="%.1f"),
+        },
     )
+    st.subheader("Type B Pump Flow-Head Curve")
     curveB_df = st.data_editor(
         pd.DataFrame({"Flow": DEFAULT_PUMP_CURVE["B"]["flow"], "Head": DEFAULT_PUMP_CURVE["B"]["head"]}),
         num_rows="dynamic",
         key="curveB",
+        use_container_width=True,
+        column_config={
+            "Flow": st.column_config.NumberColumn("Flow (m³/h)", format="%.1f"),
+            "Head": st.column_config.NumberColumn("Head (m)", format="%.1f"),
+        },
     )
 
     pump_curve = {
