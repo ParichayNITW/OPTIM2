@@ -141,7 +141,7 @@ def _evaluate(
     if (
         pk_low < pipe["peak_min"] - 1e-6
         or term_low < pipe["terminal_min"] - 1e-6
-        or press_low > pipe["mop"] + 1e-6
+        or press_low >= pipe["mop"] - 1e-6
     ):
         return None
 
@@ -165,7 +165,7 @@ def _evaluate(
                 break
         q_oper = q_mid
         peak_head, term_head, sdh, press = pk_mid, term_mid, sdh_mid, press_mid
-        if term_head >= pipe["terminal_min"] and press <= pipe["mop"] + 1e-6:
+        if term_head >= pipe["terminal_min"] and press < pipe["mop"] - 1e-6:
             aor_min, aor_max, _ = _aor_limits(combo, pump_curve, rpm, dol_speed)
             in_aor = aor_min <= q_oper <= aor_max
             return {
@@ -204,7 +204,7 @@ def _evaluate(
             break
     q_oper = q_mid
     peak_head, term_head, sdh, press = pk_mid, term_mid, sdh_mid, press_mid
-    if peak_head + 1e-6 < pipe["peak_min"] or press > pipe["mop"] + 1e-6:
+    if peak_head + 1e-6 < pipe["peak_min"] or press >= pipe["mop"] - 1e-6:
         return None
 
     aor_min, aor_max, _ = _aor_limits(combo, pump_curve, rpm, dol_speed)
@@ -532,7 +532,23 @@ def hydraulic_app():
     results = st.session_state.get("hydraulic_results")
     if results:
         df = results["df"]
+        st.subheader("Feasible operating points")
         st.dataframe(df)
+
+        df_max = (
+            df.loc[df.groupby("Combination")["Flow (m3/hr)"].idxmax()]
+            .reset_index(drop=True)
+        )
+        st.subheader("Maximum flow per pump combination")
+        st.dataframe(df_max)
+
+        dol_rows = df[
+            np.isclose(df["RPM A"], results["dol_speed"].get("A", np.nan))
+            | np.isclose(df["RPM B"], results["dol_speed"].get("B", np.nan))
+        ]
+        if not dol_rows.empty:
+            st.subheader("Operation at rated (DOL) speed")
+            st.dataframe(dol_rows)
 
         def _label_row(r: pd.Series) -> str:
             parts = []
