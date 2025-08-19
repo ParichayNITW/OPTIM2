@@ -112,28 +112,58 @@ def _evaluate(
     qmin, qmax = _flow_limits(combo, pump_curve)
     if qmax <= qmin:
         return None
-    flows = np.linspace(qmin, qmax, 50)
-    best = None
-    for q in flows:
+
+    def compute(q: float):
         hp = _combo_head(q, rpm, combo, pump_curve, dol_speed)
         sdh = pipe["suction_head"] + hp
         hl1, *_ = _segment_hydraulics(q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra)
         hl_total, *_ = _segment_hydraulics(q, pipe["total_length"], pipe["diam_inner"], pipe["roughness"], kv, dra)
         peak_head = sdh - hl1 - (pipe["peak_elev"] - pipe["start_elev"])
         term_head = sdh - hl_total - (pipe["terminal_elev"] - pipe["start_elev"])
-        if peak_head >= pipe["peak_min"] and term_head >= pipe["terminal_min"]:
-            press = head_to_kgcm2(sdh, rho)
-            if press <= pipe["mop"]:
-                best = (q, sdh, peak_head, term_head)
-    if best is None:
+        req_peak = pipe["suction_head"] + (pipe["peak_elev"] - pipe["start_elev"]) + pipe["peak_min"] + hl1
+        req_term = pipe["suction_head"] + (pipe["terminal_elev"] - pipe["start_elev"]) + pipe["terminal_min"] + hl_total
+        req_head = max(req_peak, req_term)
+        return sdh - req_head, sdh, peak_head, term_head, req_head
+
+    dmin, _, _, _, _ = compute(qmin)
+    if dmin < 0:
         return None
-    q, sdh, peak_head, term_head = best
+    dmax, _, _, _, _ = compute(qmax)
+    if dmax > 0:
+        q_oper = qmax
+        diff, sdh, peak_head, term_head, req_head = compute(q_oper)
+    else:
+        q_low, q_high = qmin, qmax
+        for _ in range(50):
+            q_mid = 0.5 * (q_low + q_high)
+            diff_mid, sdh_mid, peak_mid, term_mid, req_mid = compute(q_mid)
+            if diff_mid > 0:
+                q_low = q_mid
+            else:
+                q_high = q_mid
+            if abs(diff_mid) < 1e-3:
+                q_oper = q_mid
+                diff, sdh, peak_head, term_head, req_head = diff_mid, sdh_mid, peak_mid, term_mid, req_mid
+                break
+        else:
+            q_oper = q_mid
+            diff, sdh, peak_head, term_head, req_head = diff_mid, sdh_mid, peak_mid, term_mid, req_mid
+
+    press = head_to_kgcm2(sdh, rho)
+    if (
+        peak_head + 1e-6 < pipe["peak_min"]
+        or term_head + 1e-6 < pipe["terminal_min"]
+        or press > pipe["mop"] + 1e-6
+        or diff < -0.01
+    ):
+        return None
+
     aor_min, aor_max = _aor_limits(combo, pump_curve)
-    in_aor = aor_min <= q <= aor_max
+    in_aor = aor_min <= q_oper <= aor_max
     return {
         "Combination": combo["name"],
         "RPM": rpm,
-        "Flow (m3/hr)": round(q, 1),
+        "Flow (m3/hr)": round(q_oper, 1),
         "Discharge Head (m)": round(sdh, 1),
         "Head at Peak (m)": round(peak_head, 1),
         "Terminal Head (m)": round(term_head, 1),
@@ -218,6 +248,7 @@ def _plot_curves(
     kv: float,
     dra: float,
     rho: float,
+    op_point: tuple[float, float] | None = None,
 ):
     _, qmax = _flow_limits(combo, pump_curve)
     flows = np.linspace(0, qmax, 100)
@@ -275,7 +306,11 @@ def _plot_curves(
         .mark_rule()
         .encode(y="Head", color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")))
     )
-    chart1 = (rect + lines + mop_line).properties(
+    chart1 = rect + lines + mop_line
+    if op_point is not None:
+        op_df = pd.DataFrame({"Flow": [op_point[0]], "Head": [op_point[1]]})
+        chart1 += alt.Chart(op_df).mark_point(color="black", size=60).encode(x="Flow", y="Head")
+    chart1 = chart1.properties(
         height=350,
         padding={"bottom": 40},
         usermeta={"embedOptions": {"actions": False}},
@@ -444,6 +479,7 @@ def hydraulic_app():
                 results["kv"],
                 results["dra"],
                 results["rho"],
+                op_point=(row["Flow (m3/hr)"], row["Discharge Head (m)"]),
             )
 
 
