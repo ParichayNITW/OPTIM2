@@ -162,7 +162,8 @@ def _evaluate(
     in_aor = aor_min <= q_oper <= aor_max
     return {
         "Combination": combo["name"],
-        "RPM": rpm,
+        "RPM A": rpm if combo.get("A", 0) > 0 else np.nan,
+        "RPM B": rpm if combo.get("B", 0) > 0 else np.nan,
         "Flow (m3/hr)": round(q_oper, 1),
         "Discharge Head (m)": round(sdh, 1),
         "Head at Peak (m)": round(peak_head, 1),
@@ -228,6 +229,9 @@ def analyze_all_combinations(
         if max_speed < min_speed:
             continue
         rpm_list = list(range(int(min_speed), int(max_speed) + 1, 100))
+        if not rpm_list or rpm_list[-1] != int(max_speed):
+            rpm_list.append(int(max_speed))
+        rpm_list = [float(r) for r in rpm_list]
         for rpm in rpm_list:
             res = _evaluate(combo, rpm, rho, visc, dra, pipe, pump_curve, dol_speed)
             if res:
@@ -469,7 +473,19 @@ def hydraulic_app():
     if results:
         df = results["df"]
         st.dataframe(df)
-        labels = df.apply(lambda r: f"{r['Combination']} @ {r['RPM']} RPM", axis=1)
+
+        def _label_row(r: pd.Series) -> str:
+            parts = []
+            a_rpm = r.get("RPM A")
+            b_rpm = r.get("RPM B")
+            if not np.isnan(a_rpm):
+                parts.append(f"A:{int(a_rpm)}")
+            if not np.isnan(b_rpm):
+                parts.append(f"B:{int(b_rpm)}")
+            rpm_txt = " ".join(parts)
+            return f"{r['Combination']} @ {rpm_txt} RPM"
+
+        labels = df.apply(_label_row, axis=1)
         choice = st.selectbox(
             "Select combination and speed for curves",
             labels,
@@ -478,7 +494,7 @@ def hydraulic_app():
         if choice:
             row = df.loc[labels == choice].iloc[0]
             combo_name = row["Combination"]
-            rpm_sel = float(row["RPM"])
+            rpm_sel = float(row["RPM A"] if not np.isnan(row["RPM A"]) else row["RPM B"])
             in_aor = bool(row["Within AOR"])
             if not in_aor:
                 st.warning("Operating point lies outside AOR range.")
