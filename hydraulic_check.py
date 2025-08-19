@@ -67,7 +67,10 @@ def _flow_limits(combo: dict, pump_curve: dict) -> tuple[float, float]:
         if cnt <= 0:
             continue
         min_f = pump_curve[ptype]["mcsf"]
-        max_f = pump_curve[ptype]["flow"][-1]
+        # Allow evaluation beyond the pump's published curve by extending the
+        # maximum flow range. The head beyond the last point is treated as
+        # constant by _interp_head, so we simply double the curve's max flow.
+        max_f = pump_curve[ptype]["flow"][-1] * 2
         arr = combo.get(f"arr{ptype}", "series")
         if arr == "parallel" and cnt > 1:
             limits.append((cnt * min_f, cnt * max_f))
@@ -195,14 +198,11 @@ def analyze_all_combinations(
         if max_speed < min_speed:
             continue
         rpm_list = list(range(int(min_speed), int(max_speed) + 1, 100))
-        best = None
         for rpm in rpm_list:
             res = _evaluate(combo, rpm, rho, visc, dra, pipe, pump_curve, dol_speed)
-            if res and (best is None or res["Flow (m3/hr)"] > best["Flow (m3/hr)"]):
-                best = res
-        if best:
-            records.append(best)
-            combo_map[combo["name"]] = combo
+            if res:
+                records.append(res)
+                combo_map[combo["name"]] = combo
     df = pd.DataFrame(records)
     if return_specs:
         return df, combo_map
@@ -313,7 +313,7 @@ def _plot_curves(
 
 
 def hydraulic_app():
-    st.title("Hydraulic System Analysis")
+    st.title("Hydraulic Feasibility Check")
 
     st.header("Fluid Properties")
     visc = st.number_input("Viscosity (cSt)", value=5.0, step=0.1)
@@ -422,18 +422,21 @@ def hydraulic_app():
     if results:
         df = results["df"]
         st.dataframe(df)
+        labels = df.apply(lambda r: f"{r['Combination']} @ {r['RPM']} RPM", axis=1)
         choice = st.selectbox(
-            "Select combination for curves",
-            df["Combination"],
+            "Select combination and speed for curves",
+            labels,
             key="combo_choice",
         )
         if choice:
-            rpm_sel = float(df.loc[df["Combination"] == choice, "RPM"].iloc[0])
-            in_aor = bool(df.loc[df["Combination"] == choice, "Within AOR"].iloc[0])
+            row = df.loc[labels == choice].iloc[0]
+            combo_name = row["Combination"]
+            rpm_sel = float(row["RPM"])
+            in_aor = bool(row["Within AOR"])
             if not in_aor:
                 st.warning("Operating point lies outside AOR range.")
             _plot_curves(
-                results["combos"][choice],
+                results["combos"][combo_name],
                 rpm_sel,
                 results["pipe"],
                 results["pump_curve"],
