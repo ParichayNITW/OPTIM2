@@ -81,22 +81,35 @@ def _flow_limits(combo: dict, pump_curve: dict) -> tuple[float, float]:
     return max(l[0] for l in limits), min(l[1] for l in limits)
 
 
-def _aor_limits(combo: dict, pump_curve: dict) -> tuple[float, float]:
-    ranges = []
+def _aor_limits(
+    combo: dict, pump_curve: dict, rpm: float, dol_speed: dict
+) -> tuple[float, float, dict]:
+    """Return overall and per-type AOR flow ranges at a given speed.
+
+    The provided MCSF/AOR values are specified at rated (DOL) speed.
+    Flow ranges scale linearly with RPM per the affinity laws, and counts
+    are adjusted for parallel arrangements.
+    """
+
+    ranges = {}
     for ptype in ["A", "B"]:
         cnt = combo.get(ptype, 0)
         if cnt <= 0:
             continue
-        min_f = pump_curve[ptype]["mcsf"]
-        max_f = pump_curve[ptype]["aor_max"]
+        rated = dol_speed.get(ptype, 1.0)
+        factor = rpm / rated if rated > 0 else 0.0
+        min_f = pump_curve[ptype]["mcsf"] * factor
+        max_f = pump_curve[ptype]["aor_max"] * factor
         arr = combo.get(f"arr{ptype}", "series")
         if arr == "parallel" and cnt > 1:
-            ranges.append((cnt * min_f, cnt * max_f))
-        else:
-            ranges.append((min_f, max_f))
+            min_f *= cnt
+            max_f *= cnt
+        ranges[ptype] = (min_f, max_f)
     if not ranges:
-        return (0.0, 0.0)
-    return max(r[0] for r in ranges), min(r[1] for r in ranges)
+        return 0.0, 0.0, {}
+    overall_min = max(r[0] for r in ranges.values())
+    overall_max = min(r[1] for r in ranges.values())
+    return overall_min, overall_max, ranges
 
 
 def _evaluate(
@@ -153,7 +166,7 @@ def _evaluate(
         q_oper = q_mid
         peak_head, term_head, sdh, press = pk_mid, term_mid, sdh_mid, press_mid
         if term_head >= pipe["terminal_min"] and press <= pipe["mop"] + 1e-6:
-            aor_min, aor_max = _aor_limits(combo, pump_curve)
+            aor_min, aor_max, _ = _aor_limits(combo, pump_curve, rpm, dol_speed)
             in_aor = aor_min <= q_oper <= aor_max
             return {
                 "Combination": combo["name"],
@@ -194,7 +207,7 @@ def _evaluate(
     if peak_head + 1e-6 < pipe["peak_min"] or press > pipe["mop"] + 1e-6:
         return None
 
-    aor_min, aor_max = _aor_limits(combo, pump_curve)
+    aor_min, aor_max, _ = _aor_limits(combo, pump_curve, rpm, dol_speed)
     in_aor = aor_min <= q_oper <= aor_max
     return {
         "Combination": combo["name"],
@@ -313,17 +326,28 @@ def _plot_curves(
     head_mop = pipe["mop"] * 10000.0 / rho if rho > 0 else 0.0
     max_head = max(pump_heads + sys_heads + [head_mop])
     df1 = pd.DataFrame({"Flow": flows, "Pump Discharge Head": pump_heads, "System Head Required": sys_heads})
-    aor_min, aor_max = _aor_limits(combo, pump_curve)
-    band_df = pd.DataFrame({
-        "Flow_start": [aor_min],
-        "Flow_end": [aor_max],
-        "Head_start": [0],
-        "Head_end": [max_head],
-        "Curve": ["Within AOR"],
-    })
+    _, _, aor_ranges = _aor_limits(combo, pump_curve, rpm, dol_speed)
+    band_rows = []
+    for ptype, (lo, hi) in aor_ranges.items():
+        band_rows.append(
+            {
+                "Flow_start": lo,
+                "Flow_end": hi,
+                "Head_start": 0,
+                "Head_end": max_head,
+                "Curve": f"Type {ptype} AOR",
+            }
+        )
+    band_df = pd.DataFrame(band_rows)
     color_scale = alt.Scale(
-        domain=["Pump Discharge Head", "System Head Required", "Within AOR", "MOP"],
-        range=["#1f77b4", "#d62728", "#90ee90", "#9467bd"],
+        domain=[
+            "Pump Discharge Head",
+            "System Head Required",
+            "Type A AOR",
+            "Type B AOR",
+            "MOP",
+        ],
+        range=["#1f77b4", "#d62728", "#90ee90", "#fdd0a2", "#9467bd"],
     )
     rect = alt.Chart(band_df).mark_rect(opacity=0.1).encode(
         x="Flow_start",
