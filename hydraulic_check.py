@@ -316,8 +316,12 @@ def _plot_curves(
     sys_heads: list[float] = []
     peak_heads: list[float] = []
     term_heads: list[float] = []
+    head_a: list[float] = []
+    head_b: list[float] = []
     for q in flows:
-        hp = _combo_head(q, rpm, combo, pump_curve, dol_speed)
+        hp_a = _group_head(q, "A", rpm, combo.get("A", 0), combo.get("arrA", "series"), pump_curve, dol_speed) if combo.get("A", 0) > 0 else 0.0
+        hp_b = _group_head(q, "B", rpm, combo.get("B", 0), combo.get("arrB", "series"), pump_curve, dol_speed) if combo.get("B", 0) > 0 else 0.0
+        hp = hp_a + hp_b
         sdh = pipe["suction_head"] + hp
         hl1, *_ = _segment_hydraulics(q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra)
         hl_total, *_ = _segment_hydraulics(q, pipe["total_length"], pipe["diam_inner"], pipe["roughness"], kv, dra)
@@ -329,10 +333,19 @@ def _plot_curves(
         sys_heads.append(max(req_peak, req_term))
         peak_heads.append(max(0.0, peak))
         term_heads.append(max(0.0, term))
+        if combo.get("A", 0) > 0:
+            head_a.append(pipe["suction_head"] + hp_a)
+        if combo.get("B", 0) > 0:
+            head_b.append(pipe["suction_head"] + hp_b)
         
     head_mop = pipe["mop"] * 10000.0 / rho if rho > 0 else 0.0
     max_head = max(pump_heads + sys_heads + [head_mop])
-    df1 = pd.DataFrame({"Flow": flows, "Pump Discharge Head": pump_heads, "System Head Required": sys_heads})
+    data_dict = {"Flow": flows, "Combined Pump Head": pump_heads, "System Head Required": sys_heads}
+    if head_a:
+        data_dict["Type A Head"] = head_a
+    if head_b:
+        data_dict["Type B Head"] = head_b
+    df1 = pd.DataFrame(data_dict)
     _, _, aor_ranges = _aor_limits(combo, pump_curve, rpm, dol_speed)
     band_rows = []
     for ptype, (lo, hi) in aor_ranges.items():
@@ -346,26 +359,32 @@ def _plot_curves(
             }
         )
     band_df = pd.DataFrame(band_rows)
-    color_scale = alt.Scale(
-        domain=[
-            "Pump Discharge Head",
-            "System Head Required",
-            "Type A AOR",
-            "Type B AOR",
-            "MOP",
-        ],
-        range=["#1f77b4", "#d62728", "#90ee90", "#fdd0a2", "#9467bd"],
-    )
-    rect = alt.Chart(band_df).mark_rect(opacity=0.1).encode(
-        x="Flow_start",
-        x2="Flow_end",
-        y="Head_start",
-        y2="Head_end",
-        color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")),
+    domain = ["Combined Pump Head", "System Head Required"]
+    colors = ["#e41a1c", "#1f77b4"]
+    if head_a:
+        domain.extend(["Type A Head", "Type A AOR"])
+        colors.extend(["#2ca02c", "#a6d854"])
+    if head_b:
+        domain.extend(["Type B Head", "Type B AOR"])
+        colors.extend(["#ff7f00", "#fdd0a2"])
+    domain.append("MOP")
+    colors.append("#9467bd")
+    color_scale = alt.Scale(domain=domain, range=colors)
+    rect = (
+        alt.Chart(band_df)
+        .mark_rect()
+        .encode(
+            x="Flow_start",
+            x2="Flow_end",
+            y="Head_start",
+            y2="Head_end",
+            color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")),
+            opacity=alt.value(0.15),
+        )
     )
     lines = (
         alt.Chart(df1.melt("Flow", var_name="Curve", value_name="Head"))
-        .mark_line()
+        .mark_line(strokeWidth=2.5)
         .encode(
             x=alt.X("Flow", title="Flow (m3/h)"),
             y=alt.Y("Head", title="Head (m)", scale=alt.Scale(domain=(0, max_head))),
@@ -374,7 +393,7 @@ def _plot_curves(
     )
     mop_line = (
         alt.Chart(pd.DataFrame({"Head": [head_mop], "Curve": ["MOP"]}))
-        .mark_rule()
+        .mark_rule(strokeDash=[4, 4], strokeWidth=2)
         .encode(y="Head", color=alt.Color("Curve", scale=color_scale, legend=alt.Legend(title="")))
     )
     chart1 = rect + lines + mop_line
@@ -532,6 +551,7 @@ def hydraulic_app():
                 "dol_speed": dol_speed,
                 "kv": visc,
                 "rho": rho,
+                "max_dra": max_dra,
             }
             st.session_state.pop("combo_choice", None)
 
@@ -541,9 +561,18 @@ def hydraulic_app():
         st.subheader("Feasible operating points")
         st.dataframe(df)
 
-        df_sorted = df.sort_values(
-            ["Combination", "Flow (m3/hr)", "Drag Reduction (%)"],
-            ascending=[True, False, True],
+        dr_opts = list(range(0, int(results.get("max_dra", 0)) + 1, 5))
+        if dr_opts and dr_opts[-1] != int(results.get("max_dra", 0)):
+            dr_opts.append(int(results.get("max_dra", 0)))
+        dr_sel = st.selectbox(
+            "Drag reduction (%) for table",
+            dr_opts,
+            key="dr_filter",
+        )
+        df_filtered = df[df["Drag Reduction (%)"] == float(dr_sel)]
+        df_sorted = df_filtered.sort_values(
+            ["Combination", "Flow (m3/hr)"],
+            ascending=[True, False],
         )
         df_max = df_sorted.groupby("Combination", as_index=False).first()
         st.subheader("Maximum flow per pump combination")
