@@ -277,12 +277,17 @@ def analyze_all_combinations(
             max_speed = min(max_speed, dol_speed.get("B", float("inf")))
         if max_speed < min_speed:
             continue
-        rpm_list = list(range(int(min_speed), int(max_speed) + 1, 100))
+        rpm_list = list(range(int(min_speed), int(max_speed) + 1, 25))
         if not rpm_list or rpm_list[-1] != int(max_speed):
             rpm_list.append(int(max_speed))
         rpm_list = [float(r) for r in rpm_list]
+
+        dra_values = list(range(0, int(max_dra) + 1, 2))
+        if dra_values and dra_values[-1] != int(max_dra):
+            dra_values.append(int(max_dra))
+
         for rpm in rpm_list:
-            for dra in range(0, int(max_dra) + 1):
+            for dra in dra_values:
                 res = _evaluate(combo, rpm, rho, visc, float(dra), pipe, pump_curve, dol_speed)
                 if res:
                     res["Drag Reduction (%)"] = float(dra)
