@@ -253,7 +253,7 @@ def _generate_combos(max_a: int, max_b: int):
 def analyze_all_combinations(
     visc: float,
     rho: float,
-    dra: float,
+    max_dra: float,
     pipe: dict,
     pump_curve: dict,
     dol_speed: dict,
@@ -282,10 +282,12 @@ def analyze_all_combinations(
             rpm_list.append(int(max_speed))
         rpm_list = [float(r) for r in rpm_list]
         for rpm in rpm_list:
-            res = _evaluate(combo, rpm, rho, visc, dra, pipe, pump_curve, dol_speed)
-            if res:
-                records.append(res)
-                combo_map[combo["name"]] = combo
+            for dra in range(0, int(max_dra) + 1):
+                res = _evaluate(combo, rpm, rho, visc, float(dra), pipe, pump_curve, dol_speed)
+                if res:
+                    res["Drag Reduction (%)"] = float(dra)
+                    records.append(res)
+                    combo_map[combo["name"]] = combo
     df = pd.DataFrame(records)
     if return_specs:
         return df, combo_map
@@ -417,7 +419,7 @@ def hydraulic_app():
     st.header("Fluid Properties")
     visc = st.number_input("Viscosity (cSt)", value=5.0, step=0.1)
     rho = st.number_input("Density (kg/m³)", value=820.0, step=1.0)
-    dra = st.slider("Drag Reduction (%)", 0, 70, 0)
+    max_dra = st.slider("Maximum Drag Reduction (%)", 0, 70, 0)
 
     st.header("Pipeline Parameters")
     suction_head = st.number_input("Suction head at origin (m)", value=60.0)
@@ -504,7 +506,7 @@ def hydraulic_app():
         df, combos = analyze_all_combinations(
             visc,
             rho,
-            dra,
+            max_dra,
             pipe,
             pump_curve,
             dol_speed,
@@ -524,7 +526,6 @@ def hydraulic_app():
                 "pump_curve": pump_curve,
                 "dol_speed": dol_speed,
                 "kv": visc,
-                "dra": dra,
                 "rho": rho,
             }
             st.session_state.pop("combo_choice", None)
@@ -535,10 +536,11 @@ def hydraulic_app():
         st.subheader("Feasible operating points")
         st.dataframe(df)
 
-        df_max = (
-            df.loc[df.groupby("Combination")["Flow (m3/hr)"].idxmax()]
-            .reset_index(drop=True)
+        df_sorted = df.sort_values(
+            ["Combination", "Flow (m3/hr)", "Drag Reduction (%)"],
+            ascending=[True, False, True],
         )
+        df_max = df_sorted.groupby("Combination", as_index=False).first()
         st.subheader("Maximum flow per pump combination")
         st.dataframe(df_max)
 
@@ -558,8 +560,9 @@ def hydraulic_app():
                 parts.append(f"A:{int(a_rpm)}")
             if not np.isnan(b_rpm):
                 parts.append(f"B:{int(b_rpm)}")
+            parts.append(f"DR:{int(r['Drag Reduction (%)'])}%")
             rpm_txt = " ".join(parts)
-            return f"{r['Combination']} @ {rpm_txt} RPM"
+            return f"{r['Combination']} @ {rpm_txt}"
 
         labels = df.apply(_label_row, axis=1)
         choice = st.selectbox(
@@ -571,6 +574,7 @@ def hydraulic_app():
             row = df.loc[labels == choice].iloc[0]
             combo_name = row["Combination"]
             rpm_sel = float(row["RPM A"] if not np.isnan(row["RPM A"]) else row["RPM B"])
+            dra_sel = float(row["Drag Reduction (%)"])
             in_aor = bool(row["Within AOR"])
             if not in_aor:
                 st.warning("Operating point lies outside AOR range.")
@@ -581,7 +585,7 @@ def hydraulic_app():
                 results["pump_curve"],
                 results["dol_speed"],
                 results["kv"],
-                results["dra"],
+                dra_sel,
                 results["rho"],
                 op_point=(row["Flow (m3/hr)"], row["Discharge Head (m)"]),
             )
