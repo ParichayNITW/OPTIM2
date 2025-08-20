@@ -360,13 +360,13 @@ def _plot_curves(
         )
     band_df = pd.DataFrame(band_rows)
     domain = ["Combined Pump Head", "System Head Required"]
-    colors = ["#e41a1c", "#1f77b4"]
+    colors = ["#d62728", "#1f77b4"]
     if head_a:
         domain.extend(["Type A Head", "Type A AOR"])
-        colors.extend(["#2ca02c", "#a6d854"])
+        colors.extend(["#2ca02c", "#17becf"])
     if head_b:
         domain.extend(["Type B Head", "Type B AOR"])
-        colors.extend(["#ff7f00", "#fdd0a2"])
+        colors.extend(["#ff7f0e", "#ff9896"])
     domain.append("MOP")
     colors.append("#9467bd")
     color_scale = alt.Scale(domain=domain, range=colors)
@@ -561,7 +561,7 @@ def hydraulic_app():
         st.subheader("Feasible operating points")
         st.dataframe(df)
 
-        dr_opts = list(range(0, int(results.get("max_dra", 0)) + 1, 5))
+        dr_opts = list(range(0, int(results.get("max_dra", 0)) + 1, 2))
         if dr_opts and dr_opts[-1] != int(results.get("max_dra", 0)):
             dr_opts.append(int(results.get("max_dra", 0)))
         dr_sel = st.selectbox(
@@ -585,35 +585,67 @@ def hydraulic_app():
         if not dol_rows.empty:
             st.subheader("Operation at rated (DOL) speed")
             st.dataframe(dol_rows)
-
-        def _label_row(r: pd.Series) -> str:
-            parts = []
-            a_rpm = r.get("RPM A")
-            b_rpm = r.get("RPM B")
-            if not np.isnan(a_rpm):
-                parts.append(f"A:{int(a_rpm)}")
-            if not np.isnan(b_rpm):
-                parts.append(f"B:{int(b_rpm)}")
-            parts.append(f"DR:{int(r['Drag Reduction (%)'])}%")
-            rpm_txt = " ".join(parts)
-            return f"{r['Combination']} @ {rpm_txt}"
-
-        labels = df.apply(_label_row, axis=1)
-        choice = st.selectbox(
-            "Select combination and speed for curves",
-            labels,
-            key="combo_choice",
+        combos = results["combos"]
+        countA_opts = sorted({c.get("A", 0) for c in combos.values()})
+        countB_opts = sorted({c.get("B", 0) for c in combos.values()})
+        nA = st.selectbox("Number of Type A pumps", countA_opts, key="sel_nA")
+        arrA = st.selectbox(
+            "Type A arrangement", ["series", "parallel"], key="sel_arrA", disabled=nA <= 1
         )
-        if choice:
-            row = df.loc[labels == choice].iloc[0]
+        nB = st.selectbox("Number of Type B pumps", countB_opts, key="sel_nB")
+        arrB = st.selectbox(
+            "Type B arrangement", ["series", "parallel"], key="sel_arrB", disabled=nB <= 1
+        )
+        rpmA_opts = sorted(df[~df["RPM A"].isna()]["RPM A"].unique())
+        rpmB_opts = sorted(df[~df["RPM B"].isna()]["RPM B"].unique())
+        if not rpmA_opts:
+            rpmA_opts = [0.0]
+        if not rpmB_opts:
+            rpmB_opts = [0.0]
+        rpmA_sel = st.selectbox(
+            "Type A speed (RPM)", rpmA_opts, key="sel_rpmA", disabled=nA == 0
+        )
+        rpmB_sel = st.selectbox(
+            "Type B speed (RPM)", rpmB_opts, key="sel_rpmB", disabled=nB == 0
+        )
+        dr_opts_plot = list(range(0, int(results.get("max_dra", 0)) + 1, 2))
+        if dr_opts_plot and dr_opts_plot[-1] != int(results.get("max_dra", 0)):
+            dr_opts_plot.append(int(results.get("max_dra", 0)))
+        dr_plot = st.selectbox(
+            "Drag reduction (%)", dr_opts_plot, key="sel_dra_plot"
+        )
+        match = [
+            name
+            for name, c in combos.items()
+            if c.get("A", 0) == nA
+            and c.get("B", 0) == nB
+            and (nA <= 1 or c.get("arrA", "series") == arrA)
+            and (nB <= 1 or c.get("arrB", "series") == arrB)
+        ]
+        subdf = df[
+            df["Combination"].isin(match)
+            & (df["Drag Reduction (%)"] == float(dr_plot))
+        ]
+        if nA > 0:
+            subdf = subdf[np.isclose(subdf["RPM A"], rpmA_sel)]
+        else:
+            subdf = subdf[subdf["RPM A"].isna()]
+        if nB > 0:
+            subdf = subdf[np.isclose(subdf["RPM B"], rpmB_sel)]
+        else:
+            subdf = subdf[subdf["RPM B"].isna()]
+        if subdf.empty:
+            st.warning("No data for selected configuration.")
+        else:
+            row = subdf.iloc[0]
             combo_name = row["Combination"]
-            rpm_sel = float(row["RPM A"] if not np.isnan(row["RPM A"]) else row["RPM B"])
+            rpm_sel = float(row["RPM A"] if nA > 0 else row["RPM B"])
             dra_sel = float(row["Drag Reduction (%)"])
             in_aor = bool(row["Within AOR"])
             if not in_aor:
                 st.warning("Operating point lies outside AOR range.")
             _plot_curves(
-                results["combos"][combo_name],
+                combos[combo_name],
                 rpm_sel,
                 results["pipe"],
                 results["pump_curve"],
