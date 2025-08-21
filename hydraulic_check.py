@@ -168,78 +168,61 @@ def _evaluate(
         press = head_to_kgcm2(sdh, rho)
         return peak_head, term_head, sdh, press
 
-    # --- Try to meet peak minimum head ---
-    pk_low, term_low, sdh_low, press_low = compute(qmin)
+    pk, term, sdh, press = compute(qmin)
     if (
-        pk_low < pipe["peak_min"] - 1e-6
-        or term_low < pipe["terminal_min"] - 1e-6
-        or press_low >= pipe["mop"] - 1e-6
+        pk < pipe["peak_min"] - 1e-6
+        or term < pipe["terminal_min"] - 1e-6
+        or press >= pipe["mop"] - 1e-6
     ):
         return None
 
+    q_low = qmin
     q_high = qmax
-    pk_high = compute(q_high)[0]
-    while pk_high > pipe["peak_min"]:
+    pk_high, term_high, sdh_high, press_high = compute(q_high)
+    while (
+        pk_high >= pipe["peak_min"] - 1e-6
+        and term_high >= pipe["terminal_min"] - 1e-6
+        and press_high < pipe["mop"] - 1e-6
+    ):
+        q_low = q_high
         q_high *= 2
-        pk_high = compute(q_high)[0]
+        pk_high, term_high, sdh_high, press_high = compute(q_high)
         if q_high > qmax * 1e3:
             break
-    if pk_high <= pipe["peak_min"]:
-        q_low = qmin
+
+    if (
+        pk_high >= pipe["peak_min"] - 1e-6
+        and term_high >= pipe["terminal_min"] - 1e-6
+        and press_high < pipe["mop"] - 1e-6
+    ):
+        q_oper = q_high
+        peak_head, term_head, sdh_val, press_val = (
+            pk_high,
+            term_high,
+            sdh_high,
+            press_high,
+        )
+    else:
+        pk_val, term_val, sdh_val, press_val = pk, term, sdh, press
         for _ in range(60):
             q_mid = 0.5 * (q_low + q_high)
             pk_mid, term_mid, sdh_mid, press_mid = compute(q_mid)
-            if pk_mid > pipe["peak_min"]:
+            if (
+                pk_mid >= pipe["peak_min"] - 1e-6
+                and term_mid >= pipe["terminal_min"] - 1e-6
+                and press_mid < pipe["mop"] - 1e-6
+            ):
                 q_low = q_mid
+                pk_val, term_val, sdh_val, press_val = (
+                    pk_mid,
+                    term_mid,
+                    sdh_mid,
+                    press_mid,
+                )
             else:
                 q_high = q_mid
-            if abs(pk_mid - pipe["peak_min"]) < 1e-3:
-                break
-        q_oper = q_mid
-        peak_head, term_head, sdh, press = pk_mid, term_mid, sdh_mid, press_mid
-        if term_head >= pipe["terminal_min"] and press < pipe["mop"] - 1e-6:
-            aor_min, aor_max, _ = _aor_limits(
-                combo, pump_curve, {"A": rpm_a, "B": rpm_b}, dol_speed
-            )
-            in_aor = aor_min <= q_oper <= aor_max
-            return {
-                "Combination": combo["name"],
-                "RPM A": rpm_a if combo.get("A", 0) > 0 else np.nan,
-                "RPM B": rpm_b if combo.get("B", 0) > 0 else np.nan,
-                "Flow (m3/hr)": round(q_oper, 1),
-                "Discharge Head (m)": round(sdh, 1),
-                "Head at Peak (m)": round(peak_head, 1),
-                "Terminal Head (m)": round(term_head, 1),
-                "Within AOR": in_aor,
-            }
-
-    # --- Fall back to meeting terminal minimum head ---
-    term_low = compute(qmin)[1]
-    if term_low < pipe["terminal_min"] - 1e-6:
-        return None
-    q_high = qmax
-    term_high = compute(q_high)[1]
-    while term_high > pipe["terminal_min"]:
-        q_high *= 2
-        term_high = compute(q_high)[1]
-        if q_high > qmax * 1e3:
-            break
-    if term_high > pipe["terminal_min"]:
-        return None
-    q_low = qmin
-    for _ in range(60):
-        q_mid = 0.5 * (q_low + q_high)
-        pk_mid, term_mid, sdh_mid, press_mid = compute(q_mid)
-        if term_mid > pipe["terminal_min"]:
-            q_low = q_mid
-        else:
-            q_high = q_mid
-        if abs(term_mid - pipe["terminal_min"]) < 1e-3:
-            break
-    q_oper = q_mid
-    peak_head, term_head, sdh, press = pk_mid, term_mid, sdh_mid, press_mid
-    if peak_head + 1e-6 < pipe["peak_min"] or press >= pipe["mop"] - 1e-6:
-        return None
+        q_oper = q_low
+        peak_head, term_head = pk_val, term_val
 
     aor_min, aor_max, _ = _aor_limits(
         combo, pump_curve, {"A": rpm_a, "B": rpm_b}, dol_speed
@@ -250,7 +233,7 @@ def _evaluate(
         "RPM A": rpm_a if combo.get("A", 0) > 0 else np.nan,
         "RPM B": rpm_b if combo.get("B", 0) > 0 else np.nan,
         "Flow (m3/hr)": round(q_oper, 1),
-        "Discharge Head (m)": round(sdh, 1),
+        "Discharge Head (m)": round(sdh_val, 1),
         "Head at Peak (m)": round(peak_head, 1),
         "Terminal Head (m)": round(term_head, 1),
         "Within AOR": in_aor,
