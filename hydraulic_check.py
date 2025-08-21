@@ -255,44 +255,41 @@ def _evaluate(
     dol_speed: dict,
     step: float = 25.0,
 ):
-    """Increase pump speeds until MOP or head limits reached.
+    """Search RPM combinations to maximize flow.
 
-    Starting from ``rpm_a_start``/``rpm_b_start`` the speeds are increased in
-    ``step`` increments (up to the provided maxima) and the operating flow is
-    recalculated. The final state is returned once either the discharge pressure
-    is close to the station MOP or the maximum allowed speed is reached.
+    All feasible speed pairs within the provided ranges are evaluated in a
+    simple grid search. For each pair of RPM values the operating flow is
+    computed; the configuration yielding the highest flow while respecting the
+    station MOP and head limits is returned.
     """
 
-    rpm_a = rpm_a_start
-    rpm_b = rpm_b_start
+    def _rpm_range(start: float, stop: float) -> list[float]:
+        vals = [start]
+        while vals[-1] + 1e-6 < stop:
+            nxt = min(vals[-1] + step, stop)
+            if abs(nxt - vals[-1]) < 1e-6:
+                break
+            vals.append(nxt)
+        return vals
+
+    rpm_a_vals = [0.0]
+    rpm_b_vals = [0.0]
+    if combo.get("A", 0) > 0:
+        rpm_a_vals = _rpm_range(rpm_a_start, rpm_a_max)
+    if combo.get("B", 0) > 0:
+        rpm_b_vals = _rpm_range(rpm_b_start, rpm_b_max)
+
     best = None
-    while True:
-        res = _evaluate_fixed_rpm(
-            combo, rpm_a, rpm_b, rho, kv, dra, pipe, pump_curve, dol_speed
-        )
-        if not res:
-            return best
-        best = res
-        press = res["Discharge Pressure (kg/cm²)"]
-        # Stop if MOP is reached or both pumps are at their maximum speed
-        if press >= pipe["mop"] - 1e-6 or (
-            (combo.get("A", 0) == 0 or rpm_a >= rpm_a_max)
-            and (combo.get("B", 0) == 0 or rpm_b >= rpm_b_max)
-        ):
-            return best
-
-        # Increase speeds where allowed and iterate
-        if combo.get("A", 0) > 0 and rpm_a < rpm_a_max:
-            rpm_a = min(rpm_a + step, rpm_a_max)
-        if combo.get("B", 0) > 0 and rpm_b < rpm_b_max:
-            rpm_b = min(rpm_b + step, rpm_b_max)
-
-        # Break if no further change is possible
-        if (
-            (combo.get("A", 0) == 0 or rpm_a == res.get("RPM A", rpm_a))
-            and (combo.get("B", 0) == 0 or rpm_b == res.get("RPM B", rpm_b))
-        ):
-            return best
+    for rpm_a in rpm_a_vals:
+        for rpm_b in rpm_b_vals:
+            res = _evaluate_fixed_rpm(
+                combo, rpm_a, rpm_b, rho, kv, dra, pipe, pump_curve, dol_speed
+            )
+            if not res:
+                continue
+            if not best or res["Flow (m3/hr)"] > best["Flow (m3/hr)"]:
+                best = res
+    return best
 
 
 def _combo_label(a: int, arrA: str, b: int, arrB: str) -> str:
