@@ -53,10 +53,35 @@ def _group_head(flow: float, pump_type: str, rpm: float, count: int, arrangement
     return _single_pump_head(pump_type, flow, rpm, pump_curve, dol_speed) * count
 
 
-def _combo_head(flow: float, rpm: float, combo: dict, pump_curve: dict, dol_speed: dict) -> float:
+def _combo_head(
+    flow: float,
+    rpm_a: float,
+    rpm_b: float,
+    combo: dict,
+    pump_curve: dict,
+    dol_speed: dict,
+) -> float:
+    """Total head produced by a pump combination at the given speeds."""
+
     head = 0.0
-    head += _group_head(flow, "A", rpm, combo.get("A", 0), combo.get("arrA", "series"), pump_curve, dol_speed)
-    head += _group_head(flow, "B", rpm, combo.get("B", 0), combo.get("arrB", "series"), pump_curve, dol_speed)
+    head += _group_head(
+        flow,
+        "A",
+        rpm_a,
+        combo.get("A", 0),
+        combo.get("arrA", "series"),
+        pump_curve,
+        dol_speed,
+    )
+    head += _group_head(
+        flow,
+        "B",
+        rpm_b,
+        combo.get("B", 0),
+        combo.get("arrB", "series"),
+        pump_curve,
+        dol_speed,
+    )
     return head
 
 
@@ -82,12 +107,13 @@ def _flow_limits(combo: dict, pump_curve: dict) -> tuple[float, float]:
 
 
 def _aor_limits(
-    combo: dict, pump_curve: dict, rpm: float, dol_speed: dict
+    combo: dict, pump_curve: dict, rpm_map: dict, dol_speed: dict
 ) -> tuple[float, float, dict]:
-    """Return overall and per-type AOR flow ranges at a given speed.
+    """Return overall and per-type AOR flow ranges at given speeds.
 
-    The provided MCSF/AOR values are specified at rated (DOL) speed.
-    Flow ranges scale linearly with RPM per the affinity laws, and counts
+    ``rpm_map`` should contain the operating RPM for each pump type present
+    in the combination. The provided MCSF/AOR values are specified at rated
+    (DOL) speed, so the flow ranges scale linearly with the RPM ratio. Counts
     are adjusted for parallel arrangements.
     """
 
@@ -96,6 +122,7 @@ def _aor_limits(
         cnt = combo.get(ptype, 0)
         if cnt <= 0:
             continue
+        rpm = rpm_map.get(ptype, dol_speed.get(ptype, 0.0))
         rated = dol_speed.get(ptype, 1.0)
         factor = rpm / rated if rated > 0 else 0.0
         min_f = pump_curve[ptype]["mcsf"] * factor
@@ -114,7 +141,8 @@ def _aor_limits(
 
 def _evaluate(
     combo: dict,
-    rpm: float,
+    rpm_a: float,
+    rpm_b: float,
     rho: float,
     kv: float,
     dra: float,
@@ -127,10 +155,14 @@ def _evaluate(
         return None
 
     def compute(q: float):
-        hp = _combo_head(q, rpm, combo, pump_curve, dol_speed)
+        hp = _combo_head(q, rpm_a, rpm_b, combo, pump_curve, dol_speed)
         sdh = pipe["suction_head"] + hp
-        hl1 = _segment_hydraulics(q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra)[0]
-        hl_total = _segment_hydraulics(q, pipe["total_length"], pipe["diam_inner"], pipe["roughness"], kv, dra)[0]
+        hl1 = _segment_hydraulics(
+            q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra
+        )[0]
+        hl_total = _segment_hydraulics(
+            q, pipe["total_length"], pipe["diam_inner"], pipe["roughness"], kv, dra
+        )[0]
         peak_head = sdh - hl1 - (pipe["peak_elev"] - pipe["start_elev"])
         term_head = sdh - hl_total - (pipe["terminal_elev"] - pipe["start_elev"])
         press = head_to_kgcm2(sdh, rho)
@@ -166,12 +198,14 @@ def _evaluate(
         q_oper = q_mid
         peak_head, term_head, sdh, press = pk_mid, term_mid, sdh_mid, press_mid
         if term_head >= pipe["terminal_min"] and press < pipe["mop"] - 1e-6:
-            aor_min, aor_max, _ = _aor_limits(combo, pump_curve, rpm, dol_speed)
+            aor_min, aor_max, _ = _aor_limits(
+                combo, pump_curve, {"A": rpm_a, "B": rpm_b}, dol_speed
+            )
             in_aor = aor_min <= q_oper <= aor_max
             return {
                 "Combination": combo["name"],
-                "RPM A": rpm if combo.get("A", 0) > 0 else np.nan,
-                "RPM B": rpm if combo.get("B", 0) > 0 else np.nan,
+                "RPM A": rpm_a if combo.get("A", 0) > 0 else np.nan,
+                "RPM B": rpm_b if combo.get("B", 0) > 0 else np.nan,
                 "Flow (m3/hr)": round(q_oper, 1),
                 "Discharge Head (m)": round(sdh, 1),
                 "Head at Peak (m)": round(peak_head, 1),
@@ -207,12 +241,14 @@ def _evaluate(
     if peak_head + 1e-6 < pipe["peak_min"] or press >= pipe["mop"] - 1e-6:
         return None
 
-    aor_min, aor_max, _ = _aor_limits(combo, pump_curve, rpm, dol_speed)
+    aor_min, aor_max, _ = _aor_limits(
+        combo, pump_curve, {"A": rpm_a, "B": rpm_b}, dol_speed
+    )
     in_aor = aor_min <= q_oper <= aor_max
     return {
         "Combination": combo["name"],
-        "RPM A": rpm if combo.get("A", 0) > 0 else np.nan,
-        "RPM B": rpm if combo.get("B", 0) > 0 else np.nan,
+        "RPM A": rpm_a if combo.get("A", 0) > 0 else np.nan,
+        "RPM B": rpm_b if combo.get("B", 0) > 0 else np.nan,
         "Flow (m3/hr)": round(q_oper, 1),
         "Discharge Head (m)": round(sdh, 1),
         "Head at Peak (m)": round(peak_head, 1),
@@ -267,32 +303,50 @@ def analyze_all_combinations(
     if min_rpm is None:
         min_rpm = {"A": 2000.0, "B": 2000.0}
     for combo in _generate_combos(max_a, max_b):
-        min_speed = 0
-        max_speed = float("inf")
+        # Determine RPM ranges for each pump type present
+        rpmA_list = [0.0]
+        rpmB_list = [0.0]
         if combo.get("A", 0) > 0:
-            min_speed = max(min_speed, min_rpm.get("A", 0))
-            max_speed = min(max_speed, dol_speed.get("A", float("inf")))
+            minA = min_rpm.get("A", 0)
+            maxA = dol_speed.get("A", float("inf"))
+            if maxA < minA:
+                continue
+            rpmA_list = list(range(int(minA), int(maxA) + 1, 25))
+            if not rpmA_list or rpmA_list[-1] != int(maxA):
+                rpmA_list.append(int(maxA))
+            rpmA_list = [float(r) for r in rpmA_list]
         if combo.get("B", 0) > 0:
-            min_speed = max(min_speed, min_rpm.get("B", 0))
-            max_speed = min(max_speed, dol_speed.get("B", float("inf")))
-        if max_speed < min_speed:
-            continue
-        rpm_list = list(range(int(min_speed), int(max_speed) + 1, 25))
-        if not rpm_list or rpm_list[-1] != int(max_speed):
-            rpm_list.append(int(max_speed))
-        rpm_list = [float(r) for r in rpm_list]
+            minB = min_rpm.get("B", 0)
+            maxB = dol_speed.get("B", float("inf"))
+            if maxB < minB:
+                continue
+            rpmB_list = list(range(int(minB), int(maxB) + 1, 25))
+            if not rpmB_list or rpmB_list[-1] != int(maxB):
+                rpmB_list.append(int(maxB))
+            rpmB_list = [float(r) for r in rpmB_list]
 
         dra_values = list(range(0, int(max_dra) + 1, 2))
         if dra_values and dra_values[-1] != int(max_dra):
             dra_values.append(int(max_dra))
 
-        for rpm in rpm_list:
-            for dra in dra_values:
-                res = _evaluate(combo, rpm, rho, visc, float(dra), pipe, pump_curve, dol_speed)
-                if res:
-                    res["Drag Reduction (%)"] = float(dra)
-                    records.append(res)
-                    combo_map[combo["name"]] = combo
+        for rpm_a in rpmA_list:
+            for rpm_b in rpmB_list:
+                for dra in dra_values:
+                    res = _evaluate(
+                        combo,
+                        rpm_a,
+                        rpm_b,
+                        rho,
+                        visc,
+                        float(dra),
+                        pipe,
+                        pump_curve,
+                        dol_speed,
+                    )
+                    if res:
+                        res["Drag Reduction (%)"] = float(dra)
+                        records.append(res)
+                        combo_map[combo["name"]] = combo
     df = pd.DataFrame(records)
     if return_specs:
         return df, combo_map
@@ -301,7 +355,8 @@ def analyze_all_combinations(
 
 def _plot_curves(
     combo: dict,
-    rpm: float,
+    rpm_a: float,
+    rpm_b: float,
     pipe: dict,
     pump_curve: dict,
     dol_speed: dict,
@@ -319,8 +374,32 @@ def _plot_curves(
     head_a: list[float] = []
     head_b: list[float] = []
     for q in flows:
-        hp_a = _group_head(q, "A", rpm, combo.get("A", 0), combo.get("arrA", "series"), pump_curve, dol_speed) if combo.get("A", 0) > 0 else 0.0
-        hp_b = _group_head(q, "B", rpm, combo.get("B", 0), combo.get("arrB", "series"), pump_curve, dol_speed) if combo.get("B", 0) > 0 else 0.0
+        hp_a = (
+            _group_head(
+                q,
+                "A",
+                rpm_a,
+                combo.get("A", 0),
+                combo.get("arrA", "series"),
+                pump_curve,
+                dol_speed,
+            )
+            if combo.get("A", 0) > 0
+            else 0.0
+        )
+        hp_b = (
+            _group_head(
+                q,
+                "B",
+                rpm_b,
+                combo.get("B", 0),
+                combo.get("arrB", "series"),
+                pump_curve,
+                dol_speed,
+            )
+            if combo.get("B", 0) > 0
+            else 0.0
+        )
         hp = hp_a + hp_b
         sdh = pipe["suction_head"] + hp
         hl1, *_ = _segment_hydraulics(q, pipe["peak_location"], pipe["diam_inner"], pipe["roughness"], kv, dra)
@@ -346,7 +425,9 @@ def _plot_curves(
     if head_b:
         data_dict["Type B Head"] = head_b
     df1 = pd.DataFrame(data_dict)
-    _, _, aor_ranges = _aor_limits(combo, pump_curve, rpm, dol_speed)
+    _, _, aor_ranges = _aor_limits(
+        combo, pump_curve, {"A": rpm_a, "B": rpm_b}, dol_speed
+    )
     band_rows = []
     for ptype, (lo, hi) in aor_ranges.items():
         band_rows.append(
@@ -578,10 +659,9 @@ def hydraulic_app():
         st.subheader("Maximum flow per pump combination")
         st.dataframe(df_max)
 
-        dol_rows = df[
-            np.isclose(df["RPM A"], results["dol_speed"].get("A", np.nan))
-            | np.isclose(df["RPM B"], results["dol_speed"].get("B", np.nan))
-        ]
+        condA = df["RPM A"].isna() | np.isclose(df["RPM A"], results["dol_speed"].get("A", np.nan))
+        condB = df["RPM B"].isna() | np.isclose(df["RPM B"], results["dol_speed"].get("B", np.nan))
+        dol_rows = df[condA & condB]
         if not dol_rows.empty:
             st.subheader("Operation at rated (DOL) speed")
             st.dataframe(dol_rows)
@@ -639,14 +719,16 @@ def hydraulic_app():
         else:
             row = subdf.iloc[0]
             combo_name = row["Combination"]
-            rpm_sel = float(row["RPM A"] if nA > 0 else row["RPM B"])
+            rpm_a_sel = float(row["RPM A"]) if nA > 0 else 0.0
+            rpm_b_sel = float(row["RPM B"]) if nB > 0 else 0.0
             dra_sel = float(row["Drag Reduction (%)"])
             in_aor = bool(row["Within AOR"])
             if not in_aor:
                 st.warning("Operating point lies outside AOR range.")
             _plot_curves(
                 combos[combo_name],
-                rpm_sel,
+                rpm_a_sel,
+                rpm_b_sel,
                 results["pipe"],
                 results["pump_curve"],
                 results["dol_speed"],
