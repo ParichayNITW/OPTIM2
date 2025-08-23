@@ -711,7 +711,15 @@ def solve_pipeline(
                     new_cost = state['cost'] + total_cost
                     bucket = round(residual_next, RESIDUAL_ROUND)
                     new_record_list = state['records'] + [record]
-                    if bucket not in new_states or new_cost < new_states[bucket]['cost']:
+                    existing = new_states.get(bucket)
+                    if (
+                        existing is None
+                        or new_cost < existing['cost']
+                        or (
+                            abs(new_cost - existing['cost']) < 1e-9
+                            and residual_next > existing['residual']
+                        )
+                    ):
                         new_states[bucket] = {
                             'cost': new_cost,
                             'residual': residual_next,
