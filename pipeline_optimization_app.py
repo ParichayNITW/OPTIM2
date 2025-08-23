@@ -1083,6 +1083,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
             'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
+            'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{key}", 0.0) or 0.0),
             'No. of Pumps': n_pumps,
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
@@ -1099,6 +1100,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
             'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
+            'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
 
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
@@ -3318,13 +3320,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
                 for idx, stn in enumerate(stations_data):
                     key = stn['name'].lower().replace(' ', '_')
-                    dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-                    dr_max = stn.get('max_dr', 0.0)
-                    viscosity = kv_list[idx]
-                    dr_use = min(dr_opt, dr_max)
-                    ppm = get_ppm_for_dr(viscosity, dr_use)
-                    seg_flow = res.get(f"pump_flow_{key}", res.get(f"pipeline_flow_{key}", FLOW))
-                    dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
+                    dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
                     power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
                     velocity = res.get(f"velocity_{key}", 0.0) or 0.0
                     total_cost += dra_cost + power_cost
@@ -3379,22 +3375,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 total_cost, new_cost = 0, 0
                 for idx, stn in enumerate(stations_data):
                     key = stn['name'].lower().replace(' ', '_')
-                    dr_opt = st.session_state["last_res"].get(f"drag_reduction_{key}", 0.0)
-                    dr_max = stn.get('max_dr', 0.0)
-                    viscosity = kv_list[idx]
-                    dr_use = min(dr_opt, dr_max)
-                    ppm = get_ppm_for_dr(viscosity, dr_use)
-                    seg_flow = st.session_state["last_res"].get(
-                        f"pump_flow_{key}",
-                        st.session_state["last_res"].get(f"pipeline_flow_{key}", FLOW),
-                    )
-                    dra_cost = ppm * (seg_flow * 1000.0 * 24.0 / 1e6) * RateDRA
-                    power_cost = float(st.session_state["last_res"].get(f"power_cost_{key}", 0.0) or 0.0)
+                    last = st.session_state["last_res"]
+                    dra_cost = float(last.get(f"dra_cost_{key}", 0.0) or 0.0)
+                    power_cost = float(last.get(f"power_cost_{key}", 0.0) or 0.0)
                     total_cost += dra_cost + power_cost
-                    dr_opt2 = res2.get(f"drag_reduction_{key}", 0.0)
-                    seg_flow2 = res2.get(f"pump_flow_{key}", res2.get(f"pipeline_flow_{key}", new_FLOW))
-                    ppm2 = get_ppm_for_dr(viscosity, min(dr_opt2, dr_max))
-                    dra_cost2 = ppm2 * (seg_flow2 * 1000.0 * 24.0 / 1e6) * new_RateDRA
+                    dra_cost2 = float(res2.get(f"dra_cost_{key}", 0.0) or 0.0)
                     power_cost2 = float(res2.get(f"power_cost_{key}", 0.0) or 0.0)
                     new_cost += dra_cost2 + power_cost2
                 annual_savings = (total_cost - new_cost) * 365.0
