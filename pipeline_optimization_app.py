@@ -599,7 +599,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                             st.session_state[f"sfc_display{idx}{ptype}"] = sfc_calc
                                         sfc = st.session_state.get(f"sfc_display{idx}{ptype}", 0.0)
                                         if sfc:
-                                            st.write(f"Computed SFC: {sfc:.2f} gm/bhp·hr")
+                                            st.write(f"Computed SFC at 100% load: {sfc:.2f} gm/bhp·hr")
                                         engine_params = {
                                             'make': engine_make,
                                             'model': engine_model,
@@ -1568,58 +1568,61 @@ if not auto_batch:
 
     if run_day:
         st.session_state["run_mode"] = "daily"
+
+        import copy
+        stations_base = copy.deepcopy(st.session_state.stations)
+        for stn in stations_base:
+            if stn.get('pump_types'):
+                names_all = []
+                for pdata in stn['pump_types'].values():
+                    avail = int(pdata.get('available', 0))
+                    names = pdata.get('names', [])
+                    if len(names) < avail:
+                        names += [f"Pump {len(names_all)+i+1}" for i in range(avail - len(names))]
+                    names_all.extend(names[:avail])
+                stn['pump_names'] = names_all
+                if names_all:
+                    stn['pump_name'] = names_all[0]
+            elif stn.get('is_pump'):
+                names = stn.get('pump_names', [])
+                if len(names) < stn.get('max_pumps', 1):
+                    names += [f"Pump {stn['name']} {i+1}" for i in range(len(names), stn.get('max_pumps', 1))]
+                stn['pump_names'] = names
+                if names:
+                    stn['pump_name'] = names[0]
+
+        term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+
+        # Prepare initial volumetric linefill
+        vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
+        if vol_df is None or len(vol_df) == 0:
+            st.error("Please enter linefill (volumetric) data.")
+            st.stop()
+
+        # Determine FLOW for this mode
+        if st.session_state.get("op_mode") == "Daily Pumping Schedule":
+            plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
+            daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
+            FLOW_sched = daily_m3 / 24.0
+        else:
+            plan_df = None
+            FLOW_sched = st.session_state.get("FLOW", 1000.0)
+
+        # Helper to compute segment kv/rho from volumetric table
+        def kv_rho_from_vol(vol_df_now):
+            return map_vol_linefill_to_segments(vol_df_now, stations_base)
+
+        # Time points
+        hours = [7, 11, 15, 19, 23, 27]
+        reports = []
+        linefill_snaps = []
+        total_length = sum(stn.get('L', 0.0) for stn in stations_base)
+        dra_reach_km = 0.0
+
+        current_vol = vol_df.copy()
+        error_msg = None
+
         with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
-            import copy
-            stations_base = copy.deepcopy(st.session_state.stations)
-            for stn in stations_base:
-                if stn.get('pump_types'):
-                    names_all = []
-                    for pdata in stn['pump_types'].values():
-                        avail = int(pdata.get('available', 0))
-                        names = pdata.get('names', [])
-                        if len(names) < avail:
-                            names += [f"Pump {len(names_all)+i+1}" for i in range(avail - len(names))]
-                        names_all.extend(names[:avail])
-                    stn['pump_names'] = names_all
-                    if names_all:
-                        stn['pump_name'] = names_all[0]
-                elif stn.get('is_pump'):
-                    names = stn.get('pump_names', [])
-                    if len(names) < stn.get('max_pumps', 1):
-                        names += [f"Pump {stn['name']} {i+1}" for i in range(len(names), stn.get('max_pumps', 1))]
-                    stn['pump_names'] = names
-                    if names:
-                        stn['pump_name'] = names[0]
-            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
-
-            # Prepare initial volumetric linefill
-            vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
-            if vol_df is None or len(vol_df)==0:
-                st.error("Please enter linefill (volumetric) data.")
-                st.stop()
-
-            # Determine FLOW for this mode
-            if st.session_state.get("op_mode") == "Daily Pumping Schedule":
-                plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
-                daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
-                FLOW_sched = daily_m3 / 24.0
-            else:
-                plan_df = None
-                FLOW_sched = st.session_state.get("FLOW", 1000.0)
-
-            # Helper to compute segment kv/rho from volumetric table
-            def kv_rho_from_vol(vol_df_now):
-                return map_vol_linefill_to_segments(vol_df_now, stations_base)
-
-            # Time points
-            hours = [7,11,15,19,23,27]
-            reports = []
-            linefill_snaps = []
-            total_length = sum(stn.get('L', 0.0) for stn in stations_base)
-            dra_reach_km = 0.0
-
-            current_vol = vol_df.copy()
-
             for ti, hr in enumerate(hours):
                 pumped_tmp = FLOW_sched * 4.0
                 future_vol, future_plan = shift_vol_linefill(
@@ -1640,60 +1643,64 @@ if not auto_batch:
                 )
 
                 if res.get("error"):
-                    st.error(f"Optimization failed at {hr%24:02d}:00 -> {res.get('message','')}")
-                    st.stop()
+                    error_msg = f"Optimization failed at {hr%24:02d}:00 -> {res.get('message','')}"
+                    break
 
-                reports.append({"time": hr%24, "result": res})
+                reports.append({"time": hr % 24, "result": res})
                 linefill_snaps.append(current_vol.copy())
 
-                if ti < len(hours)-1:
+                if ti < len(hours) - 1:
                     current_vol, plan_df = future_vol, future_plan
                     dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
 
-            # Build a consolidated station-wise table
-            station_tables = []
-            for rec in reports:
-                res = rec["result"]
-                hr = rec["time"]
-                df_int = build_station_table(res, stations_base)
-                df_int.insert(0, "Time", f"{hr:02d}:00")
-                station_tables.append(df_int)
-            df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+        if error_msg:
+            st.error(error_msg)
+            st.stop()
 
-            num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name"]]
-            styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
-                subset=num_cols, cmap="Blues"
-            )
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download Daily Optimizer Output data",
-                df_day.to_csv(index=False, float_format="%.2f"),
-                file_name="daily_schedule_results.csv",
-            )
+        # Build a consolidated station-wise table
+        station_tables = []
+        for rec in reports:
+            res = rec["result"]
+            hr = rec["time"]
+            df_int = build_station_table(res, stations_base)
+            df_int.insert(0, "Time", f"{hr:02d}:00")
+            station_tables.append(df_int)
+        df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            # Display total cost per time slice and global sum
-            cost_rows = [
-                {"Time": f"{rec['time']:02d}:00", "Total Cost (INR)": rec["result"].get("total_cost", 0.0)}
-                for rec in reports
-            ]
-            df_cost = pd.DataFrame(cost_rows).round(2)
-            st.dataframe(df_cost, use_container_width=True, hide_index=True)
-            st.markdown(
-                f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
-            )
+        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name"]]
+        styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
+            subset=num_cols, cmap="Blues"
+        )
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download Daily Optimizer Output data",
+            df_day.to_csv(index=False, float_format="%.2f"),
+            file_name="daily_schedule_results.csv",
+        )
 
-            combined = []
-            for idx, df_line in enumerate(linefill_snaps):
-                hr = hours[idx] % 24
-                temp = df_line.copy()
-                temp['Time'] = f"{hr:02d}:00"
-                combined.append(temp)
-            lf_all = pd.concat(combined, ignore_index=True).round(2)
-            st.download_button(
-                "Download Daily Dynamic Linefill Output",
-                lf_all.to_csv(index=False, float_format="%.2f"),
-                file_name="linefill_snapshots.csv",
-            )
+        # Display total cost per time slice and global sum
+        cost_rows = [
+            {"Time": f"{rec['time']:02d}:00", "Total Cost (INR)": rec["result"].get("total_cost", 0.0)}
+            for rec in reports
+        ]
+        df_cost = pd.DataFrame(cost_rows).round(2)
+        st.dataframe(df_cost, use_container_width=True, hide_index=True)
+        st.markdown(
+            f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+        )
+
+        combined = []
+        for idx, df_line in enumerate(linefill_snaps):
+            hr = hours[idx] % 24
+            temp = df_line.copy()
+            temp['Time'] = f"{hr:02d}:00"
+            combined.append(temp)
+        lf_all = pd.concat(combined, ignore_index=True).round(2)
+        st.download_button(
+            "Download Daily Dynamic Linefill Output",
+            lf_all.to_csv(index=False, float_format="%.2f"),
+            file_name="linefill_snapshots.csv",
+        )
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
