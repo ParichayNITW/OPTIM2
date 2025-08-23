@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import streamlit as st
 import altair as alt
+import pipeline_model
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -23,6 +24,10 @@ if "MOP_kgcm2" not in st.session_state:
     st.session_state["MOP_kgcm2"] = 100.0
 if "run_mode" not in st.session_state:
     st.session_state["run_mode"] = None
+if "Fuel_density" not in st.session_state:
+    st.session_state["Fuel_density"] = 820.0
+if "Ambient_temp" not in st.session_state:
+    st.session_state["Ambient_temp"] = 25.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -166,6 +171,8 @@ def restore_case_dict(loaded_data):
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
+    st.session_state['Fuel_density'] = loaded_data.get('Fuel_density', 820.0)
+    st.session_state['Ambient_temp'] = loaded_data.get('Ambient_temp', 25.0)
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
@@ -238,11 +245,15 @@ with st.sidebar:
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
         RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
-        Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
+        Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
+        Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0)
+        Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0)
         MOP_val   = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0)
         st.session_state["FLOW"] = FLOW
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
+        st.session_state["Fuel_density"] = Fuel_density
+        st.session_state["Ambient_temp"] = Ambient_temp
         st.session_state["MOP_kgcm2"] = MOP_val
 
     st.subheader("Operating Mode")
@@ -548,14 +559,55 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                     key=f"ptype{idx}{ptype}"
                                 )
                             with pcol2:
-                                minrpm = st.number_input("Min RPM", value=pdata.get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
-                                dol = st.number_input("Rated RPM", value=pdata.get('DOL', 1500.0), key=f"dol{idx}{ptype}")
+                                min_label = "Min Pump RPM" if ptype_sel == "Diesel" else "Min RPM"
+                                rated_label = "Rated Pump RPM" if ptype_sel == "Diesel" else "Rated RPM"
+                                minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
+                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol{idx}{ptype}")
                             with pcol3:
                                 if ptype_sel == "Grid":
                                     rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                    sfc_mode = "none"
                                     sfc = 0.0
+                                    engine_params = {}
                                 else:
-                                    sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                    sfc_mode = st.radio(
+                                        "SFC Input",
+                                        ["Enter manually", "System calculated (ISO 3046)"],
+                                        index=0 if pdata.get('sfc_mode', 'manual') == 'manual' else 1,
+                                        key=f"sfc_mode{idx}{ptype}"
+                                    )
+                                    if sfc_mode == "Enter manually":
+                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                        engine_params = {}
+                                    else:
+                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake{idx}{ptype}")
+                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel{idx}{ptype}")
+                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower{idx}{ptype}")
+                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50{idx}{ptype}")
+                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75{idx}{ptype}")
+                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100{idx}{ptype}")
+                                        if st.button("Compute SFC", key=f"comp_sfc{idx}{ptype}"):
+                                            pump_bkw = rated_power * 0.98
+                                            sfc_calc = pipeline_model._compute_iso_sfc(
+                                                {'engine_params': {'rated_power': rated_power, 'sfc50': sfc50, 'sfc75': sfc75, 'sfc100': sfc100}},
+                                                dol,
+                                                pump_bkw,
+                                                dol,
+                                                stn.get('elev', 0.0),
+                                                st.session_state.get('Ambient_temp', 25.0),
+                                            )
+                                            st.session_state[f"sfc_display{idx}{ptype}"] = sfc_calc
+                                        sfc = st.session_state.get(f"sfc_display{idx}{ptype}", 0.0)
+                                        if sfc:
+                                            st.write(f"Computed SFC: {sfc:.2f} gm/bhp·hr")
+                                        engine_params = {
+                                            'make': engine_make,
+                                            'model': engine_model,
+                                            'rated_power': rated_power,
+                                            'sfc50': sfc50,
+                                            'sfc75': sfc75,
+                                            'sfc100': sfc100,
+                                        }
                                     rate = 0.0
 
                             stn.setdefault('pump_types', {})[ptype] = {
@@ -567,7 +619,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 'MinRPM': minrpm,
                                 'DOL': dol,
                                 'rate': rate,
+                                'sfc_mode': 'manual' if sfc_mode == "Enter manually" else ('iso' if ptype_sel == 'Diesel' else 'none'),
                                 'sfc': sfc,
+                                'engine_params': engine_params,
                                 'available': avail
                             }
                     # Aggregate all pump names for station-level display
@@ -677,6 +731,8 @@ def get_full_case_dict():
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
+        "Fuel_density": st.session_state.get('Fuel_density', 820.0),
+        "Ambient_temp": st.session_state.get('Ambient_temp', 25.0),
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
@@ -1096,6 +1152,8 @@ def solve_pipeline(
     rho_list,
     RateDRA,
     Price_HSD,
+    Fuel_density,
+    Ambient_temp,
     linefill_dict,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
@@ -1127,6 +1185,8 @@ def solve_pipeline(
                 rho_list,
                 RateDRA,
                 Price_HSD,
+                Fuel_density,
+                Ambient_temp,
                 linefill_dict,
                 dra_reach_km,
                 mop_kgcm2,
@@ -1140,6 +1200,8 @@ def solve_pipeline(
             rho_list,
             RateDRA,
             Price_HSD,
+            Fuel_density,
+            Ambient_temp,
             linefill_dict,
             dra_reach_km,
             mop_kgcm2,
@@ -1161,10 +1223,14 @@ if auto_batch:
     total_length = sum(stn["L"] for stn in st.session_state.stations)
     FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="batch_flow")
     RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="batch_dra")
-    Price_HSD = st.number_input("Diesel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
+    Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
+    Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
+    Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
     st.session_state["FLOW"] = FLOW
     st.session_state["RateDRA"] = RateDRA
     st.session_state["Price_HSD"] = Price_HSD
+    st.session_state["Fuel_density"] = Fuel_density
+    st.session_state["Ambient_temp"] = Ambient_temp
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
     product_table = st.data_editor(
         pd.DataFrame({
@@ -1240,7 +1306,7 @@ if auto_batch:
                         prod_row = product_table.iloc[0]
                         kv_list.append(prod_row["Viscosity (cSt)"])
                         rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
                     row = {"Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
@@ -1260,7 +1326,7 @@ if auto_batch:
                         prod_row = product_table.iloc[1]
                         kv_list.append(prod_row["Viscosity (cSt)"])
                         rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
                     row = {"Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
@@ -1291,7 +1357,7 @@ if auto_batch:
                                 prod_row = product_table.iloc[1]
                             kv_list.append(prod_row["Viscosity (cSt)"])
                             rho_list.append(prod_row["Density (kg/m³)"])
-                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
                         row = {"Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}"}
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
@@ -1316,7 +1382,7 @@ if auto_batch:
                         scenario_labels = ["0%"] * 3
                         scenario_labels[first] = "100%"
                         row = {"Scenario": f"{scenario_labels[0]} {product_table.iloc[0]['Product']}, {scenario_labels[1]} {product_table.iloc[1]['Product']}, {scenario_labels[2]} {product_table.iloc[2]['Product']}"}
-                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -1354,7 +1420,7 @@ if auto_batch:
                             row = {
                                 "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
                             }
-                            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, {})
+                            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
                             for idx, stn in enumerate(stations_data, start=1):
                                 key = stn['name'].lower().replace(' ', '_')
                                 row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -1471,6 +1537,8 @@ if not auto_batch:
                 rho_list,
                 RateDRA,
                 Price_HSD,
+                st.session_state.get("Fuel_density", 820.0),
+                st.session_state.get("Ambient_temp", 25.0),
                 linefill_df.to_dict(),
                 dra_reach_km=0.0,
                 mop_kgcm2=st.session_state.get("MOP_kgcm2"),
@@ -1565,7 +1633,7 @@ if not auto_batch:
 
                 res = solve_pipeline(
                     stns_run, term_data, FLOW_sched, kv_list, rho_list,
-                    RateDRA, Price_HSD, current_vol.to_dict(), dra_reach_km,
+                    RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), current_vol.to_dict(), dra_reach_km,
                     st.session_state.get("MOP_kgcm2"), hours=4.0
                 )
 
@@ -1711,6 +1779,8 @@ if not auto_batch:
                         rho_run,
                         RateDRA,
                         Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
                         current_vol.to_dict(),
                         dra_reach_km,
                         st.session_state.get("MOP_kgcm2"),
@@ -3119,7 +3189,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.info("Run optimization first to enable sensitivity analysis.")
         else:
             param = st.selectbox("Parameter to vary", [
-                "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Diesel Price (INR/L)", "DRA Cost (INR/L)"
+                "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Fuel Price (INR/L)", "DRA Cost (INR/L)"
             ])
             output = st.selectbox("Output metric", [
                 "Total Cost (INR)", "Power Cost (INR)", "DRA Cost (INR)",
@@ -3143,7 +3213,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             max_dr = stn.get('max_dr', 40)
                             break
                     pvals = np.linspace(0, max_dr, N)
-                elif param == "Diesel Price (INR/L)":
+                elif param == "Fuel Price (INR/L)":
                     pvals = np.linspace(0.5*Price_HSD, 2*Price_HSD, N)
                 elif param == "DRA Cost (INR/L)":
                     pvals = np.linspace(0.5*RateDRA, 2*RateDRA, N)
@@ -3168,11 +3238,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             if stn.get('is_pump', False):
                                 stn['max_dr'] = max(stn.get('max_dr', val), val)
                                 break
-                    elif param == "Diesel Price (INR/L)":
+                    elif param == "Fuel Price (INR/L)":
                         this_Price_HSD = val
                     elif param == "DRA Cost (INR/L)":
                         this_RateDRA = val
-                    resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, this_linefill_df.to_dict())
+                    resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), this_linefill_df.to_dict())
                     total_cost = power_cost = dra_cost = rh = eff = 0
                     for idx, stn in enumerate(stations_data):
                         key = stn['name'].lower().replace(' ', '_')
@@ -3305,7 +3375,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
                 new_FLOW = FLOW * (1 + flow_change / 100)
                 kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-                res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, linefill_df.to_dict())
+                res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), linefill_df.to_dict())
                 total_cost, new_cost = 0, 0
                 for idx, stn in enumerate(stations_data):
                     key = stn['name'].lower().replace(' ', '_')
