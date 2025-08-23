@@ -731,7 +731,18 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        states = new_states
+        # Remove dominated states to curb combinatorial growth without
+        # sacrificing optimality.  After sorting by residual head, retain only
+        # states that improve upon the best cost seen so far.  Higher-residual
+        # states are kept when costs tie, preserving global minima while
+        # pruning less promising branches.
+        pruned: dict[float, dict] = {}
+        best_cost = float('inf')
+        for bucket, data in sorted(new_states.items(), key=lambda x: x[1]['residual'], reverse=True):
+            if data['cost'] < best_cost - 1e-9:
+                pruned[bucket] = data
+                best_cost = data['cost']
+        states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
