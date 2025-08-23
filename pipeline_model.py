@@ -47,6 +47,11 @@ RESIDUAL_ROUND = 1
 V_MIN = 0.5
 V_MAX = 2.5
 
+# Simple memoisation caches used to avoid repeatedly solving the same
+# hydraulic sub-problems when many states evaluate identical conditions.
+_SEGMENT_CACHE: dict[tuple, tuple] = {}
+_PARALLEL_CACHE: dict[tuple, tuple] = {}
+
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
@@ -71,6 +76,21 @@ def _segment_hydraulics(
     than ``L`` the drag reduction is assumed to act over the full length.  When
     the value is ``0`` only the base friction is applied.
     """
+
+    # Cache look-up keyed by the rounded arguments.  Rounding keeps the number
+    # of unique keys manageable while still distinguishing materially different
+    # states.
+    key = (
+        round(flow_m3h, 3),
+        round(L, 3),
+        round(d_inner, 5),
+        round(rough, 6),
+        round(kv, 6),
+        round(dra_perc, 1),
+        round(-1.0 if dra_length is None else dra_length, 3),
+    )
+    if key in _SEGMENT_CACHE:
+        return _SEGMENT_CACHE[key]
 
     g = 9.81
     flow_m3s = flow_m3h / 3600.0
@@ -98,7 +118,9 @@ def _segment_hydraulics(
         hl_nodra = f * (((L - dra_length) * 1000.0) / d_inner) * (v ** 2 / (2 * g))
         head_loss = hl_dra + hl_nodra
 
-    return head_loss, v, Re, f
+    result = (head_loss, v, Re, f)
+    _SEGMENT_CACHE[key] = result
+    return result
 
 
 def _parallel_segment_hydraulics(
@@ -124,10 +146,26 @@ def _parallel_segment_hydraulics(
             data.get('dra', 0.0),
             data.get('dra_len'),
         )
+    key = (
+        round(flow_m3h, 3),
+        round(main['L'], 3),
+        round(main['d_inner'], 5),
+        round(main['rough'], 6),
+        round(main.get('dra', 0.0), 1),
+        round(-1.0 if main.get('dra_len') is None else main.get('dra_len'), 3),
+        round(loop['L'], 3),
+        round(loop['d_inner'], 5),
+        round(loop['rough'], 6),
+        round(loop.get('dra', 0.0), 1),
+        round(-1.0 if loop.get('dra_len') is None else loop.get('dra_len'), 3),
+        round(kv, 6),
+    )
+    if key in _PARALLEL_CACHE:
+        return _PARALLEL_CACHE[key]
 
     lo, hi = 0.0, flow_m3h
     best = None
-    for _ in range(30):
+    for _ in range(20):
         mid = (lo + hi) / 2.0
         q_loop = mid
         q_main = flow_m3h - q_loop
@@ -145,6 +183,8 @@ def _parallel_segment_hydraulics(
             lo = mid
         else:
             hi = mid
+
+    _PARALLEL_CACHE[key] = best
     return best
 
 
