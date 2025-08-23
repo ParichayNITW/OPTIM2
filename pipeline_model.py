@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from math import log10, pi
 import copy
+import numpy as np
 
 from dra_utils import get_ppm_for_dr
 
@@ -165,6 +166,42 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
     return tdh, eff
 
 
+def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: float, elevation: float, ambient_temp: float) -> float:
+    """Compute SFC (gm/bhp-hr) using ISO 3046 approximation."""
+    params = pdata.get('engine_params', {})
+    rated_power = params.get('rated_power', 0.0)
+    sfc50 = params.get('sfc50', 0.0)
+    sfc75 = params.get('sfc75', 0.0)
+    sfc100 = params.get('sfc100', 0.0)
+    # Step 1: engine shaft power (kW)
+    engine_kw = pump_bkw_total / 0.98 if pump_bkw_total > 0 else 0.0
+    # Step 2: engine power based on operating speed
+    engine_power = rated_power * (rpm / rated_rpm) if rated_rpm > 0 else 0.0
+    # Step 3: determine ISO 3046 power adjustment factor (formula ref. D)
+    T_ref = 298.15  # 25 °C in kelvin
+    T_K = ambient_temp + 273.15
+    m = 0.7
+    n = 1.2
+    alpha = (T_ref / T_K) ** m * np.exp(-n * elevation / 1000.0)
+    engine_derated_power = engine_power * alpha
+    # Step 4: load ratio
+    load = engine_kw / engine_derated_power if engine_derated_power > 0 else 0.0
+    load_perc = load * 100.0
+    # Interpolate test bed SFC at current load
+    if load_perc <= 50:
+        sfc_tb = sfc50
+    elif load_perc <= 75:
+        sfc_tb = sfc50 + (sfc75 - sfc50) * (load_perc - 50) / 25.0
+    elif load_perc <= 100:
+        sfc_tb = sfc75 + (sfc100 - sfc75) * (load_perc - 75) / 25.0
+    else:
+        sfc_tb = sfc100
+    # ISO 3046 fuel consumption adjustment factor (β) ~ 1/α for ref. D
+    beta = 1.0 / alpha if alpha > 0 else 1.0
+    sfc_site = sfc_tb * beta
+    return sfc_site
+
+
 # ---------------------------------------------------------------------------
 # Downstream requirements
 # ---------------------------------------------------------------------------
@@ -256,6 +293,8 @@ def solve_pipeline(
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
     linefill_dict: dict | None = None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
@@ -368,17 +407,26 @@ def solve_pipeline(
                         if nop > 0 and rpm > 0:
                             pump_bkw_total = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
                             pump_bkw = pump_bkw_total / nop
-                            motor_kw_total = pump_bkw_total / 0.95
-                            motor_kw = motor_kw_total / nop
+                            if stn.get('power_type', 'Grid') == 'Diesel':
+                                prime_kw_total = pump_bkw_total / 0.98
+                            else:
+                                prime_kw_total = pump_bkw_total / 0.95
+                            motor_kw = prime_kw_total / nop
                         else:
-                            pump_bkw = motor_kw = motor_kw_total = 0.0
-                        if stn.get('sfc', 0) and motor_kw_total > 0:
-                            sfc_val = stn['sfc']
-                            fuel_per_kWh = (sfc_val * 1.34102) / 820.0
-                            power_cost = motor_kw_total * hours * fuel_per_kWh * Price_HSD
+                            pump_bkw = motor_kw = prime_kw_total = 0.0
+                        if stn.get('power_type', 'Grid') == 'Diesel' and prime_kw_total > 0:
+                            mode = stn.get('sfc_mode', 'manual')
+                            if mode == 'manual':
+                                sfc_val = stn.get('sfc', 0.0)
+                            elif mode == 'iso':
+                                sfc_val = _compute_iso_sfc(stn, rpm, pump_bkw_total, stn.get('DOL', rpm), stn.get('elev', 0.0), Ambient_temp)
+                            else:
+                                sfc_val = 0.0
+                            fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
+                            power_cost = prime_kw_total * hours * fuel_per_kWh * Price_HSD
                         else:
                             rate = stn.get('rate', 0.0)
-                            power_cost = motor_kw_total * hours * rate
+                            power_cost = prime_kw_total * hours * rate
                         ppm = get_ppm_for_dr(kv, dra) if dra > 0 else 0.0
                         dra_cost = ppm * (flow * 1000.0 * hours / 1e6) * RateDRA if dra > 0 else 0.0
                         cost = power_cost + dra_cost
@@ -682,6 +730,8 @@ def solve_pipeline_with_types(
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
     linefill_dict: dict | None = None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
@@ -697,7 +747,7 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -744,7 +794,9 @@ def solve_pipeline_with_types(
                             'T': pdata.get('T', 0.0) if pdata else 0.0,
                             'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
                             'rate': pdata.get('rate', 0.0) if pdata else 0.0,
+                            'sfc_mode': pdata.get('sfc_mode', 'none') if pdata else 'none',
                             'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
+                            'engine_params': pdata.get('engine_params', {}) if pdata else {},
                             'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
                             'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
                             'max_pumps': 1,
