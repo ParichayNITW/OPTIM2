@@ -36,6 +36,7 @@ from math import pi
 import hashlib
 import uuid
 import json
+import tomllib
 import copy
 from plotly.colors import qualitative
 
@@ -122,7 +123,39 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
-users = {"parichay_das": hash_pwd("Parichay_Das")}
+
+def load_users():
+    """Load user credentials from environment or secrets files.
+
+    Search order:
+    1. ``PIPELINE_OPTIMA_USERS`` environment variable containing a JSON
+       mapping ``{"user": "sha256_hash"}``.
+    2. ``.streamlit/secrets.toml`` relative to the app directory.
+    3. ``secrets.toml`` in the app directory.
+    4. Fallback built-in credentials for development.
+    """
+
+    env = os.getenv("PIPELINE_OPTIMA_USERS")
+    if env:
+        try:
+            return json.loads(env)
+        except json.JSONDecodeError:
+            pass
+
+    for path in (ROOT / ".streamlit" / "secrets.toml", ROOT / "secrets.toml"):
+        if path.exists():
+            try:
+                with path.open("rb") as fh:
+                    data = tomllib.load(fh)
+                return data.get("users", {})
+            except Exception:
+                pass
+
+    # Development fallback
+    return {"parichay_das": hash_pwd("Parichay_Das")}
+
+
+users = load_users()
 
 
 def check_login():
