@@ -119,53 +119,21 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 # --- User Login Logic ---
 
-def hash_pwd(pwd: str) -> str:
+def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
-
-def load_users() -> tuple[dict[str, str], bool]:
-    """Load user credentials from env var or Streamlit secrets.
-
-    Returns a tuple ``(users, using_default)``. When neither the
-    ``PIPELINE_OPTIMA_USERS`` environment variable nor ``st.secrets['users']``
-    is configured, a fallback ``admin``/``admin`` user is provided for local
-    development and ``using_default`` is ``True``.
-    """
-
-    raw = os.environ.get("PIPELINE_OPTIMA_USERS")
-    data: dict | None = None
-    default_used = False
-    if raw:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            data = {}
-    elif "users" in st.secrets:
-        data = st.secrets["users"]
-    else:
-        data = {"admin": hash_pwd("admin")}
-        default_used = True
-    users = {str(k): str(v) for k, v in (data or {}).items()}
-    return users, default_used
-
-
-USERS, USING_DEFAULT_USERS = load_users()
+users = {"parichay_das": hash_pwd("Parichay_Das")}
 
 
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        if USING_DEFAULT_USERS:
-            st.info(
-                "Using default credentials (admin/admin). Configure the "
-                "PIPELINE_OPTIMA_USERS env var or Streamlit secrets for production."
-            )
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login", key="login_btn"):
-            if username in USERS and hash_pwd(password) == USERS[username]:
+            if username in users and hash_pwd(password) == users[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
                 st.rerun()
