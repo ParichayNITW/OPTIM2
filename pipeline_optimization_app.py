@@ -119,18 +119,47 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 # --- User Login Logic ---
 
-def hash_pwd(pwd):
+def hash_pwd(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
-users = {"parichay_das": hash_pwd("heteroscedasticity")}
+
+
+def load_users() -> dict:
+    """Load user credentials from environment variable or Streamlit secrets.
+
+    Expects a JSON mapping of ``username`` → ``sha256 password hash`` in the
+    ``PIPELINE_OPTIMA_USERS`` environment variable or ``st.secrets['users']``.
+    Returns an empty dict if nothing is configured.
+    """
+
+    raw = os.environ.get("PIPELINE_OPTIMA_USERS")
+    data = None
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = {}
+    elif "users" in st.secrets:
+        data = st.secrets["users"]
+    else:
+        data = {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+USERS = load_users()
+
+
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
+        if not USERS:
+            st.error("No user credentials configured.")
+            st.stop()
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login", key="login_btn"):
-            if username in users and hash_pwd(password) == users[username]:
+            if username in USERS and hash_pwd(password) == USERS[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
                 st.rerun()
@@ -884,27 +913,25 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
 
     for L in seg_lengths:
         need = L
-        # Consume from batches until we cover this segment upstream-to-downstream
+        kv_acc = 0.0
+        rho_acc = 0.0
         while need > 1e-9:
             if remaining <= 1e-9:
                 i_batch += 1
                 if i_batch >= len(batches):
                     # If we ran out, extend with last known properties
                     remaining = need
-                    # kv_cur, rho_cur unchanged
                 else:
                     remaining = batches[i_batch]["len_km"]
                     kv_cur = batches[i_batch]["kv"]
                     rho_cur = batches[i_batch]["rho"]
             take = min(need, remaining)
-            # For per-segment properties, use the property of the upstream-most fluid in the segment.
-            # (Piecewise mixing could be done, but you asked to keep other logic unchanged.)
-            # So we only need the first batch's kv/rho per segment.
-            if need == L:
-                seg_kv.append(kv_cur)
-                seg_rho.append(rho_cur)
+            kv_acc += kv_cur * take
+            rho_acc += rho_cur * take
             need -= take
             remaining -= take
+        seg_kv.append(kv_acc / L if L else 0.0)
+        seg_rho.append(rho_acc / L if L else 0.0)
 
     return seg_kv, seg_rho
 
@@ -1163,11 +1190,7 @@ def solve_pipeline(
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
-    import pipeline_model
-    import importlib
     import copy
-
-    importlib.reload(pipeline_model)
 
     stations = copy.deepcopy(stations)
     first_pump = next((s for s in stations if s.get('is_pump')), None)
@@ -1625,14 +1648,26 @@ if not auto_batch:
         with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
             for ti, hr in enumerate(hours):
                 pumped_tmp = FLOW_sched * 4.0
+                plan_snapshot = plan_df.copy() if plan_df is not None else None
                 future_vol, future_plan = shift_vol_linefill(
                     current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
                 )
-                # Determine worst-case fluid properties over this 4h window
-                kv_now, rho_now = kv_rho_from_vol(current_vol)
-                kv_next, rho_next = kv_rho_from_vol(future_vol)
-                kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
-                rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
+                # Determine worst-case fluid properties over this 4h window using hourly snapshots
+                snapshots = [current_vol]
+                for hh in range(1, 4):
+                    part_vol, _ = shift_vol_linefill(
+                        current_vol.copy(), FLOW_sched * hh, plan_snapshot.copy() if plan_snapshot is not None else None
+                    )
+                    snapshots.append(part_vol)
+                snapshots.append(future_vol)
+                kv_list, rho_list = None, None
+                for snap in snapshots:
+                    kv_tmp, rho_tmp = kv_rho_from_vol(snap)
+                    if kv_list is None:
+                        kv_list, rho_list = kv_tmp, rho_tmp
+                    else:
+                        kv_list = [max(a, b) for a, b in zip(kv_list, kv_tmp)]
+                        rho_list = [max(a, b) for a, b in zip(rho_list, rho_tmp)]
 
                 stns_run = copy.deepcopy(stations_base)
 
@@ -1769,15 +1804,27 @@ if not auto_batch:
                     pumped_m3 = flow * duration_hr
 
                     try:
-                        kv_now, rho_now = map_vol_linefill_to_segments(current_vol, stations_base)
+                        plan_snapshot = current_plan.copy() if current_plan is not None else None
                         future_vol, current_plan = shift_vol_linefill(current_vol.copy(), pumped_m3, current_plan)
-                        kv_next, rho_next = map_vol_linefill_to_segments(future_vol, stations_base)
+                        snapshots = [current_vol]
+                        steps = int(max(1, np.floor(duration_hr)))
+                        for hh in range(1, steps):
+                            part_vol, _ = shift_vol_linefill(
+                                current_vol.copy(), flow * hh, plan_snapshot.copy() if plan_snapshot is not None else None
+                            )
+                            snapshots.append(part_vol)
+                        snapshots.append(future_vol)
+                        kv_run, rho_run = None, None
+                        for snap in snapshots:
+                            kv_tmp, rho_tmp = map_vol_linefill_to_segments(snap, stations_base)
+                            if kv_run is None:
+                                kv_run, rho_run = kv_tmp, rho_tmp
+                            else:
+                                kv_run = [max(a, b) for a, b in zip(kv_run, kv_tmp)]
+                                rho_run = [max(a, b) for a, b in zip(rho_run, rho_tmp)]
                     except ValueError as e:
                         st.error(str(e))
                         st.stop()
-
-                    kv_run = [max(a, b) for a, b in zip(kv_now, kv_next)]
-                    rho_run = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
                     stns_run = copy.deepcopy(stations_base)
                     res = solve_pipeline(
