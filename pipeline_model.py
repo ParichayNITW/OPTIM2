@@ -261,41 +261,28 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
 # Downstream requirements
 # ---------------------------------------------------------------------------
 
-def _downstream_requirement(
+def _compute_downstream_requirements(
     stations: list[dict],
-    idx: int,
     terminal: dict,
     segment_flows: list[float],
     seg_batches: list[list[dict]],
-) -> float:
-    """Return minimum residual head needed immediately after station ``idx``.
+) -> list[float]:
+    """Return minimum residual head needed before each station.
 
-    The previous implementation only accumulated losses across consecutive
-    non-pump stations.  When multiple pump stations appear in sequence (e.g. to
-    represent different pump types at an origin), upstream pumps were unaware of
-    the downstream pressure requirement and the solver could deem a feasible
-    configuration infeasible.  This version performs a backward recursion over
-    *all* downstream stations, subtracting the maximum head each pump can
-    deliver and adding line/elevation losses for every segment.  The returned
-    value is therefore the minimum residual needed after station ``idx`` so that
-    the terminal residual head constraint can still be met.
+    A single backward pass accumulates losses and pump capabilities so the
+    requirement for every station is computed once.  This mirrors the logic of
+    the previous recursive implementation but avoids rebuilding the recursion for
+    each call, significantly reducing runtime while preserving results.
     """
 
-    from functools import lru_cache
-
     N = len(stations)
+    req = [0.0] * (N + 1)
+    req[N] = terminal.get('min_residual', 0.0)
 
-    @lru_cache(None)
-    def req_entry(i: int) -> float:
-        if i >= N:
-            return terminal.get('min_residual', 0.0)
+    for i in range(N - 1, -1, -1):
         stn = stations[i]
         batches = seg_batches[i]
-        # ``segment_flows`` holds the flow rate *after* each station;
-        # use the downstream value so losses reflect the correct
-        # segment flow between station ``i`` and ``i+1``.
         flow = segment_flows[i + 1]
-        L = stn.get('L', 0.0)
         t = stn.get('t', 0.007)
         if 'D' in stn:
             d_inner = stn['D'] - 2 * t
@@ -310,13 +297,8 @@ def _downstream_requirement(
             head_loss += hl
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
-        downstream = req_entry(i + 1)
-        req = downstream + head_loss + (elev_next - elev_i)
+        req_i = req[i + 1] + head_loss + (elev_next - elev_i)
 
-        # Check intermediate peaks within this segment.  Each peak requires enough
-        # upstream pressure to maintain at least 25 m of residual head at the peak
-        # itself.  Use the maximum requirement among all peaks and the downstream
-        # station.
         peak_req = 0.0
         for peak in stn.get('peaks', []) or []:
             dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
@@ -327,16 +309,17 @@ def _downstream_requirement(
             req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
             if req_peak > peak_req:
                 peak_req = req_peak
-        req = max(req, peak_req)
+        req_i = max(req_i, peak_req)
 
         if stn.get('is_pump', False):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
             tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
-            req -= tdh_max
-        return max(req, stn.get('min_residual', 0.0))
+            req_i -= tdh_max
 
-    return req_entry(idx + 1)
+        req[i] = max(req_i, stn.get('min_residual', 0.0))
+
+    return req
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +357,8 @@ def solve_pipeline(
     default_t = 0.007
     default_e = 0.00004
 
+    downstream_reqs = _compute_downstream_requirements(stations, terminal, segment_flows, seg_batches)
+
     # Pre-compute static data for each station; head losses depend on DRA reach
     station_opts = []
     origin_enforced = False
@@ -385,7 +370,7 @@ def solve_pipeline(
         kv_first = batches[0]['kv'] if batches else 0.0
         rho = rho_list[i - 1]
 
-        min_residual_next = _downstream_requirement(stations, i - 1, terminal, segment_flows, seg_batches)
+        min_residual_next = downstream_reqs[i]
 
         L = stn.get('L', 0.0)
         if 'D' in stn:
