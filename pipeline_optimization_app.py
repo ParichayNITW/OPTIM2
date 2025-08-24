@@ -911,6 +911,105 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
     return seg_kv, seg_rho
 
 
+def _headloss_to_kv(target_hl: float, flow: float, L: float, d_inner: float, rough: float) -> float:
+    """Find kinematic viscosity producing ``target_hl`` for given conditions."""
+    if target_hl <= 0 or flow <= 0 or L <= 0 or d_inner <= 0:
+        return 0.0
+    lo, hi = 0.01, 10000.0
+    for _ in range(10):
+        hl_hi, *_ = pipeline_model._segment_hydraulics(flow, L, d_inner, rough, hi, 0.0, None)
+        if hl_hi >= target_hl:
+            break
+        hi *= 2
+    for _ in range(25):
+        mid = (lo + hi) / 2.0
+        hl_mid, *_ = pipeline_model._segment_hydraulics(flow, L, d_inner, rough, mid, 0.0, None)
+        if hl_mid >= target_hl:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def map_vol_linefill_to_segments_batch(
+    vol_table: pd.DataFrame,
+    stations: list[dict],
+    segment_flows: list[float],
+) -> tuple[list[float], list[float]]:
+    """Convert volumetric linefill to segment KV/rho using per-batch friction sums."""
+    A = pipe_cross_section_area_m2(stations)
+    if A <= 0:
+        raise ValueError("Invalid pipe area (check D and t).")
+
+    batches = []
+    for _, r in vol_table.iterrows():
+        vol = float(r.get("Volume (m³)", 0.0) or r.get("Volume", 0.0) or 0.0)
+        if vol <= 0:
+            continue
+        length_km = (vol / A) / 1000.0
+        visc = float(r.get("Viscosity (cSt)", 0.0))
+        dens = float(r.get("Density (kg/m³)", 0.0))
+        batches.append({"len_km": length_km, "kv": visc, "rho": dens})
+
+    seg_lengths = [s.get("L", 0.0) for s in stations]
+    default_t = 0.007
+    default_e = 0.00004
+    d_inners = []
+    roughs = []
+    for s in stations:
+        if "D" in s:
+            t = s.get("t", default_t)
+            d_inners.append(s["D"] - 2 * t)
+        else:
+            t = s.get("t", default_t)
+            d_inners.append(s.get("d", 0.7) - 2 * t)
+        roughs.append(s.get("rough", default_e))
+
+    seg_hl, seg_rho = [], []
+    i_batch = 0
+    remaining = batches[0]["len_km"] if batches else 0.0
+    kv_cur = batches[0]["kv"] if batches else 0.0
+    rho_cur = batches[0]["rho"] if batches else 0.0
+
+    for idx, L in enumerate(seg_lengths):
+        need = L
+        hl_acc = 0.0
+        rho_max = 0.0
+        while need > 1e-9:
+            if remaining <= 1e-9:
+                i_batch += 1
+                if i_batch >= len(batches):
+                    remaining = need
+                else:
+                    remaining = batches[i_batch]["len_km"]
+                    kv_cur = batches[i_batch]["kv"]
+                    rho_cur = batches[i_batch]["rho"]
+            take = min(need, remaining)
+            hl_part, *_ = pipeline_model._segment_hydraulics(
+                segment_flows[idx] if idx < len(segment_flows) else segment_flows[-1],
+                take,
+                d_inners[idx],
+                roughs[idx],
+                kv_cur,
+                0.0,
+                None,
+            )
+            hl_acc += hl_part
+            rho_max = max(rho_max, rho_cur)
+            need -= take
+            remaining -= take
+        seg_hl.append(hl_acc)
+        seg_rho.append(rho_max)
+
+    seg_kv = []
+    for idx, hl in enumerate(seg_hl):
+        seg_kv.append(
+            _headloss_to_kv(hl, segment_flows[idx], seg_lengths[idx], d_inners[idx], roughs[idx])
+        )
+
+    return seg_kv, seg_rho
+
+
 def shift_vol_linefill(
     vol_table: pd.DataFrame,
     pumped_m3: float,
@@ -1605,10 +1704,15 @@ if not auto_batch:
         else:
             plan_df = None
             FLOW_sched = st.session_state.get("FLOW", 1000.0)
+        seg_flows = [FLOW_sched]
+        for stn in stations_base:
+            prev = seg_flows[-1]
+            seg_flows.append(prev - float(stn.get("delivery", 0.0)) + float(stn.get("supply", 0.0)))
+        seg_flows = seg_flows[1:]
 
         # Helper to compute segment kv/rho from volumetric table
         def kv_rho_from_vol(vol_df_now):
-            return map_vol_linefill_to_segments(vol_df_now, stations_base)
+            return map_vol_linefill_to_segments_batch(vol_df_now, stations_base, seg_flows)
 
         # Time points
         hours = [7, 11, 15, 19, 23, 27]
@@ -1789,9 +1893,14 @@ if not auto_batch:
                             )
                             snapshots.append(part_vol)
                         snapshots.append(future_vol)
+                        seg_flows_run = [flow]
+                        for stn in stations_base:
+                            prev = seg_flows_run[-1]
+                            seg_flows_run.append(prev - float(stn.get("delivery", 0.0)) + float(stn.get("supply", 0.0)))
+                        seg_flows_run = seg_flows_run[1:]
                         kv_run, rho_run = None, None
                         for snap in snapshots:
-                            kv_tmp, rho_tmp = map_vol_linefill_to_segments(snap, stations_base)
+                            kv_tmp, rho_tmp = map_vol_linefill_to_segments_batch(snap, stations_base, seg_flows_run)
                             if kv_run is None:
                                 kv_run, rho_run = kv_tmp, rho_tmp
                             else:
