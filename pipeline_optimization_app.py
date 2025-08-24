@@ -36,7 +36,6 @@ from math import pi
 import hashlib
 import uuid
 import json
-import tomllib
 import copy
 from plotly.colors import qualitative
 
@@ -120,53 +119,53 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 # --- User Login Logic ---
 
-def hash_pwd(pwd):
+def hash_pwd(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 
-def load_users():
-    """Load user credentials from environment or secrets files.
+def load_users() -> tuple[dict[str, str], bool]:
+    """Load user credentials from env var or Streamlit secrets.
 
-    Search order:
-    1. ``PIPELINE_OPTIMA_USERS`` environment variable containing a JSON
-       mapping ``{"user": "sha256_hash"}``.
-    2. ``.streamlit/secrets.toml`` relative to the app directory.
-    3. ``secrets.toml`` in the app directory.
-    4. Fallback built-in credentials for development.
+    Returns a tuple ``(users, using_default)``. When neither the
+    ``PIPELINE_OPTIMA_USERS`` environment variable nor ``st.secrets['users']``
+    is configured, a fallback ``admin``/``admin`` user is provided for local
+    development and ``using_default`` is ``True``.
     """
 
-    env = os.getenv("PIPELINE_OPTIMA_USERS")
-    if env:
+    raw = os.environ.get("PIPELINE_OPTIMA_USERS")
+    data: dict | None = None
+    default_used = False
+    if raw:
         try:
-            return json.loads(env)
+            data = json.loads(raw)
         except json.JSONDecodeError:
-            pass
-
-    for path in (ROOT / ".streamlit" / "secrets.toml", ROOT / "secrets.toml"):
-        if path.exists():
-            try:
-                with path.open("rb") as fh:
-                    data = tomllib.load(fh)
-                return data.get("users", {})
-            except Exception:
-                pass
-
-    # Development fallback
-    return {"parichay_das": hash_pwd("Parichay_Das")}
+            data = {}
+    elif "users" in st.secrets:
+        data = st.secrets["users"]
+    else:
+        data = {"admin": hash_pwd("admin")}
+        default_used = True
+    users = {str(k): str(v) for k, v in (data or {}).items()}
+    return users, default_used
 
 
-users = load_users()
+USERS, USING_DEFAULT_USERS = load_users()
 
 
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
+        if USING_DEFAULT_USERS:
+            st.info(
+                "Using default credentials (admin/admin). Configure the "
+                "PIPELINE_OPTIMA_USERS env var or Streamlit secrets for production."
+            )
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login", key="login_btn"):
-            if username in users and hash_pwd(password) == users[username]:
+            if username in USERS and hash_pwd(password) == USERS[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
                 st.rerun()
