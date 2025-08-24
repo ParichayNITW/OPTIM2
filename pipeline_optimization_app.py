@@ -1,9 +1,9 @@
+import os
 import sys
 from pathlib import Path
 import streamlit as st
 import altair as alt
 import pipeline_model
-import json
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -35,6 +35,7 @@ import plotly.graph_objects as go
 from math import pi
 import hashlib
 import uuid
+import json
 import copy
 from plotly.colors import qualitative
 
@@ -118,12 +119,10 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 # --- User Login Logic ---
 
-def hash_pwd(pwd: str) -> str:
+def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
-
-# Built-in credential pair
-USERS = {"parichay_das": hash_pwd("Parichay_Das")}
+users = {"parichay_das": hash_pwd("Parichay_Das")}
 
 
 def check_login():
@@ -134,7 +133,7 @@ def check_login():
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login", key="login_btn"):
-            if username in USERS and hash_pwd(password) == USERS[username]:
+            if username in users and hash_pwd(password) == users[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
                 st.rerun()
