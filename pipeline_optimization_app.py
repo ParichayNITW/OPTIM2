@@ -1,9 +1,9 @@
-import os
 import sys
 from pathlib import Path
 import streamlit as st
 import altair as alt
 import pipeline_model
+import json
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -35,8 +35,6 @@ import plotly.graph_objects as go
 from math import pi
 import hashlib
 import uuid
-import json
-import tomllib
 import copy
 from plotly.colors import qualitative
 
@@ -120,42 +118,12 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 # --- User Login Logic ---
 
-def hash_pwd(pwd):
+def hash_pwd(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 
-def load_users():
-    """Load user credentials from environment or secrets files.
-
-    Search order:
-    1. ``PIPELINE_OPTIMA_USERS`` environment variable containing a JSON
-       mapping ``{"user": "sha256_hash"}``.
-    2. ``.streamlit/secrets.toml`` relative to the app directory.
-    3. ``secrets.toml`` in the app directory.
-    4. Fallback built-in credentials for development.
-    """
-
-    env = os.getenv("PIPELINE_OPTIMA_USERS")
-    if env:
-        try:
-            return json.loads(env)
-        except json.JSONDecodeError:
-            pass
-
-    for path in (ROOT / ".streamlit" / "secrets.toml", ROOT / "secrets.toml"):
-        if path.exists():
-            try:
-                with path.open("rb") as fh:
-                    data = tomllib.load(fh)
-                return data.get("users", {})
-            except Exception:
-                pass
-
-    # Development fallback
-    return {"parichay_das": hash_pwd("Parichay_Das")}
-
-
-users = load_users()
+# Built-in credential pair
+USERS = {"parichay_das": hash_pwd("Parichay_Das")}
 
 
 def check_login():
@@ -166,7 +134,7 @@ def check_login():
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login", key="login_btn"):
-            if username in users and hash_pwd(password) == users[username]:
+            if username in USERS and hash_pwd(password) == USERS[username]:
                 st.session_state.authenticated = True
                 st.success("Login successful!")
                 st.rerun()
