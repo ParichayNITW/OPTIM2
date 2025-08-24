@@ -123,16 +123,18 @@ def hash_pwd(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 
-def load_users() -> dict:
-    """Load user credentials from environment variable or Streamlit secrets.
+def load_users() -> tuple[dict[str, str], bool]:
+    """Load user credentials from env var or Streamlit secrets.
 
-    Expects a JSON mapping of ``username`` → ``sha256 password hash`` in the
-    ``PIPELINE_OPTIMA_USERS`` environment variable or ``st.secrets['users']``.
-    Returns an empty dict if nothing is configured.
+    Returns a tuple ``(users, using_default)``. When neither the
+    ``PIPELINE_OPTIMA_USERS`` environment variable nor ``st.secrets['users']``
+    is configured, a fallback ``admin``/``admin`` user is provided for local
+    development and ``using_default`` is ``True``.
     """
 
     raw = os.environ.get("PIPELINE_OPTIMA_USERS")
-    data = None
+    data: dict | None = None
+    default_used = False
     if raw:
         try:
             data = json.loads(raw)
@@ -141,20 +143,24 @@ def load_users() -> dict:
     elif "users" in st.secrets:
         data = st.secrets["users"]
     else:
-        data = {}
-    return {str(k): str(v) for k, v in data.items()}
+        data = {"admin": hash_pwd("admin")}
+        default_used = True
+    users = {str(k): str(v) for k, v in (data or {}).items()}
+    return users, default_used
 
 
-USERS = load_users()
+USERS, USING_DEFAULT_USERS = load_users()
 
 
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        if not USERS:
-            st.error("No user credentials configured.")
-            st.stop()
+        if USING_DEFAULT_USERS:
+            st.info(
+                "Using default credentials (admin/admin). Configure the "
+                "PIPELINE_OPTIMA_USERS env var or Streamlit secrets for production."
+            )
         st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
