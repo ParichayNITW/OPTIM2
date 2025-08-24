@@ -127,25 +127,40 @@ def _parallel_segment_hydraulics(
     flow_m3h: float,
     main: dict,
     loop: dict,
-    kv: float,
+    batches: list[dict],
 ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
     """Split ``flow_m3h`` between ``main`` and ``loop`` so both see the same head loss.
 
     ``main`` and ``loop`` are dictionaries with keys ``L``, ``d_inner``, ``rough``,
-    ``dra`` and ``dra_len`` describing each line.  The function returns the common
-    head loss and the (velocity, Re, f, flow) tuples for each path.
+    ``dra`` and ``dra_len`` describing each line.  ``batches`` describes the
+    fluid slices within the segment. The function returns the common head loss
+    and the (velocity, Re, f, flow) tuples for each path.
     """
 
     def calc(line_flow: float, data: dict) -> tuple[float, float, float, float]:
-        return _segment_hydraulics(
-            line_flow,
-            data['L'],
-            data['d_inner'],
-            data['rough'],
-            kv,
-            data.get('dra', 0.0),
-            data.get('dra_len'),
-        )
+        total_hl = 0.0
+        v_ret = Re_ret = f_ret = 0.0
+        remaining = data.get('dra_len')
+        first = True
+        for part in batches:
+            use = min(remaining, part['len_km']) if remaining is not None else None
+            hl, v, Re, f = _segment_hydraulics(
+                line_flow,
+                part['len_km'],
+                data['d_inner'],
+                data['rough'],
+                part['kv'],
+                data.get('dra', 0.0),
+                use,
+            )
+            total_hl += hl
+            if first:
+                v_ret, Re_ret, f_ret = v, Re, f
+                first = False
+            if remaining is not None:
+                remaining -= use or 0.0
+        return total_hl, v_ret, Re_ret, f_ret
+
     key = (
         round(flow_m3h, 3),
         round(main['L'], 3),
@@ -158,7 +173,7 @@ def _parallel_segment_hydraulics(
         round(loop['rough'], 6),
         round(loop.get('dra', 0.0), 1),
         round(-1.0 if loop.get('dra_len') is None else loop.get('dra_len'), 3),
-        round(kv, 6),
+        tuple((round(p['len_km'], 3), round(p['kv'], 6)) for p in batches),
     )
     if key in _PARALLEL_CACHE:
         return _PARALLEL_CACHE[key]
@@ -251,7 +266,7 @@ def _downstream_requirement(
     idx: int,
     terminal: dict,
     segment_flows: list[float],
-    KV_list: list[float],
+    seg_batches: list[list[dict]],
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -275,7 +290,7 @@ def _downstream_requirement(
         if i >= N:
             return terminal.get('min_residual', 0.0)
         stn = stations[i]
-        kv = KV_list[i]
+        batches = seg_batches[i]
         # ``segment_flows`` holds the flow rate *after* each station;
         # use the downstream value so losses reflect the correct
         # segment flow between station ``i`` and ``i+1``.
@@ -289,7 +304,10 @@ def _downstream_requirement(
         rough = stn.get('rough', 0.00004)
         dra_down = stn.get('max_dr', 0.0)
 
-        head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down, None)
+        head_loss = 0.0
+        for part in batches:
+            hl, *_ = _segment_hydraulics(flow, part['len_km'], d_inner, rough, part['kv'], dra_down, None)
+            head_loss += hl
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
         downstream = req_entry(i + 1)
@@ -305,7 +323,7 @@ def _downstream_requirement(
             elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
             if dist is None or elev_peak is None:
                 continue
-            head_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner, rough, kv, dra_down)
+            head_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner, rough, batches[0]['kv'], dra_down)
             req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
             if req_peak > peak_req:
                 peak_req = req_peak
@@ -329,7 +347,7 @@ def solve_pipeline(
     stations: list[dict],
     terminal: dict,
     FLOW: float,
-    KV_list: list[float],
+    seg_batches: list[list[dict]],
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
@@ -363,10 +381,11 @@ def solve_pipeline(
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
         flow = segment_flows[i]
-        kv = KV_list[i - 1]
+        batches = seg_batches[i - 1]
+        kv_first = batches[0]['kv'] if batches else 0.0
         rho = rho_list[i - 1]
 
-        min_residual_next = _downstream_requirement(stations, i - 1, terminal, segment_flows, KV_list)
+        min_residual_next = _downstream_requirement(stations, i - 1, terminal, segment_flows, seg_batches)
 
         L = stn.get('L', 0.0)
         if 'D' in stn:
@@ -472,8 +491,8 @@ def solve_pipeline(
                             else:
                                 rate = stn.get('rate', 0.0)
                                 power_cost = prime_kw_total * hours * rate
-                            ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                            ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
+                            ppm_main = get_ppm_for_dr(kv_first, dra_main) if dra_main > 0 else 0.0
+                            ppm_loop = get_ppm_for_dr(kv_first, dra_loop) if dra_loop > 0 else 0.0
                             opts.append({
                                 'nop': nop,
                                 'rpm': rpm,
@@ -509,7 +528,8 @@ def solve_pipeline(
             'orig_name': stn['name'],
             'flow': flow,
             'flow_in': segment_flows[i - 1],
-            'kv': kv,
+            'batches': batches,
+            'kv_first': batches[0]['kv'] if batches else 0.0,
             'rho': rho,
             'L': L,
             'd_inner': d_inner,
@@ -559,15 +579,27 @@ def solve_pipeline(
                 dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
                 eff_dra_main = opt['dra_main'] if dra_len_main > 0 else 0.0
                 scenarios = []
-                hl_single, v_single, Re_single, f_single = _segment_hydraulics(
-                    stn_data['flow'],
-                    stn_data['L'],
-                    stn_data['d_inner'],
-                    stn_data['rough'],
-                    stn_data['kv'],
-                    eff_dra_main,
-                    dra_len_main,
-                )
+                hl_single = 0.0
+                v_single = Re_single = f_single = 0.0
+                remaining = dra_len_main if eff_dra_main > 0 else None
+                first = True
+                for part in stn_data['batches']:
+                    use = min(remaining, part['len_km']) if remaining is not None else None
+                    hl_part, v_part, Re_part, f_part = _segment_hydraulics(
+                        stn_data['flow'],
+                        part['len_km'],
+                        stn_data['d_inner'],
+                        stn_data['rough'],
+                        part['kv'],
+                        eff_dra_main,
+                        use,
+                    )
+                    hl_single += hl_part
+                    if first:
+                        v_single, Re_single, f_single = v_part, Re_part, f_part
+                        first = False
+                    if remaining is not None:
+                        remaining -= use or 0.0
                 scenarios.append({
                     'head_loss': hl_single,
                     'v': v_single,
@@ -601,7 +633,7 @@ def solve_pipeline(
                             'dra': eff_dra_loop,
                             'dra_len': dra_len_loop,
                         },
-                        stn_data['kv'],
+                        stn_data['batches'],
                     )
                     v_m, Re_m, f_m, q_main = main_stats
                     v_l, Re_l, f_l, q_loop = loop_stats
@@ -802,7 +834,7 @@ def solve_pipeline_with_types(
     stations: list[dict],
     terminal: dict,
     FLOW: float,
-    KV_list: list[float],
+    seg_batches: list[list[dict]],
     rho_list: list[float],
     RateDRA: float,
     Price_HSD: float,
@@ -820,10 +852,10 @@ def solve_pipeline_with_types(
     best_stations = None
     N = len(stations)
 
-    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
+    def expand_all(pos: int, stn_acc: list[dict], batch_acc: list[list[dict]], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -834,7 +866,7 @@ def solve_pipeline_with_types(
             return
 
         stn = stations[pos]
-        kv = KV_list[pos]
+        batches = seg_batches[pos]
         rho = rho_list[pos]
 
         if stn.get('pump_types'):
@@ -892,9 +924,9 @@ def solve_pipeline_with_types(
                 units[-1]['max_dr'] = stn.get('max_dr', 0.0)
                 if stn.get('loopline'):
                     units[-1]['loopline'] = copy.deepcopy(stn['loopline'])
-                expand_all(pos + 1, stn_acc + units, kv_acc + [kv] * len(units), rho_acc + [rho] * len(units))
+                expand_all(pos + 1, stn_acc + units, batch_acc + [batches] * len(units), rho_acc + [rho] * len(units))
         else:
-            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
+            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], batch_acc + [batches], rho_acc + [rho])
 
     expand_all(0, [], [], [])
 
