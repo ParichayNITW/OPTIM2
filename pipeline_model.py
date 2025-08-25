@@ -354,10 +354,44 @@ def _downstream_requirement(
         rough = stn.get('rough', 0.00004)
         dra_down = stn.get('max_dr', 0.0)
 
-        head_loss = 0.0
+        # Head loss assuming the entire flow stays in the mainline.  When a
+        # loopline is available we also evaluate the parallel configuration and
+        # retain the lower loss so upstream pumps are not over-constrained.
+        head_main = 0.0
         for part in batches:
             hl, *_ = _segment_hydraulics(flow, part['len_km'], d_inner, rough, part['kv'], dra_down, None)
-            head_loss += hl
+            head_main += hl
+        head_loss = head_main
+        loop = stn.get('loopline')
+        if loop:
+            L_loop = loop.get('L', L)
+            if 'D' in loop:
+                t_loop = loop.get('t', t)
+                d_inner_loop = loop['D'] - 2 * t_loop
+            else:
+                d_inner_loop = loop.get('d', d_inner)
+                t_loop = loop.get('t', t)
+            rough_loop = loop.get('rough', rough)
+            dra_loop = loop.get('max_dr', 0.0)
+            hl_par, _, _ = _parallel_segment_hydraulics(
+                flow,
+                {
+                    'L': L,
+                    'd_inner': d_inner,
+                    'rough': rough,
+                    'dra': dra_down,
+                    'dra_len': None,
+                },
+                {
+                    'L': L_loop,
+                    'd_inner': d_inner_loop,
+                    'rough': rough_loop,
+                    'dra': dra_loop,
+                    'dra_len': None,
+                },
+                batches,
+            )
+            head_loss = min(head_main, hl_par)
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
         downstream = req_entry(i + 1)
@@ -431,6 +465,7 @@ def solve_pipeline(
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
         flow = segment_flows[i]
+        flow_in = segment_flows[i - 1]
         batches = seg_batches[i - 1]
         kv_first = batches[0]['kv'] if batches else 0.0
         rho = rho_list[i - 1]
@@ -496,8 +531,9 @@ def solve_pipeline(
         travel_km = v_nom * hours * 3600.0 / 1000.0
 
         if stn.get('is_pump', False):
+            is_origin_station = not origin_enforced
             min_p = stn.get('min_pumps', 0)
-            if not origin_enforced:
+            if is_origin_station:
                 min_p = max(1, min_p)
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
@@ -514,12 +550,12 @@ def solve_pipeline(
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
                             if nop > 0 and rpm > 0:
-                                tdh, eff = _pump_head(stn, flow, rpm, nop)
+                                tdh, eff = _pump_head(stn, flow_in, rpm, nop)
                             else:
                                 tdh, eff = 0.0, 0.0
                             eff = max(eff, 1e-6) if nop > 0 else 0.0
                             if nop > 0 and rpm > 0:
-                                pump_bkw_total = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
+                                pump_bkw_total = (rho * flow_in * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
                                 pump_bkw = pump_bkw_total / nop
                                 if stn.get('power_type', 'Grid') == 'Diesel':
                                     prime_kw_total = pump_bkw_total / 0.98
@@ -577,7 +613,7 @@ def solve_pipeline(
             'name': name,
             'orig_name': stn['name'],
             'flow': flow,
-            'flow_in': segment_flows[i - 1],
+            'flow_in': flow_in,
             'batches': batches,
             'kv_first': batches[0]['kv'] if batches else 0.0,
             'rho': rho,
@@ -777,7 +813,7 @@ def solve_pipeline(
                         })
                     if stn_data['is_pump']:
                         record.update({
-                            f"pump_flow_{key}": stn_data['flow'],
+                            f"pump_flow_{key}": stn_data['flow_in'],
                             f"num_pumps_{key}": opt['nop'],
                             f"speed_{key}": opt['rpm'],
                             f"efficiency_{key}": opt['eff'],
