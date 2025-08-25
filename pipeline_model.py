@@ -254,7 +254,7 @@ def _parallel_segment_hydraulics(
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
-    """Return (tdh, efficiency) for ``stn`` at ``rpm`` and ``nop`` pumps."""
+    """Return (tdh, efficiency) for ``nop`` identical pumps in **series**."""
     dol = stn.get('DOL', rpm)
     Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
     A = stn.get('A', 0.0)
@@ -556,12 +556,16 @@ def solve_pipeline(
                             eff = max(eff, 1e-6) if nop > 0 else 0.0
                             if nop > 0 and rpm > 0:
                                 pump_bkw_total = (rho * flow_in * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
-                                pump_bkw = pump_bkw_total / nop
+                                # Pumps operate in series so the total brake
+                                # work and motor load are not divided among
+                                # units.  Each pump sees the full flow and the
+                                # combined head is the sum of individual heads.
+                                pump_bkw = pump_bkw_total
                                 if stn.get('power_type', 'Grid') == 'Diesel':
                                     prime_kw_total = pump_bkw_total / 0.98
                                 else:
                                     prime_kw_total = pump_bkw_total / 0.95
-                                motor_kw = prime_kw_total / nop
+                                motor_kw = prime_kw_total
                             else:
                                 pump_bkw = motor_kw = prime_kw_total = 0.0
                             if stn.get('power_type', 'Grid') == 'Diesel' and prime_kw_total > 0:
