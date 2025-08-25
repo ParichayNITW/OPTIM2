@@ -1233,6 +1233,9 @@ def solve_pipeline(
     if first_pump and first_pump.get('min_pumps', 0) < 1:
         first_pump['min_pumps'] = 1
 
+    # Clear cached hydraulic results so new input conditions are honoured
+    pipeline_model.reset_caches()
+
     if mop_kgcm2 is None:
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
