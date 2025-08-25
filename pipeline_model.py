@@ -45,7 +45,7 @@ DRA_STEP = 5
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 1
 V_MIN = 0.5
-V_MAX = 2.5
+V_MAX = 3.0
 
 # Simple memoisation caches used to avoid repeatedly solving the same
 # hydraulic sub-problems when many states evaluate identical conditions.
@@ -708,6 +708,7 @@ def solve_pipeline(
                     'flow_loop': 0.0,
                     'maop_loop': 0.0,
                     'maop_loop_kg': 0.0,
+                    'mode': 'No Bypass',
                 })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
@@ -747,9 +748,46 @@ def solve_pipeline(
                         'flow_loop': q_loop,
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
+                        'mode': 'No Bypass',
+                    })
+                    # Scenario where loopline bypasses the station entirely
+                    hl_loop_only = 0.0
+                    v_lp = Re_lp = f_lp = 0.0
+                    remaining_loop = dra_len_loop if eff_dra_loop > 0 else None
+                    first_lp = True
+                    for part in stn_data['batches']:
+                        use = min(remaining_loop, part['len_km']) if remaining_loop is not None else None
+                        hl_part, v_part, Re_part, f_part = _segment_hydraulics(
+                            stn_data['flow'],
+                            part['len_km'],
+                            loop['d_inner'],
+                            loop['rough'],
+                            part['kv'],
+                            eff_dra_loop,
+                            use,
+                        )
+                        hl_loop_only += hl_part
+                        if first_lp:
+                            v_lp, Re_lp, f_lp = v_part, Re_part, f_part
+                            first_lp = False
+                        if remaining_loop is not None:
+                            remaining_loop -= use or 0.0
+                    scenarios.append({
+                        'head_loss': hl_loop_only,
+                        'v': 0.0,
+                        'Re': 0.0,
+                        'f': 0.0,
+                        'flow_main': 0.0,
+                        'v_loop': v_lp,
+                        'Re_loop': Re_lp,
+                        'f_loop': f_lp,
+                        'flow_loop': stn_data['flow'],
+                        'maop_loop': loop['maop_head'],
+                        'maop_loop_kg': loop['maop_kgcm2'],
+                        'mode': 'Bypass',
                     })
                 for sc in scenarios:
-                    if not (V_MIN <= sc['v'] <= V_MAX):
+                    if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
@@ -815,6 +853,10 @@ def solve_pipeline(
                             f"maop_loop_{key}": 0.0,
                             f"maop_loop_kgcm2_{key}": 0.0,
                         })
+                    if stn_data.get('loopline'):
+                        record[f"loopline_mode_{key}"] = sc.get('mode', 'No Bypass')
+                    else:
+                        record[f"loopline_mode_{key}"] = 'N/A'
                     if stn_data['is_pump']:
                         record.update({
                             f"pump_flow_{key}": stn_data['flow_in'],

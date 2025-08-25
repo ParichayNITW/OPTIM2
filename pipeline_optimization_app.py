@@ -1040,14 +1040,33 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
     segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
     loop_flows = [res.get(f"loopline_flow_{k}", np.nan) for k in keys]
+    loop_modes = [res.get(f"loopline_mode_{k}", "N/A") for k in keys]
     pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
 
     params = [
-        "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power & Fuel Cost (INR)", "DRA Cost (INR)",
-        "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
-        "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
-        "Residual Head (m)", "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
-        "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
+        "Pipeline Flow (m³/hr)",
+        "Loopline Flow (m³/hr)",
+        "Loopline Mode",
+        "Pump Flow (m³/hr)",
+        "Power & Fuel Cost (INR)",
+        "DRA Cost (INR)",
+        "DRA PPM",
+        "No. of Pumps",
+        "Pump Speed (rpm)",
+        "Pump Eff (%)",
+        "Pump BKW (kW)",
+        "Motor Input (kW)",
+        "Reynolds No.",
+        "Head Loss (m)",
+        "Head Loss (kg/cm²)",
+        "Vel (m/s)",
+        "Residual Head (m)",
+        "Residual Head (kg/cm²)",
+        "SDH (m)",
+        "SDH (kg/cm²)",
+        "MAOP (m)",
+        "MAOP (kg/cm²)",
+        "Drag Reduction (%)",
     ]
     summary = {"Parameters": params}
 
@@ -1056,6 +1075,7 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         summary[nm] = [
             segment_flows[idx],
             loop_flows[idx],
+            loop_modes[idx],
             pump_flows[idx] if idx < len(pump_flows) and not pd.isna(pump_flows[idx]) else np.nan,
             res.get(f"power_cost_{key}", 0.0),
             res.get(f"dra_cost_{key}", 0.0),
@@ -1132,6 +1152,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pump Name': pump_name,
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
+            'Loopline Mode': res.get(f"loopline_mode_{key}", 'N/A'),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
@@ -1768,7 +1789,7 @@ if not auto_batch:
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name"]]
+        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name", "Loopline Mode"]]
         styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
             subset=num_cols, cmap="Blues"
         )
@@ -1971,7 +1992,7 @@ if not auto_batch:
                 station_tables.append(df_int)
             df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name"]]
+            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Loopline Mode"]]
             styled = df_plan.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
                 subset=num_cols, cmap="Blues"
             )
@@ -2063,7 +2084,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             df_display = df_sum.fillna(0.0).copy()
             for col in df_display.columns:
                 if col != "Parameters":
-                    df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
+                    df_display[col] = df_display[col].apply(
+                        lambda x: f"{float(x):.2f}" if isinstance(x, (int, float, np.number)) else x
+                    )
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_display, use_container_width=True, hide_index=True)
             st.download_button(
