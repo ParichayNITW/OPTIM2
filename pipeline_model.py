@@ -413,7 +413,7 @@ def _downstream_requirement(
                 t_loop = loop.get('t', t)
             rough_loop = loop.get('rough', rough)
             dra_loop = loop.get('max_dr', 0.0)
-            hl_par, _, _ = _parallel_segment_hydraulics(
+            hl_par, _, _, _ = _parallel_segment_hydraulics(
                 flow,
                 {
                     'L': L,
