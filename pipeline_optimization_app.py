@@ -1044,7 +1044,7 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
     params = [
         "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Power & Fuel Cost (INR)", "DRA Cost (INR)",
-        "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)",
+        "DRA PPM", "No. of Pumps", "Pump Speed (rpm)", "Pump Eff (%)", "Pump BKW (kW)", "Pump BKW per Pump (kW)",
         "Motor Input (kW)", "Reynolds No.", "Head Loss (m)", "Head Loss (kg/cm²)", "Vel (m/s)",
         "Residual Head (m)", "Residual Head (kg/cm²)", "SDH (m)", "SDH (kg/cm²)",
         "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
@@ -1064,6 +1064,7 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
             res.get(f"speed_{key}", 0.0),
             res.get(f"efficiency_{key}", 0.0),
             res.get(f"pump_bkw_{key}", 0.0),
+            res.get(f"pump_bkw_each_{key}", 0.0),
             res.get(f"motor_kw_{key}", 0.0),
             res.get(f"reynolds_{key}", 0.0),
             res.get(f"head_loss_{key}", 0.0),
@@ -1141,6 +1142,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
+            'Pump BKW per Pump (kW)': float(res.get(f"pump_bkw_each_{key}", 0.0) or 0.0),
             'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
             'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
             'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
@@ -2814,22 +2816,20 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     A = res.get(f"coef_A_{key}", 0)
                     B = res.get(f"coef_B_{key}", 0)
                     C = res.get(f"coef_C_{key}", 0)
-                    for npump in range(1, n_pumps+1):
+                    for npump in range(1, n_pumps + 1):
                         for idx, rpm in enumerate(rpm_steps):
                             # Fix: protect division by zero
-                            if n_rpms > 1:
-                                blend = idx / (n_rpms-1)
-                            else:
-                                blend = 0.5
+                            blend = idx / (n_rpms - 1) if n_rpms > 1 else 0.5
                             color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
                             Q_equiv = flows * N_max / rpm if rpm else flows
-                            H_DOL = A*Q_equiv**2 + B*Q_equiv + C
-                            H_pump = npump * (H_DOL * (rpm/N_max)**2 if N_max else H_DOL)
-                            H_pump = np.clip(H_pump, 0, None)
+                            head_single = A * Q_equiv**2 + B * Q_equiv + C
+                            head_single = head_single * (rpm / N_max)**2 if N_max else head_single
+                            head_total = np.clip(head_single * npump, 0, None)
                             label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
-                            showlegend = (idx == 0 or idx == n_rpms-1)
+                            showlegend = (idx == 0 or idx == n_rpms - 1)
                             fig.add_trace(go.Scatter(
-                                x=flows, y=H_pump,
+                                x=flows,
+                                y=head_total,
                                 mode='lines',
                                 line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
                                 name=label if showlegend else None,

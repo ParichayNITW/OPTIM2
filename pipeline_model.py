@@ -254,21 +254,31 @@ def _parallel_segment_hydraulics(
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
-    """Return (tdh, efficiency) for ``nop`` identical pumps in **series**."""
+    """Return the total head and efficiency for ``nop`` pumps in series.
+
+    The flow through each pump equals the station flow ``flow_m3h``.  Head gains
+    add linearly across the pumps while the efficiency of each unit is assumed
+    to be identical.
+    """
+
     dol = stn.get('DOL', rpm)
     Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
+
     A = stn.get('A', 0.0)
     B = stn.get('B', 0.0)
     C = stn.get('C', 0.0)
-    tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
-    tdh = tdh_single * (rpm / dol) ** 2 * nop
+    head_single = A * Q_equiv ** 2 + B * Q_equiv + C
+    head_single = head_single * (rpm / dol) ** 2
+    head_total = head_single * nop
+
     P = stn.get('P', 0.0)
     Q = stn.get('Q', 0.0)
     R = stn.get('R', 0.0)
     S = stn.get('S', 0.0)
     T = stn.get('T', 0.0)
     eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
-    return tdh, eff
+
+    return head_total, eff
 
 
 def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: float, elevation: float, ambient_temp: float) -> float:
@@ -555,19 +565,18 @@ def solve_pipeline(
                                 tdh, eff = 0.0, 0.0
                             eff = max(eff, 1e-6) if nop > 0 else 0.0
                             if nop > 0 and rpm > 0:
-                                pump_bkw_total = (rho * flow_in * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
-                                # Pumps operate in series so the total brake
-                                # work and motor load are not divided among
-                                # units.  Each pump sees the full flow and the
-                                # combined head is the sum of individual heads.
-                                pump_bkw = pump_bkw_total
+                                # For pumps in series each unit handles the full
+                                # flow and contributes equally to the total head.
+                                head_each = tdh / nop
+                                pump_bkw_each = (rho * flow_in * 9.81 * head_each) / (3600.0 * 1000.0 * (eff / 100.0))
+                                pump_bkw_total = pump_bkw_each * nop
                                 if stn.get('power_type', 'Grid') == 'Diesel':
                                     prime_kw_total = pump_bkw_total / 0.98
                                 else:
                                     prime_kw_total = pump_bkw_total / 0.95
                                 motor_kw = prime_kw_total
                             else:
-                                pump_bkw = motor_kw = prime_kw_total = 0.0
+                                pump_bkw_each = pump_bkw_total = motor_kw = prime_kw_total = 0.0
                             if stn.get('power_type', 'Grid') == 'Diesel' and prime_kw_total > 0:
                                 mode = stn.get('sfc_mode', 'manual')
                                 if mode == 'manual':
@@ -591,7 +600,8 @@ def solve_pipeline(
                                 'travel_km': travel_km if (dra_main > 0 or dra_loop > 0) else 0.0,
                                 'tdh': tdh,
                                 'eff': eff,
-                                'pump_bkw': pump_bkw,
+                                'pump_bkw': pump_bkw_total,
+                                'pump_bkw_each': pump_bkw_each,
                                 'motor_kw': motor_kw,
                                 'power_cost': power_cost,
                                 'dra_ppm_main': ppm_main,
@@ -822,6 +832,7 @@ def solve_pipeline(
                             f"speed_{key}": opt['rpm'],
                             f"efficiency_{key}": opt['eff'],
                             f"pump_bkw_{key}": opt['pump_bkw'],
+                            f"pump_bkw_each_{key}": opt['pump_bkw_each'],
                             f"motor_kw_{key}": opt['motor_kw'],
                             f"power_cost_{key}": opt['power_cost'],
                             f"dra_cost_{key}": dra_cost,
@@ -837,6 +848,7 @@ def solve_pipeline(
                             f"speed_{key}": 0.0,
                             f"efficiency_{key}": 0.0,
                             f"pump_bkw_{key}": 0.0,
+                            f"pump_bkw_each_{key}": 0.0,
                             f"motor_kw_{key}": 0.0,
                             f"power_cost_{key}": 0.0,
                             f"dra_cost_{key}": 0.0,
@@ -940,6 +952,7 @@ def solve_pipeline(
         f"num_pumps_{term_name}": 0,
         f"efficiency_{term_name}": 0.0,
         f"pump_bkw_{term_name}": 0.0,
+        f"pump_bkw_each_{term_name}": 0.0,
         f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
         f"dra_cost_{term_name}": 0.0,
