@@ -815,6 +815,8 @@ def solve_pipeline(
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
                     sdh = state['residual'] + opt['tdh']
+                    if sc.get('mode') == 'Bypass':
+                        sdh = state['residual']
                     if sdh > stn_data['maop_head'] or (sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']):
                         continue
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
@@ -825,7 +827,8 @@ def solve_pipeline(
                     dra_cost = inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     if sc['flow_loop'] > 0:
                         dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
-                    total_cost = opt['power_cost'] + dra_cost
+                    power_cost = opt['power_cost'] if sc['flow_main'] > 0 else 0.0
+                    total_cost = power_cost + dra_cost
                     flow_total = sc['flow_main'] + sc['flow_loop']
                     ppm_next = (
                         (ppm_main * sc['flow_main'] + ppm_loop * sc['flow_loop']) / flow_total
@@ -882,13 +885,13 @@ def solve_pipeline(
                         record[f"loopline_mode_{key}"] = 'N/A'
                     if stn_data['is_pump']:
                         record.update({
-                            f"pump_flow_{key}": stn_data['flow_in'],
-                            f"num_pumps_{key}": opt['nop'],
-                            f"speed_{key}": opt['rpm'],
-                            f"efficiency_{key}": opt['eff'],
-                            f"pump_bkw_{key}": opt['pump_bkw'],
-                            f"motor_kw_{key}": opt['motor_kw'],
-                            f"power_cost_{key}": opt['power_cost'],
+                            f"pump_flow_{key}": stn_data['flow_in'] if sc['flow_main'] > 0 else 0.0,
+                            f"num_pumps_{key}": opt['nop'] if sc['flow_main'] > 0 else 0,
+                            f"speed_{key}": opt['rpm'] if sc['flow_main'] > 0 else 0.0,
+                            f"efficiency_{key}": opt['eff'] if sc['flow_main'] > 0 else 0.0,
+                            f"pump_bkw_{key}": opt['pump_bkw'] if sc['flow_main'] > 0 else 0.0,
+                            f"motor_kw_{key}": opt['motor_kw'] if sc['flow_main'] > 0 else 0.0,
+                            f"power_cost_{key}": power_cost,
                             f"dra_cost_{key}": dra_cost,
                             f"dra_ppm_{key}": opt['dra_ppm_main'],
                             f"dra_ppm_loop_{key}": opt['dra_ppm_loop'],
