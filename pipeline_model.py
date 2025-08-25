@@ -1143,3 +1143,90 @@ def solve_pipeline_with_types(
 
     best_result['stations_used'] = best_stations
     return best_result
+
+
+# ---------------------------------------------------------------------------
+# Flow scanning wrapper
+# ---------------------------------------------------------------------------
+
+
+def _default_flow_scan(max_flow: float) -> list[float]:
+    """Return a modest set of trial flows up to ``max_flow``.
+
+    The step size is chosen so roughly ten levels are evaluated.  A minimum
+    step of 50 m³/h avoids excessive iterations when ``max_flow`` is small.
+    """
+
+    if max_flow <= 0:
+        return [0.0]
+    step = max(50.0, max_flow / 10.0)
+    flows = []
+    f = step
+    while f < max_flow:
+        flows.append(round(f, 2))
+        f += step
+    flows.append(float(max_flow))
+    return flows
+
+
+def solve_pipeline_flow_scan(
+    stations: list[dict],
+    terminal: dict,
+    FLOW: float,
+    seg_batches: list[list[dict]],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
+    linefill_dict: dict | None = None,
+    dra_reach_km: float = 0.0,
+    mop_kgcm2: float | None = None,
+    hours: float = 24.0,
+    flow_scan: list[float] | None = None,
+) -> dict:
+    """Evaluate multiple flow targets and return the lowest-cost feasible result.
+
+    ``flow_scan`` may explicitly list the trial flow rates.  If omitted, a
+    default sequence up to ``FLOW`` is generated.  Each flow is solved using the
+    existing optimisation routine and the solution with minimum total cost is
+    returned.  If no flow level is feasible an error dictionary is produced.
+    """
+
+    flows = sorted(set(flow_scan or _default_flow_scan(FLOW)))
+    solver = (
+        solve_pipeline_with_types
+        if any(s.get('pump_types') for s in stations)
+        else solve_pipeline
+    )
+
+    best: dict | None = None
+    for f in flows:
+        res = solver(
+            stations,
+            terminal,
+            f,
+            seg_batches,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill_dict,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+        )
+        if res.get('error'):
+            continue
+        if best is None or res.get('total_cost', float('inf')) < best.get('total_cost', float('inf')):
+            best = res
+            best['FLOW'] = f
+
+    if best is None:
+        return {
+            "error": True,
+            "message": "No feasible flow found across scan.",
+        }
+
+    return best
