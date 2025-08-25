@@ -547,14 +547,8 @@ def solve_pipeline(
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
                 for rpm in rpm_opts:
-                    if is_origin_station or nop == 0:
-                        dra_main_iter = dra_main_vals
-                        dra_loop_iter = dra_loop_vals
-                    else:
-                        dra_main_iter = [0]
-                        dra_loop_iter = [0]
-                    for dra_main in dra_main_iter:
-                        for dra_loop in dra_loop_iter:
+                    for dra_main in dra_main_vals:
+                        for dra_loop in dra_loop_vals:
                             if nop > 0 and rpm > 0:
                                 tdh, eff = _pump_head(stn, flow_in, rpm, nop)
                             else:
