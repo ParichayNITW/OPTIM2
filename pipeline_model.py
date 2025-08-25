@@ -13,7 +13,7 @@ from math import log10, pi
 import copy
 import numpy as np
 
-from dra_utils import get_ppm_for_dr
+from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -606,28 +606,34 @@ def solve_pipeline(
         cum_dist += L
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
-    states: dict[tuple[float, float], dict] = {
-        (round(init_residual, 2), round(dra_reach_km, 1)): {
+    states: dict[tuple[float, float, float], dict] = {
+        (round(init_residual, 2), round(dra_reach_km, 1), round(0.0, 1)): {
             'cost': 0.0,
             'residual': init_residual,
             'records': [],
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'reach': dra_reach_km,
+            'ppm': 0.0,
         }
     }
 
     for stn_data in station_opts:
-        new_states: dict[tuple[float, float], dict] = {}
+        new_states: dict[tuple[float, float, float], dict] = {}
         for state in states.values():
             for opt in stn_data['options']:
                 reach_prev = state.get('reach', 0.0)
+                ppm_prev = state.get('ppm', 0.0)
                 reach_after = reach_prev
                 if opt['dra_main'] > 0 or opt['dra_loop'] > 0:
                     reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
 
                 dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
-                eff_dra_main = opt['dra_main'] if dra_len_main > 0 else 0.0
+                ppm_main = max(ppm_prev, opt['dra_ppm_main'])
+                ppm_loop = max(ppm_prev, opt['dra_ppm_loop'])
+                eff_dra_main = (
+                    get_dr_for_ppm(stn_data['kv_first'], ppm_main) if dra_len_main > 0 else 0.0
+                )
                 scenarios = []
                 hl_single = 0.0
                 v_single = Re_single = f_single = 0.0
@@ -666,7 +672,9 @@ def solve_pipeline(
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
                     dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
-                    eff_dra_loop = opt['dra_loop'] if dra_len_loop > 0 else 0.0
+                    eff_dra_loop = (
+                        get_dr_for_ppm(stn_data['kv_first'], ppm_loop) if dra_len_loop > 0 else 0.0
+                    )
                     hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                         stn_data['flow'],
                         {
@@ -711,12 +719,18 @@ def solve_pipeline(
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
                     if residual_next < stn_data['min_residual_next']:
                         continue
-                    dra_cost = 0.0
-                    if opt['dra_ppm_main'] > 0:
-                        dra_cost += opt['dra_ppm_main'] * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
-                    if opt['dra_ppm_loop'] > 0 and sc['flow_loop'] > 0:
-                        dra_cost += opt['dra_ppm_loop'] * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
+                    inj_ppm_main = max(0.0, opt['dra_ppm_main'] - ppm_prev)
+                    inj_ppm_loop = max(0.0, opt['dra_ppm_loop'] - ppm_prev)
+                    dra_cost = inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                    if sc['flow_loop'] > 0:
+                        dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
                     total_cost = opt['power_cost'] + dra_cost
+                    flow_total = sc['flow_main'] + sc['flow_loop']
+                    ppm_next = (
+                        (ppm_main * sc['flow_main'] + ppm_loop * sc['flow_loop']) / flow_total
+                        if flow_total > 0
+                        else 0.0
+                    )
                     key = stn_data['name'].lower().replace(' ', '_')
                     record = {
                         f"pipeline_flow_{key}": sc['flow_main'],
@@ -795,6 +809,7 @@ def solve_pipeline(
                     bucket = (
                         round(residual_next, RESIDUAL_ROUND),
                         round(reach_after, 1),
+                        round(ppm_next, 1),
                     )
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
@@ -803,7 +818,19 @@ def solve_pipeline(
                         or new_cost < existing['cost']
                         or (
                             abs(new_cost - existing['cost']) < 1e-9
-                            and residual_next > existing['residual']
+                            and (
+                                residual_next > existing['residual']
+                                or (
+                                    abs(residual_next - existing['residual']) < 1e-9
+                                    and (
+                                        reach_after > existing.get('reach', 0.0)
+                                        or (
+                                            abs(reach_after - existing.get('reach', 0.0)) < 1e-9
+                                            and ppm_next > existing.get('ppm', 0.0)
+                                        )
+                                    )
+                                )
+                            )
                         )
                     ):
                         new_states[bucket] = {
@@ -813,20 +840,23 @@ def solve_pipeline(
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'reach': reach_after,
+                            'ppm': ppm_next,
                         }
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Remove dominated states while considering residual head and DRA reach.
-        pruned: dict[tuple[float, float], dict] = {}
+        # Remove dominated states while considering residual head, DRA reach and
+        # current concentration.
+        pruned: dict[tuple[float, float, float], dict] = {}
         for bucket, data in new_states.items():
             dominated = False
-            to_remove: list[tuple[float, float]] = []
+            to_remove: list[tuple[float, float, float]] = []
             for b2, d2 in pruned.items():
                 if (
                     d2['cost'] <= data['cost']
                     and d2['residual'] >= data['residual']
                     and d2.get('reach', 0.0) >= data.get('reach', 0.0)
+                    and d2.get('ppm', 0.0) >= data.get('ppm', 0.0)
                 ):
                     dominated = True
                     break
@@ -834,6 +864,7 @@ def solve_pipeline(
                     data['cost'] <= d2['cost']
                     and data['residual'] >= d2['residual']
                     and data.get('reach', 0.0) >= d2.get('reach', 0.0)
+                    and data.get('ppm', 0.0) >= d2.get('ppm', 0.0)
                 ):
                     to_remove.append(b2)
             if not dominated:
@@ -891,6 +922,7 @@ def solve_pipeline(
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
     result['dra_front_km'] = best_state.get('reach', 0.0)
+    result['dra_ppm_final'] = best_state.get('ppm', 0.0)
     result['error'] = False
     return result
 
