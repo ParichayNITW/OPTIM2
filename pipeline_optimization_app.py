@@ -202,12 +202,15 @@ def restore_case_dict(loaded_data):
         head_data = loaded_data.get(f"head_data_{i+1}", None)
         eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
         peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+        loop_peak = loaded_data.get(f"loop_peak_data_{i+1}", None)
         if head_data is not None:
             st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
         if eff_data is not None:
             st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
         if peak_data is not None:
             st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+        if loop_peak is not None:
+            st.session_state[f"loop_peak_data_{i+1}"] = pd.DataFrame(loop_peak)
 
     # Handle pump type data for originating station
     headA = loaded_data.get("head_data_1A", None)
@@ -498,6 +501,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
         else:
             stn.pop('loopline', None)
+            st.session_state.pop(f"loop_peak_data_{idx}", None)
 
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
@@ -652,6 +656,22 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             )
             st.session_state[key_peak] = peak_df
 
+            if has_loop:
+                st.markdown("Loopline Peaks")
+                key_lp = f"loop_peak_data_{idx}"
+                if key_lp not in st.session_state or not isinstance(st.session_state[key_lp], pd.DataFrame):
+                    init_loc = stn.get('loopline', {}).get('L', stn['L']) / 2.0
+                    init_elev = stn.get('loopline', {}).get('elev', stn.get('elev', 0.0)) + 100.0
+                    st.session_state[key_lp] = pd.DataFrame({"Location (km)": [init_loc], "Elevation (m)": [init_elev]})
+                lp_df = st.data_editor(
+                    st.session_state[key_lp],
+                    num_rows="dynamic",
+                    key=f"{key_lp}_editor",
+                )
+                st.session_state[key_lp] = lp_df
+            else:
+                st.session_state.pop(f"loop_peak_data_{idx}", None)
+
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
@@ -782,6 +802,14 @@ def get_full_case_dict():
                 st.session_state.get(f"peak_data_{i+1}").to_dict(orient="records")
                 if isinstance(st.session_state.get(f"peak_data_{i+1}"), pd.DataFrame)
                 else stations[i].get('peak_data')
+            )
+            for i in range(len(stations))
+        },
+        **{
+            f"loop_peak_data_{i+1}": (
+                st.session_state.get(f"loop_peak_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"loop_peak_data_{i+1}"), pd.DataFrame)
+                else stations[i].get('loopline', {}).get('peak_data')
             )
             for i in range(len(stations))
         },
@@ -1015,7 +1043,13 @@ def shift_vol_linefill(
 
 
 # Build a summary dataframe from solver results
-def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: pd.DataFrame | None, drop_unused: bool = True) -> pd.DataFrame:
+def build_summary_dataframe(
+    res: dict,
+    stations_data: list[dict],
+    linefill_df: pd.DataFrame | None,
+    terminal: dict | None = None,
+    drop_unused: bool = True,
+) -> pd.DataFrame:
     """Create station-wise summary table matching the Optimization Results view."""
 
     if linefill_df is not None and len(linefill_df):
@@ -1027,6 +1061,8 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         kv_list = [0.0] * len(stations_data)
 
     names = [s['name'] for s in stations_data]
+    if terminal:
+        names.append(terminal.get('name', 'Terminal'))
     keys = [n.lower().replace(' ', '_') for n in names]
 
     station_ppm = {}
@@ -1111,13 +1147,14 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
     return df_sum.round(2)
 
 
-def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
+def build_station_table(res: dict, base_stations: list[dict], terminal: dict | None = None) -> pd.DataFrame:
     """Return per-station details used in the daily schedule table.
 
     The function iterates over the stations used in the optimisation (including
     individual pump units at the origin) and pulls the corresponding values from
     ``res``.  No aggregation is performed so the hydraulic linkage between
-    pumps and stations (RH -> SDH propagation) is preserved.
+    pumps and stations (RH -> SDH propagation) is preserved.  If ``terminal`` is
+    provided, a final row for the terminal station is appended.
     """
 
     rows: list[dict] = []
@@ -1189,6 +1226,42 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         rows.append(row)
 
+    if terminal:
+        term_key = terminal.get('name', 'Terminal').lower().replace(' ', '_')
+        trow = {
+            'Station': terminal.get('name', 'Terminal'),
+            'Pump Name': '',
+            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{term_key}", 0.0) or 0.0),
+            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{term_key}", 0.0) or 0.0),
+            'Loopline Mode': res.get(f"loopline_mode_{term_key}", 'N/A'),
+            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{term_key}", 0.0) or 0.0),
+            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{term_key}", 0.0) or 0.0),
+            'DRA Cost (INR)': float(res.get(f"dra_cost_{term_key}", 0.0) or 0.0),
+            'DRA PPM': float(res.get(f"dra_ppm_{term_key}", 0.0) or 0.0),
+            'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{term_key}", 0.0) or 0.0),
+            'No. of Pumps': int(res.get(f"num_pumps_{term_key}", 0) or 0),
+            'Pump Speed (rpm)': float(res.get(f"speed_{term_key}", 0.0) or 0.0),
+            'Pump Eff (%)': float(res.get(f"efficiency_{term_key}", 0.0) or 0.0),
+            'Pump BKW (kW)': float(res.get(f"pump_bkw_{term_key}", 0.0) or 0.0),
+            'Motor Input (kW)': float(res.get(f"motor_kw_{term_key}", 0.0) or 0.0),
+            'Reynolds No.': float(res.get(f"reynolds_{term_key}", 0.0) or 0.0),
+            'Head Loss (m)': float(res.get(f"head_loss_{term_key}", 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{term_key}", 0.0) or 0.0),
+            'Vel (m/s)': float(res.get(f"velocity_{term_key}", 0.0) or 0.0),
+            'Residual Head (m)': float(res.get(f"residual_head_{term_key}", 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{term_key}", 0.0) or 0.0),
+            'SDH (m)': float(res.get(f"sdh_{term_key}", 0.0) or 0.0),
+            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{term_key}", 0.0) or 0.0),
+            'MAOP (m)': float(res.get(f"maop_{term_key}", 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{term_key}", 0.0) or 0.0),
+            'Drag Reduction (%)': float(res.get(f"drag_reduction_{term_key}", 0.0) or 0.0),
+            'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{term_key}", 0.0) or 0.0),
+            'Total Cost (INR)': float(res.get(f"power_cost_{term_key}", 0.0) or 0.0) + float(res.get(f"dra_cost_{term_key}", 0.0) or 0.0),
+            'Available Suction Head (m)': np.nan,
+            'Available Suction Head (kg/cm²)': np.nan,
+        }
+        rows.append(trow)
+
     df = pd.DataFrame(rows)
     return df.round(2)
 
@@ -1227,6 +1300,26 @@ def build_uniform_batches(kv_list: list[float], rho_list: list[float], stations:
     for kv, rho, st in zip(kv_list, rho_list, stations):
         seg_batches.append([{ 'len_km': st.get('L', 0.0), 'kv': kv, 'rho': rho }])
     return seg_batches
+
+
+def apply_session_peaks(stations: list[dict]) -> None:
+    """Attach peak data from session state to station dictionaries.
+
+    Both mainline and loopline peaks are pulled from the corresponding
+    ``peak_data_*`` and ``loop_peak_data_*`` DataFrames, if present.
+    """
+    for idx, stn in enumerate(stations, start=1):
+        peak_df = st.session_state.get(f"peak_data_{idx}")
+        if isinstance(peak_df, pd.DataFrame):
+            stn['peaks'] = peak_df.to_dict(orient="records")
+        else:
+            stn.pop('peaks', None)
+        loop_peak_df = st.session_state.get(f"loop_peak_data_{idx}")
+        if stn.get('loopline'):
+            if isinstance(loop_peak_df, pd.DataFrame):
+                stn['loopline']['peaks'] = loop_peak_df.to_dict(orient="records")
+            else:
+                stn['loopline'].pop('peaks', None)
 
 def solve_pipeline(
     stations,
@@ -1568,6 +1661,7 @@ if not auto_batch:
     if run:
         with st.spinner("Solving optimization..."):
             stations_data = st.session_state.stations
+            apply_session_peaks(stations_data)
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
             # Always ensure linefill_df, kv_list, rho_list are defined!
             linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
@@ -1649,6 +1743,7 @@ if not auto_batch:
 
         import copy
         stations_base = copy.deepcopy(st.session_state.stations)
+        apply_session_peaks(stations_base)
         for stn in stations_base:
             if stn.get('pump_types'):
                 names_all = []
@@ -1784,7 +1879,7 @@ if not auto_batch:
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
-            df_int = build_station_table(res, stations_base)
+            df_int = build_station_table(res, stations_base, term_data)
             df_int.insert(0, "Time", f"{hr:02d}:00")
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
@@ -1832,6 +1927,7 @@ if not auto_batch:
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
+            apply_session_peaks(stations_base)
             for stn in stations_base:
                 if stn.get('pump_types'):
                     names_all = []
@@ -1987,7 +2083,7 @@ if not auto_batch:
             for rec in reports:
                 res = rec["result"]
                 ts = rec["time"]
-                df_int = build_station_table(res, stations_base)
+                df_int = build_station_table(res, stations_base, term_data)
                 df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
                 station_tables.append(df_int)
             df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
@@ -2079,7 +2175,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
             names = [s['name'] for s in stations_data]
             keys = [n.lower().replace(' ', '_') for n in names]
-            df_sum = build_summary_dataframe(res, stations_data, linefill_df)
+            df_sum = build_summary_dataframe(res, stations_data, linefill_df, term_data)
             st.session_state["summary_table"] = df_sum.copy()
             df_display = df_sum.fillna(0.0).copy()
             for col in df_display.columns:
