@@ -137,12 +137,26 @@ def _parallel_segment_hydraulics(
     and the (velocity, Re, f, flow) tuples for each path.
     """
 
-    def calc(line_flow: float, data: dict) -> tuple[float, float, float, float]:
+    def slice_batches(parts: list[dict], length: float) -> list[dict]:
+        remaining = length
+        out: list[dict] = []
+        for part in parts:
+            if remaining <= 0:
+                break
+            use = min(part['len_km'], remaining)
+            out.append({'len_km': use, 'kv': part['kv']})
+            remaining -= use
+        return out
+
+    overlap = min(main['L'], loop['L'])
+    batches_overlap = slice_batches(batches, overlap)
+
+    def calc(line_flow: float, data: dict, parts: list[dict]) -> tuple[float, float, float, float]:
         total_hl = 0.0
         v_ret = Re_ret = f_ret = 0.0
         remaining = data.get('dra_len')
         first = True
-        for part in batches:
+        for part in parts:
             use = min(remaining, part['len_km']) if remaining is not None else None
             hl, v, Re, f = _segment_hydraulics(
                 line_flow,
@@ -161,6 +175,19 @@ def _parallel_segment_hydraulics(
                 remaining -= use or 0.0
         return total_hl, v_ret, Re_ret, f_ret
 
+    main_overlap = main.copy()
+    if main.get('dra_len') is None:
+        main_overlap['dra_len'] = None
+    else:
+        main_overlap['dra_len'] = min(main['dra_len'], overlap)
+    main_overlap['L'] = overlap
+    loop_overlap = loop.copy()
+    if loop.get('dra_len') is None:
+        loop_overlap['dra_len'] = None
+    else:
+        loop_overlap['dra_len'] = min(loop['dra_len'], overlap)
+    loop_overlap['L'] = overlap
+
     key = (
         round(flow_m3h, 3),
         round(main['L'], 3),
@@ -173,34 +200,57 @@ def _parallel_segment_hydraulics(
         round(loop['rough'], 6),
         round(loop.get('dra', 0.0), 1),
         round(-1.0 if loop.get('dra_len') is None else loop.get('dra_len'), 3),
-        tuple((round(p['len_km'], 3), round(p['kv'], 6)) for p in batches),
+        tuple((round(p['len_km'], 3), round(p['kv'], 6)) for p in batches_overlap),
     )
     if key in _PARALLEL_CACHE:
-        return _PARALLEL_CACHE[key]
+        hl_overlap, main_stats, loop_stats = _PARALLEL_CACHE[key]
+    else:
+        lo, hi = 0.0, flow_m3h
+        best = None
+        for _ in range(20):
+            mid = (lo + hi) / 2.0
+            q_loop = mid
+            q_main = flow_m3h - q_loop
+            hl_main, v_main, Re_main, f_main = calc(q_main, main_overlap, batches_overlap)
+            hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop_overlap, batches_overlap)
+            diff = hl_main - hl_loop
+            best = (
+                hl_main,
+                (v_main, Re_main, f_main, q_main),
+                (v_loop, Re_loop, f_loop, q_loop),
+            )
+            if abs(diff) < 1e-6:
+                break
+            if diff > 0:
+                lo = mid
+            else:
+                hi = mid
+        hl_overlap, main_stats, loop_stats = best
+        _PARALLEL_CACHE[key] = best
 
-    lo, hi = 0.0, flow_m3h
-    best = None
-    for _ in range(20):
-        mid = (lo + hi) / 2.0
-        q_loop = mid
-        q_main = flow_m3h - q_loop
-        hl_main, v_main, Re_main, f_main = calc(q_main, main)
-        hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop)
-        diff = hl_main - hl_loop
-        best = (
-            hl_main,
-            (v_main, Re_main, f_main, q_main),
-            (v_loop, Re_loop, f_loop, q_loop),
-        )
-        if abs(diff) < 1e-6:
-            break
-        if diff > 0:
-            lo = mid
-        else:
-            hi = mid
+    total_hl = hl_overlap
+    if main['L'] > overlap:
+        rem = main['L'] - overlap
+        batches_rem = slice_batches(batches, rem + overlap)[len(batches_overlap):]
+        remaining_dra = None
+        if main.get('dra_len') is not None:
+            remaining_dra = max(0.0, main.get('dra_len') - overlap)
+        for part in batches_rem:
+            use = min(remaining_dra, part['len_km']) if remaining_dra is not None else None
+            hl_part, _, _, _ = _segment_hydraulics(
+                flow_m3h,
+                part['len_km'],
+                main['d_inner'],
+                main['rough'],
+                part['kv'],
+                main.get('dra', 0.0),
+                use,
+            )
+            total_hl += hl_part
+            if remaining_dra is not None:
+                remaining_dra -= use or 0.0
 
-    _PARALLEL_CACHE[key] = best
-    return best
+    return total_hl, main_stats, loop_stats
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
