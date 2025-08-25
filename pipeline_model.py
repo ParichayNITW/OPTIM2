@@ -1074,7 +1074,17 @@ def solve_pipeline_with_types(
                 units[-1]['max_dr'] = stn.get('max_dr', 0.0)
                 if stn.get('loopline'):
                     units[-1]['loopline'] = copy.deepcopy(stn['loopline'])
-                expand_all(pos + 1, stn_acc + units, batch_acc + [batches] * len(units), rho_acc + [rho] * len(units))
+                # Only the final pump in a station has the downstream pipeline
+                # segment associated with it.  Intermediate pumps are purely
+                # series units and should not incur additional head loss.
+                zero_batch = [{'len_km': 0.0, 'kv': batches[0]['kv'] if batches else 0.0}]
+                batch_list = [zero_batch] * (len(units) - 1) + [batches]
+                expand_all(
+                    pos + 1,
+                    stn_acc + units,
+                    batch_acc + batch_list,
+                    rho_acc + [rho] * len(units),
+                )
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], batch_acc + [batches], rho_acc + [rho])
 
