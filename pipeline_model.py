@@ -556,8 +556,8 @@ def solve_pipeline(
         cum_dist += L
     # Dynamic programming over stations
     init_residual = stations[0].get('min_residual', 50.0)
-    states: dict[float, dict] = {
-        round(init_residual, 2): {
+    states: dict[tuple[float, float], dict] = {
+        (round(init_residual, 2), round(dra_reach_km, 1)): {
             'cost': 0.0,
             'residual': init_residual,
             'records': [],
@@ -568,7 +568,7 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
-        new_states: dict[float, dict] = {}
+        new_states: dict[tuple[float, float], dict] = {}
         for state in states.values():
             for opt in stn_data['options']:
                 reach_prev = state.get('reach', 0.0)
@@ -742,7 +742,10 @@ def solve_pipeline(
                             f"drag_reduction_loop_{key}": 0.0,
                         })
                     new_cost = state['cost'] + total_cost
-                    bucket = round(residual_next, RESIDUAL_ROUND)
+                    bucket = (
+                        round(residual_next, RESIDUAL_ROUND),
+                        round(reach_after, 1),
+                    )
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
                     if (
@@ -764,17 +767,29 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Remove dominated states to curb combinatorial growth without
-        # sacrificing optimality.  After sorting by residual head, retain only
-        # states that improve upon the best cost seen so far.  Higher-residual
-        # states are kept when costs tie, preserving global minima while
-        # pruning less promising branches.
-        pruned: dict[float, dict] = {}
-        best_cost = float('inf')
-        for bucket, data in sorted(new_states.items(), key=lambda x: x[1]['residual'], reverse=True):
-            if data['cost'] < best_cost - 1e-9:
+        # Remove dominated states while considering residual head and DRA reach.
+        pruned: dict[tuple[float, float], dict] = {}
+        for bucket, data in new_states.items():
+            dominated = False
+            to_remove: list[tuple[float, float]] = []
+            for b2, d2 in pruned.items():
+                if (
+                    d2['cost'] <= data['cost']
+                    and d2['residual'] >= data['residual']
+                    and d2.get('reach', 0.0) >= data.get('reach', 0.0)
+                ):
+                    dominated = True
+                    break
+                if (
+                    data['cost'] <= d2['cost']
+                    and data['residual'] >= d2['residual']
+                    and data.get('reach', 0.0) >= d2.get('reach', 0.0)
+                ):
+                    to_remove.append(b2)
+            if not dominated:
+                for b2 in to_remove:
+                    del pruned[b2]
                 pruned[bucket] = data
-                best_cost = data['cost']
         states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
