@@ -44,7 +44,7 @@ DRA_STEP = 5
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 1
-V_MIN = 0.5
+V_MIN = 0.15
 V_MAX = 3.0
 
 # Simple memoisation caches used to avoid repeatedly solving the same
