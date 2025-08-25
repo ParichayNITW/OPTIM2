@@ -53,18 +53,6 @@ _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _PARALLEL_CACHE: dict[tuple, tuple] = {}
 
 
-def reset_caches() -> None:
-    """Clear internal hydraulic result caches.
-
-    The model memoises segment and parallel segment calculations to speed up
-    repeated evaluations.  In an interactive application the operating
-    conditions can change between runs, so caches must be cleared to avoid
-    reusing stale results.
-    """
-    _SEGMENT_CACHE.clear()
-    _PARALLEL_CACHE.clear()
-
-
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
@@ -268,53 +256,28 @@ def _parallel_segment_hydraulics(
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
     """Return the total head and efficiency for ``nop`` pumps in series.
 
-    Head/efficiency data may be provided either as polynomial coefficients or
-    as tabular curve data.  When curves are supplied the function performs a
-    simple linear interpolation on flow to obtain the head and efficiency at the
-    operating point before scaling for speed.
+    The flow through each pump equals the station flow ``flow_m3h``.  Head gains
+    add linearly across the pumps while the efficiency of each unit is assumed
+    to be identical.
     """
 
     dol = stn.get('DOL', rpm)
     Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
 
-    head_single = 0.0
-    eff = 0.0
-
-    head_data = stn.get('head_data')
-    if head_data:
-        # Determine the likely column names for flow and head values
-        first = head_data[0]
-        f_key = next((k for k in first.keys() if 'flow' in k.lower()), None)
-        h_key = next((k for k in first.keys() if 'head' in k.lower()), None)
-        if f_key and h_key:
-            flows = [float(row[f_key]) for row in head_data]
-            heads = [float(row[h_key]) for row in head_data]
-            head_base = float(np.interp(Q_equiv, flows, heads))
-            head_single = head_base * (rpm / dol) ** 2
-    else:
-        A = stn.get('A', 0.0)
-        B = stn.get('B', 0.0)
-        C = stn.get('C', 0.0)
-        head_single = (A * Q_equiv ** 2 + B * Q_equiv + C) * (rpm / dol) ** 2
-
-    eff_data = stn.get('eff_data')
-    if eff_data:
-        first = eff_data[0]
-        f_key = next((k for k in first.keys() if 'flow' in k.lower()), None)
-        e_key = next((k for k in first.keys() if 'eff' in k.lower()), None)
-        if f_key and e_key:
-            flows = [float(row[f_key]) for row in eff_data]
-            effs = [float(row[e_key]) for row in eff_data]
-            eff = float(np.interp(Q_equiv, flows, effs))
-    else:
-        P = stn.get('P', 0.0)
-        Q = stn.get('Q', 0.0)
-        R = stn.get('R', 0.0)
-        S = stn.get('S', 0.0)
-        T = stn.get('T', 0.0)
-        eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
-
+    A = stn.get('A', 0.0)
+    B = stn.get('B', 0.0)
+    C = stn.get('C', 0.0)
+    head_single = A * Q_equiv ** 2 + B * Q_equiv + C
+    head_single = head_single * (rpm / dol) ** 2
     head_total = head_single * nop
+
+    P = stn.get('P', 0.0)
+    Q = stn.get('Q', 0.0)
+    R = stn.get('R', 0.0)
+    S = stn.get('S', 0.0)
+    T = stn.get('T', 0.0)
+    eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
+
     return head_total, eff
 
 
@@ -1111,7 +1074,17 @@ def solve_pipeline_with_types(
                 units[-1]['max_dr'] = stn.get('max_dr', 0.0)
                 if stn.get('loopline'):
                     units[-1]['loopline'] = copy.deepcopy(stn['loopline'])
-                expand_all(pos + 1, stn_acc + units, batch_acc + [batches] * len(units), rho_acc + [rho] * len(units))
+                # Only the final pump in a station has the downstream pipeline
+                # segment associated with it.  Intermediate pumps are purely
+                # series units and should not incur additional head loss.
+                zero_batch = [{'len_km': 0.0, 'kv': batches[0]['kv'] if batches else 0.0}]
+                batch_list = [zero_batch] * (len(units) - 1) + [batches]
+                expand_all(
+                    pos + 1,
+                    stn_acc + units,
+                    batch_acc + batch_list,
+                    rho_acc + [rho] * len(units),
+                )
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], batch_acc + [batches], rho_acc + [rho])
 
