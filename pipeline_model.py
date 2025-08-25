@@ -402,6 +402,7 @@ def _downstream_requirement(
         # itself.  Use the maximum requirement among all peaks and the downstream
         # station.
         peak_req = 0.0
+        # Mainline peaks
         for peak in stn.get('peaks', []) or []:
             dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
             elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
@@ -411,6 +412,28 @@ def _downstream_requirement(
             req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
             if req_peak > peak_req:
                 peak_req = req_peak
+
+        # Loopline peaks (if loopline present)
+        loop = stn.get('loopline')
+        if loop:
+            L_loop = loop.get('L', L)
+            if 'D' in loop:
+                t_loop = loop.get('t', t)
+                d_inner_loop = loop['D'] - 2 * t_loop
+            else:
+                d_inner_loop = loop.get('d', d_inner)
+                t_loop = loop.get('t', t)
+            rough_loop = loop.get('rough', rough)
+            dra_loop = loop.get('max_dr', 0.0)
+            for peak in loop.get('peaks', []) or []:
+                dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
+                elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
+                if dist is None or elev_peak is None:
+                    continue
+                head_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner_loop, rough_loop, batches[0]['kv'], dra_loop)
+                req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
+                if req_peak > peak_req:
+                    peak_req = req_peak
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
