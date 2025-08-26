@@ -164,29 +164,66 @@ def _parallel_segment_hydraulics(
     overlap = min(main['L'], loop['L'])
     batches_overlap = slice_batches(batches, overlap)
 
-    def calc(line_flow: float, data: dict, parts: list[dict]) -> tuple[float, float, float, float]:
-        total_hl = 0.0
-        v_ret = Re_ret = f_ret = 0.0
+    def _precompute_coeffs(data: dict, parts: list[dict]) -> dict:
+        """Return pre-computed coefficients for fast head-loss evaluation."""
+        g = 9.81
+        area = pi * data['d_inner'] ** 2 / 4.0
+        v_coeff = 1.0 / (3600.0 * area) if area > 0 else 0.0
+        v2_coeff = (v_coeff ** 2) / (2 * g) if v_coeff > 0 else 0.0
+        rough_const = (
+            data['rough'] / data['d_inner'] / 3.7 if data['d_inner'] > 0 else 0.0
+        )
+        len_coeffs: list[float] = []
+        re_coeffs: list[float] = []
         remaining = data.get('dra_len')
-        first = True
         for part in parts:
-            use = min(remaining, part['len_km']) if remaining is not None else None
-            hl, v, Re, f = _segment_hydraulics(
-                line_flow,
-                part['len_km'],
-                data['d_inner'],
-                data['rough'],
-                part['kv'],
-                data.get('dra', 0.0),
-                use,
+            if remaining is None:
+                use = part['len_km']
+            else:
+                use = min(remaining, part['len_km'])
+                remaining -= use
+            eff_len = (
+                use * (1 - data.get('dra', 0.0) / 100.0)
+                + (part['len_km'] - use)
             )
-            total_hl += hl
+            len_coeffs.append(
+                (1000.0 / data['d_inner']) * eff_len if data['d_inner'] > 0 else 0.0
+            )
+            re_coeffs.append(
+                v_coeff * data['d_inner'] / (part['kv'] * 1e-6)
+                if part['kv'] > 0
+                else 0.0
+            )
+        return {
+            'v_coeff': v_coeff,
+            'v2_coeff': v2_coeff,
+            'rough_const': rough_const,
+            'len_coeffs': len_coeffs,
+            're_coeffs': re_coeffs,
+        }
+
+    def _calc_with_coeffs(line_flow: float, coeffs: dict) -> tuple[float, float, float, float]:
+        flow_sq = line_flow ** 2
+        v = line_flow * coeffs['v_coeff']
+        factor = flow_sq * coeffs['v2_coeff']
+        total_hl = 0.0
+        Re_ret = f_ret = 0.0
+        first = True
+        for len_coeff, re_coeff in zip(coeffs['len_coeffs'], coeffs['re_coeffs']):
+            Re = line_flow * re_coeff
+            if Re > 0:
+                if Re < 4000:
+                    f = 64.0 / Re
+                else:
+                    arg = coeffs['rough_const'] + 5.74 / (Re ** 0.9)
+                    f = 0.25 / (log10(arg) ** 2) if arg > 0 else 0.0
+            else:
+                f = 0.0
+            total_hl += f * len_coeff * factor
             if first:
-                v_ret, Re_ret, f_ret = v, Re, f
+                Re_ret, f_ret = Re, f
                 first = False
-            if remaining is not None:
-                remaining -= use or 0.0
-        return total_hl, v_ret, Re_ret, f_ret
+        return total_hl, v, Re_ret, f_ret
 
     main_overlap = main.copy()
     if main.get('dra_len') is None:
@@ -200,6 +237,9 @@ def _parallel_segment_hydraulics(
     else:
         loop_overlap['dra_len'] = min(loop['dra_len'], overlap)
     loop_overlap['L'] = overlap
+
+    coeff_main = _precompute_coeffs(main_overlap, batches_overlap)
+    coeff_loop = _precompute_coeffs(loop_overlap, batches_overlap)
 
     if pump_func is None:
         key = (
@@ -217,7 +257,7 @@ def _parallel_segment_hydraulics(
             tuple((round(p['len_km'], 3), round(p['kv'], 6)) for p in batches_overlap),
         )
         if key in _PARALLEL_CACHE:
-            hl_overlap, pump_h, main_stats, loop_stats = _PARALLEL_CACHE[key]
+            hl_overlap, pump_h, main_stats, loop_stats, _, _ = _PARALLEL_CACHE[key]
         else:
             lo, hi = 0.0, flow_m3h
             best = None
@@ -225,8 +265,8 @@ def _parallel_segment_hydraulics(
                 mid = (lo + hi) / 2.0
                 q_loop = mid
                 q_main = flow_m3h - q_loop
-                hl_main, v_main, Re_main, f_main = calc(q_main, main_overlap, batches_overlap)
-                hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop_overlap, batches_overlap)
+                hl_main, v_main, Re_main, f_main = _calc_with_coeffs(q_main, coeff_main)
+                hl_loop, v_loop, Re_loop, f_loop = _calc_with_coeffs(q_loop, coeff_loop)
                 pump_h = 0.0
                 diff = hl_main - hl_loop
                 best = (
@@ -242,7 +282,14 @@ def _parallel_segment_hydraulics(
                 else:
                     hi = mid
             hl_overlap, pump_h, main_stats, loop_stats = best
-            _PARALLEL_CACHE[key] = best
+            _PARALLEL_CACHE[key] = (
+                hl_overlap,
+                pump_h,
+                main_stats,
+                loop_stats,
+                coeff_main,
+                coeff_loop,
+            )
     else:
         lo, hi = 0.0, flow_m3h
         best = None
@@ -250,8 +297,8 @@ def _parallel_segment_hydraulics(
             mid = (lo + hi) / 2.0
             q_loop = mid
             q_main = flow_m3h - q_loop
-            hl_main, v_main, Re_main, f_main = calc(q_main, main_overlap, batches_overlap)
-            hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop_overlap, batches_overlap)
+            hl_main, v_main, Re_main, f_main = _calc_with_coeffs(q_main, coeff_main)
+            hl_loop, v_loop, Re_loop, f_loop = _calc_with_coeffs(q_loop, coeff_loop)
             pump_h = pump_func(q_main)
             diff = (hl_main - pump_h) - hl_loop
             best = (
