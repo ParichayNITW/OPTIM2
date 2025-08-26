@@ -1100,7 +1100,7 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
 
 def build_station_table(res: dict, base_stations: list[dict], terminal_name: str) -> pd.DataFrame:
-    """Return per-station details excluding idle pumps and mark bypass decisions."""
+    """Return per-station details including idle stations and mark bypass decisions."""
 
     rows: list[dict] = []
     names = [s['name'] for s in base_stations]
@@ -1109,8 +1109,6 @@ def build_station_table(res: dict, base_stations: list[dict], terminal_name: str
     for idx, stn in enumerate(base_stations):
         key = keys[idx]
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
-        if n_pumps == 0:
-            continue
         pump_list = stn.get('pump_names') or ([stn.get('pump_name')] if stn.get('pump_name') else [])
         pump_name = ", ".join(pump_list[:n_pumps]) if pump_list else ''
         prev_key = keys[idx - 1] if idx > 0 else None
