@@ -295,20 +295,34 @@ def _downstream_requirement(
         downstream = req_entry(i + 1)
         req = downstream + head_loss + (elev_next - elev_i)
 
-        # Check intermediate peaks within this segment.  Each peak requires enough
-        # upstream pressure to maintain at least 25 m of residual head at the peak
-        # itself.  Use the maximum requirement among all peaks and the downstream
-        # station.
-        peak_req = 0.0
-        for peak in stn.get('peaks', []) or []:
-            dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
-            elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
-            if dist is None or elev_peak is None:
-                continue
-            head_peak, *_ = _segment_hydraulics(flow, float(dist), d_inner, rough, kv, dra_down)
-            req_peak = head_peak + (float(elev_peak) - elev_i) + 25.0
-            if req_peak > peak_req:
-                peak_req = req_peak
+        # Check intermediate peaks on both mainline and loopline.  Each peak
+        # requires sufficient upstream pressure to maintain at least 25 m of
+        # residual head at the peak itself.  Consider whichever peak demands the
+        # highest pressure.
+        def peak_requirement(peaks, d_pipe, rough_pipe, dra_perc):
+            req_local = 0.0
+            for peak in peaks or []:
+                dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
+                elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
+                if dist is None or elev_peak is None:
+                    continue
+                head_peak, *_ = _segment_hydraulics(flow, float(dist), d_pipe, rough_pipe, kv, dra_perc)
+                req_p = head_peak + (float(elev_peak) - elev_i) + 25.0
+                if req_p > req_local:
+                    req_local = req_p
+            return req_local
+
+        peak_req = peak_requirement(stn.get('peaks'), d_inner, rough, dra_down)
+        loop = stn.get('loopline')
+        if loop:
+            if 'D' in loop:
+                t_loop = loop.get('t', t)
+                d_inner_loop = loop['D'] - 2 * t_loop
+            else:
+                d_inner_loop = loop.get('d', d_inner)
+            rough_loop = loop.get('rough', rough)
+            dra_loop = loop.get('max_dr', 0.0)
+            peak_req = max(peak_req, peak_requirement(loop.get('peaks'), d_inner_loop, rough_loop, dra_loop))
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
