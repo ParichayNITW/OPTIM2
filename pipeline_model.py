@@ -51,6 +51,11 @@ V_MAX = 3.0
 # expense of a small loss in optimality when many near-equivalent states exist.
 STATE_LIMIT = 100
 
+# Allow states more expensive than the best in a bucket by at most this
+# fraction.  A tighter margin reduces the search space and speeds up the solve
+# at the risk of missing slightly cheaper combinations.
+BUCKET_COST_MARGIN = 0.05
+
 # Simple memoisation caches used to avoid repeatedly solving the same
 # hydraulic sub-problems when many states evaluate identical conditions.
 _SEGMENT_CACHE: dict[tuple, tuple] = {}
@@ -551,6 +556,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    bucket_cost_margin: float = BUCKET_COST_MARGIN,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.  This replaces the previous greedy approach and
@@ -1046,6 +1052,8 @@ def solve_pipeline(
                     )
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
+                    if existing is not None and new_cost > existing['cost'] * (1 + bucket_cost_margin):
+                        continue
                     if (
                         existing is None
                         or new_cost < existing['cost']
@@ -1176,6 +1184,7 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    bucket_cost_margin: float = BUCKET_COST_MARGIN,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -1187,7 +1196,7 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], batch_acc: list[list[dict]], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours, bucket_cost_margin)
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -1311,6 +1320,7 @@ def solve_pipeline_flow_scan(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     flow_scan: list[float] | None = None,
+    bucket_cost_margin: float = BUCKET_COST_MARGIN,
 ) -> dict:
     """Evaluate multiple flow targets and return the lowest-cost feasible result.
 
@@ -1343,6 +1353,7 @@ def solve_pipeline_flow_scan(
             dra_reach_km,
             mop_kgcm2,
             hours,
+            bucket_cost_margin=bucket_cost_margin,
         )
         if res.get('error'):
             continue
