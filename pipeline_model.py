@@ -253,18 +253,22 @@ def _downstream_requirement(
     segment_flows: list[float] | None,
     KV_list: list[float],
     flow_override: float | list[float] | None = None,
-    pump_plan: dict[int, tuple[int, int]] | None = None,
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
-    ``pump_plan`` optionally maps a station index to the chosen number of pumps
-    and rpm.  Only stations present in this plan have their head contribution
-    subtracted when computing the requirement; others are treated as offering no
-    additional head.  ``segment_flows`` may supply the flow rate after each
-    station.  When ``flow_override`` is given it takes precedence and may be
-    either a constant flow value or a full per-segment list.  The returned value
-    is therefore the minimum residual needed after station ``idx`` so that the
-    terminal residual head constraint can still be met.
+    The previous implementation only accumulated losses across consecutive
+    non-pump stations.  When multiple pump stations appear in sequence (e.g. to
+    represent different pump types at an origin), upstream pumps were unaware of
+    the downstream pressure requirement and the solver could deem a feasible
+    configuration infeasible.  This version performs a backward recursion over
+    *all* downstream stations, subtracting the maximum head each pump can
+    deliver and adding line/elevation losses for every segment.
+
+    ``segment_flows`` may supply the flow rate after each station.  When
+    ``flow_override`` is given it takes precedence and may be either a constant
+    flow value or a full per-segment list.  The returned value is therefore the
+    minimum residual needed after station ``idx`` so that the terminal residual
+    head constraint can still be met.
     """
 
     from functools import lru_cache
@@ -336,23 +340,10 @@ def _downstream_requirement(
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
-            # Assume downstream stations can contribute head.  When a specific
-            # pump selection has already been made for the station (present in
-            # ``pump_plan``) use that head value; otherwise subtract the
-            # maximum head the station could deliver (``max_pumps`` running at
-            # ``DOL``).  This prevents upstream stations from being forced to
-            # supply the entire downstream requirement when later stations could
-            # assist.
-            if pump_plan and i in pump_plan:
-                nop_sel, rpm_sel = pump_plan[i]
-            else:
-                nop_sel = stn.get('max_pumps', 0)
-                rpm_sel = stn.get('DOL', 0)
-            if nop_sel and rpm_sel:
-                tdh_sel, _ = _pump_head(stn, flow, rpm_sel, nop_sel)
-            else:
-                tdh_sel = 0.0
-            req -= tdh_sel
+            rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
+            nop_max = stn.get('max_pumps', 0)
+            tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
+            req -= tdh_max
         return max(req, stn.get('min_residual', 0.0))
 
     return req_entry(idx + 1)
@@ -459,12 +450,11 @@ def solve_pipeline(
         flow_m3s = flow / 3600.0
         area = pi * d_inner ** 2 / 4.0
         if stn.get('is_pump', False):
-            max_p = stn.get('max_pumps', 2)
+            min_p = stn.get('min_pumps', 0)
             if not origin_enforced:
-                min_p = max(1, stn.get('min_pumps', 0))
+                min_p = max(1, min_p)
                 origin_enforced = True
-            else:
-                min_p = 0
+            max_p = stn.get('max_pumps', 2)
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
             fixed_dr = stn.get('fixed_dra_perc', None)
             dra_main_vals = [int(round(fixed_dr))] if (fixed_dr is not None) else _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
@@ -484,7 +474,7 @@ def solve_pipeline(
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
                             })
-            if min_p == 0 and not any(o['nop'] == 0 for o in opts):
+            if not any(o['nop'] == 0 for o in opts):
                 opts.insert(0, {
                     'nop': 0,
                     'rpm': 0,
@@ -548,7 +538,6 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'reach': dra_reach_km,
             'flow': segment_flows[0],
-            'plan': {},
         }
     }
 
@@ -716,7 +705,6 @@ def solve_pipeline(
                             terminal,
                             seg_flows_tmp,
                             KV_list,
-                            pump_plan=state.get('plan', {}),
                         )
                     else:
                         min_req = _downstream_requirement(
@@ -725,7 +713,6 @@ def solve_pipeline(
                             terminal,
                             seg_flows_tmp,
                             KV_list,
-                            pump_plan=state.get('plan', {}),
                         )
                     if residual_next < min_req:
                         continue
@@ -816,9 +803,6 @@ def solve_pipeline(
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
                     flow_next = sc['flow_main'] if sc.get('bypass_next') else flow_total
-                    plan_new = state.get('plan', {}).copy()
-                    if stn_data['is_pump']:
-                        plan_new[stn_data['idx']] = (opt['nop'], opt['rpm'])
                     if (
                         existing is None
                         or new_cost < existing['cost']
@@ -835,16 +819,22 @@ def solve_pipeline(
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'reach': reach_after,
                             'flow': flow_next,
-                            'plan': plan_new,
                         }
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Previously we pruned higher-cost states across residual buckets to
-        # limit combinatorial growth.  For full enumeration, retain every bucket
-        # and keep only the cheapest entry within each bucket (handled above
-        # when populating ``new_states``).
-        states = new_states
+        # Remove dominated states to curb combinatorial growth without
+        # sacrificing optimality.  After sorting by residual head, retain only
+        # states that improve upon the best cost seen so far.  Higher-residual
+        # states are kept when costs tie, preserving global minima while
+        # pruning less promising branches.
+        pruned: dict[float, dict] = {}
+        best_cost = float('inf')
+        for bucket, data in sorted(new_states.items(), key=lambda x: x[1]['residual'], reverse=True):
+            if data['cost'] < best_cost - 1e-9:
+                pruned[bucket] = data
+                best_cost = data['cost']
+        states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
