@@ -464,6 +464,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    max_states: int | None = 5000,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.  This replaces the previous greedy approach and
@@ -980,6 +981,8 @@ def solve_pipeline(
                     del pruned[b2]
                 pruned[bucket] = data
         states = pruned
+        if max_states is not None and len(states) > max_states:
+            states = dict(sorted(states.items(), key=lambda kv: kv[1]['cost'])[:max_states])
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -1049,6 +1052,7 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    max_states: int | None = 5000,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -1060,7 +1064,7 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], batch_acc: list[list[dict]], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
+            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours, max_states=max_states)
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -1183,6 +1187,7 @@ def solve_pipeline_flow_scan(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    max_states: int | None = 5000,
     flow_scan: list[float] | None = None,
 ) -> dict:
     """Evaluate multiple flow targets and return the lowest-cost feasible result.
@@ -1216,6 +1221,7 @@ def solve_pipeline_flow_scan(
             dra_reach_km,
             mop_kgcm2,
             hours,
+            max_states=max_states,
         )
         if res.get('error'):
             continue
