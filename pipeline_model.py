@@ -252,7 +252,7 @@ def _downstream_requirement(
     terminal: dict,
     segment_flows: list[float] | None,
     KV_list: list[float],
-    flow_override: float | None = None,
+    flow_override: float | list[float] | None = None,
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -262,20 +262,27 @@ def _downstream_requirement(
     the downstream pressure requirement and the solver could deem a feasible
     configuration infeasible.  This version performs a backward recursion over
     *all* downstream stations, subtracting the maximum head each pump can
-    deliver and adding line/elevation losses for every segment.  The caller may
-    supply a ``segment_flows`` list giving the flow rate after each station or a
-    ``flow_override`` to apply a constant flow to all segments.  The returned
-    value is therefore the minimum residual needed after station ``idx`` so that
-    the terminal residual head constraint can still be met.
+    deliver and adding line/elevation losses for every segment.
+
+    ``segment_flows`` may supply the flow rate after each station.  When
+    ``flow_override`` is given it takes precedence and may be either a constant
+    flow value or a full per-segment list.  The returned value is therefore the
+    minimum residual needed after station ``idx`` so that the terminal residual
+    head constraint can still be met.
     """
 
     from functools import lru_cache
 
     N = len(stations)
     if flow_override is not None:
-        segment_flows = [flow_override] * (N + 1)
-    elif segment_flows is None:
-        raise ValueError("segment_flows or flow_override must be provided")
+        if isinstance(flow_override, list):
+            flows = flow_override
+        else:
+            flows = [flow_override] * (N + 1)
+    else:
+        if segment_flows is None:
+            raise ValueError("segment_flows or flow_override must be provided")
+        flows = segment_flows
 
     @lru_cache(None)
     def req_entry(i: int) -> float:
@@ -283,10 +290,10 @@ def _downstream_requirement(
             return terminal.get('min_residual', 0.0)
         stn = stations[i]
         kv = KV_list[i]
-        # ``segment_flows`` holds the flow rate *after* each station;
-        # use the downstream value so losses reflect the correct
-        # segment flow between station ``i`` and ``i+1``.
-        flow = segment_flows[i + 1]
+        # ``flows`` holds the flow rate *after* each station; use the downstream
+        # value so losses reflect the correct segment flow between station ``i``
+        # and ``i+1``.
+        flow = flows[i + 1]
         L = stn.get('L', 0.0)
         t = stn.get('t', 0.007)
         if 'D' in stn:
