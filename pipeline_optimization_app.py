@@ -1327,6 +1327,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    scan_flow: bool = True,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1341,7 +1342,12 @@ def solve_pipeline(
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
     try:
-        return pipeline_model.solve_pipeline_flow_scan(
+        solver = (
+            pipeline_model.solve_pipeline_flow_scan
+            if scan_flow
+            else pipeline_model.solve_pipeline
+        )
+        return solver(
             stations,
             terminal,
             FLOW,
@@ -1832,7 +1838,7 @@ if not auto_batch:
                 res = solve_pipeline(
                     stns_run, term_data, FLOW_sched, seg_batches, rho_list,
                     RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), current_vol.to_dict(), dra_reach_km,
-                    st.session_state.get("MOP_kgcm2"), hours=4.0
+                    st.session_state.get("MOP_kgcm2"), hours=4.0, scan_flow=False
                 )
 
                 if res.get("error"):
@@ -2033,6 +2039,7 @@ if not auto_batch:
                         dra_reach_km,
                         st.session_state.get("MOP_kgcm2"),
                         hours=duration_hr,
+                        scan_flow=False,
                     )
                     if res.get("error"):
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
