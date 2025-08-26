@@ -1020,125 +1020,6 @@ def shift_vol_linefill(
     return vol_table, day_plan
 
 
-def build_pressure_profile_figure(
-    res: dict,
-    stations: list[dict],
-    terminal: dict,
-    use_loop: bool = False,
-):
-    """Create a pressure vs. pipeline length Plotly figure.
-
-    When ``use_loop`` is ``True`` the loopline geometry and MAOP values are
-    used; otherwise the mainline data are plotted.  The logic mirrors the
-    graph shown under the performance tab but is factored out so it can be
-    reused for multiple time slices.
-    """
-
-    import plotly.graph_objects as go
-
-    N = len(stations)
-    lengths = [0.0]
-    for stn in stations:
-        L = (
-            stn.get("loopline", {}).get("L", stn.get("L", 0.0))
-            if use_loop
-            else stn.get("L", 0.0)
-        )
-        lengths.append(lengths[-1] + float(L))
-
-    names = [s["name"] for s in stations] + [terminal["name"]]
-    keys = [n.lower().replace(" ", "_") for n in names]
-
-    # Elevation profile (converted to kg/cm²)
-    elev_x, elev_y = [], []
-    for i, stn in enumerate(stations):
-        rho_i = res.get(f"rho_{keys[i]}", 850.0)
-        elev_x.append(lengths[i])
-        if use_loop and stn.get("loopline"):
-            elev_y.append(stn["loopline"].get("elev", stn.get("elev", 0.0)) * rho_i / 10000.0)
-            peaks = stn["loopline"].get("peaks", [])
-        else:
-            elev_y.append(stn.get("elev", 0.0) * rho_i / 10000.0)
-            peaks = stn.get("peaks", [])
-        for pk in sorted(peaks, key=lambda x: x.get("loc")):
-            loc = pk.get("loc") or pk.get("Location (km)") or pk.get("Location")
-            elev_pk = pk.get("elev") or pk.get("Elevation (m)") or pk.get("Elevation")
-            if loc is None or elev_pk is None:
-                continue
-            elev_x.append(lengths[i] + float(loc))
-            elev_y.append(float(elev_pk) * rho_i / 10000.0)
-    rho_term = res.get(f"rho_{keys[-1]}", 850.0)
-    elev_x.append(lengths[-1])
-    elev_y.append(terminal.get("elev", 0.0) * rho_term / 10000.0)
-
-    rh_list = [res.get(f"rh_kgcm2_{k}", 0.0) for k in keys]
-    sdh_list = [res.get(f"sdh_kgcm2_{k}", 0.0) for k in keys]
-
-    maop_key = "maop_loop_kgcm2_" if use_loop else "maop_kgcm2_"
-    maop_val = max(
-        [res.get(f"{maop_key}{k}", res.get(f"maop_kgcm2_{k}", 85.0)) for k in keys[:-1]]
-        + [res.get(f"maop_kgcm2_{keys[-1]}", 85.0)]
-    )
-    maop_x = [lengths[0], lengths[-1]]
-    maop_y = [maop_val, maop_val]
-
-    press_x, press_y = [], []
-    for i in range(N):
-        press_x.extend([lengths[i], lengths[i]])
-        press_y.extend([rh_list[i], sdh_list[i]])
-        press_x.append(lengths[i + 1])
-        press_y.append(rh_list[i + 1])
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=elev_x,
-            y=elev_y,
-            mode="lines",
-            line=dict(dash="dot", color="#2ab240", width=1.5),
-            name="Elevation",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=maop_x,
-            y=maop_y,
-            mode="lines",
-            line=dict(dash="dash", color="#e0115f", width=2),
-            name="MAOP Envelope",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=press_x,
-            y=press_y,
-            mode="lines",
-            line=dict(color="#1846d2", width=2.8),
-            name="Pressure Optimizer",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[lengths[i] for i in range(N + 1)],
-            y=rh_list,
-            mode="markers+text",
-            marker=dict(symbol="circle-open", size=12, color="#222", line=dict(width=2, color="#1846d2")),
-            text=[names[i] for i in range(N + 1)],
-            textposition="top center",
-            name="Residual Head",
-        )
-    )
-
-    fig.update_layout(
-        title=("Loopline" if use_loop else "Mainline") + " Pressure Profile",
-        xaxis_title="Pipeline Length (km)",
-        yaxis_title="Elevation / Pressure (kg/cm²)",
-        height=560,
-        margin=dict(l=35, r=15, t=60, b=35),
-    )
-    return fig
-
-
 # Build a summary dataframe from solver results
 def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: pd.DataFrame | None, drop_unused: bool = True) -> pd.DataFrame:
     """Create station-wise summary table matching the Optimization Results view."""
@@ -1795,6 +1676,7 @@ if not auto_batch:
         hours = [7, 11, 15, 19, 23, 27]
         reports = []
         linefill_snaps = []
+        total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         dra_reach_km = 0.0
 
         current_vol = vol_df.copy()
@@ -1806,7 +1688,11 @@ if not auto_batch:
                 future_vol, future_plan = shift_vol_linefill(
                     current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
                 )
-                kv_list, rho_list = kv_rho_from_vol(current_vol)
+                # Determine worst-case fluid properties over this 4h window
+                kv_now, rho_now = kv_rho_from_vol(current_vol)
+                kv_next, rho_next = kv_rho_from_vol(future_vol)
+                kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
+                rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
                 stns_run = copy.deepcopy(stations_base)
 
@@ -1875,20 +1761,6 @@ if not auto_batch:
             lf_all.to_csv(index=False, float_format="%.2f"),
             file_name="linefill_snapshots.csv",
         )
-
-        has_loop = any(stn.get('loopline') for stn in stations_base)
-        st.markdown("### Pressure vs Pipeline Length Profiles")
-        st.markdown("#### Mainline")
-        for rec in reports:
-            fig = build_pressure_profile_figure(rec["result"], stations_base, term_data, use_loop=False)
-            fig.update_layout(title=f"Mainline Pressure Profile @ {rec['time']:02d}:00")
-            st.plotly_chart(fig, use_container_width=True, key=f"press_main_{rec['time']}")
-        if has_loop:
-            st.markdown("#### Loopline")
-            for rec in reports:
-                fig = build_pressure_profile_figure(rec["result"], stations_base, term_data, use_loop=True)
-                fig.update_layout(title=f"Loopline Pressure Profile @ {rec['time']:02d}:00")
-                st.plotly_chart(fig, use_container_width=True, key=f"press_loop_{rec['time']}")
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
