@@ -44,7 +44,7 @@ DRA_STEP = 5
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 1
-V_MIN = 0.25
+V_MIN = 0.5
 V_MAX = 2.5
 
 # Simple memoisation caches used to avoid repeatedly solving the same
@@ -583,16 +583,13 @@ def solve_pipeline(
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'reach': dra_reach_km,
-            'force_bypass': False,
         }
     }
 
     for stn_data in station_opts:
         new_states: dict[float, dict] = {}
         for state in states.values():
-            force = state.get('force_bypass', False)
-            opts_iter = [o for o in stn_data['options'] if (not force or o['nop'] == 0)]
-            for opt in opts_iter:
+            for opt in stn_data['options']:
                 reach_prev = state.get('reach', 0.0)
                 reach_after = reach_prev
                 if opt['dra_main'] > 0 or opt['dra_loop'] > 0:
@@ -664,26 +661,17 @@ def solve_pipeline(
                         'bypass_next': False,
                         'min_req': stn_data['min_residual_next'],
                     })
-                    # Bypass scenario: send all flow via loopline and bypass next pump
-                    hl_bypass, v_b, Re_b, f_b = _segment_hydraulics(
-                        stn_data['flow'],
-                        loop['L'],
-                        loop['d_inner'],
-                        loop['rough'],
-                        stn_data['kv'],
-                        eff_dra_loop,
-                        dra_len_loop,
-                    )
+                    # Bypass scenario: split flow and bypass next station's pumps
                     scenarios.append({
-                        'head_loss': hl_bypass,
-                        'v': 0.0,
-                        'Re': 0.0,
-                        'f': 0.0,
-                        'flow_main': 0.0,
-                        'v_loop': v_b,
-                        'Re_loop': Re_b,
-                        'f_loop': f_b,
-                        'flow_loop': stn_data['flow'],
+                        'head_loss': hl_par,
+                        'v': v_m,
+                        'Re': Re_m,
+                        'f': f_m,
+                        'flow_main': q_main,
+                        'v_loop': v_l,
+                        'Re_loop': Re_l,
+                        'f_loop': f_l,
+                        'flow_loop': q_loop,
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': True,
@@ -800,7 +788,6 @@ def solve_pipeline(
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'reach': reach_after,
-                            'force_bypass': sc.get('bypass_next', False),
                         }
 
         if not new_states:
