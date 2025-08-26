@@ -1328,6 +1328,7 @@ def solve_pipeline(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     scan_flow: bool = True,
+    max_states: int = 1000,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1361,6 +1362,7 @@ def solve_pipeline(
             dra_reach_km,
             mop_kgcm2,
             hours,
+            max_states=max_states,
         )
         if result.get("error") and not scan_flow:
             result = pipeline_model.solve_pipeline_flow_scan(
@@ -1377,6 +1379,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                max_states=max_states,
             )
         return result
     except Exception as exc:  # pragma: no cover - diagnostic path
