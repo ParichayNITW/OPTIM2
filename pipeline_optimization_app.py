@@ -1347,7 +1347,7 @@ def solve_pipeline(
             if scan_flow
             else pipeline_model.solve_pipeline
         )
-        return solver(
+        result = solver(
             stations,
             terminal,
             FLOW,
@@ -1362,6 +1362,23 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
         )
+        if result.get("error") and not scan_flow:
+            result = pipeline_model.solve_pipeline_flow_scan(
+                stations,
+                terminal,
+                FLOW,
+                seg_batches,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+            )
+        return result
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
 
