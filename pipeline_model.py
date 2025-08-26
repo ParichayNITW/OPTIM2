@@ -46,15 +46,6 @@ DRA_STEP = 5
 RESIDUAL_ROUND = 1
 V_MIN = 0.15
 V_MAX = 3.0
-# Maximum number of dynamic-programming states retained per station.  Limiting
-# the state space prevents combinatorial explosion and speeds up solves at the
-# expense of a small loss in optimality when many near-equivalent states exist.
-STATE_LIMIT = 100
-
-# Allow states more expensive than the best in a bucket by at most this
-# fraction.  A tighter margin reduces the search space and speeds up the solve
-# at the risk of missing slightly cheaper combinations.
-BUCKET_COST_MARGIN = 0.05
 
 # Simple memoisation caches used to avoid repeatedly solving the same
 # hydraulic sub-problems when many states evaluate identical conditions.
@@ -137,22 +128,13 @@ def _parallel_segment_hydraulics(
     main: dict,
     loop: dict,
     batches: list[dict],
-    pump_func=None,
-) -> tuple[
-    float,
-    float,
-    tuple[float, float, float, float],
-    tuple[float, float, float, float],
-]:
+) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
     """Split ``flow_m3h`` between ``main`` and ``loop`` so both see the same head loss.
 
     ``main`` and ``loop`` are dictionaries with keys ``L``, ``d_inner``, ``rough``,
     ``dra`` and ``dra_len`` describing each line.  ``batches`` describes the
-    fluid slices within the segment.  If ``pump_func`` is provided it should be a
-    callable returning the pump head added to the mainline for a given mainline
-    flow (m³/h).  The function returns the head loss along the mainline path,
-    the pump head applied (0 if none) and the (velocity, Re, f, flow) tuples for
-    each path.
+    fluid slices within the segment. The function returns the common head loss
+    and the (velocity, Re, f, flow) tuples for each path.
     """
 
     def slice_batches(parts: list[dict], length: float) -> list[dict]:
@@ -169,66 +151,29 @@ def _parallel_segment_hydraulics(
     overlap = min(main['L'], loop['L'])
     batches_overlap = slice_batches(batches, overlap)
 
-    def _precompute_coeffs(data: dict, parts: list[dict]) -> dict:
-        """Return pre-computed coefficients for fast head-loss evaluation."""
-        g = 9.81
-        area = pi * data['d_inner'] ** 2 / 4.0
-        v_coeff = 1.0 / (3600.0 * area) if area > 0 else 0.0
-        v2_coeff = (v_coeff ** 2) / (2 * g) if v_coeff > 0 else 0.0
-        rough_const = (
-            data['rough'] / data['d_inner'] / 3.7 if data['d_inner'] > 0 else 0.0
-        )
-        len_coeffs: list[float] = []
-        re_coeffs: list[float] = []
-        remaining = data.get('dra_len')
-        for part in parts:
-            if remaining is None:
-                use = part['len_km']
-            else:
-                use = min(remaining, part['len_km'])
-                remaining -= use
-            eff_len = (
-                use * (1 - data.get('dra', 0.0) / 100.0)
-                + (part['len_km'] - use)
-            )
-            len_coeffs.append(
-                (1000.0 / data['d_inner']) * eff_len if data['d_inner'] > 0 else 0.0
-            )
-            re_coeffs.append(
-                v_coeff * data['d_inner'] / (part['kv'] * 1e-6)
-                if part['kv'] > 0
-                else 0.0
-            )
-        return {
-            'v_coeff': v_coeff,
-            'v2_coeff': v2_coeff,
-            'rough_const': rough_const,
-            'len_coeffs': len_coeffs,
-            're_coeffs': re_coeffs,
-        }
-
-    def _calc_with_coeffs(line_flow: float, coeffs: dict) -> tuple[float, float, float, float]:
-        flow_sq = line_flow ** 2
-        v = line_flow * coeffs['v_coeff']
-        factor = flow_sq * coeffs['v2_coeff']
+    def calc(line_flow: float, data: dict, parts: list[dict]) -> tuple[float, float, float, float]:
         total_hl = 0.0
-        Re_ret = f_ret = 0.0
+        v_ret = Re_ret = f_ret = 0.0
+        remaining = data.get('dra_len')
         first = True
-        for len_coeff, re_coeff in zip(coeffs['len_coeffs'], coeffs['re_coeffs']):
-            Re = line_flow * re_coeff
-            if Re > 0:
-                if Re < 4000:
-                    f = 64.0 / Re
-                else:
-                    arg = coeffs['rough_const'] + 5.74 / (Re ** 0.9)
-                    f = 0.25 / (log10(arg) ** 2) if arg > 0 else 0.0
-            else:
-                f = 0.0
-            total_hl += f * len_coeff * factor
+        for part in parts:
+            use = min(remaining, part['len_km']) if remaining is not None else None
+            hl, v, Re, f = _segment_hydraulics(
+                line_flow,
+                part['len_km'],
+                data['d_inner'],
+                data['rough'],
+                part['kv'],
+                data.get('dra', 0.0),
+                use,
+            )
+            total_hl += hl
             if first:
-                Re_ret, f_ret = Re, f
+                v_ret, Re_ret, f_ret = v, Re, f
                 first = False
-        return total_hl, v, Re_ret, f_ret
+            if remaining is not None:
+                remaining -= use or 0.0
+        return total_hl, v_ret, Re_ret, f_ret
 
     main_overlap = main.copy()
     if main.get('dra_len') is None:
@@ -243,72 +188,34 @@ def _parallel_segment_hydraulics(
         loop_overlap['dra_len'] = min(loop['dra_len'], overlap)
     loop_overlap['L'] = overlap
 
-    coeff_main = _precompute_coeffs(main_overlap, batches_overlap)
-    coeff_loop = _precompute_coeffs(loop_overlap, batches_overlap)
-
-    if pump_func is None:
-        key = (
-            round(flow_m3h, 3),
-            round(main['L'], 3),
-            round(main['d_inner'], 5),
-            round(main['rough'], 6),
-            round(main.get('dra', 0.0), 1),
-            round(-1.0 if main.get('dra_len') is None else main.get('dra_len'), 3),
-            round(loop['L'], 3),
-            round(loop['d_inner'], 5),
-            round(loop['rough'], 6),
-            round(loop.get('dra', 0.0), 1),
-            round(-1.0 if loop.get('dra_len') is None else loop.get('dra_len'), 3),
-            tuple((round(p['len_km'], 3), round(p['kv'], 6)) for p in batches_overlap),
-        )
-        if key in _PARALLEL_CACHE:
-            hl_overlap, pump_h, main_stats, loop_stats, _, _ = _PARALLEL_CACHE[key]
-        else:
-            lo, hi = 0.0, flow_m3h
-            best = None
-            for _ in range(25):
-                mid = (lo + hi) / 2.0
-                q_loop = mid
-                q_main = flow_m3h - q_loop
-                hl_main, v_main, Re_main, f_main = _calc_with_coeffs(q_main, coeff_main)
-                hl_loop, v_loop, Re_loop, f_loop = _calc_with_coeffs(q_loop, coeff_loop)
-                pump_h = 0.0
-                diff = hl_main - hl_loop
-                best = (
-                    hl_main,
-                    pump_h,
-                    (v_main, Re_main, f_main, q_main),
-                    (v_loop, Re_loop, f_loop, q_loop),
-                )
-                if abs(diff) < 1e-6:
-                    break
-                if diff > 0:
-                    lo = mid
-                else:
-                    hi = mid
-            hl_overlap, pump_h, main_stats, loop_stats = best
-            _PARALLEL_CACHE[key] = (
-                hl_overlap,
-                pump_h,
-                main_stats,
-                loop_stats,
-                coeff_main,
-                coeff_loop,
-            )
+    key = (
+        round(flow_m3h, 3),
+        round(main['L'], 3),
+        round(main['d_inner'], 5),
+        round(main['rough'], 6),
+        round(main.get('dra', 0.0), 1),
+        round(-1.0 if main.get('dra_len') is None else main.get('dra_len'), 3),
+        round(loop['L'], 3),
+        round(loop['d_inner'], 5),
+        round(loop['rough'], 6),
+        round(loop.get('dra', 0.0), 1),
+        round(-1.0 if loop.get('dra_len') is None else loop.get('dra_len'), 3),
+        tuple((round(p['len_km'], 3), round(p['kv'], 6)) for p in batches_overlap),
+    )
+    if key in _PARALLEL_CACHE:
+        hl_overlap, main_stats, loop_stats = _PARALLEL_CACHE[key]
     else:
         lo, hi = 0.0, flow_m3h
         best = None
-        for _ in range(25):
+        for _ in range(20):
             mid = (lo + hi) / 2.0
             q_loop = mid
             q_main = flow_m3h - q_loop
-            hl_main, v_main, Re_main, f_main = _calc_with_coeffs(q_main, coeff_main)
-            hl_loop, v_loop, Re_loop, f_loop = _calc_with_coeffs(q_loop, coeff_loop)
-            pump_h = pump_func(q_main)
-            diff = (hl_main - pump_h) - hl_loop
+            hl_main, v_main, Re_main, f_main = calc(q_main, main_overlap, batches_overlap)
+            hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop_overlap, batches_overlap)
+            diff = hl_main - hl_loop
             best = (
                 hl_main,
-                pump_h,
                 (v_main, Re_main, f_main, q_main),
                 (v_loop, Re_loop, f_loop, q_loop),
             )
@@ -318,7 +225,8 @@ def _parallel_segment_hydraulics(
                 lo = mid
             else:
                 hi = mid
-        hl_overlap, pump_h, main_stats, loop_stats = best
+        hl_overlap, main_stats, loop_stats = best
+        _PARALLEL_CACHE[key] = best
 
     total_hl = hl_overlap
     if main['L'] > overlap:
@@ -342,7 +250,7 @@ def _parallel_segment_hydraulics(
             if remaining_dra is not None:
                 remaining_dra -= use or 0.0
 
-    return total_hl, pump_h, main_stats, loop_stats
+    return total_hl, main_stats, loop_stats
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
@@ -465,7 +373,7 @@ def _downstream_requirement(
                 t_loop = loop.get('t', t)
             rough_loop = loop.get('rough', rough)
             dra_loop = loop.get('max_dr', 0.0)
-            hl_par, _, _, _ = _parallel_segment_hydraulics(
+            hl_par, _, _ = _parallel_segment_hydraulics(
                 flow,
                 {
                     'L': L,
@@ -556,7 +464,6 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    bucket_cost_margin: float = BUCKET_COST_MARGIN,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.  This replaces the previous greedy approach and
@@ -825,8 +732,6 @@ def solve_pipeline(
                     'maop_loop': 0.0,
                     'maop_loop_kg': 0.0,
                     'mode': 'No Bypass',
-                    'power_cost': opt['power_cost'],
-                    'tdh': opt['tdh'],
                 })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
@@ -834,7 +739,7 @@ def solve_pipeline(
                     eff_dra_loop = (
                         get_dr_for_ppm(stn_data['kv_first'], ppm_loop) if dra_len_loop > 0 else 0.0
                     )
-                    hl_par, _, main_stats, loop_stats = _parallel_segment_hydraulics(
+                    hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                         stn_data['flow'],
                         {
                             'L': stn_data['L'],
@@ -867,87 +772,51 @@ def solve_pipeline(
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'mode': 'No Bypass',
-                        'power_cost': opt['power_cost'],
-                        'tdh': opt['tdh'],
                     })
-                    # Scenario where loopline bypasses the station (pumps may operate on mainline only)
-                    hl_bp, pump_h_bp, main_bp, loop_bp = _parallel_segment_hydraulics(
-                        stn_data['flow'],
-                        {
-                            'L': stn_data['L'],
-                            'd_inner': stn_data['d_inner'],
-                            'rough': stn_data['rough'],
-                            'dra': eff_dra_main,
-                            'dra_len': dra_len_main,
-                        },
-                        {
-                            'L': loop['L'],
-                            'd_inner': loop['d_inner'],
-                            'rough': loop['rough'],
-                            'dra': eff_dra_loop,
-                            'dra_len': dra_len_loop,
-                        },
-                        stn_data['batches'],
-                        pump_func=(
-                            (lambda q: _pump_head(stn_data, q, opt['rpm'], opt['nop'])[0])
-                            if opt['nop'] > 0 and opt['rpm'] > 0
-                            else None
-                        ),
-                    )
-                    v_m_bp, Re_m_bp, f_m_bp, q_main_bp = main_bp
-                    v_l_bp, Re_l_bp, f_l_bp, q_loop_bp = loop_bp
-                    power_cost_bp = 0.0
-                    tdh_bp = pump_h_bp
-                    if opt['nop'] > 0 and opt['rpm'] > 0 and q_main_bp > 0:
-                        tdh_bp, eff_bp = _pump_head(stn_data, q_main_bp, opt['rpm'], opt['nop'])
-                        eff_bp = max(eff_bp, 1e-6)
-                        pump_bkw_total = (
-                            stn_data['rho'] * q_main_bp * 9.81 * tdh_bp
-                        ) / (3600.0 * 1000.0 * (eff_bp / 100.0))
-                        if stn_data.get('power_type', 'Grid') == 'Diesel':
-                            prime_kw_total = pump_bkw_total / 0.98
-                            mode = stn_data.get('sfc_mode', 'manual')
-                            if mode == 'manual':
-                                sfc_val = stn_data.get('sfc', 0.0)
-                            elif mode == 'iso':
-                                sfc_val = _compute_iso_sfc(
-                                    stn_data,
-                                    opt['rpm'],
-                                    pump_bkw_total,
-                                    stn_data.get('DOL', opt['rpm']),
-                                    stn_data.get('elev', 0.0),
-                                    Ambient_temp,
-                                )
-                            else:
-                                sfc_val = 0.0
-                            fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                            power_cost_bp = prime_kw_total * hours * fuel_per_kWh * Price_HSD
-                        else:
-                            prime_kw_total = pump_bkw_total / 0.95
-                            rate = stn_data.get('rate', 0.0)
-                            power_cost_bp = prime_kw_total * hours * rate
+                    # Scenario where loopline bypasses the station entirely
+                    hl_loop_only = 0.0
+                    v_lp = Re_lp = f_lp = 0.0
+                    remaining_loop = dra_len_loop if eff_dra_loop > 0 else None
+                    first_lp = True
+                    for part in stn_data['batches']:
+                        use = min(remaining_loop, part['len_km']) if remaining_loop is not None else None
+                        hl_part, v_part, Re_part, f_part = _segment_hydraulics(
+                            stn_data['flow'],
+                            part['len_km'],
+                            loop['d_inner'],
+                            loop['rough'],
+                            part['kv'],
+                            eff_dra_loop,
+                            use,
+                        )
+                        hl_loop_only += hl_part
+                        if first_lp:
+                            v_lp, Re_lp, f_lp = v_part, Re_part, f_part
+                            first_lp = False
+                        if remaining_loop is not None:
+                            remaining_loop -= use or 0.0
                     scenarios.append({
-                        'head_loss': hl_bp,
-                        'v': v_m_bp if q_main_bp > 0 else 0.0,
-                        'Re': Re_m_bp if q_main_bp > 0 else 0.0,
-                        'f': f_m_bp if q_main_bp > 0 else 0.0,
-                        'flow_main': q_main_bp,
-                        'v_loop': v_l_bp,
-                        'Re_loop': Re_l_bp,
-                        'f_loop': f_l_bp,
-                        'flow_loop': q_loop_bp,
+                        'head_loss': hl_loop_only,
+                        'v': 0.0,
+                        'Re': 0.0,
+                        'f': 0.0,
+                        'flow_main': 0.0,
+                        'v_loop': v_lp,
+                        'Re_loop': Re_lp,
+                        'f_loop': f_lp,
+                        'flow_loop': stn_data['flow'],
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'mode': 'Bypass',
-                        'power_cost': power_cost_bp,
-                        'tdh': tdh_bp,
                     })
                 for sc in scenarios:
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
-                    sdh = state['residual'] + sc.get('tdh', 0.0)
+                    sdh = state['residual'] + opt['tdh']
+                    if sc.get('mode') == 'Bypass':
+                        sdh = state['residual']
                     if sdh > stn_data['maop_head'] or (sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']):
                         continue
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
@@ -958,7 +827,7 @@ def solve_pipeline(
                     dra_cost = inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     if sc['flow_loop'] > 0:
                         dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
-                    power_cost = sc.get('power_cost', 0.0)
+                    power_cost = opt['power_cost'] if sc['flow_main'] > 0 else 0.0
                     total_cost = power_cost + dra_cost
                     flow_total = sc['flow_main'] + sc['flow_loop']
                     ppm_next = (
@@ -1052,8 +921,6 @@ def solve_pipeline(
                     )
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
-                    if existing is not None and new_cost > existing['cost'] * (1 + bucket_cost_margin):
-                        continue
                     if (
                         existing is None
                         or new_cost < existing['cost']
@@ -1113,8 +980,6 @@ def solve_pipeline(
                     del pruned[b2]
                 pruned[bucket] = data
         states = pruned
-        if len(states) > STATE_LIMIT:
-            states = dict(sorted(states.items(), key=lambda item: item[1]['cost'])[:STATE_LIMIT])
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -1184,7 +1049,6 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    bucket_cost_margin: float = BUCKET_COST_MARGIN,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -1196,7 +1060,7 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], batch_acc: list[list[dict]], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours, bucket_cost_margin)
+            result = solve_pipeline(stn_acc, terminal, FLOW, batch_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -1320,7 +1184,6 @@ def solve_pipeline_flow_scan(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     flow_scan: list[float] | None = None,
-    bucket_cost_margin: float = BUCKET_COST_MARGIN,
 ) -> dict:
     """Evaluate multiple flow targets and return the lowest-cost feasible result.
 
@@ -1353,7 +1216,6 @@ def solve_pipeline_flow_scan(
             dra_reach_km,
             mop_kgcm2,
             hours,
-            bucket_cost_margin=bucket_cost_margin,
         )
         if res.get('error'):
             continue
