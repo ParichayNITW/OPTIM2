@@ -7,8 +7,7 @@ Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
 from __future__ import annotations
 
 import os
-from collections import OrderedDict
-from typing import Dict, Tuple, MutableMapping
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,62 +30,22 @@ DRA_CSV_FILES: Dict[float, str] = {
     40: "40 cst.csv",
 }
 
-# Cache of loaded drag-reducer curves.  Curves are loaded on demand via
-# ``load_curve`` below.  We use an ``OrderedDict`` so we can enforce a small
-# LRU-style cache and avoid unbounded growth if many viscosities are requested.
-DRA_CURVE_DATA: OrderedDict[float, pd.DataFrame | None] = OrderedDict()
-
-
-def load_curve(
-    visc: float,
-    cache: MutableMapping[float, pd.DataFrame | None] | None = None,
-    max_size: int = 8,
-) -> pd.DataFrame | None:
-    """Return DataFrame for ``visc`` loading and caching it on demand.
-
-    Parameters
-    ----------
-    visc:
-        Viscosity in cSt for which to load the curve.
-    cache:
-        Mapping used to store cached curves.  Defaults to the module-level
-        ``DRA_CURVE_DATA``.  If ``cache`` is an ``OrderedDict`` an LRU policy is
-        applied keeping the size below ``max_size``.
-    max_size:
-        Maximum number of curves to retain in ``cache`` when it is an
-        ``OrderedDict``.
-    """
-
-    cache = DRA_CURVE_DATA if cache is None else cache
-    visc = float(visc)
-
-    if visc in cache:
-        if isinstance(cache, OrderedDict):
-            cache.move_to_end(visc)
-        return cache[visc]
-
-    df: pd.DataFrame | None = None
-    fname = DRA_CSV_FILES.get(visc)
-    if fname and os.path.exists(fname):
+# Load the drag-reducer curves lazily at import time
+DRA_CURVE_DATA: Dict[float, pd.DataFrame | None] = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
         try:
-            tmp = pd.read_csv(fname)
-            if "%Drag Reduction" in tmp.columns and "PPM" in tmp.columns:
-                df = (
-                    tmp[["%Drag Reduction", "PPM"]]
-                    .dropna()
-                    .sort_values("%Drag Reduction")
-                    .reset_index(drop=True)
-                )
+            df = pd.read_csv(fname)
+            # Ensure required columns exist
+            if "%Drag Reduction" in df.columns and "PPM" in df.columns:
+                df = df[["%Drag Reduction", "PPM"]].dropna().sort_values("%Drag Reduction")
+                DRA_CURVE_DATA[cst] = df.reset_index(drop=True)
+            else:
+                DRA_CURVE_DATA[cst] = None
         except Exception:
-            df = None
-
-    cache[visc] = df
-    if isinstance(cache, OrderedDict):
-        cache.move_to_end(visc)
-        while len(cache) > max_size:
-            cache.popitem(last=False)
-
-    return df
+            DRA_CURVE_DATA[cst] = None
+    else:
+        DRA_CURVE_DATA[cst] = None
 
 
 def _ppm_from_df(df: pd.DataFrame, dr: float) -> float:
@@ -112,47 +71,41 @@ def _dr_from_df(df: pd.DataFrame, ppm: float) -> float:
     return float(np.interp(ppm, y, x))
 
 
-def _nearest_bounds(visc: float) -> Tuple[float, float]:
-    """Return the viscosities bounding ``visc`` with available CSV files."""
-    available = sorted(
-        c for c, fname in DRA_CSV_FILES.items() if os.path.exists(fname)
-    )
-    if not available:
+def _nearest_bounds(visc: float, data: Dict[float, pd.DataFrame | None]) -> Tuple[float, float]:
+    cst_list = sorted([c for c in data.keys() if data[c] is not None])
+    if not cst_list:
         return (visc, visc)
-    if visc <= available[0]:
-        return (available[0], available[0])
-    if visc >= available[-1]:
-        return (available[-1], available[-1])
-    lower = max(c for c in available if c <= visc)
-    upper = min(c for c in available if c >= visc)
+    if visc <= cst_list[0]:
+        return (cst_list[0], cst_list[0])
+    if visc >= cst_list[-1]:
+        return (cst_list[-1], cst_list[-1])
+    lower = max(c for c in cst_list if c <= visc)
+    upper = min(c for c in cst_list if c >= visc)
     return (lower, upper)
 
 
 def get_ppm_for_dr(
     visc: float,
     dr: float,
-    dra_curve_data: MutableMapping[float, pd.DataFrame | None] | None = None,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = DRA_CURVE_DATA,
 ) -> float:
     """Interpolate PPM for a given drag reduction and viscosity.
 
     Returns the PPM value rounded to the nearest 0.5.
     """
-    cache = DRA_CURVE_DATA if dra_curve_data is None else dra_curve_data
     visc = float(visc)
-    lower, upper = _nearest_bounds(visc)
-    df_lower = load_curve(lower, cache)
-    if df_lower is None:
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
         return 0.0
 
     def round_ppm(val: float, step: float = 0.5) -> float:
         return round(val / step) * step
 
     if lower == upper:
-        return round_ppm(_ppm_from_df(df_lower, dr))
+        return round_ppm(_ppm_from_df(dra_curve_data[lower], dr))
 
-    df_upper = load_curve(upper, cache)
-    if df_upper is None:
-        return 0.0
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
     ppm_lower = _ppm_from_df(df_lower, dr)
     ppm_upper = _ppm_from_df(df_upper, dr)
     ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
@@ -162,22 +115,19 @@ def get_ppm_for_dr(
 def get_dr_for_ppm(
     visc: float,
     ppm: float,
-    dra_curve_data: MutableMapping[float, pd.DataFrame | None] | None = None,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = DRA_CURVE_DATA,
 ) -> float:
     """Inverse: interpolate %Drag Reduction for a given PPM and viscosity."""
-    cache = DRA_CURVE_DATA if dra_curve_data is None else dra_curve_data
     visc = float(visc)
-    lower, upper = _nearest_bounds(visc)
-    df_lower = load_curve(lower, cache)
-    if df_lower is None:
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
         return 0.0
 
     if lower == upper:
-        return _dr_from_df(df_lower, ppm)
+        return _dr_from_df(dra_curve_data[lower], ppm)
 
-    df_upper = load_curve(upper, cache)
-    if df_upper is None:
-        return 0.0
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
     dr_lower = _dr_from_df(df_lower, ppm)
     dr_upper = _dr_from_df(df_upper, ppm)
     dr_interp = np.interp(visc, [lower, upper], [dr_lower, dr_upper])
@@ -187,7 +137,6 @@ def get_dr_for_ppm(
 __all__ = [
     "DRA_CSV_FILES",
     "DRA_CURVE_DATA",
-    "load_curve",
     "get_ppm_for_dr",
     "get_dr_for_ppm",
 ]
