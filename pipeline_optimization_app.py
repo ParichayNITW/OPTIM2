@@ -198,12 +198,27 @@ def restore_case_dict(loaded_data):
         head_data = loaded_data.get(f"head_data_{i+1}", None)
         eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
         peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+        loop_peak_data = loaded_data.get(f"loop_peak_data_{i+1}", None)
         if head_data is not None:
-            st.session_state[f"head_data_{i+1}"] = pd.DataFrame(head_data)
+            df_head = pd.DataFrame(head_data)
+            st.session_state[f"head_data_{i+1}"] = df_head
+            st.session_state['stations'][i]['head_data'] = head_data
         if eff_data is not None:
-            st.session_state[f"eff_data_{i+1}"] = pd.DataFrame(eff_data)
+            df_eff = pd.DataFrame(eff_data)
+            st.session_state[f"eff_data_{i+1}"] = df_eff
+            st.session_state['stations'][i]['eff_data'] = eff_data
         if peak_data is not None:
-            st.session_state[f"peak_data_{i+1}"] = pd.DataFrame(peak_data)
+            df_peak = pd.DataFrame(peak_data)
+            st.session_state[f"peak_data_{i+1}"] = df_peak
+            st.session_state['stations'][i]['peak_data'] = peak_data
+        if loop_peak_data is not None:
+            df_lpeak = pd.DataFrame(loop_peak_data)
+            st.session_state[f"loop_peak_data_{i+1}"] = df_lpeak
+            st.session_state['stations'][i].setdefault('loopline', {})['peaks'] = loop_peak_data
+        else:
+            loop_peaks = st.session_state['stations'][i].get('loopline', {}).get('peaks')
+            if loop_peaks is not None:
+                st.session_state[f"loop_peak_data_{i+1}"] = pd.DataFrame(loop_peaks)
 
     # Handle pump type data for originating station
     headA = loaded_data.get("head_data_1A", None)
@@ -213,17 +228,35 @@ def restore_case_dict(loaded_data):
     effB  = loaded_data.get("eff_data_1B", None)
     peakB = loaded_data.get("peak_data_1B", None)
     if headA is not None:
-        st.session_state["head_data_1A"] = pd.DataFrame(headA)
+        df_headA = pd.DataFrame(headA)
+        st.session_state["head_data_1A"] = df_headA
+        if st.session_state['stations']:
+            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('A', {})['head_data'] = headA
     if effA is not None:
-        st.session_state["eff_data_1A"] = pd.DataFrame(effA)
+        df_effA = pd.DataFrame(effA)
+        st.session_state["eff_data_1A"] = df_effA
+        if st.session_state['stations']:
+            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('A', {})['eff_data'] = effA
     if peakA is not None:
-        st.session_state["peak_data_1A"] = pd.DataFrame(peakA)
+        df_peakA = pd.DataFrame(peakA)
+        st.session_state["peak_data_1A"] = df_peakA
+        if st.session_state['stations']:
+            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('A', {})['peak_data'] = peakA
     if headB is not None:
-        st.session_state["head_data_1B"] = pd.DataFrame(headB)
+        df_headB = pd.DataFrame(headB)
+        st.session_state["head_data_1B"] = df_headB
+        if st.session_state['stations']:
+            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['head_data'] = headB
     if effB is not None:
-        st.session_state["eff_data_1B"] = pd.DataFrame(effB)
+        df_effB = pd.DataFrame(effB)
+        st.session_state["eff_data_1B"] = df_effB
+        if st.session_state['stations']:
+            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['eff_data'] = effB
     if peakB is not None:
-        st.session_state["peak_data_1B"] = pd.DataFrame(peakB)
+        df_peakB = pd.DataFrame(peakB)
+        st.session_state["peak_data_1B"] = df_peakB
+        if st.session_state['stations']:
+            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['peak_data'] = peakB
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -492,6 +525,20 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
                 loop['max_dr'] = st.number_input("Max Drag Reduction (%)", value=loop.get('max_dr', 0.0), key=f"loopmdr{idx}")
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
+
+            loop_peak_key = f"loop_peak_data_{idx}"
+            if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
+                st.session_state[loop_peak_key] = pd.DataFrame({
+                    "Location (km)": [loop.get('L', stn['L'])/2.0],
+                    "Elevation (m)": [loop.get('elev', stn.get('elev',0.0)) + 100.0]
+                })
+            loop_peak_df = st.data_editor(
+                st.session_state[loop_peak_key],
+                num_rows="dynamic",
+                key=f"{loop_peak_key}_editor",
+            )
+            st.session_state[loop_peak_key] = loop_peak_df
+            loop['peaks'] = loop_peak_df.to_dict(orient="records")
         else:
             stn.pop('loopline', None)
 
@@ -702,6 +749,10 @@ def get_full_case_dict():
                     Ee = dfe.iloc[:, 1].values
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+                if isinstance(dfh, pd.DataFrame):
+                    stn['head_data'] = dfh.to_dict(orient="records")
+                if isinstance(dfe, pd.DataFrame):
+                    stn['eff_data'] = dfe.to_dict(orient="records")
 
     flow_df = st.session_state.get('proj_flow_df', pd.DataFrame())
     if isinstance(flow_df, pd.DataFrame) and len(flow_df):
@@ -788,6 +839,14 @@ def get_full_case_dict():
                 else first_station.get('pump_types', {}).get(ptype, {}).get('peak_data')
             )
             for ptype in ['A', 'B']
+        },
+        **{
+            f"loop_peak_data_{i+1}": (
+                st.session_state.get(f"loop_peak_data_{i+1}").to_dict(orient="records")
+                if isinstance(st.session_state.get(f"loop_peak_data_{i+1}"), pd.DataFrame)
+                else stations[i].get('loopline', {}).get('peaks')
+            )
+            for i in range(len(stations))
         }
     }
 
