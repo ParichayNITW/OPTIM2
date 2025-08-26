@@ -336,10 +336,23 @@ def _downstream_requirement(
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
+            # Assume downstream stations can contribute head.  When a specific
+            # pump selection has already been made for the station (present in
+            # ``pump_plan``) use that head value; otherwise subtract the
+            # maximum head the station could deliver (``max_pumps`` running at
+            # ``DOL``).  This prevents upstream stations from being forced to
+            # supply the entire downstream requirement when later stations could
+            # assist.
             if pump_plan and i in pump_plan:
                 nop_sel, rpm_sel = pump_plan[i]
-                tdh_sel, _ = _pump_head(stn, flow, rpm_sel, nop_sel) if rpm_sel and nop_sel else (0.0, 0.0)
-                req -= tdh_sel
+            else:
+                nop_sel = stn.get('max_pumps', 0)
+                rpm_sel = stn.get('DOL', 0)
+            if nop_sel and rpm_sel:
+                tdh_sel, _ = _pump_head(stn, flow, rpm_sel, nop_sel)
+            else:
+                tdh_sel = 0.0
+            req -= tdh_sel
         return max(req, stn.get('min_residual', 0.0))
 
     return req_entry(idx + 1)
@@ -827,18 +840,11 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Remove dominated states to curb combinatorial growth without
-        # sacrificing optimality.  After sorting by residual head, retain only
-        # states that improve upon the best cost seen so far.  Higher-residual
-        # states are kept when costs tie, preserving global minima while
-        # pruning less promising branches.
-        pruned: dict[float, dict] = {}
-        best_cost = float('inf')
-        for bucket, data in sorted(new_states.items(), key=lambda x: x[1]['residual'], reverse=True):
-            if data['cost'] < best_cost - 1e-9:
-                pruned[bucket] = data
-                best_cost = data['cost']
-        states = pruned
+        # Previously we pruned higher-cost states across residual buckets to
+        # limit combinatorial growth.  For full enumeration, retain every bucket
+        # and keep only the cheapest entry within each bucket (handled above
+        # when populating ``new_states``).
+        states = new_states
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
