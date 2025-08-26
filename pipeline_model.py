@@ -250,8 +250,9 @@ def _downstream_requirement(
     stations: list[dict],
     idx: int,
     terminal: dict,
-    segment_flows: list[float],
+    segment_flows: list[float] | None,
     KV_list: list[float],
+    flow_override: float | None = None,
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -261,7 +262,9 @@ def _downstream_requirement(
     the downstream pressure requirement and the solver could deem a feasible
     configuration infeasible.  This version performs a backward recursion over
     *all* downstream stations, subtracting the maximum head each pump can
-    deliver and adding line/elevation losses for every segment.  The returned
+    deliver and adding line/elevation losses for every segment.  The caller may
+    supply a ``segment_flows`` list giving the flow rate after each station or a
+    ``flow_override`` to apply a constant flow to all segments.  The returned
     value is therefore the minimum residual needed after station ``idx`` so that
     the terminal residual head constraint can still be met.
     """
@@ -269,6 +272,10 @@ def _downstream_requirement(
     from functools import lru_cache
 
     N = len(stations)
+    if flow_override is not None:
+        segment_flows = [flow_override] * (N + 1)
+    elif segment_flows is None:
+        raise ValueError("segment_flows or flow_override must be provided")
 
     @lru_cache(None)
     def req_entry(i: int) -> float:
@@ -380,8 +387,6 @@ def solve_pipeline(
         kv = KV_list[i - 1]
         rho = rho_list[i - 1]
 
-        min_residual_next = _downstream_requirement(stations, i - 1, terminal, segment_flows, KV_list)
-
         L = stn.get('L', 0.0)
         if 'D' in stn:
             thickness = stn.get('t', default_t)
@@ -481,18 +486,10 @@ def solve_pipeline(
                 'dra_ppm_loop': 0.0,
             })
 
-        min_residual_skip = min_residual_next
-        if loop_dict and i < N:
-            stations_skip = copy.deepcopy(stations)
-            stations_skip[i]['is_pump'] = False
-            stations_skip[i]['max_pumps'] = 0
-            min_residual_skip = _downstream_requirement(
-                stations_skip, i - 1, terminal, segment_flows, KV_list
-            )
-
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
+            'idx': i - 1,
             'kv': kv,
             'rho': rho,
             'L': L,
@@ -500,8 +497,6 @@ def solve_pipeline(
             'rough': rough,
             'cum_dist': cum_dist,
             'elev_delta': elev_delta,
-            'min_residual_next': min_residual_next,
-            'min_residual_skip': min_residual_skip,
             'maop_head': maop_head,
             'maop_kgcm2': maop_kgcm2,
             'loopline': loop_dict,
@@ -577,7 +572,6 @@ def solve_pipeline(
                     'maop_loop': 0.0,
                     'maop_loop_kg': 0.0,
                     'bypass_next': False,
-                    'min_req': stn_data['min_residual_next'],
                 })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
@@ -616,7 +610,6 @@ def solve_pipeline(
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': False,
-                        'min_req': stn_data['min_residual_next'],
                     })
                     scenarios.append({
                         'head_loss': hl_par,
@@ -631,7 +624,6 @@ def solve_pipeline(
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': True,
-                        'min_req': stn_data.get('min_residual_skip', stn_data['min_residual_next']),
                     })
 
                 if opt['nop'] > 0 and opt['rpm'] > 0:
@@ -690,7 +682,31 @@ def solve_pipeline(
                     ):
                         continue
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
-                    min_req = sc.get('min_req', stn_data['min_residual_next'])
+                    seg_flows_tmp = segment_flows.copy()
+                    seg_flows_tmp[stn_data['idx'] + 1] = sc['flow_main'] if sc.get('bypass_next') else flow_total
+                    for j in range(stn_data['idx'] + 1, N):
+                        delivery_j = float(stations[j].get('delivery', 0.0))
+                        supply_j = float(stations[j].get('supply', 0.0))
+                        seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
+                    if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
+                        stations_skip = copy.deepcopy(stations)
+                        stations_skip[stn_data['idx'] + 1]['is_pump'] = False
+                        stations_skip[stn_data['idx'] + 1]['max_pumps'] = 0
+                        min_req = _downstream_requirement(
+                            stations_skip,
+                            stn_data['idx'],
+                            terminal,
+                            seg_flows_tmp,
+                            KV_list,
+                        )
+                    else:
+                        min_req = _downstream_requirement(
+                            stations,
+                            stn_data['idx'],
+                            terminal,
+                            seg_flows_tmp,
+                            KV_list,
+                        )
                     if residual_next < min_req:
                         continue
                     dra_cost = 0.0
