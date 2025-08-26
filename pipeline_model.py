@@ -15,6 +15,9 @@ import numpy as np
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 
+# Built‑in concurrency library; used later for parallel flow scanning.
+import concurrent.futures
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -685,6 +688,18 @@ def solve_pipeline(
         new_states: dict[tuple[float, float, float], dict] = {}
         for state in states.values():
             for opt in stn_data['options']:
+                # Quick feasibility filter: if the pump (and existing residual head)
+                # cannot achieve the minimum required downstream head even
+                # assuming zero friction losses, skip this option entirely.
+                # For bypass options or non-pump stations, opt['tdh'] will be zero.
+                # The next residual head must be at least the minimum required
+                # residual at the next station plus any elevation change.  Head
+                # losses from friction will only decrease the residual further,
+                # so this pre-check is conservative and does not eliminate
+                # feasible solutions.
+                min_after_elev = state['residual'] + opt['tdh'] - stn_data['elev_delta']
+                if min_after_elev < stn_data['min_residual_next']:
+                    continue
                 reach_prev = state.get('reach', 0.0)
                 ppm_prev = state.get('ppm', 0.0)
                 reach_after = reach_prev
@@ -1200,9 +1215,66 @@ def solve_pipeline_flow_scan(
         else solve_pipeline
     )
 
-    best: dict | None = None
-    for f in flows:
-        res = solver(
+    # Evaluate each candidate flow level.  If there is only a single flow to
+    # consider, evaluate sequentially; otherwise attempt to dispatch each
+    # evaluation to a separate process.  The solver function and all input
+    # arguments are top-level and picklable, so multiprocessing is viable.
+
+    results: dict[float, dict] = {}
+    if len(flows) > 1:
+        # Use a separate process for each flow to leverage multiple CPU cores.
+        try:
+            with concurrent.futures.ProcessPoolExecutor() as pool:
+                future_map = {
+                    pool.submit(
+                        solver,
+                        stations,
+                        terminal,
+                        f,
+                        seg_batches,
+                        rho_list,
+                        RateDRA,
+                        Price_HSD,
+                        Fuel_density,
+                        Ambient_temp,
+                        linefill_dict,
+                        dra_reach_km,
+                        mop_kgcm2,
+                        hours,
+                    ): f
+                    for f in flows
+                }
+                for fut in concurrent.futures.as_completed(future_map):
+                    f = future_map[fut]
+                    try:
+                        res = fut.result()
+                    except Exception:
+                        # An error in a worker should not stop other evaluations.
+                        continue
+                    results[f] = res
+        except (ImportError, OSError):
+            # Fallback: run sequentially if process-based parallelism fails.
+            for f in flows:
+                res = solver(
+                    stations,
+                    terminal,
+                    f,
+                    seg_batches,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill_dict,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                )
+                results[f] = res
+    else:
+        # Only one candidate flow; compute directly.
+        f = flows[0]
+        results[f] = solver(
             stations,
             terminal,
             f,
@@ -1217,16 +1289,22 @@ def solve_pipeline_flow_scan(
             mop_kgcm2,
             hours,
         )
-        if res.get('error'):
+
+    best: dict | None = None
+    best_flow: float | None = None
+    for f in flows:
+        res = results.get(f, {})
+        if not res or res.get('error'):
             continue
         if best is None or res.get('total_cost', float('inf')) < best.get('total_cost', float('inf')):
             best = res
-            best['FLOW'] = f
+            best_flow = f
 
     if best is None:
         return {
             "error": True,
             "message": "No feasible flow found across scan.",
         }
-
+    # Annotate the solution with the flow value that produced it.
+    best['FLOW'] = best_flow
     return best
