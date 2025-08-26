@@ -474,7 +474,7 @@ def solve_pipeline(
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
                             })
-            if not any(o['nop'] == 0 for o in opts):
+            if min_p == 0 and not any(o['nop'] == 0 for o in opts):
                 opts.insert(0, {
                     'nop': 0,
                     'rpm': 0,
