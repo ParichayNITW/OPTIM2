@@ -1200,8 +1200,96 @@ def solve_pipeline_flow_scan(
         else solve_pipeline
     )
 
+    # To accelerate the flow scanning step we optionally evaluate individual
+    # flow levels concurrently.  When multiple trial flows are present the
+    # solver can be dispatched to separate processes, significantly
+    # reducing wall-clock time on multi-core systems.  Because the solver
+    # function is pure with respect to its inputs (no shared state is
+    # mutated), parallel evaluation does not alter the resulting optimal
+    # solution.  When only a single flow is evaluated the overhead of
+    # spawning processes is avoided and a sequential loop is used.
+
     best: dict | None = None
-    for f in flows:
+    # Attempt concurrent evaluation if multiple flows exist.  A try/except
+    # guard ensures that if the multiprocessing start method is unsupported
+    # (e.g. in constrained environments) the fallback sequential path is
+    # used seamlessly.
+    if len(flows) > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            # Prepare call arguments in a list to avoid repeatedly closing
+            # over the same objects inside the loop.  Each worker receives
+            # deep copies of the station and batch definitions to prevent
+            # accidental cross-process mutations.
+            tasks = []
+            for f in flows:
+                # Use copy.deepcopy on per-flow inputs to ensure
+                # independence across processes.  Although the solver
+                # itself defensively copies station lists, copying here
+                # further insulates the input structures.
+                import copy
+                stn_copy = copy.deepcopy(stations)
+                batch_copy = copy.deepcopy(seg_batches)
+                rho_copy = copy.deepcopy(rho_list)
+                tasks.append((f, stn_copy, batch_copy, rho_copy))
+
+            with ProcessPoolExecutor() as executor:
+                future_to_flow = {
+                    executor.submit(
+                        solver,
+                        t[1],  # stations copy
+                        terminal,
+                        t[0],  # flow value
+                        t[2],  # seg_batches copy
+                        t[3],  # rho_list copy
+                        RateDRA,
+                        Price_HSD,
+                        Fuel_density,
+                        Ambient_temp,
+                        linefill_dict,
+                        dra_reach_km,
+                        mop_kgcm2,
+                        hours,
+                    ): t[0]
+                    for t in tasks
+                }
+                for future in as_completed(future_to_flow):
+                    f = future_to_flow[future]
+                    res = future.result()
+                    if res.get('error'):
+                        continue
+                    # On initial improvement or lower cost update best
+                    if best is None or res.get('total_cost', float('inf')) < best.get('total_cost', float('inf')):
+                        best = res
+                        best['FLOW'] = f
+        except Exception:
+            # Fallback sequential evaluation on any multiprocessing error
+            best = None
+            for f in flows:
+                res = solver(
+                    stations,
+                    terminal,
+                    f,
+                    seg_batches,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill_dict,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                )
+                if res.get('error'):
+                    continue
+                if best is None or res.get('total_cost', float('inf')) < best.get('total_cost', float('inf')):
+                    best = res
+                    best['FLOW'] = f
+    else:
+        # Sequential evaluation for a single flow value
+        f = flows[0]
         res = solver(
             stations,
             terminal,
@@ -1217,9 +1305,7 @@ def solve_pipeline_flow_scan(
             mop_kgcm2,
             hours,
         )
-        if res.get('error'):
-            continue
-        if best is None or res.get('total_cost', float('inf')) < best.get('total_cost', float('inf')):
+        if not res.get('error'):
             best = res
             best['FLOW'] = f
 
