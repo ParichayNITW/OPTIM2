@@ -678,7 +678,7 @@ def solve_pipeline(
                         'min_req': stn_data.get('min_residual_skip', stn_data['min_residual_next']),
                     })
                 for sc in scenarios:
-                    if not (V_MIN <= sc['v'] <= V_MAX):
+                    if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
