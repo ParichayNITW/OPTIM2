@@ -437,9 +437,6 @@ def solve_pipeline(
         opts = []
         flow_m3s = flow / 3600.0
         area = pi * d_inner ** 2 / 4.0
-        v_nom = flow_m3s / area if area > 0 else 0.0
-        travel_km = v_nom * hours * 3600.0 / 1000.0
-
         if stn.get('is_pump', False):
             min_p = stn.get('min_pumps', 0)
             if not origin_enforced:
@@ -449,43 +446,12 @@ def solve_pipeline(
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
             fixed_dr = stn.get('fixed_dra_perc', None)
             dra_main_vals = [int(round(fixed_dr))] if (fixed_dr is not None) else _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
-            if loop_dict:
-                dra_loop_vals = _allowed_values(0, int(loop_dict.get('max_dr', 0)), DRA_STEP)
-            else:
-                dra_loop_vals = [0]
+            dra_loop_vals = _allowed_values(0, int(loop_dict.get('max_dr', 0)), DRA_STEP) if loop_dict else [0]
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
                 for rpm in rpm_opts:
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
-                            if nop > 0 and rpm > 0:
-                                tdh, eff = _pump_head(stn, flow, rpm, nop)
-                            else:
-                                tdh, eff = 0.0, 0.0
-                            eff = max(eff, 1e-6) if nop > 0 else 0.0
-                            if nop > 0 and rpm > 0:
-                                pump_bkw_total = (rho * flow * 9.81 * tdh) / (3600.0 * 1000.0 * (eff / 100.0))
-                                pump_bkw = pump_bkw_total / nop
-                                if stn.get('power_type', 'Grid') == 'Diesel':
-                                    prime_kw_total = pump_bkw_total / 0.98
-                                else:
-                                    prime_kw_total = pump_bkw_total / 0.95
-                                motor_kw = prime_kw_total / nop
-                            else:
-                                pump_bkw = motor_kw = prime_kw_total = 0.0
-                            if stn.get('power_type', 'Grid') == 'Diesel' and prime_kw_total > 0:
-                                mode = stn.get('sfc_mode', 'manual')
-                                if mode == 'manual':
-                                    sfc_val = stn.get('sfc', 0.0)
-                                elif mode == 'iso':
-                                    sfc_val = _compute_iso_sfc(stn, rpm, pump_bkw_total, stn.get('DOL', rpm), stn.get('elev', 0.0), Ambient_temp)
-                                else:
-                                    sfc_val = 0.0
-                                fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                                power_cost = prime_kw_total * hours * fuel_per_kWh * Price_HSD
-                            else:
-                                rate = stn.get('rate', 0.0)
-                                power_cost = prime_kw_total * hours * rate
                             ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
                             ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
                             opts.append({
@@ -493,12 +459,6 @@ def solve_pipeline(
                                 'rpm': rpm,
                                 'dra_main': dra_main,
                                 'dra_loop': dra_loop,
-                                'travel_km': travel_km if (dra_main > 0 or dra_loop > 0) else 0.0,
-                                'tdh': tdh,
-                                'eff': eff,
-                                'pump_bkw': pump_bkw,
-                                'motor_kw': motor_kw,
-                                'power_cost': power_cost,
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
                             })
@@ -508,12 +468,6 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'travel_km': 0.0,
-                    'tdh': 0.0,
-                    'eff': 0.0,
-                    'pump_bkw': 0.0,
-                    'motor_kw': 0.0,
-                    'power_cost': 0.0,
                     'dra_ppm_main': 0.0,
                     'dra_ppm_loop': 0.0,
                 })
@@ -523,12 +477,6 @@ def solve_pipeline(
                 'rpm': 0,
                 'dra_main': 0,
                 'dra_loop': 0,
-                'travel_km': 0.0,
-                'tdh': 0.0,
-                'eff': 0.0,
-                'pump_bkw': 0.0,
-                'motor_kw': 0.0,
-                'power_cost': 0.0,
                 'dra_ppm_main': 0.0,
                 'dra_ppm_loop': 0.0,
             })
@@ -545,8 +493,6 @@ def solve_pipeline(
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
-            'flow': flow,
-            'flow_in': segment_flows[i - 1],
             'kv': kv,
             'rho': rho,
             'L': L,
@@ -571,6 +517,12 @@ def solve_pipeline(
             'coef_T': float(stn.get('T', 0.0)),
             'min_rpm': int(stn.get('MinRPM', 0)),
             'dol': int(stn.get('DOL', 0)),
+            'power_type': stn.get('power_type', 'Grid'),
+            'rate': float(stn.get('rate', 0.0)),
+            'sfc': float(stn.get('sfc', 0.0)),
+            'sfc_mode': stn.get('sfc_mode', 'manual'),
+            'engine_params': stn.get('engine_params', {}),
+            'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
     # Dynamic programming over stations
@@ -583,23 +535,28 @@ def solve_pipeline(
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'reach': dra_reach_km,
+            'flow': segment_flows[0],
         }
     }
 
     for stn_data in station_opts:
         new_states: dict[float, dict] = {}
         for state in states.values():
+            flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
                 reach_prev = state.get('reach', 0.0)
-                reach_after = reach_prev
-                if opt['dra_main'] > 0 or opt['dra_loop'] > 0:
-                    reach_after = max(reach_after, stn_data['cum_dist'] + opt['travel_km'])
+                area = pi * stn_data['d_inner'] ** 2 / 4.0
+                v_nom = flow_total / 3600.0 / area if area > 0 else 0.0
+                travel_km = (
+                    v_nom * hours * 3600.0 / 1000.0 if (opt['dra_main'] > 0 or opt['dra_loop'] > 0) else 0.0
+                )
+                reach_after = max(reach_prev, stn_data['cum_dist'] + travel_km)
 
                 dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
                 eff_dra_main = opt['dra_main'] if dra_len_main > 0 else 0.0
                 scenarios = []
                 hl_single, v_single, Re_single, f_single = _segment_hydraulics(
-                    stn_data['flow'],
+                    flow_total,
                     stn_data['L'],
                     stn_data['d_inner'],
                     stn_data['rough'],
@@ -612,7 +569,7 @@ def solve_pipeline(
                     'v': v_single,
                     'Re': Re_single,
                     'f': f_single,
-                    'flow_main': stn_data['flow'],
+                    'flow_main': flow_total,
                     'v_loop': 0.0,
                     'Re_loop': 0.0,
                     'f_loop': 0.0,
@@ -627,7 +584,7 @@ def solve_pipeline(
                     dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
                     eff_dra_loop = opt['dra_loop'] if dra_len_loop > 0 else 0.0
                     hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
-                        stn_data['flow'],
+                        flow_total,
                         {
                             'L': stn_data['L'],
                             'd_inner': stn_data['d_inner'],
@@ -661,7 +618,6 @@ def solve_pipeline(
                         'bypass_next': False,
                         'min_req': stn_data['min_residual_next'],
                     })
-                    # Bypass scenario: split flow and bypass next station's pumps
                     scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
@@ -677,13 +633,61 @@ def solve_pipeline(
                         'bypass_next': True,
                         'min_req': stn_data.get('min_residual_skip', stn_data['min_residual_next']),
                     })
+
+                if opt['nop'] > 0 and opt['rpm'] > 0:
+                    pump_def = {
+                        'A': stn_data['coef_A'],
+                        'B': stn_data['coef_B'],
+                        'C': stn_data['coef_C'],
+                        'P': stn_data['coef_P'],
+                        'Q': stn_data['coef_Q'],
+                        'R': stn_data['coef_R'],
+                        'S': stn_data['coef_S'],
+                        'T': stn_data['coef_T'],
+                        'DOL': stn_data['dol'],
+                    }
+                    tdh, eff = _pump_head(pump_def, flow_total, opt['rpm'], opt['nop'])
+                else:
+                    tdh, eff = 0.0, 0.0
+                eff = max(eff, 1e-6) if opt['nop'] > 0 else 0.0
+                if opt['nop'] > 0 and opt['rpm'] > 0:
+                    pump_bkw_total = (stn_data['rho'] * flow_total * 9.81 * tdh) / (
+                        3600.0 * 1000.0 * (eff / 100.0)
+                    )
+                    pump_bkw = pump_bkw_total / opt['nop']
+                    prime_kw_total = pump_bkw_total / (0.98 if stn_data['power_type'] == 'Diesel' else 0.95)
+                    motor_kw = prime_kw_total / opt['nop']
+                else:
+                    pump_bkw = motor_kw = prime_kw_total = 0.0
+                if stn_data['power_type'] == 'Diesel' and prime_kw_total > 0:
+                    mode = stn_data.get('sfc_mode', 'manual')
+                    if mode == 'manual':
+                        sfc_val = stn_data.get('sfc', 0.0)
+                    elif mode == 'iso':
+                        sfc_val = _compute_iso_sfc(
+                            stn_data,
+                            opt['rpm'],
+                            pump_bkw_total,
+                            stn_data['dol'],
+                            stn_data.get('elev', 0.0),
+                            Ambient_temp,
+                        )
+                    else:
+                        sfc_val = 0.0
+                    fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
+                    power_cost = prime_kw_total * hours * fuel_per_kWh * Price_HSD
+                else:
+                    power_cost = prime_kw_total * hours * stn_data.get('rate', 0.0)
+
                 for sc in scenarios:
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
-                    sdh = state['residual'] + opt['tdh']
-                    if sdh > stn_data['maop_head'] or (sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']):
+                    sdh = state['residual'] + tdh
+                    if sdh > stn_data['maop_head'] or (
+                        sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
+                    ):
                         continue
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
                     min_req = sc.get('min_req', stn_data['min_residual_next'])
@@ -694,17 +698,19 @@ def solve_pipeline(
                         dra_cost += opt['dra_ppm_main'] * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     if opt['dra_ppm_loop'] > 0 and sc['flow_loop'] > 0:
                         dra_cost += opt['dra_ppm_loop'] * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
-                    total_cost = opt['power_cost'] + dra_cost
+                    total_cost = power_cost + dra_cost
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
-                        f"pipeline_flow_in_{stn_data['name']}": stn_data['flow_in'],
+                        f"pipeline_flow_in_{stn_data['name']}": flow_total,
                         f"loopline_flow_{stn_data['name']}": sc['flow_loop'],
                         f"head_loss_{stn_data['name']}": sc['head_loss'],
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
                         f"residual_head_{stn_data['name']}": state['residual'],
                         f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
                         f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
-                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']),
+                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(
+                            sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']
+                        ),
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
@@ -740,13 +746,13 @@ def solve_pipeline(
                         })
                     if stn_data['is_pump']:
                         record.update({
-                            f"pump_flow_{stn_data['name']}": stn_data['flow'],
+                            f"pump_flow_{stn_data['name']}": flow_total,
                             f"num_pumps_{stn_data['name']}": opt['nop'],
                             f"speed_{stn_data['name']}": opt['rpm'],
-                            f"efficiency_{stn_data['name']}": opt['eff'],
-                            f"pump_bkw_{stn_data['name']}": opt['pump_bkw'],
-                            f"motor_kw_{stn_data['name']}": opt['motor_kw'],
-                            f"power_cost_{stn_data['name']}": opt['power_cost'],
+                            f"efficiency_{stn_data['name']}": eff,
+                            f"pump_bkw_{stn_data['name']}": pump_bkw,
+                            f"motor_kw_{stn_data['name']}": motor_kw,
+                            f"power_cost_{stn_data['name']}": power_cost,
                             f"dra_cost_{stn_data['name']}": dra_cost,
                             f"dra_ppm_{stn_data['name']}": opt['dra_ppm_main'],
                             f"dra_ppm_loop_{stn_data['name']}": opt['dra_ppm_loop'],
@@ -773,6 +779,7 @@ def solve_pipeline(
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
+                    flow_next = sc['flow_main'] if sc.get('bypass_next') else flow_total
                     if (
                         existing is None
                         or new_cost < existing['cost']
@@ -788,6 +795,7 @@ def solve_pipeline(
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'reach': reach_after,
+                            'flow': flow_next,
                         }
 
         if not new_states:
