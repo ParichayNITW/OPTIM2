@@ -502,6 +502,21 @@ def solve_pipeline(
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
                             })
+            if not any(o['nop'] == 0 for o in opts):
+                opts.insert(0, {
+                    'nop': 0,
+                    'rpm': 0,
+                    'dra_main': 0,
+                    'dra_loop': 0,
+                    'travel_km': 0.0,
+                    'tdh': 0.0,
+                    'eff': 0.0,
+                    'pump_bkw': 0.0,
+                    'motor_kw': 0.0,
+                    'power_cost': 0.0,
+                    'dra_ppm_main': 0.0,
+                    'dra_ppm_loop': 0.0,
+                })
         else:
             opts.append({
                 'nop': 0,
@@ -518,6 +533,15 @@ def solve_pipeline(
                 'dra_ppm_loop': 0.0,
             })
 
+        min_residual_skip = min_residual_next
+        if loop_dict and i < N:
+            stations_skip = copy.deepcopy(stations)
+            stations_skip[i]['is_pump'] = False
+            stations_skip[i]['max_pumps'] = 0
+            min_residual_skip = _downstream_requirement(
+                stations_skip, i - 1, terminal, segment_flows, KV_list
+            )
+
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
@@ -531,6 +555,7 @@ def solve_pipeline(
             'cum_dist': cum_dist,
             'elev_delta': elev_delta,
             'min_residual_next': min_residual_next,
+            'min_residual_skip': min_residual_skip,
             'maop_head': maop_head,
             'maop_kgcm2': maop_kgcm2,
             'loopline': loop_dict,
@@ -558,13 +583,16 @@ def solve_pipeline(
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'reach': dra_reach_km,
+            'force_bypass': False,
         }
     }
 
     for stn_data in station_opts:
         new_states: dict[float, dict] = {}
         for state in states.values():
-            for opt in stn_data['options']:
+            force = state.get('force_bypass', False)
+            opts_iter = [o for o in stn_data['options'] if (not force or o['nop'] == 0)]
+            for opt in opts_iter:
                 reach_prev = state.get('reach', 0.0)
                 reach_after = reach_prev
                 if opt['dra_main'] > 0 or opt['dra_loop'] > 0:
@@ -594,6 +622,8 @@ def solve_pipeline(
                     'flow_loop': 0.0,
                     'maop_loop': 0.0,
                     'maop_loop_kg': 0.0,
+                    'bypass_next': False,
+                    'min_req': stn_data['min_residual_next'],
                 })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
@@ -631,6 +661,33 @@ def solve_pipeline(
                         'flow_loop': q_loop,
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
+                        'bypass_next': False,
+                        'min_req': stn_data['min_residual_next'],
+                    })
+                    # Bypass scenario: send all flow via loopline and bypass next pump
+                    hl_bypass, v_b, Re_b, f_b = _segment_hydraulics(
+                        stn_data['flow'],
+                        loop['L'],
+                        loop['d_inner'],
+                        loop['rough'],
+                        stn_data['kv'],
+                        eff_dra_loop,
+                        dra_len_loop,
+                    )
+                    scenarios.append({
+                        'head_loss': hl_bypass,
+                        'v': 0.0,
+                        'Re': 0.0,
+                        'f': 0.0,
+                        'flow_main': 0.0,
+                        'v_loop': v_b,
+                        'Re_loop': Re_b,
+                        'f_loop': f_b,
+                        'flow_loop': stn_data['flow'],
+                        'maop_loop': loop['maop_head'],
+                        'maop_loop_kg': loop['maop_kgcm2'],
+                        'bypass_next': True,
+                        'min_req': stn_data.get('min_residual_skip', stn_data['min_residual_next']),
                     })
                 for sc in scenarios:
                     if not (V_MIN <= sc['v'] <= V_MAX):
@@ -641,7 +698,8 @@ def solve_pipeline(
                     if sdh > stn_data['maop_head'] or (sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']):
                         continue
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
-                    if residual_next < stn_data['min_residual_next']:
+                    min_req = sc.get('min_req', stn_data['min_residual_next'])
+                    if residual_next < min_req:
                         continue
                     dra_cost = 0.0
                     if opt['dra_ppm_main'] > 0:
@@ -724,6 +782,7 @@ def solve_pipeline(
                         })
                     new_cost = state['cost'] + total_cost
                     bucket = round(residual_next, RESIDUAL_ROUND)
+                    record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
                     if (
@@ -741,6 +800,7 @@ def solve_pipeline(
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'reach': reach_after,
+                            'force_bypass': sc.get('bypass_next', False),
                         }
 
         if not new_states:
