@@ -164,10 +164,6 @@ if st.session_state.get("run_mode") == "hydraulic":
 def restore_case_dict(loaded_data):
     """Populate ``st.session_state`` from a saved case dictionary."""
 
-    # Prepare to load a new case.  We do not clear the entire session state
-    # because that may also remove authentication or other critical values
-    # (which could cause Streamlit to appear logged out).  Instead, we
-    # selectively reset keys that store station and pump data.
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
@@ -198,56 +194,31 @@ def restore_case_dict(loaded_data):
         st.session_state["planner_days"] = loaded_data["planner_days"]
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    # Clear any old pump data keys to avoid mixing with the new case.
-    keys_to_remove = [k for k in st.session_state.keys() if k.startswith('head_data_') or k.startswith('eff_data_') or k.startswith('peak_data_') or k.startswith('loop_peak_data_')]
-    for k in keys_to_remove:
-        del st.session_state[k]
-
-    # Restore pump data for each station (non-typed)
     for i in range(len(st.session_state['stations'])):
-        base_key = str(i + 1)
-        head_data = loaded_data.get(f"head_data_{base_key}")
-        eff_data  = loaded_data.get(f"eff_data_{base_key}")
-        peak_data = loaded_data.get(f"peak_data_{base_key}")
-        loop_peak_data = loaded_data.get(f"loop_peak_data_{base_key}")
+        head_data = loaded_data.get(f"head_data_{i+1}", None)
+        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
+        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
+        loop_peak_data = loaded_data.get(f"loop_peak_data_{i+1}", None)
         if head_data is not None:
-            st.session_state[f"head_data_{base_key}"] = pd.DataFrame(head_data)
+            df_head = pd.DataFrame(head_data)
+            st.session_state[f"head_data_{i+1}"] = df_head
             st.session_state['stations'][i]['head_data'] = head_data
         if eff_data is not None:
-            st.session_state[f"eff_data_{base_key}"] = pd.DataFrame(eff_data)
+            df_eff = pd.DataFrame(eff_data)
+            st.session_state[f"eff_data_{i+1}"] = df_eff
             st.session_state['stations'][i]['eff_data'] = eff_data
         if peak_data is not None:
-            st.session_state[f"peak_data_{base_key}"] = pd.DataFrame(peak_data)
+            df_peak = pd.DataFrame(peak_data)
+            st.session_state[f"peak_data_{i+1}"] = df_peak
             st.session_state['stations'][i]['peak_data'] = peak_data
         if loop_peak_data is not None:
-            st.session_state[f"loop_peak_data_{base_key}"] = pd.DataFrame(loop_peak_data)
+            df_lpeak = pd.DataFrame(loop_peak_data)
+            st.session_state[f"loop_peak_data_{i+1}"] = df_lpeak
             st.session_state['stations'][i].setdefault('loopline', {})['peaks'] = loop_peak_data
         else:
             loop_peaks = st.session_state['stations'][i].get('loopline', {}).get('peaks')
             if loop_peaks is not None:
-                st.session_state[f"loop_peak_data_{base_key}"] = pd.DataFrame(loop_peaks)
-
-    # Restore pump-type specific data generically for all stations.  Keys are of
-    # the form head_data_{{idx}}{{type}} or eff_data_{{idx}}{{type}} where idx
-    # is 1-based station index and type is a single letter (A, B, etc.).  Use
-    # regex to parse these keys and assign the data to the corresponding
-    # station and pump_type entry.
-    import re
-    pattern = re.compile(r'^(head_data|eff_data|peak_data|loop_peak_data)_(\d+)([A-Za-z]+)$')
-    for key, value in loaded_data.items():
-        match = pattern.match(key)
-        if not match:
-            continue
-        data_type, idx, ptype = match.groups()
-        idx_int = int(idx) - 1
-        if idx_int < 0 or idx_int >= len(st.session_state['stations']):
-            continue
-        if not isinstance(value, list):
-            continue
-        # Create DataFrame and store in session state
-        st.session_state[key] = pd.DataFrame(value)
-        # Set into station pump_types structure
-        st.session_state['stations'][idx_int].setdefault('pump_types', {}).setdefault(ptype, {})[f"{data_type}"] = value
+                st.session_state[f"loop_peak_data_{i+1}"] = pd.DataFrame(loop_peaks)
 
     # Handle pump type data for originating station
     headA = loaded_data.get("head_data_1A", None)
@@ -288,11 +259,7 @@ def restore_case_dict(loaded_data):
             st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['peak_data'] = peakB
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
-# Always restore the case whenever a JSON is selected.  Clearing previous
-# session state in restore_case_dict ensures that new uploads fully replace
-# existing data.  Mark case_loaded for downstream logic but allow
-# subsequent uploads without forcing a logout.
-if uploaded_case is not None:
+if uploaded_case is not None and not st.session_state.get("case_loaded", False):
     loaded_data = json.load(uploaded_case)
     restore_case_dict(loaded_data)
     st.session_state["case_loaded"] = True
@@ -1167,8 +1134,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if pump_list and n_pumps > 0:
             pump_name = ", ".join(pump_list[:n_pumps])
         else:
-            # When no pumps are running leave the pump name blank to avoid confusion
-            pump_name = ""
+            pump_name = (stn.get('pump_name') if isinstance(stn, dict) else '') or base_stn.get('pump_name', '')
 
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
@@ -1215,58 +1181,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    # Append terminal row if terminal information is available in the result.
-    # The terminal name is inferred from keys ending with residual_head_*
-    # or may be provided via an optional terminal argument.  For backward
-    # compatibility the function accepts an optional ``terminal`` parameter.
-    term_name = None
-    # Check if caller passed a terminal in the kwargs.  Python passes
-    # additional args via ``terminal`` parameter in function signature.  Use
-    # locals() to detect if terminal variable exists in closure.
-    # We cannot directly reference ``terminal`` here because it is captured
-    # dynamically.  Instead, rely on ``res`` keys.
-    # Find terminal by looking for residual_head_* keys not in station names
-    station_keys = {s['name'].lower().replace(' ', '_') for s in base_stations}
-    for k in res.keys():
-        if k.startswith('residual_head_'):
-            cand = k[len('residual_head_'):]
-            if cand not in station_keys:
-                term_name = cand
-                break
-    if term_name:
-        tname_disp = term_name.replace('_', ' ').title()
-        term_row = {
-            'Station': tname_disp,
-            'Pump Name': "",
-            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{term_name}", 0.0) or 0.0),
-            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{term_name}", 0.0) or 0.0),
-            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{term_name}", 0.0) or 0.0),
-            'Power & Fuel Cost (INR)': 0.0,
-            'DRA Cost (INR)': 0.0,
-            'DRA PPM': float(res.get(f"dra_ppm_{term_name}", 0.0) or 0.0),
-            'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{term_name}", 0.0) or 0.0),
-            'No. of Pumps': 0,
-            'Pump Speed (rpm)': 0.0,
-            'Pump Eff (%)': 0.0,
-            'Pump BKW (kW)': 0.0,
-            'Motor Input (kW)': 0.0,
-            'Reynolds No.': 0.0,
-            'Head Loss (m)': float(res.get(f"head_loss_{term_name}", 0.0) or 0.0),
-            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{term_name}", 0.0) or 0.0),
-            'Vel (m/s)': 0.0,
-            'Residual Head (m)': float(res.get(f"residual_head_{term_name}", 0.0) or 0.0),
-            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{term_name}", 0.0) or 0.0),
-            'SDH (m)': float(res.get(f"sdh_{term_name}", 0.0) or 0.0),
-            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{term_name}", 0.0) or 0.0),
-            'MAOP (m)': float(res.get(f"maop_{term_name}", 0.0) or 0.0),
-            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{term_name}", 0.0) or 0.0),
-            'Drag Reduction (%)': float(res.get(f"drag_reduction_{term_name}", 0.0) or 0.0),
-            'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{term_name}", 0.0) or 0.0),
-        }
-        term_row['Total Cost (INR)'] = term_row['Power & Fuel Cost (INR)'] + term_row['DRA Cost (INR)']
-        term_row['Available Suction Head (m)'] = np.nan
-        term_row['Available Suction Head (kg/cm²)'] = np.nan
-        df = pd.concat([df, pd.DataFrame([term_row])], ignore_index=True)
     return df.round(2)
 
 # Persisted DRA lock from 07:00 run
@@ -1854,14 +1768,16 @@ if not auto_batch:
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
+        # Pandas may treat some columns as object if they contain NaN or are newly inserted.
         df_day_numeric = df_day.copy()
+        # Identify columns eligible for numeric styling
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        # Apply a blue gradient to numeric columns for visual differentiation.  Only
-        # numeric columns are included in the gradient to avoid conversion errors.
-        styled = df_day_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        # Display the data without complex styling.  A background gradient
+        # previously applied caused conversion errors when non-numeric
+        # values were present.  Using a plain dataframe avoids this issue.
+        st.dataframe(df_day_numeric, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -2029,11 +1945,8 @@ if not auto_batch:
             df_plan_numeric = df_plan.copy()
             for c in num_cols:
                 df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            # Apply a blue gradient to numeric columns for visual differentiation.  Only
-            # numeric columns are included in the gradient to avoid conversion errors on
-            # string columns (e.g., Time, Station, Pump Name, Pattern).
-            styled_plan = df_plan_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
-            st.dataframe(styled_plan, use_container_width=True, hide_index=True)
+            # Display without background gradient to avoid type conversion errors.
+            st.dataframe(df_plan_numeric, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
