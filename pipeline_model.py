@@ -634,7 +634,12 @@ def solve_pipeline(
             if res.get('error'):
                 continue
             if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
-                best_res = res
+                # Track which loop usage produced the best result.  Store a
+                # copy to avoid mutating the result of nested calls.  Users
+                # can inspect this field to derive human‑friendly names.
+                res_with_usage = res.copy()
+                res_with_usage['loop_usage'] = usage.copy()
+                best_res = res_with_usage
         return best_res or {
             'error': True,
             'message': 'No feasible pump combination found for stations.',
@@ -823,8 +828,25 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
+    # -----------------------------------------------------------------------
     # Dynamic programming over stations
+
     init_residual = stations[0].get('min_residual', 50.0)
+    # Initial dynamic‑programming state.  Each state carries the cumulative
+    # operating cost, the residual head after the current station, the full
+    # sequence of record dictionaries (one per station), the last MAOP
+    # limits, the current flow into the next segment and, importantly, a
+    # ``carry_loop_dra`` field.  ``carry_loop_dra`` represents the drag
+    # reduction percentage that remains effective on the loopline due to
+    # upstream injection when a bypass scenario occurs.  At the origin
+    # there is no upstream DRA on the loopline so this value starts at zero.
+    #
+    # Note: The earlier implementation tracked the advancement of DRA along the
+    # pipeline via a ``reach`` parameter.  This has been removed because the
+    # entire pipeline is assumed to be treated at the start of the day.  As
+    # such, DRA either applies across an entire segment when injected or is
+    # carried over unchanged on bypassed loops, but it does not advance
+    # progressively.
     states: dict[float, dict] = {
         round(init_residual, 2): {
             'cost': 0.0,
@@ -832,8 +854,8 @@ def solve_pipeline(
             'records': [],
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
-            'reach': dra_reach_km,
             'flow': segment_flows[0],
+            'carry_loop_dra': 0.0,
         }
     }
 
@@ -842,17 +864,15 @@ def solve_pipeline(
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
-                reach_prev = state.get('reach', 0.0)
-                area = pi * stn_data['d_inner'] ** 2 / 4.0
-                v_nom = flow_total / 3600.0 / area if area > 0 else 0.0
-                travel_km = (
-                    v_nom * hours * 3600.0 / 1000.0 if (opt['dra_main'] > 0 or opt['dra_loop'] > 0) else 0.0
-                )
-                reach_after = max(reach_prev, stn_data['cum_dist'] + travel_km)
+                # Determine effective drag reduction for the mainline.  In this
+                # simplified model the drag reduction applies across the entire
+                # segment whenever a non‑zero DRA percentage is selected.  There
+                # is no partial advancement of DRA along the pipe.
+                eff_dra_main = opt['dra_main']
+                dra_len_main = stn_data['L'] if eff_dra_main > 0 else 0.0
 
-                dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
-                eff_dra_main = opt['dra_main'] if dra_len_main > 0 else 0.0
                 scenarios = []
+                # Base scenario: flow through mainline only
                 hl_single, v_single, Re_single, f_single = _segment_hydraulics(
                     flow_total,
                     stn_data['L'],
@@ -878,8 +898,9 @@ def solve_pipeline(
                 })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
-                    dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
-                    eff_dra_loop = opt['dra_loop'] if dra_len_loop > 0 else 0.0
+                    # Drag reduction on loopline applies across the entire loop
+                    eff_dra_loop = opt['dra_loop']
+                    dra_len_loop = loop['L'] if eff_dra_loop > 0 else 0.0
                     # Parallel scenario (main + loop split by equal head)
                     hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                         flow_total,
@@ -901,6 +922,7 @@ def solve_pipeline(
                     )
                     v_m, Re_m, f_m, q_main = main_stats
                     v_l, Re_l, f_l, q_loop = loop_stats
+                    # Parallel scenario without bypass
                     scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
@@ -915,7 +937,7 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': False,
                     })
-                    # Bypass scenario: same flow split but bypass next pump
+                    # Bypass scenario: same flow split but bypass next pump on loop
                     scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
@@ -930,10 +952,9 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': True,
                     })
-                    # Loop-only scenario: entire flow goes through loopline only.
-                    # Only include this scenario when the loopline and mainline
-                    # diameters differ.  When they are identical the
-                    # parallel scenario already covers equal-split behaviour.
+                    # Loop‑only scenario: entire flow goes through loopline only.
+                    # Only include when diameters differ; otherwise the parallel
+                    # scenario already captures equal pipes.
                     if abs(stn_data['d_inner'] - loop['d_inner']) > 1e-6:
                         hl_loop, v_loop_only, Re_loop_only, f_loop_only = _segment_hydraulics(
                             flow_total,
@@ -1042,30 +1063,69 @@ def solve_pipeline(
                 else:
                     filtered_scenarios = scenarios
                 for sc in filtered_scenarios:
+                    # Skip scenarios with unacceptable velocities
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
+
+                    # Determine the effective drag reduction on the loopline.  In bypass
+                    # mode (Condition‑G) the DRA injection at this station is not
+                    # performed on the loopline; instead the drag reduction from the
+                    # upstream station persists.  Otherwise use the station's
+                    # prescribed DRA for the loopline.  When there is no loop flow
+                    # the value is irrelevant but carried forward.
+                    carry_prev = state.get('carry_loop_dra', 0.0)
+                    if sc['flow_loop'] > 0:
+                        if sc.get('bypass_next'):
+                            eff_dra_loop = carry_prev
+                            # No injection at this station for loopline in bypass mode
+                            inj_loop_current = 0.0
+                            inj_ppm_loop = 0.0
+                        else:
+                            eff_dra_loop = opt['dra_loop']
+                            inj_loop_current = opt['dra_loop']
+                            inj_ppm_loop = opt['dra_ppm_loop']
+                    else:
+                        eff_dra_loop = 0.0
+                        inj_loop_current = 0.0
+                        inj_ppm_loop = 0.0
+
+                    # Determine next carry-over drag reduction value for the loop.
+                    if sc['flow_loop'] > 0:
+                        if sc.get('bypass_next'):
+                            new_carry = carry_prev
+                        else:
+                            new_carry = opt['dra_loop']
+                    else:
+                        new_carry = carry_prev
+
+                    # Compute the resulting superimposed discharge head after the pump and
+                    # check MAOP constraints.  Use the head delivered by the pumps on
+                    # this segment.
                     sdh = state['residual'] + tdh
                     if sdh > stn_data['maop_head'] or (
                         sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
                     ):
                         continue
+
+                    # Compute downstream residual head after segment loss and elevation
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
+
+                    # Recompute downstream flows if bypassing the next station; the flow
+                    # through the mainline changes only for a bypass.  ``seg_flows_tmp``
+                    # holds the flow after each station.
                     seg_flows_tmp = segment_flows.copy()
                     seg_flows_tmp[stn_data['idx'] + 1] = sc['flow_main'] if sc.get('bypass_next') else flow_total
                     for j in range(stn_data['idx'] + 1, N):
                         delivery_j = float(stations[j].get('delivery', 0.0))
                         supply_j = float(stations[j].get('supply', 0.0))
                         seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
+
+                    # Compute minimum downstream requirement and skip infeasible states
                     if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
-                        # When bypassing the next pump, skip all consecutive units belonging to the next
-                        # physical station (i.e. all units sharing the same orig_name) rather than
-                        # skipping only the immediate next unit.  This is important when pump type
-                        # combinations expand a single physical station into multiple unit entries.
                         stations_skip = copy.deepcopy(stations)
                         next_index = stn_data['idx'] + 1
-                        # Determine the original station name of the next unit
                         next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
                         j = next_index
                         while j < N:
@@ -1094,12 +1154,23 @@ def solve_pipeline(
                         )
                     if residual_next < min_req:
                         continue
+
+                    # Compute DRA costs.  Only charge for injections performed at this
+                    # station.  For bypass on the loopline we skip loop DRA cost because
+                    # no injection is made here.  We still charge for mainline DRA
+                    # injections if applicable.
                     dra_cost = 0.0
                     if opt['dra_ppm_main'] > 0:
                         dra_cost += opt['dra_ppm_main'] * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
-                    if opt['dra_ppm_loop'] > 0 and sc['flow_loop'] > 0:
-                        dra_cost += opt['dra_ppm_loop'] * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
+                    if sc['flow_loop'] > 0 and inj_ppm_loop > 0:
+                        dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
+
                     total_cost = power_cost + dra_cost
+
+                    # Build the record for this station.  Update loop velocity and MAOP
+                    # information based on the scenario.  Use the effective drag
+                    # reduction for loopline in display.  Note: drag_reduction_loop
+                    # reflects the value used in this segment (carry over for bypass).
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
                         f"pipeline_flow_in_{stn_data['name']}": flow_total,
@@ -1156,9 +1227,9 @@ def solve_pipeline(
                             f"power_cost_{stn_data['name']}": power_cost,
                             f"dra_cost_{stn_data['name']}": dra_cost,
                             f"dra_ppm_{stn_data['name']}": opt['dra_ppm_main'],
-                            f"dra_ppm_loop_{stn_data['name']}": opt['dra_ppm_loop'],
+                            f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
                             f"drag_reduction_{stn_data['name']}": opt['dra_main'],
-                            f"drag_reduction_loop_{stn_data['name']}": opt['dra_loop'],
+                            f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
                     else:
                         record.update({
@@ -1175,6 +1246,10 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": 0.0,
                             f"drag_reduction_loop_{stn_data['name']}": 0.0,
                         })
+                    # Accumulate cost and update dynamic state.  When comparing states
+                    # with the same residual bucket, prefer the one with lower cost
+                    # or, when costs tie, the one with higher residual.  Carry
+                    # forward the loop DRA carry value and the updated reach.
                     new_cost = state['cost'] + total_cost
                     bucket = round(residual_next, RESIDUAL_ROUND)
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
@@ -1195,8 +1270,9 @@ def solve_pipeline(
                             'records': new_record_list,
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
-                            'reach': reach_after,
+                            # ``reach`` removed because DRA advancement is no longer tracked
                             'flow': flow_next,
+                            'carry_loop_dra': new_carry,
                         }
 
         if not new_states:
@@ -1350,8 +1426,11 @@ def solve_pipeline_with_types(
                     continue
                 cost = result.get("total_cost", float('inf'))
                 if cost < best_cost:
+                    # Preserve usage directive for later labelling
+                    result_with_usage = result.copy()
+                    result_with_usage['loop_usage'] = usage.copy()
                     best_cost = cost
-                    best_result = result
+                    best_result = result_with_usage
                     best_stations = stn_acc
             return
 
