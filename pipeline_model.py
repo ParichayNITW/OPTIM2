@@ -474,7 +474,7 @@ def _downstream_requirement(
         req = downstream + head_loss + (elev_next - elev_i)
 
         # Check intermediate peaks on both mainline and loopline.  Each peak
-        # requires sufficient upstream pressure to maintain at least 25 m of
+        # requires sufficient upstream pressure to maintain at least 15 m of
         # residual head at the peak itself.  Consider whichever peak demands the
         # highest pressure.
         # Helper to compute the residual head requirement at intermediate peaks.
@@ -488,7 +488,7 @@ def _downstream_requirement(
                 if dist is None or elev_peak is None:
                     continue
                 head_peak, *_ = _segment_hydraulics(flow_rate, float(dist), d_pipe, rough_pipe, kv, dra_perc)
-                req_p = head_peak + (float(elev_peak) - elev_i) + 25.0
+                req_p = head_peak + (float(elev_peak) - elev_i) + 15.0
                 if req_p > req_local:
                     req_local = req_p
             return req_local
