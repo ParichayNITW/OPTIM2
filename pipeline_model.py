@@ -716,6 +716,11 @@ def solve_pipeline_with_types(
                 stn['pump_types'].get('A', {}).get('available', 0),
                 stn['pump_types'].get('B', {}).get('available', 0),
             )
+            if not combos:
+                stn_copy = copy.deepcopy(stn)
+                stn_copy.pop('pump_types', None)
+                stn_copy['is_pump'] = False
+                expand_all(pos + 1, stn_acc + [stn_copy], kv_acc + [kv], rho_acc + [rho])
             for numA, numB in combos:
                 units: list[dict] = []
                 name_base = stn['name']
