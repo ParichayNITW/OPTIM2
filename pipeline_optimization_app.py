@@ -1044,12 +1044,12 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         dr_use = min(dr_opt, dr_max)
         station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
 
-    segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
-    loop_flows = [res.get(f"loopline_flow_{k}", np.nan) for k in keys]
-    pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
+    segment_flows = [float(res.get(f"pipeline_flow_{k}", 0.0) or 0.0) for k in keys]
+    loop_flows = [float(res.get(f"loopline_flow_{k}", 0.0) or 0.0) for k in keys]
+    pump_flows = [float(res.get(f"pump_flow_{k}", 0.0) or 0.0) for k in keys]
 
     params = [
-        "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Bypass Next?",
+        "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Loopline Bypass?",
         "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)",
         "Pump Eff (%)", "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
         "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)", "Residual Head (kg/cm²)",
@@ -1059,11 +1059,13 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
 
     for idx, nm in enumerate(names):
         key = keys[idx]
+        prev_key = keys[idx - 1] if idx > 0 else None
+        bypass = res.get(f"bypass_next_{prev_key}", 0) if prev_key else 0
         summary[nm] = [
             segment_flows[idx],
             loop_flows[idx],
             pump_flows[idx] if idx < len(pump_flows) and not pd.isna(pump_flows[idx]) else np.nan,
-            res.get(f"bypass_next_{key}", 0),
+            bypass,
             res.get(f"power_cost_{key}", 0.0),
             res.get(f"dra_cost_{key}", 0.0),
             station_ppm.get(key, np.nan),
@@ -1090,56 +1092,36 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         drop_cols = []
         for stn in stations_data:
             key = stn['name'].lower().replace(' ', '_')
-            if stn.get('is_pump', False):
-                if int(res.get(f"num_pumps_{key}", 0)) == 0 and float(res.get(f"drag_reduction_{key}", 0)) == 0:
-                    drop_cols.append(stn['name'])
+            if stn.get('is_pump', False) and int(res.get(f"num_pumps_{key}", 0)) == 0:
+                drop_cols.append(stn['name'])
         if drop_cols:
             df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
     return df_sum.round(2)
 
 
-def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
-    """Return per-station details used in the daily schedule table.
-
-    The function iterates over the stations used in the optimisation (including
-    individual pump units at the origin) and pulls the corresponding values from
-    ``res``.  No aggregation is performed so the hydraulic linkage between
-    pumps and stations (RH -> SDH propagation) is preserved.
-    """
+def build_station_table(res: dict, base_stations: list[dict], terminal_name: str) -> pd.DataFrame:
+    """Return per-station details excluding idle pumps and mark bypass decisions."""
 
     rows: list[dict] = []
-    stations_seq = res.get('stations_used') or base_stations
-    origin_name = base_stations[0]['name'] if base_stations else ''
-    base_map = {s['name']: s for s in base_stations}
+    names = [s['name'] for s in base_stations]
+    keys = [n.lower().replace(' ', '_') for n in names]
 
-    for idx, stn in enumerate(stations_seq):
-        name = stn['name'] if isinstance(stn, dict) else str(stn)
-        key = name.lower().replace(' ', '_')
-        if f"pipeline_flow_{key}" not in res:
-            continue
-
-        station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
-        base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
-        pump_list = None
-        if isinstance(stn, dict):
-            pump_list = stn.get('pump_names') or base_stn.get('pump_names')
-        else:
-            pump_list = base_stn.get('pump_names') if base_stn else None
+    for idx, stn in enumerate(base_stations):
+        key = keys[idx]
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
-        if pump_list and n_pumps > 0:
-            pump_name = ", ".join(pump_list[:n_pumps])
-        else:
-            pump_name = (stn.get('pump_name') if isinstance(stn, dict) else '') or base_stn.get('pump_name', '')
-
-        if origin_name and name != origin_name and name.startswith(origin_name):
-            station_display = origin_name
-
+        if n_pumps == 0:
+            continue
+        pump_list = stn.get('pump_names') or ([stn.get('pump_name')] if stn.get('pump_name') else [])
+        pump_name = ", ".join(pump_list[:n_pumps]) if pump_list else ''
+        prev_key = keys[idx - 1] if idx > 0 else None
+        bypass = res.get(f"bypass_next_{prev_key}", 0) if prev_key else 0
         row = {
-            'Station': station_display,
+            'Station': stn['name'],
             'Pump Name': pump_name,
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
+            'Loopline Bypass?': int(bypass),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
             'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
@@ -1162,18 +1144,50 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
-
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
-
-        # Available suction head only needs to be reported at the origin suction
         if idx == 0:
             row['Available Suction Head (m)'] = row['Residual Head (m)']
             row['Available Suction Head (kg/cm²)'] = row['Residual Head (kg/cm²)']
         else:
             row['Available Suction Head (m)'] = np.nan
             row['Available Suction Head (kg/cm²)'] = np.nan
-
         rows.append(row)
+
+    term_key = terminal_name.lower().replace(' ', '_')
+    if f"residual_head_{term_key}" in res:
+        trow = {
+            'Station': terminal_name,
+            'Pump Name': '',
+            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{term_key}", 0.0) or 0.0),
+            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{term_key}", 0.0) or 0.0),
+            'Pump Flow (m³/hr)': 0.0,
+            'Loopline Bypass?': int(res.get(f"bypass_next_{keys[-1]}", 0) if keys else 0),
+            'Power & Fuel Cost (INR)': 0.0,
+            'DRA Cost (INR)': 0.0,
+            'DRA PPM': 0.0,
+            'Loop DRA PPM': 0.0,
+            'No. of Pumps': 0,
+            'Pump Speed (rpm)': 0.0,
+            'Pump Eff (%)': 0.0,
+            'Pump BKW (kW)': 0.0,
+            'Motor Input (kW)': 0.0,
+            'Reynolds No.': float(res.get(f"reynolds_{term_key}", 0.0) or 0.0),
+            'Head Loss (m)': float(res.get(f"head_loss_{term_key}", 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{term_key}", 0.0) or 0.0),
+            'Vel (m/s)': float(res.get(f"velocity_{term_key}", 0.0) or 0.0),
+            'Residual Head (m)': float(res.get(f"residual_head_{term_key}", 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{term_key}", 0.0) or 0.0),
+            'SDH (m)': float(res.get(f"sdh_{term_key}", 0.0) or 0.0),
+            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{term_key}", 0.0) or 0.0),
+            'MAOP (m)': float(res.get(f"maop_{term_key}", 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{term_key}", 0.0) or 0.0),
+            'Drag Reduction (%)': float(res.get(f"drag_reduction_{term_key}", 0.0) or 0.0),
+            'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{term_key}", 0.0) or 0.0),
+            'Total Cost (INR)': 0.0,
+            'Available Suction Head (m)': np.nan,
+            'Available Suction Head (kg/cm²)': np.nan,
+        }
+        rows.append(trow)
 
     df = pd.DataFrame(rows)
     return df.round(2)
@@ -1719,10 +1733,11 @@ if not auto_batch:
 
         # Build a consolidated station-wise table
         station_tables = []
+        term_name = st.session_state.get("terminal_name", "Terminal")
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
-            df_int = build_station_table(res, stations_base)
+            df_int = build_station_table(res, stations_base, term_name)
             df_int.insert(0, "Time", f"{hr:02d}:00")
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
@@ -1877,10 +1892,11 @@ if not auto_batch:
             st.session_state["last_linefill"] = copy.deepcopy(current_vol)
 
             station_tables = []
+            term_name = st.session_state.get("terminal_name", "Terminal")
             for rec in reports:
                 res = rec["result"]
                 ts = rec["time"]
-                df_int = build_station_table(res, stations_base)
+                df_int = build_station_table(res, stations_base, term_name)
                 df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
                 station_tables.append(df_int)
             df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
