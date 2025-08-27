@@ -194,78 +194,64 @@ def restore_case_dict(loaded_data):
         st.session_state["planner_days"] = loaded_data["planner_days"]
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
-    for i in range(len(st.session_state['stations'])):
-        head_data = loaded_data.get(f"head_data_{i+1}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
-        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
-        loop_peak_data = loaded_data.get(f"loop_peak_data_{i+1}", None)
+    for i, stn in enumerate(st.session_state['stations'], start=1):
+        head_data = loaded_data.get(f"head_data_{i}", None)
+        eff_data  = loaded_data.get(f"eff_data_{i}", None)
+        peak_data = loaded_data.get(f"peak_data_{i}", None)
+        loop_peak_data = loaded_data.get(f"loop_peak_data_{i}", None)
         if head_data is not None:
             df_head = pd.DataFrame(head_data)
-            st.session_state[f"head_data_{i+1}"] = df_head
-            st.session_state['stations'][i]['head_data'] = head_data
+            st.session_state[f"head_data_{i}"] = df_head
+            st.session_state['stations'][i-1]['head_data'] = head_data
         if eff_data is not None:
             df_eff = pd.DataFrame(eff_data)
-            st.session_state[f"eff_data_{i+1}"] = df_eff
-            st.session_state['stations'][i]['eff_data'] = eff_data
+            st.session_state[f"eff_data_{i}"] = df_eff
+            st.session_state['stations'][i-1]['eff_data'] = eff_data
         if peak_data is not None:
             df_peak = pd.DataFrame(peak_data)
-            st.session_state[f"peak_data_{i+1}"] = df_peak
-            st.session_state['stations'][i]['peak_data'] = peak_data
+            st.session_state[f"peak_data_{i}"] = df_peak
+            st.session_state['stations'][i-1]['peak_data'] = peak_data
         if loop_peak_data is not None:
             df_lpeak = pd.DataFrame(loop_peak_data)
-            st.session_state[f"loop_peak_data_{i+1}"] = df_lpeak
-            st.session_state['stations'][i].setdefault('loopline', {})['peaks'] = loop_peak_data
+            st.session_state[f"loop_peak_data_{i}"] = df_lpeak
+            st.session_state['stations'][i-1].setdefault('loopline', {})['peaks'] = loop_peak_data
         else:
-            loop_peaks = st.session_state['stations'][i].get('loopline', {}).get('peaks')
+            loop_peaks = st.session_state['stations'][i-1].get('loopline', {}).get('peaks')
             if loop_peaks is not None:
-                st.session_state[f"loop_peak_data_{i+1}"] = pd.DataFrame(loop_peaks)
+                st.session_state[f"loop_peak_data_{i}"] = pd.DataFrame(loop_peaks)
 
-    # Handle pump type data for originating station
-    headA = loaded_data.get("head_data_1A", None)
-    effA  = loaded_data.get("eff_data_1A", None)
-    peakA = loaded_data.get("peak_data_1A", None)
-    headB = loaded_data.get("head_data_1B", None)
-    effB  = loaded_data.get("eff_data_1B", None)
-    peakB = loaded_data.get("peak_data_1B", None)
-    if headA is not None:
-        df_headA = pd.DataFrame(headA)
-        st.session_state["head_data_1A"] = df_headA
-        if st.session_state['stations']:
-            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('A', {})['head_data'] = headA
-    if effA is not None:
-        df_effA = pd.DataFrame(effA)
-        st.session_state["eff_data_1A"] = df_effA
-        if st.session_state['stations']:
-            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('A', {})['eff_data'] = effA
-    if peakA is not None:
-        df_peakA = pd.DataFrame(peakA)
-        st.session_state["peak_data_1A"] = df_peakA
-        if st.session_state['stations']:
-            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('A', {})['peak_data'] = peakA
-    if headB is not None:
-        df_headB = pd.DataFrame(headB)
-        st.session_state["head_data_1B"] = df_headB
-        if st.session_state['stations']:
-            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['head_data'] = headB
-    if effB is not None:
-        df_effB = pd.DataFrame(effB)
-        st.session_state["eff_data_1B"] = df_effB
-        if st.session_state['stations']:
-            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['eff_data'] = effB
-    if peakB is not None:
-        df_peakB = pd.DataFrame(peakB)
-        st.session_state["peak_data_1B"] = df_peakB
-        if st.session_state['stations']:
-            st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['peak_data'] = peakB
+        # Load pump type-specific data if present
+        for ptype in stn.get('pump_types', {}).keys():
+            head_pt = loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data'))
+            eff_pt  = loaded_data.get(f"eff_data_{i}{ptype}", stn['pump_types'][ptype].get('eff_data'))
+            peak_pt = loaded_data.get(f"peak_data_{i}{ptype}", stn['pump_types'][ptype].get('peak_data'))
+            if head_pt is not None:
+                df_head_pt = pd.DataFrame(head_pt)
+                st.session_state[f"head_data_{i}{ptype}"] = df_head_pt
+                st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['head_data'] = head_pt
+            if eff_pt is not None:
+                df_eff_pt = pd.DataFrame(eff_pt)
+                st.session_state[f"eff_data_{i}{ptype}"] = df_eff_pt
+                st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['eff_data'] = eff_pt
+            if peak_pt is not None:
+                df_peak_pt = pd.DataFrame(peak_pt)
+                st.session_state[f"peak_data_{i}{ptype}"] = df_peak_pt
+                st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['peak_data'] = peak_pt
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
-if uploaded_case is not None and not st.session_state.get("case_loaded", False):
-    loaded_data = json.load(uploaded_case)
-    restore_case_dict(loaded_data)
-    st.session_state["case_loaded"] = True
-    st.session_state["should_rerun"] = True
-    st.rerun()
-    st.stop()
+if uploaded_case is None:
+    st.session_state["case_loaded"] = False
+    st.session_state["case_loaded_name"] = None
+else:
+    file_id = getattr(uploaded_case, "name", None)
+    if st.session_state.get("case_loaded_name") != file_id:
+        loaded_data = json.load(uploaded_case)
+        restore_case_dict(loaded_data)
+        st.session_state["case_loaded"] = True
+        st.session_state["case_loaded_name"] = file_id
+        st.session_state["should_rerun"] = True
+        st.rerun()
+        st.stop()
 
 if st.session_state.get("should_rerun", False):
     st.session_state["should_rerun"] = False
@@ -276,18 +262,27 @@ if st.session_state.get("should_rerun", False):
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
-        RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
-        Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
-        Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0)
-        Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0)
-        MOP_val   = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0)
-        st.session_state["FLOW"] = FLOW
-        st.session_state["RateDRA"] = RateDRA
-        st.session_state["Price_HSD"] = Price_HSD
-        st.session_state["Fuel_density"] = Fuel_density
-        st.session_state["Ambient_temp"] = Ambient_temp
-        st.session_state["MOP_kgcm2"] = MOP_val
+        with st.form("global_params"):
+            FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="FLOW_input")
+            RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="RateDRA_input")
+            Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="Price_HSD_input")
+            Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="Fuel_density_input")
+            Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="Ambient_temp_input")
+            MOP_val = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0, key="MOP_input")
+            submitted_glob = st.form_submit_button("Apply")
+        if submitted_glob:
+            st.session_state["FLOW"] = FLOW
+            st.session_state["RateDRA"] = RateDRA
+            st.session_state["Price_HSD"] = Price_HSD
+            st.session_state["Fuel_density"] = Fuel_density
+            st.session_state["Ambient_temp"] = Ambient_temp
+            st.session_state["MOP_kgcm2"] = MOP_val
+        FLOW = st.session_state.get("FLOW", 1000.0)
+        RateDRA = st.session_state.get("RateDRA", 500.0)
+        Price_HSD = st.session_state.get("Price_HSD", 70.0)
+        Fuel_density = st.session_state.get("Fuel_density", 820.0)
+        Ambient_temp = st.session_state.get("Ambient_temp", 25.0)
+        MOP_val = st.session_state.get("MOP_kgcm2", 100.0)
 
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
@@ -1026,7 +1021,13 @@ def shift_vol_linefill(
 
 
 # Build a summary dataframe from solver results
-def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: pd.DataFrame | None, drop_unused: bool = True) -> pd.DataFrame:
+def build_summary_dataframe(
+    res: dict,
+    stations_data: list[dict],
+    linefill_df: pd.DataFrame | None,
+    terminal: dict | None = None,
+    drop_unused: bool = True,
+) -> pd.DataFrame:
     """Create station-wise summary table matching the Optimization Results view."""
 
     if linefill_df is not None and len(linefill_df):
@@ -1038,16 +1039,22 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         kv_list = [0.0] * len(stations_data)
 
     names = [s['name'] for s in stations_data]
+    if terminal is not None:
+        names.append(terminal.get('name', 'Terminal'))
     keys = [n.lower().replace(' ', '_') for n in names]
 
     station_ppm = {}
-    for idx, stn in enumerate(stations_data):
+    for idx, nm in enumerate(names):
         key = keys[idx]
-        dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-        dr_max = stn.get('max_dr', 0.0)
-        viscosity = kv_list[idx] if idx < len(kv_list) else 0.0
-        dr_use = min(dr_opt, dr_max)
-        station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+        if idx < len(stations_data):
+            stn = stations_data[idx]
+            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
+            dr_max = stn.get('max_dr', 0.0)
+            viscosity = kv_list[idx] if idx < len(kv_list) else 0.0
+            dr_use = min(dr_opt, dr_max)
+            station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+        else:
+            station_ppm[key] = np.nan
 
     segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
     loop_flows = [res.get(f"loopline_flow_{k}", np.nan) for k in keys]
@@ -1134,7 +1141,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if pump_list and n_pumps > 0:
             pump_name = ", ".join(pump_list[:n_pumps])
         else:
-            pump_name = (stn.get('pump_name') if isinstance(stn, dict) else '') or base_stn.get('pump_name', '')
+            pump_name = ""
 
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
@@ -1774,10 +1781,8 @@ if not auto_batch:
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        # Display the data without complex styling.  A background gradient
-        # previously applied caused conversion errors when non-numeric
-        # values were present.  Using a plain dataframe avoids this issue.
-        st.dataframe(df_day_numeric, use_container_width=True, hide_index=True)
+        df_day_style = df_day_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
+        st.dataframe(df_day_style, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -1945,8 +1950,8 @@ if not auto_batch:
             df_plan_numeric = df_plan.copy()
             for c in num_cols:
                 df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            # Display without background gradient to avoid type conversion errors.
-            st.dataframe(df_plan_numeric, use_container_width=True, hide_index=True)
+            df_plan_style = df_plan_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
+            st.dataframe(df_plan_style, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
@@ -2030,12 +2035,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
             names = [s['name'] for s in stations_data]
             keys = [n.lower().replace(' ', '_') for n in names]
-            df_sum = build_summary_dataframe(res, stations_data, linefill_df)
+            df_sum = build_summary_dataframe(res, stations_data, linefill_df, st.session_state["last_term_data"])
             st.session_state["summary_table"] = df_sum.copy()
-            df_display = df_sum.fillna(0.0).copy()
-            for col in df_display.columns:
-                if col != "Parameters":
-                    df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
+            fmt_cols = {col: "{:.2f}" for col in df_sum.columns if col != "Parameters"}
+            df_display = df_sum.style.format(fmt_cols).background_gradient(cmap="Blues", subset=df_sum.columns[1:])
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_display, use_container_width=True, hide_index=True)
             st.download_button(
