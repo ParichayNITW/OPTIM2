@@ -1834,22 +1834,38 @@ if not auto_batch:
 
                 stns_run = copy.deepcopy(stations_base)
 
-                res = solve_pipeline(
-                    stns_run, term_data, FLOW_sched, kv_list, rho_list,
-                    RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), current_vol.to_dict(), dra_reach_km,
-                    st.session_state.get("MOP_kgcm2"), hours=4.0
+                case_results = solve_pipeline_cases(
+                    stns_run,
+                    term_data,
+                    FLOW_sched,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    st.session_state.get("Fuel_density", 820.0),
+                    st.session_state.get("Ambient_temp", 25.0),
+                    current_vol.to_dict(),
+                    dra_reach_km,
+                    st.session_state.get("MOP_kgcm2"),
+                    hours=4.0,
                 )
-
-                if res.get("error"):
-                    error_msg = f"Optimization failed at {hr%24:02d}:00 -> {res.get('message','')}"
+                feasible = [c for c in case_results if not c["result"].get("error")]
+                if not feasible:
+                    error_msg = (
+                        f"Optimization failed at {hr%24:02d}:00 -> No feasible pump combination found for stations."
+                    )
                     break
+                best_case = min(
+                    feasible, key=lambda c: c["result"].get("total_cost", float("inf"))
+                )
+                res = best_case["result"]
 
-                reports.append({"time": hr % 24, "result": res})
+                reports.append({"time": hr % 24, "result": res, "case": best_case.get("label")})
                 linefill_snaps.append(current_vol.copy())
 
                 if ti < len(hours) - 1:
                     current_vol, plan_df = future_vol, future_plan
-                    dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
+                    dra_reach_km = float(res.get("dra_front_km", dra_reach_km))
 
         if error_msg:
             st.error(error_msg)
