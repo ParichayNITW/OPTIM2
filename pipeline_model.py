@@ -1149,7 +1149,7 @@ def solve_pipeline_cases(
     """
     cases = _generate_loop_cases(stations)
     results: list[dict] = []
-    for usage in cases:
+    for idx, usage in enumerate(cases):
         # Map the usage vector to station positions.  Only stations with
         # looplines contribute entries in the usage vector, so we need to
         # construct a full-length list for each station.  Stations without
@@ -1198,5 +1198,6 @@ def solve_pipeline_cases(
                 hours,
                 loop_usage=loop_by_station,
             )
-        results.append({'case': usage, 'result': result})
+        label = f"Case {chr(65 + idx)}"
+        results.append({'case': usage, 'label': label, 'result': result})
     return results
