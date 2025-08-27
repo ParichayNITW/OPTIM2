@@ -383,7 +383,7 @@ with st.sidebar:
             column_config={
                 "Start": st.column_config.DatetimeColumn("Start", format="DD/MM/YY HH:mm"),
                 "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm"),
-                "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)", format="%.2f"),
+                "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)"),
             },
         )
         st.session_state["proj_flow_df"] = flow_df
@@ -401,9 +401,9 @@ with st.sidebar:
             key="proj_plan_editor",
             column_config={
                 "Product": st.column_config.TextColumn("Product"),
-                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)", format="%.2f"),
-                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", format="%.2f"),
-                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", format="%.2f"),
+                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)"),
+                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)"),
+                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)"),
             },
         )
         st.session_state["proj_plan_df"] = proj_df
@@ -1781,7 +1781,11 @@ if not auto_batch:
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        df_day_style = df_day_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
+        fmt_dict = {c: "{:.2f}" for c in num_cols}
+        df_day_style = (
+            df_day_numeric.style.format(fmt_dict)
+            .background_gradient(cmap="Blues", subset=num_cols)
+        )
         st.dataframe(df_day_style, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
@@ -1799,7 +1803,8 @@ if not auto_batch:
             for rec in reports
         ]
         df_cost = pd.DataFrame(cost_rows).round(2)
-        st.dataframe(df_cost, use_container_width=True, hide_index=True)
+        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+        st.dataframe(df_cost_style, use_container_width=True, hide_index=True)
         st.markdown(
             f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
         )
@@ -1950,7 +1955,11 @@ if not auto_batch:
             df_plan_numeric = df_plan.copy()
             for c in num_cols:
                 df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            df_plan_style = df_plan_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
+            fmt_dict = {c: "{:.2f}" for c in num_cols}
+            df_plan_style = (
+                df_plan_numeric.style.format(fmt_dict)
+                .background_gradient(cmap="Blues", subset=num_cols)
+            )
             st.dataframe(df_plan_style, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
@@ -1968,7 +1977,8 @@ if not auto_batch:
                 for rec in reports
             ]
             df_cost = pd.DataFrame(cost_rows).round(2)
-            st.dataframe(df_cost, use_container_width=True, hide_index=True)
+            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+            st.dataframe(df_cost_style, use_container_width=True, hide_index=True)
             st.markdown(
                 f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
             )
