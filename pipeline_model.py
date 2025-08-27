@@ -35,6 +35,52 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
     return sorted(combos, key=lambda x: (x[0] + x[1], x))
 
 # ---------------------------------------------------------------------------
+# Loop enumeration utilities
+# ---------------------------------------------------------------------------
+
+def _generate_loop_cases(num_loops: int) -> list[list[int]]:
+    """Return a small set of representative loop-usage combinations.
+
+    For pipelines with looplines at one or two stations the user typically
+    expects at most five cases: no loops used, both loops used, only the
+    first loop used, only the second loop used and the first loop used in
+    bypass mode.  When more than two looped segments exist this helper
+    generates a handful of combinations rather than all 3^n permutations
+    to keep the optimisation tractable.  Each returned list contains an
+    integer per loop-position where 0 means the loop is disabled, 1
+    means the loop is used in parallel, and 2 means the loop is used in
+    bypass mode (i.e. it rejoins downstream of the next pump).  For
+    segments without a loop the value is ignored.
+    """
+    if num_loops <= 0:
+        return [[]]
+    if num_loops == 1:
+        return [[0], [1], [2]]
+    if num_loops == 2:
+        return [[0, 0], [1, 1], [2, 0], [0, 1], [1, 0]]
+    # For more than two looped segments choose a few representative cases:
+    # (1) no loops, (2) all loops used, (3) each individual loop used alone,
+    # (4) first bypass and others off, (5) last bypass and others off.
+    combos: list[list[int]] = []
+    combos.append([0] * num_loops)
+    combos.append([1] * num_loops)
+    for i in range(num_loops):
+        c = [0] * num_loops
+        c[i] = 1
+        combos.append(c)
+    c = [0] * num_loops
+    c[0] = 2
+    combos.append(c)
+    c = [0] * num_loops
+    c[-1] = 2
+    combos.append(c)
+    unique: list[list[int]] = []
+    for c in combos:
+        if c not in unique:
+            unique.append(c)
+    return unique
+
+# ---------------------------------------------------------------------------
 # Core calculations
 # ---------------------------------------------------------------------------
 
@@ -296,7 +342,10 @@ def _downstream_requirement(
         flow = flows[i + 1]
         L = stn.get('L', 0.0)
         t = stn.get('t', 0.007)
-        if 'D' in stn:
+        # ``D`` may be present but ``None`` in pump-type expansions.  Treat
+        # a ``None`` value as absent and fall back to the ``d`` key.  Without
+        # this check subtraction would error.
+        if stn.get('D') is not None:
             d_inner = stn['D'] - 2 * t
         else:
             d_inner = stn.get('d', 0.7) - 2 * t
@@ -329,7 +378,7 @@ def _downstream_requirement(
         peak_req = peak_requirement(stn.get('peaks'), d_inner, rough, dra_down)
         loop = stn.get('loopline')
         if loop:
-            if 'D' in loop:
+            if loop.get('D') is not None:
                 t_loop = loop.get('t', t)
                 d_inner_loop = loop['D'] - 2 * t_loop
             else:
@@ -367,12 +416,65 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    loop_usage: list[int] | None = None,
+    *,
+    loop_usage_by_station: list[int] | None = None,
+    enumerate_loops: bool = True,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
-    operating strategy.  This replaces the previous greedy approach and
-    guarantees that the global minimum (within the discretised search space) is
-    returned."""
+    operating strategy.
+
+    This function supports optional loop-use directives.  When
+    ``enumerate_loops`` is ``True`` and no explicit
+    ``loop_usage_by_station`` is provided the solver will automatically
+    build a small set of loop-use patterns (e.g. Cases A–E) and run the
+    optimisation for each.  The best result is returned.  When
+    ``loop_usage_by_station`` is supplied the solver restricts which
+    loop scenarios are considered at each station: 0=disabled, 1=parallel,
+    2=bypass.  By default the function behaves like the original
+    implementation with internal loop enumeration.
+    """
+
+    # When requested, perform an outer enumeration over loop usage patterns.
+    # We only enter this branch when no explicit per-station loop usage is
+    # specified.  Each candidate pattern is mapped onto the stations with
+    # looplines, then the solver is invoked recursively with
+    # ``enumerate_loops=False`` so that this block isn't re-entered.  The
+    # best feasible result across all cases is returned.
+    if enumerate_loops and loop_usage_by_station is None:
+        # Identify the indices of stations with defined looplines
+        loop_positions = [idx for idx, stn in enumerate(stations) if stn.get('loopline')]
+        num_loops = len(loop_positions)
+        cases = _generate_loop_cases(num_loops)
+        best_res: dict | None = None
+        for case in cases:
+            usage = [0] * len(stations)
+            for pos, val in zip(loop_positions, case):
+                usage[pos] = val
+            res = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                loop_usage_by_station=usage,
+                enumerate_loops=False,
+            )
+            if res.get('error'):
+                continue
+            if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
+                best_res = res
+        return best_res or {
+            'error': True,
+            'message': 'No feasible pump combination found for stations.',
+        }
 
     N = len(stations)
     segment_flows = [float(FLOW)]
@@ -396,17 +498,29 @@ def solve_pipeline(
         rho = rho_list[i - 1]
 
         L = stn.get('L', 0.0)
-        if 'D' in stn:
+        # Determine pipe dimensions.  Some pump-type expansions may carry a
+        # ``D`` key with value ``None``.  Treat a ``None`` diameter as
+        # unspecified and fall back to using ``d`` instead.  Likewise,
+        # thickness defaults when not provided.  Without this check,
+        # ``stn['D']`` could be ``None`` and arithmetic would raise an error.
+        if stn.get('D') is not None:
             thickness = stn.get('t', default_t)
-            d_inner = stn['D'] - 2 * thickness
-            outer_d = stn['D']
+            # ``outer_d`` may be ``None`` if ``D`` exists but is explicitly
+            # null.  Guard against this by falling back to the internal
+            # diameter ``d`` if provided, otherwise the default 0.7 m.
+            outer_d = stn['D'] if stn['D'] is not None else stn.get('d', 0.7)
+            d_inner = outer_d - 2 * thickness
         else:
+            # When ``D`` is absent or ``None`` fall back to ``d``
             d_inner = stn.get('d', 0.7)
-            outer_d = stn.get('d', 0.7)
+            outer_d = d_inner
             thickness = stn.get('t', default_t)
         rough = stn.get('rough', default_e)
 
-        SMYS = stn.get('SMYS', 52000.0)
+        # Use a default SMYS when the station provides ``None`` or omits the
+        # parameter entirely.  A value of ``None`` would propagate and
+        # break downstream multiplication.
+        SMYS = stn.get('SMYS', 52000.0) or 52000.0
         design_factor = 0.72
         maop_psi = 2 * SMYS * design_factor * (thickness / outer_d) if outer_d > 0 else 0.0
         maop_kgcm2 = maop_psi * 0.0703069
@@ -557,17 +671,7 @@ def solve_pipeline(
 
                 dra_len_main = max(0.0, min(stn_data['L'], reach_after - stn_data['cum_dist']))
                 eff_dra_main = opt['dra_main'] if dra_len_main > 0 else 0.0
-                scenarios: list[dict] = []
-
-                # Determine the forced loop usage for this station (0=no loop, 1=join, 2=bypass)
-                use_case = None
-                if loop_usage is not None:
-                    try:
-                        use_case = loop_usage[stn_data['idx']]
-                    except IndexError:
-                        use_case = 0
-
-                # Compute base (single pipeline) scenario
+                scenarios = []
                 hl_single, v_single, Re_single, f_single = _segment_hydraulics(
                     flow_total,
                     stn_data['L'],
@@ -577,7 +681,7 @@ def solve_pipeline(
                     eff_dra_main,
                     dra_len_main,
                 )
-                base_scenario = {
+                scenarios.append({
                     'head_loss': hl_single,
                     'v': v_single,
                     'Re': Re_single,
@@ -590,20 +694,11 @@ def solve_pipeline(
                     'maop_loop': 0.0,
                     'maop_loop_kg': 0.0,
                     'bypass_next': False,
-                }
-
-                # Append base scenario only if loops are not forced to be used for this station
-                if not stn_data.get('loopline') or (use_case is None) or (use_case == 0):
-                    scenarios.append(base_scenario)
-
-                # If there is a loopline, prepare parallel scenarios
+                })
                 if stn_data.get('loopline'):
                     loop = stn_data['loopline']
-                    # Only compute parallel scenarios if loops are allowed or forced
-                    # Determine drag lengths for main and loop
                     dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
                     eff_dra_loop = opt['dra_loop'] if dra_len_loop > 0 else 0.0
-                    # Evaluate parallel hydraulics once
                     hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                         flow_total,
                         {
@@ -624,7 +719,7 @@ def solve_pipeline(
                     )
                     v_m, Re_m, f_m, q_main = main_stats
                     v_l, Re_l, f_l, q_loop = loop_stats
-                    join_scenario = {
+                    scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
                         'Re': Re_m,
@@ -637,15 +732,21 @@ def solve_pipeline(
                         'maop_loop': loop['maop_head'],
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': False,
-                    }
-                    bypass_scenario = join_scenario.copy()
-                    bypass_scenario['bypass_next'] = True
-                    # Append join scenario if loops are forced to join or loops are unrestricted
-                    if use_case is None or use_case == 1:
-                        scenarios.append(join_scenario)
-                    # Append bypass scenario if loops are forced to bypass or loops are unrestricted
-                    if use_case is None or use_case == 2:
-                        scenarios.append(bypass_scenario)
+                    })
+                    scenarios.append({
+                        'head_loss': hl_par,
+                        'v': v_m,
+                        'Re': Re_m,
+                        'f': f_m,
+                        'flow_main': q_main,
+                        'v_loop': v_l,
+                        'Re_loop': Re_l,
+                        'f_loop': f_l,
+                        'flow_loop': q_loop,
+                        'maop_loop': loop['maop_head'],
+                        'maop_loop_kg': loop['maop_kgcm2'],
+                        'bypass_next': True,
+                    })
 
                 if opt['nop'] > 0 and opt['rpm'] > 0:
                     pump_def = {
@@ -692,7 +793,38 @@ def solve_pipeline(
                 else:
                     power_cost = prime_kw_total * hours * stn_data.get('rate', 0.0)
 
-                for sc in scenarios:
+                # Filter candidate scenarios based on explicit loop-usage directives.
+                filtered_scenarios = []
+                if loop_usage_by_station is not None and stn_data.get('loopline'):
+                    usage = loop_usage_by_station[stn_data['idx']]
+                    if usage == 0:
+                        # Only the base (no-loop) scenario is allowed.  Pick the first
+                        # scenario with zero loop flow.
+                        for cand in scenarios:
+                            if cand['flow_loop'] == 0.0:
+                                filtered_scenarios.append(cand)
+                                break
+                    elif usage == 1:
+                        # Use only the parallel scenario: loop flow > 0 and not bypass.
+                        for cand in scenarios:
+                            if cand['flow_loop'] > 0.0 and not cand.get('bypass_next', False):
+                                filtered_scenarios.append(cand)
+                                break
+                    elif usage == 2:
+                        # Use only the bypass scenario: loop flow > 0 and bypass flag set.
+                        for cand in scenarios:
+                            if cand['flow_loop'] > 0.0 and cand.get('bypass_next', False):
+                                filtered_scenarios.append(cand)
+                                break
+                    else:
+                        # Unrecognised directive: fall back to no-loop scenario.
+                        for cand in scenarios:
+                            if cand['flow_loop'] == 0.0:
+                                filtered_scenarios.append(cand)
+                                break
+                else:
+                    filtered_scenarios = scenarios
+                for sc in filtered_scenarios:
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
@@ -710,9 +842,24 @@ def solve_pipeline(
                         supply_j = float(stations[j].get('supply', 0.0))
                         seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
                     if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
+                        # When bypassing the next pump, skip all consecutive units belonging to the next
+                        # physical station (i.e. all units sharing the same orig_name) rather than
+                        # skipping only the immediate next unit.  This is important when pump type
+                        # combinations expand a single physical station into multiple unit entries.
                         stations_skip = copy.deepcopy(stations)
-                        stations_skip[stn_data['idx'] + 1]['is_pump'] = False
-                        stations_skip[stn_data['idx'] + 1]['max_pumps'] = 0
+                        next_index = stn_data['idx'] + 1
+                        # Determine the original station name of the next unit
+                        next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
+                        j = next_index
+                        while j < N:
+                            if stations[j].get('orig_name') == next_orig or (
+                                next_orig is None and stations[j].get('orig_name') is None
+                            ):
+                                stations_skip[j]['is_pump'] = False
+                                stations_skip[j]['max_pumps'] = 0
+                                j += 1
+                            else:
+                                break
                         min_req = _downstream_requirement(
                             stations_skip,
                             stn_data['idx'],
@@ -837,18 +984,11 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Remove dominated states to curb combinatorial growth without
-        # sacrificing optimality.  After sorting by residual head, retain only
-        # states that improve upon the best cost seen so far.  Higher-residual
-        # states are kept when costs tie, preserving global minima while
-        # pruning less promising branches.
-        pruned: dict[float, dict] = {}
-        best_cost = float('inf')
-        for bucket, data in sorted(new_states.items(), key=lambda x: x[1]['residual'], reverse=True):
-            if data['cost'] < best_cost - 1e-9:
-                pruned[bucket] = data
-                best_cost = data['cost']
-        states = pruned
+        # Assign all new states for the next iteration.  Previously we pruned
+        # aggressively by residual and cost, which could discard viable
+        # solutions.  Retaining all states helps ensure that marginally
+        # more expensive configurations remain available for later stations.
+        states = new_states
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -917,7 +1057,6 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    loop_usage_by_station: list[int] | None = None,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -926,26 +1065,10 @@ def solve_pipeline_with_types(
     best_stations = None
     N = len(stations)
 
-    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float], loop_usage_unit: list[int]):
+    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            # At the end of recursion, call solve_pipeline with the accumulated loop usage per unit
-            result = solve_pipeline(
-                stn_acc,
-                terminal,
-                FLOW,
-                kv_acc,
-                rho_acc,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill_dict,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                loop_usage=loop_usage_unit,
-            )
+            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
             if result.get("error"):
                 return
             cost = result.get("total_cost", float('inf'))
@@ -1002,11 +1125,12 @@ def solve_pipeline_with_types(
                             'delivery': 0.0,
                             'supply': 0.0,
                             'max_dr': 0.0,
+                            # Preserve the originating physical station name for later grouping
+                            'orig_name': stn.get('name'),
                         }
                         units.append(unit)
                 if not units:
                     continue
-                # Transfer aggregate station parameters to the first/last unit
                 units[0]['delivery'] = stn.get('delivery', 0.0)
                 units[0]['supply'] = stn.get('supply', 0.0)
                 min_res = 50.0 if pos == 0 else 0.0
@@ -1015,46 +1139,11 @@ def solve_pipeline_with_types(
                 units[-1]['max_dr'] = stn.get('max_dr', 0.0)
                 if stn.get('loopline'):
                     units[-1]['loopline'] = copy.deepcopy(stn['loopline'])
-                # Build new loop usage for each unit.  Start with existing list and append zeros for new units.
-                lu_new = loop_usage_unit + [0] * len(units)
-                # Determine the loop usage for this original station from loop_usage_by_station
-                if loop_usage_by_station is not None:
-                    usage_val = 0
-                    try:
-                        usage_val = loop_usage_by_station[pos]
-                    except IndexError:
-                        usage_val = 0
-                    # Assign usage to the last unit representing the pipe segment
-                    if len(lu_new) > 0:
-                        lu_new[-1] = usage_val
-                expand_all(
-                    pos + 1,
-                    stn_acc + units,
-                    kv_acc + [kv] * len(units),
-                    rho_acc + [rho] * len(units),
-                    lu_new,
-                )
+                expand_all(pos + 1, stn_acc + units, kv_acc + [kv] * len(units), rho_acc + [rho] * len(units))
         else:
-            # Non-pump station: copy as-is.  Append its loop usage if defined.
-            new_unit = copy.deepcopy(stn)
-            lu_new = loop_usage_unit + [0]
-            if loop_usage_by_station is not None:
-                usage_val = 0
-                try:
-                    usage_val = loop_usage_by_station[pos]
-                except IndexError:
-                    usage_val = 0
-                lu_new[-1] = usage_val
-            expand_all(
-                pos + 1,
-                stn_acc + [new_unit],
-                kv_acc + [kv],
-                rho_acc + [rho],
-                lu_new,
-            )
+            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
 
-    # Kick off the recursive search.  Start with an empty loop usage list.
-    expand_all(0, [], [], [], [])
+    expand_all(0, [], [], [])
 
     if best_result is None:
         return {
@@ -1064,140 +1153,3 @@ def solve_pipeline_with_types(
 
     best_result['stations_used'] = best_stations
     return best_result
-
-
-def _generate_loop_cases(stations: list[dict]) -> list[list[int]]:
-    """Generate loop usage combinations for a pipeline.
-
-    Each station that defines a ``loopline`` corresponds to one segment in the
-    pipeline where a loop may be used.  For each such segment we consider three
-    modes: 0 – no loop used, 1 – loop used and joined before the downstream pump,
-    and 2 – loop used but bypasses the downstream pump.  To keep the number of
-    combinations manageable, we build a small set of scenarios:
-
-    - All segments unused (case A)
-    - All segments used in parallel (case B)
-    - Each individual segment used while others are unused (e.g. cases D and E)
-    - A bypass on the first loop segment while others are unused (case C)
-
-    This yields at most ``n + 3`` unique combinations for ``n`` loop segments.
-
-    Parameters
-    ----------
-    stations : list[dict]
-        List of station definitions.
-
-    Returns
-    -------
-    list[list[int]]
-        A list of loop usage vectors.  Each vector has length equal to the
-        number of segments with looplines, ordered by their appearance in
-        ``stations``.
-    """
-    # Identify which stations have looplines
-    idxs = [i for i, stn in enumerate(stations) if stn.get('loopline')]
-    n = len(idxs)
-    if n == 0:
-        return [[]]
-    combos: list[list[int]] = []
-    # Case A: no loops used
-    combos.append([0] * n)
-    # Case B: all loops used in parallel
-    combos.append([1] * n)
-    # Individual segments used (cases D/E for two segments)
-    for i in range(n):
-        usage = [0] * n
-        usage[i] = 1
-        combos.append(usage)
-    # Bypass on the first loop (case C)
-    bypass = [0] * n
-    bypass[0] = 2
-    combos.append(bypass)
-    # Deduplicate while preserving order
-    unique: list[list[int]] = []
-    for c in combos:
-        if c not in unique:
-            unique.append(c)
-    return unique
-
-
-def solve_pipeline_cases(
-    stations: list[dict],
-    terminal: dict,
-    FLOW: float,
-    KV_list: list[float],
-    rho_list: list[float],
-    RateDRA: float,
-    Price_HSD: float,
-    Fuel_density: float,
-    Ambient_temp: float,
-    linefill_dict: dict | None = None,
-    dra_reach_km: float = 0.0,
-    mop_kgcm2: float | None = None,
-    hours: float = 24.0,
-) -> list[dict]:
-    """Compute optimisation results across multiple loop usage cases.
-
-    For pipelines with looplines defined on one or more segments, evaluate a
-    small set of loop usage scenarios and return the corresponding results.
-
-    Parameters and return values mirror those of :func:`solve_pipeline` and
-    :func:`solve_pipeline_with_types`, except that a list of case results is
-    returned.  Each element of the list is a dictionary with keys ``case`` and
-    ``result``.  The ``case`` key holds the loop usage vector, and the
-    ``result`` key holds the solver output for that case.
-    """
-    cases = _generate_loop_cases(stations)
-    results: list[dict] = []
-    for idx, usage in enumerate(cases):
-        # Map the usage vector to station positions.  Only stations with
-        # looplines contribute entries in the usage vector, so we need to
-        # construct a full-length list for each station.  Stations without
-        # looplines default to usage 0.
-        loop_by_station: list[int] = []
-        idxs = [i for i, stn in enumerate(stations) if stn.get('loopline')]
-        for i, stn in enumerate(stations):
-            if i in idxs:
-                # Determine position of this station in the loop usage vector
-                pos_in_usage = idxs.index(i)
-                loop_by_station.append(usage[pos_in_usage])
-            else:
-                loop_by_station.append(0)
-        # Solve with or without pump types
-        if any(s.get('pump_types') for s in stations):
-            result = solve_pipeline_with_types(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill_dict,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                loop_usage_by_station=loop_by_station,
-            )
-        else:
-            result = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill_dict,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                loop_usage=loop_by_station,
-            )
-        label = f"Case {chr(65 + idx)}"
-        results.append({'case': usage, 'label': label, 'result': result})
-    return results
