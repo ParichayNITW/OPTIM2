@@ -336,10 +336,23 @@ def _downstream_requirement(
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
+            # Assume downstream stations can contribute head.  When a specific
+            # pump selection has already been made for the station (present in
+            # ``pump_plan``) use that head value; otherwise subtract the
+            # maximum head the station could deliver (``max_pumps`` running at
+            # ``DOL``).  This prevents upstream stations from being forced to
+            # supply the entire downstream requirement when later stations could
+            # assist.
             if pump_plan and i in pump_plan:
                 nop_sel, rpm_sel = pump_plan[i]
-                tdh_sel, _ = _pump_head(stn, flow, rpm_sel, nop_sel) if rpm_sel and nop_sel else (0.0, 0.0)
-                req -= tdh_sel
+            else:
+                nop_sel = stn.get('max_pumps', 0)
+                rpm_sel = stn.get('DOL', 0)
+            if nop_sel and rpm_sel:
+                tdh_sel, _ = _pump_head(stn, flow, rpm_sel, nop_sel)
+            else:
+                tdh_sel = 0.0
+            req -= tdh_sel
         return max(req, stn.get('min_residual', 0.0))
 
     return req_entry(idx + 1)
@@ -451,7 +464,7 @@ def solve_pipeline(
                 min_p = max(1, stn.get('min_pumps', 0))
                 origin_enforced = True
             else:
-                min_p = 0
+                min_p = stn.get('min_pumps', 0)
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
             fixed_dr = stn.get('fixed_dra_perc', None)
             dra_main_vals = [int(round(fixed_dr))] if (fixed_dr is not None) else _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
@@ -827,18 +840,11 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Remove dominated states to curb combinatorial growth without
-        # sacrificing optimality.  After sorting by residual head, retain only
-        # states that improve upon the best cost seen so far.  Higher-residual
-        # states are kept when costs tie, preserving global minima while
-        # pruning less promising branches.
-        pruned: dict[float, dict] = {}
-        best_cost = float('inf')
-        for bucket, data in sorted(new_states.items(), key=lambda x: x[1]['residual'], reverse=True):
-            if data['cost'] < best_cost - 1e-9:
-                pruned[bucket] = data
-                best_cost = data['cost']
-        states = pruned
+        # Previously we pruned higher-cost states across residual buckets to
+        # limit combinatorial growth.  For full enumeration, retain every bucket
+        # and keep only the cheapest entry within each bucket (handled above
+        # when populating ``new_states``).
+        states = new_states
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -908,96 +914,61 @@ def solve_pipeline_with_types(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+    """Apply selected pump types for each station and delegate to ``solve_pipeline``."""
 
-    best_result = None
-    best_cost = float('inf')
-    best_stations = None
-    N = len(stations)
+    stations_copy = copy.deepcopy(stations)
+    kv_copy = KV_list[:]
+    rho_copy = rho_list[:]
+    for stn in stations_copy:
+        ptypes = stn.pop('pump_types', None)
+        if not ptypes:
+            continue
+        chosen = None
+        sel = stn.get('pump_name')
+        for pdata in ptypes.values():
+            if not isinstance(pdata, dict):
+                continue
+            names = pdata.get('names', [])
+            if sel and names and sel in names:
+                chosen = pdata
+                break
+            if chosen is None and pdata.get('available', 0) > 0:
+                chosen = pdata
+        if chosen:
+            stn.update({
+                'head_data': chosen.get('head_data'),
+                'eff_data': chosen.get('eff_data'),
+                'A': chosen.get('A', stn.get('A', 0.0)),
+                'B': chosen.get('B', stn.get('B', 0.0)),
+                'C': chosen.get('C', stn.get('C', 0.0)),
+                'P': chosen.get('P', stn.get('P', 0.0)),
+                'Q': chosen.get('Q', stn.get('Q', 0.0)),
+                'R': chosen.get('R', stn.get('R', 0.0)),
+                'S': chosen.get('S', stn.get('S', 0.0)),
+                'T': chosen.get('T', stn.get('T', 0.0)),
+                'power_type': chosen.get('power_type', stn.get('power_type', 'Grid')),
+                'rate': chosen.get('rate', stn.get('rate', 0.0)),
+                'sfc_mode': chosen.get('sfc_mode', stn.get('sfc_mode', 'manual')),
+                'sfc': chosen.get('sfc', stn.get('sfc', 0.0)),
+                'engine_params': chosen.get('engine_params', stn.get('engine_params', {})),
+                'MinRPM': chosen.get('MinRPM', stn.get('MinRPM', 0.0)),
+                'DOL': chosen.get('DOL', stn.get('DOL', 0.0)),
+            })
 
-    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
-        nonlocal best_result, best_cost, best_stations
-        if pos >= N:
-            result = solve_pipeline(stn_acc, terminal, FLOW, kv_acc, rho_acc, RateDRA, Price_HSD, Fuel_density, Ambient_temp, linefill_dict, dra_reach_km, mop_kgcm2, hours)
-            if result.get("error"):
-                return
-            cost = result.get("total_cost", float('inf'))
-            if cost < best_cost:
-                best_cost = cost
-                best_result = result
-                best_stations = stn_acc
-            return
-
-        stn = stations[pos]
-        kv = KV_list[pos]
-        rho = rho_list[pos]
-
-        if stn.get('pump_types'):
-            combos = generate_type_combinations(
-                stn['pump_types'].get('A', {}).get('available', 0),
-                stn['pump_types'].get('B', {}).get('available', 0),
-            )
-            for numA, numB in combos:
-                units: list[dict] = []
-                name_base = stn['name']
-                for ptype, count in [('A', numA), ('B', numB)]:
-                    pdata = stn['pump_types'].get(ptype)
-                    for n in range(count):
-                        unit = {
-                            'name': f"{name_base}_{ptype}{n + 1}",
-                            'pump_name': pdata.get('name', f'Type {ptype}') if pdata else f'Type {ptype}',
-                            'elev': stn.get('elev', 0.0),
-                            'D': stn.get('D'),
-                            't': stn.get('t'),
-                            'SMYS': stn.get('SMYS'),
-                            'rough': stn.get('rough'),
-                            'L': 0.0,
-                            'is_pump': True,
-                            'head_data': pdata.get('head_data') if pdata else None,
-                            'eff_data': pdata.get('eff_data') if pdata else None,
-                            'A': pdata.get('A', 0.0) if pdata else 0.0,
-                            'B': pdata.get('B', 0.0) if pdata else 0.0,
-                            'C': pdata.get('C', 0.0) if pdata else 0.0,
-                            'P': pdata.get('P', 0.0) if pdata else 0.0,
-                            'Q': pdata.get('Q', 0.0) if pdata else 0.0,
-                            'R': pdata.get('R', 0.0) if pdata else 0.0,
-                            'S': pdata.get('S', 0.0) if pdata else 0.0,
-                            'T': pdata.get('T', 0.0) if pdata else 0.0,
-                            'power_type': pdata.get('power_type', 'Grid') if pdata else 'Grid',
-                            'rate': pdata.get('rate', 0.0) if pdata else 0.0,
-                            'sfc_mode': pdata.get('sfc_mode', 'none') if pdata else 'none',
-                            'sfc': pdata.get('sfc', 0.0) if pdata else 0.0,
-                            'engine_params': pdata.get('engine_params', {}) if pdata else {},
-                            'MinRPM': pdata.get('MinRPM', 0.0) if pdata else 0.0,
-                            'DOL': pdata.get('DOL', 0.0) if pdata else 0.0,
-                            'max_pumps': 1,
-                            'min_pumps': 1,
-                            'delivery': 0.0,
-                            'supply': 0.0,
-                            'max_dr': 0.0,
-                        }
-                        units.append(unit)
-                if not units:
-                    continue
-                units[0]['delivery'] = stn.get('delivery', 0.0)
-                units[0]['supply'] = stn.get('supply', 0.0)
-                min_res = 50.0 if pos == 0 else 0.0
-                units[0]['min_residual'] = stn.get('min_residual', min_res)
-                units[-1]['L'] = stn.get('L', 0.0)
-                units[-1]['max_dr'] = stn.get('max_dr', 0.0)
-                if stn.get('loopline'):
-                    units[-1]['loopline'] = copy.deepcopy(stn['loopline'])
-                expand_all(pos + 1, stn_acc + units, kv_acc + [kv] * len(units), rho_acc + [rho] * len(units))
-        else:
-            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
-
-    expand_all(0, [], [], [])
-
-    if best_result is None:
-        return {
-            "error": True,
-            "message": "No feasible pump combination found for stations.",
-        }
-
-    best_result['stations_used'] = best_stations
-    return best_result
+    result = solve_pipeline(
+        stations_copy,
+        terminal,
+        FLOW,
+        kv_copy,
+        rho_copy,
+        RateDRA,
+        Price_HSD,
+        Fuel_density,
+        Ambient_temp,
+        linefill_dict,
+        dra_reach_km,
+        mop_kgcm2,
+        hours,
+    )
+    result['stations_used'] = stations_copy
+    return result
