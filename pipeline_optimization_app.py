@@ -164,6 +164,10 @@ if st.session_state.get("run_mode") == "hydraulic":
 def restore_case_dict(loaded_data):
     """Populate ``st.session_state`` from a saved case dictionary."""
 
+    # Reset any previous state before loading a new case.  This allows the user to
+    # upload a different JSON without having to log out and back in.
+    st.session_state.clear()
+    # Use a fresh copy of the stations list from the uploaded case
     st.session_state['stations'] = loaded_data.get('stations', [])
     st.session_state['terminal_name'] = loaded_data.get('terminal', {}).get('name', "Terminal")
     st.session_state['terminal_elev'] = loaded_data.get('terminal', {}).get('elev', 0.0)
@@ -194,31 +198,56 @@ def restore_case_dict(loaded_data):
         st.session_state["planner_days"] = loaded_data["planner_days"]
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+    # Clear any old pump data keys to avoid mixing with the new case.
+    keys_to_remove = [k for k in st.session_state.keys() if k.startswith('head_data_') or k.startswith('eff_data_') or k.startswith('peak_data_') or k.startswith('loop_peak_data_')]
+    for k in keys_to_remove:
+        del st.session_state[k]
+
+    # Restore pump data for each station (non-typed)
     for i in range(len(st.session_state['stations'])):
-        head_data = loaded_data.get(f"head_data_{i+1}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i+1}", None)
-        peak_data = loaded_data.get(f"peak_data_{i+1}", None)
-        loop_peak_data = loaded_data.get(f"loop_peak_data_{i+1}", None)
+        base_key = str(i + 1)
+        head_data = loaded_data.get(f"head_data_{base_key}")
+        eff_data  = loaded_data.get(f"eff_data_{base_key}")
+        peak_data = loaded_data.get(f"peak_data_{base_key}")
+        loop_peak_data = loaded_data.get(f"loop_peak_data_{base_key}")
         if head_data is not None:
-            df_head = pd.DataFrame(head_data)
-            st.session_state[f"head_data_{i+1}"] = df_head
+            st.session_state[f"head_data_{base_key}"] = pd.DataFrame(head_data)
             st.session_state['stations'][i]['head_data'] = head_data
         if eff_data is not None:
-            df_eff = pd.DataFrame(eff_data)
-            st.session_state[f"eff_data_{i+1}"] = df_eff
+            st.session_state[f"eff_data_{base_key}"] = pd.DataFrame(eff_data)
             st.session_state['stations'][i]['eff_data'] = eff_data
         if peak_data is not None:
-            df_peak = pd.DataFrame(peak_data)
-            st.session_state[f"peak_data_{i+1}"] = df_peak
+            st.session_state[f"peak_data_{base_key}"] = pd.DataFrame(peak_data)
             st.session_state['stations'][i]['peak_data'] = peak_data
         if loop_peak_data is not None:
-            df_lpeak = pd.DataFrame(loop_peak_data)
-            st.session_state[f"loop_peak_data_{i+1}"] = df_lpeak
+            st.session_state[f"loop_peak_data_{base_key}"] = pd.DataFrame(loop_peak_data)
             st.session_state['stations'][i].setdefault('loopline', {})['peaks'] = loop_peak_data
         else:
             loop_peaks = st.session_state['stations'][i].get('loopline', {}).get('peaks')
             if loop_peaks is not None:
-                st.session_state[f"loop_peak_data_{i+1}"] = pd.DataFrame(loop_peaks)
+                st.session_state[f"loop_peak_data_{base_key}"] = pd.DataFrame(loop_peaks)
+
+    # Restore pump-type specific data generically for all stations.  Keys are of
+    # the form head_data_{{idx}}{{type}} or eff_data_{{idx}}{{type}} where idx
+    # is 1-based station index and type is a single letter (A, B, etc.).  Use
+    # regex to parse these keys and assign the data to the corresponding
+    # station and pump_type entry.
+    import re
+    pattern = re.compile(r'^(head_data|eff_data|peak_data|loop_peak_data)_(\d+)([A-Za-z]+)$')
+    for key, value in loaded_data.items():
+        match = pattern.match(key)
+        if not match:
+            continue
+        data_type, idx, ptype = match.groups()
+        idx_int = int(idx) - 1
+        if idx_int < 0 or idx_int >= len(st.session_state['stations']):
+            continue
+        if not isinstance(value, list):
+            continue
+        # Create DataFrame and store in session state
+        st.session_state[key] = pd.DataFrame(value)
+        # Set into station pump_types structure
+        st.session_state['stations'][idx_int].setdefault('pump_types', {}).setdefault(ptype, {})[f"{data_type}"] = value
 
     # Handle pump type data for originating station
     headA = loaded_data.get("head_data_1A", None)
@@ -259,7 +288,11 @@ def restore_case_dict(loaded_data):
             st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['peak_data'] = peakB
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
-if uploaded_case is not None and not st.session_state.get("case_loaded", False):
+# Always restore the case whenever a JSON is selected.  Clearing previous
+# session state in restore_case_dict ensures that new uploads fully replace
+# existing data.  Mark case_loaded for downstream logic but allow
+# subsequent uploads without forcing a logout.
+if uploaded_case is not None:
     loaded_data = json.load(uploaded_case)
     restore_case_dict(loaded_data)
     st.session_state["case_loaded"] = True
@@ -276,12 +309,14 @@ if st.session_state.get("should_rerun", False):
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0)
-        RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0)
-        Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5)
-        Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0)
-        Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0)
-        MOP_val   = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0)
+        # Use consistent formatting to reduce cursor jumps and input lag.  Integer-valued
+        # fields specify integer format, while decimals use two decimal places.
+        FLOW      = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, format="%.0f")
+        RateDRA   = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, format="%.2f")
+        Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, format="%.2f")
+        Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, format="%.0f")
+        Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, format="%.0f")
+        MOP_val   = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0, format="%.1f")
         st.session_state["FLOW"] = FLOW
         st.session_state["RateDRA"] = RateDRA
         st.session_state["Price_HSD"] = Price_HSD
@@ -488,23 +523,23 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
             stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, format="%.1f", key=f"elev{idx}")
             stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
+            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, format="%.1f", key=f"L{idx}")
+            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), format="%.1f", key=f"mdr{idx}")
             if idx == 1:
-                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, format="%.1f", key=f"res{idx}")
         with col2:
             D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
             t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
             stn['D'] = D_in * 0.0254
             stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
+            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, format="%.0f", key=f"SMYS{idx}")
             stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.7f", step=0.0000001, key=f"rough{idx}")
         with col3:
-            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
-            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
-            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, format="%.0f", key=f"mpumps{idx}")
+            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), format="%.1f", key=f"deliv{idx}")
+            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), format="%.1f", key=f"sup{idx}")
         st.markdown("**Loopline (optional)**")
         has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag{idx}")
         if has_loop:
@@ -512,19 +547,19 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             lcol1, lcol2, lcol3 = st.columns(3)
             with lcol1:
                 loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname{idx}")
-                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart{idx}")
-                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend{idx}")
-                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL{idx}")
+                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), format="%.1f", key=f"loopstart{idx}")
+                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), format="%.1f", key=f"loopend{idx}")
+                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), format="%.1f", key=f"loopL{idx}")
             with lcol2:
                 Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD{idx}")
                 tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt{idx}")
                 loop['D'] = Dloop_in * 0.0254
                 loop['t'] = tloop_in * 0.0254
-                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS{idx}")
+                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, format="%.0f", key=f"loopSMYS{idx}")
             with lcol3:
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
-                loop['max_dr'] = st.number_input("Max Drag Reduction (%)", value=loop.get('max_dr', 0.0), key=f"loopmdr{idx}")
-                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
+                loop['max_dr'] = st.number_input("Max Drag Reduction (%)", value=loop.get('max_dr', 0.0), format="%.1f", key=f"loopmdr{idx}")
+                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, format="%.1f", key=f"loopelev{idx}")
 
             loop_peak_key = f"loop_peak_data_{idx}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
@@ -1134,7 +1169,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if pump_list and n_pumps > 0:
             pump_name = ", ".join(pump_list[:n_pumps])
         else:
-            pump_name = (stn.get('pump_name') if isinstance(stn, dict) else '') or base_stn.get('pump_name', '')
+            # When no pumps are running leave the pump name blank to avoid confusion
+            pump_name = ""
 
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
@@ -1181,6 +1217,58 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
+    # Append terminal row if terminal information is available in the result.
+    # The terminal name is inferred from keys ending with residual_head_*
+    # or may be provided via an optional terminal argument.  For backward
+    # compatibility the function accepts an optional ``terminal`` parameter.
+    term_name = None
+    # Check if caller passed a terminal in the kwargs.  Python passes
+    # additional args via ``terminal`` parameter in function signature.  Use
+    # locals() to detect if terminal variable exists in closure.
+    # We cannot directly reference ``terminal`` here because it is captured
+    # dynamically.  Instead, rely on ``res`` keys.
+    # Find terminal by looking for residual_head_* keys not in station names
+    station_keys = {s['name'].lower().replace(' ', '_') for s in base_stations}
+    for k in res.keys():
+        if k.startswith('residual_head_'):
+            cand = k[len('residual_head_'):]
+            if cand not in station_keys:
+                term_name = cand
+                break
+    if term_name:
+        tname_disp = term_name.replace('_', ' ').title()
+        term_row = {
+            'Station': tname_disp,
+            'Pump Name': "",
+            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{term_name}", 0.0) or 0.0),
+            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{term_name}", 0.0) or 0.0),
+            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{term_name}", 0.0) or 0.0),
+            'Power & Fuel Cost (INR)': 0.0,
+            'DRA Cost (INR)': 0.0,
+            'DRA PPM': float(res.get(f"dra_ppm_{term_name}", 0.0) or 0.0),
+            'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{term_name}", 0.0) or 0.0),
+            'No. of Pumps': 0,
+            'Pump Speed (rpm)': 0.0,
+            'Pump Eff (%)': 0.0,
+            'Pump BKW (kW)': 0.0,
+            'Motor Input (kW)': 0.0,
+            'Reynolds No.': 0.0,
+            'Head Loss (m)': float(res.get(f"head_loss_{term_name}", 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{term_name}", 0.0) or 0.0),
+            'Vel (m/s)': 0.0,
+            'Residual Head (m)': float(res.get(f"residual_head_{term_name}", 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{term_name}", 0.0) or 0.0),
+            'SDH (m)': float(res.get(f"sdh_{term_name}", 0.0) or 0.0),
+            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{term_name}", 0.0) or 0.0),
+            'MAOP (m)': float(res.get(f"maop_{term_name}", 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{term_name}", 0.0) or 0.0),
+            'Drag Reduction (%)': float(res.get(f"drag_reduction_{term_name}", 0.0) or 0.0),
+            'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{term_name}", 0.0) or 0.0),
+        }
+        term_row['Total Cost (INR)'] = term_row['Power & Fuel Cost (INR)'] + term_row['DRA Cost (INR)']
+        term_row['Available Suction Head (m)'] = np.nan
+        term_row['Available Suction Head (kg/cm²)'] = np.nan
+        df = pd.concat([df, pd.DataFrame([term_row])], ignore_index=True)
     return df.round(2)
 
 # Persisted DRA lock from 07:00 run
@@ -1768,16 +1856,14 @@ if not auto_batch:
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
-        # Pandas may treat some columns as object if they contain NaN or are newly inserted.
         df_day_numeric = df_day.copy()
-        # Identify columns eligible for numeric styling
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        # Display the data without complex styling.  A background gradient
-        # previously applied caused conversion errors when non-numeric
-        # values were present.  Using a plain dataframe avoids this issue.
-        st.dataframe(df_day_numeric, use_container_width=True, hide_index=True)
+        # Apply a blue gradient to numeric columns for visual differentiation.  Only
+        # numeric columns are included in the gradient to avoid conversion errors.
+        styled = df_day_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -1945,8 +2031,11 @@ if not auto_batch:
             df_plan_numeric = df_plan.copy()
             for c in num_cols:
                 df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            # Display without background gradient to avoid type conversion errors.
-            st.dataframe(df_plan_numeric, use_container_width=True, hide_index=True)
+            # Apply a blue gradient to numeric columns for visual differentiation.  Only
+            # numeric columns are included in the gradient to avoid conversion errors on
+            # string columns (e.g., Time, Station, Pump Name, Pattern).
+            styled_plan = df_plan_numeric.style.background_gradient(cmap="Blues", subset=num_cols)
+            st.dataframe(styled_plan, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
