@@ -477,20 +477,28 @@ def _downstream_requirement(
         # requires sufficient upstream pressure to maintain at least 25 m of
         # residual head at the peak itself.  Consider whichever peak demands the
         # highest pressure.
-        def peak_requirement(peaks, d_pipe, rough_pipe, dra_perc):
+        # Helper to compute the residual head requirement at intermediate peaks.
+        # ``flow_rate`` is the volumetric flow rate (m³/h) used to compute friction to the peak.
+        def peak_requirement(flow_rate: float, peaks, d_pipe: float, rough_pipe: float, dra_perc: float) -> float:
             req_local = 0.0
             for peak in peaks or []:
+                # Peak location can be stored under various keys
                 dist = peak.get('loc') or peak.get('Location (km)') or peak.get('Location')
                 elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
                 if dist is None or elev_peak is None:
                     continue
-                head_peak, *_ = _segment_hydraulics(flow, float(dist), d_pipe, rough_pipe, kv, dra_perc)
+                head_peak, *_ = _segment_hydraulics(flow_rate, float(dist), d_pipe, rough_pipe, kv, dra_perc)
                 req_p = head_peak + (float(elev_peak) - elev_i) + 25.0
                 if req_p > req_local:
                     req_local = req_p
             return req_local
 
-        peak_req = peak_requirement(stn.get('peaks'), d_inner, rough, dra_down)
+        # Compute peak requirement on the mainline using downstream flow ``flow``.
+        peak_req_main = peak_requirement(flow, stn.get('peaks'), d_inner, rough, dra_down)
+        peak_req = peak_req_main
+        # Compute peak requirement on the loopline.  When the loop carries flow beyond this station
+        # (e.g. under bypass), we conservatively use the upstream flow ``flows[i]`` to estimate
+        # friction to the peak.  This avoids underestimating the head needed at peaks on the 18" line.
         loop = stn.get('loopline')
         if loop:
             if loop.get('D') is not None:
@@ -500,7 +508,9 @@ def _downstream_requirement(
                 d_inner_loop = loop.get('d', d_inner)
             rough_loop = loop.get('rough', rough)
             dra_loop = loop.get('max_dr', 0.0)
-            peak_req = max(peak_req, peak_requirement(loop.get('peaks'), d_inner_loop, rough_loop, dra_loop))
+            # Use the upstream flow ``flows[i]`` for loop peaks to account for bypassed flow.
+            peak_req_loop = peak_requirement(flows[i], loop.get('peaks'), d_inner_loop, rough_loop, dra_loop)
+            peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
@@ -1116,7 +1126,13 @@ def solve_pipeline(
                     # through the mainline changes only for a bypass.  ``seg_flows_tmp``
                     # holds the flow after each station.
                     seg_flows_tmp = segment_flows.copy()
-                    seg_flows_tmp[stn_data['idx'] + 1] = sc['flow_main'] if sc.get('bypass_next') else flow_total
+                    # When bypassing the next station, only the mainline flow enters that station; the
+                    # loopline flow bypasses the pumps and rejoins downstream.  Therefore the flow for
+                    # downstream segments should reflect either the mainline-only flow (in bypass) or the
+                    # total flow (in parallel or loop-only modes).  This ensures head requirements are
+                    # computed against the proper volumetric flow in each pipe.
+                    next_flow = sc['flow_main'] if sc.get('bypass_next') else flow_total
+                    seg_flows_tmp[stn_data['idx'] + 1] = next_flow
                     for j in range(stn_data['idx'] + 1, N):
                         delivery_j = float(stations[j].get('delivery', 0.0))
                         supply_j = float(stations[j].get('supply', 0.0))
