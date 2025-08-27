@@ -1750,12 +1750,15 @@ if not auto_batch:
             st.error(error_msg)
             st.stop()
 
-        # Build a consolidated station-wise table
+        # Build a consolidated station-wise table with flow pattern names
         station_tables = []
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
             df_int = build_station_table(res, stations_base)
+            # Insert human-readable pattern and time columns
+            pattern = res.get('flow_pattern_name', '')
+            df_int.insert(0, "Pattern", pattern)
             df_int.insert(0, "Time", f"{hr:02d}:00")
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
@@ -1773,7 +1776,11 @@ if not auto_batch:
 
         # Display total cost per time slice and global sum
         cost_rows = [
-            {"Time": f"{rec['time']:02d}:00", "Total Cost (INR)": rec["result"].get("total_cost", 0.0)}
+            {
+                "Time": f"{rec['time']:02d}:00",
+                "Pattern": rec["result"].get("flow_pattern_name", ""),
+                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+            }
             for rec in reports
         ]
         df_cost = pd.DataFrame(cost_rows).round(2)
@@ -1914,6 +1921,9 @@ if not auto_batch:
                 res = rec["result"]
                 ts = rec["time"]
                 df_int = build_station_table(res, stations_base)
+                # Prepend pattern and time columns
+                pattern = res.get('flow_pattern_name', '')
+                df_int.insert(0, "Pattern", pattern)
                 df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
                 station_tables.append(df_int)
             df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
@@ -1933,6 +1943,7 @@ if not auto_batch:
             cost_rows = [
                 {
                     "Time": rec["time"].strftime("%d/%m %H:%M"),
+                    "Pattern": rec["result"].get("flow_pattern_name", ""),
                     "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
                 }
                 for rec in reports
