@@ -220,10 +220,7 @@ def restore_case_dict(loaded_data):
             if loop_peaks is not None:
                 st.session_state[f"loop_peak_data_{i+1}"] = pd.DataFrame(loop_peaks)
 
-    # Handle pump type data for all stations.  The JSON may include keys like
-    # "head_data_2A", "eff_data_3B" etc.  Parse such keys and load into
-    # session state and station definitions.  We first handle explicit
-    # 1A/1B entries for backward compatibility and then generalise.
+    # Handle pump type data for originating station
     headA = loaded_data.get("head_data_1A", None)
     effA  = loaded_data.get("eff_data_1A", None)
     peakA = loaded_data.get("peak_data_1A", None)
@@ -260,52 +257,6 @@ def restore_case_dict(loaded_data):
         st.session_state["peak_data_1B"] = df_peakB
         if st.session_state['stations']:
             st.session_state['stations'][0].setdefault('pump_types', {}).setdefault('B', {})['peak_data'] = peakB
-
-    # Generic pump data loader: scan for keys like 'head_data_2A', 'eff_data_3B'
-    import re  # import here to avoid global import overhead
-    head_re = re.compile(r'^head_data_(\d+)([A-Za-z])$')
-    eff_re = re.compile(r'^eff_data_(\d+)([A-Za-z])$')
-    peak_re = re.compile(r'^peak_data_(\d+)([A-Za-z])$')
-    for key, val in loaded_data.items():
-        # Skip keys already handled
-        if key in {"head_data_1A", "eff_data_1A", "peak_data_1A", "head_data_1B", "eff_data_1B", "peak_data_1B"}:
-            continue
-        m_head = head_re.match(key)
-        m_eff = eff_re.match(key)
-        m_peak = peak_re.match(key)
-        if m_head:
-            idx = int(m_head.group(1)) - 1
-            ptype = m_head.group(2)
-            if idx < len(st.session_state['stations']):
-                try:
-                    df = pd.DataFrame(val)
-                except Exception:
-                    df = pd.DataFrame()
-                st.session_state[key] = df
-                st.session_state['stations'][idx].setdefault('pump_types', {}).setdefault(ptype, {})['head_data'] = val
-            continue
-        if m_eff:
-            idx = int(m_eff.group(1)) - 1
-            ptype = m_eff.group(2)
-            if idx < len(st.session_state['stations']):
-                try:
-                    df = pd.DataFrame(val)
-                except Exception:
-                    df = pd.DataFrame()
-                st.session_state[key] = df
-                st.session_state['stations'][idx].setdefault('pump_types', {}).setdefault(ptype, {})['eff_data'] = val
-            continue
-        if m_peak:
-            idx = int(m_peak.group(1)) - 1
-            ptype = m_peak.group(2)
-            if idx < len(st.session_state['stations']):
-                try:
-                    df = pd.DataFrame(val)
-                except Exception:
-                    df = pd.DataFrame()
-                st.session_state[key] = df
-                st.session_state['stations'][idx].setdefault('pump_types', {}).setdefault(ptype, {})['peak_data'] = val
-            continue
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is not None and not st.session_state.get("case_loaded", False):
@@ -1321,61 +1272,6 @@ def solve_pipeline(
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
 
-
-def solve_pipeline_cases(
-    stations,
-    terminal,
-    FLOW,
-    KV_list,
-    rho_list,
-    RateDRA,
-    Price_HSD,
-    Fuel_density,
-    Ambient_temp,
-    linefill_dict,
-    dra_reach_km: float = 0.0,
-    mop_kgcm2: float | None = None,
-    hours: float = 24.0,
-):
-    """Wrapper calling :func:`pipeline_model.solve_pipeline_cases`.
-
-    Ensures the origin station runs at least one pump and mirrors the behaviour
-    of :func:`solve_pipeline` while returning a list of case results.
-    """
-
-    import pipeline_model
-    import importlib
-    import copy
-
-    importlib.reload(pipeline_model)
-
-    stations = copy.deepcopy(stations)
-    first_pump = next((s for s in stations if s.get('is_pump')), None)
-    if first_pump and first_pump.get('min_pumps', 0) < 1:
-        first_pump['min_pumps'] = 1
-
-    if mop_kgcm2 is None:
-        mop_kgcm2 = st.session_state.get("MOP_kgcm2")
-
-    try:
-        return pipeline_model.solve_pipeline_cases(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill_dict,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-        )
-    except Exception as exc:  # pragma: no cover - diagnostic path
-        return [{"case": [], "label": "", "result": {"error": True, "message": str(exc)}}]
-
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
 st.subheader("Batch Linefill Scenario Analysis")
@@ -1695,70 +1591,36 @@ if not auto_batch:
                             stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
             # ------------- END OF BLOCK -------------
 
-            has_loop = any(stn.get('loopline') for stn in stations_data)
-            if has_loop:
-                case_results = solve_pipeline_cases(
-                    stations_data,
-                    term_data,
-                    FLOW,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    st.session_state.get("Fuel_density", 820.0),
-                    st.session_state.get("Ambient_temp", 25.0),
-                    linefill_df.to_dict(),
-                    dra_reach_km=0.0,
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                    hours=24.0,
-                )
-                feasible = [c for c in case_results if not c['result'].get('error')]
-                import copy
-                if not feasible:
-                    st.error("No feasible solution found")
-                    for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill", "last_res_cases"]:
-                        st.session_state.pop(k, None)
-                else:
-                    best = min(feasible, key=lambda c: c['result'].get('total_cost', float('inf')))
-                    st.session_state["last_res"] = copy.deepcopy(best['result'])
-                    st.session_state["last_res_cases"] = copy.deepcopy(feasible)
-                    st.session_state["last_stations_data"] = copy.deepcopy(best['result'].get('stations_used', stations_data))
-                    st.session_state["last_term_data"] = copy.deepcopy(term_data)
-                    st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-                    st.session_state["run_mode"] = "instantaneous"
-                    st.rerun()
-            else:
-                res = solve_pipeline(
-                    stations_data,
-                    term_data,
-                    FLOW,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    st.session_state.get("Fuel_density", 820.0),
-                    st.session_state.get("Ambient_temp", 25.0),
-                    linefill_df.to_dict(),
-                    dra_reach_km=0.0,
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                    hours=24.0,
-                )
+            res = solve_pipeline(
+                stations_data,
+                term_data,
+                FLOW,
+                kv_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                st.session_state.get("Fuel_density", 820.0),
+                st.session_state.get("Ambient_temp", 25.0),
+                linefill_df.to_dict(),
+                dra_reach_km=0.0,
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                hours=24.0,
+            )
 
-                import copy
-                if not res or res.get("error"):
-                    msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
-                    st.error(msg)
-                    for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill", "last_res_cases"]:
-                        st.session_state.pop(k, None)
-                else:
-                    st.session_state["last_res"] = copy.deepcopy(res)
-                    st.session_state.pop("last_res_cases", None)
-                    st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
-                    st.session_state["last_term_data"] = copy.deepcopy(term_data)
-                    st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-                    st.session_state["run_mode"] = "instantaneous"
-                    # --- CRUCIAL LINE TO FORCE UI REFRESH ---
-                    st.rerun()
+            import copy
+            if not res or res.get("error"):
+                msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
+                st.error(msg)
+                for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
+                    st.session_state.pop(k, None)
+            else:
+                st.session_state["last_res"] = copy.deepcopy(res)
+                st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
+                st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+                st.session_state["run_mode"] = "instantaneous"
+                # --- CRUCIAL LINE TO FORCE UI REFRESH ---
+                st.rerun()
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_day = st.button("Run Daily Pumping Schedule Optimizer", key="run_day_btn", type="primary")
@@ -1834,38 +1696,22 @@ if not auto_batch:
 
                 stns_run = copy.deepcopy(stations_base)
 
-                case_results = solve_pipeline_cases(
-                    stns_run,
-                    term_data,
-                    FLOW_sched,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    st.session_state.get("Fuel_density", 820.0),
-                    st.session_state.get("Ambient_temp", 25.0),
-                    current_vol.to_dict(),
-                    dra_reach_km,
-                    st.session_state.get("MOP_kgcm2"),
-                    hours=4.0,
+                res = solve_pipeline(
+                    stns_run, term_data, FLOW_sched, kv_list, rho_list,
+                    RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), current_vol.to_dict(), dra_reach_km,
+                    st.session_state.get("MOP_kgcm2"), hours=4.0
                 )
-                feasible = [c for c in case_results if not c["result"].get("error")]
-                if not feasible:
-                    error_msg = (
-                        f"Optimization failed at {hr%24:02d}:00 -> No feasible pump combination found for stations."
-                    )
-                    break
-                best_case = min(
-                    feasible, key=lambda c: c["result"].get("total_cost", float("inf"))
-                )
-                res = best_case["result"]
 
-                reports.append({"time": hr % 24, "result": res, "case": best_case.get("label")})
+                if res.get("error"):
+                    error_msg = f"Optimization failed at {hr%24:02d}:00 -> {res.get('message','')}"
+                    break
+
+                reports.append({"time": hr % 24, "result": res})
                 linefill_snaps.append(current_vol.copy())
 
                 if ti < len(hours) - 1:
                     current_vol, plan_df = future_vol, future_plan
-                    dra_reach_km = float(res.get("dra_front_km", dra_reach_km))
+                    dra_reach_km = float(res.get('dra_front_km', dra_reach_km))
 
         if error_msg:
             st.error(error_msg)
@@ -2095,130 +1941,78 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         if "last_res" not in st.session_state:
             st.info("Please run optimization.")
         else:
+            res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
-            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-
-            case_list = st.session_state.get("last_res_cases")
-            if case_list:
-                for idx, case in enumerate(case_list):
-                    res = case["result"]
-                    label = case.get("label", f"Case {chr(65+idx)}")
-                    names = [s['name'] for s in stations_data] + [terminal_name]
-                    segment_flows = []
-                    pump_flows = []
-                    for nm in names:
-                        key = nm.lower().replace(' ', '_')
-                        segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
-                        pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
-
-                    df_sum = build_summary_dataframe(res, stations_data, linefill_df)
-                    df_display = df_sum.fillna(0.0).copy()
-                    for col in df_display.columns:
-                        if col != "Parameters":
-                            df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
-                    st.markdown(
-                        f"<div class='section-title'>Optimization Results - {label}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    st.dataframe(df_display, use_container_width=True, hide_index=True)
-                    st.download_button(
-                        f"📥 Download CSV {label}",
-                        df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
-                        file_name=f"results_{label.replace(' ', '_').lower()}.csv",
-                        key=f"dl_{idx}",
-                    )
-
-                    total_cost = float(res.get("total_cost", 0.0))
-                    total_pumps = 0
-                    effs = []
-                    speeds = []
-                    for stn in stations_data:
-                        key = stn['name'].lower().replace(' ','_')
-                        npump = int(res.get(f"num_pumps_{key}", 0))
-                        if npump > 0:
-                            total_pumps += npump
-                            eff = float(res.get(f"efficiency_{key}", 0.0))
-                            speed = float(res.get(f"speed_{key}", 0.0))
-                            for _ in range(npump):
-                                effs.append(eff)
-                                speeds.append(speed)
-                    avg_eff = sum(effs)/len(effs) if effs else 0.0
-                    avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
-                    st.markdown(
-                        f"""<br>
-                        <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
-                        <b>No. of operating Pumps:</b> {total_pumps}<br>
-                        <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
-                        <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-            else:
-                res = st.session_state["last_res"]
-                names = [s['name'] for s in stations_data] + [terminal_name]
-
-                plan_start = st.session_state.get("last_plan_start")
-                plan_hours = st.session_state.get("last_plan_hours")
-                if plan_start is not None and plan_hours:
-                    plan_end = plan_start + pd.Timedelta(hours=plan_hours)
-                    st.markdown(
-                        f"**Pumping plan duration:** {plan_start.strftime('%d/%m/%y %H:%M')} to {plan_end.strftime('%d/%m/%y %H:%M')}**"
-                    )
-                    sched_df = st.session_state.get("proj_flow_df", pd.DataFrame()).copy()
-                    if not sched_df.empty and "Start" in sched_df and "End" in sched_df:
-                        sched_disp = sched_df.copy()
-                        sched_disp["Start"] = pd.to_datetime(sched_disp["Start"]).dt.strftime("%d/%m/%y %H:%M")
-                        sched_disp["End"] = pd.to_datetime(sched_disp["End"]).dt.strftime("%d/%m/%y %H:%M")
-                        st.dataframe(sched_disp, use_container_width=True)
-
-                segment_flows = []
-                pump_flows = []
-                for nm in names:
-                    key = nm.lower().replace(' ', '_')
-                    segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
-                    pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
-
-                df_sum = build_summary_dataframe(res, stations_data, linefill_df)
-                st.session_state["summary_table"] = df_sum.copy()
-                df_display = df_sum.fillna(0.0).copy()
-                for col in df_display.columns:
-                    if col != "Parameters":
-                        df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
-                st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
-                st.download_button(
-                    "📥 Download CSV",
-                    df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
-                    file_name="results.csv",
-                )
-
-                total_cost = float(res.get("total_cost", 0.0))
-                total_pumps = 0
-                effs = []
-                speeds = []
-                for stn in stations_data:
-                    key = stn['name'].lower().replace(' ','_')
-                    npump = int(res.get(f"num_pumps_{key}", 0))
-                    if npump > 0:
-                        total_pumps += npump
-                        eff = float(res.get(f"efficiency_{key}", 0.0))
-                        speed = float(res.get(f"speed_{key}", 0.0))
-                        for _ in range(npump):
-                            effs.append(eff)
-                            speeds.append(speed)
-                avg_eff = sum(effs)/len(effs) if effs else 0.0
-                avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
-
+            names = [s['name'] for s in stations_data] + [terminal_name]
+    
+            # --- Display plan timing and table if available ---
+            plan_start = st.session_state.get("last_plan_start")
+            plan_hours = st.session_state.get("last_plan_hours")
+            if plan_start is not None and plan_hours:
+                plan_end = plan_start + pd.Timedelta(hours=plan_hours)
                 st.markdown(
-                    f"""<br>
-                    <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
-                    <b>No. of operating Pumps:</b> {total_pumps}<br>
-                    <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
-                    <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
-                    """,
-                    unsafe_allow_html=True,
+                    f"**Pumping plan duration:** {plan_start.strftime('%d/%m/%y %H:%M')} to {plan_end.strftime('%d/%m/%y %H:%M')}**"
                 )
+                sched_df = st.session_state.get("proj_flow_df", pd.DataFrame()).copy()
+                if not sched_df.empty and "Start" in sched_df and "End" in sched_df:
+                    sched_disp = sched_df.copy()
+                    sched_disp["Start"] = pd.to_datetime(sched_disp["Start"]).dt.strftime("%d/%m/%y %H:%M")
+                    sched_disp["End"] = pd.to_datetime(sched_disp["End"]).dt.strftime("%d/%m/%y %H:%M")
+                    st.dataframe(sched_disp, use_container_width=True)
+
+            # --- Use flows from backend output only ---
+            segment_flows = []
+            pump_flows = []
+            for nm in names:
+                key = nm.lower().replace(' ', '_')
+                segment_flows.append(res.get(f"pipeline_flow_{key}", np.nan))
+                pump_flows.append(res.get(f"pump_flow_{key}", np.nan))
+
+            linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
+            names = [s['name'] for s in stations_data]
+            keys = [n.lower().replace(' ', '_') for n in names]
+            df_sum = build_summary_dataframe(res, stations_data, linefill_df)
+            st.session_state["summary_table"] = df_sum.copy()
+            df_display = df_sum.fillna(0.0).copy()
+            for col in df_display.columns:
+                if col != "Parameters":
+                    df_display[col] = df_display[col].apply(lambda x: f"{float(x):.2f}")
+            st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Download CSV",
+                df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
+                file_name="results.csv",
+            )
+    
+            # --- Aggregate counts for display ---
+            total_cost = float(res.get("total_cost", 0.0))
+            total_pumps = 0
+            effs = []
+            speeds = []
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ','_')
+                npump = int(res.get(f"num_pumps_{key}", 0))
+                if npump > 0:
+                    total_pumps += npump
+                    eff = float(res.get(f"efficiency_{key}", 0.0))
+                    speed = float(res.get(f"speed_{key}", 0.0))
+                    for _ in range(npump):
+                        effs.append(eff)
+                        speeds.append(speed)
+            avg_eff = sum(effs)/len(effs) if effs else 0.0
+            avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
+            
+            st.markdown(
+                f"""<br>
+                <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
+                <b>No. of operating Pumps:</b> {total_pumps}<br>
+                <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
+                <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
+                """,
+                unsafe_allow_html=True
+            )
     
     # ---- Tab 2: Cost Breakdown ----
     import numpy as np
