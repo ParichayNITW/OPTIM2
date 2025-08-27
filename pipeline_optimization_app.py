@@ -2048,12 +2048,16 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             avg_eff = sum(effs)/len(effs) if effs else 0.0
             avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
             
+            pattern_name = res.get('flow_pattern_name', 'Mainline Only')
             st.markdown(
                 f"""<br>
-                <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
+                <div style='font-size:1.1em;'>
+                <b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
-                <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
+                <b>Average Pump Speed:</b> {avg_speed:.0f} rpm<br>
+                <b>Flow Pattern:</b> {pattern_name}
+                </div>
                 """,
                 unsafe_allow_html=True
             )
