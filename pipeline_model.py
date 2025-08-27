@@ -41,26 +41,34 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
 def _generate_loop_cases(num_loops: int) -> list[list[int]]:
     """Return a small set of representative loop-usage combinations.
 
-    For pipelines with looplines at one or two stations the user typically
-    expects at most five cases: no loops used, both loops used, only the
-    first loop used, only the second loop used and the first loop used in
-    bypass mode.  When more than two looped segments exist this helper
-    generates a handful of combinations rather than all 3^n permutations
-    to keep the optimisation tractable.  Each returned list contains an
-    integer per loop-position where 0 means the loop is disabled, 1
-    means the loop is used in parallel, and 2 means the loop is used in
-    bypass mode (i.e. it rejoins downstream of the next pump).  For
-    segments without a loop the value is ignored.
+    This helper produces a variety of loop-use vectors that are independent of
+    pipe diameters.  Each element in a returned list corresponds to a looped
+    segment and takes one of the following values:
+
+      * ``0`` – loop disabled (flow only through the mainline)
+      * ``1`` – loop used in parallel with the mainline (flows split)
+      * ``2`` – loop used in bypass mode (loop rejoins downstream of the next pump)
+      * ``3`` – loop-only mode (flow only through the loopline)
+
+    The enumeration intentionally limits the number of combinations so that
+    optimisation remains tractable.  When there is only a single looped
+    segment it returns four cases.  For two loops it returns the most
+    relevant permutations.  When there are more than two loops the helper
+    constructs a handful of representative cases: all off, all parallel,
+    each individual loop used in parallel, first bypass, last bypass and
+    all loop-only.
     """
     if num_loops <= 0:
         return [[]]
+    # One loop: off, parallel, bypass and loop-only
     if num_loops == 1:
-        return [[0], [1], [2]]
+        return [[0], [1], [2], [3]]
+    # Two loops: no-loop, both parallel, first bypass, second parallel,
+    # first parallel only, and both loop-only
     if num_loops == 2:
-        return [[0, 0], [1, 1], [2, 0], [0, 1], [1, 0]]
-    # For more than two looped segments choose a few representative cases:
-    # (1) no loops, (2) all loops used, (3) each individual loop used alone,
-    # (4) first bypass and others off, (5) last bypass and others off.
+        return [[0, 0], [1, 1], [2, 0], [0, 1], [1, 0], [3, 3]]
+    # More loops: all off, all parallel, each single loop in parallel,
+    # first bypass, last bypass, and all loop-only
     combos: list[list[int]] = []
     combos.append([0] * num_loops)
     combos.append([1] * num_loops)
@@ -68,12 +76,119 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
         c = [0] * num_loops
         c[i] = 1
         combos.append(c)
+    # first bypass
     c = [0] * num_loops
     c[0] = 2
     combos.append(c)
+    # last bypass
     c = [0] * num_loops
     c[-1] = 2
     combos.append(c)
+    combos.append([3] * num_loops)
+    # Remove duplicates while preserving order
+    unique: list[list[int]] = []
+    for c in combos:
+        if c not in unique:
+            unique.append(c)
+    return unique
+
+# ---------------------------------------------------------------------------
+# Custom loop-case enumeration respecting pipe diameters
+# ---------------------------------------------------------------------------
+
+def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> list[list[int]]:
+    """Generate loop usage patterns tailored to pipe diameter equality.
+
+    When ``equal_diameter`` is ``True`` the returned cases correspond to
+    combinations required by Case‑1 in the problem description: no loops,
+    parallel loops on all segments and each individual loop in parallel.  For
+    instance, with two loops this yields four cases: `[0, 0]`, `[1, 1]`,
+    `[0, 1]` and `[1, 0]`.  Bypass and loop‑only modes are not returned
+    because they are irrelevant when the loop and mainline diameters are
+    identical.
+
+    When ``equal_diameter`` is ``False`` the returned cases reflect Case‑2:
+    no loops, loop‑only across the entire pipeline and a bypass case.  With
+    multiple loops the bypass directive applies only to the first looped
+    segment because the specification assumes that the loop bypasses the
+    next pump and rejoins the mainline downstream of that station.  Additional
+    loops are disabled in this case.  For a single loop this yields three
+    cases: `[0]`, `[3]` and `[2]`; for two loops: `[0, 0]`, `[3, 3]` and
+    `[2, 0]`.  When more than two loops exist the patterns generalise to
+    `[0, 0, ...]`, `[3, 3, ...]` and `[2, 0, 0, ...]`.
+    """
+    if num_loops <= 0:
+        return [[]]
+    if equal_diameter:
+        # Case‑1: only consider off/on combinations without bypass or loop-only.
+        cases: list[list[int]] = []
+        # All loops off
+        cases.append([0] * num_loops)
+        # All loops on (parallel)
+        cases.append([1] * num_loops)
+        # Each loop individually on
+        for i in range(num_loops):
+            c = [0] * num_loops
+            c[i] = 1
+            if c not in cases:
+                cases.append(c)
+        return cases
+    else:
+        # Case‑2: consider mainline‑only, loop‑only and bypass for first loop.
+        cases: list[list[int]] = []
+        # All loops off (mainline only)
+        cases.append([0] * num_loops)
+        # All loops loop‑only
+        cases.append([3] * num_loops)
+        # Bypass on first loop and others off
+        c = [0] * num_loops
+        c[0] = 2
+        cases.append(c)
+        return cases
+
+# ---------------------------------------------------------------------------
+# Fine-grained loop-case enumeration based on per-loop diameter equality
+# ---------------------------------------------------------------------------
+
+def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
+    """Generate loop usage combinations for multiple loops with mixed diameter equality.
+
+    ``flags`` is a list of booleans where each element corresponds to a looped
+    segment and indicates whether the loopline diameter equals the mainline
+    diameter at that position (``True``) or not (``False``).  The return
+    value is a list of integer lists; each inner list represents a choice of
+    loop usage per segment.  The options per loop are as follows:
+
+    - If ``flags[i]`` is ``True`` (Case‑1), the solver considers only
+      disabling the loop (``0``) or using it in parallel (``1``).  The
+      bypass (``2``) and loop‑only (``3``) modes are not applicable when
+      diameters match.
+    - If ``flags[i]`` is ``False`` (Case‑2), the solver considers
+      disabling the loop (``0``), using it in bypass (``2``) and using the
+      loop only (``3``).  Parallel mode (``1``) is intentionally omitted
+      because splitting flow between pipes of different diameter is not
+      desired under Case‑2.
+
+    The overall patterns are formed by taking the Cartesian product of
+    allowed options for each loop.  Duplicate patterns are removed while
+    preserving order.  For a single loop this yields two or three patterns;
+    for two loops up to six patterns; and for more loops the number of
+    combinations grows but remains manageable given typical pipeline
+    configurations.  When no loops exist the function returns a list
+    containing an empty list.
+    """
+    from itertools import product
+    if not flags:
+        return [[]]
+    options_list = []
+    for eq in flags:
+        if eq:
+            # Equal diameters: only off and parallel
+            options_list.append([0, 1])
+        else:
+            # Different diameters: off, bypass, loop-only
+            options_list.append([0, 2, 3])
+    combos = [list(c) for c in product(*options_list)]
     unique: list[list[int]] = []
     for c in combos:
         if c not in unique:
@@ -444,7 +559,56 @@ def solve_pipeline(
         # Identify the indices of stations with defined looplines
         loop_positions = [idx for idx, stn in enumerate(stations) if stn.get('loopline')]
         num_loops = len(loop_positions)
-        cases = _generate_loop_cases(num_loops)
+        # If there are no looped segments simply call solve_pipeline once
+        if num_loops == 0:
+            return solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                loop_usage_by_station=[],
+                enumerate_loops=False,
+            )
+        # Determine per-loop diameter equality flags.  For each looped
+        # segment compute whether the inner diameters of the mainline and
+        # loopline match within a small tolerance.  This allows the
+        # optimiser to apply Case‑1 logic on loops with equal pipes and
+        # Case‑2 logic on those with differing pipes independently.
+        default_t_local = 0.007
+        flags: list[bool] = []
+        for idx in loop_positions:
+            stn = stations[idx]
+            # Inner diameter of mainline
+            if stn.get('D') is not None:
+                d_main_outer = stn['D']
+                t_main = stn.get('t', default_t_local)
+                d_inner_main = d_main_outer - 2 * t_main
+            else:
+                # When only an inner diameter is given treat it as inner
+                d_inner_main = stn.get('d', 0.0)
+            loop = stn.get('loopline') or {}
+            if loop:
+                if loop.get('D') is not None:
+                    d_loop_outer = loop['D']
+                    t_loop = loop.get('t', stn.get('t', default_t_local))
+                    d_inner_loop = d_loop_outer - 2 * t_loop
+                else:
+                    d_inner_loop = loop.get('d', d_inner_main)
+            else:
+                # Should not happen as only stations with loopline are in loop_positions
+                d_inner_loop = d_inner_main
+            flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
+        # Generate loop-usage patterns based on per-loop diameter equality
+        cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
         for case in cases:
             usage = [0] * len(stations)
@@ -716,6 +880,7 @@ def solve_pipeline(
                     loop = stn_data['loopline']
                     dra_len_loop = max(0.0, min(loop['L'], reach_after - stn_data['cum_dist']))
                     eff_dra_loop = opt['dra_loop'] if dra_len_loop > 0 else 0.0
+                    # Parallel scenario (main + loop split by equal head)
                     hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                         flow_total,
                         {
@@ -750,6 +915,7 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': False,
                     })
+                    # Bypass scenario: same flow split but bypass next pump
                     scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
@@ -764,6 +930,34 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': True,
                     })
+                    # Loop-only scenario: entire flow goes through loopline only.
+                    # Only include this scenario when the loopline and mainline
+                    # diameters differ.  When they are identical the
+                    # parallel scenario already covers equal-split behaviour.
+                    if abs(stn_data['d_inner'] - loop['d_inner']) > 1e-6:
+                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = _segment_hydraulics(
+                            flow_total,
+                            loop['L'],
+                            loop['d_inner'],
+                            loop['rough'],
+                            stn_data['kv'],
+                            eff_dra_loop,
+                            dra_len_loop,
+                        )
+                        scenarios.append({
+                            'head_loss': hl_loop,
+                            'v': 0.0,
+                            'Re': 0.0,
+                            'f': 0.0,
+                            'flow_main': 0.0,
+                            'v_loop': v_loop_only,
+                            'Re_loop': Re_loop_only,
+                            'f_loop': f_loop_only,
+                            'flow_loop': flow_total,
+                            'maop_loop': loop['maop_head'],
+                            'maop_loop_kg': loop['maop_kgcm2'],
+                            'bypass_next': False,
+                        })
 
                 if opt['nop'] > 0 and opt['rpm'] > 0:
                     pump_def = {
@@ -831,6 +1025,12 @@ def solve_pipeline(
                         # Use only the bypass scenario: loop flow > 0 and bypass flag set.
                         for cand in scenarios:
                             if cand['flow_loop'] > 0.0 and cand.get('bypass_next', False):
+                                filtered_scenarios.append(cand)
+                                break
+                    elif usage == 3:
+                        # Loop-only directive: select scenario where all flow goes through loopline
+                        for cand in scenarios:
+                            if cand['flow_loop'] > 0.0 and cand['flow_main'] == 0.0:
                                 filtered_scenarios.append(cand)
                                 break
                     else:
@@ -1094,7 +1294,34 @@ def solve_pipeline_with_types(
             # unpredictably when stations are split into multiple units.
             loop_positions = [idx for idx, u in enumerate(stn_acc) if u.get('loopline')]
             # Always run at least once even if no loops exist
-            cases = _generate_loop_cases(len(loop_positions)) if loop_positions else [[]]
+            if not loop_positions:
+                cases = [[]]
+            else:
+                # Determine per-loop diameter equality flags for the expanded stations.
+                default_t_local = 0.007
+                flags_expanded: list[bool] = []
+                for pidx in loop_positions:
+                    stn_e = stn_acc[pidx]
+                    # Inner diameter of the mainline segment
+                    if stn_e.get('D') is not None:
+                        d_main_outer = stn_e['D']
+                        t_main = stn_e.get('t', default_t_local)
+                        d_inner_main = d_main_outer - 2 * t_main
+                    else:
+                        d_inner_main = stn_e.get('d', 0.0)
+                    lp = stn_e.get('loopline') or {}
+                    if lp:
+                        if lp.get('D') is not None:
+                            d_loop_outer = lp['D']
+                            t_loop = lp.get('t', stn_e.get('t', default_t_local))
+                            d_inner_loop = d_loop_outer - 2 * t_loop
+                        else:
+                            d_inner_loop = lp.get('d', d_inner_main)
+                    else:
+                        d_inner_loop = d_inner_main
+                    flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
+                # Generate loop-case combinations based on flags
+                cases = _generate_loop_cases_by_flags(flags_expanded)
             for case in cases:
                 usage = [0] * len(stn_acc)
                 for pidx, val in zip(loop_positions, case):
