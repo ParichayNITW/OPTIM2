@@ -1750,30 +1750,21 @@ if not auto_batch:
             st.error(error_msg)
             st.stop()
 
-        # Build a consolidated station-wise table with flow pattern names
+        # Build a consolidated station-wise table
         station_tables = []
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
             df_int = build_station_table(res, stations_base)
-            # Insert human-readable pattern and time columns
-            pattern = res.get('flow_pattern_name', '')
-            df_int.insert(0, "Pattern", pattern)
             df_int.insert(0, "Time", f"{hr:02d}:00")
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-        # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
-        # Pandas may treat some columns as object if they contain NaN or are newly inserted.
-        df_day_numeric = df_day.copy()
-        # Identify columns eligible for numeric styling
-        num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
-        for c in num_cols:
-            df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        # Display the data without complex styling.  A background gradient
-        # previously applied caused conversion errors when non-numeric
-        # values were present.  Using a plain dataframe avoids this issue.
-        st.dataframe(df_day_numeric, use_container_width=True, hide_index=True)
+        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name"]]
+        styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
+            subset=num_cols, cmap="Blues"
+        )
+        st.dataframe(styled, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -1782,11 +1773,7 @@ if not auto_batch:
 
         # Display total cost per time slice and global sum
         cost_rows = [
-            {
-                "Time": f"{rec['time']:02d}:00",
-                "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
-            }
+            {"Time": f"{rec['time']:02d}:00", "Total Cost (INR)": rec["result"].get("total_cost", 0.0)}
             for rec in reports
         ]
         df_cost = pd.DataFrame(cost_rows).round(2)
@@ -1927,20 +1914,15 @@ if not auto_batch:
                 res = rec["result"]
                 ts = rec["time"]
                 df_int = build_station_table(res, stations_base)
-                # Prepend pattern and time columns
-                pattern = res.get('flow_pattern_name', '')
-                df_int.insert(0, "Pattern", pattern)
                 df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
                 station_tables.append(df_int)
             df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            # Exclude non-numeric columns including Pattern for gradient styling
-            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
-            df_plan_numeric = df_plan.copy()
-            for c in num_cols:
-                df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            # Display without background gradient to avoid type conversion errors.
-            st.dataframe(df_plan_numeric, use_container_width=True, hide_index=True)
+            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name"]]
+            styled = df_plan.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
+                subset=num_cols, cmap="Blues"
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
@@ -1951,7 +1933,6 @@ if not auto_batch:
             cost_rows = [
                 {
                     "Time": rec["time"].strftime("%d/%m %H:%M"),
-                    "Pattern": rec["result"].get("flow_pattern_name", ""),
                     "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
                 }
                 for rec in reports
@@ -2056,16 +2037,12 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             avg_eff = sum(effs)/len(effs) if effs else 0.0
             avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
             
-            pattern_name = res.get('flow_pattern_name', 'Mainline Only')
             st.markdown(
                 f"""<br>
-                <div style='font-size:1.1em;'>
-                <b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
+                <div style='font-size:1.1em;'><b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
-                <b>Average Pump Speed:</b> {avg_speed:.0f} rpm<br>
-                <b>Flow Pattern:</b> {pattern_name}
-                </div>
+                <b>Average Pump Speed:</b> {avg_speed:.0f} rpm</div>
                 """,
                 unsafe_allow_html=True
             )
