@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from math import log10, pi
 import copy
+import itertools
 import numpy as np
 
 from dra_utils import get_ppm_for_dr
@@ -39,46 +40,22 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
 # ---------------------------------------------------------------------------
 
 def _generate_loop_cases(num_loops: int) -> list[list[int]]:
-    """Return a small set of representative loop-usage combinations.
+    """Enumerate all loop-usage combinations for ``num_loops`` segments.
 
-    For pipelines with looplines at one or two stations the user typically
-    expects at most five cases: no loops used, both loops used, only the
-    first loop used, only the second loop used and the first loop used in
-    bypass mode.  When more than two looped segments exist this helper
-    generates a handful of combinations rather than all 3^n permutations
-    to keep the optimisation tractable.  Each returned list contains an
-    integer per loop-position where 0 means the loop is disabled, 1
-    means the loop is used in parallel, and 2 means the loop is used in
-    bypass mode (i.e. it rejoins downstream of the next pump).  For
-    segments without a loop the value is ignored.
+    Each loop may be in one of three states:
+    ``0`` – loop disabled; flow remains on the mainline.
+    ``1`` – loop used in parallel with the mainline.
+    ``2`` – loop bypasses the next pump and rejoins downstream.
+
+    The function returns a list of lists where each inner list specifies the
+    state of every looped segment.  Returning the full Cartesian product keeps
+    the solver generic so that all physically meaningful combinations are
+    explored before declaring that no feasible solution exists.
     """
+
     if num_loops <= 0:
         return [[]]
-    if num_loops == 1:
-        return [[0], [1], [2]]
-    if num_loops == 2:
-        return [[0, 0], [1, 1], [2, 0], [0, 1], [1, 0]]
-    # For more than two looped segments choose a few representative cases:
-    # (1) no loops, (2) all loops used, (3) each individual loop used alone,
-    # (4) first bypass and others off, (5) last bypass and others off.
-    combos: list[list[int]] = []
-    combos.append([0] * num_loops)
-    combos.append([1] * num_loops)
-    for i in range(num_loops):
-        c = [0] * num_loops
-        c[i] = 1
-        combos.append(c)
-    c = [0] * num_loops
-    c[0] = 2
-    combos.append(c)
-    c = [0] * num_loops
-    c[-1] = 2
-    combos.append(c)
-    unique: list[list[int]] = []
-    for c in combos:
-        if c not in unique:
-            unique.append(c)
-    return unique
+    return [list(c) for c in itertools.product([0, 1, 2], repeat=num_loops)]
 
 # ---------------------------------------------------------------------------
 # Core calculations
@@ -1041,6 +1018,98 @@ def solve_pipeline(
     result['dra_front_km'] = best_state.get('reach', 0.0)
     result['error'] = False
     return result
+
+
+def solve_pipeline_cases(
+    stations: list[dict],
+    terminal: dict,
+    FLOW: float,
+    KV_list: list[float],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
+    linefill_dict: dict | None = None,
+    dra_reach_km: float = 0.0,
+    mop_kgcm2: float | None = None,
+    hours: float = 24.0,
+) -> list[dict]:
+    """Solve the pipeline for all loop utilisation patterns.
+
+    Returns a list of dictionaries where each entry contains the loop usage
+    ``case`` (per station), a human readable ``label`` describing the case and
+    the optimisation ``result`` for that configuration.  This helper ensures
+    that *all* combinations are evaluated before concluding that no feasible
+    solution exists for a looped pipeline.
+    """
+
+    # Determine which stations have looplines so we can map usage patterns onto
+    # the full station list.
+    loop_positions = [idx for idx, stn in enumerate(stations) if stn.get('loopline')]
+
+    # If no looplines exist fall back to a single solve.
+    if not loop_positions:
+        return [
+            {
+                "case": [],
+                "label": "",
+                "result": solve_pipeline(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill_dict,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                ),
+            }
+        ]
+
+    cases = _generate_loop_cases(len(loop_positions))
+    results: list[dict] = []
+    for case in cases:
+        usage = [0] * len(stations)
+        for pos, val in zip(loop_positions, case):
+            usage[pos] = val
+        res = solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill_dict,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            loop_usage_by_station=usage,
+            enumerate_loops=False,
+        )
+
+        # Build human readable label for this case.
+        labels = []
+        for pos, val in zip(loop_positions, case):
+            if val == 0:
+                mode = "off"
+            elif val == 1:
+                mode = "parallel"
+            else:
+                mode = "bypass"
+            labels.append(f"Loop {pos + 1} {mode}")
+
+        results.append({"case": usage, "label": ", ".join(labels), "result": res})
+
+    return results
 
 
 def solve_pipeline_with_types(
