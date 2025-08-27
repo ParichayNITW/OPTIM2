@@ -868,7 +868,12 @@ def map_linefill_to_segments(linefill_df, stations):
     """
 
     if linefill_df is None or len(linefill_df) == 0:
-        return [0.0] * len(stations), [0.0] * len(stations)
+        # When no linefill information is provided, return conservative defaults
+        # rather than zeros.  Zero viscosities and densities result in
+        # non-physical conditions that cause the optimiser to reject all
+        # scenarios.  Here we assume a light refined product of 1.0 cSt and
+        # density 850 kg/m³ across all segments.
+        return [1.0] * len(stations), [850.0] * len(stations)
 
     cols = set(linefill_df.columns)
 
@@ -1238,8 +1243,9 @@ def solve_pipeline(
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
     try:
+        # Delegate to the backend optimiser
         if any(s.get('pump_types') for s in stations):
-            return pipeline_model.solve_pipeline_with_types(
+            res = pipeline_model.solve_pipeline_with_types(
                 stations,
                 terminal,
                 FLOW,
@@ -1254,21 +1260,48 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
             )
-        return pipeline_model.solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill_dict,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-        )
+        else:
+            res = pipeline_model.solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+            )
+        # Append a human-readable flow pattern name based on loop usage
+        if not res.get("error"):
+            usage = res.get("loop_usage", [])
+            # Build segment-based descriptors for each looped section
+            seg_names = []
+            for idx, stn in enumerate(stations):
+                # Looplines are associated with the segment connecting this station to the next
+                if stn.get('loopline') and idx < len(stations) - 1:
+                    uval = usage[idx] if idx < len(usage) else 0
+                    seg_label = f"{stn['name']}–{stations[idx+1]['name']}"
+                    if uval == 1:
+                        seg_names.append(f"Parallel on {seg_label}")
+                    elif uval == 2:
+                        seg_names.append(f"Bypass on {seg_label}")
+                    elif uval == 3:
+                        seg_names.append(f"Loop only on {seg_label}")
+            if not seg_names:
+                pattern_name = "Mainline Only"
+            elif len(seg_names) == sum(1 for stn in stations if stn.get('loopline')) and all('Parallel' in n for n in seg_names):
+                pattern_name = "Parallel on all loop segments"
+            elif len(seg_names) == sum(1 for stn in stations if stn.get('loopline')) and all('Loop only' in n for n in seg_names):
+                pattern_name = "Loop only on all loop segments"
+            else:
+                pattern_name = ' & '.join(seg_names)
+            res['flow_pattern_name'] = pattern_name
+        return res
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
 
