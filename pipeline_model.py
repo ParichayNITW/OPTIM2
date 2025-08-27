@@ -51,6 +51,8 @@ V_MAX = 2.5
 # hydraulic sub-problems when many states evaluate identical conditions.
 _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _PARALLEL_CACHE: dict[tuple, tuple] = {}
+# Cache for downstream residual head requirements keyed by (stations id, idx, flows)
+_DOWNSTREAM_CACHE: dict[tuple, float] = {}
 
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
@@ -276,13 +278,18 @@ def _downstream_requirement(
     N = len(stations)
     if flow_override is not None:
         if isinstance(flow_override, list):
-            flows = flow_override
+            flows = tuple(flow_override)
         else:
-            flows = [flow_override] * (N + 1)
+            flows = tuple([flow_override] * (N + 1))
     else:
         if segment_flows is None:
             raise ValueError("segment_flows or flow_override must be provided")
-        flows = segment_flows
+        flows = tuple(segment_flows)
+
+    station_sig = tuple((s.get('is_pump', False), s.get('max_pumps', 0)) for s in stations)
+    cache_key = (station_sig, idx, tuple(round(f, 3) for f in flows))
+    if cache_key in _DOWNSTREAM_CACHE:
+        return _DOWNSTREAM_CACHE[cache_key]
 
     @lru_cache(None)
     def req_entry(i: int) -> float:
@@ -346,7 +353,9 @@ def _downstream_requirement(
             req -= tdh_max
         return max(req, stn.get('min_residual', 0.0))
 
-    return req_entry(idx + 1)
+    result = req_entry(idx + 1)
+    _DOWNSTREAM_CACHE[cache_key] = result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +381,7 @@ def solve_pipeline(
     operating strategy.  This replaces the previous greedy approach and
     guarantees that the global minimum (within the discretised search space) is
     returned."""
+    _DOWNSTREAM_CACHE.clear()
 
     N = len(stations)
     segment_flows = [float(FLOW)]

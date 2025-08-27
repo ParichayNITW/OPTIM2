@@ -1044,9 +1044,9 @@ def build_summary_dataframe(res: dict, stations_data: list[dict], linefill_df: p
         dr_use = min(dr_opt, dr_max)
         station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
 
-    segment_flows = [res.get(f"pipeline_flow_{k}", np.nan) for k in keys]
-    loop_flows = [res.get(f"loopline_flow_{k}", np.nan) for k in keys]
-    pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
+    segment_flows = [float(res.get(f"pipeline_flow_{k}", 0.0) or 0.0) for k in keys]
+    loop_flows = [float(res.get(f"loopline_flow_{k}", 0.0) or 0.0) for k in keys]
+    pump_flows = [float(res.get(f"pump_flow_{k}", 0.0) or 0.0) for k in keys]
 
     params = [
         "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Loopline Bypass?",
