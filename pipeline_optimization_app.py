@@ -1763,11 +1763,17 @@ if not auto_batch:
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-        num_cols = [c for c in df_day.columns if c not in ["Time", "Station", "Pump Name"]]
-        styled = df_day.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
-            subset=num_cols, cmap="Blues"
-        )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
+        # Pandas may treat some columns as object if they contain NaN or are newly inserted.
+        df_day_numeric = df_day.copy()
+        # Identify columns eligible for numeric styling
+        num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
+        for c in num_cols:
+            df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
+        # Display the data without complex styling.  A background gradient
+        # previously applied caused conversion errors when non-numeric
+        # values were present.  Using a plain dataframe avoids this issue.
+        st.dataframe(df_day_numeric, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -1928,11 +1934,13 @@ if not auto_batch:
                 station_tables.append(df_int)
             df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name"]]
-            styled = df_plan.style.format({c: "{:.2f}" for c in num_cols}).background_gradient(
-                subset=num_cols, cmap="Blues"
-            )
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            # Exclude non-numeric columns including Pattern for gradient styling
+            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
+            df_plan_numeric = df_plan.copy()
+            for c in num_cols:
+                df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
+            # Display without background gradient to avoid type conversion errors.
+            st.dataframe(df_plan_numeric, use_container_width=True, hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
