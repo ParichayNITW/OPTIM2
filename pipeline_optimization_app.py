@@ -177,6 +177,10 @@ def restore_case_dict(loaded_data):
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
+        # Keep a unified linefill table so subsequent logic and case saving
+        # operate on the user-edited volumetric data instead of a stale
+        # distance-based default.
+        st.session_state["linefill_df"] = st.session_state["linefill_vol_df"].copy()
     if loaded_data.get("day_plan"):
         st.session_state["day_plan_df"] = pd.DataFrame(loaded_data["day_plan"])
     if loaded_data.get("proj_flow"):
@@ -319,6 +323,9 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         st.session_state["linefill_vol_df"] = lf_df
+        # Ensure the generic linefill reference uses the volumetric table so
+        # runs and saved cases reflect current edits.
+        st.session_state["linefill_df"] = lf_df
     elif mode == "Daily Pumping Schedule":
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
@@ -334,6 +341,7 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         st.session_state["linefill_vol_df"] = lf_df
+        st.session_state["linefill_df"] = lf_df
         st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
         if "day_plan_df" not in st.session_state:
             st.session_state["day_plan_df"] = pd.DataFrame({
@@ -363,6 +371,7 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         st.session_state["linefill_vol_df"] = lf_df
+        st.session_state["linefill_df"] = lf_df
         st.session_state["planner_days"] = st.number_input(
             "Number of days in Projected Pumping Plan",
             min_value=1.0,
