@@ -401,7 +401,41 @@ def _split_flow_two_segments(
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
-    """Return (tdh, efficiency) for ``stn`` at ``rpm`` and ``nop`` pumps."""
+    """Return ``(tdh, efficiency)`` for ``stn`` at ``rpm`` and ``nop`` pumps."""
+
+    combo = stn.get("combo") or stn.get("pump_combo")
+    ptypes = stn.get("pump_types")
+    if combo and ptypes:
+        total_units = sum(combo.values())
+        if total_units <= 0:
+            return 0.0, 0.0
+        factor = nop / total_units if total_units > 0 else 0.0
+        tdh_total = 0.0
+        eff_total = 0.0
+        active_total = 0.0
+        for ptype, count in combo.items():
+            if count <= 0:
+                continue
+            pdata = ptypes.get(ptype, {})
+            dol = pdata.get("DOL", rpm)
+            Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
+            A = pdata.get("A", 0.0)
+            B = pdata.get("B", 0.0)
+            C = pdata.get("C", 0.0)
+            tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
+            active = count * factor
+            tdh_total += tdh_single * (rpm / dol) ** 2 * active
+            P = pdata.get("P", 0.0)
+            Qc = pdata.get("Q", 0.0)
+            R = pdata.get("R", 0.0)
+            S = pdata.get("S", 0.0)
+            T = pdata.get("T", 0.0)
+            eff_single = P * Q_equiv ** 4 + Qc * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
+            eff_total += eff_single * active
+            active_total += active
+        eff = eff_total / active_total if active_total > 0 else 0.0
+        return tdh_total, eff
+
     dol = stn.get('DOL', rpm)
     Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
     A = stn.get('A', 0.0)
@@ -894,6 +928,8 @@ def solve_pipeline(
             'loopline': loop_dict,
             'options': opts,
             'is_pump': stn.get('is_pump', False),
+            'pump_combo': stn.get('pump_combo'),
+            'pump_types': stn.get('pump_types'),
             'coef_A': float(stn.get('A', 0.0)),
             'coef_B': float(stn.get('B', 0.0)),
             'coef_C': float(stn.get('C', 0.0)),
@@ -1119,6 +1155,8 @@ def solve_pipeline(
                         'S': stn_data['coef_S'],
                         'T': stn_data['coef_T'],
                         'DOL': stn_data['dol'],
+                        'combo': stn_data.get('pump_combo'),
+                        'pump_types': stn_data.get('pump_types'),
                     }
                     tdh, eff = _pump_head(pump_def, flow_total, opt['rpm'], opt['nop'])
                 else:
@@ -1709,22 +1747,19 @@ def solve_pipeline_with_types(
             combos = generate_type_combinations(availA, availB)
             for numA, numB in combos:
                 total_units = numA + numB
-                # Skip impossible combination
                 if total_units <= 0:
                     continue
-                # Copy the base station and overwrite pump-specific fields
                 unit = copy.deepcopy(stn)
-                # Select which pump type to use for characteristic curves.  If both
-                # types are present choose the first non-zero type (A preferred).
-                if numA > 0 and stn['pump_types'].get('A'):
-                    ptype = 'A'
-                elif numB > 0 and stn['pump_types'].get('B'):
-                    ptype = 'B'
+                unit['pump_combo'] = {'A': numA, 'B': numB}
+                pdataA = stn['pump_types'].get('A', {})
+                pdataB = stn['pump_types'].get('B', {})
+                if numA > 0 and numB == 0:
+                    pdata = pdataA
+                elif numB > 0 and numA == 0:
+                    pdata = pdataB
                 else:
-                    # Should not happen as total_units > 0
-                    ptype = None
-                if ptype:
-                    pdata = stn['pump_types'][ptype]
+                    pdata = None
+                if pdata is not None:
                     for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
                         unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
                     unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
@@ -1734,12 +1769,16 @@ def solve_pipeline_with_types(
                     unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
                     unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                     unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
-                # Restrict pump counts to the selected combination
+                else:
+                    unit['MinRPM'] = min(pdataA.get('MinRPM', unit.get('MinRPM', 0.0)), pdataB.get('MinRPM', unit.get('MinRPM', 0.0)))
+                    unit['DOL'] = max(pdataA.get('DOL', unit.get('DOL', 0.0)), pdataB.get('DOL', unit.get('DOL', 0.0)))
+                    unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
+                    unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
+                    unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
+                    unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                    unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                 unit['max_pumps'] = total_units
-                # Always allow zero pumps to be turned off if desired except for origin
                 unit['min_pumps'] = 1 if pos == 0 else 0
-                # Remove pump_types key to avoid re-expansion downstream
-                unit.pop('pump_types', None)
                 expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
