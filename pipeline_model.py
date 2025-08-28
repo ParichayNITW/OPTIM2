@@ -11,10 +11,9 @@ from __future__ import annotations
 
 from math import log10, pi
 import copy
-from itertools import permutations
 import numpy as np
 
-from dra_utils import get_ppm_for_dr, compute_drag_reduction
+from dra_utils import get_ppm_for_dr
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -419,43 +418,6 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
     return tdh, eff
 
 
-def _pump_head_sequence(
-    pumps: list[dict], flow_m3h: float, rpm: float, nop: int
-) -> tuple[float, list[tuple[float, float, dict]]]:
-    """Return total head and per-pump stats for mixed pump sequences.
-
-    ``pumps`` is a list of pump definition dictionaries in the order the
-    pumps appear in series.  Only the first ``nop`` pumps are considered
-    active.  Each dictionary may contain the usual polynomial coefficients
-    ``A``–``C`` for head and ``P``–``T`` for efficiency along with a ``DOL``
-    speed reference.  The returned tuple consists of the total developed head
-    and a list of ``(tdh, eff, pdata)`` triples for each active pump.
-    """
-
-    if nop <= 0 or not pumps:
-        return 0.0, []
-
-    total_head = 0.0
-    per_pump: list[tuple[float, float, dict]] = []
-    active = pumps[:nop]
-    for pdata in active:
-        dol = pdata.get("DOL", rpm)
-        Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
-        A = pdata.get("A", 0.0)
-        B = pdata.get("B", 0.0)
-        C = pdata.get("C", 0.0)
-        tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
-        tdh = tdh_single * (rpm / dol) ** 2
-        P = pdata.get("P", 0.0)
-        Q = pdata.get("Q", 0.0)
-        R = pdata.get("R", 0.0)
-        S = pdata.get("S", 0.0)
-        T = pdata.get("T", 0.0)
-        eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
-        total_head += tdh
-        per_pump.append((tdh, eff, pdata))
-    return total_head, per_pump
-
 def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: float, elevation: float, ambient_temp: float) -> float:
     """Compute SFC (gm/bhp-hr) using ISO 3046 approximation."""
     params = pdata.get('engine_params', {})
@@ -605,14 +567,7 @@ def _downstream_requirement(
         if stn.get('is_pump', False):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
-            if rpm_max and nop_max:
-                if stn.get('pump_sequence') and stn.get('pump_configs'):
-                    defs = [stn['pump_configs'][p] for p in stn['pump_sequence']]
-                    tdh_max, _ = _pump_head_sequence(defs, flow, rpm_max, nop_max)
-                else:
-                    tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max)
-            else:
-                tdh_max = 0.0
+            tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
             req -= tdh_max
         return max(req, stn.get('min_residual', 0.0))
 
@@ -873,13 +828,11 @@ def solve_pipeline(
                         for dra_loop in dra_loop_vals:
                             ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
                             ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
-                            eff_main = compute_drag_reduction(kv, ppm_main)
-                            eff_loop = compute_drag_reduction(kv, ppm_loop)
                             opts.append({
                                 'nop': nop,
                                 'rpm': rpm,
-                                'dra_main': eff_main,
-                                'dra_loop': eff_loop,
+                                'dra_main': dra_main,
+                                'dra_loop': dra_loop,
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
                             })
@@ -905,11 +858,10 @@ def solve_pipeline(
                 dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
                 for dra_main in dra_vals:
                     ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                    eff_main = compute_drag_reduction(kv, ppm_main)
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
-                        'dra_main': eff_main,
+                        'dra_main': dra_main,
                         'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
                         'dra_ppm_loop': 0.0,
@@ -941,9 +893,6 @@ def solve_pipeline(
             'maop_kgcm2': maop_kgcm2,
             'loopline': loop_dict,
             'options': opts,
-            'pump_type': stn.get('pump_type'),
-            'pump_sequence': stn.get('pump_sequence', []),
-            'pump_configs': stn.get('pump_configs'),
             'is_pump': stn.get('is_pump', False),
             'coef_A': float(stn.get('A', 0.0)),
             'coef_B': float(stn.get('B', 0.0)),
@@ -983,11 +932,10 @@ def solve_pipeline(
     # carried over unchanged on bypassed loops, but it does not advance
     # progressively.
     # Each state now carries an additional field ``prev_dra_main`` which stores
-    # the mainline drag‑reduction percentage achieved at the previous station.
-    # This is derived from the upstream injection PPM and local viscosity so
-    # that downstream segments use the correct drag reduction for their own
-    # kinematic viscosity.  Initialise both this value and ``prev_ppm_main`` to
-    # zero for the starting state.
+    # the mainline drag‑reduction percentage injected at the previous station.
+    # This is used in Condition‑G (bypass) to ensure that the DRA rate on
+    # subsequent mainline segments matches the upstream injection.  Initialise
+    # it to zero for the starting state.
     states: dict[float, dict] = {
         round(init_residual, 2): {
             'cost': 0.0,
@@ -997,7 +945,7 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0.0,
-            'prev_dra_main': 0.0,
+            'prev_dra_main': 0,
             'prev_ppm_main': 0.0,
         }
     }
@@ -1008,16 +956,31 @@ def solve_pipeline(
             flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
                 # -----------------------------------------------------------------
-                # Enforce mainline injection continuity using PPM.  Once a
-                # non‑zero injection rate is chosen at the origin, all
-                # downstream stations must continue with a non‑zero rate.  If
-                # no DRA is injected at the origin, no downstream station may
-                # initiate injection.  This keeps the mainline PPM uniform
-                # along the pipeline.
+                # Enforce drag‑reduction continuity on the mainline.
+                #
+                # In the problem statement the user specified that when a drag
+                # reduction agent (DRA) is injected on the 30″ mainline at the
+                # origin, the same injection rate (PPM and percentage) must be
+                # applied at the downstream pump station(s) on the mainline.
+                # In other words, the mainline DRA setting is global for the
+                # entire pipeline: once a non‑zero ``dra_main`` is chosen at
+                # the first station, all subsequent stations must use the same
+                # ``dra_main`` value.  Conversely, if no DRA is injected at
+                # the origin, no injection may occur downstream either.  The
+                # loopline DRA remains independent and can vary by station,
+                # subject to bypass rules.
+                #
+                # We achieve this by carrying a ``prev_dra_main`` value in
+                # each dynamic‑programming state.  At the origin this value
+                # starts at zero.  After selecting an option at a station, we
+                # update ``prev_dra_main`` to ``opt['dra_main']`` for the
+                # new state.  When evaluating options at a downstream
+                # station, we skip any option whose ``dra_main`` does not
+                # match the ``prev_dra_main`` stored in the current state.
+                # This ensures continuity of mainline drag reduction.
                 if stn_data['idx'] > 0:
-                    prev_ppm = state.get('prev_ppm_main', 0.0)
-                    cur_ppm = opt.get('dra_ppm_main', 0.0)
-                    if (prev_ppm > 0 and cur_ppm == 0) or (prev_ppm == 0 and cur_ppm > 0):
+                    prev_dra = state.get('prev_dra_main', 0)
+                    if opt.get('dra_main') != prev_dra:
                         continue
                 # Additionally, enforce bypass rules on loopline injection:
                 # if the previous station operated in bypass mode (Case‑G)
@@ -1033,11 +996,7 @@ def solve_pipeline(
                 # simplified model the drag reduction applies across the entire
                 # segment whenever a non‑zero DRA percentage is selected.  There
                 # is no partial advancement of DRA along the pipe.
-                if stn_data['idx'] == 0:
-                    ppm_main = opt['dra_ppm_main']
-                else:
-                    ppm_main = state.get('prev_ppm_main', 0.0)
-                eff_dra_main = compute_drag_reduction(stn_data['kv'], ppm_main)
+                eff_dra_main = opt['dra_main']
                 dra_len_main = stn_data['L'] if eff_dra_main > 0 else 0.0
 
                 scenarios = []
@@ -1150,77 +1109,49 @@ def solve_pipeline(
                         })
 
                 if opt['nop'] > 0 and opt['rpm'] > 0:
-                    if stn_data.get('pump_sequence') and stn_data.get('pump_configs'):
-                        defs_all = [stn_data['pump_configs'][p] for p in stn_data['pump_sequence']]
-                        tdh, pump_stats = _pump_head_sequence(defs_all, flow_total, opt['rpm'], opt['nop'])
-                        eff = (
-                            sum(e for _, e, _ in pump_stats) / len(pump_stats)
-                            if pump_stats
-                            else 0.0
+                    pump_def = {
+                        'A': stn_data['coef_A'],
+                        'B': stn_data['coef_B'],
+                        'C': stn_data['coef_C'],
+                        'P': stn_data['coef_P'],
+                        'Q': stn_data['coef_Q'],
+                        'R': stn_data['coef_R'],
+                        'S': stn_data['coef_S'],
+                        'T': stn_data['coef_T'],
+                        'DOL': stn_data['dol'],
+                    }
+                    tdh, eff = _pump_head(pump_def, flow_total, opt['rpm'], opt['nop'])
+                else:
+                    tdh, eff = 0.0, 0.0
+                eff = max(eff, 1e-6) if opt['nop'] > 0 else 0.0
+                if opt['nop'] > 0 and opt['rpm'] > 0:
+                    pump_bkw_total = (stn_data['rho'] * flow_total * 9.81 * tdh) / (
+                        3600.0 * 1000.0 * (eff / 100.0)
+                    )
+                    pump_bkw = pump_bkw_total / opt['nop']
+                    prime_kw_total = pump_bkw_total / (0.98 if stn_data['power_type'] == 'Diesel' else 0.95)
+                    motor_kw = prime_kw_total / opt['nop']
+                else:
+                    pump_bkw = motor_kw = prime_kw_total = 0.0
+                if stn_data['power_type'] == 'Diesel' and prime_kw_total > 0:
+                    mode = stn_data.get('sfc_mode', 'manual')
+                    if mode == 'manual':
+                        sfc_val = stn_data.get('sfc', 0.0)
+                    elif mode == 'iso':
+                        sfc_val = _compute_iso_sfc(
+                            stn_data,
+                            opt['rpm'],
+                            pump_bkw_total,
+                            stn_data['dol'],
+                            stn_data.get('elev', 0.0),
+                            Ambient_temp,
                         )
                     else:
-                        pump_def = {
-                            'A': stn_data['coef_A'],
-                            'B': stn_data['coef_B'],
-                            'C': stn_data['coef_C'],
-                            'P': stn_data['coef_P'],
-                            'Q': stn_data['coef_Q'],
-                            'R': stn_data['coef_R'],
-                            'S': stn_data['coef_S'],
-                            'T': stn_data['coef_T'],
-                            'DOL': stn_data['dol'],
-                            'power_type': stn_data.get('power_type', 'Grid'),
-                            'rate': stn_data.get('rate', 0.0),
-                            'sfc': stn_data.get('sfc', 0.0),
-                            'sfc_mode': stn_data.get('sfc_mode', 'manual'),
-                            'engine_params': stn_data.get('engine_params', {}),
-                            'elev': stn_data.get('elev', 0.0),
-                        }
-                        tdh, pump_stats = _pump_head_sequence([pump_def], flow_total, opt['rpm'], opt['nop'])
-                        eff = pump_stats[0][1] if pump_stats else 0.0
+                        sfc_val = 0.0
+                    fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
+                    power_cost = prime_kw_total * hours * fuel_per_kWh * Price_HSD
                 else:
-                    tdh = 0.0
-                    eff = 0.0
-                    pump_stats = []
-
-                eff = max(eff, 1e-6) if opt['nop'] > 0 else 0.0
-                pump_bkw_total = 0.0
-                prime_kw_total = 0.0
-                power_cost = 0.0
-                if opt['nop'] > 0 and opt['rpm'] > 0:
-                    for tdh_i, eff_i, pdata in pump_stats:
-                        eff_i = max(eff_i, 1e-6)
-                        pump_bkw_i = (
-                            stn_data['rho'] * flow_total * 9.81 * tdh_i
-                        ) / (3600.0 * 1000.0 * (eff_i / 100.0))
-                        mech_eff = 0.98 if pdata.get('power_type', 'Grid') == 'Diesel' else 0.95
-                        prime_kw_i = pump_bkw_i / mech_eff
-                        pump_bkw_total += pump_bkw_i
-                        prime_kw_total += prime_kw_i
-                        if pdata.get('power_type', 'Grid') == 'Diesel':
-                            mode = pdata.get('sfc_mode', 'manual')
-                            if mode == 'manual':
-                                sfc_val = pdata.get('sfc', 0.0)
-                            elif mode == 'iso':
-                                sfc_val = _compute_iso_sfc(
-                                    pdata,
-                                    opt['rpm'],
-                                    pump_bkw_i,
-                                    pdata.get('DOL', opt['rpm']),
-                                    pdata.get('elev', stn_data.get('elev', 0.0)),
-                                    Ambient_temp,
-                                )
-                            else:
-                                sfc_val = 0.0
-                            fuel_per_kWh = (
-                                (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                            )
-                            power_cost += prime_kw_i * hours * fuel_per_kWh * Price_HSD
-                        else:
-                            power_cost += prime_kw_i * hours * pdata.get('rate', 0.0)
-
-                pump_bkw = pump_bkw_total / opt['nop'] if opt['nop'] > 0 else 0.0
-                motor_kw = prime_kw_total / opt['nop'] if opt['nop'] > 0 else 0.0
+                    power_cost = prime_kw_total * hours * stn_data.get('rate', 0.0)
 
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
@@ -1305,13 +1236,13 @@ def solve_pipeline(
                         if length_loop_total <= 0.0:
                             length_loop_total = stn_data['loopline']['L']
                         # Effective drag reduction for the entire path
-                        eff_dra_main_tot = eff_dra_main
+                        eff_dra_main_tot = opt['dra_main']
                         # Carry-over drag reduction on the loop from the previous state
                         carry_prev = state.get('carry_loop_dra', 0.0)
                         # In bypass mode the loopline at this station does not
                         # receive new DRA injection; its drag reduction remains
                         # from the upstream station (carry_prev)
-                        eff_dra_loop_tot = carry_prev if sc.get('bypass_next') else eff_dra_loop
+                        eff_dra_loop_tot = carry_prev if sc.get('bypass_next') else opt['dra_loop']
                         # Compute flow split to equalise head loss over the entire path
                         hl_tot, main_stats_tot, loop_stats_tot = _parallel_segment_hydraulics(
                             flow_total,
@@ -1380,12 +1311,15 @@ def solve_pipeline(
                         if sc.get('bypass_next'):
                             eff_dra_loop = carry_prev
                             # No injection at this station for loopline in bypass mode
+                            inj_loop_current = 0.0
                             inj_ppm_loop = 0.0
                         else:
+                            eff_dra_loop = opt['dra_loop']
+                            inj_loop_current = opt['dra_loop']
                             inj_ppm_loop = opt['dra_ppm_loop']
-                            eff_dra_loop = compute_drag_reduction(stn_data['kv'], inj_ppm_loop)
                     else:
                         eff_dra_loop = 0.0
+                        inj_loop_current = 0.0
                         inj_ppm_loop = 0.0
 
                     # Determine next carry-over drag reduction value for the loop.
@@ -1393,7 +1327,7 @@ def solve_pipeline(
                         if sc.get('bypass_next'):
                             new_carry = carry_prev
                         else:
-                            new_carry = eff_dra_loop
+                            new_carry = opt['dra_loop']
                     else:
                         new_carry = carry_prev
 
@@ -1548,11 +1482,8 @@ def solve_pipeline(
                             # ``prev_ppm_main``.  The loopline PPM is recorded separately.
                             f"dra_ppm_{stn_data['name']}": (opt['dra_ppm_main'] if stn_data['idx'] == 0 else state.get('prev_ppm_main', 0.0)),
                             f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
-                            f"drag_reduction_{stn_data['name']}": eff_dra_main,
+                            f"drag_reduction_{stn_data['name']}": opt['dra_main'],
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
-                            f"pump_type_{stn_data['name']}": ','.join(stn_data.get('pump_sequence', []))
-                            if stn_data.get('pump_sequence')
-                            else stn_data.get('pump_type', ''),
                         })
                     else:
                         record.update({
@@ -1568,9 +1499,6 @@ def solve_pipeline(
                             f"dra_ppm_loop_{stn_data['name']}": 0.0,
                             f"drag_reduction_{stn_data['name']}": 0.0,
                             f"drag_reduction_loop_{stn_data['name']}": 0.0,
-                            f"pump_type_{stn_data['name']}": ','.join(stn_data.get('pump_sequence', []))
-                            if stn_data.get('pump_sequence')
-                            else stn_data.get('pump_type', ''),
                         })
                     # Accumulate cost and update dynamic state.  When comparing states
                     # with the same residual bucket, prefer the one with lower cost
@@ -1599,9 +1527,11 @@ def solve_pipeline(
                             # ``reach`` removed because DRA advancement is no longer tracked
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            # Propagate the achieved mainline drag reduction based on the
-                            # upstream injection PPM and local viscosity.
-                            'prev_dra_main': eff_dra_main,
+                            # Propagate the selected mainline DRA percentage.  For the origin
+                            # this stores the chosen injection; for downstream stations
+                            # continuity is enforced via the option filter above, so the
+                            # same value is carried forward unchanged.
+                            'prev_dra_main': opt.get('dra_main', 0),
                             # Propagate the injection PPM on the mainline.  At the
                             # origin this captures the chosen PPM; at downstream
                             # stations it carries forward the upstream PPM so
@@ -1651,7 +1581,6 @@ def solve_pipeline(
         f"dra_ppm_loop_{term_name}": 0.0,
         f"drag_reduction_{term_name}": 0.0,
         f"drag_reduction_loop_{term_name}": 0.0,
-        f"pump_type_{term_name}": "",
         f"head_loss_{term_name}": 0.0,
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
@@ -1780,30 +1709,38 @@ def solve_pipeline_with_types(
             combos = generate_type_combinations(availA, availB)
             for numA, numB in combos:
                 total_units = numA + numB
+                # Skip impossible combination
                 if total_units <= 0:
                     continue
-                seq_base = ['A'] * numA + ['B'] * numB
-                seqs = {tuple(p) for p in permutations(seq_base)}
-                for seq in seqs:
-                    unit = copy.deepcopy(stn)
-                    first = seq[0]
-                    pdata_first = stn['pump_types'][first]
+                # Copy the base station and overwrite pump-specific fields
+                unit = copy.deepcopy(stn)
+                # Select which pump type to use for characteristic curves.  If both
+                # types are present choose the first non-zero type (A preferred).
+                if numA > 0 and stn['pump_types'].get('A'):
+                    ptype = 'A'
+                elif numB > 0 and stn['pump_types'].get('B'):
+                    ptype = 'B'
+                else:
+                    # Should not happen as total_units > 0
+                    ptype = None
+                if ptype:
+                    pdata = stn['pump_types'][ptype]
                     for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
-                        unit[coef] = pdata_first.get(coef, unit.get(coef, 0.0))
-                    unit['MinRPM'] = pdata_first.get('MinRPM', unit.get('MinRPM', 0.0))
-                    unit['DOL'] = pdata_first.get('DOL', unit.get('DOL', 0.0))
-                    unit['power_type'] = pdata_first.get('power_type', unit.get('power_type', 'Grid'))
-                    unit['rate'] = pdata_first.get('rate', unit.get('rate', 0.0))
-                    unit['sfc'] = pdata_first.get('sfc', unit.get('sfc', 0.0))
-                    unit['sfc_mode'] = pdata_first.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                    unit['engine_params'] = pdata_first.get('engine_params', unit.get('engine_params', {}))
-                    unit['pump_type'] = first
-                    unit['pump_sequence'] = list(seq)
-                    unit['pump_configs'] = copy.deepcopy(stn['pump_types'])
-                    unit['max_pumps'] = total_units
-                    unit['min_pumps'] = 1 if pos == 0 else 0
-                    unit.pop('pump_types', None)
-                    expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
+                        unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
+                    unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
+                    unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
+                    unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
+                    unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
+                    unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
+                    unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                    unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
+                # Restrict pump counts to the selected combination
+                unit['max_pumps'] = total_units
+                # Always allow zero pumps to be turned off if desired except for origin
+                unit['min_pumps'] = 1 if pos == 0 else 0
+                # Remove pump_types key to avoid re-expansion downstream
+                unit.pop('pump_types', None)
+                expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
 
