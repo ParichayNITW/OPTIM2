@@ -37,8 +37,8 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
 # Core calculations
 # ---------------------------------------------------------------------------
 
-RPM_STEP = 100
-DRA_STEP = 5
+RPM_STEP = 25
+DRA_STEP = 1
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
