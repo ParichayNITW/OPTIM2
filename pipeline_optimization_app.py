@@ -1548,7 +1548,7 @@ if auto_batch:
 
     if 'batch_df' in st.session_state:
         df_batch = st.session_state['batch_df']
-        st.dataframe(df_batch, use_container_width=True)
+        st.dataframe(df_batch, width='stretch')
         st.download_button("Download Batch Results", df_batch.to_csv(index=False), file_name="batch_results.csv")
         if len(df_batch) > 0:
             pc_cols = []
@@ -1582,7 +1582,7 @@ if auto_batch:
                 height=750,
                 plot_bgcolor='white',
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     st.session_state.pop('batch_df', None)
@@ -1792,7 +1792,7 @@ if not auto_batch:
             df_day_numeric.style.format(fmt_dict)
             .background_gradient(cmap="Blues", subset=num_cols)
         )
-        st.dataframe(df_day_style, use_container_width=True, hide_index=True)
+        st.dataframe(df_day_style, width='stretch', hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -1810,7 +1810,7 @@ if not auto_batch:
         ]
         df_cost = pd.DataFrame(cost_rows).round(2)
         df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-        st.dataframe(df_cost_style, use_container_width=True, hide_index=True)
+        st.dataframe(df_cost_style, width='stretch', hide_index=True)
         st.markdown(
             f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
         )
@@ -1966,7 +1966,7 @@ if not auto_batch:
                 df_plan_numeric.style.format(fmt_dict)
                 .background_gradient(cmap="Blues", subset=num_cols)
             )
-            st.dataframe(df_plan_style, use_container_width=True, hide_index=True)
+            st.dataframe(df_plan_style, width='stretch', hide_index=True)
             st.download_button(
                 "Download Dynamic Plan Output data",
                 df_plan.to_csv(index=False, float_format="%.2f"),
@@ -1984,7 +1984,7 @@ if not auto_batch:
             ]
             df_cost = pd.DataFrame(cost_rows).round(2)
             df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-            st.dataframe(df_cost_style, use_container_width=True, hide_index=True)
+            st.dataframe(df_cost_style, width='stretch', hide_index=True)
             st.markdown(
                 f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
             )
@@ -2038,7 +2038,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     sched_disp = sched_df.copy()
                     sched_disp["Start"] = pd.to_datetime(sched_disp["Start"]).dt.strftime("%d/%m/%y %H:%M")
                     sched_disp["End"] = pd.to_datetime(sched_disp["End"]).dt.strftime("%d/%m/%y %H:%M")
-                    st.dataframe(sched_disp, use_container_width=True)
+                    st.dataframe(sched_disp, width='stretch')
 
             # --- Use flows from backend output only ---
             segment_flows = []
@@ -2056,7 +2056,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             fmt_cols = {col: "{:.2f}" for col in df_sum.columns if col != "Parameters"}
             df_display = df_sum.style.format(fmt_cols).background_gradient(cmap="Blues", subset=df_sum.columns[1:])
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
                 "📥 Download CSV",
                 df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
@@ -2149,7 +2149,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 height=430,
                 margin=dict(l=0, r=0, t=40, b=0)
             )
-            st.plotly_chart(fig_grouped, use_container_width=True)
+            st.plotly_chart(fig_grouped, width='stretch')
     
             # DRA cost bar chart only ---
             st.markdown("<h4 style='font-weight:600; margin-top: 2em;'>DRA Cost</h4>", unsafe_allow_html=True)
@@ -2168,7 +2168,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=0, r=0, t=30, b=0)
             )
-            st.plotly_chart(fig_dra, use_container_width=True)
+            st.plotly_chart(fig_dra, width='stretch')
     
             # --- Pie chart: Total cost distribution by station ---
             st.markdown("#### Cost Contribution by Station")
@@ -2186,7 +2186,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=10, r=10, t=40, b=10)
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width='stretch')
     
             # --- Trend line: Total cost vs. chainage ---
             st.markdown("#### Cost Accumulation Along Pipeline")
@@ -2212,7 +2212,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     font=dict(size=15),
                     height=350
                 )
-                st.plotly_chart(fig_line, use_container_width=True)
+                st.plotly_chart(fig_line, width='stretch')
     
             # --- Table: All cost heads, 2-decimal formatted ---
             df_cost_fmt = df_cost.copy()
@@ -2220,7 +2220,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 if c != "Station":
                     df_cost_fmt[c] = df_cost_fmt[c].apply(lambda x: f"{x:.2f}")
             st.markdown("#### Tabular Cost Summary")
-            st.dataframe(df_cost_fmt, use_container_width=True, hide_index=True)
+            st.dataframe(df_cost_fmt, width='stretch', hide_index=True)
     
             st.download_button(
                 "📥 Download Station Cost (CSV)",
@@ -2276,8 +2276,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     title="Head Loss per Segment",
                     height=400
                 )
-                st.plotly_chart(fig_h, use_container_width=True, key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
-                st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), use_container_width=True, hide_index=True)
+                st.plotly_chart(fig_h, width='stretch', key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
+                st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), width='stretch', hide_index=True)
             
             # --- 2. Velocity & Reynolds ---
             with head_tab:
@@ -2314,9 +2314,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     legend=dict(font=dict(size=14)),
                     height=420
                 )
-                st.plotly_chart(fig_v, use_container_width=True)
+                st.plotly_chart(fig_v, width='stretch')
                 # Data table
-                st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), use_container_width=True, hide_index=True)
+                st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), width='stretch', hide_index=True)
             
             # --- 3. Pump Characteristic Curve (Head vs Flow at various Speeds) ---
             with char_tab:
@@ -2364,7 +2364,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, use_container_width=True, key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                    st.plotly_chart(fig, width='stretch', key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
     
             
             # --- 4. Pump Efficiency Curve (Eff vs Flow at various Speeds) ---
@@ -2412,7 +2412,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             
             # --- 5. Pressure vs Pipeline Length ---
             with press_tab:
@@ -2538,7 +2538,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig.update_xaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
                 fig.update_yaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
             
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
@@ -2591,7 +2591,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400
                         )
-                        st.plotly_chart(fig_pwr, use_container_width=True)
+                        st.plotly_chart(fig_pwr, width='stretch')
                     else:
                         st.warning("DOL speed not specified; skipping Power vs Speed plot.")
                     # --- 2. Power vs Flow (various speeds) ---
@@ -2625,7 +2625,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         font=dict(size=16),
                         height=400,
                     )
-                    st.plotly_chart(fig_pwr2, use_container_width=True)
+                    st.plotly_chart(fig_pwr2, width='stretch')
     
     # ---- Tab 4: System Curves ----
     import plotly.graph_objects as go
@@ -2692,7 +2692,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     margin=dict(l=10, r=10, t=60, b=30),
                     plot_bgcolor="#f5f8fc"
                 )
-                st.plotly_chart(fig_sys, use_container_width=True, key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(fig_sys, width='stretch', key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
     
     
     # ---- Tab 5: Pump-System Interaction ----
@@ -2881,7 +2881,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
                     hovermode="closest",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
     
     
     
@@ -2937,9 +2937,13 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     
                     ppm_lower = np.interp(percent_dr, xp_lower, yp_lower)
                     ppm_upper = np.interp(percent_dr, xp_upper, yp_upper)
-                    # Interpolate each percent_dr value for given viscosity
-                    ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((viscosity - lower) / (upper - lower))
-                    curve_label = f"Interpolated for {viscosity:.2f} cSt"
+                    if np.isclose(upper, lower):
+                        ppm_vals = ppm_lower
+                        curve_label = f"{lower} cSt curve"
+                    else:
+                        # Interpolate each percent_dr value for given viscosity
+                        ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((viscosity - lower) / (upper - lower))
+                        curve_label = f"Interpolated for {viscosity:.2f} cSt"
                 opt_ppm = res.get(f"dra_ppm_{key}", 0.0)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -2960,7 +2964,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis_title="% Drag Reduction",
                     legend=dict(orientation="h", y=-0.2),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
     
@@ -3116,7 +3120,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             margin=dict(l=30, r=30, b=30, t=80)
         )
     
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown(
             """
@@ -3322,7 +3326,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
             )
     
-            st.plotly_chart(fig3d, use_container_width=True)
+            st.plotly_chart(fig3d, width='stretch')
             st.markdown(
                 "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
                 "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
@@ -3416,8 +3420,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     progress.progress((i+1)/len(pvals))
                 fig = px.line(x=pvals, y=yvals, labels={"x": param, "y": output}, title=f"{output} vs {param} (Sensitivity)")
                 df_sens = pd.DataFrame({param: pvals, output: yvals})
-                st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(df_sens, use_container_width=True, hide_index=True)
+                st.plotly_chart(fig, width='stretch')
+                st.dataframe(df_sens, width='stretch', hide_index=True)
                 st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
 
     with tab_bench:
@@ -3492,7 +3496,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         status = "✅" if (k != "Pump Efficiency (%)" and v <= bench) or (k == "Pump Efficiency (%)" and v >= bench) else "🔴"
                         rows.append((k, f"{v:.2f}", f"{bench:.2f}", status))
                 df_bench = pd.DataFrame(rows, columns=["Parameter", "Pipeline", "Benchmark", "Status"])
-                st.dataframe(df_bench, use_container_width=True, hide_index=True)
+                st.dataframe(df_bench, width='stretch', hide_index=True)
 
     with tab_sim:
         st.markdown("<div class='section-title'>Annualized Savings Simulator</div>", unsafe_allow_html=True)
