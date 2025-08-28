@@ -134,9 +134,17 @@ def get_dr_for_ppm(
     return float(dr_interp)
 
 
+def compute_drag_reduction(visc: float, ppm: float) -> float:
+    """Return effective % drag reduction for ``ppm`` at viscosity ``visc``."""
+    if ppm <= 0:
+        return 0.0
+    return get_dr_for_ppm(visc, ppm)
+
+
 __all__ = [
     "DRA_CSV_FILES",
     "DRA_CURVE_DATA",
     "get_ppm_for_dr",
     "get_dr_for_ppm",
+    "compute_drag_reduction",
 ]
