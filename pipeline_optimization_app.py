@@ -1047,12 +1047,7 @@ def build_summary_dataframe(
     for idx, nm in enumerate(names):
         key = keys[idx]
         if idx < len(stations_data):
-            stn = stations_data[idx]
-            dr_opt = res.get(f"drag_reduction_{key}", 0.0)
-            dr_max = stn.get('max_dr', 0.0)
-            viscosity = kv_list[idx] if idx < len(kv_list) else 0.0
-            dr_use = min(dr_opt, dr_max)
-            station_ppm[key] = get_ppm_for_dr(viscosity, dr_use)
+            station_ppm[key] = res.get(f"dra_ppm_{key}", 0.0)
         else:
             station_ppm[key] = np.nan
 
@@ -2934,7 +2929,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     # Interpolate each percent_dr value for given viscosity
                     ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((viscosity - lower) / (upper - lower))
                     curve_label = f"Interpolated for {viscosity:.2f} cSt"
-                opt_ppm = get_ppm_for_dr(viscosity, dr_opt)
+                opt_ppm = res.get(f"dra_ppm_{key}", 0.0)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=ppm_vals,
@@ -3050,10 +3045,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             return stn['elev'] + DH
             
         dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
-        dr_max = stn.get('max_dr', 0.0)
         viscosity = kv_list[pump_idx]
-        dr_use = min(dr_opt, dr_max)
-        ppm_value = get_ppm_for_dr(viscosity, dr_use)
+        ppm_value = last_res.get(f"dra_ppm_{key}", 0.0)
     
         def get_total_cost(q, n, d, npump):
             local_ppm = get_ppm_for_dr(viscosity, d)
