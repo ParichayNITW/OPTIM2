@@ -474,7 +474,7 @@ def _downstream_requirement(
         req = downstream + head_loss + (elev_next - elev_i)
 
         # Check intermediate peaks on both mainline and loopline.  Each peak
-        # requires sufficient upstream pressure to maintain at least 15 m of
+        # requires sufficient upstream pressure to maintain at least 25 m of
         # residual head at the peak itself.  Consider whichever peak demands the
         # highest pressure.
         # Helper to compute the residual head requirement at intermediate peaks.
@@ -488,7 +488,7 @@ def _downstream_requirement(
                 if dist is None or elev_peak is None:
                     continue
                 head_peak, *_ = _segment_hydraulics(flow_rate, float(dist), d_pipe, rough_pipe, kv, dra_perc)
-                req_p = head_peak + (float(elev_peak) - elev_i) + 15.0
+                req_p = head_peak + (float(elev_peak) - elev_i) + 25.0
                 if req_p > req_local:
                     req_local = req_p
             return req_local
@@ -1078,6 +1078,109 @@ def solve_pipeline(
                         continue
                     if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
+
+                    # -----------------------------------------------------------------
+                    # Special handling for bypass patterns across an entire pipeline.
+                    #
+                    # When there are exactly two stations and the first station's
+                    # loopline bypasses the pumps at the next station, the loopline
+                    # flow travels all the way from the origin to the terminal before
+                    # rejoining the mainline.  In such cases the flow split between
+                    # the mainline and loopline should be determined by equalising
+                    # the total head loss (friction + elevation) from the origin to
+                    # the terminal rather than on a per-segment basis.  The default
+                    # implementation splits flow only over the current segment, which
+                    # underestimates the required head for the loopline when the
+                    # downstream segment contains peaks or substantial length.  The
+                    # block below recomputes the flow split and corresponding head
+                    # loss for the first segment based on the combined length of
+                    # successive segments.  It then overwrites the candidate
+                    # scenario's flow and velocity fields accordingly.  Only apply
+                    # this correction when bypassing the next pump on the very
+                    # first station in a two-station pipeline.
+                    if (
+                        sc.get('bypass_next')
+                        and stn_data['idx'] == 0
+                        and N == 2
+                        and stn_data.get('loopline')
+                    ):
+                        # Identify the downstream station
+                        next_stn = stations[1]
+                        # Compute total mainline and loopline path lengths from
+                        # the current station to the terminal
+                        length_main_total = stn_data['L'] + next_stn['L']
+                        # Loopline on the next station may not exist; use zero
+                        length_loop_total = (
+                            stn_data['loopline']['L'] + next_stn.get('loopline', {}).get('L', 0.0)
+                        )
+                        # If the downstream station does not define a loopline,
+                        # treat the loopline length as only the current segment
+                        if length_loop_total <= 0.0:
+                            length_loop_total = stn_data['loopline']['L']
+                        # Effective drag reduction for the entire path
+                        eff_dra_main_tot = opt['dra_main']
+                        # Carry-over drag reduction on the loop from the previous state
+                        carry_prev = state.get('carry_loop_dra', 0.0)
+                        # In bypass mode the loopline at this station does not
+                        # receive new DRA injection; its drag reduction remains
+                        # from the upstream station (carry_prev)
+                        eff_dra_loop_tot = carry_prev if sc.get('bypass_next') else opt['dra_loop']
+                        # Compute flow split to equalise head loss over the entire path
+                        hl_tot, main_stats_tot, loop_stats_tot = _parallel_segment_hydraulics(
+                            flow_total,
+                            {
+                                'L': length_main_total,
+                                'd_inner': stn_data['d_inner'],
+                                'rough': stn_data['rough'],
+                                'dra': eff_dra_main_tot,
+                                'dra_len': length_main_total if eff_dra_main_tot > 0 else 0.0,
+                            },
+                            {
+                                'L': length_loop_total,
+                                'd_inner': stn_data['loopline']['d_inner'],
+                                'rough': stn_data['loopline']['rough'],
+                                'dra': eff_dra_loop_tot,
+                                'dra_len': length_loop_total if eff_dra_loop_tot > 0 else 0.0,
+                            },
+                            stn_data['kv'],
+                        )
+                        v_main_tot, Re_main_tot, f_main_tot, q_main_tot = main_stats_tot
+                        v_loop_tot, Re_loop_tot, f_loop_tot, q_loop_tot = loop_stats_tot
+                        # Recompute head loss for the first segment using the split
+                        # flow on this segment.  Apply the same drag reduction
+                        hl_main_seg, v_main_seg, Re_main_seg, f_main_seg = _segment_hydraulics(
+                            q_main_tot,
+                            stn_data['L'],
+                            stn_data['d_inner'],
+                            stn_data['rough'],
+                            stn_data['kv'],
+                            eff_dra_main_tot,
+                            stn_data['L'] if eff_dra_main_tot > 0 else 0.0,
+                        )
+                        # Recompute loopline velocity and friction factor for the
+                        # first segment.  The loopline may have different length
+                        # than the mainline on this segment.
+                        hl_loop_seg, v_loop_seg, Re_loop_seg, f_loop_seg = _segment_hydraulics(
+                            q_loop_tot,
+                            stn_data['loopline']['L'],
+                            stn_data['loopline']['d_inner'],
+                            stn_data['loopline']['rough'],
+                            stn_data['kv'],
+                            eff_dra_loop_tot,
+                            stn_data['loopline']['L'] if eff_dra_loop_tot > 0 else 0.0,
+                        )
+                        # Overwrite the candidate scenario with corrected values
+                        sc = sc.copy()
+                        sc['flow_main'] = q_main_tot
+                        sc['flow_loop'] = q_loop_tot
+                        sc['v'] = v_main_seg
+                        sc['Re'] = Re_main_seg
+                        sc['f'] = f_main_seg
+                        sc['v_loop'] = v_loop_seg
+                        sc['Re_loop'] = Re_loop_seg
+                        sc['f_loop'] = f_loop_seg
+                        sc['head_loss'] = hl_main_seg
+                        sc['bypass_next'] = True
 
                     # Determine the effective drag reduction on the loopline.  In bypass
                     # mode (Condition‑G) the DRA injection at this station is not
