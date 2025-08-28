@@ -534,7 +534,7 @@ def _plot_curves(
         padding={"bottom": 40},
         usermeta={"embedOptions": {"actions": False}},
     )
-    st.altair_chart(chart1, use_container_width=True, theme=None)
+    st.altair_chart(chart1, width='stretch', theme=None)
 
     df2 = pd.DataFrame({"Flow": flows, "Peak Head": peak_heads, "Terminal Head": term_heads})
     data2 = df2.melt("Flow", var_name="Location", value_name="Head")
@@ -563,7 +563,7 @@ def _plot_curves(
         padding={"bottom": 40},
         usermeta={"embedOptions": {"actions": False}},
     )
-    st.altair_chart(chart2_full, use_container_width=True, theme=None)
+    st.altair_chart(chart2_full, width='stretch', theme=None)
 
 
 def hydraulic_app():
@@ -609,7 +609,7 @@ def hydraulic_app():
         pd.DataFrame({"Flow": DEFAULT_PUMP_CURVE["A"]["flow"], "Head": DEFAULT_PUMP_CURVE["A"]["head"]}),
         num_rows="dynamic",
         key="curveA",
-        use_container_width=True,
+        width='stretch',
         column_config={
             "Flow": st.column_config.NumberColumn("Flow (m³/h)", format="%.1f"),
             "Head": st.column_config.NumberColumn("Head (m)", format="%.1f"),
@@ -620,7 +620,7 @@ def hydraulic_app():
         pd.DataFrame({"Flow": DEFAULT_PUMP_CURVE["B"]["flow"], "Head": DEFAULT_PUMP_CURVE["B"]["head"]}),
         num_rows="dynamic",
         key="curveB",
-        use_container_width=True,
+        width='stretch',
         column_config={
             "Flow": st.column_config.NumberColumn("Flow (m³/h)", format="%.1f"),
             "Head": st.column_config.NumberColumn("Head (m)", format="%.1f"),
