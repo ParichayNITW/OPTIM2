@@ -2334,7 +2334,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     if N_max == 0:
                         st.warning(f"Pump DOL (max RPM) not set for {stn['name']} — cannot plot characteristic curves.")
                         continue
-                    rpm_vals = list(range(N_min, N_max+1, 100))
+                    rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
                     if rpm_vals and rpm_vals[-1] != N_max:
                         rpm_vals.append(N_max)
                     fig = go.Figure()
@@ -2384,7 +2384,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     S = stn.get('S', 0); T = stn.get('T', 0)
                     N_min = int(res.get(f"min_rpm_{key}", 0))
                     N_max = int(res.get(f"dol_{key}", 0))
-                    rpm_vals = list(range(N_min, N_max+1, 100))
+                    rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
                     if rpm_vals and rpm_vals[-1] != N_max:
                         rpm_vals.append(N_max)
                     fig = go.Figure()
@@ -2568,7 +2568,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     eff = max(0.01, eff/100)
                     P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
                     if N_max > 0:
-                        speeds = np.arange(N_min, N_max+1, 100)
+                        speeds = np.arange(N_min, N_max + 1, pipeline_model.RPM_STEP)
                         power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
                         fig_pwr = go.Figure()
                         fig_pwr.add_trace(go.Scatter(
@@ -2595,7 +2595,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         flow_max = float(np.max(flow_user))
                     else:
                         flow_max = pump_flow
-                    rpm_vals = list(range(N_min, N_max+1, 100))
+                    rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
                     if rpm_vals and rpm_vals[-1] != N_max:
                         rpm_vals.append(N_max)
                     fig_pwr2 = go.Figure()
@@ -2656,14 +2656,14 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Re_vals = np.zeros_like(v_vals)
                     f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
-                n_curves = (max_dr // 5) + 1
+                n_curves = (max_dr // pipeline_model.DRA_STEP) + 1
                 color_palette = [
                     "#1565C0", "#1976D2", "#1E88E5", "#3949AB", "#8E24AA",
                     "#D81B60", "#F4511E", "#F9A825", "#43A047", "#00897B"
                 ]
                 color_idx = np.linspace(0, len(color_palette)-1, n_curves).astype(int)
                 fig_sys = go.Figure()
-                for j, dra in enumerate(range(0, max_dr+1, 5)):
+                for j, dra in enumerate(range(0, max_dr + pipeline_model.DRA_STEP, pipeline_model.DRA_STEP)):
                     DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = elev_i + DH
                     # Fix: safe indexing for palette if only 1 curve
@@ -2760,7 +2760,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig = go.Figure()
     
                 # -------- System Curves: All DRA, Turbo Colormap, Vivid and Bold --------
-                system_dra_steps = list(range(0, max_dr+1, 5))
+                system_dra_steps = list(range(0, max_dr + pipeline_model.DRA_STEP, pipeline_model.DRA_STEP))
                 n_dra = len(system_dra_steps)
                 for idx, dra in enumerate(system_dra_steps):
                     v_vals = flows/3600.0 / (pi*(d_inner**2)/4)
@@ -2798,7 +2798,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 if is_pump:
                     N_min = int(res.get(f"min_rpm_{key}", 1200))
                     N_max = int(res.get(f"dol_{key}", 3000))
-                    rpm_steps = np.arange(N_min, N_max+1, 100)
+                    rpm_steps = np.arange(N_min, N_max + 1, pipeline_model.RPM_STEP)
                     n_rpms = len(rpm_steps)
                     A = res.get(f"coef_A_{key}", 0)
                     B = res.get(f"coef_B_{key}", 0)
