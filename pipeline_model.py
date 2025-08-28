@@ -348,6 +348,57 @@ def _parallel_segment_hydraulics(
     _PARALLEL_CACHE[key] = best
     return best
 
+# ---------------------------------------------------------------------------
+# Multi‑segment parallel flow splitting
+# ---------------------------------------------------------------------------
+def _split_flow_two_segments(
+    flow_m3h: float,
+    kv: float,
+    main1: dict,
+    main2: dict,
+    loop1: dict,
+    loop2: dict,
+) -> tuple[float, float, float, float, float, float]:
+    """Split ``flow_m3h`` between mainline and loopline over two segments.
+
+    This helper solves for a loop flow ``q_loop`` and a mainline flow
+    ``q_main`` such that the total head loss (friction only) across both
+    segments is the same for the mainline and loopline.  ``main1`` and
+    ``main2`` describe the first and second mainline segments; ``loop1``
+    and ``loop2`` describe the corresponding loop segments.  Each dict must
+    have keys ``L``, ``d_inner``, ``rough``, ``dra`` and ``dra_len``.
+
+    The return tuple contains ``q_main``, ``q_loop``, the head loss for
+    the first mainline segment, the head loss for the first loopline
+    segment, the head loss for the second mainline segment and the
+    head loss for the second loopline segment.  All head losses are
+    returned in metres.
+    """
+    # Binary search on q_loop to equalise total head loss
+    lo, hi = 0.0, flow_m3h
+    best = None
+    for _ in range(25):
+        q_loop = (lo + hi) / 2.0
+        q_main = flow_m3h - q_loop
+        # Head loss for mainline segments
+        hl_m1, _, _, _ = _segment_hydraulics(q_main, main1['L'], main1['d_inner'], main1['rough'], kv, main1.get('dra', 0.0), main1.get('dra_len'))
+        hl_m2, _, _, _ = _segment_hydraulics(q_main, main2['L'], main2['d_inner'], main2['rough'], kv, main2.get('dra', 0.0), main2.get('dra_len'))
+        hl_main_total = hl_m1 + hl_m2
+        # Head loss for loopline segments
+        hl_l1, _, _, _ = _segment_hydraulics(q_loop, loop1['L'], loop1['d_inner'], loop1['rough'], kv, loop1.get('dra', 0.0), loop1.get('dra_len'))
+        hl_l2, _, _, _ = _segment_hydraulics(q_loop, loop2['L'], loop2['d_inner'], loop2['rough'], kv, loop2.get('dra', 0.0), loop2.get('dra_len'))
+        hl_loop_total = hl_l1 + hl_l2
+        diff = hl_main_total - hl_loop_total
+        best = (q_main, q_loop, hl_m1, hl_l1, hl_m2, hl_l2)
+        if abs(diff) < 1e-6:
+            break
+        if diff > 0:
+            # mainline has higher head; increase loop flow
+            lo = q_loop
+        else:
+            hi = q_loop
+    return best
+
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
     """Return (tdh, efficiency) for ``stn`` at ``rpm`` and ``nop`` pumps."""
@@ -795,14 +846,37 @@ def solve_pipeline(
                     'dra_ppm_loop': 0.0,
                 })
         else:
-            opts.append({
-                'nop': 0,
-                'rpm': 0,
-                'dra_main': 0,
-                'dra_loop': 0,
-                'dra_ppm_main': 0.0,
-                'dra_ppm_loop': 0.0,
-            })
+            # For non‑pump stations allow DRA injection on the mainline if a
+            # maximum drag reduction is specified.  The loopline injection is
+            # always zero at non‑pump stations because the loopline bypasses
+            # pumps and should not receive new DRA here.  ``dra_loop`` and
+            # ``dra_ppm_loop`` remain zero.  ``dra_main`` can range from 0
+            # to ``max_dr`` in DRA_STEP increments.
+            non_pump_opts: list[dict] = []
+            max_dr_main = int(stn.get('max_dr', 0))
+            if max_dr_main > 0:
+                dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
+                for dra_main in dra_vals:
+                    ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                    non_pump_opts.append({
+                        'nop': 0,
+                        'rpm': 0,
+                        'dra_main': dra_main,
+                        'dra_loop': 0,
+                        'dra_ppm_main': ppm_main,
+                        'dra_ppm_loop': 0.0,
+                    })
+            # Always include the zero‑injection case
+            if not non_pump_opts:
+                non_pump_opts.append({
+                    'nop': 0,
+                    'rpm': 0,
+                    'dra_main': 0,
+                    'dra_loop': 0,
+                    'dra_ppm_main': 0.0,
+                    'dra_ppm_loop': 0.0,
+                })
+            opts.extend(non_pump_opts)
 
         station_opts.append({
             'name': name,
@@ -857,6 +931,11 @@ def solve_pipeline(
     # such, DRA either applies across an entire segment when injected or is
     # carried over unchanged on bypassed loops, but it does not advance
     # progressively.
+    # Each state now carries an additional field ``prev_dra_main`` which stores
+    # the mainline drag‑reduction percentage injected at the previous station.
+    # This is used in Condition‑G (bypass) to ensure that the DRA rate on
+    # subsequent mainline segments matches the upstream injection.  Initialise
+    # it to zero for the starting state.
     states: dict[float, dict] = {
         round(init_residual, 2): {
             'cost': 0.0,
@@ -866,6 +945,8 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0.0,
+            'prev_dra_main': 0,
+            'prev_ppm_main': 0.0,
         }
     }
 
@@ -874,6 +955,43 @@ def solve_pipeline(
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
+                # -----------------------------------------------------------------
+                # Enforce drag‑reduction continuity on the mainline.
+                #
+                # In the problem statement the user specified that when a drag
+                # reduction agent (DRA) is injected on the 30″ mainline at the
+                # origin, the same injection rate (PPM and percentage) must be
+                # applied at the downstream pump station(s) on the mainline.
+                # In other words, the mainline DRA setting is global for the
+                # entire pipeline: once a non‑zero ``dra_main`` is chosen at
+                # the first station, all subsequent stations must use the same
+                # ``dra_main`` value.  Conversely, if no DRA is injected at
+                # the origin, no injection may occur downstream either.  The
+                # loopline DRA remains independent and can vary by station,
+                # subject to bypass rules.
+                #
+                # We achieve this by carrying a ``prev_dra_main`` value in
+                # each dynamic‑programming state.  At the origin this value
+                # starts at zero.  After selecting an option at a station, we
+                # update ``prev_dra_main`` to ``opt['dra_main']`` for the
+                # new state.  When evaluating options at a downstream
+                # station, we skip any option whose ``dra_main`` does not
+                # match the ``prev_dra_main`` stored in the current state.
+                # This ensures continuity of mainline drag reduction.
+                if stn_data['idx'] > 0:
+                    prev_dra = state.get('prev_dra_main', 0)
+                    if opt.get('dra_main') != prev_dra:
+                        continue
+                # Additionally, enforce bypass rules on loopline injection:
+                # if the previous station operated in bypass mode (Case‑G)
+                # then no loopline DRA injection is permitted at this
+                # station (dra_loop must be zero).  The upstream carry‑over
+                # drag reduction is used instead.  We detect bypass using
+                # ``loop_usage_by_station`` when provided.
+                if stn_data['idx'] > 0 and loop_usage_by_station is not None:
+                    usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
+                    if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
+                        continue
                 # Determine effective drag reduction for the mainline.  In this
                 # simplified model the drag reduction applies across the entire
                 # segment whenever a non‑zero DRA percentage is selected.  There
@@ -1279,8 +1397,22 @@ def solve_pipeline(
                     # no injection is made here.  We still charge for mainline DRA
                     # injections if applicable.
                     dra_cost = 0.0
-                    if opt['dra_ppm_main'] > 0:
-                        dra_cost += opt['dra_ppm_main'] * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                    # Determine the injection PPM for the mainline.  At the
+                    # origin (first station) this is based on the selected
+                    # ``dra_main`` and the local kinematic viscosity.  At
+                    # downstream stations the mainline injection PPM must
+                    # remain the same as the upstream selection (stored
+                    # in ``prev_ppm_main``).  This enforces continuity of
+                    # DRA injection rate across the mainline.
+                    if stn_data['idx'] == 0:
+                        ppm_main = opt['dra_ppm_main']
+                    else:
+                        ppm_main = state.get('prev_ppm_main', 0.0)
+                    if ppm_main > 0:
+                        dra_cost += ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                    # Loopline injection uses ``inj_ppm_loop`` computed
+                    # earlier.  This applies only when there is loop flow and
+                    # a non‑zero injection.
                     if sc['flow_loop'] > 0 and inj_ppm_loop > 0:
                         dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
 
@@ -1345,7 +1477,10 @@ def solve_pipeline(
                             f"motor_kw_{stn_data['name']}": motor_kw,
                             f"power_cost_{stn_data['name']}": power_cost,
                             f"dra_cost_{stn_data['name']}": dra_cost,
-                            f"dra_ppm_{stn_data['name']}": opt['dra_ppm_main'],
+                            # Store the actual PPM used on the mainline.  At the origin this is
+                            # ``opt['dra_ppm_main']``; downstream stations use
+                            # ``prev_ppm_main``.  The loopline PPM is recorded separately.
+                            f"dra_ppm_{stn_data['name']}": (opt['dra_ppm_main'] if stn_data['idx'] == 0 else state.get('prev_ppm_main', 0.0)),
                             f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
                             f"drag_reduction_{stn_data['name']}": opt['dra_main'],
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
@@ -1392,6 +1527,16 @@ def solve_pipeline(
                             # ``reach`` removed because DRA advancement is no longer tracked
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
+                            # Propagate the selected mainline DRA percentage.  For the origin
+                            # this stores the chosen injection; for downstream stations
+                            # continuity is enforced via the option filter above, so the
+                            # same value is carried forward unchanged.
+                            'prev_dra_main': opt.get('dra_main', 0),
+                            # Propagate the injection PPM on the mainline.  At the
+                            # origin this captures the chosen PPM; at downstream
+                            # stations it carries forward the upstream PPM so
+                            # continuity of injection rate is maintained.
+                            'prev_ppm_main': (opt['dra_ppm_main'] if stn_data['idx'] == 0 else state.get('prev_ppm_main', 0.0)),
                         }
 
         if not new_states:
