@@ -173,6 +173,7 @@ def restore_case_dict(loaded_data):
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     st.session_state['Fuel_density'] = loaded_data.get('Fuel_density', 820.0)
     st.session_state['Ambient_temp'] = loaded_data.get('Ambient_temp', 25.0)
+    st.session_state['MOP_kgcm2'] = loaded_data.get('MOP_kgcm2', 100.0)
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
@@ -779,6 +780,7 @@ def get_full_case_dict():
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "Fuel_density": st.session_state.get('Fuel_density', 820.0),
         "Ambient_temp": st.session_state.get('Ambient_temp', 25.0),
+        "MOP_kgcm2": st.session_state.get('MOP_kgcm2', 100.0),
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
