@@ -1138,16 +1138,36 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
         base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
-        pump_list = None
-        if isinstance(stn, dict):
-            pump_list = stn.get('pump_names') or base_stn.get('pump_names')
-        else:
-            pump_list = base_stn.get('pump_names') if base_stn else None
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
-        if pump_list and n_pumps > 0:
-            pump_name = ", ".join(pump_list[:n_pumps])
+
+        combo = None
+        if isinstance(stn, dict):
+            combo = stn.get('active_combo') or stn.get('pump_combo')
+            pump_types = stn.get('pump_types') or base_stn.get('pump_types')
         else:
-            pump_name = ""
+            pump_types = base_stn.get('pump_types') if base_stn else None
+        if combo is None and base_stn:
+            combo = base_stn.get('active_combo') or base_stn.get('pump_combo')
+
+        pump_name = ""
+        if combo and pump_types:
+            names_used: list[str] = []
+            for ptype, count in combo.items():
+                if count <= 0:
+                    continue
+                pnames = pump_types.get(ptype, {}).get('names', [])
+                names_used.extend(pnames[:count])
+            pump_name = ", ".join(names_used)
+        else:
+            pump_list = None
+            if isinstance(stn, dict):
+                pump_list = stn.get('pump_names') or base_stn.get('pump_names')
+            else:
+                pump_list = base_stn.get('pump_names') if base_stn else None
+            if pump_list and n_pumps > 0:
+                pump_name = ", ".join(pump_list[:n_pumps])
+            else:
+                pump_name = ""
 
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
@@ -1686,6 +1706,7 @@ if not auto_batch:
                     names = pdata.get('names', [])
                     if len(names) < avail:
                         names += [f"Pump {len(names_all)+i+1}" for i in range(avail - len(names))]
+                    pdata['names'] = names
                     names_all.extend(names[:avail])
                 stn['pump_names'] = names_all
                 if names_all:
@@ -1845,6 +1866,7 @@ if not auto_batch:
                         names = pdata.get('names', [])
                         if len(names) < avail:
                             names += [f"Pump {len(names_all)+i+1}" for i in range(avail - len(names))]
+                        pdata['names'] = names
                         names_all.extend(names[:avail])
                     stn['pump_names'] = names_all
                     if names_all:
