@@ -1753,7 +1753,7 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                         unit['max_pumps'] = actA + actB
-                        unit['min_pumps'] = actA + actB if pos == 0 else 0
+                        unit['min_pumps'] = actA + actB
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
