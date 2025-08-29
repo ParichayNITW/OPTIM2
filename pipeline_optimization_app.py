@@ -1605,9 +1605,6 @@ def run_all_updates():
     linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
     kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
 
-    import pandas as pd
-    import numpy as np
-
     for idx, stn in enumerate(stations_data, start=1):
         if stn.get("is_pump", False):
             if "pump_types" in stn:
