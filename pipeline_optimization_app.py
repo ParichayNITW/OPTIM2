@@ -1587,91 +1587,87 @@ if auto_batch:
 else:
     st.session_state.pop('batch_df', None)
 
-def invalidate_results():
-    """Clear any cached optimisation results from session state."""
-    for k in ("last_res", "last_stations_data", "last_term_data", "last_linefill", "last_station_table"):
-        st.session_state.pop(k, None)
-
-
-def run_all_updates():
-    """Invalidate caches, rebuild station data and solve for the global optimum."""
-    invalidate_results()
-    stations_data = st.session_state.stations
-    term_data = {
-        "name": st.session_state.get("terminal_name", "Terminal"),
-        "elev": st.session_state.get("terminal_elev", 0.0),
-        "min_residual": st.session_state.get("terminal_head", 10.0),
-    }
-    linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-
-    import pandas as pd
-    import numpy as np
-
-    for idx, stn in enumerate(stations_data, start=1):
-        if stn.get("is_pump", False):
-            if "pump_types" in stn:
-                for ptype in ["A", "B"]:
-                    if ptype not in stn["pump_types"]:
-                        continue
-                    if stn["pump_types"][ptype].get("available", 0) == 0:
-                        continue
-                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
-                    stn["pump_types"][ptype]["head_data"] = dfh
-                    stn["pump_types"][ptype]["eff_data"] = dfe
-            else:
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
-                if dfh is None and "head_data" in stn:
-                    dfh = pd.DataFrame(stn["head_data"])
-                if dfe is None and "eff_data" in stn:
-                    dfe = pd.DataFrame(stn["eff_data"])
-                if dfh is not None and len(dfh) >= 3:
-                    Qh = dfh.iloc[:, 0].values
-                    Hh = dfh.iloc[:, 1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                if dfe is not None and len(dfe) >= 5:
-                    Qe = dfe.iloc[:, 0].values
-                    Ee = dfe.iloc[:, 1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
-
-    with st.spinner("Solving optimization..."):
-        res = pipeline_model.solve_pipeline_with_types(
-            stations_data,
-            term_data,
-            st.session_state.get("FLOW", 1000.0),
-            kv_list,
-            rho_list,
-            st.session_state.get("RateDRA", 500.0),
-            st.session_state.get("Price_HSD", 70.0),
-            st.session_state.get("Fuel_density", 820.0),
-            st.session_state.get("Ambient_temp", 25.0),
-            linefill_df.to_dict(),
-            0.0,
-            st.session_state.get("MOP_kgcm2"),
-            24.0,
-        )
-    if not res or res.get("error"):
-        msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
-        st.error(msg)
-        return
-    import copy
-    st.session_state["last_res"] = copy.deepcopy(res)
-    st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
-    st.session_state["last_term_data"] = copy.deepcopy(term_data)
-    st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
-    st.session_state["last_station_table"] = build_station_table(res, stations_data)
-    st.session_state["run_mode"] = "instantaneous"
-    st.rerun()
 
 
 if not auto_batch:
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-    st.button("Start task", key="start_task", type="primary", on_click=run_all_updates)
+    run = st.button("Run Instantaneous Flow Optimizer", key="runoptbtn", help="Run pipeline optimization.", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
+    if run:
+        with st.spinner("Solving optimization..."):
+            stations_data = st.session_state.stations
+            term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+            # Always ensure linefill_df, kv_list, rho_list are defined!
+            linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
+            kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+
+            
+            # ------------- ADD THIS BLOCK -------------
+            import pandas as pd
+            import numpy as np
+    
+            for idx, stn in enumerate(stations_data, start=1):
+                if stn.get('is_pump', False):
+                    if 'pump_types' in stn:
+                        for ptype in ['A', 'B']:
+                            if ptype not in stn['pump_types']:
+                                continue
+                            if stn['pump_types'][ptype].get('available', 0) == 0:
+                                continue
+                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            stn['pump_types'][ptype]['head_data'] = dfh
+                            stn['pump_types'][ptype]['eff_data'] = dfe
+                    else:
+                        dfh = st.session_state.get(f"head_data_{idx}")
+                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        if dfh is None and "head_data" in stn:
+                            dfh = pd.DataFrame(stn["head_data"])
+                        if dfe is None and "eff_data" in stn:
+                            dfe = pd.DataFrame(stn["eff_data"])
+                        if dfh is not None and len(dfh) >= 3:
+                            Qh = dfh.iloc[:, 0].values
+                            Hh = dfh.iloc[:, 1].values
+                            coeff = np.polyfit(Qh, Hh, 2)
+                            stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                        if dfe is not None and len(dfe) >= 5:
+                            Qe = dfe.iloc[:, 0].values
+                            Ee = dfe.iloc[:, 1].values
+                            coeff_e = np.polyfit(Qe, Ee, 4)
+                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+            # ------------- END OF BLOCK -------------
+
+            res = solve_pipeline(
+                stations_data,
+                term_data,
+                FLOW,
+                kv_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                st.session_state.get("Fuel_density", 820.0),
+                st.session_state.get("Ambient_temp", 25.0),
+                linefill_df.to_dict(),
+                dra_reach_km=0.0,
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                hours=24.0,
+            )
+
+            import copy
+            if not res or res.get("error"):
+                msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
+                st.error(msg)
+                for k in ["last_res", "last_stations_data", "last_term_data", "last_linefill"]:
+                    st.session_state.pop(k, None)
+            else:
+                st.session_state["last_res"] = copy.deepcopy(res)
+                st.session_state["last_stations_data"] = copy.deepcopy(res.get('stations_used', stations_data))
+                st.session_state["last_term_data"] = copy.deepcopy(term_data)
+                st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
+                st.session_state["run_mode"] = "instantaneous"
+                # --- CRUCIAL LINE TO FORCE UI REFRESH ---
+                st.rerun()
+
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_day = st.button("Run Daily Pumping Schedule Optimizer", key="run_day_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
