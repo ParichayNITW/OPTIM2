@@ -432,13 +432,21 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
             B = pdata.get("B", 0.0)
             C = pdata.get("C", 0.0)
             tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
+            tdh_single = max(tdh_single, 0.0)
             tdh_type = tdh_single * (rpm / dol) ** 2 * count
             P = pdata.get("P", 0.0)
             Qc = pdata.get("Q", 0.0)
             R = pdata.get("R", 0.0)
             S = pdata.get("S", 0.0)
             T = pdata.get("T", 0.0)
-            eff_single = P * Q_equiv ** 4 + Qc * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
+            eff_single = (
+                P * Q_equiv ** 4
+                + Qc * Q_equiv ** 3
+                + R * Q_equiv ** 2
+                + S * Q_equiv
+                + T
+            )
+            eff_single = min(max(eff_single, 0.0), 100.0)
             results.append(
                 {
                     "tdh": tdh_type,
@@ -457,6 +465,7 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
     B = stn.get("B", 0.0)
     C = stn.get("C", 0.0)
     tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
+    tdh_single = max(tdh_single, 0.0)
     tdh = tdh_single * (rpm / dol) ** 2 * nop
     P = stn.get("P", 0.0)
     Q = stn.get("Q", 0.0)
@@ -464,6 +473,7 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
     S = stn.get("S", 0.0)
     T = stn.get("T", 0.0)
     eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
+    eff = min(max(eff, 0.0), 100.0)
     results.append(
         {
             "tdh": tdh,
@@ -627,7 +637,7 @@ def _downstream_requirement(
             nop_max = stn.get('max_pumps', 0)
             if rpm_max and nop_max:
                 pump_info = _pump_head(stn, flow, rpm_max, nop_max)
-                tdh_max = sum(p['tdh'] for p in pump_info)
+                tdh_max = sum(max(p['tdh'], 0.0) for p in pump_info)
             else:
                 tdh_max = 0.0
             req -= tdh_max
@@ -1183,11 +1193,11 @@ def solve_pipeline(
                 prime_kw_total = 0.0
                 power_cost = 0.0
                 for pinfo in pump_details:
-                    eff_local = max(pinfo['eff'], 1e-6)
-                    tdh_local = pinfo['tdh']
-                    pump_bkw_i = (stn_data['rho'] * flow_total * 9.81 * tdh_local) / (
-                        3600.0 * 1000.0 * (eff_local / 100.0)
-                    )
+                    eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
+                    tdh_local = max(pinfo['tdh'], 0.0)
+                    pump_bkw_i = (
+                        stn_data['rho'] * flow_total * 9.81 * tdh_local
+                    ) / (3600.0 * 1000.0 * (eff_local / 100.0))
                     pump_bkw_total += pump_bkw_i
                     mech_eff = 0.98 if pinfo.get('power_type') == 'Diesel' else 0.95
                     prime_kw_i = pump_bkw_i / mech_eff
@@ -1212,6 +1222,7 @@ def solve_pipeline(
                         cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
                     else:
                         cost_i = prime_kw_i * hours * stn_data.get('rate', 0.0)
+                    cost_i = max(cost_i, 0.0)
                     pinfo['pump_bkw'] = pump_bkw_i
                     pinfo['prime_kw'] = prime_kw_i
                     pinfo['power_cost'] = cost_i
