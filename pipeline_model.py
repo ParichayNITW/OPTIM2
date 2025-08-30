@@ -625,7 +625,11 @@ def _downstream_requirement(
         if stn.get('is_pump', False):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
-            tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
+            if rpm_max and nop_max:
+                pump_info = _pump_head(stn, flow, rpm_max, nop_max)
+                tdh_max = sum(p['tdh'] for p in pump_info)
+            else:
+                tdh_max = 0.0
             req -= tdh_max
         return max(req, stn.get('min_residual', 0.0))
 
