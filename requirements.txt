@@ -8,4 +8,3 @@ kaleido>=0.2.1
 scipy
 matplotlib
 streamlit-agraph
-numba
