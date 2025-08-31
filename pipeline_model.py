@@ -522,69 +522,6 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
     return sfc_site
 
 
-def _option_cost(
-    stn: dict,
-    flow_m3h: float,
-    rho: float,
-    opt: dict,
-    maop_head: float,
-    RateDRA: float,
-    Price_HSD: float,
-    Fuel_density: float,
-    Ambient_temp: float,
-    hours: float,
-) -> tuple[float, float, bool]:
-    """Return (head, total_cost, feasible) for a station option.
-
-    Mirrors the detailed power and DRA cost calculations used during the
-    dynamic-programming stage so Pareto pruning is consistent with the final
-    optimisation step.
-    """
-    head_total = 0.0
-    power_cost = 0.0
-    if stn.get('is_pump', False) and opt.get('nop', 0) > 0 and opt.get('rpm', 0) > 0:
-        pump_info = _pump_head(stn, flow_m3h, opt['rpm'], opt['nop'])
-        head_total = sum(p['tdh'] for p in pump_info)
-        for pinfo in pump_info:
-            eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
-            tdh_local = max(pinfo['tdh'], 0.0)
-            pump_bkw = (rho * flow_m3h * 9.81 * tdh_local) / (
-                3600.0 * 1000.0 * (eff_local / 100.0)
-            )
-            mech_eff = 0.98 if pinfo.get('power_type') == 'Diesel' else 0.95
-            prime_kw = pump_bkw / mech_eff
-            pdata = pinfo.get('data', {})
-            if pinfo.get('power_type') == 'Diesel':
-                mode = pdata.get('sfc_mode', stn.get('sfc_mode', 'manual'))
-                if mode == 'manual':
-                    sfc_val = pdata.get('sfc', stn.get('sfc', 0.0))
-                elif mode == 'iso':
-                    sfc_val = _compute_iso_sfc(
-                        pdata,
-                        opt['rpm'],
-                        pump_bkw,
-                        pdata.get('DOL', stn.get('DOL', opt['rpm'])),
-                        stn.get('elev', 0.0),
-                        Ambient_temp,
-                    )
-                else:
-                    sfc_val = 0.0
-                fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                cost_i = prime_kw * hours * fuel_per_kWh * Price_HSD
-            else:
-                cost_i = prime_kw * hours * stn.get('rate', 0.0)
-            power_cost += max(cost_i, 0.0)
-
-    dra_cost = 0.0
-    if opt.get('dra_ppm_main', 0.0) > 0:
-        dra_cost += opt['dra_ppm_main'] * (flow_m3h * 1000.0 * hours / 1e6) * RateDRA
-    if opt.get('dra_ppm_loop', 0.0) > 0:
-        dra_cost += opt['dra_ppm_loop'] * (flow_m3h * 1000.0 * hours / 1e6) * RateDRA
-    total_cost = power_cost + dra_cost
-    feasible = head_total <= maop_head + 1e-6
-    return head_total, total_cost, feasible
-
-
 # ---------------------------------------------------------------------------
 # Downstream requirements
 # ---------------------------------------------------------------------------
@@ -1012,53 +949,6 @@ def solve_pipeline(
                     'dra_ppm_loop': 0.0,
                 })
             opts.extend(non_pump_opts)
-
-        # ---------------------------------------------------------------
-        # Compute detailed cost for each option and prune dominated choices.
-        # Costs mirror the full power and DRA calculations used later in the
-        # dynamic program.  Only feasible options may dominate others.
-        tol = 1e-3
-        base_opt = None
-        for opt in opts:
-            if opt['nop'] == 0 and opt['dra_main'] == 0 and opt['dra_loop'] == 0:
-                base_opt = opt
-            head_total, total_cost, feasible = _option_cost(
-                stn,
-                flow,
-                rho,
-                opt,
-                maop_head,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                hours,
-            )
-            opt['_head'] = head_total
-            opt['_cost'] = total_cost
-            opt['_feasible'] = feasible
-        filtered: list[dict] = []
-        for opt in opts:
-            dominated = False
-            for other in opts:
-                if other is opt or not other.get('_feasible', True):
-                    continue
-                if (
-                    other['_head'] >= opt['_head'] - tol
-                    and other['_cost'] <= opt['_cost'] + tol
-                    and (other['_head'] > opt['_head'] + tol or other['_cost'] < opt['_cost'] - tol)
-                ):
-                    dominated = True
-                    break
-            if not dominated or opt is base_opt:
-                filtered.append(opt)
-        if base_opt and base_opt not in filtered:
-            filtered.append(base_opt)
-        for opt in filtered:
-            opt.pop('_head', None)
-            opt.pop('_cost', None)
-            opt.pop('_feasible', None)
-        opts = filtered
 
         station_opts.append({
             'name': name,
