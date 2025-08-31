@@ -12,7 +12,6 @@ from __future__ import annotations
 from math import log10, pi
 import copy
 import numpy as np
-from numba import njit
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 
@@ -215,42 +214,6 @@ _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _PARALLEL_CACHE: dict[tuple, tuple] = {}
 
 
-@njit(cache=True)
-def _segment_hydraulics_core(
-    flow_m3h: float,
-    L: float,
-    d_inner: float,
-    rough: float,
-    kv: float,
-    dra_perc: float,
-    dra_length: float,
-) -> tuple[float, float, float, float]:
-    g = 9.81
-    flow_m3s = flow_m3h / 3600.0
-    area = pi * d_inner ** 2 / 4.0
-    v = flow_m3s / area if area > 0 else 0.0
-    Re = v * d_inner / (kv * 1e-6) if kv > 0 else 0.0
-    if Re > 0:
-        if Re < 4000:
-            f = 64.0 / Re
-        else:
-            arg = (rough / d_inner / 3.7) + (5.74 / (Re ** 0.9))
-            f = 0.25 / (log10(arg) ** 2) if arg > 0 else 0.0
-    else:
-        f = 0.0
-
-    if dra_length < 0 or dra_length >= L:
-        head_loss = f * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g)) * (1 - dra_perc / 100.0)
-    elif dra_length == 0:
-        head_loss = f * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g))
-    else:
-        hl_dra = f * ((dra_length * 1000.0) / d_inner) * (v ** 2 / (2 * g)) * (1 - dra_perc / 100.0)
-        hl_nodra = f * (((L - dra_length) * 1000.0) / d_inner) * (v ** 2 / (2 * g))
-        head_loss = hl_dra + hl_nodra
-
-    return head_loss, v, Re, f
-
-
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
@@ -290,70 +253,35 @@ def _segment_hydraulics(
     if key in _SEGMENT_CACHE:
         return _SEGMENT_CACHE[key]
 
-    result = _segment_hydraulics_core(
-        flow_m3h,
-        L,
-        d_inner,
-        rough,
-        kv,
-        dra_perc,
-        -1.0 if dra_length is None else dra_length,
-    )
+    g = 9.81
+    flow_m3s = flow_m3h / 3600.0
+    area = pi * d_inner ** 2 / 4.0
+    v = flow_m3s / area if area > 0 else 0.0
+    Re = v * d_inner / (kv * 1e-6) if kv > 0 else 0.0
+    if Re > 0:
+        if Re < 4000:
+            f = 64.0 / Re
+        else:
+            arg = (rough / d_inner / 3.7) + (5.74 / (Re ** 0.9))
+            f = 0.25 / (log10(arg) ** 2) if arg > 0 else 0.0
+    else:
+        f = 0.0
+
+    # Drag reduction may only apply to part of the segment.  Compute head losses
+    # for the affected and unaffected lengths separately.
+    if dra_length is None or dra_length >= L:
+        hl_dra = f * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g)) * (1 - dra_perc / 100.0)
+        head_loss = hl_dra
+    elif dra_length <= 0:
+        head_loss = f * ((L * 1000.0) / d_inner) * (v ** 2 / (2 * g))
+    else:
+        hl_dra = f * (((dra_length) * 1000.0) / d_inner) * (v ** 2 / (2 * g)) * (1 - dra_perc / 100.0)
+        hl_nodra = f * (((L - dra_length) * 1000.0) / d_inner) * (v ** 2 / (2 * g))
+        head_loss = hl_dra + hl_nodra
+
+    result = (head_loss, v, Re, f)
     _SEGMENT_CACHE[key] = result
     return result
-
-
-@njit(cache=True)
-def _parallel_segment_hydraulics_core(
-    flow_m3h: float,
-    kv: float,
-    main_L: float,
-    main_d_inner: float,
-    main_rough: float,
-    main_dra: float,
-    main_dra_len: float,
-    loop_L: float,
-    loop_d_inner: float,
-    loop_rough: float,
-    loop_dra: float,
-    loop_dra_len: float,
-) -> tuple[float, float, float, float, float, float, float, float, float]:
-    lo = 0.0
-    hi = flow_m3h
-    hl = 0.0
-    v_main = Re_main = f_main = q_main = 0.0
-    v_loop = Re_loop = f_loop = q_loop = 0.0
-    for _ in range(20):
-        mid = (lo + hi) / 2.0
-        q_loop = mid
-        q_main = flow_m3h - q_loop
-        hl_main, v_m, Re_m, f_m = _segment_hydraulics_core(
-            q_main, main_L, main_d_inner, main_rough, kv, main_dra, main_dra_len
-        )
-        hl_loop, v_l, Re_l, f_l = _segment_hydraulics_core(
-            q_loop, loop_L, loop_d_inner, loop_rough, kv, loop_dra, loop_dra_len
-        )
-        diff = hl_main - hl_loop
-        hl = hl_main
-        v_main, Re_main, f_main, q_main = v_m, Re_m, f_m, q_main
-        v_loop, Re_loop, f_loop, q_loop = v_l, Re_l, f_l, q_loop
-        if abs(diff) < 1e-6:
-            break
-        if diff > 0:
-            lo = mid
-        else:
-            hi = mid
-    return (
-        hl,
-        v_main,
-        Re_main,
-        f_main,
-        q_main,
-        v_loop,
-        Re_loop,
-        f_loop,
-        q_loop,
-    )
 
 
 def _parallel_segment_hydraulics(
@@ -369,6 +297,16 @@ def _parallel_segment_hydraulics(
     head loss and the (velocity, Re, f, flow) tuples for each path.
     """
 
+    def calc(line_flow: float, data: dict) -> tuple[float, float, float, float]:
+        return _segment_hydraulics(
+            line_flow,
+            data['L'],
+            data['d_inner'],
+            data['rough'],
+            kv,
+            data.get('dra', 0.0),
+            data.get('dra_len'),
+        )
     key = (
         round(flow_m3h, 3),
         round(main['L'], 3),
@@ -385,91 +323,34 @@ def _parallel_segment_hydraulics(
     )
     if key in _PARALLEL_CACHE:
         return _PARALLEL_CACHE[key]
-    main_dra_len = -1.0 if main.get('dra_len') is None else main.get('dra_len')
-    loop_dra_len = -1.0 if loop.get('dra_len') is None else loop.get('dra_len')
-    res = _parallel_segment_hydraulics_core(
-        flow_m3h,
-        kv,
-        main['L'],
-        main['d_inner'],
-        main['rough'],
-        main.get('dra', 0.0),
-        main_dra_len,
-        loop['L'],
-        loop['d_inner'],
-        loop['rough'],
-        loop.get('dra', 0.0),
-        loop_dra_len,
-    )
-    best = (
-        res[0],
-        (res[1], res[2], res[3], res[4]),
-        (res[5], res[6], res[7], res[8]),
-    )
+
+    lo, hi = 0.0, flow_m3h
+    best = None
+    for _ in range(20):
+        mid = (lo + hi) / 2.0
+        q_loop = mid
+        q_main = flow_m3h - q_loop
+        hl_main, v_main, Re_main, f_main = calc(q_main, main)
+        hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop)
+        diff = hl_main - hl_loop
+        best = (
+            hl_main,
+            (v_main, Re_main, f_main, q_main),
+            (v_loop, Re_loop, f_loop, q_loop),
+        )
+        if abs(diff) < 1e-6:
+            break
+        if diff > 0:
+            lo = mid
+        else:
+            hi = mid
+
     _PARALLEL_CACHE[key] = best
     return best
 
 # ---------------------------------------------------------------------------
 # Multi‑segment parallel flow splitting
 # ---------------------------------------------------------------------------
-
-
-@njit(cache=True)
-def _split_flow_two_segments_core(
-    flow_m3h: float,
-    kv: float,
-    m1_L: float,
-    m1_d_inner: float,
-    m1_rough: float,
-    m1_dra: float,
-    m1_dra_len: float,
-    m2_L: float,
-    m2_d_inner: float,
-    m2_rough: float,
-    m2_dra: float,
-    m2_dra_len: float,
-    l1_L: float,
-    l1_d_inner: float,
-    l1_rough: float,
-    l1_dra: float,
-    l1_dra_len: float,
-    l2_L: float,
-    l2_d_inner: float,
-    l2_rough: float,
-    l2_dra: float,
-    l2_dra_len: float,
-) -> tuple[float, float, float, float, float, float]:
-    lo = 0.0
-    hi = flow_m3h
-    q_main = q_loop = 0.0
-    hl_m1 = hl_l1 = hl_m2 = hl_l2 = 0.0
-    for _ in range(25):
-        q_loop = (lo + hi) / 2.0
-        q_main = flow_m3h - q_loop
-        hl_m1, _, _, _ = _segment_hydraulics_core(
-            q_main, m1_L, m1_d_inner, m1_rough, kv, m1_dra, m1_dra_len
-        )
-        hl_m2, _, _, _ = _segment_hydraulics_core(
-            q_main, m2_L, m2_d_inner, m2_rough, kv, m2_dra, m2_dra_len
-        )
-        hl_l1, _, _, _ = _segment_hydraulics_core(
-            q_loop, l1_L, l1_d_inner, l1_rough, kv, l1_dra, l1_dra_len
-        )
-        hl_l2, _, _, _ = _segment_hydraulics_core(
-            q_loop, l2_L, l2_d_inner, l2_rough, kv, l2_dra, l2_dra_len
-        )
-        hl_main_total = hl_m1 + hl_m2
-        hl_loop_total = hl_l1 + hl_l2
-        diff = hl_main_total - hl_loop_total
-        if abs(diff) < 1e-6:
-            break
-        if diff > 0:
-            lo = q_loop
-        else:
-            hi = q_loop
-    return q_main, q_loop, hl_m1, hl_l1, hl_m2, hl_l2
-
-
 def _split_flow_two_segments(
     flow_m3h: float,
     kv: float,
@@ -493,31 +374,30 @@ def _split_flow_two_segments(
     head loss for the second loopline segment.  All head losses are
     returned in metres.
     """
-    res = _split_flow_two_segments_core(
-        flow_m3h,
-        kv,
-        main1['L'],
-        main1['d_inner'],
-        main1['rough'],
-        main1.get('dra', 0.0),
-        -1.0 if main1.get('dra_len') is None else main1.get('dra_len'),
-        main2['L'],
-        main2['d_inner'],
-        main2['rough'],
-        main2.get('dra', 0.0),
-        -1.0 if main2.get('dra_len') is None else main2.get('dra_len'),
-        loop1['L'],
-        loop1['d_inner'],
-        loop1['rough'],
-        loop1.get('dra', 0.0),
-        -1.0 if loop1.get('dra_len') is None else loop1.get('dra_len'),
-        loop2['L'],
-        loop2['d_inner'],
-        loop2['rough'],
-        loop2.get('dra', 0.0),
-        -1.0 if loop2.get('dra_len') is None else loop2.get('dra_len'),
-    )
-    return res
+    # Binary search on q_loop to equalise total head loss
+    lo, hi = 0.0, flow_m3h
+    best = None
+    for _ in range(25):
+        q_loop = (lo + hi) / 2.0
+        q_main = flow_m3h - q_loop
+        # Head loss for mainline segments
+        hl_m1, _, _, _ = _segment_hydraulics(q_main, main1['L'], main1['d_inner'], main1['rough'], kv, main1.get('dra', 0.0), main1.get('dra_len'))
+        hl_m2, _, _, _ = _segment_hydraulics(q_main, main2['L'], main2['d_inner'], main2['rough'], kv, main2.get('dra', 0.0), main2.get('dra_len'))
+        hl_main_total = hl_m1 + hl_m2
+        # Head loss for loopline segments
+        hl_l1, _, _, _ = _segment_hydraulics(q_loop, loop1['L'], loop1['d_inner'], loop1['rough'], kv, loop1.get('dra', 0.0), loop1.get('dra_len'))
+        hl_l2, _, _, _ = _segment_hydraulics(q_loop, loop2['L'], loop2['d_inner'], loop2['rough'], kv, loop2.get('dra', 0.0), loop2.get('dra_len'))
+        hl_loop_total = hl_l1 + hl_l2
+        diff = hl_main_total - hl_loop_total
+        best = (q_main, q_loop, hl_m1, hl_l1, hl_m2, hl_l2)
+        if abs(diff) < 1e-6:
+            break
+        if diff > 0:
+            # mainline has higher head; increase loop flow
+            lo = q_loop
+        else:
+            hi = q_loop
+    return best
 
 
 def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
