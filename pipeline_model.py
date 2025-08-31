@@ -501,6 +501,7 @@ def _downstream_requirement(
     segment_flows: list[float] | None,
     KV_list: list[float],
     flow_override: float | list[float] | None = None,
+    bypass_idx: set[int] | None = None,
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -516,7 +517,8 @@ def _downstream_requirement(
     ``flow_override`` is given it takes precedence and may be either a constant
     flow value or a full per-segment list.  The returned value is therefore the
     minimum residual needed after station ``idx`` so that the terminal residual
-    head constraint can still be met.
+    head constraint can still be met.  ``bypass_idx`` optionally lists downstream
+    station indices whose pumps are bypassed and thus contribute no head.
     """
 
     from functools import lru_cache
@@ -600,7 +602,7 @@ def _downstream_requirement(
             peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
-        if stn.get('is_pump', False):
+        if stn.get('is_pump', False) and (bypass_idx is None or i not in bypass_idx):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
             tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
@@ -1389,25 +1391,16 @@ def solve_pipeline(
                     # Compute downstream residual head after segment loss and elevation
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
 
-                    # Recompute downstream flows if bypassing the next station; the flow
-                    # through the mainline changes only for a bypass.  ``seg_flows_tmp``
-                    # holds the flow after each station.
-                    seg_flows_tmp = segment_flows.copy()
-                    # When bypassing the next station, only the mainline flow enters that station; the
-                    # loopline flow bypasses the pumps and rejoins downstream.  Therefore the flow for
-                    # downstream segments should reflect either the mainline-only flow (in bypass) or the
-                    # total flow (in parallel or loop-only modes).  This ensures head requirements are
-                    # computed against the proper volumetric flow in each pipe.
-                    next_flow = sc['flow_main'] if sc.get('bypass_next') else flow_total
-                    seg_flows_tmp[stn_data['idx'] + 1] = next_flow
-                    for j in range(stn_data['idx'] + 1, N):
-                        delivery_j = float(stations[j].get('delivery', 0.0))
-                        supply_j = float(stations[j].get('supply', 0.0))
-                        seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
-
-                    # Compute minimum downstream requirement and skip infeasible states
-                    if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
-                        stations_skip = copy.deepcopy(stations)
+                    # Adjust downstream flows and track bypassed pump indices when
+                    # the next station is bypassed.  The baseline flows are
+                    # pre‑computed in ``segment_flows``; bypassing simply shifts
+                    # all downstream segments by a constant delta.
+                    if sc.get('bypass_next'):
+                        delta_flow = sc['flow_main'] - segment_flows[stn_data['idx'] + 1]
+                        seg_flows_tmp = segment_flows.copy()
+                        for j in range(stn_data['idx'] + 1, N + 1):
+                            seg_flows_tmp[j] += delta_flow
+                        bypass_idx: set[int] | None = set()
                         next_index = stn_data['idx'] + 1
                         next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
                         j = next_index
@@ -1415,26 +1408,23 @@ def solve_pipeline(
                             if stations[j].get('orig_name') == next_orig or (
                                 next_orig is None and stations[j].get('orig_name') is None
                             ):
-                                stations_skip[j]['is_pump'] = False
-                                stations_skip[j]['max_pumps'] = 0
+                                bypass_idx.add(j)
                                 j += 1
                             else:
                                 break
-                        min_req = _downstream_requirement(
-                            stations_skip,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                        )
                     else:
-                        min_req = _downstream_requirement(
-                            stations,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                        )
+                        seg_flows_tmp = segment_flows
+                        bypass_idx = None
+
+                    # Compute minimum downstream requirement and skip infeasible states
+                    min_req = _downstream_requirement(
+                        stations,
+                        stn_data['idx'],
+                        terminal,
+                        seg_flows_tmp,
+                        KV_list,
+                        bypass_idx=bypass_idx,
+                    )
                     if residual_next < min_req:
                         continue
 
