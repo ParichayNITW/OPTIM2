@@ -400,11 +400,19 @@ def _split_flow_two_segments(
     return best
 
 
-def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float, float]:
-    """Return ``(tdh, efficiency)`` for ``stn`` at ``rpm`` and ``nop`` pumps."""
+def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
+    """Return per-pump-type head and efficiency information.
+
+    The return value is a list of dictionaries with keys ``tdh`` (total head
+    contributed by that pump type), ``eff`` (efficiency at the operating
+    point), ``count`` (number of pumps of that type), ``power_type`` and the
+    original pump-type data under ``data``.  This allows callers to compute
+    power and cost contributions for each pump type individually instead of
+    relying on an averaged efficiency across all running pumps.
+    """
 
     if nop <= 0:
-        return 0.0, 0.0
+        return []
 
     combo = (
         stn.get("active_combo")
@@ -412,10 +420,8 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
         or stn.get("pump_combo")
     )
     ptypes = stn.get("pump_types")
+    results: list[dict] = []
     if combo and ptypes:
-        tdh_total = 0.0
-        eff_total = 0.0
-        active_total = 0.0
         for ptype, count in combo.items():
             if count <= 0:
                 continue
@@ -426,24 +432,40 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
             B = pdata.get("B", 0.0)
             C = pdata.get("C", 0.0)
             tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
-            tdh_total += tdh_single * (rpm / dol) ** 2 * count
+            tdh_single = max(tdh_single, 0.0)
+            tdh_type = tdh_single * (rpm / dol) ** 2 * count
             P = pdata.get("P", 0.0)
             Qc = pdata.get("Q", 0.0)
             R = pdata.get("R", 0.0)
             S = pdata.get("S", 0.0)
             T = pdata.get("T", 0.0)
-            eff_single = P * Q_equiv ** 4 + Qc * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
-            eff_total += eff_single * count
-            active_total += count
-        eff = eff_total / active_total if active_total > 0 else 0.0
-        return tdh_total, eff
+            eff_single = (
+                P * Q_equiv ** 4
+                + Qc * Q_equiv ** 3
+                + R * Q_equiv ** 2
+                + S * Q_equiv
+                + T
+            )
+            eff_single = min(max(eff_single, 0.0), 100.0)
+            results.append(
+                {
+                    "tdh": tdh_type,
+                    "eff": eff_single,
+                    "count": count,
+                    "power_type": pdata.get("power_type", stn.get("power_type")),
+                    "data": pdata,
+                }
+            )
+        return results
 
+    # Single pump type
     dol = stn.get("DOL", rpm)
     Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
     A = stn.get("A", 0.0)
     B = stn.get("B", 0.0)
     C = stn.get("C", 0.0)
     tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
+    tdh_single = max(tdh_single, 0.0)
     tdh = tdh_single * (rpm / dol) ** 2 * nop
     P = stn.get("P", 0.0)
     Q = stn.get("Q", 0.0)
@@ -451,7 +473,17 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> tuple[float,
     S = stn.get("S", 0.0)
     T = stn.get("T", 0.0)
     eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
-    return tdh, eff
+    eff = min(max(eff, 0.0), 100.0)
+    results.append(
+        {
+            "tdh": tdh,
+            "eff": eff,
+            "count": nop,
+            "power_type": stn.get("power_type"),
+            "data": stn,
+        }
+    )
+    return results
 
 
 def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: float, elevation: float, ambient_temp: float) -> float:
@@ -603,7 +635,11 @@ def _downstream_requirement(
         if stn.get('is_pump', False):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
-            tdh_max, _ = _pump_head(stn, flow, rpm_max, nop_max) if rpm_max and nop_max else (0.0, 0.0)
+            if rpm_max and nop_max:
+                pump_info = _pump_head(stn, flow, rpm_max, nop_max)
+                tdh_max = sum(max(p['tdh'], 0.0) for p in pump_info)
+            else:
+                tdh_max = 0.0
             req -= tdh_max
         return max(req, stn.get('min_residual', 0.0))
 
@@ -1136,39 +1172,64 @@ def solve_pipeline(
                         'combo': stn_data.get('pump_combo'),
                         'pump_types': stn_data.get('pump_types'),
                         'active_combo': stn_data.get('active_combo'),
+                        'power_type': stn_data.get('power_type'),
+                        'sfc_mode': stn_data.get('sfc_mode'),
+                        'sfc': stn_data.get('sfc'),
+                        'engine_params': stn_data.get('engine_params', {}),
                     }
-                    tdh, eff = _pump_head(pump_def, flow_total, opt['rpm'], opt['nop'])
+                    pump_details = _pump_head(pump_def, flow_total, opt['rpm'], opt['nop'])
+                    tdh = sum(p['tdh'] for p in pump_details)
                 else:
-                    tdh, eff = 0.0, 0.0
-                eff = max(eff, 1e-6) if opt['nop'] > 0 else 0.0
-                if opt['nop'] > 0 and opt['rpm'] > 0:
-                    pump_bkw_total = (stn_data['rho'] * flow_total * 9.81 * tdh) / (
-                        3600.0 * 1000.0 * (eff / 100.0)
-                    )
-                    pump_bkw = pump_bkw_total / opt['nop']
-                    prime_kw_total = pump_bkw_total / (0.98 if stn_data['power_type'] == 'Diesel' else 0.95)
-                    motor_kw = prime_kw_total / opt['nop']
-                else:
-                    pump_bkw = motor_kw = prime_kw_total = 0.0
-                if stn_data['power_type'] == 'Diesel' and prime_kw_total > 0:
-                    mode = stn_data.get('sfc_mode', 'manual')
-                    if mode == 'manual':
-                        sfc_val = stn_data.get('sfc', 0.0)
-                    elif mode == 'iso':
-                        sfc_val = _compute_iso_sfc(
-                            stn_data,
-                            opt['rpm'],
-                            pump_bkw_total,
-                            stn_data['dol'],
-                            stn_data.get('elev', 0.0),
-                            Ambient_temp,
-                        )
+                    pump_details = []
+                    tdh = 0.0
+
+                eff = (
+                    sum(p['eff'] * p['count'] for p in pump_details) / opt['nop']
+                    if pump_details and opt['nop'] > 0
+                    else 0.0
+                )
+
+                pump_bkw_total = 0.0
+                prime_kw_total = 0.0
+                power_cost = 0.0
+                for pinfo in pump_details:
+                    eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
+                    tdh_local = max(pinfo['tdh'], 0.0)
+                    pump_bkw_i = (
+                        stn_data['rho'] * flow_total * 9.81 * tdh_local
+                    ) / (3600.0 * 1000.0 * (eff_local / 100.0))
+                    pump_bkw_total += pump_bkw_i
+                    mech_eff = 0.98 if pinfo.get('power_type') == 'Diesel' else 0.95
+                    prime_kw_i = pump_bkw_i / mech_eff
+                    prime_kw_total += prime_kw_i
+                    pdata = pinfo.get('data', {})
+                    if pinfo.get('power_type') == 'Diesel':
+                        mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
+                        if mode == 'manual':
+                            sfc_val = pdata.get('sfc', stn_data.get('sfc', 0.0))
+                        elif mode == 'iso':
+                            sfc_val = _compute_iso_sfc(
+                                pdata,
+                                opt['rpm'],
+                                pump_bkw_i,
+                                pdata.get('DOL', stn_data['dol']),
+                                stn_data.get('elev', 0.0),
+                                Ambient_temp,
+                            )
+                        else:
+                            sfc_val = 0.0
+                        fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
+                        cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
                     else:
-                        sfc_val = 0.0
-                    fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                    power_cost = prime_kw_total * hours * fuel_per_kWh * Price_HSD
-                else:
-                    power_cost = prime_kw_total * hours * stn_data.get('rate', 0.0)
+                        cost_i = prime_kw_i * hours * stn_data.get('rate', 0.0)
+                    cost_i = max(cost_i, 0.0)
+                    pinfo['pump_bkw'] = pump_bkw_i
+                    pinfo['prime_kw'] = prime_kw_i
+                    pinfo['power_cost'] = cost_i
+                    power_cost += cost_i
+
+                pump_bkw = pump_bkw_total / opt['nop'] if opt['nop'] > 0 else 0.0
+                motor_kw = prime_kw_total / opt['nop'] if opt['nop'] > 0 else 0.0
 
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
@@ -1484,6 +1545,7 @@ def solve_pipeline(
                             f"motor_kw_{stn_data['name']}": motor_kw,
                             f"power_cost_{stn_data['name']}": power_cost,
                             f"dra_cost_{stn_data['name']}": dra_cost,
+                            f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
                             # Store the actual PPM used on the mainline.  At the origin this is
                             # ``opt['dra_ppm_main']``; downstream stations use
                             # ``prev_ppm_main``.  The loopline PPM is recorded separately.
@@ -1502,6 +1564,7 @@ def solve_pipeline(
                             f"motor_kw_{stn_data['name']}": 0.0,
                             f"power_cost_{stn_data['name']}": 0.0,
                             f"dra_cost_{stn_data['name']}": 0.0,
+                            f"pump_details_{stn_data['name']}": [],
                             f"dra_ppm_{stn_data['name']}": 0.0,
                             f"dra_ppm_loop_{stn_data['name']}": 0.0,
                             f"drag_reduction_{stn_data['name']}": 0.0,
