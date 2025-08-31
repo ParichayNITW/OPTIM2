@@ -950,6 +950,48 @@ def solve_pipeline(
                 })
             opts.extend(non_pump_opts)
 
+        # ---------------------------------------------------------------
+        # Compute a simple cost proxy for each option and prune dominated
+        # choices.  The proxy combines hydraulic energy (head divided by
+        # efficiency) with chemical cost based on injected DRA PPM.  Only
+        # keep Pareto‑optimal options, always retaining the pure bypass
+        # scenario (nop=0, dra_main=0, dra_loop=0) to preserve this
+        # operating mode.
+        tol = 1e-6
+        base_opt = None
+        for opt in opts:
+            if opt['nop'] == 0 and opt['dra_main'] == 0 and opt['dra_loop'] == 0:
+                base_opt = opt
+            head_total = 0.0
+            energy = 0.0
+            if stn.get('is_pump', False) and opt['nop'] > 0 and opt['rpm'] > 0:
+                pump_info = _pump_head(stn, flow, opt['rpm'], opt['nop'])
+                head_total = sum(p['tdh'] for p in pump_info)
+                for p in pump_info:
+                    eff_frac = p['eff'] / 100.0 if p['eff'] > 0 else 1e-9
+                    energy += p['tdh'] / eff_frac
+            chem_cost = (opt.get('dra_ppm_main', 0.0) + opt.get('dra_ppm_loop', 0.0)) * RateDRA
+            opt['_head'] = head_total
+            opt['_cost'] = energy + chem_cost
+        filtered: list[dict] = []
+        for opt in opts:
+            dominated = False
+            for other in opts:
+                if other is opt:
+                    continue
+                if (other['_head'] >= opt['_head'] - tol and other['_cost'] <= opt['_cost'] + tol and (
+                    other['_head'] > opt['_head'] + tol or other['_cost'] < opt['_cost'] - tol)):
+                    dominated = True
+                    break
+            if not dominated or opt is base_opt:
+                filtered.append(opt)
+        if base_opt and base_opt not in filtered:
+            filtered.append(base_opt)
+        for opt in filtered:
+            opt.pop('_head', None)
+            opt.pop('_cost', None)
+        opts = filtered
+
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
