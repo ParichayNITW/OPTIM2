@@ -113,9 +113,9 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
     segment because the specification assumes that the loop bypasses the
     next pump and rejoins the mainline downstream of that station.  Additional
     loops are disabled in this case.  For a single loop this yields three
-    cases: `[0]`, `[3]` and `[2]`; for two loops: `[0, 0]`, `[3, 3]` and
-    `[2, 0]`.  When more than two loops exist the patterns generalise to
-    `[0, 0, ...]`, `[3, 3, ...]` and `[2, 0, 0, ...]`.
+    cases: `[0]`, `[3]` and `[2]`; for two loops: `[0, 0]`, `[3, 3]`, `[2, 0]`
+    and `[2, 3]`.  When more than two loops exist the patterns generalise to
+    `[0, 0, ...]`, `[3, 3, ...]`, `[2, 0, 0, ...]` and `[2, 3, 0, ...]`.
     """
     if num_loops <= 0:
         return [[]]
@@ -144,6 +144,12 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
         c = [0] * num_loops
         c[0] = 2
         cases.append(c)
+        # Bypass on first loop and loop-only on second to evaluate downstream peaks
+        if num_loops >= 2:
+            c = [0] * num_loops
+            c[0] = 2
+            c[1] = 3
+            cases.append(c)
         return cases
 
 # ---------------------------------------------------------------------------
@@ -171,11 +177,13 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
     The overall patterns are formed by taking the Cartesian product of
     allowed options for each loop.  Duplicate patterns are removed while
-    preserving order.  For a single loop this yields two or three patterns;
-    for two loops up to six patterns; and for more loops the number of
-    combinations grows but remains manageable given typical pipeline
-    configurations.  When no loops exist the function returns a list
-    containing an empty list.
+    preserving order.  This naturally produces combinations such as
+    ``[2, 3]`` when two differing‑diameter loops exist, ensuring that the
+    bypassed flow continues through the downstream loop and its peaks are
+    evaluated.  For a single loop this yields two or three patterns; for two
+    loops up to six patterns; and for more loops the number of combinations
+    grows but remains manageable given typical pipeline configurations.  When
+    no loops exist the function returns a list containing an empty list.
     """
     from itertools import product
     if not flags:
@@ -740,7 +748,9 @@ def solve_pipeline(
                 # Should not happen as only stations with loopline are in loop_positions
                 d_inner_loop = d_inner_main
             flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-        # Generate loop-usage patterns based on per-loop diameter equality
+        # Generate loop-usage patterns based on per-loop diameter equality.
+        # This includes cases like [2, 3] when two differing-diameter loops
+        # exist so that bypassed flow continues through the downstream loop.
         cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
         for case in cases:
@@ -1725,7 +1735,9 @@ def solve_pipeline_with_types(
                     else:
                         d_inner_loop = d_inner_main
                     flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-                # Generate loop-case combinations based on flags
+                # Generate loop-case combinations based on flags.  Patterns
+                # like [2, 3] are included when two differing-diameter loops
+                # are present so that bypassed flow traverses the next loop.
                 cases = _generate_loop_cases_by_flags(flags_expanded)
             for case in cases:
                 usage = [0] * len(stn_acc)
