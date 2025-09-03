@@ -647,6 +647,33 @@ def _downstream_requirement(
 
 
 # ---------------------------------------------------------------------------
+# Flow utilities
+# ---------------------------------------------------------------------------
+
+def _update_segment_flows(
+    segment_flows: list[float],
+    stations: list[dict],
+    idx: int,
+    next_flow: float,
+) -> list[float]:
+    """Return segment flows with downstream values recomputed from ``idx``.
+
+    Only the affected suffix starting immediately after ``idx`` is recalculated,
+    leaving the preceding portion unchanged.  ``segment_flows`` itself is not
+    modified.
+    """
+
+    # Copy the unaffected prefix once and rebuild the downstream suffix.
+    flows = segment_flows[: idx + 1]
+    flows.append(next_flow)
+    for j in range(idx + 1, len(stations)):
+        delivery_j = float(stations[j].get("delivery", 0.0))
+        supply_j = float(stations[j].get("supply", 0.0))
+        flows.append(flows[-1] - delivery_j + supply_j)
+    return flows
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1422,21 +1449,13 @@ def solve_pipeline(
                     # Compute downstream residual head after segment loss and elevation
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
 
-                    # Recompute downstream flows if bypassing the next station; the flow
-                    # through the mainline changes only for a bypass.  ``seg_flows_tmp``
-                    # holds the flow after each station.
-                    seg_flows_tmp = segment_flows.copy()
-                    # When bypassing the next station, only the mainline flow enters that station; the
-                    # loopline flow bypasses the pumps and rejoins downstream.  Therefore the flow for
-                    # downstream segments should reflect either the mainline-only flow (in bypass) or the
-                    # total flow (in parallel or loop-only modes).  This ensures head requirements are
-                    # computed against the proper volumetric flow in each pipe.
+                    # Recompute downstream flows; the mainline flow changes only for a
+                    # bypass.  ``seg_flows_tmp`` holds the flow after each station and
+                    # updates only the affected suffix.
                     next_flow = sc['flow_main'] if sc.get('bypass_next') else flow_total
-                    seg_flows_tmp[stn_data['idx'] + 1] = next_flow
-                    for j in range(stn_data['idx'] + 1, N):
-                        delivery_j = float(stations[j].get('delivery', 0.0))
-                        supply_j = float(stations[j].get('supply', 0.0))
-                        seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
+                    seg_flows_tmp = _update_segment_flows(
+                        segment_flows, stations, stn_data['idx'], next_flow
+                    )
 
                     # Compute minimum downstream requirement and skip infeasible states
                     if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
