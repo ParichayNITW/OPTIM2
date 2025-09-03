@@ -1346,10 +1346,15 @@ def solve_pipeline(
                         eff_dra_main_tot = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
                         # Carry-over drag reduction on the loop from the previous state
                         carry_prev = state.get('carry_loop_dra', 0.0)
-                        # In bypass mode the loopline at this station does not
-                        # receive new DRA injection; its drag reduction remains
-                        # from the upstream station (carry_prev)
-                        eff_dra_loop_tot = carry_prev if sc.get('bypass_next') else opt['dra_loop']
+                        # In bypass mode the loopline may still inject additional DRA.
+                        # Combine any upstream carry-over with the current option so
+                        # the full effect is considered when splitting flow over the
+                        # total path.
+                        eff_dra_loop_tot = (
+                            carry_prev + opt['dra_loop']
+                            if sc.get('bypass_next')
+                            else opt['dra_loop']
+                        )
                         # Compute flow split to equalise head loss over the entire path
                         hl_tot, main_stats_tot, loop_stats_tot = _parallel_segment_hydraulics(
                             flow_total,
@@ -1416,10 +1421,9 @@ def solve_pipeline(
                     carry_prev = state.get('carry_loop_dra', 0.0)
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
-                            eff_dra_loop = carry_prev
-                            # No injection at this station for loopline in bypass mode
-                            inj_loop_current = 0.0
-                            inj_ppm_loop = 0.0
+                            eff_dra_loop = carry_prev + opt['dra_loop']
+                            inj_loop_current = opt['dra_loop']
+                            inj_ppm_loop = opt['dra_ppm_loop']
                         else:
                             eff_dra_loop = opt['dra_loop']
                             inj_loop_current = opt['dra_loop']
@@ -1432,7 +1436,7 @@ def solve_pipeline(
                     # Determine next carry-over drag reduction value for the loop.
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
-                            new_carry = carry_prev
+                            new_carry = carry_prev + opt['dra_loop']
                         else:
                             new_carry = opt['dra_loop']
                     else:
@@ -1494,16 +1498,16 @@ def solve_pipeline(
                         continue
 
                     # Compute DRA costs.  Only charge for injections performed at this
-                    # station.  For bypass on the loopline we skip loop DRA cost because
-                    # no injection is made here.  We still charge for mainline DRA
-                    # injections if applicable.
+                    # station.  Mainline and loopline injections are handled
+                    # separately and loopline cost is incurred only when
+                    # an injection is made.
                     dra_cost = 0.0
                     if ppm_main > 0:
                         dra_cost += ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     # Loopline injection uses ``inj_ppm_loop`` computed
-                    # earlier.  This applies only when there is loop flow and
-                    # a non‑zero injection.
-                    if sc['flow_loop'] > 0 and inj_ppm_loop > 0:
+                    # earlier.  Charge cost only when an actual injection is
+                    # performed at this station.
+                    if sc['flow_loop'] > 0 and inj_loop_current > 0:
                         dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
 
                     total_cost = power_cost + dra_cost
