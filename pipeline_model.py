@@ -553,6 +553,7 @@ def _downstream_requirement(
     KV_list: list[float],
     flow_override: float | list[float] | None = None,
     loop_usage_by_station: list[int] | None = None,
+    pump_flow_overrides: dict[int, float] | None = None,
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -568,9 +569,11 @@ def _downstream_requirement(
     ``flow_override`` is given it takes precedence and may be either a constant
     flow value or a full per-segment list.  ``loop_usage_by_station`` can be used
     to indicate whether each looped segment is active (0 means the loop is
-    disabled).  The returned value is therefore the minimum residual needed after
-    station ``idx`` so that the terminal residual head constraint can still be
-    met.
+    disabled).  ``pump_flow_overrides`` optionally maps station indices to flow
+    rates used when computing pump head; this is useful when a downstream pump
+    is bypassed and only the mainline flow enters the pumps.  The returned value
+    is therefore the minimum residual needed after station ``idx`` so that the
+    terminal residual head constraint can still be met.
     """
 
     from functools import lru_cache
@@ -659,8 +662,9 @@ def _downstream_requirement(
         if stn.get('is_pump', False):
             rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
             nop_max = stn.get('max_pumps', 0)
+            flow_pump = pump_flow_overrides.get(i, flow) if pump_flow_overrides else flow
             if rpm_max and nop_max:
-                pump_info = _pump_head(stn, flow, rpm_max, nop_max)
+                pump_info = _pump_head(stn, flow_pump, rpm_max, nop_max)
                 tdh_max = sum(max(p['tdh'], 0.0) for p in pump_info)
             else:
                 tdh_max = 0.0
@@ -1455,7 +1459,7 @@ def solve_pipeline(
                     # downstream segments should reflect either the mainline-only flow (in bypass) or the
                     # total flow (in parallel or loop-only modes).  This ensures head requirements are
                     # computed against the proper volumetric flow in each pipe.
-                    next_flow = sc['flow_main'] if sc.get('bypass_next') else flow_total
+                    next_flow = flow_total
                     seg_flows_tmp[stn_data['idx'] + 1] = next_flow
                     for j in range(stn_data['idx'] + 1, N):
                         delivery_j = float(stations[j].get('delivery', 0.0))
@@ -1463,8 +1467,9 @@ def solve_pipeline(
                         seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
 
                     # Compute minimum downstream requirement and skip infeasible states
+                    pump_overrides = None
                     if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
-                        stations_skip = copy.deepcopy(stations)
+                        pump_overrides = {}
                         next_index = stn_data['idx'] + 1
                         next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
                         j = next_index
@@ -1472,28 +1477,19 @@ def solve_pipeline(
                             if stations[j].get('orig_name') == next_orig or (
                                 next_orig is None and stations[j].get('orig_name') is None
                             ):
-                                stations_skip[j]['is_pump'] = False
-                                stations_skip[j]['max_pumps'] = 0
+                                pump_overrides[j] = sc['flow_main']
                                 j += 1
                             else:
                                 break
-                        min_req = _downstream_requirement(
-                            stations_skip,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                            loop_usage_by_station=loop_usage_by_station,
-                        )
-                    else:
-                        min_req = _downstream_requirement(
-                            stations,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                            loop_usage_by_station=loop_usage_by_station,
-                        )
+                    min_req = _downstream_requirement(
+                        stations,
+                        stn_data['idx'],
+                        terminal,
+                        seg_flows_tmp,
+                        KV_list,
+                        loop_usage_by_station=loop_usage_by_station,
+                        pump_flow_overrides=pump_overrides,
+                    )
                     if residual_next < min_req:
                         continue
 
@@ -1605,7 +1601,7 @@ def solve_pipeline(
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
-                    flow_next = sc['flow_main'] if sc.get('bypass_next') else flow_total
+                    flow_next = flow_total
                     if (
                         existing is None
                         or new_cost < existing['cost']
