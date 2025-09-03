@@ -151,44 +151,63 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
 # ---------------------------------------------------------------------------
 
 def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
-    """Generate loop usage combinations for multiple loops with mixed diameter equality.
+    """Return loop usage cases for pipelines with mixed diameter equality.
 
-    ``flags`` is a list of booleans where each element corresponds to a looped
-    segment and indicates whether the loopline diameter equals the mainline
-    diameter at that position (``True``) or not (``False``).  The return
-    value is a list of integer lists; each inner list represents a choice of
-    loop usage per segment.  The options per loop are as follows:
+    ``flags`` contains one boolean per looped segment indicating whether the
+    loopline diameter matches the mainline (``True``) or differs (``False``).
 
-    - If ``flags[i]`` is ``True`` (Case‑1), the solver considers only
-      disabling the loop (``0``) or using it in parallel (``1``).  The
-      bypass (``2``) and loop‑only (``3``) modes are not applicable when
-      diameters match.
-    - If ``flags[i]`` is ``False`` (Case‑2), the solver considers
-      disabling the loop (``0``), using it in bypass (``2``) and using the
-      loop only (``3``).  Parallel mode (``1``) is intentionally omitted
-      because splitting flow between pipes of different diameter is not
-      desired under Case‑2.
+    Behaviour follows the two cases described in the problem statement:
 
-    The overall patterns are formed by taking the Cartesian product of
-    allowed options for each loop.  Duplicate patterns are removed while
-    preserving order.  For a single loop this yields two or three patterns;
-    for two loops up to six patterns; and for more loops the number of
-    combinations grows but remains manageable given typical pipeline
-    configurations.  When no loops exist the function returns a list
-    containing an empty list.
+    * **Case‑1** – When all flags are ``True`` the returned patterns are the
+      same as :func:`_generate_loop_cases_by_diameter` with
+      ``equal_diameter=True``: all loops off, all parallel and each loop
+      individually in parallel.
+    * **Case‑2** – When at least one flag is ``False`` the solver considers
+      only three global scenarios for the differing loops: all loops off
+      (mainline only), all differing loops in loop-only mode with equal-diameter
+      loops disabled, and a bypass on the first differing loop with all other
+      loops disabled.  Equal-diameter loops may additionally operate in
+      parallel while all differing loops remain off.
+
+    This tailored enumeration avoids invalid combinations such as bypassing
+    multiple loops simultaneously or running unequal pipes in parallel.
+    When ``flags`` is empty an empty pattern is returned.
     """
-    from itertools import product
     if not flags:
         return [[]]
-    options_list = []
-    for eq in flags:
-        if eq:
-            # Equal diameters: only off and parallel
-            options_list.append([0, 1])
-        else:
-            # Different diameters: off, bypass, loop-only
-            options_list.append([0, 2, 3])
-    combos = [list(c) for c in product(*options_list)]
+    if all(flags):
+        # All loops have equal diameter → reuse simpler helper
+        return _generate_loop_cases_by_diameter(len(flags), True)
+
+    combos: list[list[int]] = []
+    n = len(flags)
+    # Base case: all loops off
+    combos.append([0] * n)
+
+    # Equal-diameter loops may run in parallel when differing loops are off
+    eq_positions = [i for i, eq in enumerate(flags) if eq]
+    if eq_positions:
+        # All equal loops on in parallel
+        all_eq_parallel = [1 if eq else 0 for eq in flags]
+        combos.append(all_eq_parallel)
+        # Each equal loop individually on
+        for i in eq_positions:
+            c = [0] * n
+            c[i] = 1
+            combos.append(c)
+
+    # Case-2 scenarios for differing loops
+    diff_positions = [i for i, eq in enumerate(flags) if not eq]
+    if diff_positions:
+        # All differing loops in loop-only mode (others off)
+        loop_only = [3 if not eq else 0 for eq in flags]
+        combos.append(loop_only)
+        # Bypass only the first differing loop
+        bypass_first = [0] * n
+        bypass_first[diff_positions[0]] = 2
+        combos.append(bypass_first)
+
+    # Remove duplicates while preserving order
     unique: list[list[int]] = []
     for c in combos:
         if c not in unique:
