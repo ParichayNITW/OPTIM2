@@ -161,10 +161,10 @@ def _generate_loop_cases_by_flags(flags: list[bool], mix_flags: list[bool] | Non
     The per-loop options are:
 
     - Equal diameters → mainline-only, parallel or loop-only (``0``, ``1``, ``3``)
-    - Unequal diameters with mixing allowed → off, parallel, bypass and loop-only
-      (``0``, ``1``, ``2``, ``3``)
-    - Unequal diameters without mixing → off, bypass and loop-only (``0``, ``2``,
-      ``3``)
+    - Unequal diameters with mixing allowed → mainline-only, parallel,
+      bypass (loop skips pumps) and loop-only (``0``, ``1``, ``2``, ``3``)
+    - Unequal diameters without mixing → mainline-only, bypass and
+      loop-only (``0``, ``2``, ``3``)
 
     The Cartesian product of these options forms the overall combinations.
     Duplicate patterns are removed while preserving order.  When ``flags`` is
@@ -1115,7 +1115,10 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': False,
                     })
-                    # Bypass scenario: same flow split but bypass next pump on loop
+                    # Bypass scenario: loop flow skips the next pump station but
+                    # the mainline still passes through the pumps.  This keeps the
+                    # downstream station available while redirecting only the loop
+                    # around it.
                     scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
@@ -1426,48 +1429,28 @@ def solve_pipeline(
                     # through the mainline changes only for a bypass.  ``seg_flows_tmp``
                     # holds the flow after each station.
                     seg_flows_tmp = segment_flows.copy()
-                    # When bypassing the next station, only the mainline flow enters that station; the
-                    # loopline flow bypasses the pumps and rejoins downstream.  Therefore the flow for
-                    # downstream segments should reflect either the mainline-only flow (in bypass) or the
-                    # total flow (in parallel or loop-only modes).  This ensures head requirements are
-                    # computed against the proper volumetric flow in each pipe.
+                    # When the loop bypasses the next station, only the mainline
+                    # flow enters that station while the loopline rejoins
+                    # downstream.  The downstream segments therefore see the full
+                    # combined flow.
                     next_flow = sc['flow_main'] if sc.get('bypass_next') else flow_total
                     seg_flows_tmp[stn_data['idx'] + 1] = next_flow
                     for j in range(stn_data['idx'] + 1, N):
                         delivery_j = float(stations[j].get('delivery', 0.0))
                         supply_j = float(stations[j].get('supply', 0.0))
-                        seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
+                        base = seg_flows_tmp[j]
+                        if sc.get('bypass_next') and j == stn_data['idx'] + 1:
+                            base += sc['flow_loop']
+                        seg_flows_tmp[j + 1] = base - delivery_j + supply_j
 
                     # Compute minimum downstream requirement and skip infeasible states
-                    if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
-                        stations_skip = copy.deepcopy(stations)
-                        next_index = stn_data['idx'] + 1
-                        next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
-                        j = next_index
-                        while j < N:
-                            if stations[j].get('orig_name') == next_orig or (
-                                next_orig is None and stations[j].get('orig_name') is None
-                            ):
-                                stations_skip[j]['is_pump'] = False
-                                stations_skip[j]['max_pumps'] = 0
-                                j += 1
-                            else:
-                                break
-                        min_req = _downstream_requirement(
-                            stations_skip,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                        )
-                    else:
-                        min_req = _downstream_requirement(
-                            stations,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                        )
+                    min_req = _downstream_requirement(
+                        stations,
+                        stn_data['idx'],
+                        terminal,
+                        seg_flows_tmp,
+                        KV_list,
+                    )
                     if residual_next < min_req:
                         continue
 
