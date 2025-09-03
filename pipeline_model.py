@@ -552,6 +552,7 @@ def _downstream_requirement(
     segment_flows: list[float] | None,
     KV_list: list[float],
     flow_override: float | list[float] | None = None,
+    loop_usage_by_station: list[int] | None = None,
 ) -> float:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -565,9 +566,11 @@ def _downstream_requirement(
 
     ``segment_flows`` may supply the flow rate after each station.  When
     ``flow_override`` is given it takes precedence and may be either a constant
-    flow value or a full per-segment list.  The returned value is therefore the
-    minimum residual needed after station ``idx`` so that the terminal residual
-    head constraint can still be met.
+    flow value or a full per-segment list.  ``loop_usage_by_station`` can be used
+    to indicate whether each looped segment is active (0 means the loop is
+    disabled).  The returned value is therefore the minimum residual needed after
+    station ``idx`` so that the terminal residual head constraint can still be
+    met.
     """
 
     from functools import lru_cache
@@ -638,7 +641,9 @@ def _downstream_requirement(
         # (e.g. under bypass), we conservatively use the upstream flow ``flows[i]`` to estimate
         # friction to the peak.  This avoids underestimating the head needed at peaks on the 18" line.
         loop = stn.get('loopline')
-        if loop:
+        usage = loop_usage_by_station[i] if loop_usage_by_station and i < len(loop_usage_by_station) else None
+        loop_flow = flows[i] if usage != 0 else 0.0
+        if loop and usage != 0:
             if loop.get('D') is not None:
                 t_loop = loop.get('t', t)
                 d_inner_loop = loop['D'] - 2 * t_loop
@@ -647,7 +652,7 @@ def _downstream_requirement(
             rough_loop = loop.get('rough', rough)
             dra_loop = loop.get('max_dr', 0.0)
             # Use the upstream flow ``flows[i]`` for loop peaks to account for bypassed flow.
-            peak_req_loop = peak_requirement(flows[i], loop.get('peaks'), d_inner_loop, rough_loop, dra_loop)
+            peak_req_loop = peak_requirement(loop_flow, loop.get('peaks'), d_inner_loop, rough_loop, dra_loop)
             peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
@@ -1478,6 +1483,7 @@ def solve_pipeline(
                             terminal,
                             seg_flows_tmp,
                             KV_list,
+                            loop_usage_by_station=loop_usage_by_station,
                         )
                     else:
                         min_req = _downstream_requirement(
@@ -1486,6 +1492,7 @@ def solve_pipeline(
                             terminal,
                             seg_flows_tmp,
                             KV_list,
+                            loop_usage_by_station=loop_usage_by_station,
                         )
                     if residual_next < min_req:
                         continue
