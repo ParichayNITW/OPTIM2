@@ -1258,6 +1258,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    max_states: int = 200,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1292,6 +1293,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                max_states,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1308,6 +1310,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                max_states=max_states,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
