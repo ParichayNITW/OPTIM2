@@ -160,7 +160,7 @@ def _generate_loop_cases_by_flags(flags: list[bool], mix_flags: list[bool] | Non
 
     The per-loop options are:
 
-    - Equal diameters → off (``0``) or parallel (``1``)
+    - Equal diameters → mainline-only, parallel or loop-only (``0``, ``1``, ``3``)
     - Unequal diameters with mixing allowed → off, parallel, bypass and loop-only
       (``0``, ``1``, ``2``, ``3``)
     - Unequal diameters without mixing → off, bypass and loop-only (``0``, ``2``,
@@ -177,7 +177,7 @@ def _generate_loop_cases_by_flags(flags: list[bool], mix_flags: list[bool] | Non
     for i, eq in enumerate(flags):
         mix = mix_flags[i] if mix_flags and i < len(mix_flags) else False
         if eq:
-            options = [0, 1]
+            options = [0, 1, 3]
         elif mix:
             options = [0, 1, 2, 3]
         else:
