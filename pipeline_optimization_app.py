@@ -225,6 +225,11 @@ def restore_case_dict(loaded_data):
             if loop_peaks is not None:
                 st.session_state[f"loop_peak_data_{i}"] = pd.DataFrame(loop_peaks)
 
+        # Ensure loopline mixing flag persists or defaults to False
+        loop_info = stn.get('loopline')
+        if loop_info is not None:
+            loop_info.setdefault('allow_mixing', False)
+
         # Load pump type-specific data if present
         for ptype in stn.get('pump_types', {}).keys():
             head_pt = loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data'))
@@ -530,6 +535,16 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
                 loop['max_dr'] = st.number_input("Max Drag Reduction (%)", value=loop.get('max_dr', 0.0), key=f"loopmdr{idx}")
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
+
+            # Offer mixing option when loop diameter differs from mainline
+            if abs(loop.get('D', stn['D']) - stn['D']) > 1e-6:
+                loop['allow_mixing'] = st.checkbox(
+                    "Allow product mixing at intermediate pump stations?",
+                    value=loop.get('allow_mixing', False),
+                    key=f"allowmix{idx}",
+                )
+            else:
+                loop.pop('allow_mixing', None)
 
             loop_peak_key = f"loop_peak_data_{idx}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
@@ -1269,6 +1284,7 @@ def solve_pipeline(
     importlib.reload(pipeline_model)
 
     stations = copy.deepcopy(stations)
+    mix_flags = [s.get('loopline', {}).get('allow_mixing', False) for s in stations if s.get('loopline')]
     first_pump = next((s for s in stations if s.get('is_pump')), None)
     if first_pump and first_pump.get('min_pumps', 0) < 1:
         first_pump['min_pumps'] = 1
@@ -1293,7 +1309,8 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                max_states,
+                mix_flags=mix_flags,
+                max_states=max_states,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1310,6 +1327,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                mix_flags=mix_flags,
                 max_states=max_states,
             )
         # Append a human-readable flow pattern name based on loop usage
@@ -1627,6 +1645,7 @@ def run_all_updates():
     }
     linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
     kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+    mix_flags = [s.get('loopline', {}).get('allow_mixing', False) for s in stations_data if s.get('loopline')]
 
     for idx, stn in enumerate(stations_data, start=1):
         if stn.get("is_pump", False):
@@ -1673,6 +1692,7 @@ def run_all_updates():
             0.0,
             st.session_state.get("MOP_kgcm2"),
             24.0,
+            mix_flags=mix_flags,
         )
     if not res or res.get("error"):
         msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
