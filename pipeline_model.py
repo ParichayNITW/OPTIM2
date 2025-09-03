@@ -150,39 +150,44 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
 # Fine-grained loop-case enumeration based on per-loop diameter equality
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_flags(flags: list[bool], mix_flags: list[bool] | None = None) -> list[list[int]]:
+def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
     """Generate loop usage combinations for multiple loops with mixed diameter equality.
 
-    ``flags`` indicates whether the loopline diameter equals the mainline for
-    each looped segment.  ``mix_flags`` optionally specifies if product mixing
-    is permitted for loops where diameters differ.  When mixing is allowed, the
-    parallel option is offered in addition to bypass and loop-only modes.
+    ``flags`` is a list of booleans where each element corresponds to a looped
+    segment and indicates whether the loopline diameter equals the mainline
+    diameter at that position (``True``) or not (``False``).  The return
+    value is a list of integer lists; each inner list represents a choice of
+    loop usage per segment.  The options per loop are as follows:
 
-    The per-loop options are:
+    - If ``flags[i]`` is ``True`` (Case‑1), the solver considers only
+      disabling the loop (``0``) or using it in parallel (``1``).  The
+      bypass (``2``) and loop‑only (``3``) modes are not applicable when
+      diameters match.
+    - If ``flags[i]`` is ``False`` (Case‑2), the solver considers
+      disabling the loop (``0``), using it in bypass (``2``) and using the
+      loop only (``3``).  Parallel mode (``1``) is intentionally omitted
+      because splitting flow between pipes of different diameter is not
+      desired under Case‑2.
 
-    - Equal diameters → mainline-only, parallel or loop-only (``0``, ``1``, ``3``)
-    - Unequal diameters with mixing allowed → mainline-only, parallel,
-      bypass (loop skips pumps) and loop-only (``0``, ``1``, ``2``, ``3``)
-    - Unequal diameters without mixing → mainline-only, bypass and
-      loop-only (``0``, ``2``, ``3``)
-
-    The Cartesian product of these options forms the overall combinations.
-    Duplicate patterns are removed while preserving order.  When ``flags`` is
-    empty the function returns ``[[]]``.
+    The overall patterns are formed by taking the Cartesian product of
+    allowed options for each loop.  Duplicate patterns are removed while
+    preserving order.  For a single loop this yields two or three patterns;
+    for two loops up to six patterns; and for more loops the number of
+    combinations grows but remains manageable given typical pipeline
+    configurations.  When no loops exist the function returns a list
+    containing an empty list.
     """
     from itertools import product
     if not flags:
         return [[]]
     options_list = []
-    for i, eq in enumerate(flags):
-        mix = mix_flags[i] if mix_flags and i < len(mix_flags) else False
+    for eq in flags:
         if eq:
-            options = [0, 1, 3]
-        elif mix:
-            options = [0, 1, 2, 3]
+            # Equal diameters: only off and parallel
+            options_list.append([0, 1])
         else:
-            options = [0, 2, 3]
-        options_list.append(options)
+            # Different diameters: off, bypass, loop-only
+            options_list.append([0, 2, 3])
     combos = [list(c) for c in product(*options_list)]
     unique: list[list[int]] = []
     for c in combos:
@@ -659,11 +664,9 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    mix_flags: list[bool] | None = None,
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
-    max_states: int = 200,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -676,9 +679,7 @@ def solve_pipeline(
     ``loop_usage_by_station`` is supplied the solver restricts which
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
     2=bypass.  By default the function behaves like the original
-    implementation with internal loop enumeration.  ``mix_flags`` may be
-    provided to indicate which loops (in station order) allow product
-    mixing when diameters differ, enabling parallel flow on those loops.
+    implementation with internal loop enumeration.
     """
 
     # When requested, perform an outer enumeration over loop usage patterns.
@@ -707,21 +708,25 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                mix_flags,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
-                max_states=max_states,
             )
-        # Determine per-loop diameter equality flags.
+        # Determine per-loop diameter equality flags.  For each looped
+        # segment compute whether the inner diameters of the mainline and
+        # loopline match within a small tolerance.  This allows the
+        # optimiser to apply Case‑1 logic on loops with equal pipes and
+        # Case‑2 logic on those with differing pipes independently.
         default_t_local = 0.007
         flags: list[bool] = []
         for idx in loop_positions:
             stn = stations[idx]
+            # Inner diameter of mainline
             if stn.get('D') is not None:
                 d_main_outer = stn['D']
                 t_main = stn.get('t', default_t_local)
                 d_inner_main = d_main_outer - 2 * t_main
             else:
+                # When only an inner diameter is given treat it as inner
                 d_inner_main = stn.get('d', 0.0)
             loop = stn.get('loopline') or {}
             if loop:
@@ -732,14 +737,11 @@ def solve_pipeline(
                 else:
                     d_inner_loop = loop.get('d', d_inner_main)
             else:
+                # Should not happen as only stations with loopline are in loop_positions
                 d_inner_loop = d_inner_main
             flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-        mix_local = (
-            mix_flags
-            if mix_flags is not None
-            else [stations[idx].get('loopline', {}).get('allow_mixing', False) for idx in loop_positions]
-        )
-        cases = _generate_loop_cases_by_flags(flags, mix_local)
+        # Generate loop-usage patterns based on per-loop diameter equality
+        cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
         for case in cases:
             usage = [0] * len(stations)
@@ -761,7 +763,6 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
-                max_states=max_states,
             )
             if res.get('error'):
                 continue
@@ -873,7 +874,6 @@ def solve_pipeline(
                 'max_dr': loop_info.get('max_dr', 0.0),
                 'maop_head': maop_head_loop,
                 'maop_kgcm2': maop_kg_loop,
-                'allow_mixing': loop_info.get('allow_mixing', False),
             }
 
         elev_i = stn.get('elev', 0.0)
@@ -1115,10 +1115,7 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': False,
                     })
-                    # Bypass scenario: loop flow skips the next pump station but
-                    # the mainline still passes through the pumps.  This keeps the
-                    # downstream station available while redirecting only the loop
-                    # around it.
+                    # Bypass scenario: same flow split but bypass next pump on loop
                     scenarios.append({
                         'head_loss': hl_par,
                         'v': v_m,
@@ -1429,28 +1426,48 @@ def solve_pipeline(
                     # through the mainline changes only for a bypass.  ``seg_flows_tmp``
                     # holds the flow after each station.
                     seg_flows_tmp = segment_flows.copy()
-                    # When the loop bypasses the next station, only the mainline
-                    # flow enters that station while the loopline rejoins
-                    # downstream.  The downstream segments therefore see the full
-                    # combined flow.
+                    # When bypassing the next station, only the mainline flow enters that station; the
+                    # loopline flow bypasses the pumps and rejoins downstream.  Therefore the flow for
+                    # downstream segments should reflect either the mainline-only flow (in bypass) or the
+                    # total flow (in parallel or loop-only modes).  This ensures head requirements are
+                    # computed against the proper volumetric flow in each pipe.
                     next_flow = sc['flow_main'] if sc.get('bypass_next') else flow_total
                     seg_flows_tmp[stn_data['idx'] + 1] = next_flow
                     for j in range(stn_data['idx'] + 1, N):
                         delivery_j = float(stations[j].get('delivery', 0.0))
                         supply_j = float(stations[j].get('supply', 0.0))
-                        base = seg_flows_tmp[j]
-                        if sc.get('bypass_next') and j == stn_data['idx'] + 1:
-                            base += sc['flow_loop']
-                        seg_flows_tmp[j + 1] = base - delivery_j + supply_j
+                        seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
 
                     # Compute minimum downstream requirement and skip infeasible states
-                    min_req = _downstream_requirement(
-                        stations,
-                        stn_data['idx'],
-                        terminal,
-                        seg_flows_tmp,
-                        KV_list,
-                    )
+                    if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
+                        stations_skip = copy.deepcopy(stations)
+                        next_index = stn_data['idx'] + 1
+                        next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
+                        j = next_index
+                        while j < N:
+                            if stations[j].get('orig_name') == next_orig or (
+                                next_orig is None and stations[j].get('orig_name') is None
+                            ):
+                                stations_skip[j]['is_pump'] = False
+                                stations_skip[j]['max_pumps'] = 0
+                                j += 1
+                            else:
+                                break
+                        min_req = _downstream_requirement(
+                            stations_skip,
+                            stn_data['idx'],
+                            terminal,
+                            seg_flows_tmp,
+                            KV_list,
+                        )
+                    else:
+                        min_req = _downstream_requirement(
+                            stations,
+                            stn_data['idx'],
+                            terminal,
+                            seg_flows_tmp,
+                            KV_list,
+                        )
                     if residual_next < min_req:
                         continue
 
@@ -1589,14 +1606,10 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Assign all new states for the next iteration.  To balance
-        # optimality and memory use we keep at most ``max_states`` entries,
-        # ranked by total cost and, for ties, higher residual head.
-        if len(new_states) > max_states:
-            pruned = sorted(
-                new_states.items(), key=lambda kv: (kv[1]['cost'], -kv[1]['residual'])
-            )[:max_states]
-            new_states = {k: v for k, v in pruned}
+        # Assign all new states for the next iteration.  Previously we pruned
+        # aggressively by residual and cost, which could discard viable
+        # solutions.  Retaining all states helps ensure that marginally
+        # more expensive configurations remain available for later stations.
         states = new_states
 
     # Pick lowest-cost end state and, among equal-cost candidates,
@@ -1666,19 +1679,8 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    mix_flags: list[bool] | None = None,
-    *,
-    loop_usage_by_station: list[int] | None = None,
-    enumerate_loops: bool = True,
-    max_states: int = 200,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
-
-    ``mix_flags`` provides per-loop mixing permissions analogous to
-    :func:`solve_pipeline`.  ``loop_usage_by_station`` and
-    ``enumerate_loops`` mirror the parameters of :func:`solve_pipeline` to
-    allow explicit loop directives.
-    """
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
     best_result = None
     best_cost = float('inf')
@@ -1688,37 +1690,6 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            if loop_usage_by_station is not None or not enumerate_loops:
-                result = solve_pipeline(
-                    stn_acc,
-                    terminal,
-                    FLOW,
-                    kv_acc,
-                    rho_acc,
-                    RateDRA,
-                    Price_HSD,
-                    Fuel_density,
-                    Ambient_temp,
-                    linefill_dict,
-                    dra_reach_km,
-                    mop_kgcm2,
-                    hours,
-                    mix_flags=mix_flags,
-                    loop_usage_by_station=loop_usage_by_station,
-                    enumerate_loops=enumerate_loops,
-                    max_states=max_states,
-                )
-                if not result.get("error"):
-                    cost = result.get("total_cost", float('inf'))
-                    if cost < best_cost:
-                        result_with_usage = result.copy()
-                        if loop_usage_by_station is not None:
-                            result_with_usage['loop_usage'] = loop_usage_by_station.copy()
-                        best_cost = cost
-                        best_result = result_with_usage
-                        best_stations = stn_acc
-                return
-
             # When all stations have been expanded into individual pump units,
             # perform loop-case enumeration explicitly.  We determine the
             # positions of units with looplines (typically the last unit of each
@@ -1736,6 +1707,7 @@ def solve_pipeline_with_types(
                 flags_expanded: list[bool] = []
                 for pidx in loop_positions:
                     stn_e = stn_acc[pidx]
+                    # Inner diameter of the mainline segment
                     if stn_e.get('D') is not None:
                         d_main_outer = stn_e['D']
                         t_main = stn_e.get('t', default_t_local)
@@ -1753,12 +1725,8 @@ def solve_pipeline_with_types(
                     else:
                         d_inner_loop = d_inner_main
                     flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-                mix_expanded = (
-                    mix_flags
-                    if mix_flags is not None
-                    else [stn_acc[p].get('loopline', {}).get('allow_mixing', False) for p in loop_positions]
-                )
-                cases = _generate_loop_cases_by_flags(flags_expanded, mix_expanded)
+                # Generate loop-case combinations based on flags
+                cases = _generate_loop_cases_by_flags(flags_expanded)
             for case in cases:
                 usage = [0] * len(stn_acc)
                 for pidx, val in zip(loop_positions, case):
@@ -1782,7 +1750,6 @@ def solve_pipeline_with_types(
                     hours,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
-                    max_states=max_states,
                 )
                 if result.get("error"):
                     continue
@@ -1813,6 +1780,8 @@ def solve_pipeline_with_types(
                 pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
+                        if actA + actB <= 0:
+                            continue
                         unit = copy.deepcopy(stn)
                         unit['pump_combo'] = {'A': numA, 'B': numB}
                         unit['active_combo'] = {'A': actA, 'B': actB}
@@ -1847,7 +1816,7 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                         unit['max_pumps'] = actA + actB
-                        unit['min_pumps'] = 0
+                        unit['min_pumps'] = actA + actB
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
