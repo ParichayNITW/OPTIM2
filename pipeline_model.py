@@ -1684,12 +1684,17 @@ def solve_pipeline_with_types(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     mix_flags: list[bool] | None = None,
+    *,
+    loop_usage_by_station: list[int] | None = None,
+    enumerate_loops: bool = True,
     max_states: int = 200,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
 
     ``mix_flags`` provides per-loop mixing permissions analogous to
-    :func:`solve_pipeline`.
+    :func:`solve_pipeline`.  ``loop_usage_by_station`` and
+    ``enumerate_loops`` mirror the parameters of :func:`solve_pipeline` to
+    allow explicit loop directives.
     """
 
     best_result = None
@@ -1700,6 +1705,37 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
+            if loop_usage_by_station is not None or not enumerate_loops:
+                result = solve_pipeline(
+                    stn_acc,
+                    terminal,
+                    FLOW,
+                    kv_acc,
+                    rho_acc,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill_dict,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    mix_flags=mix_flags,
+                    loop_usage_by_station=loop_usage_by_station,
+                    enumerate_loops=enumerate_loops,
+                    max_states=max_states,
+                )
+                if not result.get("error"):
+                    cost = result.get("total_cost", float('inf'))
+                    if cost < best_cost:
+                        result_with_usage = result.copy()
+                        if loop_usage_by_station is not None:
+                            result_with_usage['loop_usage'] = loop_usage_by_station.copy()
+                        best_cost = cost
+                        best_result = result_with_usage
+                        best_stations = stn_acc
+                return
+
             # When all stations have been expanded into individual pump units,
             # perform loop-case enumeration explicitly.  We determine the
             # positions of units with looplines (typically the last unit of each
@@ -1794,8 +1830,6 @@ def solve_pipeline_with_types(
                 pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
-                        if actA + actB <= 0:
-                            continue
                         unit = copy.deepcopy(stn)
                         unit['pump_combo'] = {'A': numA, 'B': numB}
                         unit['active_combo'] = {'A': actA, 'B': actB}
@@ -1830,7 +1864,7 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                         unit['max_pumps'] = actA + actB
-                        unit['min_pumps'] = actA + actB
+                        unit['min_pumps'] = 0
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
