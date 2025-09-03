@@ -1637,6 +1637,12 @@ def invalidate_results():
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
     invalidate_results()
+    # Reload the optimisation core to pick up any recent code changes and to
+    # ensure the latest function signatures are available.  This avoids
+    # ``TypeError`` issues when new keyword arguments are introduced.
+    import importlib
+    importlib.reload(pipeline_model)
+
     stations_data = st.session_state.stations
     term_data = {
         "name": st.session_state.get("terminal_name", "Terminal"),
