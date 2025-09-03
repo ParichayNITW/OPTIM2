@@ -225,11 +225,6 @@ def restore_case_dict(loaded_data):
             if loop_peaks is not None:
                 st.session_state[f"loop_peak_data_{i}"] = pd.DataFrame(loop_peaks)
 
-        # Ensure loopline mixing flag persists or defaults to False
-        loop_info = stn.get('loopline')
-        if loop_info is not None:
-            loop_info.setdefault('allow_mixing', False)
-
         # Load pump type-specific data if present
         for ptype in stn.get('pump_types', {}).keys():
             head_pt = loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data'))
@@ -535,16 +530,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
                 loop['max_dr'] = st.number_input("Max Drag Reduction (%)", value=loop.get('max_dr', 0.0), key=f"loopmdr{idx}")
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
-
-            # Offer mixing option when loop diameter differs from mainline
-            if abs(loop.get('D', stn['D']) - stn['D']) > 1e-6:
-                loop['allow_mixing'] = st.checkbox(
-                    "Allow product mixing at intermediate pump stations?",
-                    value=loop.get('allow_mixing', False),
-                    key=f"allowmix{idx}",
-                )
-            else:
-                loop.pop('allow_mixing', None)
 
             loop_peak_key = f"loop_peak_data_{idx}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
@@ -1273,7 +1258,6 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    max_states: int = 200,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1284,7 +1268,6 @@ def solve_pipeline(
     importlib.reload(pipeline_model)
 
     stations = copy.deepcopy(stations)
-    mix_flags = [s.get('loopline', {}).get('allow_mixing', False) for s in stations if s.get('loopline')]
     first_pump = next((s for s in stations if s.get('is_pump')), None)
     if first_pump and first_pump.get('min_pumps', 0) < 1:
         first_pump['min_pumps'] = 1
@@ -1309,8 +1292,6 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                mix_flags=mix_flags,
-                max_states=max_states,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1327,8 +1308,6 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                mix_flags=mix_flags,
-                max_states=max_states,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -1637,12 +1616,6 @@ def invalidate_results():
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
     invalidate_results()
-    # Reload the optimisation core to pick up any recent code changes and to
-    # ensure the latest function signatures are available.  This avoids
-    # ``TypeError`` issues when new keyword arguments are introduced.
-    import importlib
-    importlib.reload(pipeline_model)
-
     stations_data = st.session_state.stations
     term_data = {
         "name": st.session_state.get("terminal_name", "Terminal"),
@@ -1651,35 +1624,6 @@ def run_all_updates():
     }
     linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
     kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-    mix_flags = [s.get('loopline', {}).get('allow_mixing', False) for s in stations_data if s.get('loopline')]
-
-    # Determine loop usage scenarios based on diameter equality and mixing flags
-    loop_positions = [idx for idx, stn in enumerate(stations_data) if stn.get('loopline')]
-    default_t_local = 0.007
-    flags: list[bool] = []
-    for idx in loop_positions:
-        stn = stations_data[idx]
-        if stn.get('D') is not None:
-            d_outer = stn['D']
-            t_main = stn.get('t', default_t_local)
-            d_inner_main = d_outer - 2 * t_main
-        else:
-            d_inner_main = stn.get('d', 0.0)
-        lp = stn.get('loopline') or {}
-        if lp:
-            if lp.get('D') is not None:
-                d_loop_outer = lp['D']
-                t_loop = lp.get('t', stn.get('t', default_t_local))
-                d_inner_loop = d_loop_outer - 2 * t_loop
-            else:
-                d_inner_loop = lp.get('d', d_inner_main)
-        else:
-            d_inner_loop = d_inner_main
-        flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-    if loop_positions:
-        cases = pipeline_model._generate_loop_cases_by_flags(flags, mix_flags)
-    else:
-        cases = [[]]
 
     for idx, stn in enumerate(stations_data, start=1):
         if stn.get("is_pump", False):
@@ -1710,53 +1654,28 @@ def run_all_updates():
                     Ee = dfe.iloc[:, 1].values
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
-    interval_results = []
-    for start in range(0, 24, 4):
-        best_res = None
-        best_cost = float('inf')
-        for case in cases:
-            usage = [0] * len(stations_data)
-            for pos, val in zip(loop_positions, case):
-                usage[pos] = val
-            with st.spinner("Solving optimization..."):
-                res = pipeline_model.solve_pipeline_with_types(
-                    stations_data,
-                    term_data,
-                    st.session_state.get("FLOW", 1000.0),
-                    kv_list,
-                    rho_list,
-                    st.session_state.get("RateDRA", 500.0),
-                    st.session_state.get("Price_HSD", 70.0),
-                    st.session_state.get("Fuel_density", 820.0),
-                    st.session_state.get("Ambient_temp", 25.0),
-                    linefill_df.to_dict(),
-                    0.0,
-                    st.session_state.get("MOP_kgcm2"),
-                    4.0,
-                    mix_flags=mix_flags,
-                    loop_usage_by_station=usage,
-                    enumerate_loops=False,
-                )
-            if not res or res.get("error"):
-                msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
-                st.error(f"Interval {start}-{start+4}h case {case}: {msg}")
-                continue
-            cost = res.get("total_cost", float('inf'))
-            if cost < best_cost:
-                best_cost = cost
-                best_res = res
-        if best_res:
-            interval_results.append({"interval": (start, start + 4), "result": best_res})
-        else:
-            st.error(f"No feasible configuration for interval {start}-{start+4}h")
-    if not interval_results:
-        st.error("Optimization failed")
+
+    with st.spinner("Solving optimization..."):
+        res = pipeline_model.solve_pipeline_with_types(
+            stations_data,
+            term_data,
+            st.session_state.get("FLOW", 1000.0),
+            kv_list,
+            rho_list,
+            st.session_state.get("RateDRA", 500.0),
+            st.session_state.get("Price_HSD", 70.0),
+            st.session_state.get("Fuel_density", 820.0),
+            st.session_state.get("Ambient_temp", 25.0),
+            linefill_df.to_dict(),
+            0.0,
+            st.session_state.get("MOP_kgcm2"),
+            24.0,
+        )
+    if not res or res.get("error"):
+        msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
+        st.error(msg)
         return
-    # Select overall best configuration across intervals
-    best_overall = min(interval_results, key=lambda x: x["result"].get("total_cost", float('inf')))
-    res = best_overall["result"]
     import copy
-    st.session_state["interval_results"] = copy.deepcopy(interval_results)
     st.session_state["last_res"] = copy.deepcopy(res)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
