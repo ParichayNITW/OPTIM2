@@ -1795,46 +1795,59 @@ if not auto_batch:
 
         with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
             for ti, hr in enumerate(hours):
-                pumped_tmp = FLOW_sched * 4.0
-                future_vol, future_plan = shift_vol_linefill(
-                    current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
-                )
-                # Determine worst-case fluid properties over this 4h window
-                kv_now, rho_now = kv_rho_from_vol(current_vol)
-                kv_next, rho_next = kv_rho_from_vol(future_vol)
-                kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
-                rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
-
-                stns_run = copy.deepcopy(stations_base)
-
-                res = solve_pipeline(
-                    stns_run,
-                    term_data,
-                    FLOW_sched,
-                    kv_list,
-                    rho_list,
-                    RateDRA,
-                    Price_HSD,
-                    st.session_state.get("Fuel_density", 820.0),
-                    st.session_state.get("Ambient_temp", 25.0),
-                    dra_linefill,
-                    dra_reach_km,
-                    st.session_state.get("MOP_kgcm2"),
-                    hours=4.0,
-                )
-
-                if res.get("error"):
-                    error_msg = f"Optimization failed at {hr%24:02d}:00 -> {res.get('message','')}"
-                    break
-
-                reports.append({"time": hr % 24, "result": res})
                 linefill_snaps.append(current_vol.copy())
+                sdh_hourly = []
+                res = {}
+                for sub in range(4):
+                    pumped_tmp = FLOW_sched * 1.0
+                    future_vol, future_plan = shift_vol_linefill(
+                        current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
+                    )
+                    # Determine worst-case fluid properties over this 1h window
+                    kv_now, rho_now = kv_rho_from_vol(current_vol)
+                    kv_next, rho_next = kv_rho_from_vol(future_vol)
+                    kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
+                    rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
-                if ti < len(hours) - 1:
+                    stns_run = copy.deepcopy(stations_base)
+
+                    res = solve_pipeline(
+                        stns_run,
+                        term_data,
+                        FLOW_sched,
+                        kv_list,
+                        rho_list,
+                        RateDRA,
+                        Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
+                        dra_linefill,
+                        dra_reach_km,
+                        st.session_state.get("MOP_kgcm2"),
+                        hours=1.0,
+                    )
+
+                    if res.get("error"):
+                        cur_hr = (hr + sub) % 24
+                        error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
+                        break
+
+                    # Record SDH for objective calculation
+                    term_key = term_data["name"].lower().replace(" ", "_")
+                    keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
+                    sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
+                    sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
+                    sdh_hourly.append(max(sdh_vals))
+
                     dra_linefill = res.get("linefill", dra_linefill)
                     current_vol, plan_df = future_vol, future_plan
                     current_vol = apply_dra_ppm(current_vol, dra_linefill)
                     dra_reach_km = 0.0
+
+                if error_msg:
+                    break
+
+                reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
 
         if error_msg:
             st.error(error_msg)
