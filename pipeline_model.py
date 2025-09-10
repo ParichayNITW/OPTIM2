@@ -14,6 +14,7 @@ import copy
 import numpy as np
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
+from linefill_utils import advance_linefill
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -688,7 +689,7 @@ def solve_pipeline(
     Price_HSD: float,
     Fuel_density: float,
     Ambient_temp: float,
-    linefill_dict: dict | None = None,
+    linefill: list[dict] | dict | None = None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
@@ -698,6 +699,12 @@ def solve_pipeline(
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
+
+    ``linefill`` describes the current batches in the pipeline as a sequence of
+    dictionaries with at least ``volume`` (m³) and ``dra_ppm`` keys.  The
+    leading batch's concentration is used as the upstream DRA level for the
+    first station.  The function returns the updated linefill after pumping
+    under the key ``"linefill"``.
 
     This function supports optional loop-use directives.  When
     ``enumerate_loops`` is ``True`` and no explicit
@@ -732,7 +739,7 @@ def solve_pipeline(
                 Price_HSD,
                 Fuel_density,
                 Ambient_temp,
-                linefill_dict,
+                linefill,
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
@@ -785,7 +792,7 @@ def solve_pipeline(
                 Price_HSD,
                 Fuel_density,
                 Ambient_temp,
-                linefill_dict,
+                linefill,
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
@@ -805,6 +812,49 @@ def solve_pipeline(
             'error': True,
             'message': 'No feasible pump combination found for stations.',
         }
+    # Normalise linefill input into a list of batches each carrying volume and
+    # DRA concentration.  Accepts either a list of dictionaries or a dict of
+    # columns as produced by ``DataFrame.to_dict()``.  The linefill is copied
+    # so callers are not mutated.
+    linefill_state: list[dict] = []
+    if linefill:
+        if isinstance(linefill, dict):
+            vols = linefill.get('volume') or linefill.get('Volume (m³)') or linefill.get('Volume')
+            ppms = linefill.get('dra_ppm') or linefill.get('DRA ppm') or {}
+            if vols is not None:
+                items = vols.items() if isinstance(vols, dict) else enumerate(vols)
+                for idx, v in items:
+                    try:
+                        vol = float(v)
+                    except Exception:
+                        continue
+                    if vol <= 0:
+                        continue
+                    if isinstance(ppms, dict):
+                        ppm_val = ppms.get(idx, 0.0)
+                    elif isinstance(ppms, list):
+                        ppm_val = ppms[idx] if idx < len(ppms) else 0.0
+                    else:
+                        ppm_val = 0.0
+                    try:
+                        ppm = float(ppm_val)
+                    except Exception:
+                        ppm = 0.0
+                    linefill_state.append({'volume': vol, 'dra_ppm': ppm})
+        elif isinstance(linefill, list):
+            for ent in linefill:
+                try:
+                    vol = float(ent.get('volume') or ent.get('Volume (m³)') or ent.get('Volume') or 0.0)
+                except Exception:
+                    continue
+                if vol <= 0:
+                    continue
+                try:
+                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
+                except Exception:
+                    ppm = 0.0
+                linefill_state.append({'volume': vol, 'dra_ppm': ppm})
+    linefill_state = copy.deepcopy(linefill_state)
 
     N = len(stations)
 
@@ -1045,7 +1095,7 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0.0,
-            'prev_ppm_main': 0.0,
+            'prev_ppm_main': linefill_state[0]['dra_ppm'] if linefill_state else 0.0,
         }
     }
 
@@ -1656,6 +1706,17 @@ def solve_pipeline(
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
 
+    # Advance the linefill based on the selected origin injection.  The pumped
+    # volume is the flow entering the first segment multiplied by the run
+    # duration.  A single batch carrying the chosen ``dra_ppm`` is injected at
+    # the origin.
+    pumped_volume = segment_flows[0] * hours
+    origin_name = stations[0]['name'].strip().lower().replace(' ', '_') if stations else ''
+    inj_ppm = result.get(f"dra_ppm_{origin_name}", 0.0) if origin_name else 0.0
+    schedule = [{'volume': pumped_volume, 'dra_ppm': inj_ppm}]
+    advance_linefill(linefill_state, schedule, pumped_volume)
+    result['linefill'] = linefill_state
+
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
     result.update({
         f"pipeline_flow_{term_name}": segment_flows[-1],
@@ -1701,7 +1762,7 @@ def solve_pipeline_with_types(
     Price_HSD: float,
     Fuel_density: float,
     Ambient_temp: float,
-    linefill_dict: dict | None = None,
+    linefill: list[dict] | dict | None = None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
@@ -1770,7 +1831,7 @@ def solve_pipeline_with_types(
                     Price_HSD,
                     Fuel_density,
                     Ambient_temp,
-                    linefill_dict,
+                    linefill,
                     dra_reach_km,
                     mop_kgcm2,
                     hours,
