@@ -2,7 +2,9 @@
 
 Provides helpers to translate volume based linefill information into
 length-wise positions along the pipeline and to update the linefill after a
-certain throughput has been delivered.
+certain throughput has been delivered.  Each linefill entry may carry an
+optional ``dra_ppm`` field denoting the drag-reducing agent concentration in
+parts-per-million for that batch.
 """
 
 from __future__ import annotations
@@ -18,9 +20,9 @@ def linefill_lengths(linefill: List[Dict], diameter: float) -> List[Dict]:
     ----------
     linefill:
         List of dictionaries each describing a batch with keys ``volume``
-        (m³) along with optional ``product``, ``viscosity`` and ``density``.
-        The first element is assumed to be the batch closest to the
-        originating station.
+        (m³) and optional metadata such as ``product``, ``viscosity``,
+        ``density`` and ``dra_ppm``.  The first element is assumed to be the
+        batch closest to the originating station.
     diameter:
         Inner diameter of the pipeline in metres.
 
@@ -57,7 +59,8 @@ def advance_linefill(linefill: List[Dict], schedule: List[Dict], delivered: floa
 
     The same volume is injected at the origin according to ``schedule``.  Both
     ``linefill`` and ``schedule`` are modified in-place and the updated
-    ``linefill`` is returned for convenience.
+    ``linefill`` is returned for convenience.  Any ``dra_ppm`` values present
+    on the batches are preserved and shifted along with the volumes.
     """
     remaining = delivered
     # Remove delivered volume from the terminal side (end of list)
