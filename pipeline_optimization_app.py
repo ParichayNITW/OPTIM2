@@ -1031,6 +1031,45 @@ def shift_vol_linefill(
     return vol_table, day_plan
 
 
+def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
+    """Convert a volumetric linefill dataframe to a list of DRA batches."""
+    if df is None or len(df) == 0:
+        return []
+    col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
+    col_ppm = "DRA ppm" if "DRA ppm" in df.columns else "dra_ppm"
+    batches: list[dict] = []
+    for _, r in df.iterrows():
+        vol = float(r.get(col_vol, 0.0) or 0.0)
+        if vol <= 0:
+            continue
+        ppm = float(r.get(col_ppm, 0.0) or 0.0)
+        batches.append({"volume": vol, "dra_ppm": ppm})
+    return batches
+
+
+def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
+    """Assign ``dra_ppm`` values from ``dra_batches`` onto ``df`` by volume."""
+    if df is None:
+        return df
+    df = df.copy()
+    col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
+    ppm_vals: list[float] = []
+    idx = 0
+    remaining = dra_batches[0]["volume"] if dra_batches else 0.0
+    ppm_cur = dra_batches[0].get("dra_ppm", 0.0) if dra_batches else 0.0
+    for _, row in df.iterrows():
+        vol = float(row.get(col_vol, 0.0))
+        while vol > remaining + 1e-9 and idx < len(dra_batches) - 1:
+            vol -= remaining
+            idx += 1
+            remaining = dra_batches[idx]["volume"]
+            ppm_cur = dra_batches[idx].get("dra_ppm", 0.0)
+        remaining -= vol
+        ppm_vals.append(ppm_cur)
+    df["DRA ppm"] = ppm_vals
+    return df
+
+
 # Build a summary dataframe from solver results
 def build_summary_dataframe(
     res: dict,
@@ -1748,6 +1787,10 @@ if not auto_batch:
         dra_reach_km = 0.0
 
         current_vol = vol_df.copy()
+        if "DRA ppm" not in current_vol.columns:
+            current_vol["DRA ppm"] = 0.0
+        dra_linefill = df_to_dra_linefill(current_vol)
+        current_vol = apply_dra_ppm(current_vol, dra_linefill)
         error_msg = None
 
         with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
@@ -1765,9 +1808,19 @@ if not auto_batch:
                 stns_run = copy.deepcopy(stations_base)
 
                 res = solve_pipeline(
-                    stns_run, term_data, FLOW_sched, kv_list, rho_list,
-                    RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), current_vol.to_dict(), dra_reach_km,
-                    st.session_state.get("MOP_kgcm2"), hours=4.0
+                    stns_run,
+                    term_data,
+                    FLOW_sched,
+                    kv_list,
+                    rho_list,
+                    RateDRA,
+                    Price_HSD,
+                    st.session_state.get("Fuel_density", 820.0),
+                    st.session_state.get("Ambient_temp", 25.0),
+                    dra_linefill,
+                    dra_reach_km,
+                    st.session_state.get("MOP_kgcm2"),
+                    hours=4.0,
                 )
 
                 if res.get("error"):
@@ -1778,11 +1831,9 @@ if not auto_batch:
                 linefill_snaps.append(current_vol.copy())
 
                 if ti < len(hours) - 1:
-                    # Advance volumetric linefill but do not track DRA advancement.
-                    # The pipeline is assumed fully treated at the start, so there is
-                    # no DRA front to propagate between intervals.  Keep
-                    # dra_reach_km constant at zero.
+                    dra_linefill = res.get("linefill", dra_linefill)
                     current_vol, plan_df = future_vol, future_plan
+                    current_vol = apply_dra_ppm(current_vol, dra_linefill)
                     dra_reach_km = 0.0
 
         if error_msg:
@@ -1901,6 +1952,10 @@ if not auto_batch:
             flow_df = flow_df.sort_values("Start").reset_index(drop=True)
 
             current_vol = vol_df.copy()
+            if "DRA ppm" not in current_vol.columns:
+                current_vol["DRA ppm"] = 0.0
+            dra_linefill = df_to_dra_linefill(current_vol)
+            current_vol = apply_dra_ppm(current_vol, dra_linefill)
             reports = []
             linefill_snaps = []
             dra_reach_km = 0.0
@@ -1939,7 +1994,7 @@ if not auto_batch:
                         Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
                         st.session_state.get("Ambient_temp", 25.0),
-                        current_vol.to_dict(),
+                        dra_linefill,
                         dra_reach_km,
                         st.session_state.get("MOP_kgcm2"),
                         hours=duration_hr,
@@ -1950,9 +2005,10 @@ if not auto_batch:
 
                     reports.append({"time": seg_start, "result": res})
                     linefill_snaps.append(current_vol.copy())
-                    current_vol = future_vol
+                    dra_linefill = res.get("linefill", dra_linefill)
+                    current_vol = apply_dra_ppm(future_vol, dra_linefill)
                     # In the revised model DRA does not propagate downstream over time.
-                    # Keep the DRA reach constant (zero) rather than updating it from the result.
+                    # Keep the DRA reach constant (zero).
                     dra_reach_km = 0.0
                     seg_start = seg_end
 
