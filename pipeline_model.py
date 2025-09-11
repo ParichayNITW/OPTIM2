@@ -1806,6 +1806,12 @@ def solve_pipeline(
     result['total_cost'] = total_cost
     result['dra_front_km'] = best_state.get('reach', 0.0)
     result['error'] = False
+    # Provide a top-level alias 'cost' for 'total_cost' so that callers may
+    # reference the cost by either name.  If 'cost' already exists it is
+    # preserved.  The total cost corresponds to the full pumping
+    # interval specified by the ``hours`` argument.
+    if 'cost' not in result:
+        result['cost'] = result['total_cost']
     return result
 
 
@@ -1980,8 +1986,62 @@ def solve_pipeline_with_types(
             "message": "No feasible pump combination found for stations.",
         }
 
-    best_result['stations_used'] = best_stations
-    return best_result
+        best_result['stations_used'] = best_stations
+        # expose a "cost" key as an alias for total_cost when present.  Some
+        # callers may rely on a generic cost field rather than total_cost.  Do
+        # not override existing cost values if they already exist.
+        if 'total_cost' in best_result and 'cost' not in best_result:
+            best_result['cost'] = best_result['total_cost']
+        return best_result
+
+# ---------------------------------------------------------------------------
+# Adaptive wrapper: coarse/fine search or global-min mode
+# ---------------------------------------------------------------------------
+def _solve_pipeline_adaptive_deprecated(
+    stations: list[dict],
+    terminal: dict,
+    FLOW: float,
+    KV_list: list[float],
+    rho_list: list[float],
+    RateDRA: float,
+    Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
+    linefill: list[dict] | dict | None = None,
+    *,
+    # When True, skip any coarse discretisation and beam pruning and search the full
+    # fine grid.  This guarantees the returned solution is the global minimum.
+    ensure_global_min: bool = False,
+    # Duration in hours for which to compute the cost.  The solver will scale
+    # internal energy/fuel consumption by this value when producing the result.
+    run_hours: float = 24.0,
+) -> dict:
+    """Deprecated.  Retained for backward compatibility but not used.
+
+    The actual adaptive solver is defined later in this module as
+    ``solve_pipeline_adaptive``.  This stub exists to preserve symbol
+    references in older code.  It simply delegates to
+    ``solve_pipeline_with_types`` for the requested duration without
+    performing any coarse→fine search or beam pruning.
+
+    Parameters and return value mirror those of ``solve_pipeline_with_types``.
+    """
+    # Delegate to the primary solver directly; no adaptive logic
+    return solve_pipeline_with_types(
+        stations,
+        terminal,
+        FLOW,
+        KV_list,
+        rho_list,
+        RateDRA,
+        Price_HSD,
+        Fuel_density,
+        Ambient_temp,
+        linefill=linefill,
+        dra_reach_km=0.0,
+        mop_kgcm2=None,
+        hours=run_hours,
+    )
 
 # -----------------------------------------------------------------------------
 # Adaptive coarse→fine solver
@@ -2036,6 +2096,8 @@ def solve_pipeline_adaptive(
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
     residual_round_coarse: int | None = None,
+    ensure_global_min: bool = False,
+    run_hours: float = 24.0,
 ) -> dict:
     """
     Perform a two-pass optimisation with coarse and fine discretisations.
@@ -2064,7 +2126,37 @@ def solve_pipeline_adaptive(
       buckets and speed up the coarse search.  The original rounding is
       restored for the fine pass.
     """
-    # First pass: coarse search
+    # If global optimum is requested, bypass coarse search and beam pruning.
+    # Solve using the default fine discretisation (100 rpm and 5 % DR) across
+    # the full search space and return the result for the specified duration.
+    if ensure_global_min:
+        return solve_pipeline_with_types(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill,
+            dra_reach_km=0.0,
+            mop_kgcm2=None,
+            hours=run_hours,
+            loop_usage_by_station=loop_usage_by_station,
+            enumerate_loops=enumerate_loops,
+            rpm_step=RPM_STEP,
+            dra_step=DRA_STEP,
+            per_station_ranges=None,
+            beam_cap=None,
+        )
+    # Otherwise perform a two-pass coarse→fine search.  The coarse pass uses
+    # larger step sizes to quickly explore the search space, narrowing to
+    # promising regions.  Both passes operate over the time horizon
+    # ``run_hours``.  Beam pruning may be applied in each pass according
+    # to ``beam_cap`` to limit dynamic-programming state growth.
+    # Coarse pass
     coarse_result = solve_pipeline_with_types(
         stations,
         terminal,
@@ -2078,7 +2170,7 @@ def solve_pipeline_adaptive(
         linefill,
         dra_reach_km=0.0,
         mop_kgcm2=None,
-        hours=24.0,
+        hours=run_hours,
         loop_usage_by_station=loop_usage_by_station,
         enumerate_loops=enumerate_loops,
         rpm_step=coarse_rpm_step,
@@ -2132,7 +2224,7 @@ def solve_pipeline_adaptive(
         linefill,
         dra_reach_km=0.0,
         mop_kgcm2=None,
-        hours=24.0,
+        hours=run_hours,
         loop_usage_by_station=loop_usage_by_station,
         enumerate_loops=enumerate_loops,
         rpm_step=final_rpm_step,
