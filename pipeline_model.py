@@ -238,10 +238,20 @@ V_MAX = 2.5
 _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _PARALLEL_CACHE: dict[tuple, tuple] = {}
 
-
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+    """Return a list of allowed values from ``min_val`` to ``max_val``.
+
+    The helper guards against invalid input ranges by ensuring ``min_val`` is
+    not greater than ``max_val`` and that ``step`` is positive.  When either
+    condition is violated an empty list is returned.  This behaviour prevents
+    callers from attempting to iterate over nonsensical ranges.
+    """
+
+    if min_val > max_val or step <= 0:
+        return []
+
     vals = list(range(min_val, max_val + 1, step))
-    if vals[-1] != max_val:
+    if vals and vals[-1] != max_val:
         vals.append(max_val)
     return vals
 
@@ -597,6 +607,10 @@ def _adaptive_enum(stn: dict, coarse_step: tuple[int, int], fine_step: tuple[int
             if stn.get('loopline')
             else [0]
         )
+
+        if not rpm_vals or not dra_main_vals or (stn.get('loopline') and not dra_loop_vals):
+            return []
+
         options: list[dict] = []
         for nop in range(min_p, max_p + 1):
             rpm_opts = [0] if nop == 0 else rpm_vals
@@ -695,6 +709,8 @@ def _adaptive_enum(stn: dict, coarse_step: tuple[int, int], fine_step: tuple[int
         return pump_cost + dra_cost
 
     coarse_opts = build_opts(rpm_step_c, dra_step_c)
+    if not coarse_opts:
+        return []
     best_opt = min(coarse_opts, key=option_cost)
 
     rpm_min_ref = max(min_rpm, best_opt['rpm'] - rpm_step_c)
@@ -1191,27 +1207,28 @@ def solve_pipeline(
                     if loop_dict
                     else [0]
                 )
-                for nop in range(min_p, max_p + 1):
-                    rpm_opts = [0] if nop == 0 else rpm_vals
-                    for rpm in rpm_opts:
-                        for dra_main in dra_main_vals:
-                            for dra_loop in dra_loop_vals:
-                                ppm_main = (
-                                    get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                                )
-                                ppm_loop = (
-                                    get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
-                                )
-                                opts.append(
-                                    {
-                                        'nop': nop,
-                                        'rpm': rpm,
-                                        'dra_main': dra_main,
-                                        'dra_loop': dra_loop,
-                                        'dra_ppm_main': ppm_main,
-                                        'dra_ppm_loop': ppm_loop,
-                                    }
-                                )
+                if rpm_vals and dra_main_vals and (not loop_dict or dra_loop_vals):
+                    for nop in range(min_p, max_p + 1):
+                        rpm_opts = [0] if nop == 0 else rpm_vals
+                        for rpm in rpm_opts:
+                            for dra_main in dra_main_vals:
+                                for dra_loop in dra_loop_vals:
+                                    ppm_main = (
+                                        get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                                    )
+                                    ppm_loop = (
+                                        get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
+                                    )
+                                    opts.append(
+                                        {
+                                            'nop': nop,
+                                            'rpm': rpm,
+                                            'dra_main': dra_main,
+                                            'dra_loop': dra_loop,
+                                            'dra_ppm_main': ppm_main,
+                                            'dra_ppm_loop': ppm_loop,
+                                        }
+                                    )
                 if not any(o['nop'] == 0 for o in opts):
                     opts.insert(
                         0,
@@ -1232,16 +1249,17 @@ def solve_pipeline(
             max_dr_main = int(stn.get('max_dr', 0))
             if max_dr_main > 0:
                 dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
-                for dra_main in dra_vals:
-                    ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                    non_pump_opts.append({
-                        'nop': 0,
-                        'rpm': 0,
-                        'dra_main': dra_main,
-                        'dra_loop': 0,
-                        'dra_ppm_main': ppm_main,
-                        'dra_ppm_loop': 0.0,
-                    })
+                if dra_vals:
+                    for dra_main in dra_vals:
+                        ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                        non_pump_opts.append({
+                            'nop': 0,
+                            'rpm': 0,
+                            'dra_main': dra_main,
+                            'dra_loop': 0,
+                            'dra_ppm_main': ppm_main,
+                            'dra_ppm_loop': 0.0,
+                        })
             if not non_pump_opts:
                 non_pump_opts.append({
                     'nop': 0,
