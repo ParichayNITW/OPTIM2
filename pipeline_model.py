@@ -361,10 +361,10 @@ def _adaptive_enum(
         stn["max_pumps"],
         stn["kv"],
         stn.get("fixed_dr"),
-        0,
-        stn["max_dr_main"],
-        0,
-        stn["max_dr_loop"],
+        dra_main_min=stn["min_dr_main"],
+        dra_main_max=stn["max_dr_main"],
+        dra_loop_min=stn["min_dr_loop"],
+        dra_loop_max=stn["max_dr_loop"],
     )
     if not coarse_opts:
         return []
@@ -378,9 +378,9 @@ def _adaptive_enum(
 
     rpm_min_ref = max(stn["rpm_min"], best_coarse["rpm"] - rpm_step_c)
     rpm_max_ref = min(stn["rpm_max"], best_coarse["rpm"] + rpm_step_c)
-    dra_main_min_ref = max(0, best_coarse["dra_main"] - dra_step_c)
+    dra_main_min_ref = max(stn["min_dr_main"], best_coarse["dra_main"] - dra_step_c)
     dra_main_max_ref = min(stn["max_dr_main"], best_coarse["dra_main"] + dra_step_c)
-    dra_loop_min_ref = max(0, best_coarse["dra_loop"] - dra_step_c)
+    dra_loop_min_ref = max(stn["min_dr_loop"], best_coarse["dra_loop"] - dra_step_c)
     dra_loop_max_ref = min(stn["max_dr_loop"], best_coarse["dra_loop"] + dra_step_c)
 
     refined_opts = build_opts(
@@ -392,10 +392,10 @@ def _adaptive_enum(
         stn["max_pumps"],
         stn["kv"],
         stn.get("fixed_dr"),
-        dra_main_min_ref,
-        dra_main_max_ref,
-        dra_loop_min_ref,
-        dra_loop_max_ref,
+        dra_main_min=dra_main_min_ref,
+        dra_main_max=dra_main_max_ref,
+        dra_loop_min=dra_loop_min_ref,
+        dra_loop_max=dra_loop_max_ref,
     )
     if refined_opts:
         all_opts: list[dict] = []
@@ -1183,7 +1183,9 @@ def solve_pipeline(
             rpm_max = int(stn.get('DOL', 0))
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = int(stn.get('max_dr', 0))
+            min_dr_main = int(stn.get('min_dr', 0))
             max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
+            min_dr_loop = int(loop_dict.get('min_dr', 0)) if loop_dict else 0
 
             if adaptive:
                 stn_enum = {
@@ -1191,7 +1193,9 @@ def solve_pipeline(
                     'max_pumps': max_p,
                     'kv': kv,
                     'fixed_dr': fixed_dr,
+                    'min_dr_main': min_dr_main,
                     'max_dr_main': max_dr_main,
+                    'min_dr_loop': min_dr_loop,
                     'max_dr_loop': max_dr_loop,
                     'rpm_min': rpm_min,
                     'rpm_max': rpm_max,
@@ -1211,10 +1215,10 @@ def solve_pipeline(
                         max_p,
                         kv,
                         fixed_dr,
-                        0,
-                        max_dr_main,
-                        0,
-                        max_dr_loop,
+                        dra_main_min=min_dr_main,
+                        dra_main_max=max_dr_main,
+                        dra_loop_min=min_dr_loop,
+                        dra_loop_max=max_dr_loop,
                     )
             else:
                 opts = build_opts(
@@ -1226,10 +1230,10 @@ def solve_pipeline(
                     max_p,
                     kv,
                     fixed_dr,
-                    0,
-                    max_dr_main,
-                    0,
-                    max_dr_loop,
+                    dra_main_min=min_dr_main,
+                    dra_main_max=max_dr_main,
+                    dra_loop_min=min_dr_loop,
+                    dra_loop_max=max_dr_loop,
                 )
         else:
             # Non-pump stations can inject DRA independently whenever a
@@ -1237,8 +1241,9 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = int(stn.get('max_dr', 0))
-            if max_dr_main > 0:
-                dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
+            min_dr_main = int(stn.get('min_dr', 0))
+            if max_dr_main >= min_dr_main:
+                dra_vals = _allowed_values(min_dr_main, max_dr_main, DRA_STEP)
                 for dra_main in dra_vals:
                     ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
                     non_pump_opts.append({
@@ -2187,14 +2192,14 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
                         else:
-                            unit['MinRPM'] = min(
-                                pdataA.get('MinRPM', unit.get('MinRPM', 0.0)),
-                                pdataB.get('MinRPM', unit.get('MinRPM', 0.0)),
-                            )
-                            unit['DOL'] = max(
-                                pdataA.get('DOL', unit.get('DOL', 0.0)),
-                                pdataB.get('DOL', unit.get('DOL', 0.0)),
-                            )
+                            min_rpm_a = pdataA.get('MinRPM', unit.get('MinRPM', 0.0))
+                            min_rpm_b = pdataB.get('MinRPM', unit.get('MinRPM', 0.0))
+                            dol_a = pdataA.get('DOL', unit.get('DOL', 0.0))
+                            dol_b = pdataB.get('DOL', unit.get('DOL', 0.0))
+                            unit['MinRPM'] = max(min_rpm_a, min_rpm_b)
+                            unit['DOL'] = min(dol_a, dol_b)
+                            if unit['MinRPM'] > unit['DOL']:
+                                continue
                             unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
                             unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
                             unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
