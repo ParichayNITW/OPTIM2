@@ -1798,6 +1798,7 @@ if not auto_batch:
                 linefill_snaps.append(current_vol.copy())
                 sdh_hourly = []
                 res = {}
+                block_cost = 0.0
                 for sub in range(4):
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
@@ -1827,6 +1828,8 @@ if not auto_batch:
                         hours=1.0,
                     )
 
+                    block_cost += res.get("total_cost", 0.0)
+
                     if res.get("error"):
                         cur_hr = (hr + sub) % 24
                         error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
@@ -1847,6 +1850,7 @@ if not auto_batch:
                 if error_msg:
                     break
 
+                res["total_cost"] = block_cost
                 reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
 
         if error_msg:
