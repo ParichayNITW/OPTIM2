@@ -1161,13 +1161,15 @@ def build_summary_dataframe(
     return df_sum.round(2)
 
 
-def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
-    """Return per-station details used in the daily schedule table.
+def build_station_table(
+    res: dict, base_stations: list[dict], interval_hours: float | None = None
+) -> pd.DataFrame:
+    """Return per-station details used in the schedule tables.
 
     The function iterates over the stations used in the optimisation (including
     individual pump units at the origin) and pulls the corresponding values from
-    ``res``.  No aggregation is performed so the hydraulic linkage between
-    pumps and stations (RH -> SDH propagation) is preserved.
+    ``res``.  Costs may optionally be scaled to a reporting interval (e.g. 4 h)
+    when ``interval_hours`` is provided.
     """
 
     rows: list[dict] = []
@@ -1223,8 +1225,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
-            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
-            'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
+            'Power & Fuel Cost (INR)': 0.0,
+            'DRA Cost (INR)': 0.0,
             'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
             'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{key}", 0.0) or 0.0),
             'No. of Pumps': n_pumps,
@@ -1250,6 +1252,20 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
+
+        run_hours = res.get('hours')
+        p_cost_raw = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+        d_cost_raw = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
+        if interval_hours is not None:
+            row['Power & Fuel Cost (INR)'] = _per_interval_cost(
+                {'total_cost': p_cost_raw, 'hours': run_hours}, interval_hours, run_hours
+            )
+            row['DRA Cost (INR)'] = _per_interval_cost(
+                {'total_cost': d_cost_raw, 'hours': run_hours}, interval_hours, run_hours
+            )
+        else:
+            row['Power & Fuel Cost (INR)'] = p_cost_raw
+            row['DRA Cost (INR)'] = d_cost_raw
 
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
 
@@ -1351,7 +1367,8 @@ def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd
     -------
     pandas.DataFrame
         A table with columns ``Time``, ``Flow (m³/h)``, ``Cost (4h)`` and
-        per-station pump speed, efficiency percentage and brake kW.
+        per-station pump speed, efficiency percentage, brake kW, motor kW,
+        power/fuel cost and DRA cost scaled to 4 hours.
     """
     import numpy as _np
     import re as _re
@@ -1381,16 +1398,33 @@ def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd
             rpm = res.get(f"speed_{raw}") or res.get(f"speed_{norm}")
             eff = res.get(f"pump_efficiency_pct_{raw}") or res.get(f"pump_efficiency_pct_{norm}")
             bkw = res.get(f"pump_bkw_{raw}") or res.get(f"pump_bkw_{norm}")
+            mkw = res.get(f"motor_kw_{raw}") or res.get(f"motor_kw_{norm}")
+            p_cost = res.get(f"power_cost_{raw}") or res.get(f"power_cost_{norm}")
+            d_cost = res.get(f"dra_cost_{raw}") or res.get(f"dra_cost_{norm}")
             row[f"{name} RPM"] = float(rpm or 0.0)
             row[f"{name} Eff (%)"] = float(eff or 0.0)
             row[f"{name} BKW"] = float(bkw or 0.0)
+            row[f"{name} Motor kW"] = float(mkw or 0.0)
+            row[f"{name} Power (4h)"] = _per_interval_cost(
+                {"total_cost": p_cost or 0.0, "hours": run_hours}, 4.0, run_hours
+            )
+            row[f"{name} DRA (4h)"] = _per_interval_cost(
+                {"total_cost": d_cost or 0.0, "hours": run_hours}, 4.0, run_hours
+            )
         rows.append(row)
 
     df = pd.DataFrame(rows)
     # Order columns: Time, Flow, Cost then station columns
     ordered_cols = ["Time", "Flow (m³/h)", "Cost (4h)"]
     for name in station_names:
-        ordered_cols += [f"{name} RPM", f"{name} Eff (%)", f"{name} BKW"]
+        ordered_cols += [
+            f"{name} RPM",
+            f"{name} Eff (%)",
+            f"{name} BKW",
+            f"{name} Motor kW",
+            f"{name} Power (4h)",
+            f"{name} DRA (4h)",
+        ]
     df = df[ordered_cols]
     return df.round(2)
 
@@ -1942,6 +1976,8 @@ if not auto_batch:
                 sdh_hourly = []
                 res = {}
                 block_cost = 0.0
+                power_costs: dict[str, float] = {}
+                dra_costs: dict[str, float] = {}
                 for sub in range(sub_steps):
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
@@ -1972,6 +2008,16 @@ if not auto_batch:
                     )
 
                     block_cost += res.get("total_cost", 0.0)
+                    # Accumulate per-station costs so the final record reflects the
+                    # entire block rather than just the last sub-step.
+                    for stn in stns_run:
+                        norm = stn["name"].lower().replace(" ", "_")
+                        power_costs[norm] = power_costs.get(norm, 0.0) + (
+                            res.get(f"power_cost_{norm}", 0.0) or 0.0
+                        )
+                        dra_costs[norm] = dra_costs.get(norm, 0.0) + (
+                            res.get(f"dra_cost_{norm}", 0.0) or 0.0
+                        )
 
                     if res.get("error"):
                         cur_hr = (hr + sub) % 24
@@ -1992,6 +2038,13 @@ if not auto_batch:
 
                 if error_msg:
                     break
+
+                # Merge accumulated station costs into the final result before
+                # scaling to the reporting interval.
+                for k, v in power_costs.items():
+                    res[f"power_cost_{k}"] = v
+                for k, v in dra_costs.items():
+                    res[f"dra_cost_{k}"] = v
 
                 # Aggregate the cost and actual run duration for this block
                 res["total_cost"] = block_cost
@@ -2017,7 +2070,7 @@ if not auto_batch:
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
-            df_int = build_station_table(res, stations_base)
+            df_int = build_station_table(res, stations_base, 4.0)
             # Insert human-readable pattern and time columns
             pattern = res.get('flow_pattern_name', '')
             df_int.insert(0, "Pattern", pattern)
@@ -2046,20 +2099,26 @@ if not auto_batch:
         )
 
         # Display total cost per time slice and global sum
-        cost_rows = [
-            {
-                "Time": f"{rec['time']:02d}:00",
-                "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
-            }
-            for rec in reports
-        ]
+        cost_rows = []
+        for rec in reports:
+            res = rec["result"]
+            run_hours = rec.get("duration_hr", res.get("hours"))
+            c4h = rec.get("cost_4h")
+            if c4h is None:
+                c4h = _per_interval_cost(res, 4.0, run_hours)
+            cost_rows.append(
+                {
+                    "Time": f"{rec['time']:02d}:00",
+                    "Pattern": res.get("flow_pattern_name", ""),
+                    "Cost (4h)": c4h,
+                }
+            )
         df_cost = pd.DataFrame(cost_rows).round(2)
-        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+        df_cost_style = df_cost.style.format({"Cost (4h)": "{:.2f}"})
         st.dataframe(df_cost_style, width='stretch', hide_index=True)
         total_label = "1h" if is_hourly else "24h"
         st.markdown(
-            f"**Total Optimized Cost ({total_label}): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+            f"**Total Optimized Cost ({total_label}): {df_cost['Cost (4h)'].sum():,.2f} INR**"
         )
 
         combined = []
@@ -2173,6 +2232,7 @@ if not auto_batch:
                         st.session_state.get("MOP_kgcm2"),
                         hours=duration_hr,
                     )
+                    res["cost_4h"] = _per_interval_cost(res, 4.0, duration_hr)
                     if res.get("error"):
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
                         st.stop()
@@ -2210,7 +2270,7 @@ if not auto_batch:
             for rec in reports:
                 res = rec["result"]
                 ts = rec["time"]
-                df_int = build_station_table(res, stations_base)
+                df_int = build_station_table(res, stations_base, 4.0)
                 # Prepend pattern and time columns
                 pattern = res.get('flow_pattern_name', '')
                 df_int.insert(0, "Pattern", pattern)
@@ -2235,20 +2295,26 @@ if not auto_batch:
                 file_name="dynamic_plan_results.csv",
             )
 
-            # Display total cost per interval and overall sum
-            cost_rows = [
-                {
-                    "Time": rec["time"].strftime("%d/%m %H:%M"),
-                    "Pattern": rec["result"].get("flow_pattern_name", ""),
-                    "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
-                }
-                for rec in reports
-            ]
+            # Display total cost per interval and overall sum (scaled to 4 h)
+            cost_rows = []
+            for rec in reports:
+                res = rec["result"]
+                run_hours = rec.get("duration_hr", res.get("hours"))
+                c4h = rec.get("cost_4h")
+                if c4h is None:
+                    c4h = _per_interval_cost(res, 4.0, run_hours)
+                cost_rows.append(
+                    {
+                        "Time": rec["time"].strftime("%d/%m %H:%M"),
+                        "Pattern": res.get("flow_pattern_name", ""),
+                        "Cost (4h)": c4h,
+                    }
+                )
             df_cost = pd.DataFrame(cost_rows).round(2)
-            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+            df_cost_style = df_cost.style.format({"Cost (4h)": "{:.2f}"})
             st.dataframe(df_cost_style, width='stretch', hide_index=True)
             st.markdown(
-                f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+                f"**Total Optimized Cost: {df_cost['Cost (4h)'].sum():,.2f} INR**"
             )
 
             combined = []
