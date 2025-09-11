@@ -397,7 +397,17 @@ def _adaptive_enum(
         dra_loop_min_ref,
         dra_loop_max_ref,
     )
-    return refined_opts
+    if refined_opts:
+        all_opts: list[dict] = []
+        seen: set[tuple[int, int, int, int]] = set()
+        for opt in coarse_opts + refined_opts:
+            key = (opt["nop"], opt["rpm"], opt["dra_main"], opt["dra_loop"])
+            if key not in seen:
+                seen.add(key)
+                all_opts.append(opt)
+        return all_opts
+    # If refinement produced no options, fall back to the coarse grid
+    return coarse_opts
 
 
 def _segment_hydraulics(
@@ -2028,6 +2038,25 @@ def solve_pipeline_with_types(
                     enumerate_loops=enumerate_loops,
                     adaptive=adaptive,
                 )
+                if result.get("error") and adaptive:
+                    result = solve_pipeline(
+                        stn_acc,
+                        terminal,
+                        FLOW,
+                        kv_acc,
+                        rho_acc,
+                        RateDRA,
+                        Price_HSD,
+                        Fuel_density,
+                        Ambient_temp,
+                        linefill,
+                        dra_reach_km,
+                        mop_kgcm2,
+                        hours,
+                        loop_usage_by_station=loop_usage_by_station,
+                        enumerate_loops=enumerate_loops,
+                        adaptive=False,
+                    )
                 if not result.get("error"):
                     cost = result.get("total_cost", float('inf'))
                     if cost < best_cost:
@@ -2087,6 +2116,27 @@ def solve_pipeline_with_types(
                     enumerate_loops=False,
                     adaptive=adaptive,
                 )
+                if result.get("error") and adaptive:
+                    # Fallback to full enumeration when adaptive refinement
+                    # fails to produce a feasible solution.
+                    result = solve_pipeline(
+                        stn_acc,
+                        terminal,
+                        FLOW,
+                        kv_acc,
+                        rho_acc,
+                        RateDRA,
+                        Price_HSD,
+                        Fuel_density,
+                        Ambient_temp,
+                        linefill,
+                        dra_reach_km,
+                        mop_kgcm2,
+                        hours,
+                        loop_usage_by_station=usage,
+                        enumerate_loops=False,
+                        adaptive=False,
+                    )
                 if result.get("error"):
                     continue
                 cost = result.get("total_cost", float('inf'))
