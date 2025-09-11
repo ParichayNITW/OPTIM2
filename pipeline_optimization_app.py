@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from collections import defaultdict
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -1217,8 +1218,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
             'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
-            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
-            'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
+            'Power & Fuel Cost 4h (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
+            'DRA Cost 4h (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
             'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
             'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{key}", 0.0) or 0.0),
             'No. of Pumps': n_pumps,
@@ -1240,7 +1241,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
 
-        row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
+        row['Total Cost 4h (INR)'] = row['Power & Fuel Cost 4h (INR)'] + row['DRA Cost 4h (INR)']
 
         # Available suction head only needs to be reported at the origin suction
         if idx == 0:
@@ -1799,6 +1800,8 @@ if not auto_batch:
                 sdh_hourly = []
                 res = {}
                 block_cost = 0.0
+                power_cost_agg = defaultdict(float)
+                dra_cost_agg = defaultdict(float)
                 for sub in range(4):
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
@@ -1830,6 +1833,12 @@ if not auto_batch:
 
                     block_cost += res.get("total_cost", 0.0)
 
+                    for k, v in res.items():
+                        if k.startswith("power_cost_"):
+                            power_cost_agg[k] += float(v or 0.0)
+                        elif k.startswith("dra_cost_"):
+                            dra_cost_agg[k] += float(v or 0.0)
+
                     if res.get("error"):
                         cur_hr = (hr + sub) % 24
                         error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
@@ -1850,7 +1859,11 @@ if not auto_batch:
                 if error_msg:
                     break
 
-                res["total_cost"] = block_cost
+                for k, v in power_cost_agg.items():
+                    res[k] = v
+                for k, v in dra_cost_agg.items():
+                    res[k] = v
+                res["total_cost_4h"] = block_cost
                 reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
 
         if error_msg:
@@ -1894,15 +1907,15 @@ if not auto_batch:
             {
                 "Time": f"{rec['time']:02d}:00",
                 "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+                "Total Cost 4h (INR)": rec["result"].get("total_cost_4h", 0.0),
             }
             for rec in reports
         ]
         df_cost = pd.DataFrame(cost_rows).round(2)
-        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+        df_cost_style = df_cost.style.format({"Total Cost 4h (INR)": "{:.2f}"})
         st.dataframe(df_cost_style, width='stretch', hide_index=True)
         st.markdown(
-            f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+            f"**Total Optimized Cost (24h): {df_cost['Total Cost 4h (INR)'].sum():,.2f} INR**"
         )
 
         combined = []
