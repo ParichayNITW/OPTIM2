@@ -221,11 +221,6 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 100
 DRA_STEP = 5
-# Coarse enumeration steps used by the adaptive search.  These provide a
-# lightweight way to explore the operating space before refining around the
-# best candidates with the finer ``RPM_STEP`` and ``DRA_STEP`` increments.
-RPM_STEP_COARSE = 500
-DRA_STEP_COARSE = 20
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -238,20 +233,10 @@ V_MAX = 2.5
 _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _PARALLEL_CACHE: dict[tuple, tuple] = {}
 
+
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
-    """Return a list of allowed values from ``min_val`` to ``max_val``.
-
-    The helper guards against invalid input ranges by ensuring ``min_val`` is
-    not greater than ``max_val`` and that ``step`` is positive.  When either
-    condition is violated an empty list is returned.  This behaviour prevents
-    callers from attempting to iterate over nonsensical ranges.
-    """
-
-    if min_val > max_val or step <= 0:
-        return []
-
     vals = list(range(min_val, max_val + 1, step))
-    if vals and vals[-1] != max_val:
+    if vals[-1] != max_val:
         vals.append(max_val)
     return vals
 
@@ -557,184 +542,6 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
     return sfc_site
 
 
-def _adaptive_enum(stn: dict, coarse_step: tuple[int, int], fine_step: tuple[int, int]) -> list[dict]:
-    """Enumerate pump operating points using an adaptive coarse-to-fine search.
-
-    ``stn`` must contain all information required to evaluate power and DRA
-    costs for the station including hydraulic coefficients.  ``coarse_step``
-    and ``fine_step`` provide the RPM and DRA increments used for the initial
-    coarse scan and the final refinement respectively.
-
-    The helper returns a list of option dictionaries compatible with the
-    original solver structure.
-    """
-
-    rpm_step_c, dra_step_c = coarse_step
-    rpm_step_f, dra_step_f = fine_step
-
-    min_rpm = int(stn.get('MinRPM', 0))
-    max_rpm = int(stn.get('DOL', 0))
-    min_p = stn.get('min_pumps', 0)
-    max_p = stn.get('max_pumps', 0)
-    fixed_dr = stn.get('fixed_dra_perc')
-    max_dr_main = int(stn.get('max_dr', 0))
-    max_dr_loop = int(stn.get('max_dr_loop', 0))
-    kv = stn.get('kv', 0.0)
-    flow = stn.get('flow', 0.0)
-    rho = stn.get('rho', 0.0)
-    rate_dra = stn.get('RateDRA', 0.0)
-    price_hsd = stn.get('Price_HSD', 0.0)
-    fuel_density = stn.get('Fuel_density', 1.0)
-    hours = stn.get('hours', 0.0)
-
-    def build_opts(
-        rpm_step: int,
-        dra_step: int,
-        rpm_min: int = min_rpm,
-        rpm_max: int = max_rpm,
-        dra_main_min: int = 0,
-        dra_main_max: int = max_dr_main,
-        dra_loop_min: int = 0,
-        dra_loop_max: int = max_dr_loop,
-    ) -> list[dict]:
-        rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
-        if fixed_dr is not None:
-            dra_main_vals = [int(round(fixed_dr))]
-        else:
-            dra_main_vals = _allowed_values(dra_main_min, dra_main_max, dra_step)
-        dra_loop_vals = (
-            _allowed_values(dra_loop_min, dra_loop_max, dra_step)
-            if stn.get('loopline')
-            else [0]
-        )
-
-        if not rpm_vals or not dra_main_vals or (stn.get('loopline') and not dra_loop_vals):
-            return []
-
-        options: list[dict] = []
-        for nop in range(min_p, max_p + 1):
-            rpm_opts = [0] if nop == 0 else rpm_vals
-            for rpm in rpm_opts:
-                for dra_main in dra_main_vals:
-                    for dra_loop in dra_loop_vals:
-                        ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                        ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
-                        options.append(
-                            {
-                                'nop': nop,
-                                'rpm': rpm,
-                                'dra_main': dra_main,
-                                'dra_loop': dra_loop,
-                                'dra_ppm_main': ppm_main,
-                                'dra_ppm_loop': ppm_loop,
-                            }
-                        )
-        if not options:
-            return []
-        if not any(o['nop'] == 0 for o in options):
-            options.insert(
-                0,
-                {
-                    'nop': 0,
-                    'rpm': 0,
-                    'dra_main': 0,
-                    'dra_loop': 0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
-                },
-            )
-        return options
-
-    def option_cost(opt: dict) -> float:
-        pump_cost = 0.0
-        if opt['nop'] > 0 and opt['rpm'] > 0:
-            pump_def = {
-                'A': stn.get('coef_A', stn.get('A')),
-                'B': stn.get('coef_B', stn.get('B')),
-                'C': stn.get('coef_C', stn.get('C')),
-                'P': stn.get('coef_P', stn.get('P')),
-                'Q': stn.get('coef_Q', stn.get('Q')),
-                'R': stn.get('coef_R', stn.get('R')),
-                'S': stn.get('coef_S', stn.get('S')),
-                'T': stn.get('coef_T', stn.get('T')),
-                'DOL': stn.get('DOL'),
-                'combo': stn.get('pump_combo'),
-                'pump_types': stn.get('pump_types'),
-                'active_combo': stn.get('active_combo'),
-                'power_type': stn.get('power_type'),
-                'sfc_mode': stn.get('sfc_mode'),
-                'sfc': stn.get('sfc'),
-                'engine_params': stn.get('engine_params', {}),
-            }
-            pump_details = _pump_head(pump_def, flow, opt['rpm'], opt['nop'])
-            for pinfo in pump_details:
-                eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
-                tdh_local = max(pinfo['tdh'], 0.0)
-                pump_bkw = (rho * flow * 9.81 * tdh_local) / (
-                    3600.0 * 1000.0 * (eff_local / 100.0)
-                )
-                pdata = pinfo.get('data', {})
-                rated_rpm = pdata.get('DOL', stn.get('DOL', 0))
-                if pinfo.get('power_type') == 'Diesel':
-                    mech_eff = 0.98
-                    mode = pdata.get('sfc_mode', stn.get('sfc_mode', 'manual'))
-                    if mode == 'manual':
-                        sfc_val = pdata.get('sfc', stn.get('sfc', 0.0))
-                    elif mode == 'iso':
-                        sfc_val = _compute_iso_sfc(
-                            pdata,
-                            opt['rpm'],
-                            pump_bkw,
-                            pdata.get('DOL', stn.get('DOL', 0)),
-                            stn.get('elev', 0.0),
-                            stn.get('Ambient_temp', 0.0),
-                        )
-                    else:
-                        sfc_val = 0.0
-                    fuel_per_kWh = (
-                        (sfc_val * 1.34102) / fuel_density if sfc_val else 0.0
-                    )
-                    prime_kw = pump_bkw / mech_eff
-                    cost_i = prime_kw * hours * fuel_per_kWh * price_hsd
-                else:
-                    mech_eff = 0.95 if opt['rpm'] >= rated_rpm else 0.91
-                    prime_kw = pump_bkw / mech_eff
-                    cost_i = prime_kw * hours * stn.get('rate', 0.0)
-                pump_cost += cost_i
-        dra_cost = (
-            (opt['dra_ppm_main'] + opt['dra_ppm_loop'])
-            * rate_dra
-            * flow
-            * hours
-            / 1e6
-        )
-        return pump_cost + dra_cost
-
-    coarse_opts = build_opts(rpm_step_c, dra_step_c)
-    if not coarse_opts:
-        return []
-    best_opt = min(coarse_opts, key=option_cost)
-
-    rpm_min_ref = max(min_rpm, best_opt['rpm'] - rpm_step_c)
-    rpm_max_ref = min(max_rpm, best_opt['rpm'] + rpm_step_c)
-    dra_main_min_ref = max(0, best_opt['dra_main'] - dra_step_c)
-    dra_main_max_ref = min(max_dr_main, best_opt['dra_main'] + dra_step_c)
-    dra_loop_min_ref = max(0, best_opt['dra_loop'] - dra_step_c)
-    dra_loop_max_ref = min(max_dr_loop, best_opt['dra_loop'] + dra_step_c)
-
-    refined_opts = build_opts(
-        rpm_step_f,
-        dra_step_f,
-        rpm_min_ref,
-        rpm_max_ref,
-        dra_main_min_ref,
-        dra_main_max_ref,
-        dra_loop_min_ref,
-        dra_loop_max_ref,
-    )
-    return refined_opts
-
-
 # ---------------------------------------------------------------------------
 # Downstream requirements
 # ---------------------------------------------------------------------------
@@ -889,10 +696,7 @@ def solve_pipeline(
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
-    rpm_step_coarse: int = RPM_STEP_COARSE,
-    dra_step_coarse: int = DRA_STEP_COARSE,
-    adaptive: bool = True,
- ) -> dict:
+) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
 
@@ -941,9 +745,6 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
-                rpm_step_coarse=rpm_step_coarse,
-                dra_step_coarse=dra_step_coarse,
-                adaptive=adaptive,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -997,9 +798,6 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
-                rpm_step_coarse=rpm_step_coarse,
-                dra_step_coarse=dra_step_coarse,
-                adaptive=adaptive,
             )
             if res.get('error'):
                 continue
@@ -1169,91 +967,38 @@ def solve_pipeline(
                 min_p = max(1, min_p)
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
-            if adaptive:
-                stn_enum = stn.copy()
-                stn_enum.update(
-                    {
-                        'kv': kv,
-                        'rho': rho,
-                        'flow': flow,
-                        'RateDRA': RateDRA,
-                        'Price_HSD': Price_HSD,
-                        'Fuel_density': Fuel_density,
-                        'hours': hours,
-                        'max_dr': int(stn.get('max_dr', 0)),
-                        'max_dr_loop': int(loop_dict.get('max_dr', 0)) if loop_dict else 0,
-                        'min_pumps': min_p,
-                        'max_pumps': max_p,
-                        'Ambient_temp': Ambient_temp,
-                        'elev': stn.get('elev', 0.0),
-                        'loopline': loop_dict,
-                    }
-                )
-                opts = _adaptive_enum(
-                    stn_enum,
-                    (rpm_step_coarse, dra_step_coarse),
-                    (RPM_STEP, DRA_STEP),
-                )
+            rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
+            fixed_dr = stn.get('fixed_dra_perc', None)
+            max_dr_main = int(stn.get('max_dr', 0))
+            if fixed_dr is not None:
+                dra_main_vals = [int(round(fixed_dr))]
             else:
-                rpm_vals = _allowed_values(
-                    int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP
-                )
-                fixed_dr = stn.get('fixed_dra_perc', None)
-                max_dr_main = int(stn.get('max_dr', 0))
-                if fixed_dr is not None:
-                    dra_main_vals = [int(round(fixed_dr))]
-                else:
-                    dra_main_vals = _allowed_values(0, max_dr_main, DRA_STEP)
-                dra_loop_vals = (
-                    _allowed_values(0, int(loop_dict.get('max_dr', 0)), DRA_STEP)
-                    if loop_dict
-                    else [0]
-                )
-                if rpm_vals and dra_main_vals and (not loop_dict or dra_loop_vals):
-                    for nop in range(min_p, max_p + 1):
-                        rpm_opts = [0] if nop == 0 else rpm_vals
-                        for rpm in rpm_opts:
-                            for dra_main in dra_main_vals:
-                                for dra_loop in dra_loop_vals:
-                                    ppm_main = (
-                                        get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                                    )
-                                    ppm_loop = (
-                                        get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
-                                    )
-                                    opts.append(
-                                        {
-                                            'nop': nop,
-                                            'rpm': rpm,
-                                            'dra_main': dra_main,
-                                            'dra_loop': dra_loop,
-                                            'dra_ppm_main': ppm_main,
-                                            'dra_ppm_loop': ppm_loop,
-                                        }
-                                    )
-                if not opts:
-                    opts = [
-                        {
-                            'nop': 0,
-                            'rpm': 0,
-                            'dra_main': 0,
-                            'dra_loop': 0,
-                            'dra_ppm_main': 0.0,
-                            'dra_ppm_loop': 0.0,
-                        }
-                    ]
-                elif not any(o['nop'] == 0 for o in opts):
-                    opts.insert(
-                        0,
-                        {
-                            'nop': 0,
-                            'rpm': 0,
-                            'dra_main': 0,
-                            'dra_loop': 0,
-                            'dra_ppm_main': 0.0,
-                            'dra_ppm_loop': 0.0,
-                        },
-                    )
+                dra_main_vals = _allowed_values(0, max_dr_main, DRA_STEP)
+            dra_loop_vals = _allowed_values(0, int(loop_dict.get('max_dr', 0)), DRA_STEP) if loop_dict else [0]
+            for nop in range(min_p, max_p + 1):
+                rpm_opts = [0] if nop == 0 else rpm_vals
+                for rpm in rpm_opts:
+                    for dra_main in dra_main_vals:
+                        for dra_loop in dra_loop_vals:
+                            ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                            ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
+                            opts.append({
+                                'nop': nop,
+                                'rpm': rpm,
+                                'dra_main': dra_main,
+                                'dra_loop': dra_loop,
+                                'dra_ppm_main': ppm_main,
+                                'dra_ppm_loop': ppm_loop,
+                            })
+            if not any(o['nop'] == 0 for o in opts):
+                opts.insert(0, {
+                    'nop': 0,
+                    'rpm': 0,
+                    'dra_main': 0,
+                    'dra_loop': 0,
+                    'dra_ppm_main': 0.0,
+                    'dra_ppm_loop': 0.0,
+                })
         else:
             # Non-pump stations can inject DRA independently whenever a
             # facility exists (max_dr > 0).  If no injection is available the
@@ -1262,17 +1007,16 @@ def solve_pipeline(
             max_dr_main = int(stn.get('max_dr', 0))
             if max_dr_main > 0:
                 dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
-                if dra_vals:
-                    for dra_main in dra_vals:
-                        ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                        non_pump_opts.append({
-                            'nop': 0,
-                            'rpm': 0,
-                            'dra_main': dra_main,
-                            'dra_loop': 0,
-                            'dra_ppm_main': ppm_main,
-                            'dra_ppm_loop': 0.0,
-                        })
+                for dra_main in dra_vals:
+                    ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                    non_pump_opts.append({
+                        'nop': 0,
+                        'rpm': 0,
+                        'dra_main': dra_main,
+                        'dra_loop': 0,
+                        'dra_ppm_main': ppm_main,
+                        'dra_ppm_loop': 0.0,
+                    })
             if not non_pump_opts:
                 non_pump_opts.append({
                     'nop': 0,
@@ -2026,10 +1770,6 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    *,
-    rpm_step_coarse: int = RPM_STEP_COARSE,
-    dra_step_coarse: int = DRA_STEP_COARSE,
-    adaptive: bool = True,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -2101,9 +1841,6 @@ def solve_pipeline_with_types(
                     hours,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
-                    rpm_step_coarse=rpm_step_coarse,
-                    dra_step_coarse=dra_step_coarse,
-                    adaptive=adaptive,
                 )
                 if result.get("error"):
                     continue
