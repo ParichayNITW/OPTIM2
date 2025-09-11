@@ -121,7 +121,7 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
-users = {"parichay_das": hash_pwd("heteroscedasticity")}
+users = {"pipeline_optima": hash_pwd("heteroscedasticity")}
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -3139,7 +3139,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         def get_power_cost(q, n, d, npump=1):
             h = get_head(q, n)
             eff = max(get_eff(q, n)/100, 0.01)
-            pwr = (rho*q*g*h*npump)/(3600.0*eff*0.95*1000)
+            motor_eff = 0.98 if stn.get('power_type') == 'Diesel' else (0.95 if n >= DOL else 0.91)
+            pwr = (rho*q*g*h*npump)/(3600.0*eff*motor_eff*1000)
             return pwr*24*rate
         def get_system_head(q, d):
             d_inner = stn['D'] - 2*stn['t']
