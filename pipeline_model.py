@@ -696,6 +696,7 @@ def solve_pipeline(
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
+    max_states: int = 200,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -745,6 +746,7 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
+                max_states=max_states,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -798,6 +800,7 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
+                max_states=max_states,
             )
             if res.get('error'):
                 continue
@@ -1686,10 +1689,14 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Assign all new states for the next iteration.  Previously we pruned
-        # aggressively by residual and cost, which could discard viable
-        # solutions.  Retaining all states helps ensure that marginally
-        # more expensive configurations remain available for later stations.
+        # Assign all new states for the next iteration.  To balance
+        # optimality and memory use we keep at most ``max_states`` entries,
+        # ranked by total cost and, for ties, higher residual head.
+        if len(new_states) > max_states:
+            pruned = sorted(
+                new_states.items(), key=lambda kv: (kv[1]['cost'], -kv[1]['residual'])
+            )[:max_states]
+            new_states = {k: v for k, v in pruned}
         states = new_states
 
     # Pick lowest-cost end state and, among equal-cost candidates,
@@ -1770,6 +1777,7 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    max_states: int = 200,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -1841,6 +1849,7 @@ def solve_pipeline_with_types(
                     hours,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
+                    max_states=max_states,
                 )
                 if result.get("error"):
                     continue
