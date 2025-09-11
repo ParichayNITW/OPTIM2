@@ -356,6 +356,12 @@ with st.sidebar:
             key="day_plan_editor",
         )
         st.session_state["day_plan_df"] = day_df
+        hourly_flow = st.number_input(
+            "Hourly flow rate (m³/hr)",
+            value=st.session_state.get("hourly_flow", 1000.0),
+            step=10.0,
+        )
+        st.session_state["hourly_flow"] = hourly_flow
     else:
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
@@ -1729,11 +1735,13 @@ if not auto_batch:
     st.button("Start task", key="start_task", type="primary", on_click=run_all_updates)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
+    run_hour = st.button("Run Hourly Flow Rate Optimizer", key="run_hour_btn", type="primary")
     run_day = st.button("Run Daily Pumping Schedule Optimizer", key="run_day_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    if run_day:
-        st.session_state["run_mode"] = "daily"
+    if run_day or run_hour:
+        is_hourly = bool(run_hour)
+        st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
 
         import copy
         stations_base = copy.deepcopy(st.session_state.stations)
@@ -1767,20 +1775,20 @@ if not auto_batch:
             st.stop()
 
         # Determine FLOW for this mode
-        if st.session_state.get("op_mode") == "Daily Pumping Schedule":
-            plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
+        plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
+        if is_hourly:
+            FLOW_sched = st.session_state.get("hourly_flow", st.session_state.get("FLOW", 1000.0))
+        else:
             daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
             FLOW_sched = daily_m3 / 24.0
-        else:
-            plan_df = None
-            FLOW_sched = st.session_state.get("FLOW", 1000.0)
 
         # Helper to compute segment kv/rho from volumetric table
         def kv_rho_from_vol(vol_df_now):
             return map_vol_linefill_to_segments(vol_df_now, stations_base)
 
-        # Time points
-        hours = [7, 11, 15, 19, 23, 27]
+        hours = [7] if is_hourly else [7, 11, 15, 19, 23, 27]
+        sub_steps = 1 if is_hourly else 4
+        spinner_msg = "Running 1 optimization (1h)..." if is_hourly else "Running 6 optimizations (07:00 to 03:00)..."
         reports = []
         linefill_snaps = []
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
@@ -1793,13 +1801,13 @@ if not auto_batch:
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
         error_msg = None
 
-        with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
+        with st.spinner(spinner_msg):
             for ti, hr in enumerate(hours):
                 linefill_snaps.append(current_vol.copy())
                 sdh_hourly = []
                 res = {}
                 block_cost = 0.0
-                for sub in range(4):
+                for sub in range(sub_steps):
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
                         current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
@@ -1883,10 +1891,11 @@ if not auto_batch:
             .background_gradient(cmap="Blues", subset=num_cols)
         )
         st.dataframe(df_day_style, width='stretch', hide_index=True)
+        label_prefix = "Hourly" if is_hourly else "Daily"
         st.download_button(
-            "Download Daily Optimizer Output data",
+            f"Download {label_prefix} Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
-            file_name="daily_schedule_results.csv",
+            file_name="hourly_schedule_results.csv" if is_hourly else "daily_schedule_results.csv",
         )
 
         # Display total cost per time slice and global sum
@@ -1901,8 +1910,9 @@ if not auto_batch:
         df_cost = pd.DataFrame(cost_rows).round(2)
         df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
         st.dataframe(df_cost_style, width='stretch', hide_index=True)
+        total_label = "1h" if is_hourly else "24h"
         st.markdown(
-            f"**Total Optimized Cost (24h): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+            f"**Total Optimized Cost ({total_label}): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
         )
 
         combined = []
@@ -1913,7 +1923,7 @@ if not auto_batch:
             combined.append(temp)
         lf_all = pd.concat(combined, ignore_index=True).round(2)
         st.download_button(
-            "Download Daily Dynamic Linefill Output",
+            f"Download {label_prefix} Dynamic Linefill Output",
             lf_all.to_csv(index=False, float_format="%.2f"),
             file_name="linefill_snapshots.csv",
         )
