@@ -1661,7 +1661,9 @@ def solve_pipeline(
                             f"pump_flow_{stn_data['name']}": flow_total,
                             f"num_pumps_{stn_data['name']}": opt['nop'],
                             f"speed_{stn_data['name']}": opt['rpm'],
+                            # Store efficiency as a fraction on the raw key and as a percentage on a dedicated key.
                             f"efficiency_{stn_data['name']}": eff,
+                            f"pump_efficiency_pct_{stn_data['name']}": eff * 100.0,
                             f"pump_bkw_{stn_data['name']}": pump_bkw,
                             f"motor_kw_{stn_data['name']}": motor_kw,
                             f"power_cost_{stn_data['name']}": power_cost,
@@ -1677,7 +1679,9 @@ def solve_pipeline(
                             f"pump_flow_{stn_data['name']}": 0.0,
                             f"num_pumps_{stn_data['name']}": 0,
                             f"speed_{stn_data['name']}": 0.0,
+                            # For non-pump stations there is no efficiency or BKW, but preserve keys for consistency.
                             f"efficiency_{stn_data['name']}": 0.0,
+                            f"pump_efficiency_pct_{stn_data['name']}": 0.0,
                             f"pump_bkw_{stn_data['name']}": 0.0,
                             f"motor_kw_{stn_data['name']}": 0.0,
                             f"power_cost_{stn_data['name']}": 0.0,
@@ -1775,7 +1779,9 @@ def solve_pipeline(
         f"pump_flow_{term_name}": 0.0,
         f"speed_{term_name}": 0.0,
         f"num_pumps_{term_name}": 0,
+        # Terminal has no pumps; set efficiency and BKW fields to zero.
         f"efficiency_{term_name}": 0.0,
+        f"pump_efficiency_pct_{term_name}": 0.0,
         f"pump_bkw_{term_name}": 0.0,
         f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
