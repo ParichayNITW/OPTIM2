@@ -1283,10 +1283,14 @@ def solve_pipeline(
                         stn_data['rho'] * flow_total * 9.81 * tdh_local
                     ) / (3600.0 * 1000.0 * (eff_local / 100.0))
                     pump_bkw_total += pump_bkw_i
-                    mech_eff = 0.98 if pinfo.get('power_type') == 'Diesel' else 0.95
+                    pdata = pinfo.get('data', {})
+                    rated_rpm = pdata.get('DOL', stn_data['dol'])
+                    if pinfo.get('power_type') == 'Diesel':
+                        mech_eff = 0.98
+                    else:
+                        mech_eff = 0.95 if opt['rpm'] >= rated_rpm else 0.91
                     prime_kw_i = pump_bkw_i / mech_eff
                     prime_kw_total += prime_kw_i
-                    pdata = pinfo.get('data', {})
                     if pinfo.get('power_type') == 'Diesel':
                         mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
                         if mode == 'manual':
