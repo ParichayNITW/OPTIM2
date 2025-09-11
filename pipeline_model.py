@@ -1302,7 +1302,7 @@ def solve_pipeline(
                     pump_details = []
                     tdh = 0.0
 
-                eff = (
+                eff_pct = (
                     sum(p['eff'] * p['count'] for p in pump_details) / opt['nop']
                     if pump_details and opt['nop'] > 0
                     else 0.0
@@ -1351,8 +1351,8 @@ def solve_pipeline(
                     pinfo['power_cost'] = cost_i
                     power_cost += cost_i
 
-                pump_bkw = pump_bkw_total / opt['nop'] if opt['nop'] > 0 else 0.0
-                motor_kw = prime_kw_total / opt['nop'] if opt['nop'] > 0 else 0.0
+                pump_bkw = pump_bkw_total
+                motor_kw = prime_kw_total
 
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
@@ -1662,8 +1662,8 @@ def solve_pipeline(
                             f"num_pumps_{stn_data['name']}": opt['nop'],
                             f"speed_{stn_data['name']}": opt['rpm'],
                             # Store efficiency as a fraction on the raw key and as a percentage on a dedicated key.
-                            f"efficiency_{stn_data['name']}": eff,
-                            f"pump_efficiency_pct_{stn_data['name']}": eff * 100.0,
+                            f"efficiency_{stn_data['name']}": eff_pct / 100.0,
+                            f"pump_efficiency_pct_{stn_data['name']}": eff_pct,
                             f"pump_bkw_{stn_data['name']}": pump_bkw,
                             f"motor_kw_{stn_data['name']}": motor_kw,
                             f"power_cost_{stn_data['name']}": power_cost,
