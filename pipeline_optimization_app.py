@@ -1111,8 +1111,8 @@ def build_summary_dataframe(
 
     params = [
         "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Bypass Next?",
-        "Power & Fuel Cost 4h (INR)", "DRA Cost 4h (INR)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)",
-        "Pump Eff (%)", "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
+        "Power & Fuel Cost 4h (INR)", "DRA Cost 4h (INR)", "DRA PPM", "No. of Pumps",
+        "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
         "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)", "Residual Head (kg/cm²)",
         "SDH (m)", "SDH (kg/cm²)", "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
     ]
@@ -1226,8 +1226,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
             'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{key}", 0.0) or 0.0),
             'No. of Pumps': n_pumps,
-            'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
-            'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
             'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
             'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
@@ -1250,8 +1248,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             ptype = pinfo.get('ptype')
             if not ptype:
                 continue
-            row[f"Pump {ptype} Speed (rpm)"] = float(pinfo.get('rpm', row['Pump Speed (rpm)']) or 0.0)
+            row[f"Pump {ptype} Speed (rpm)"] = float(pinfo.get('rpm', 0.0) or 0.0)
             row[f"Pump {ptype} Eff (%)"] = float(pinfo.get('eff', 0.0) or 0.0)
+            row[f"Pump {ptype} RH (m)"] = float(pinfo.get('rh', row['Residual Head (m)']) or 0.0)
+            row[f"Pump {ptype} SDH (m)"] = float(pinfo.get('sdh', row['SDH (m)']) or 0.0)
 
         row['Total Cost 4h (INR)'] = row['Power & Fuel Cost 4h (INR)'] + row['DRA Cost 4h (INR)']
 
@@ -1927,8 +1927,12 @@ if not auto_batch:
         df_day_style = (
             df_day_numeric.style.format(fmt_dict)
             .background_gradient(cmap="Blues", subset=num_cols)
+            .set_table_styles([
+                {"selector": "th", "props": [("text-align", "center")]},
+                {"selector": "td", "props": [("text-align", "center")]},
+            ])
         )
-        st.dataframe(df_day_style, width='stretch', hide_index=True)
+        st.dataframe(df_day_style, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Daily Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
