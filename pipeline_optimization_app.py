@@ -1310,7 +1310,7 @@ def solve_pipeline(
     import importlib
     import copy
 
-    # Removed unconditional reload for performance.  A manual reload can be triggered via the UI when needed.
+    importlib.reload(pipeline_model)
 
     stations = copy.deepcopy(stations)
     first_pump = next((s for s in stations if s.get('is_pump')), None)
@@ -1320,23 +1320,10 @@ def solve_pipeline(
     if mop_kgcm2 is None:
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
-    # Choose step sizes based on the interval duration.  Short runs (e.g. 4 h)
-    # employ coarser intermediate steps and a smaller beam cap for speed,
-    # whereas full-day runs default to the finest supported resolution.
-    if hours < 24.0:
-        coarse_rpm, coarse_dr = 400, 20
-        final_rpm, final_dr = 200, 10
-        beam = 60
-    else:
-        coarse_rpm, coarse_dr = 300, 20
-        final_rpm, final_dr = 100, 5
-        beam = 80
-
     try:
         # Delegate to the backend optimiser
         if any(s.get('pump_types') for s in stations):
-            # Use adaptive coarse→fine search for stations with pump types
-            res = pipeline_model.solve_pipeline_adaptive(
+            res = pipeline_model.solve_pipeline_with_types(
                 stations,
                 terminal,
                 FLOW,
@@ -1347,18 +1334,11 @@ def solve_pipeline(
                 Fuel_density,
                 Ambient_temp,
                 linefill_dict,
-                coarse_rpm_step=coarse_rpm,
-                coarse_dr_step=coarse_dr,
-                final_rpm_step=final_rpm,
-                final_dr_step=final_dr,
-                rpm_span=300,
-                dr_span=10,
-                beam_cap=beam,
-                loop_usage_by_station=None,
-                enumerate_loops=True,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
             )
         else:
-            # Non-type stations: call base solver with customised steps
             res = pipeline_model.solve_pipeline(
                 stations,
                 terminal,
@@ -1373,9 +1353,6 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                rpm_step=final_rpm,
-                dra_step=final_dr,
-                beam_cap=beam,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
