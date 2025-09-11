@@ -969,10 +969,11 @@ def solve_pipeline(
             max_p = stn.get('max_pumps', 2)
             rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
             fixed_dr = stn.get('fixed_dra_perc', None)
-            if i > 1:
-                dra_main_vals = [0]
+            max_dr_main = int(stn.get('max_dr', 0))
+            if fixed_dr is not None:
+                dra_main_vals = [int(round(fixed_dr))]
             else:
-                dra_main_vals = [int(round(fixed_dr))] if (fixed_dr is not None) else _allowed_values(0, int(stn.get('max_dr', 0)), DRA_STEP)
+                dra_main_vals = _allowed_values(0, max_dr_main, DRA_STEP)
             dra_loop_vals = _allowed_values(0, int(loop_dict.get('max_dr', 0)), DRA_STEP) if loop_dict else [0]
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
@@ -999,24 +1000,23 @@ def solve_pipeline(
                     'dra_ppm_loop': 0.0,
                 })
         else:
-            # For non‑pump stations allow DRA injection on the mainline only at the
-            # origin. Downstream stations inherit the upstream PPM and therefore do
-            # not enumerate drag‑reduction options to avoid inconsistent values.
+            # Non-pump stations can inject DRA independently whenever a
+            # facility exists (max_dr > 0).  If no injection is available the
+            # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
-            if i == 1:
-                max_dr_main = int(stn.get('max_dr', 0))
-                if max_dr_main > 0:
-                    dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
-                    for dra_main in dra_vals:
-                        ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                        non_pump_opts.append({
-                            'nop': 0,
-                            'rpm': 0,
-                            'dra_main': dra_main,
-                            'dra_loop': 0,
-                            'dra_ppm_main': ppm_main,
-                            'dra_ppm_loop': 0.0,
-                        })
+            max_dr_main = int(stn.get('max_dr', 0))
+            if max_dr_main > 0:
+                dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
+                for dra_main in dra_vals:
+                    ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                    non_pump_opts.append({
+                        'nop': 0,
+                        'rpm': 0,
+                        'dra_main': dra_main,
+                        'dra_loop': 0,
+                        'dra_ppm_main': ppm_main,
+                        'dra_ppm_loop': 0.0,
+                    })
             if not non_pump_opts:
                 non_pump_opts.append({
                     'nop': 0,
@@ -1115,13 +1115,19 @@ def solve_pipeline(
                     usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
-                # Determine the injection PPM for the mainline.  At the origin this
-                # is based on the option's selection; downstream stations inherit the
-                # upstream PPM stored in ``prev_ppm_main``.
-                if stn_data['idx'] == 0:
+                # Determine the downstream PPM on the mainline.  When pumps run,
+                # any upstream DRA is discarded and the selected injection sets the
+                # new concentration.  If pumps are bypassed, a non-zero injection
+                # overwrites the upstream PPM; otherwise the previous concentration
+                # is carried forward.
+                if stn_data['is_pump'] and opt['nop'] > 0:
                     ppm_main = opt['dra_ppm_main']
                 else:
-                    ppm_main = state.get('prev_ppm_main', 0.0)
+                    if opt['dra_ppm_main'] > 0:
+                        ppm_main = opt['dra_ppm_main']
+                    else:
+                        ppm_main = state.get('prev_ppm_main', 0.0)
+                inj_ppm_main = opt['dra_ppm_main'] if opt['dra_ppm_main'] > 0 else 0.0
                 # Convert the PPM into an effective drag‑reduction percentage for
                 # hydraulic calculations.
                 eff_dra_main = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
@@ -1552,8 +1558,8 @@ def solve_pipeline(
                     # separately and loopline cost is incurred only when
                     # an injection is made.
                     dra_cost = 0.0
-                    if ppm_main > 0:
-                        dra_cost += ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                    if inj_ppm_main > 0:
+                        dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     # Loopline injection uses ``inj_ppm_loop`` computed
                     # earlier.  Charge cost only when an actual injection is
                     # performed at this station.
@@ -1622,10 +1628,7 @@ def solve_pipeline(
                             f"power_cost_{stn_data['name']}": power_cost,
                             f"dra_cost_{stn_data['name']}": dra_cost,
                             f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
-                            # Store the actual PPM used on the mainline.  At the origin this is
-                            # ``opt['dra_ppm_main']``; downstream stations use
-                            # ``prev_ppm_main``.  The loopline PPM is recorded separately.
-                            f"dra_ppm_{stn_data['name']}": (opt['dra_ppm_main'] if stn_data['idx'] == 0 else state.get('prev_ppm_main', 0.0)),
+                            f"dra_ppm_{stn_data['name']}": ppm_main,
                             f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
@@ -1639,12 +1642,12 @@ def solve_pipeline(
                             f"pump_bkw_{stn_data['name']}": 0.0,
                             f"motor_kw_{stn_data['name']}": 0.0,
                             f"power_cost_{stn_data['name']}": 0.0,
-                            f"dra_cost_{stn_data['name']}": 0.0,
+                            f"dra_cost_{stn_data['name']}": dra_cost,
                             f"pump_details_{stn_data['name']}": [],
-                            f"dra_ppm_{stn_data['name']}": 0.0,
-                            f"dra_ppm_loop_{stn_data['name']}": 0.0,
-                            f"drag_reduction_{stn_data['name']}": 0.0,
-                            f"drag_reduction_loop_{stn_data['name']}": 0.0,
+                            f"dra_ppm_{stn_data['name']}": ppm_main,
+                            f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
+                            f"drag_reduction_{stn_data['name']}": eff_dra_main,
+                            f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
                     # Accumulate cost and update dynamic state.  When comparing states
                     # with the same residual bucket, prefer the one with lower cost
@@ -1673,11 +1676,8 @@ def solve_pipeline(
                             # ``reach`` removed because DRA advancement is no longer tracked
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            # Propagate the injection PPM on the mainline.  At the
-                            # origin this captures the chosen PPM; at downstream
-                            # stations it carries forward the upstream PPM so
-                            # continuity of injection rate is maintained.
-                            'prev_ppm_main': (opt['dra_ppm_main'] if stn_data['idx'] == 0 else state.get('prev_ppm_main', 0.0)),
+                            # Propagate the resulting mainline PPM for downstream stations.
+                            'prev_ppm_main': ppm_main,
                         }
 
         if not new_states:
