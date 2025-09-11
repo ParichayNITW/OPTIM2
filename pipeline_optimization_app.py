@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-from collections import defaultdict
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -1108,7 +1107,7 @@ def build_summary_dataframe(
 
     params = [
         "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Bypass Next?",
-        "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)",
+        "Power & Fuel Cost 4h (INR)", "DRA Cost 4h (INR)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)",
         "Pump Eff (%)", "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
         "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)", "Residual Head (kg/cm²)",
         "SDH (m)", "SDH (kg/cm²)", "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
@@ -1241,20 +1240,14 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
 
+        # Include per-pump-type speed and efficiency when available
         details = res.get(f"pump_details_{key}", [])
-        station_speed = float(res.get(f"speed_{key}", 0.0) or 0.0)
-        for pdet in details:
-            pname = pdet.get("name")
-            if not pname:
-                pdata = pdet.get("data", {})
-                names = pdata.get("names") or []
-                pname = names[0] if names else pdata.get("name") or pdata.get("label") or ""
-            if not pname:
+        for pinfo in details:
+            ptype = pinfo.get('ptype')
+            if not ptype:
                 continue
-            rpm_local = float(pdet.get("rpm", station_speed))
-            eff_local = float(pdet.get("eff", 0.0) or 0.0)
-            row[f"{pname} Speed (rpm)"] = rpm_local
-            row[f"{pname} Eff (%)"] = eff_local
+            row[f"Pump {ptype} Speed (rpm)"] = float(pinfo.get('rpm', row['Pump Speed (rpm)']) or 0.0)
+            row[f"Pump {ptype} Eff (%)"] = float(pinfo.get('eff', 0.0) or 0.0)
 
         row['Total Cost 4h (INR)'] = row['Power & Fuel Cost 4h (INR)'] + row['DRA Cost 4h (INR)']
 
@@ -1313,6 +1306,8 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    loop_usage_by_station: list[int] | None = None,
+    enumerate_loops: bool = True,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1347,6 +1342,8 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=enumerate_loops,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1363,6 +1360,8 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=enumerate_loops,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -1810,96 +1809,91 @@ if not auto_batch:
         error_msg = None
 
         with st.spinner("Running 6 optimizations (07:00 to 03:00)..."):
-            for ti, hr in enumerate(hours):
-                linefill_snaps.append(current_vol.copy())
-                sdh_hourly = []
-                res = {}
-                block_cost = 0.0
-                power_cost_agg = defaultdict(float)
-                dra_cost_agg = defaultdict(float)
-                pump_details_acc: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
-                for sub in range(4):
-                    pumped_tmp = FLOW_sched * 1.0
-                    future_vol, future_plan = shift_vol_linefill(
-                        current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
-                    )
-                    # Determine worst-case fluid properties over this 1h window
-                    kv_now, rho_now = kv_rho_from_vol(current_vol)
-                    kv_next, rho_next = kv_rho_from_vol(future_vol)
-                    kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
-                    rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
+                for ti, hr in enumerate(hours):
+                    linefill_snaps.append(current_vol.copy())
+                    sdh_hourly = []
+                    res = {}
+                    block_cost = 0.0
+                    cost_acc: dict[str, float] = {}
+                    pump_details_acc: dict[str, dict[str, dict]] = {}
+                    for sub in range(4):
+                        pumped_tmp = FLOW_sched * 1.0
+                        future_vol, future_plan = shift_vol_linefill(
+                            current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
+                        )
+                        # Determine worst-case fluid properties over this 1h window
+                        kv_now, rho_now = kv_rho_from_vol(current_vol)
+                        kv_next, rho_next = kv_rho_from_vol(future_vol)
+                        kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
+                        rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
-                    stns_run = copy.deepcopy(stations_base)
+                        stns_run = copy.deepcopy(stations_base)
 
-                    res = solve_pipeline(
-                        stns_run,
-                        term_data,
-                        FLOW_sched,
-                        kv_list,
-                        rho_list,
-                        RateDRA,
-                        Price_HSD,
-                        st.session_state.get("Fuel_density", 820.0),
-                        st.session_state.get("Ambient_temp", 25.0),
-                        dra_linefill,
-                        dra_reach_km,
-                        st.session_state.get("MOP_kgcm2"),
-                        hours=1.0,
-                    )
+                        res_hour = solve_pipeline(
+                            stns_run,
+                            term_data,
+                            FLOW_sched,
+                            kv_list,
+                            rho_list,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
+                            dra_linefill,
+                            dra_reach_km,
+                            st.session_state.get("MOP_kgcm2"),
+                            hours=1.0,
+                        )
 
-                    block_cost += res.get("total_cost", 0.0)
+                        block_cost += res_hour.get("total_cost", 0.0)
 
-                    for k, v in res.items():
-                        if k.startswith("power_cost_"):
-                            power_cost_agg[k] += float(v or 0.0)
-                        elif k.startswith("dra_cost_"):
-                            dra_cost_agg[k] += float(v or 0.0)
-                        elif k.startswith("pump_details_") and v:
-                            stn = k.replace("pump_details_", "")
-                            speed = float(res.get(f"speed_{stn}", 0.0) or 0.0)
-                            if speed <= 0:
-                                continue
-                            for pinfo in v:
-                                pdata = pinfo.get("data", {})
-                                names = pdata.get("names") or []
-                                pname = names[0] if names else pdata.get("name") or pdata.get("label") or ""
-                                if pname:
-                                    pump_details_acc[stn][pname] = {
-                                        "rpm": speed,
-                                        "eff": float(pinfo.get("eff", 0.0) or 0.0),
-                                    }
+                        # accumulate station-wise costs and pump details over the 4h block
+                        for k, v in res_hour.items():
+                            if k.startswith("power_cost_") or k.startswith("dra_cost_"):
+                                cost_acc[k] = cost_acc.get(k, 0.0) + (v or 0.0)
+                            elif k.startswith("pump_details_"):
+                                st_key = k[len("pump_details_") :]
+                                acc = pump_details_acc.setdefault(st_key, {})
+                                for info in v:
+                                    ptype = info.get("ptype")
+                                    if not ptype:
+                                        continue
+                                    if info.get("rpm", 0) > 0:
+                                        acc[ptype] = {
+                                            "ptype": ptype,
+                                            "rpm": info.get("rpm"),
+                                            "eff": info.get("eff"),
+                                        }
 
-                    if res.get("error"):
-                        cur_hr = (hr + sub) % 24
-                        error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
+                        res = res_hour
+
+                        if res_hour.get("error"):
+                            cur_hr = (hr + sub) % 24
+                            error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res_hour.get('message','')}"
+                            break
+
+                        # Record SDH for objective calculation
+                        term_key = term_data["name"].lower().replace(" ", "_")
+                        keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
+                        sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
+                        sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
+                        sdh_hourly.append(max(sdh_vals))
+
+                        dra_linefill = res.get("linefill", dra_linefill)
+                        current_vol, plan_df = future_vol, future_plan
+                        current_vol = apply_dra_ppm(current_vol, dra_linefill)
+                        dra_reach_km = 0.0
+
+                    if error_msg:
                         break
 
-                    # Record SDH for objective calculation
-                    term_key = term_data["name"].lower().replace(" ", "_")
-                    keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
-                    sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
-                    sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
-                    sdh_hourly.append(max(sdh_vals))
-
-                    dra_linefill = res.get("linefill", dra_linefill)
-                    current_vol, plan_df = future_vol, future_plan
-                    current_vol = apply_dra_ppm(current_vol, dra_linefill)
-                    dra_reach_km = 0.0
-
-                if error_msg:
-                    break
-
-                for k, v in power_cost_agg.items():
-                    res[k] = v
-                for k, v in dra_cost_agg.items():
-                    res[k] = v
-                for stn, pdata in pump_details_acc.items():
-                    res[f"pump_details_{stn}"] = [
-                        {"name": name, "rpm": info["rpm"], "eff": info["eff"]}
-                        for name, info in pdata.items()
-                    ]
-                res["total_cost_4h"] = block_cost
-                reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
+                    # overwrite per-station costs with 4h aggregates and attach pump details
+                    for k, v in cost_acc.items():
+                        res[k] = v
+                    for st_key, pdata in pump_details_acc.items():
+                        res[f"pump_details_{st_key}"] = list(pdata.values())
+                    res["total_cost"] = block_cost
+                    reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
 
         if error_msg:
             st.error(error_msg)
@@ -1942,7 +1936,7 @@ if not auto_batch:
             {
                 "Time": f"{rec['time']:02d}:00",
                 "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost 4h (INR)": rec["result"].get("total_cost_4h", 0.0),
+                "Total Cost 4h (INR)": rec["result"].get("total_cost", 0.0),
             }
             for rec in reports
         ]
@@ -2122,15 +2116,15 @@ if not auto_batch:
                 {
                     "Time": rec["time"].strftime("%d/%m %H:%M"),
                     "Pattern": rec["result"].get("flow_pattern_name", ""),
-                    "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+                    "Total Cost 4h (INR)": rec["result"].get("total_cost", 0.0),
                 }
                 for rec in reports
             ]
             df_cost = pd.DataFrame(cost_rows).round(2)
-            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+            df_cost_style = df_cost.style.format({"Total Cost 4h (INR)": "{:.2f}"})
             st.dataframe(df_cost_style, width='stretch', hide_index=True)
             st.markdown(
-                f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+                f"**Total Optimized Cost: {df_cost['Total Cost 4h (INR)'].sum():,.2f} INR**"
             )
 
             combined = []
