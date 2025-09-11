@@ -293,22 +293,28 @@ def build_opts(
     """
 
     rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
+    if not rpm_vals and max_pumps > 0:
+        return []
+
     if fixed_dr is not None:
         dra_main_vals = [int(round(fixed_dr))]
     else:
-        dra_main_vals = _allowed_values(dra_main_min, dra_main_max, dra_step)
+        dra_main_vals = _allowed_values(dra_main_min, dra_main_max, dra_step) or [0]
+
     dra_loop_vals = (
-        _allowed_values(dra_loop_min, dra_loop_max, dra_step)
+        _allowed_values(dra_loop_min, dra_loop_max, dra_step) or [0]
         if dra_loop_max > 0
         else [0]
     )
 
     opts: list[dict] = []
     for nop in range(min_pumps, max_pumps + 1):
+        if nop > 0 and not rpm_vals:
+            continue
         rpm_options = [0] if nop == 0 else rpm_vals
-        for rpm in rpm_options or [0]:
-            for dra_main in dra_main_vals or [0]:
-                for dra_loop in dra_loop_vals or [0]:
+        for rpm in rpm_options:
+            for dra_main in dra_main_vals:
+                for dra_loop in dra_loop_vals:
                     ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
                     ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
                     opts.append(
