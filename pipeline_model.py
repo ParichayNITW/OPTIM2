@@ -1756,6 +1756,13 @@ def solve_pipeline(
 
                     # Compute downstream residual head after segment loss and elevation
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
+                    sdh_kgcm2 = head_to_kgcm2(sdh, stn_data['rho'])
+                    rh_kgcm2 = head_to_kgcm2(residual_next, stn_data['rho'])
+                    for p in pump_details:
+                        p['sdh'] = sdh
+                        p['sdh_kgcm2'] = sdh_kgcm2
+                        p['rh'] = residual_next
+                        p['rh_kgcm2'] = rh_kgcm2
 
                     # Recompute downstream flows if bypassing the next station; the flow
                     # through the mainline changes only for a bypass.  ``seg_flows_tmp``
@@ -1806,12 +1813,16 @@ def solve_pipeline(
                     # an injection is made.
                     dra_cost = 0.0
                     if inj_ppm_main > 0:
-                        dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                        inj_kg_main = inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6)
+                        inj_l_main = inj_kg_main  # assume 1 kg/L for DRA
+                        dra_cost += inj_l_main * RateDRA
                     # Loopline injection uses ``inj_ppm_loop`` computed
-                    # earlier.  Charge cost only when an actual injection is
+                    # earlier. Charge cost only when an actual injection is
                     # performed at this station.
                     if sc['flow_loop'] > 0 and inj_loop_current > 0:
-                        dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
+                        inj_kg_loop = inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6)
+                        inj_l_loop = inj_kg_loop  # assume 1 kg/L for DRA
+                        dra_cost += inj_l_loop * RateDRA
 
                     total_cost = power_cost + dra_cost
 
