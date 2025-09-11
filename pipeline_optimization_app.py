@@ -1305,32 +1305,26 @@ def fmt_pressure(res, key_m, key_kg):
 # use that key to build a tabular representation.  If ``cost_4h`` is not
 # present the raw total cost is used instead.
 
-def _per_interval_cost(result: dict, interval_hours: float, run_hours: float) -> float:
-    """Return the cost scaled to the specified interval.
+def _per_interval_cost(result: dict, interval_hours: float, run_hours: float | None = None) -> float:
+    """Return the cost for ``interval_hours`` based on the run duration.
 
-    Parameters
-    ----------
-    result : dict
-        The optimisation result containing the key ``total_cost``.
-    interval_hours : float
-        The desired reporting interval in hours (e.g. 4.0 for 4 hours).
-    run_hours : float
-        The duration in hours that was passed to the solver to obtain
-        ``result``.  If zero or not provided, 24.0 is used.
-
-    Returns
-    -------
-    float
-        The scaled cost corresponding to ``interval_hours``.
+    ``solve_pipeline`` reports the total cost for the actual run duration.  To
+    present this on a fixed interval (e.g. 4 hours) we scale the cost when the
+    run length differs from the interval.  If the run already covers the
+    interval the total cost is returned unchanged.
     """
     try:
         total_cost = float(result.get('total_cost', 0.0) or 0.0)
     except Exception:
         total_cost = 0.0
+    if run_hours is None:
+        run_hours = result.get('hours')
     try:
-        h_val = float(run_hours) if run_hours is not None and float(run_hours) > 0 else 24.0
+        h_val = float(run_hours)
     except Exception:
-        h_val = 24.0
+        h_val = interval_hours
+    if h_val <= 0 or abs(h_val - interval_hours) < 1e-9:
+        return total_cost
     return total_cost * (interval_hours / h_val)
 
 
@@ -1360,28 +1354,38 @@ def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd
         per-station pump speed, efficiency percentage and brake kW.
     """
     import numpy as _np
+    import re as _re
+
     rows: list[dict] = []
     for rec in schedule_results:
-        res = rec if isinstance(rec, dict) else {}
-        time_label = res.get('start_time_label', '')
-        flow_cmd = res.get('flow_cmd', _np.nan)
-        cost_4h = res.get('cost_4h', None)
+        # Some callers pass a wrapper ``{"result": res}``; handle both forms.
+        res = rec.get("result", rec) if isinstance(rec, dict) else {}
+        time_label = rec.get("start_time_label", res.get("start_time_label", ""))
+        if not time_label:
+            time_label = rec.get("time", "")
+        flow_cmd = rec.get("flow_cmd", res.get("flow_cmd", _np.nan))
+        run_hours = res.get("hours", rec.get("hours", rec.get("duration_hr")))
+        cost_4h = res.get("cost_4h")
         if cost_4h is None:
-            # Fallback: scale total_cost to 4 hours using run_hours on result
-            run_hours = res.get('hours', 24.0)
             cost_4h = _per_interval_cost(res, 4.0, run_hours)
         row = {
             "Time": time_label,
             "Flow (m³/h)": flow_cmd,
             "Cost (4h)": cost_4h,
         }
-        # Populate per-station columns
+        # Populate per-station columns.  Solver keys may retain the original
+        # station name or use a normalised form (non-alphanumeric → ``_``).
         for name in station_names:
-            key = name.strip().lower().replace(' ', '_')
-            row[f"{name} RPM"] = float(res.get(f"speed_{key}", 0.0) or 0.0)
-            row[f"{name} Eff (%)"] = float(res.get(f"pump_efficiency_pct_{key}", 0.0) or 0.0)
-            row[f"{name} BKW"] = float(res.get(f"pump_bkw_{key}", 0.0) or 0.0)
+            raw = name.strip()
+            norm = _re.sub(r"\W+", "_", raw)
+            rpm = res.get(f"speed_{raw}") or res.get(f"speed_{norm}")
+            eff = res.get(f"pump_efficiency_pct_{raw}") or res.get(f"pump_efficiency_pct_{norm}")
+            bkw = res.get(f"pump_bkw_{raw}") or res.get(f"pump_bkw_{norm}")
+            row[f"{name} RPM"] = float(rpm or 0.0)
+            row[f"{name} Eff (%)"] = float(eff or 0.0)
+            row[f"{name} BKW"] = float(bkw or 0.0)
         rows.append(row)
+
     df = pd.DataFrame(rows)
     # Order columns: Time, Flow, Cost then station columns
     ordered_cols = ["Time", "Flow (m³/h)", "Cost (4h)"]
@@ -1421,23 +1425,22 @@ def solve_pipeline(
     if mop_kgcm2 is None:
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
-        # Determine whether to guarantee a global minimum.  Shorter runs
-        # (hours < 24) request the global minimum by bypassing any internal
-        # coarse discretisation.  The variables coarse_rpm and coarse_dr
-        # are retained for backward compatibility but are no longer used.
+    # Choose step sizes based on the interval duration.  Short runs (e.g. 4 h)
+    # employ coarser intermediate steps and a smaller beam cap for speed,
+    # whereas full-day runs default to the finest supported resolution.
+    if hours < 24.0:
+        coarse_rpm, coarse_dr = 400, 20
+        final_rpm, final_dr = 200, 10
+        beam = 60
+    else:
         coarse_rpm, coarse_dr = 300, 20
         final_rpm, final_dr = 100, 5
-        beam = None
+        beam = 80
 
     try:
         # Delegate to the backend optimiser
-        # When pump types are available the adaptive solver performs a coarse→fine
-        # search to find a near‑optimal solution efficiently.  This keeps the
-        # runtime reasonable for 4‑hour schedule generation.  To guarantee the
-        # global optimum set ``ensure_global_min=True`` at the call site, but
-        # note that this will significantly increase runtime because the full
-        # fine discretisation (100 rpm and 5 % DR) will be explored.
         if any(s.get('pump_types') for s in stations):
+            # Use adaptive coarse→fine search for stations with pump types
             res = pipeline_model.solve_pipeline_adaptive(
                 stations,
                 terminal,
@@ -1448,21 +1451,19 @@ def solve_pipeline(
                 Price_HSD,
                 Fuel_density,
                 Ambient_temp,
-                linefill=linefill_dict,
-                # default settings: do not force global minimum, use coarse→fine
-                # search with internal beam pruning for performance.  The
-                # ``run_hours`` argument controls the time horizon for cost
-                # calculations (e.g. 4 hours for a 4‑hour schedule row).
-                ensure_global_min=False,
-                run_hours=hours,
-                # Limit the dynamic-programming state space to accelerate optimisation
-                beam_cap=60,
+                linefill_dict,
+                coarse_rpm_step=coarse_rpm,
+                coarse_dr_step=coarse_dr,
+                final_rpm_step=final_rpm,
+                final_dr_step=final_dr,
+                rpm_span=300,
+                dr_span=10,
+                beam_cap=beam,
+                # Do not explicitly specify loop_usage_by_station or enumerate_loops here.
             )
         else:
-            # Non-type stations: call the type-aware solver directly for the
-            # requested duration.  This returns the global optimum because no
-            # coarse search applies when there are no pump types.
-            res = pipeline_model.solve_pipeline_with_types(
+            # Non-type stations: call base solver with customised steps
+            res = pipeline_model.solve_pipeline(
                 stations,
                 terminal,
                 FLOW,
@@ -1472,10 +1473,13 @@ def solve_pipeline(
                 Price_HSD,
                 Fuel_density,
                 Ambient_temp,
-                linefill=linefill_dict,
-                dra_reach_km=dra_reach_km,
-                mop_kgcm2=mop_kgcm2,
-                hours=hours,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                rpm_step=final_rpm,
+                dra_step=final_dr,
+                beam_cap=beam,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -1502,15 +1506,15 @@ def solve_pipeline(
             else:
                 pattern_name = ' & '.join(seg_names)
             res['flow_pattern_name'] = pattern_name
-            # Use the solver's own cost for the requested duration.  If a
-            # ``cost`` key exists it already reflects the cost for ``hours``
-            # hours; otherwise fall back to ``total_cost``.  For a 4‑hour
-            # interval this field is the true 4‑hour cost.
-            if 'cost' in res:
-                res['cost_4h'] = res['cost']
-            else:
-                res['cost_4h'] = res.get('total_cost', 0.0)
-            return res
+        # Compute cost for a 4‑hour interval for display purposes.  The underlying solver returns total cost
+        # proportional to the run duration (``hours``).  Scaling by (4.0 / hours) produces the cost for a 4‑hour
+        # interval.  This key is optional and is ignored in contexts where it is not used.
+        try:
+            h_val = float(hours) if hours is not None and float(hours) > 0 else 24.0
+        except Exception:
+            h_val = 24.0
+        res['cost_4h'] = (res.get('total_cost', 0.0) or 0.0) * (4.0 / h_val)
+        return res
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
 
@@ -1989,8 +1993,20 @@ if not auto_batch:
                 if error_msg:
                     break
 
+                # Aggregate the cost and actual run duration for this block
                 res["total_cost"] = block_cost
-                reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
+                res["hours"] = float(sub_steps)
+                res["cost_4h"] = _per_interval_cost(res, 4.0, res["hours"])
+                reports.append(
+                    {
+                        "time": hr % 24,
+                        "duration_hr": res["hours"],
+                        "cost_4h": res["cost_4h"],
+                        "result": res,
+                        "sdh_hourly": sdh_hourly,
+                        "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
+                    }
+                )
 
         if error_msg:
             st.error(error_msg)
@@ -2161,7 +2177,16 @@ if not auto_batch:
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
                         st.stop()
 
-                    reports.append({"time": seg_start, "result": res})
+                    # Carry the actual run duration and pre‑computed 4‑hour cost
+                    # with each record so downstream tables can reconcile totals.
+                    reports.append(
+                        {
+                            "time": seg_start,
+                            "duration_hr": duration_hr,
+                            "cost_4h": res.get("cost_4h"),
+                            "result": res,
+                        }
+                    )
                     linefill_snaps.append(current_vol.copy())
                     dra_linefill = res.get("linefill", dra_linefill)
                     current_vol = apply_dra_ppm(future_vol, dra_linefill)
