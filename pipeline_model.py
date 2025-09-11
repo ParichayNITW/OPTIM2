@@ -629,6 +629,8 @@ def _adaptive_enum(stn: dict, coarse_step: tuple[int, int], fine_step: tuple[int
                                 'dra_ppm_loop': ppm_loop,
                             }
                         )
+        if not options:
+            return []
         if not any(o['nop'] == 0 for o in options):
             options.insert(
                 0,
@@ -1229,7 +1231,18 @@ def solve_pipeline(
                                             'dra_ppm_loop': ppm_loop,
                                         }
                                     )
-                if not any(o['nop'] == 0 for o in opts):
+                if not opts:
+                    opts = [
+                        {
+                            'nop': 0,
+                            'rpm': 0,
+                            'dra_main': 0,
+                            'dra_loop': 0,
+                            'dra_ppm_main': 0.0,
+                            'dra_ppm_loop': 0.0,
+                        }
+                    ]
+                elif not any(o['nop'] == 0 for o in opts):
                     opts.insert(
                         0,
                         {
