@@ -1241,6 +1241,21 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
 
+        details = res.get(f"pump_details_{key}", [])
+        station_speed = float(res.get(f"speed_{key}", 0.0) or 0.0)
+        for pdet in details:
+            pname = pdet.get("name")
+            if not pname:
+                pdata = pdet.get("data", {})
+                names = pdata.get("names") or []
+                pname = names[0] if names else pdata.get("name") or pdata.get("label") or ""
+            if not pname:
+                continue
+            rpm_local = float(pdet.get("rpm", station_speed))
+            eff_local = float(pdet.get("eff", 0.0) or 0.0)
+            row[f"{pname} Speed (rpm)"] = rpm_local
+            row[f"{pname} Eff (%)"] = eff_local
+
         row['Total Cost 4h (INR)'] = row['Power & Fuel Cost 4h (INR)'] + row['DRA Cost 4h (INR)']
 
         # Available suction head only needs to be reported at the origin suction
@@ -1802,6 +1817,7 @@ if not auto_batch:
                 block_cost = 0.0
                 power_cost_agg = defaultdict(float)
                 dra_cost_agg = defaultdict(float)
+                pump_details_acc: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
                 for sub in range(4):
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
@@ -1838,6 +1854,20 @@ if not auto_batch:
                             power_cost_agg[k] += float(v or 0.0)
                         elif k.startswith("dra_cost_"):
                             dra_cost_agg[k] += float(v or 0.0)
+                        elif k.startswith("pump_details_") and v:
+                            stn = k.replace("pump_details_", "")
+                            speed = float(res.get(f"speed_{stn}", 0.0) or 0.0)
+                            if speed <= 0:
+                                continue
+                            for pinfo in v:
+                                pdata = pinfo.get("data", {})
+                                names = pdata.get("names") or []
+                                pname = names[0] if names else pdata.get("name") or pdata.get("label") or ""
+                                if pname:
+                                    pump_details_acc[stn][pname] = {
+                                        "rpm": speed,
+                                        "eff": float(pinfo.get("eff", 0.0) or 0.0),
+                                    }
 
                     if res.get("error"):
                         cur_hr = (hr + sub) % 24
@@ -1863,6 +1893,11 @@ if not auto_batch:
                     res[k] = v
                 for k, v in dra_cost_agg.items():
                     res[k] = v
+                for stn, pdata in pump_details_acc.items():
+                    res[f"pump_details_{stn}"] = [
+                        {"name": name, "rpm": info["rpm"], "eff": info["eff"]}
+                        for name, info in pdata.items()
+                    ]
                 res["total_cost_4h"] = block_cost
                 reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
 
