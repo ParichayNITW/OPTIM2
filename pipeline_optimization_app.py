@@ -1229,7 +1229,12 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{key}", 0.0) or 0.0),
             'No. of Pumps': n_pumps,
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
-            'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
+            # Pull pump efficiency as a percentage if available, otherwise compute from fractional efficiency.
+            'Pump Eff (%)': float(
+                res.get(f"pump_efficiency_pct_{key}", None)
+                if res.get(f"pump_efficiency_pct_{key}", None) is not None
+                else (res.get(f"efficiency_{key}", 0.0) or 0.0) * 100.0
+            ),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
             'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
             'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
@@ -1288,6 +1293,102 @@ def fmt_pressure(res, key_m, key_kg):
     m = res.get(key_m, 0.0) or 0.0
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
+
+# ---------------------------------------------------------------------------
+# Optional helpers for building a 4‑hour schedule table
+#
+# The functions below provide a simple way to assemble a 4‑hourly operating
+# plan.  They are not invoked by the main user interface but can be used by
+# advanced users or external callers.  ``solve_pipeline`` will attach a
+# ``cost_4h`` key to its result when invoked, computed as the proportional
+# fraction of the run cost corresponding to a 4‑hour interval.  These helpers
+# use that key to build a tabular representation.  If ``cost_4h`` is not
+# present the raw total cost is used instead.
+
+def _per_interval_cost(result: dict, interval_hours: float, run_hours: float) -> float:
+    """Return the cost scaled to the specified interval.
+
+    Parameters
+    ----------
+    result : dict
+        The optimisation result containing the key ``total_cost``.
+    interval_hours : float
+        The desired reporting interval in hours (e.g. 4.0 for 4 hours).
+    run_hours : float
+        The duration in hours that was passed to the solver to obtain
+        ``result``.  If zero or not provided, 24.0 is used.
+
+    Returns
+    -------
+    float
+        The scaled cost corresponding to ``interval_hours``.
+    """
+    try:
+        total_cost = float(result.get('total_cost', 0.0) or 0.0)
+    except Exception:
+        total_cost = 0.0
+    try:
+        h_val = float(run_hours) if run_hours is not None and float(run_hours) > 0 else 24.0
+    except Exception:
+        h_val = 24.0
+    return total_cost * (interval_hours / h_val)
+
+
+def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd.DataFrame:
+    """Construct a 4‑hourly operating table from individual optimisation results.
+
+    Each element of ``schedule_results`` should be a dict produced by
+    ``solve_pipeline`` or ``solve_pipeline_adaptive`` and contain a
+    ``cost_4h`` key.  The keys for pump speed, efficiency and BKW must be
+    present on the result (e.g. ``speed_station``, ``pump_efficiency_pct_station``,
+    ``pump_bkw_station``).  The return value is a DataFrame with one row
+    per result and columns for each station.
+
+    Parameters
+    ----------
+    schedule_results : list of dict
+        The sequence of optimiser results for each 4 hour block.  Each
+        element may optionally include a ``start_time_label`` and
+        ``flow_cmd`` used to label the rows.
+    station_names : list of str
+        The ordered list of station display names.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A table with columns ``Time``, ``Flow (m³/h)``, ``Cost (4h)`` and
+        per-station pump speed, efficiency percentage and brake kW.
+    """
+    import numpy as _np
+    rows: list[dict] = []
+    for rec in schedule_results:
+        res = rec if isinstance(rec, dict) else {}
+        time_label = res.get('start_time_label', '')
+        flow_cmd = res.get('flow_cmd', _np.nan)
+        cost_4h = res.get('cost_4h', None)
+        if cost_4h is None:
+            # Fallback: scale total_cost to 4 hours using run_hours on result
+            run_hours = res.get('hours', 24.0)
+            cost_4h = _per_interval_cost(res, 4.0, run_hours)
+        row = {
+            "Time": time_label,
+            "Flow (m³/h)": flow_cmd,
+            "Cost (4h)": cost_4h,
+        }
+        # Populate per-station columns
+        for name in station_names:
+            key = name.strip().lower().replace(' ', '_')
+            row[f"{name} RPM"] = float(res.get(f"speed_{key}", 0.0) or 0.0)
+            row[f"{name} Eff (%)"] = float(res.get(f"pump_efficiency_pct_{key}", 0.0) or 0.0)
+            row[f"{name} BKW"] = float(res.get(f"pump_bkw_{key}", 0.0) or 0.0)
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    # Order columns: Time, Flow, Cost then station columns
+    ordered_cols = ["Time", "Flow (m³/h)", "Cost (4h)"]
+    for name in station_names:
+        ordered_cols += [f"{name} RPM", f"{name} Eff (%)", f"{name} BKW"]
+    df = df[ordered_cols]
+    return df.round(2)
 
 def solve_pipeline(
     stations,
@@ -1401,6 +1502,14 @@ def solve_pipeline(
             else:
                 pattern_name = ' & '.join(seg_names)
             res['flow_pattern_name'] = pattern_name
+        # Compute cost for a 4‑hour interval for display purposes.  The underlying solver returns total cost
+        # proportional to the run duration (``hours``).  Scaling by (4.0 / hours) produces the cost for a 4‑hour
+        # interval.  This key is optional and is ignored in contexts where it is not used.
+        try:
+            h_val = float(hours) if hours is not None and float(hours) > 0 else 24.0
+        except Exception:
+            h_val = 24.0
+        res['cost_4h'] = (res.get('total_cost', 0.0) or 0.0) * (4.0 / h_val)
         return res
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
