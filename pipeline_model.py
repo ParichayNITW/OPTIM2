@@ -1804,6 +1804,11 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
+    # Propagate the run duration so callers can scale costs consistently.
+    # ``solve_pipeline`` may be invoked for arbitrary intervals (e.g. <4 hours)
+    # and downstream consumers need the actual duration to compute
+    # per‑interval costs.  Record it on the result before returning.
+    result['hours'] = hours
     result['dra_front_km'] = best_state.get('reach', 0.0)
     result['error'] = False
     return result

@@ -1305,32 +1305,26 @@ def fmt_pressure(res, key_m, key_kg):
 # use that key to build a tabular representation.  If ``cost_4h`` is not
 # present the raw total cost is used instead.
 
-def _per_interval_cost(result: dict, interval_hours: float, run_hours: float) -> float:
-    """Return the cost scaled to the specified interval.
+def _per_interval_cost(result: dict, interval_hours: float, run_hours: float | None = None) -> float:
+    """Return the cost for ``interval_hours`` based on the run duration.
 
-    Parameters
-    ----------
-    result : dict
-        The optimisation result containing the key ``total_cost``.
-    interval_hours : float
-        The desired reporting interval in hours (e.g. 4.0 for 4 hours).
-    run_hours : float
-        The duration in hours that was passed to the solver to obtain
-        ``result``.  If zero or not provided, 24.0 is used.
-
-    Returns
-    -------
-    float
-        The scaled cost corresponding to ``interval_hours``.
+    ``solve_pipeline`` reports the total cost for the actual run duration.  To
+    present this on a fixed interval (e.g. 4 hours) we scale the cost when the
+    run length differs from the interval.  If the run already covers the
+    interval the total cost is returned unchanged.
     """
     try:
         total_cost = float(result.get('total_cost', 0.0) or 0.0)
     except Exception:
         total_cost = 0.0
+    if run_hours is None:
+        run_hours = result.get('hours')
     try:
-        h_val = float(run_hours) if run_hours is not None and float(run_hours) > 0 else 24.0
+        h_val = float(run_hours)
     except Exception:
-        h_val = 24.0
+        h_val = interval_hours
+    if h_val <= 0 or abs(h_val - interval_hours) < 1e-9:
+        return total_cost
     return total_cost * (interval_hours / h_val)
 
 
@@ -1362,13 +1356,13 @@ def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd
     import numpy as _np
     rows: list[dict] = []
     for rec in schedule_results:
-        res = rec if isinstance(rec, dict) else {}
-        time_label = res.get('start_time_label', '')
-        flow_cmd = res.get('flow_cmd', _np.nan)
-        cost_4h = res.get('cost_4h', None)
+        # Some callers pass a wrapper ``{"result": res}``; handle both forms.
+        res = rec.get("result", rec) if isinstance(rec, dict) else {}
+        time_label = rec.get('start_time_label', res.get('start_time_label', ''))
+        flow_cmd = rec.get('flow_cmd', res.get('flow_cmd', _np.nan))
+        run_hours = res.get('hours', rec.get('hours'))
+        cost_4h = res.get('cost_4h')
         if cost_4h is None:
-            # Fallback: scale total_cost to 4 hours using run_hours on result
-            run_hours = res.get('hours', 24.0)
             cost_4h = _per_interval_cost(res, 4.0, run_hours)
         row = {
             "Time": time_label,
@@ -1989,8 +1983,20 @@ if not auto_batch:
                 if error_msg:
                     break
 
+                # Aggregate the cost and actual run duration for this block
                 res["total_cost"] = block_cost
-                reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
+                res["hours"] = float(sub_steps)
+                res["cost_4h"] = _per_interval_cost(res, 4.0, res["hours"])
+                reports.append(
+                    {
+                        "time": hr % 24,
+                        "duration_hr": res["hours"],
+                        "cost_4h": res["cost_4h"],
+                        "result": res,
+                        "sdh_hourly": sdh_hourly,
+                        "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
+                    }
+                )
 
         if error_msg:
             st.error(error_msg)
@@ -2161,7 +2167,16 @@ if not auto_batch:
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
                         st.stop()
 
-                    reports.append({"time": seg_start, "result": res})
+                    # Carry the actual run duration and pre‑computed 4‑hour cost
+                    # with each record so downstream tables can reconcile totals.
+                    reports.append(
+                        {
+                            "time": seg_start,
+                            "duration_hr": duration_hr,
+                            "cost_4h": res.get("cost_4h"),
+                            "result": res,
+                        }
+                    )
                     linefill_snaps.append(current_vol.copy())
                     dra_linefill = res.get("linefill", dra_linefill)
                     current_vol = apply_dra_ppm(future_vol, dra_linefill)
