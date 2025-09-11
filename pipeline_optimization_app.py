@@ -1354,14 +1354,18 @@ def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd
         per-station pump speed, efficiency percentage and brake kW.
     """
     import numpy as _np
+    import re as _re
+
     rows: list[dict] = []
     for rec in schedule_results:
         # Some callers pass a wrapper ``{"result": res}``; handle both forms.
         res = rec.get("result", rec) if isinstance(rec, dict) else {}
-        time_label = rec.get('start_time_label', res.get('start_time_label', ''))
-        flow_cmd = rec.get('flow_cmd', res.get('flow_cmd', _np.nan))
-        run_hours = res.get('hours', rec.get('hours'))
-        cost_4h = res.get('cost_4h')
+        time_label = rec.get("start_time_label", res.get("start_time_label", ""))
+        if not time_label:
+            time_label = rec.get("time", "")
+        flow_cmd = rec.get("flow_cmd", res.get("flow_cmd", _np.nan))
+        run_hours = res.get("hours", rec.get("hours", rec.get("duration_hr")))
+        cost_4h = res.get("cost_4h")
         if cost_4h is None:
             cost_4h = _per_interval_cost(res, 4.0, run_hours)
         row = {
@@ -1369,13 +1373,19 @@ def build_4h_table(schedule_results: list[dict], station_names: list[str]) -> pd
             "Flow (m³/h)": flow_cmd,
             "Cost (4h)": cost_4h,
         }
-        # Populate per-station columns
+        # Populate per-station columns.  Solver keys may retain the original
+        # station name or use a normalised form (non-alphanumeric → ``_``).
         for name in station_names:
-            key = name.strip().lower().replace(' ', '_')
-            row[f"{name} RPM"] = float(res.get(f"speed_{key}", 0.0) or 0.0)
-            row[f"{name} Eff (%)"] = float(res.get(f"pump_efficiency_pct_{key}", 0.0) or 0.0)
-            row[f"{name} BKW"] = float(res.get(f"pump_bkw_{key}", 0.0) or 0.0)
+            raw = name.strip()
+            norm = _re.sub(r"\W+", "_", raw)
+            rpm = res.get(f"speed_{raw}") or res.get(f"speed_{norm}")
+            eff = res.get(f"pump_efficiency_pct_{raw}") or res.get(f"pump_efficiency_pct_{norm}")
+            bkw = res.get(f"pump_bkw_{raw}") or res.get(f"pump_bkw_{norm}")
+            row[f"{name} RPM"] = float(rpm or 0.0)
+            row[f"{name} Eff (%)"] = float(eff or 0.0)
+            row[f"{name} BKW"] = float(bkw or 0.0)
         rows.append(row)
+
     df = pd.DataFrame(rows)
     # Order columns: Time, Flow, Cost then station columns
     ordered_cols = ["Time", "Flow (m³/h)", "Cost (4h)"]
