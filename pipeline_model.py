@@ -215,30 +215,12 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
             unique.append(c)
     return unique
 
-
-def _generate_loop_cases_exhaustive(num_loops: int) -> list[list[int]]:
-    """Return all possible loop usage combinations for ``num_loops`` segments."""
-
-    if num_loops <= 0:
-        return [[]]
-    from itertools import product
-
-    states = [0, 1, 2, 3]
-    return [list(p) for p in product(states, repeat=num_loops)]
-
 # ---------------------------------------------------------------------------
 # Core calculations
 # ---------------------------------------------------------------------------
 
-# Finest resolution used for RPM and DRA enumeration
 RPM_STEP = 100
 DRA_STEP = 5
-# Coarser steps for the initial adaptive sweep.  These values were chosen to
-# reduce the number of combinations explored while still covering the global
-# search space.  Subsequent refinement will shrink the grid down to
-# ``RPM_STEP``/``DRA_STEP`` around the most promising coarse point.
-RPM_STEP_COARSE = 500
-DRA_STEP_COARSE = 20
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -253,167 +235,10 @@ _PARALLEL_CACHE: dict[tuple, tuple] = {}
 
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
-    """Return a list of allowed values, including ``max_val`` when within range.
-
-    The helper now guards against invalid intervals (``min_val > max_val``) or
-    non-positive ``step`` sizes by returning an empty list.  Callers must be
-    prepared to handle the empty case and skip option generation accordingly.
-    """
-
-    if step <= 0 or min_val > max_val:
-        return []
-
     vals = list(range(min_val, max_val + 1, step))
-    if not vals or vals[-1] != max_val:
+    if vals[-1] != max_val:
         vals.append(max_val)
     return vals
-
-
-def build_opts(
-    rpm_step: int,
-    dra_step: int,
-    rpm_min: int,
-    rpm_max: int,
-    min_pumps: int,
-    max_pumps: int,
-    kv: float,
-    fixed_dr: int | None = None,
-    dra_main_min: int = 0,
-    dra_main_max: int = 0,
-    dra_loop_min: int = 0,
-    dra_loop_max: int = 0,
-) -> list[dict]:
-    """Enumerate pump/DRA options for a station.
-
-    ``kv`` is used to convert drag reduction percentages to PPM via
-    :func:`get_ppm_for_dr`.  The returned list contains dictionaries with the
-    keys ``nop`` (number of pumps), ``rpm`` and DRA-related fields.
-    ``fixed_dr`` may supply a single drag-reduction percentage that overrides
-    the mainline search range.
-    """
-
-    rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
-    if not rpm_vals and max_pumps > 0:
-        return []
-
-    if fixed_dr is not None:
-        dra_main_vals = [int(round(fixed_dr))]
-    else:
-        dra_main_vals = _allowed_values(dra_main_min, dra_main_max, dra_step) or [0]
-
-    dra_loop_vals = (
-        _allowed_values(dra_loop_min, dra_loop_max, dra_step) or [0]
-        if dra_loop_max > 0
-        else [0]
-    )
-
-    opts: list[dict] = []
-    for nop in range(min_pumps, max_pumps + 1):
-        if nop > 0 and not rpm_vals:
-            continue
-        rpm_options = [0] if nop == 0 else rpm_vals
-        for rpm in rpm_options:
-            for dra_main in dra_main_vals:
-                for dra_loop in dra_loop_vals:
-                    ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                    ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
-                    opts.append(
-                        {
-                            "nop": nop,
-                            "rpm": rpm,
-                            "dra_main": dra_main,
-                            "dra_loop": dra_loop,
-                            "dra_ppm_main": ppm_main,
-                            "dra_ppm_loop": ppm_loop,
-                        }
-                    )
-
-    # Ensure the option where the station is idle exists so that bypass or
-    # shutdown scenarios remain available even when no explicit combination
-    # produced ``nop == 0``.
-    if not any(o["nop"] == 0 for o in opts):
-        opts.insert(
-            0,
-            {
-                "nop": 0,
-                "rpm": 0,
-                "dra_main": 0,
-                "dra_loop": 0,
-                "dra_ppm_main": 0.0,
-                "dra_ppm_loop": 0.0,
-            },
-        )
-
-    return opts
-
-
-def _adaptive_enum(
-    stn: dict,
-    coarse_steps: tuple[int, int],
-    fine_steps: tuple[int, int],
-) -> list[dict]:
-    """Return a refined set of options using a coarse-to-fine sweep."""
-
-    rpm_step_c, dra_step_c = coarse_steps
-    rpm_step_f, dra_step_f = fine_steps
-
-    # Build coarse options across the full range
-    coarse_opts = build_opts(
-        rpm_step_c,
-        dra_step_c,
-        stn["rpm_min"],
-        stn["rpm_max"],
-        stn["min_pumps"],
-        stn["max_pumps"],
-        stn["kv"],
-        stn.get("fixed_dr"),
-        dra_main_min=stn["min_dr_main"],
-        dra_main_max=stn["max_dr_main"],
-        dra_loop_min=stn["min_dr_loop"],
-        dra_loop_max=stn["max_dr_loop"],
-    )
-    if not coarse_opts:
-        return []
-
-    # Select the most promising coarse option using a simple heuristic that
-    # favours fewer pumps, lower RPM and lower drag-reduction dosage.
-    best_coarse = min(
-        coarse_opts,
-        key=lambda o: (o["nop"], o["rpm"], o["dra_main"] + o["dra_loop"]),
-    )
-
-    rpm_min_ref = max(stn["rpm_min"], best_coarse["rpm"] - rpm_step_c)
-    rpm_max_ref = min(stn["rpm_max"], best_coarse["rpm"] + rpm_step_c)
-    dra_main_min_ref = max(stn["min_dr_main"], best_coarse["dra_main"] - dra_step_c)
-    dra_main_max_ref = min(stn["max_dr_main"], best_coarse["dra_main"] + dra_step_c)
-    dra_loop_min_ref = max(stn["min_dr_loop"], best_coarse["dra_loop"] - dra_step_c)
-    dra_loop_max_ref = min(stn["max_dr_loop"], best_coarse["dra_loop"] + dra_step_c)
-
-    refined_opts = build_opts(
-        rpm_step_f,
-        dra_step_f,
-        rpm_min_ref,
-        rpm_max_ref,
-        stn["min_pumps"],
-        stn["max_pumps"],
-        stn["kv"],
-        stn.get("fixed_dr"),
-        dra_main_min=dra_main_min_ref,
-        dra_main_max=dra_main_max_ref,
-        dra_loop_min=dra_loop_min_ref,
-        dra_loop_max=dra_loop_max_ref,
-    )
-    if refined_opts:
-        all_opts: list[dict] = []
-        seen: set[tuple[int, int, int, int]] = set()
-        for opt in coarse_opts + refined_opts:
-            key = (opt["nop"], opt["rpm"], opt["dra_main"], opt["dra_loop"])
-            if key not in seen:
-                seen.add(key)
-                all_opts.append(opt)
-        return all_opts
-    # If refinement produced no options, fall back to the coarse grid
-    return coarse_opts
 
 
 def _segment_hydraulics(
@@ -648,8 +473,6 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
                     "eff": eff_single,
                     "count": count,
                     "power_type": pdata.get("power_type", stn.get("power_type")),
-                    "rpm": rpm,
-                    "ptype": ptype,
                     "data": pdata,
                 }
             )
@@ -677,7 +500,6 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
             "eff": eff,
             "count": nop,
             "power_type": stn.get("power_type"),
-            "rpm": rpm,
             "data": stn,
         }
     )
@@ -874,7 +696,9 @@ def solve_pipeline(
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
-    adaptive: bool = True,
+    rpm_step: int = RPM_STEP,
+    dra_step: int = DRA_STEP,
+    per_station_ranges: dict[int, dict] | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -924,7 +748,6 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
-                adaptive=adaptive,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -978,7 +801,6 @@ def solve_pipeline(
                 hours,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
-                adaptive=adaptive,
             )
             if res.get('error'):
                 continue
@@ -986,43 +808,6 @@ def solve_pipeline(
                 # Track which loop usage produced the best result.  Store a
                 # copy to avoid mutating the result of nested calls.  Users
                 # can inspect this field to derive human‑friendly names.
-                res_with_usage = res.copy()
-                res_with_usage['loop_usage'] = usage.copy()
-                best_res = res_with_usage
-        if best_res:
-            return best_res
-
-        # Fallback: try exhaustive loop combinations without adaptive refinement
-        exhaustive = _generate_loop_cases_exhaustive(num_loops)
-        best_res = None
-        for case in exhaustive:
-            usage = [0] * len(stations)
-            for pos, val in zip(loop_positions, case):
-                usage[pos] = val
-            res = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                loop_usage_by_station=usage,
-                enumerate_loops=False,
-                adaptive=False,
-            )
-            if res.get('error'):
-                continue
-            if (
-                best_res is None
-                or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf'))
-            ):
                 res_with_usage = res.copy()
                 res_with_usage['loop_usage'] = usage.copy()
                 best_res = res_with_usage
@@ -1185,71 +970,67 @@ def solve_pipeline(
                 min_p = max(1, min_p)
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
-            rpm_min = int(stn.get('MinRPM', 0))
-            rpm_max = int(stn.get('DOL', 0))
+            # Determine rpm values for this station.  When per_station_ranges supplies a list
+            # of rpm values for this station index use those, otherwise fall back to the
+            # allowed values with the provided rpm_step.
+            if per_station_ranges and (i - 1) in per_station_ranges and per_station_ranges[i - 1].get('rpm'):
+                rpm_vals = sorted(set(int(x) for x in per_station_ranges[i - 1]['rpm']))
+            else:
+                rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), rpm_step)
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = int(stn.get('max_dr', 0))
-            min_dr_main = int(stn.get('min_dr', 0))
-            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
-            min_dr_loop = int(loop_dict.get('min_dr', 0)) if loop_dict else 0
-
-            if adaptive:
-                stn_enum = {
-                    'min_pumps': min_p,
-                    'max_pumps': max_p,
-                    'kv': kv,
-                    'fixed_dr': fixed_dr,
-                    'min_dr_main': min_dr_main,
-                    'max_dr_main': max_dr_main,
-                    'min_dr_loop': min_dr_loop,
-                    'max_dr_loop': max_dr_loop,
-                    'rpm_min': rpm_min,
-                    'rpm_max': rpm_max,
-                }
-                opts = _adaptive_enum(
-                    stn_enum,
-                    (RPM_STEP_COARSE, DRA_STEP_COARSE),
-                    (RPM_STEP, DRA_STEP),
-                )
-                if not opts:
-                    opts = build_opts(
-                        RPM_STEP,
-                        DRA_STEP,
-                        rpm_min,
-                        rpm_max,
-                        min_p,
-                        max_p,
-                        kv,
-                        fixed_dr,
-                        dra_main_min=min_dr_main,
-                        dra_main_max=max_dr_main,
-                        dra_loop_min=min_dr_loop,
-                        dra_loop_max=max_dr_loop,
-                    )
+            # Determine mainline drag reduction values.  Use per-station override if provided.
+            if per_station_ranges and (i - 1) in per_station_ranges and per_station_ranges[i - 1].get('dra_main'):
+                dra_main_vals = sorted(set(int(x) for x in per_station_ranges[i - 1]['dra_main']))
             else:
-                opts = build_opts(
-                    RPM_STEP,
-                    DRA_STEP,
-                    rpm_min,
-                    rpm_max,
-                    min_p,
-                    max_p,
-                    kv,
-                    fixed_dr,
-                    dra_main_min=min_dr_main,
-                    dra_main_max=max_dr_main,
-                    dra_loop_min=min_dr_loop,
-                    dra_loop_max=max_dr_loop,
-                )
+                if fixed_dr is not None:
+                    dra_main_vals = [int(round(fixed_dr))]
+                else:
+                    dra_main_vals = _allowed_values(0, max_dr_main, dra_step)
+            # Determine loop drag reduction values.  Use per-station override if provided.
+            if loop_dict:
+                if per_station_ranges and (i - 1) in per_station_ranges and per_station_ranges[i - 1].get('dra_loop'):
+                    dra_loop_vals = sorted(set(int(x) for x in per_station_ranges[i - 1]['dra_loop']))
+                else:
+                    dra_loop_vals = _allowed_values(0, int(loop_dict.get('max_dr', 0)), dra_step)
+            else:
+                dra_loop_vals = [0]
+            for nop in range(min_p, max_p + 1):
+                rpm_opts = [0] if nop == 0 else rpm_vals
+                for rpm in rpm_opts:
+                    for dra_main in dra_main_vals:
+                        for dra_loop in dra_loop_vals:
+                            ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                            ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
+                            opts.append({
+                                'nop': nop,
+                                'rpm': rpm,
+                                'dra_main': dra_main,
+                                'dra_loop': dra_loop,
+                                'dra_ppm_main': ppm_main,
+                                'dra_ppm_loop': ppm_loop,
+                            })
+            if not any(o['nop'] == 0 for o in opts):
+                opts.insert(0, {
+                    'nop': 0,
+                    'rpm': 0,
+                    'dra_main': 0,
+                    'dra_loop': 0,
+                    'dra_ppm_main': 0.0,
+                    'dra_ppm_loop': 0.0,
+                })
         else:
             # Non-pump stations can inject DRA independently whenever a
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = int(stn.get('max_dr', 0))
-            min_dr_main = int(stn.get('min_dr', 0))
-            if max_dr_main >= min_dr_main:
-                dra_vals = _allowed_values(min_dr_main, max_dr_main, DRA_STEP)
+            if max_dr_main > 0:
+                # Use per-station override for dra_main if provided.
+                if per_station_ranges and (i - 1) in per_station_ranges and per_station_ranges[i - 1].get('dra_main'):
+                    dra_vals = sorted(set(int(x) for x in per_station_ranges[i - 1]['dra_main']))
+                else:
+                    dra_vals = _allowed_values(0, max_dr_main, dra_step)
                 for dra_main in dra_vals:
                     ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
                     non_pump_opts.append({
@@ -1756,13 +1537,6 @@ def solve_pipeline(
 
                     # Compute downstream residual head after segment loss and elevation
                     residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
-                    sdh_kgcm2 = head_to_kgcm2(sdh, stn_data['rho'])
-                    rh_kgcm2 = head_to_kgcm2(residual_next, stn_data['rho'])
-                    for p in pump_details:
-                        p['sdh'] = sdh
-                        p['sdh_kgcm2'] = sdh_kgcm2
-                        p['rh'] = residual_next
-                        p['rh_kgcm2'] = rh_kgcm2
 
                     # Recompute downstream flows if bypassing the next station; the flow
                     # through the mainline changes only for a bypass.  ``seg_flows_tmp``
@@ -1813,16 +1587,12 @@ def solve_pipeline(
                     # an injection is made.
                     dra_cost = 0.0
                     if inj_ppm_main > 0:
-                        inj_kg_main = inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6)
-                        inj_l_main = inj_kg_main  # assume 1 kg/L for DRA
-                        dra_cost += inj_l_main * RateDRA
+                        dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     # Loopline injection uses ``inj_ppm_loop`` computed
-                    # earlier. Charge cost only when an actual injection is
+                    # earlier.  Charge cost only when an actual injection is
                     # performed at this station.
                     if sc['flow_loop'] > 0 and inj_loop_current > 0:
-                        inj_kg_loop = inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6)
-                        inj_l_loop = inj_kg_loop  # assume 1 kg/L for DRA
-                        dra_cost += inj_l_loop * RateDRA
+                        dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
 
                     total_cost = power_cost + dra_cost
 
@@ -2024,10 +1794,6 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
-    *,
-    loop_usage_by_station: list[int] | None = None,
-    enumerate_loops: bool = True,
-    adaptive: bool = True,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -2039,55 +1805,13 @@ def solve_pipeline_with_types(
     def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
-            # When all stations have been expanded into individual pump units
-            if loop_usage_by_station is not None:
-                # Use the provided loop usage directly
-                result = solve_pipeline(
-                    stn_acc,
-                    terminal,
-                    FLOW,
-                    kv_acc,
-                    rho_acc,
-                    RateDRA,
-                    Price_HSD,
-                    Fuel_density,
-                    Ambient_temp,
-                    linefill,
-                    dra_reach_km,
-                    mop_kgcm2,
-                    hours,
-                    loop_usage_by_station=loop_usage_by_station,
-                    enumerate_loops=enumerate_loops,
-                    adaptive=adaptive,
-                )
-                if result.get("error") and adaptive:
-                    result = solve_pipeline(
-                        stn_acc,
-                        terminal,
-                        FLOW,
-                        kv_acc,
-                        rho_acc,
-                        RateDRA,
-                        Price_HSD,
-                        Fuel_density,
-                        Ambient_temp,
-                        linefill,
-                        dra_reach_km,
-                        mop_kgcm2,
-                        hours,
-                        loop_usage_by_station=loop_usage_by_station,
-                        enumerate_loops=enumerate_loops,
-                        adaptive=False,
-                    )
-                if not result.get("error"):
-                    cost = result.get("total_cost", float('inf'))
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_result = result
-                        best_stations = stn_acc
-                return
-
-            # No explicit loop usage → enumerate representative cases
+            # When all stations have been expanded into individual pump units,
+            # perform loop-case enumeration explicitly.  We determine the
+            # positions of units with looplines (typically the last unit of each
+            # physical station) and then build loop usage directives for each
+            # representative case.  This avoids relying on the internal
+            # loop-enumeration of ``solve_pipeline``, which can behave
+            # unpredictably when stations are split into multiple units.
             loop_positions = [idx for idx, u in enumerate(stn_acc) if u.get('loopline')]
             # Always run at least once even if no loops exist
             if not loop_positions:
@@ -2098,6 +1822,7 @@ def solve_pipeline_with_types(
                 flags_expanded: list[bool] = []
                 for pidx in loop_positions:
                     stn_e = stn_acc[pidx]
+                    # Inner diameter of the mainline segment
                     if stn_e.get('D') is not None:
                         d_main_outer = stn_e['D']
                         t_main = stn_e.get('t', default_t_local)
@@ -2115,11 +1840,15 @@ def solve_pipeline_with_types(
                     else:
                         d_inner_loop = d_inner_main
                     flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
+                # Generate loop-case combinations based on flags
                 cases = _generate_loop_cases_by_flags(flags_expanded)
             for case in cases:
                 usage = [0] * len(stn_acc)
                 for pidx, val in zip(loop_positions, case):
                     usage[pidx] = val
+                # Call solve_pipeline with explicit loop usage and disable
+                # internal enumeration.  This ensures the provided directives
+                # are respected even for split stations.
                 result = solve_pipeline(
                     stn_acc,
                     terminal,
@@ -2136,33 +1865,12 @@ def solve_pipeline_with_types(
                     hours,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
-                    adaptive=adaptive,
                 )
-                if result.get("error") and adaptive:
-                    # Fallback to full enumeration when adaptive refinement
-                    # fails to produce a feasible solution.
-                    result = solve_pipeline(
-                        stn_acc,
-                        terminal,
-                        FLOW,
-                        kv_acc,
-                        rho_acc,
-                        RateDRA,
-                        Price_HSD,
-                        Fuel_density,
-                        Ambient_temp,
-                        linefill,
-                        dra_reach_km,
-                        mop_kgcm2,
-                        hours,
-                        loop_usage_by_station=usage,
-                        enumerate_loops=False,
-                        adaptive=False,
-                    )
                 if result.get("error"):
                     continue
                 cost = result.get("total_cost", float('inf'))
                 if cost < best_cost:
+                    # Preserve usage directive for later labelling
                     result_with_usage = result.copy()
                     result_with_usage['loop_usage'] = usage.copy()
                     best_cost = cost
@@ -2209,14 +1917,14 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
                         else:
-                            min_rpm_a = pdataA.get('MinRPM', unit.get('MinRPM', 0.0))
-                            min_rpm_b = pdataB.get('MinRPM', unit.get('MinRPM', 0.0))
-                            dol_a = pdataA.get('DOL', unit.get('DOL', 0.0))
-                            dol_b = pdataB.get('DOL', unit.get('DOL', 0.0))
-                            unit['MinRPM'] = max(min_rpm_a, min_rpm_b)
-                            unit['DOL'] = min(dol_a, dol_b)
-                            if unit['MinRPM'] > unit['DOL']:
-                                continue
+                            unit['MinRPM'] = min(
+                                pdataA.get('MinRPM', unit.get('MinRPM', 0.0)),
+                                pdataB.get('MinRPM', unit.get('MinRPM', 0.0)),
+                            )
+                            unit['DOL'] = max(
+                                pdataA.get('DOL', unit.get('DOL', 0.0)),
+                                pdataB.get('DOL', unit.get('DOL', 0.0)),
+                            )
                             unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
                             unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
                             unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
