@@ -219,8 +219,8 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 # Core calculations
 # ---------------------------------------------------------------------------
 
-RPM_STEP = 100
-DRA_STEP = 5
+RPM_STEP = 150
+DRA_STEP = 10
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
