@@ -242,6 +242,66 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     return vals
 
 
+def _update_mainline_dra(
+    prev_ppm: float,
+    reach_prev: float,
+    stn_data: dict,
+    opt: dict,
+) -> tuple[float, float, float, float]:
+    """Return updated drag‑reduction state for the mainline.
+
+    Parameters
+    ----------
+    prev_ppm:
+        Upstream DRA concentration in ppm carried from the previous station.
+    reach_prev:
+        Remaining downstream reach (km) for which the previous injection is
+        effective.
+    stn_data:
+        Dictionary describing the current station with keys ``L`` for the
+        segment length and ``is_pump`` for pump stations.
+    opt:
+        Chosen operating option containing ``dra_ppm_main`` and ``nop``.
+
+    Returns
+    -------
+    tuple
+        ``(ppm_main, dra_len_main, reach_after, inj_ppm_main)`` where
+        ``ppm_main`` is the effective concentration after any injection,
+        ``dra_len_main`` is the length on this segment receiving drag
+        reduction, ``reach_after`` is the remaining downstream reach of that
+        injection, and ``inj_ppm_main`` is the concentration injected at this
+        station.
+    """
+
+    inj_ppm_main = opt.get("dra_ppm_main", 0.0) or 0.0
+
+    if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
+        if inj_ppm_main > 0:
+            ppm_main = prev_ppm + inj_ppm_main
+            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
+            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
+        else:
+            ppm_main = 0.0
+            dra_len_main = 0.0
+            reach_after = 0.0
+    else:
+        if inj_ppm_main > 0:
+            ppm_main = prev_ppm + inj_ppm_main
+            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
+            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
+        else:
+            ppm_main = prev_ppm
+            if reach_prev > 0 and ppm_main > 0:
+                dra_len_main = min(stn_data["L"], reach_prev)
+                reach_after = max(0.0, reach_prev - stn_data["L"])
+            else:
+                dra_len_main = 0.0
+                reach_after = 0.0
+
+    return ppm_main, dra_len_main, reach_after, inj_ppm_main
+
+
 def _segment_hydraulics(
     flow_m3h: float,
     L: float,
@@ -1105,6 +1165,7 @@ def solve_pipeline(
             'carry_loop_dra': 0.0,
             'prev_ppm_main': linefill_state[0]['dra_ppm'] if linefill_state else 0.0,
             'reach': max(float(dra_reach_km), 0.0),
+            'inj_ppm_main': 0.0,
         }
     }
 
@@ -1125,29 +1186,10 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 reach_prev = state.get('reach', 0.0)
-                if stn_data['is_pump'] and opt['nop'] > 0:
-                    if opt['dra_ppm_main'] > 0:
-                        ppm_main = state.get('prev_ppm_main', 0.0) + opt['dra_ppm_main']
-                        dra_len_main = min(stn_data['L'], MAX_DRA_KM)
-                        reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
-                    else:
-                        ppm_main = 0.0
-                        dra_len_main = 0.0
-                        reach_after = 0.0
-                else:
-                    if opt['dra_ppm_main'] > 0:
-                        ppm_main = state.get('prev_ppm_main', 0.0) + opt['dra_ppm_main']
-                        dra_len_main = min(stn_data['L'], MAX_DRA_KM)
-                        reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
-                    else:
-                        ppm_main = state.get('prev_ppm_main', 0.0)
-                        if reach_prev > 0 and ppm_main > 0:
-                            dra_len_main = min(stn_data['L'], reach_prev)
-                            reach_after = max(0.0, reach_prev - stn_data['L'])
-                        else:
-                            dra_len_main = 0.0
-                            reach_after = 0.0
-                inj_ppm_main = opt['dra_ppm_main'] if opt['dra_ppm_main'] > 0 else 0.0
+                ppm_prev = state.get('prev_ppm_main', 0.0)
+                ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
+                    ppm_prev, reach_prev, stn_data, opt
+                )
                 eff_dra_main = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
 
                 scenarios = []
@@ -1712,6 +1754,7 @@ def solve_pipeline(
                             'carry_loop_dra': new_carry,
                             'prev_ppm_main': ppm_main,
                             'reach': reach_after,
+                            'inj_ppm_main': inj_ppm_main,
                         }
 
         if not new_states:
