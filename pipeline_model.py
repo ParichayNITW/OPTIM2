@@ -1127,7 +1127,7 @@ def solve_pipeline(
                 reach_prev = state.get('reach', 0.0)
                 if stn_data['is_pump'] and opt['nop'] > 0:
                     if opt['dra_ppm_main'] > 0:
-                        ppm_main = opt['dra_ppm_main']
+                        ppm_main = state.get('prev_ppm_main', 0.0) + opt['dra_ppm_main']
                         dra_len_main = min(stn_data['L'], MAX_DRA_KM)
                         reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
                     else:
@@ -1136,7 +1136,7 @@ def solve_pipeline(
                         reach_after = 0.0
                 else:
                     if opt['dra_ppm_main'] > 0:
-                        ppm_main = opt['dra_ppm_main']
+                        ppm_main = state.get('prev_ppm_main', 0.0) + opt['dra_ppm_main']
                         dra_len_main = min(stn_data['L'], MAX_DRA_KM)
                         reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
                     else:
