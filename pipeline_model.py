@@ -276,28 +276,26 @@ def _update_mainline_dra(
 
     inj_ppm_main = opt.get("dra_ppm_main", 0.0) or 0.0
 
+    # A pump station resets the DRA concentration to the injected value.  If
+    # the pump runs without injection the downstream concentration drops to
+    # zero.  Non‑pump segments simply carry the upstream concentration forward
+    # until the maximum reach is exhausted.
     if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
-        if inj_ppm_main > 0:
-            ppm_main = prev_ppm + inj_ppm_main
+        ppm_main = inj_ppm_main
+        if ppm_main > 0:
             dra_len_main = min(stn_data["L"], MAX_DRA_KM)
             reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
         else:
-            ppm_main = 0.0
             dra_len_main = 0.0
             reach_after = 0.0
     else:
-        if inj_ppm_main > 0:
-            ppm_main = prev_ppm + inj_ppm_main
-            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
-            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
+        ppm_main = prev_ppm
+        if reach_prev > 0 and ppm_main > 0:
+            dra_len_main = min(stn_data["L"], reach_prev)
+            reach_after = max(0.0, reach_prev - stn_data["L"])
         else:
-            ppm_main = prev_ppm
-            if reach_prev > 0 and ppm_main > 0:
-                dra_len_main = min(stn_data["L"], reach_prev)
-                reach_after = max(0.0, reach_prev - stn_data["L"])
-            else:
-                dra_len_main = 0.0
-                reach_after = 0.0
+            dra_len_main = 0.0
+            reach_after = 0.0
 
     return ppm_main, dra_len_main, reach_after, inj_ppm_main
 
@@ -1187,6 +1185,9 @@ def solve_pipeline(
                         continue
                 reach_prev = state.get('reach', 0.0)
                 ppm_prev = state.get('prev_ppm_main', 0.0)
+                # Update the mainline DRA concentration.  Pump stations reset the
+                # concentration to the injected value while unpumped segments carry
+                # the upstream level forward until its reach is exhausted.
                 ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
                     ppm_prev, reach_prev, stn_data, opt
                 )
