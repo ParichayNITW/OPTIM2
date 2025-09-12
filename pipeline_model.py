@@ -12,6 +12,7 @@ from __future__ import annotations
 from math import log10, pi
 import copy
 import numpy as np
+import datetime as dt
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from linefill_utils import advance_linefill
@@ -758,6 +759,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    start_time: str = "00:00",
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
@@ -808,6 +810,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                start_time,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
             )
@@ -861,6 +864,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                start_time,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
             )
@@ -1369,21 +1373,28 @@ def solve_pipeline(
                         fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
                         cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
                     else:
-                        tariffs = stn_data.get('tariffs')
-                        if tariffs:
-                            remaining = hours
-                            cost_i = 0.0
+                        tariffs = stn_data.get('tariffs') or []
+                        rate_default = stn_data.get('rate', 0.0)
+                        remaining = hours
+                        cost_i = 0.0
+                        current = dt.datetime.strptime(start_time, "%H:%M")
+                        while remaining > 0:
+                            applied = False
                             for tr in tariffs:
-                                if remaining <= 0:
+                                s = dt.datetime.strptime(tr.get('start'), "%H:%M")
+                                e = dt.datetime.strptime(tr.get('end'), "%H:%M")
+                                if e <= s:
+                                    e += dt.timedelta(days=1)
+                                if s <= current < e:
+                                    overlap = min(remaining, (e - current).total_seconds() / 3600.0)
+                                    cost_i += prime_kw_i * overlap * float(tr.get('rate', rate_default))
+                                    remaining -= overlap
+                                    current += dt.timedelta(hours=overlap)
+                                    applied = True
                                     break
-                                dur = min(float(tr.get('hours', 0.0)), remaining)
-                                rate = float(tr.get('rate', stn_data.get('rate', 0.0)))
-                                cost_i += prime_kw_i * dur * rate
-                                remaining -= dur
-                            if remaining > 0:
-                                cost_i += prime_kw_i * remaining * stn_data.get('rate', 0.0)
-                        else:
-                            cost_i = prime_kw_i * hours * stn_data.get('rate', 0.0)
+                            if not applied:
+                                cost_i += prime_kw_i * remaining * rate_default
+                                break
                     cost_i = max(cost_i, 0.0)
                     pinfo['pump_bkw'] = pump_bkw_i
                     pinfo['prime_kw'] = prime_kw_i
@@ -1844,6 +1855,7 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    start_time: str = "00:00",
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -1913,6 +1925,7 @@ def solve_pipeline_with_types(
                     dra_reach_km,
                     mop_kgcm2,
                     hours,
+                    start_time,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                 )
