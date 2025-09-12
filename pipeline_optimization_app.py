@@ -646,8 +646,14 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                             {"rate": 9.0, "start": "23:00", "end": "03:00"},
                                             {"rate": 9.0, "start": "03:00", "end": "07:00"},
                                         ]
+                                        raw_tariffs = pdata.get('tariffs') or default_rows
+                                        for tr in raw_tariffs:
+                                            if isinstance(tr.get('start'), str):
+                                                tr['start'] = dt.datetime.strptime(tr['start'], "%H:%M").time()
+                                            if isinstance(tr.get('end'), str):
+                                                tr['end'] = dt.datetime.strptime(tr['end'], "%H:%M").time()
                                         tdf = st.data_editor(
-                                            pd.DataFrame(pdata.get('tariffs') or default_rows),
+                                            pd.DataFrame(raw_tariffs),
                                             num_rows="dynamic",
                                             key=f"tariff{idx}{ptype}",
                                             column_config={
