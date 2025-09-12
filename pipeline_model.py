@@ -235,6 +235,52 @@ _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _PARALLEL_CACHE: dict[tuple, tuple] = {}
 
 
+def _update_mainline_dra(
+    prev_ppm: float,
+    reach_prev: float,
+    stn_data: dict,
+    opt: dict,
+) -> tuple[float, float, float, float]:
+    """Return updated mainline DRA state for a segment.
+
+    ``ppm_main`` is reset to the injected value at pump stations.  Unpumped
+    segments simply carry forward the previous concentration until the
+    200 km limit.  The returned tuple contains the downstream concentration,
+    the effective DRA length on the segment, the remaining reach and the
+    injection PPM at the current station.
+    """
+
+    if stn_data["is_pump"] and opt.get("nop", 0) > 0:
+        if opt.get("dra_ppm_main", 0.0) > 0:
+            ppm_main = opt["dra_ppm_main"]
+            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
+            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
+        else:
+            ppm_main = 0.0
+            dra_len_main = 0.0
+            reach_after = 0.0
+    else:
+        ppm_main = prev_ppm
+        if reach_prev > 0 and ppm_main > 0:
+            dra_len_main = min(stn_data["L"], reach_prev)
+            reach_after = max(0.0, reach_prev - stn_data["L"])
+        else:
+            dra_len_main = 0.0
+            reach_after = 0.0
+
+    inj_ppm_main = (
+        opt["dra_ppm_main"]
+        if (
+            stn_data["is_pump"]
+            and opt.get("nop", 0) > 0
+            and opt.get("dra_ppm_main", 0.0) > 0
+        )
+        else 0.0
+    )
+
+    return ppm_main, dra_len_main, reach_after, inj_ppm_main
+
+
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
@@ -1125,29 +1171,13 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 reach_prev = state.get('reach', 0.0)
-                if stn_data['is_pump'] and opt['nop'] > 0:
-                    if opt['dra_ppm_main'] > 0:
-                        ppm_main = state.get('prev_ppm_main', 0.0) + opt['dra_ppm_main']
-                        dra_len_main = min(stn_data['L'], MAX_DRA_KM)
-                        reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
-                    else:
-                        ppm_main = 0.0
-                        dra_len_main = 0.0
-                        reach_after = 0.0
-                else:
-                    if opt['dra_ppm_main'] > 0:
-                        ppm_main = state.get('prev_ppm_main', 0.0) + opt['dra_ppm_main']
-                        dra_len_main = min(stn_data['L'], MAX_DRA_KM)
-                        reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
-                    else:
-                        ppm_main = state.get('prev_ppm_main', 0.0)
-                        if reach_prev > 0 and ppm_main > 0:
-                            dra_len_main = min(stn_data['L'], reach_prev)
-                            reach_after = max(0.0, reach_prev - stn_data['L'])
-                        else:
-                            dra_len_main = 0.0
-                            reach_after = 0.0
-                inj_ppm_main = opt['dra_ppm_main'] if opt['dra_ppm_main'] > 0 else 0.0
+                prev_ppm = state.get('prev_ppm_main', 0.0)
+                (
+                    ppm_main,
+                    dra_len_main,
+                    reach_after,
+                    inj_ppm_main,
+                ) = _update_mainline_dra(prev_ppm, reach_prev, stn_data, opt)
                 eff_dra_main = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
 
                 scenarios = []
