@@ -1261,6 +1261,39 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     return df.round(2)
 
+
+def display_pump_type_details(res: dict, stations: list[dict], heading: str | None = None) -> bool:
+    """Render a table with per-pump-type metrics for stations with multiple types."""
+    multi: list[tuple[str, str, list[dict]]] = []
+    for stn in stations:
+        key_raw = stn.get('name', '')
+        key = key_raw.lower().replace(' ', '_')
+        details = res.get(f"pump_details_{key}")
+        if details is None:
+            details = res.get(f"pump_details_{key_raw}", [])
+        if isinstance(details, list) and len(details) > 1:
+            name = stn.get('orig_name', key_raw)
+            multi.append((name, key, details))
+
+    if not multi:
+        return False
+
+    title = heading or "Pump Details by Type"
+    st.markdown(f"<div class='section-title'>{title}</div>", unsafe_allow_html=True)
+    for name, key, details in multi:
+        df_pump = pd.DataFrame({
+            "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
+            "Count": [d.get("count", 0) for d in details],
+            "Pump Speed (rpm)": [d.get("rpm", res.get(f"speed_{key}", 0.0)) for d in details],
+            "Pump Eff (%)": [d.get("eff", 0.0) for d in details],
+            "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
+            "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
+        })
+        fmt = {c: "{:.2f}" for c in df_pump.columns if c not in ["Pump Type", "Count"]}
+        st.markdown(f"**{name}**")
+        st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
+    return True
+
 # Persisted DRA lock from 07:00 run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
     """Freeze per-station DRA (as %DR) based on ppm chosen at 07:00 for each station.
@@ -1914,6 +1947,12 @@ if not auto_batch:
         st.markdown(
             f"**Total Optimized Cost ({total_label}): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
         )
+        for rec in reports:
+            display_pump_type_details(
+                rec["result"],
+                stations_base,
+                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+            )
 
         combined = []
         for idx, df_line in enumerate(linefill_snaps):
@@ -2094,6 +2133,12 @@ if not auto_batch:
             st.markdown(
                 f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
             )
+            for rec in reports:
+                display_pump_type_details(
+                    rec["result"],
+                    stations_base,
+                    heading=f"Pump Details by Type ({rec['time'].strftime('%d/%m %H:%M')})",
+                )
 
             combined = []
             for idx, df_line in enumerate(linefill_snaps):
@@ -2170,26 +2215,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             )
 
             # --- Detailed pump information when multiple pump types run ---
-            multi_details = []
-            for stn in stations_data:
-                key = stn['name'].lower().replace(' ', '_')
-                details = res.get(f"pump_details_{key}", [])
-                if len(details) > 1:
-                    multi_details.append((stn['name'], key, details))
-            if multi_details:
-                st.markdown("<div class='section-title'>Pump Details by Type</div>", unsafe_allow_html=True)
-                for name, key, details in multi_details:
-                    df_pump = pd.DataFrame({
-                        "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
-                        "Count": [d.get("count", 0) for d in details],
-                        "Pump Speed (rpm)": [d.get("rpm", res.get(f"speed_{key}", 0.0)) for d in details],
-                        "Pump Eff (%)": [d.get("eff", 0.0) for d in details],
-                        "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
-                        "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
-                    })
-                    fmt = {col: "{:.2f}" for col in df_pump.columns if col not in ["Pump Type", "Count"]}
-                    st.markdown(f"**{name}**")
-                    st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
+            display_pump_type_details(res, stations_data)
 
             # --- Aggregate counts for display ---
             total_cost = float(res.get("total_cost", 0.0))
