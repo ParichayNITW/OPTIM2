@@ -1320,7 +1320,6 @@ def solve_pipeline(
     if mop_kgcm2 is None:
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
-    warm_start = st.session_state.get("last_res")
     try:
         # Delegate to the backend optimiser
         if any(s.get('pump_types') for s in stations):
@@ -1338,8 +1337,6 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                warm_start=warm_start,
-                optimality_gap=0.01,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1356,8 +1353,6 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
-                warm_start=warm_start,
-                optimality_gap=0.01,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
