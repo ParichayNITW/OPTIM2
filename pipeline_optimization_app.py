@@ -4,6 +4,7 @@ from pathlib import Path
 import streamlit as st
 import altair as alt
 import pipeline_model
+import datetime as dt
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -637,13 +638,62 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
                                         tariffs = []
                                     else:
+                                        default_rows = [
+                                            {"rate": 9.0, "start": "07:00", "end": "11:00"},
+                                            {"rate": 9.0, "start": "11:00", "end": "15:00"},
+                                            {"rate": 9.0, "start": "15:00", "end": "19:00"},
+                                            {"rate": 9.0, "start": "19:00", "end": "23:00"},
+                                            {"rate": 9.0, "start": "23:00", "end": "03:00"},
+                                            {"rate": 9.0, "start": "03:00", "end": "07:00"},
+                                        ]
                                         tdf = st.data_editor(
-                                            pd.DataFrame(pdata.get('tariffs') or [{'rate': 9.0, 'hours': 1.0}]),
+                                            pd.DataFrame(pdata.get('tariffs') or default_rows),
                                             num_rows="dynamic",
                                             key=f"tariff{idx}{ptype}",
+                                            column_config={
+                                                "rate": st.column_config.NumberColumn("Rate"),
+                                                "start": st.column_config.TimeColumn("Start"),
+                                                "end": st.column_config.TimeColumn("End"),
+                                            },
                                         )
-                                        tariffs = tdf.to_dict(orient="records")
-                                        rate = 0.0
+                                        tariffs = []
+                                        intervals = []
+                                        valid = True
+                                        for _, row in tdf.iterrows():
+                                            start_raw = row.get("start")
+                                            end_raw = row.get("end")
+                                            rate_val = row.get("rate")
+                                            if pd.isna(start_raw) or pd.isna(end_raw):
+                                                valid = False
+                                                continue
+                                            if not isinstance(start_raw, str):
+                                                start_raw = start_raw.strftime("%H:%M")
+                                            if not isinstance(end_raw, str):
+                                                end_raw = end_raw.strftime("%H:%M")
+                                            try:
+                                                sdt = dt.datetime.strptime(start_raw, "%H:%M")
+                                                edt = dt.datetime.strptime(end_raw, "%H:%M")
+                                            except ValueError:
+                                                valid = False
+                                                continue
+                                            if edt <= sdt:
+                                                edt += dt.timedelta(days=1)
+                                            duration = (edt - sdt).total_seconds() / 3600.0
+                                            intervals.append((sdt, edt))
+                                            tariffs.append({
+                                                "rate": float(rate_val),
+                                                "start": start_raw,
+                                                "end": end_raw,
+                                                "duration": duration,
+                                            })
+                                        intervals.sort(key=lambda x: x[0])
+                                        for i in range(1, len(intervals)):
+                                            if intervals[i][0] < intervals[i-1][1]:
+                                                valid = False
+                                                break
+                                        if not valid:
+                                            st.warning("Invalid tariff windows: ensure HH:MM format and no overlaps.")
+                                        rate = pdata.get('rate', 9.0)
                                     sfc_mode = "none"
                                     sfc = 0.0
                                     engine_params = {}
@@ -1374,6 +1424,7 @@ def solve_pipeline(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    start_time: str = "00:00",
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1408,6 +1459,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                start_time=start_time,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1424,6 +1476,7 @@ def solve_pipeline(
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
+                start_time=start_time,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -1896,6 +1949,7 @@ if not auto_batch:
 
                     stns_run = copy.deepcopy(stations_base)
 
+                    start_str = f"{int((hr + sub) % 24):02d}:00"
                     res = solve_pipeline(
                         stns_run,
                         term_data,
@@ -1910,6 +1964,7 @@ if not auto_batch:
                         dra_reach_km,
                         st.session_state.get("MOP_kgcm2"),
                         hours=1.0,
+                        start_time=start_str,
                     )
 
                     block_cost += res.get("total_cost", 0.0)
@@ -3233,13 +3288,32 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         rho = rho_list[pump_idx]
         rate = stn.get('rate', 9.0)
-        tariffs = stn.get('tariffs')
-        if tariffs:
-            hrs = sum(t.get('hours', 0.0) for t in tariffs)
-            if hrs > 0:
-                rate = sum(t.get('rate', 0.0) * t.get('hours', 0.0) for t in tariffs) / hrs
+        tariffs = stn.get('tariffs') or []
         g = 9.81
-    
+
+        def tariff_cost(kw, hours, start_time="00:00"):
+            t0 = dt.datetime.strptime(start_time, "%H:%M")
+            remaining = hours
+            cost = 0.0
+            while remaining > 0:
+                current = t0 + dt.timedelta(hours=hours - remaining)
+                applied = False
+                for tr in tariffs:
+                    s = dt.datetime.strptime(tr["start"], "%H:%M")
+                    e = dt.datetime.strptime(tr["end"], "%H:%M")
+                    if e <= s:
+                        e += dt.timedelta(days=1)
+                    if s <= current < e:
+                        overlap = min(remaining, (e - current).total_seconds() / 3600.0)
+                        cost += kw * overlap * float(tr["rate"])
+                        remaining -= overlap
+                        applied = True
+                        break
+                if not applied:
+                    cost += kw * remaining * rate
+                    break
+            return cost
+
         def get_head(q, n): return (A*q**2 + B*q + Cc)*(n/DOL)**2
         def get_eff(q, n): q_adj = q * DOL/n if n > 0 else q; return (P*q_adj**4 + Qc*q_adj**3 + R*q_adj**2 + S*q_adj + T)
         def get_power_cost(q, n, d, npump=1):
@@ -3247,7 +3321,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             eff = max(get_eff(q, n)/100, 0.01)
             motor_eff = 0.98 if stn.get('power_type') == 'Diesel' else (0.95 if n >= DOL else 0.91)
             pwr = (rho*q*g*h*npump)/(3600.0*eff*motor_eff*1000)
-            return pwr*24*rate
+            return tariff_cost(pwr, 24.0, "00:00")
         def get_system_head(q, d):
             d_inner = stn['D'] - 2*stn['t']
             rough = stn['rough']
