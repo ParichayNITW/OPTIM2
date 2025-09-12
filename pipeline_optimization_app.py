@@ -2168,7 +2168,29 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
                 file_name="results.csv",
             )
-    
+
+            # --- Detailed pump information when multiple pump types run ---
+            multi_details = []
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ', '_')
+                details = res.get(f"pump_details_{key}", [])
+                if len(details) > 1:
+                    multi_details.append((stn['name'], key, details))
+            if multi_details:
+                st.markdown("<div class='section-title'>Pump Details by Type</div>", unsafe_allow_html=True)
+                for name, key, details in multi_details:
+                    df_pump = pd.DataFrame({
+                        "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
+                        "Count": [d.get("count", 0) for d in details],
+                        "Pump Speed (rpm)": [d.get("rpm", res.get(f"speed_{key}", 0.0)) for d in details],
+                        "Pump Eff (%)": [d.get("eff", 0.0) for d in details],
+                        "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
+                        "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
+                    })
+                    fmt = {col: "{:.2f}" for col in df_pump.columns if col not in ["Pump Type", "Count"]}
+                    st.markdown(f"**{name}**")
+                    st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
+
             # --- Aggregate counts for display ---
             total_cost = float(res.get("total_cost", 0.0))
             total_pumps = 0
