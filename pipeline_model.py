@@ -761,6 +761,8 @@ def solve_pipeline(
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
+    warm_start: dict | None = None,
+    optimality_gap: float = 0.0,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -780,6 +782,11 @@ def solve_pipeline(
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
+
+    ``warm_start`` can be a previously returned result.  Its total cost is
+    used as an upper bound so that more expensive states are pruned early.
+    ``optimality_gap`` defines a relative tolerance for this pruning; states
+    whose cost exceeds ``best_cost * (1 + optimality_gap)`` are skipped.
     """
 
     # When requested, perform an outer enumeration over loop usage patterns.
@@ -922,6 +929,7 @@ def solve_pipeline(
     linefill_state = copy.deepcopy(linefill_state)
 
     N = len(stations)
+    best_cost = warm_start.get('total_cost', float('inf')) if warm_start else float('inf')
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
@@ -1153,7 +1161,7 @@ def solve_pipeline(
     # Track the mainline injection PPM from the previous station so that
     # downstream segments inherit the same concentration.
     states: dict[float, dict] = {
-        round(init_residual, 2): {
+        round(init_residual, RESIDUAL_ROUND): {
             'cost': 0.0,
             'residual': init_residual,
             'records': [],
@@ -1170,6 +1178,8 @@ def solve_pipeline(
     for stn_data in station_opts:
         new_states: dict[float, dict] = {}
         for state in states.values():
+            if state['cost'] >= best_cost * (1 + optimality_gap):
+                continue
             flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
                 # -----------------------------------------------------------------
@@ -1732,6 +1742,10 @@ def solve_pipeline(
                     # or, when costs tie, the one with higher residual.  Carry
                     # forward the loop DRA carry value and the updated reach.
                     new_cost = state['cost'] + total_cost
+                    if stn_data['idx'] == N - 1 and new_cost < best_cost:
+                        best_cost = new_cost
+                    if new_cost >= best_cost * (1 + optimality_gap):
+                        continue
                     bucket = round(residual_next, RESIDUAL_ROUND)
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
@@ -1844,11 +1858,18 @@ def solve_pipeline_with_types(
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
+    warm_start: dict | None = None,
+    optimality_gap: float = 0.0,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
 
-    best_result = None
-    best_cost = float('inf')
+    ``warm_start`` may contain a previous result whose cost acts as an initial
+    upper bound.  ``optimality_gap`` provides a relative tolerance when pruning
+    during both the type enumeration and the underlying pipeline solve.
+    """
+
+    best_result = warm_start if warm_start and not warm_start.get('error') else None
+    best_cost = best_result.get('total_cost', float('inf')) if best_result else float('inf')
     best_stations = None
     N = len(stations)
 
@@ -1915,6 +1936,8 @@ def solve_pipeline_with_types(
                     hours,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
+                    warm_start=best_result,
+                    optimality_gap=optimality_gap,
                 )
                 if result.get("error"):
                     continue
