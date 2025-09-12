@@ -221,6 +221,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 150
 DRA_STEP = 10
+MAX_DRA_KM = 200.0
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -426,9 +427,11 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
     The return value is a list of dictionaries with keys ``tdh`` (total head
     contributed by that pump type), ``eff`` (efficiency at the operating
     point), ``count`` (number of pumps of that type), ``power_type`` and the
-    original pump-type data under ``data``.  This allows callers to compute
-    power and cost contributions for each pump type individually instead of
-    relying on an averaged efficiency across all running pumps.
+    original pump-type data under ``data``.  The pump ``ptype`` identifier and
+    operating ``rpm`` are also included so callers can display detailed
+    information for each pump type.  This allows callers to compute power and
+    cost contributions for each pump type individually instead of relying on
+    an averaged efficiency across all running pumps.
     """
 
     if nop <= 0:
@@ -473,6 +476,8 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
                     "eff": eff_single,
                     "count": count,
                     "power_type": pdata.get("power_type", stn.get("power_type")),
+                    "ptype": ptype,
+                    "rpm": rpm,
                     "data": pdata,
                 }
             )
@@ -500,6 +505,8 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
             "eff": eff,
             "count": nop,
             "power_type": stn.get("power_type"),
+            "ptype": stn.get("pump_type", "type1"),
+            "rpm": rpm,
             "data": stn,
         }
     )
@@ -1059,6 +1066,7 @@ def solve_pipeline(
             'dol': int(stn.get('DOL', 0)),
             'power_type': stn.get('power_type', 'Grid'),
             'rate': float(stn.get('rate', 0.0)),
+            'tariffs': stn.get('tariffs'),
             'sfc': float(stn.get('sfc', 0.0)),
             'sfc_mode': stn.get('sfc_mode', 'manual'),
             'engine_params': stn.get('engine_params', {}),
@@ -1096,6 +1104,7 @@ def solve_pipeline(
             'flow': segment_flows[0],
             'carry_loop_dra': 0.0,
             'prev_ppm_main': linefill_state[0]['dra_ppm'] if linefill_state else 0.0,
+            'reach': max(float(dra_reach_km), 0.0),
         }
     }
 
@@ -1115,23 +1124,31 @@ def solve_pipeline(
                     usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
-                # Determine the downstream PPM on the mainline.  When pumps run,
-                # any upstream DRA is discarded and the selected injection sets the
-                # new concentration.  If pumps are bypassed, a non-zero injection
-                # overwrites the upstream PPM; otherwise the previous concentration
-                # is carried forward.
+                reach_prev = state.get('reach', 0.0)
                 if stn_data['is_pump'] and opt['nop'] > 0:
-                    ppm_main = opt['dra_ppm_main']
+                    if opt['dra_ppm_main'] > 0:
+                        ppm_main = opt['dra_ppm_main']
+                        dra_len_main = min(stn_data['L'], MAX_DRA_KM)
+                        reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
+                    else:
+                        ppm_main = 0.0
+                        dra_len_main = 0.0
+                        reach_after = 0.0
                 else:
                     if opt['dra_ppm_main'] > 0:
                         ppm_main = opt['dra_ppm_main']
+                        dra_len_main = min(stn_data['L'], MAX_DRA_KM)
+                        reach_after = max(0.0, MAX_DRA_KM - stn_data['L'])
                     else:
                         ppm_main = state.get('prev_ppm_main', 0.0)
+                        if reach_prev > 0 and ppm_main > 0:
+                            dra_len_main = min(stn_data['L'], reach_prev)
+                            reach_after = max(0.0, reach_prev - stn_data['L'])
+                        else:
+                            dra_len_main = 0.0
+                            reach_after = 0.0
                 inj_ppm_main = opt['dra_ppm_main'] if opt['dra_ppm_main'] > 0 else 0.0
-                # Convert the PPM into an effective drag‑reduction percentage for
-                # hydraulic calculations.
                 eff_dra_main = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
-                dra_len_main = stn_data['L'] if eff_dra_main > 0 else 0.0
 
                 scenarios = []
                 # Base scenario: flow through mainline only
@@ -1309,7 +1326,21 @@ def solve_pipeline(
                         fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
                         cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
                     else:
-                        cost_i = prime_kw_i * hours * stn_data.get('rate', 0.0)
+                        tariffs = stn_data.get('tariffs')
+                        if tariffs:
+                            remaining = hours
+                            cost_i = 0.0
+                            for tr in tariffs:
+                                if remaining <= 0:
+                                    break
+                                dur = min(float(tr.get('hours', 0.0)), remaining)
+                                rate = float(tr.get('rate', stn_data.get('rate', 0.0)))
+                                cost_i += prime_kw_i * dur * rate
+                                remaining -= dur
+                            if remaining > 0:
+                                cost_i += prime_kw_i * remaining * stn_data.get('rate', 0.0)
+                        else:
+                            cost_i = prime_kw_i * hours * stn_data.get('rate', 0.0)
                     cost_i = max(cost_i, 0.0)
                     pinfo['pump_bkw'] = pump_bkw_i
                     pinfo['prime_kw'] = prime_kw_i
@@ -1632,7 +1663,7 @@ def solve_pipeline(
                             f"power_cost_{stn_data['name']}": power_cost,
                             f"dra_cost_{stn_data['name']}": dra_cost,
                             f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
-                            f"dra_ppm_{stn_data['name']}": ppm_main,
+                            f"dra_ppm_{stn_data['name']}": inj_ppm_main,
                             f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
@@ -1648,7 +1679,7 @@ def solve_pipeline(
                             f"power_cost_{stn_data['name']}": 0.0,
                             f"dra_cost_{stn_data['name']}": dra_cost,
                             f"pump_details_{stn_data['name']}": [],
-                            f"dra_ppm_{stn_data['name']}": ppm_main,
+                            f"dra_ppm_{stn_data['name']}": inj_ppm_main,
                             f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
@@ -1677,11 +1708,10 @@ def solve_pipeline(
                             'records': new_record_list,
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
-                            # ``reach`` removed because DRA advancement is no longer tracked
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            # Propagate the resulting mainline PPM for downstream stations.
                             'prev_ppm_main': ppm_main,
+                            'reach': reach_after,
                         }
 
         if not new_states:
@@ -1889,6 +1919,7 @@ def solve_pipeline_with_types(
                             unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
                             unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
                             unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
+                            unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
                             unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
                             unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
@@ -1903,6 +1934,7 @@ def solve_pipeline_with_types(
                             )
                             unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
                             unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
+                            unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
                             unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
