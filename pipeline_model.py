@@ -580,7 +580,6 @@ def _downstream_requirement(
     from functools import lru_cache
 
     N = len(stations)
-    best_cost = warm_start.get('total_cost', float('inf')) if warm_start else float('inf')
     if flow_override is not None:
         if isinstance(flow_override, list):
             flows = flow_override
@@ -865,6 +864,7 @@ def solve_pipeline(
     linefill_state = copy.deepcopy(linefill_state)
 
     N = len(stations)
+    best_cost = warm_start.get('total_cost', float('inf')) if warm_start else float('inf')
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
