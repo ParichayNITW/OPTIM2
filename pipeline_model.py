@@ -426,9 +426,11 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
     The return value is a list of dictionaries with keys ``tdh`` (total head
     contributed by that pump type), ``eff`` (efficiency at the operating
     point), ``count`` (number of pumps of that type), ``power_type`` and the
-    original pump-type data under ``data``.  This allows callers to compute
-    power and cost contributions for each pump type individually instead of
-    relying on an averaged efficiency across all running pumps.
+    original pump-type data under ``data``.  The pump ``ptype`` identifier and
+    operating ``rpm`` are also included so callers can display detailed
+    information for each pump type.  This allows callers to compute power and
+    cost contributions for each pump type individually instead of relying on
+    an averaged efficiency across all running pumps.
     """
 
     if nop <= 0:
@@ -473,6 +475,8 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
                     "eff": eff_single,
                     "count": count,
                     "power_type": pdata.get("power_type", stn.get("power_type")),
+                    "ptype": ptype,
+                    "rpm": rpm,
                     "data": pdata,
                 }
             )
@@ -500,6 +504,8 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
             "eff": eff,
             "count": nop,
             "power_type": stn.get("power_type"),
+            "ptype": stn.get("pump_type", "type1"),
+            "rpm": rpm,
             "data": stn,
         }
     )
