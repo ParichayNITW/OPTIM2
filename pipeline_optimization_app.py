@@ -638,7 +638,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         tariffs = []
                                     else:
                                         tdf = st.data_editor(
-                                            pd.DataFrame(pdata.get('tariffs', [{'rate': 9.0, 'hours': 1.0}])),
+                                            pd.DataFrame(pdata.get('tariffs') or [{'rate': 9.0, 'hours': 1.0}]),
                                             num_rows="dynamic",
                                             key=f"tariff{idx}{ptype}",
                                         )
