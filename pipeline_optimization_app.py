@@ -170,6 +170,7 @@ def restore_case_dict(loaded_data):
     st.session_state['terminal_head'] = loaded_data.get('terminal', {}).get('min_residual', 50.0)
     st.session_state['FLOW'] = loaded_data.get('FLOW', 1000.0)
     st.session_state['RateDRA'] = loaded_data.get('RateDRA', 500.0)
+    st.session_state['InitDRAppm'] = loaded_data.get('InitDRAppm', 4.0)
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     st.session_state['Fuel_density'] = loaded_data.get('Fuel_density', 820.0)
     st.session_state['Ambient_temp'] = loaded_data.get('Ambient_temp', 25.0)
@@ -270,6 +271,7 @@ with st.sidebar:
         with st.form("global_params"):
             FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="FLOW_input")
             RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="RateDRA_input")
+            InitDRAppm = st.number_input("Initial Linefill DRA (ppm)", value=st.session_state.get("InitDRAppm", 4.0), step=0.5, key="InitDRAppm_input")
             Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="Price_HSD_input")
             Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="Fuel_density_input")
             Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="Ambient_temp_input")
@@ -278,12 +280,14 @@ with st.sidebar:
         if submitted_glob:
             st.session_state["FLOW"] = FLOW
             st.session_state["RateDRA"] = RateDRA
+            st.session_state["InitDRAppm"] = InitDRAppm
             st.session_state["Price_HSD"] = Price_HSD
             st.session_state["Fuel_density"] = Fuel_density
             st.session_state["Ambient_temp"] = Ambient_temp
             st.session_state["MOP_kgcm2"] = MOP_val
         FLOW = st.session_state.get("FLOW", 1000.0)
         RateDRA = st.session_state.get("RateDRA", 500.0)
+        InitDRAppm = st.session_state.get("InitDRAppm", 4.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
         Fuel_density = st.session_state.get("Fuel_density", 820.0)
         Ambient_temp = st.session_state.get("Ambient_temp", 25.0)
@@ -623,7 +627,23 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol{idx}{ptype}")
                             with pcol3:
                                 if ptype_sel == "Grid":
-                                    rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                    tariff_mode = st.radio(
+                                        "Tariff",
+                                        ["Fixed", "Varying"],
+                                        index=0 if not pdata.get('tariffs') else 1,
+                                        key=f"tmode{idx}{ptype}"
+                                    )
+                                    if tariff_mode == "Fixed":
+                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                        tariffs = []
+                                    else:
+                                        tdf = st.data_editor(
+                                            pd.DataFrame(pdata.get('tariffs', [{'rate': 9.0, 'hours': 1.0}])),
+                                            num_rows="dynamic",
+                                            key=f"tariff{idx}{ptype}",
+                                        )
+                                        tariffs = tdf.to_dict(orient="records")
+                                        rate = 0.0
                                     sfc_mode = "none"
                                     sfc = 0.0
                                     engine_params = {}
@@ -667,6 +687,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                             'sfc100': sfc100,
                                         }
                                     rate = 0.0
+                                    tariffs = []
 
                             stn.setdefault('pump_types', {})[ptype] = {
                                 'names': names,
@@ -677,6 +698,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 'MinRPM': minrpm,
                                 'DOL': dol,
                                 'rate': rate,
+                                'tariffs': tariffs,
                                 'sfc_mode': 'manual' if sfc_mode == "Enter manually" else ('iso' if ptype_sel == 'Diesel' else 'none'),
                                 'sfc': sfc,
                                 'engine_params': engine_params,
@@ -792,6 +814,7 @@ def get_full_case_dict():
         },
         "FLOW": st.session_state.get('FLOW', 1000.0),
         "RateDRA": st.session_state.get('RateDRA', 500.0),
+        "InitDRAppm": st.session_state.get('InitDRAppm', 4.0),
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "Fuel_density": st.session_state.get('Fuel_density', 820.0),
         "Ambient_temp": st.session_state.get('Ambient_temp', 25.0),
@@ -1044,11 +1067,12 @@ def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
     col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
     col_ppm = "DRA ppm" if "DRA ppm" in df.columns else "dra_ppm"
     batches: list[dict] = []
+    default_ppm = st.session_state.get("InitDRAppm", 4.0)
     for _, r in df.iterrows():
         vol = float(r.get(col_vol, 0.0) or 0.0)
         if vol <= 0:
             continue
-        ppm = float(r.get(col_ppm, 0.0) or 0.0)
+        ppm = float(r.get(col_ppm, default_ppm) or default_ppm)
         batches.append({"volume": vol, "dra_ppm": ppm})
     return batches
 
@@ -1158,7 +1182,15 @@ def build_summary_dataframe(
                     drop_cols.append(stn['name'])
         if drop_cols:
             df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
-    return df_sum.round(2)
+    df_sum = df_sum.round(2)
+    if 'DRA PPM' in df_sum['Parameters'].values:
+        idx = df_sum[df_sum['Parameters'] == 'DRA PPM'].index[0]
+        for col in df_sum.columns:
+            if col == 'Parameters':
+                continue
+            val = df_sum.at[idx, col]
+            df_sum.at[idx, col] = val if float(val or 0) > 0 else 'NIL'
+    return df_sum
 
 
 def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
@@ -1225,8 +1257,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
-            'DRA PPM': float(res.get(f"dra_ppm_{key}", 0.0) or 0.0),
-            'Loop DRA PPM': float(res.get(f"dra_ppm_loop_{key}", 0.0) or 0.0),
+            'DRA PPM': res.get(f"dra_ppm_{key}", 0.0),
+            'Loop DRA PPM': res.get(f"dra_ppm_loop_{key}", 0.0),
             'No. of Pumps': n_pumps,
             'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
@@ -1259,7 +1291,46 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    return df.round(2)
+    num_cols = df.select_dtypes(include='number').columns
+    df[num_cols] = df[num_cols].round(2)
+    if 'DRA PPM' in df.columns:
+        df['DRA PPM'] = df['DRA PPM'].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
+    if 'Loop DRA PPM' in df.columns:
+        df['Loop DRA PPM'] = df['Loop DRA PPM'].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
+    return df
+
+
+def display_pump_type_details(res: dict, stations: list[dict], heading: str | None = None) -> bool:
+    """Render a table with per-pump-type metrics for stations with multiple types."""
+    multi: list[tuple[str, str, list[dict]]] = []
+    for stn in stations:
+        key_raw = stn.get('name', '')
+        key = key_raw.lower().replace(' ', '_')
+        details = res.get(f"pump_details_{key}")
+        if details is None:
+            details = res.get(f"pump_details_{key_raw}", [])
+        if isinstance(details, list) and len(details) > 1:
+            name = stn.get('orig_name', key_raw)
+            multi.append((name, key, details))
+
+    if not multi:
+        return False
+
+    title = heading or "Pump Details by Type"
+    st.markdown(f"<div class='section-title'>{title}</div>", unsafe_allow_html=True)
+    for name, key, details in multi:
+        df_pump = pd.DataFrame({
+            "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
+            "Count": [d.get("count", 0) for d in details],
+            "Pump Speed (rpm)": [d.get("rpm", res.get(f"speed_{key}", 0.0)) for d in details],
+            "Pump Eff (%)": [d.get("eff", 0.0) for d in details],
+            "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
+            "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
+        })
+        fmt = {c: "{:.2f}" for c in df_pump.columns if c not in ["Pump Type", "Count"]}
+        st.markdown(f"**{name}**")
+        st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
+    return True
 
 
 def display_pump_type_details(res: dict, stations: list[dict], heading: str | None = None) -> bool:
@@ -1520,7 +1591,8 @@ if auto_batch:
                         row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                         row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
-                        row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                        _ppm = res.get(f"dra_ppm_{key}", 0.0)
+                        row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                         row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
                     row["Total Cost"] = res.get("total_cost", "")
@@ -1540,7 +1612,8 @@ if auto_batch:
                         row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                         row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
-                        row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                        _ppm = res.get(f"dra_ppm_{key}", 0.0)
+                        row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                         row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
                     row["Total Cost"] = res.get("total_cost", "")
@@ -1571,7 +1644,8 @@ if auto_batch:
                             row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                             row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
-                            row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                            _ppm = res.get(f"dra_ppm_{key}", 0.0)
+                            row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
                         row["Total Cost"] = res.get("total_cost", "")
@@ -1595,7 +1669,8 @@ if auto_batch:
                             row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                             row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
-                            row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                            _ppm = res.get(f"dra_ppm_{key}", 0.0)
+                            row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                             row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
                         row["Total Cost"] = res.get("total_cost", "")
@@ -1633,7 +1708,8 @@ if auto_batch:
                                 row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
                                 row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                                 row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
-                                row[f"DRA PPM {stn['name']}"] = res.get(f"dra_ppm_{key}", "")
+                                _ppm = res.get(f"dra_ppm_{key}", 0.0)
+                                row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                                 row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
                                 row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
                             row["Total Cost"] = res.get("total_cost", "")
@@ -1744,8 +1820,8 @@ def run_all_updates():
             st.session_state.get("Price_HSD", 70.0),
             st.session_state.get("Fuel_density", 820.0),
             st.session_state.get("Ambient_temp", 25.0),
-            linefill_df.to_dict(),
-            0.0,
+            df_to_dra_linefill(linefill_df),
+            200.0,
             st.session_state.get("MOP_kgcm2"),
             24.0,
         )
@@ -1825,7 +1901,7 @@ if not auto_batch:
         reports = []
         linefill_snaps = []
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
-        dra_reach_km = 0.0
+        dra_reach_km = 200.0
 
         current_vol = vol_df.copy()
         if "DRA ppm" not in current_vol.columns:
@@ -1886,7 +1962,7 @@ if not auto_batch:
                     dra_linefill = res.get("linefill", dra_linefill)
                     current_vol, plan_df = future_vol, future_plan
                     current_vol = apply_dra_ppm(current_vol, dra_linefill)
-                    dra_reach_km = 0.0
+                    dra_reach_km = res.get("dra_front_km", dra_reach_km)
 
                 if error_msg:
                     break
@@ -2024,7 +2100,7 @@ if not auto_batch:
             current_vol = apply_dra_ppm(current_vol, dra_linefill)
             reports = []
             linefill_snaps = []
-            dra_reach_km = 0.0
+            dra_reach_km = 200.0
 
             for _, row in flow_df.iterrows():
                 flow = float(row.get("Flow (m³/h)", row.get("Flow", 0.0)) or 0.0)
@@ -2075,7 +2151,7 @@ if not auto_batch:
                     current_vol = apply_dra_ppm(future_vol, dra_linefill)
                     # In the revised model DRA does not propagate downstream over time.
                     # Keep the DRA reach constant (zero).
-                    dra_reach_km = 0.0
+                    dra_reach_km = res.get("dra_front_km", dra_reach_km)
                     seg_start = seg_end
 
             if not reports:
@@ -3190,6 +3266,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         rho = rho_list[pump_idx]
         rate = stn.get('rate', 9.0)
+        tariffs = stn.get('tariffs')
+        if tariffs:
+            hrs = sum(t.get('hours', 0.0) for t in tariffs)
+            if hrs > 0:
+                rate = sum(t.get('rate', 0.0) * t.get('hours', 0.0) for t in tariffs) / hrs
         g = 9.81
     
         def get_head(q, n): return (A*q**2 + B*q + Cc)*(n/DOL)**2
