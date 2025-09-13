@@ -1245,7 +1245,7 @@ def build_summary_dataframe(
             if col == 'Parameters':
                 continue
             val = df_sum.at[idx, col]
-            df_sum.at[idx, col] = val if float(val or 0) > 0 else 'NIL'
+            df_sum.at[idx, col] = val if float(val or 0) > 0 else np.nan
     return df_sum
 
 
@@ -2308,8 +2308,13 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             keys = [n.lower().replace(' ', '_') for n in names]
             df_sum = build_summary_dataframe(res, stations_data, linefill_df, st.session_state["last_term_data"])
             st.session_state["summary_table"] = df_sum.copy()
+            df_sum.replace("NIL", np.nan, inplace=True)
             fmt_cols = {col: "{:.2f}" for col in df_sum.columns if col != "Parameters"}
-            df_display = df_sum.style.format(fmt_cols).background_gradient(cmap="Blues", subset=df_sum.columns[1:])
+            numeric_cols = df_sum.select_dtypes(include=[np.number]).columns
+            df_display = (
+                df_sum.style.format(fmt_cols, na_rep="NIL")
+                .background_gradient(cmap="Blues", subset=numeric_cols)
+            )
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
