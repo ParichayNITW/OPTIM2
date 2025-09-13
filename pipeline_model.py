@@ -350,15 +350,19 @@ def _segment_hydraulics(
     else:
         f = np.float64(0.0)
 
-    if dra_length is None or dra_length >= L:
+    if dra_length is None:
         hl_dra = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
         head_loss = hl_dra
-    elif dra_length <= np.float64(0.0):
-        head_loss = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g))
     else:
-        hl_dra = f * (((dra_length) * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
-        hl_nodra = f * (((L - dra_length) * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g))
-        head_loss = hl_dra + hl_nodra
+        if dra_length >= L:
+            hl_dra = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
+            head_loss = hl_dra
+        elif dra_length <= np.float64(0.0):
+            head_loss = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g))
+        else:
+            hl_dra = f * (((dra_length) * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
+            hl_nodra = f * (((L - dra_length) * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g))
+            head_loss = hl_dra + hl_nodra
 
     return head_loss, v, Re, f
 
