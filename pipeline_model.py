@@ -770,6 +770,10 @@ def solve_pipeline(
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
+    _internal_pass: bool = False,
+    rpm_step: int = RPM_STEP,
+    dra_step: int = DRA_STEP,
+    narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -779,6 +783,14 @@ def solve_pipeline(
     leading batch's concentration is used as the upstream DRA level for the
     first station.  The function returns the updated linefill after pumping
     under the key ``"linefill"``.
+
+    The solver operates in two passes.  A coarse search first evaluates
+    the pipeline using large step sizes for pump speed and drag-reduction
+    percentage to identify a near‑optimal operating point.  A refinement
+    pass then narrows the RPM and DRA ranges around that coarse solution
+    and re-solves using the user-provided ``rpm_step`` and ``dra_step``.
+    ``narrow_ranges`` is an internal helper used to restrict the values
+    considered during the refinement stage.
 
     This function supports optional loop-use directives.  When
     ``enumerate_loops`` is ``True`` and no explicit
@@ -820,6 +832,8 @@ def solve_pipeline(
                 start_time,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -874,6 +888,8 @@ def solve_pipeline(
                 start_time,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
             )
             if res.get('error'):
                 continue
@@ -933,6 +949,87 @@ def solve_pipeline(
     linefill_state = copy.deepcopy(linefill_state)
 
     N = len(stations)
+
+    # ------------------------------------------------------------------
+    # Two-pass optimisation: first run a coarse search with enlarged
+    # step sizes to find a near-optimal solution, then refine around that
+    # solution using the user-provided steps.  The recursion is controlled
+    # by the ``_internal_pass`` flag to avoid infinite loops.
+    # ------------------------------------------------------------------
+    if not _internal_pass:
+        coarse_rpm_step = max(rpm_step * 5, rpm_step)
+        coarse_dra_step = max(dra_step * 5, dra_step)
+        coarse_res = solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            start_time,
+            loop_usage_by_station=loop_usage_by_station,
+            enumerate_loops=False,
+            _internal_pass=True,
+            rpm_step=coarse_rpm_step,
+            dra_step=coarse_dra_step,
+        )
+        if coarse_res.get("error"):
+            return coarse_res
+        ranges: dict[int, dict[str, tuple[int, int]]] = {}
+        for idx, stn in enumerate(stations):
+            name = stn["name"].strip().lower().replace(" ", "_")
+            if stn.get("is_pump", False):
+                coarse_rpm = int(coarse_res.get(f"speed_{name}", stn.get("MinRPM", 0)))
+                coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                rmin = max(int(stn.get("MinRPM", 0)), coarse_rpm - rpm_step)
+                rmax = min(int(stn.get("DOL", 0)), coarse_rpm + rpm_step)
+                dmin = max(0, coarse_dr_main - dra_step)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
+                entry: dict[str, tuple[int, int]] = {
+                    "rpm": (rmin, rmax),
+                    "dra_main": (dmin, dmax),
+                }
+                loop = stn.get("loopline") or {}
+                if loop:
+                    coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
+                    lmin = max(0, coarse_dr_loop - dra_step)
+                    lmax = min(int(loop.get("max_dr", 0)), coarse_dr_loop + dra_step)
+                    entry["dra_loop"] = (lmin, lmax)
+                ranges[idx] = entry
+            else:
+                coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                dmin = max(0, coarse_dr_main - dra_step)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
+                ranges[idx] = {"dra_main": (dmin, dmax)}
+        return solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            start_time,
+            loop_usage_by_station=loop_usage_by_station,
+            enumerate_loops=False,
+            _internal_pass=True,
+            rpm_step=rpm_step,
+            dra_step=dra_step,
+            narrow_ranges=ranges,
+        )
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
@@ -1043,14 +1140,29 @@ def solve_pipeline(
                 min_p = max(1, min_p)
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
-            rpm_vals = _allowed_values(int(stn.get('MinRPM', 0)), int(stn.get('DOL', 0)), RPM_STEP)
+            rng = narrow_ranges.get(i - 1) if narrow_ranges else None
+            rpm_min = int(stn.get('MinRPM', 0))
+            rpm_max = int(stn.get('DOL', 0))
+            if rng and 'rpm' in rng:
+                rpm_min = max(rpm_min, rng['rpm'][0])
+                rpm_max = min(rpm_max, rng['rpm'][1])
+            rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = int(stn.get('max_dr', 0))
             if fixed_dr is not None:
                 dra_main_vals = [int(round(fixed_dr))]
             else:
-                dra_main_vals = _allowed_values(0, max_dr_main, DRA_STEP)
-            dra_loop_vals = _allowed_values(0, int(loop_dict.get('max_dr', 0)), DRA_STEP) if loop_dict else [0]
+                dr_min, dr_max = 0, max_dr_main
+                if rng and 'dra_main' in rng:
+                    dr_min = max(0, rng['dra_main'][0])
+                    dr_max = min(max_dr_main, rng['dra_main'][1])
+                dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
+            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
+            dr_loop_min, dr_loop_max = 0, max_dr_loop
+            if rng and 'dra_loop' in rng:
+                dr_loop_min = max(0, rng['dra_loop'][0])
+                dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
+            dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
             for nop in range(min_p, max_p + 1):
                 rpm_opts = [0] if nop == 0 else rpm_vals
                 for rpm in rpm_opts:
@@ -1081,8 +1193,13 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = int(stn.get('max_dr', 0))
+            rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
-                dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
+                dr_min, dr_max = 0, max_dr_main
+                if rng and 'dra_main' in rng:
+                    dr_min = max(0, rng['dra_main'][0])
+                    dr_max = min(max_dr_main, rng['dra_main'][1])
+                dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 for dra_main in dra_vals:
                     ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
                     non_pump_opts.append({
