@@ -245,6 +245,8 @@ STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+    if min_val > max_val:
+        return [min_val]
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
@@ -972,10 +974,14 @@ def solve_pipeline(
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
             if stn.get("is_pump", False):
-                coarse_rpm = int(coarse_res.get(f"speed_{name}", stn.get("MinRPM", 0)))
+                coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
                 coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                rmin = max(int(stn.get("MinRPM", 0)), coarse_rpm - rpm_step)
-                rmax = min(int(stn.get("DOL", 0)), coarse_rpm + rpm_step)
+                if coarse_nop == 0:
+                    rmin = rmax = 0
+                else:
+                    coarse_rpm = int(coarse_res.get(f"speed_{name}", stn.get("MinRPM", 0)))
+                    rmin = max(int(stn.get("MinRPM", 0)), coarse_rpm - rpm_step)
+                    rmax = min(int(stn.get("DOL", 0)), coarse_rpm + rpm_step)
                 dmin = max(0, coarse_dr_main - dra_step)
                 dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 entry: dict[str, tuple[int, int]] = {
