@@ -333,8 +333,6 @@ def _segment_hydraulics(
     rough = np.float64(rough)
     kv = np.float64(kv)
     dra_perc = np.float64(dra_perc)
-    if dra_length is not None:
-        dra_length = np.float64(dra_length)
 
     g = np.float64(9.81)
     flow_m3s = flow_m3h / np.float64(3600.0)
@@ -351,17 +349,27 @@ def _segment_hydraulics(
         f = np.float64(0.0)
 
     if dra_length is None:
-        hl_dra = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
-        head_loss = hl_dra
+        hl_dra = f * ((L * np.float64(1000.0)) / d_inner) * (
+            v ** np.float64(2.0) / (np.float64(2.0) * g)
+        ) * (1 - dra_perc / np.float64(100.0))
+        return hl_dra, v, Re, f
     else:
-        if dra_length >= L:
-            hl_dra = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
-            head_loss = hl_dra
-        elif dra_length <= np.float64(0.0):
-            head_loss = f * ((L * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g))
+        dlen = np.float64(dra_length)
+        if dlen >= L:
+            head_loss = f * ((L * np.float64(1000.0)) / d_inner) * (
+                v ** np.float64(2.0) / (np.float64(2.0) * g)
+            ) * (1 - dra_perc / np.float64(100.0))
+        elif dlen <= np.float64(0.0):
+            head_loss = f * ((L * np.float64(1000.0)) / d_inner) * (
+                v ** np.float64(2.0) / (np.float64(2.0) * g)
+            )
         else:
-            hl_dra = f * (((dra_length) * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g)) * (1 - dra_perc / np.float64(100.0))
-            hl_nodra = f * (((L - dra_length) * np.float64(1000.0)) / d_inner) * (v ** np.float64(2.0) / (np.float64(2.0) * g))
+            hl_dra = f * ((dlen * np.float64(1000.0)) / d_inner) * (
+                v ** np.float64(2.0) / (np.float64(2.0) * g)
+            ) * (1 - dra_perc / np.float64(100.0))
+            hl_nodra = f * (((L - dlen) * np.float64(1000.0)) / d_inner) * (
+                v ** np.float64(2.0) / (np.float64(2.0) * g)
+            )
             head_loss = hl_dra + hl_nodra
 
     return head_loss, v, Re, f
