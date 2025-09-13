@@ -230,6 +230,13 @@ RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
 
+# Limit the number of dynamic-programming states carried forward after
+# each station.  ``STATE_TOP_K`` bounds the total states retained while
+# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
+# this many currency units of the best state for the current station.
+STATE_TOP_K = 50
+STATE_COST_MARGIN = 5000.0
+
 # Simple memoisation caches used to avoid repeatedly solving the same
 # hydraulic sub-problems when many states evaluate identical conditions.
 _SEGMENT_CACHE: dict[tuple, tuple] = {}
@@ -1173,6 +1180,7 @@ def solve_pipeline(
 
     for stn_data in station_opts:
         new_states: dict[int, dict] = {}
+        best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
@@ -1743,6 +1751,8 @@ def solve_pipeline(
                     # or, when costs tie, the one with higher residual.  Carry
                     # forward the loop DRA carry value and the updated reach.
                     new_cost = state['cost'] + total_cost
+                    if new_cost < best_cost_station:
+                        best_cost_station = new_cost
                     bucket = residual_next
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
@@ -1771,11 +1781,18 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # Assign all new states for the next iteration.  Previously we pruned
-        # aggressively by residual and cost, which could discard viable
-        # solutions.  Retaining all states helps ensure that marginally
-        # more expensive configurations remain available for later stations.
-        states = new_states
+        # After evaluating all options for this station retain only the
+        # lowest-cost state for each residual (already enforced by ``bucket``)
+        # and globally prune to the top ``STATE_TOP_K`` states or those within
+        # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
+        # manageable while preserving near-optimal candidates.
+        items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
+        threshold = best_cost_station + STATE_COST_MARGIN
+        pruned: dict[int, dict] = {}
+        for idx, (residual_key, data) in enumerate(items):
+            if idx < STATE_TOP_K or data['cost'] <= threshold:
+                pruned[residual_key] = data
+        states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
