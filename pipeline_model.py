@@ -226,7 +226,7 @@ MAX_DRA_KM = 200.0
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
-RESIDUAL_ROUND = 1
+RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
 
@@ -244,11 +244,11 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
 
 
 def _update_mainline_dra(
-    prev_ppm: float,
+    prev_ppm: int,
     reach_prev: float,
     stn_data: dict,
     opt: dict,
-) -> tuple[float, float, float, float]:
+) -> tuple[int, float, float, int]:
     """Return updated drag‑reduction state for the mainline.
 
     Parameters
@@ -275,7 +275,7 @@ def _update_mainline_dra(
         station.
     """
 
-    inj_ppm_main = opt.get("dra_ppm_main", 0.0) or 0.0
+    inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
 
     # A pump station resets the DRA concentration to the injected value.  If
     # the pump runs without injection the downstream concentration drops to
@@ -298,7 +298,7 @@ def _update_mainline_dra(
             dra_len_main = 0.0
             reach_after = 0.0
 
-    return ppm_main, dra_len_main, reach_after, inj_ppm_main
+    return int(ppm_main), dra_len_main, reach_after, inj_ppm_main
 
 
 def _segment_hydraulics(
@@ -480,7 +480,7 @@ def _split_flow_two_segments(
     return best
 
 
-def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
+def _pump_head(stn: dict, flow_m3h: float, rpm: int, nop: int) -> list[dict]:
     """Return per-pump-type head and efficiency information.
 
     The return value is a list of dictionaries with keys ``tdh`` (total head
@@ -536,7 +536,7 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
                     "count": count,
                     "power_type": pdata.get("power_type", stn.get("power_type")),
                     "ptype": ptype,
-                    "rpm": rpm,
+                    "rpm": int(rpm),
                     "data": pdata,
                 }
             )
@@ -565,7 +565,7 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: float, nop: int) -> list[dict]:
             "count": nop,
             "power_type": stn.get("power_type"),
             "ptype": stn.get("pump_type", "type1"),
-            "rpm": rpm,
+            "rpm": int(rpm),
             "data": stn,
         }
     )
@@ -621,7 +621,7 @@ def _downstream_requirement(
     flow_override: float | list[float] | None = None,
     loop_usage_by_station: list[int] | None = None,
     pump_flow_overrides: dict[int, float] | None = None,
-) -> float:
+) -> int:
     """Return minimum residual head needed immediately after station ``idx``.
 
     The previous implementation only accumulated losses across consecutive
@@ -657,9 +657,9 @@ def _downstream_requirement(
         flows = segment_flows
 
     @lru_cache(None)
-    def req_entry(i: int) -> float:
+    def req_entry(i: int) -> int:
         if i >= N:
-            return terminal.get('min_residual', 0.0)
+            return int(terminal.get('min_residual', 0))
         stn = stations[i]
         kv = KV_list[i]
         # ``flows`` holds the flow rate *after* each station; use the downstream
@@ -676,7 +676,7 @@ def _downstream_requirement(
         else:
             d_inner = stn.get('d', 0.7) - 2 * t
         rough = stn.get('rough', 0.00004)
-        dra_down = stn.get('max_dr', 0.0)
+        dra_down = stn.get('max_dr', 0)
 
         head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down, None)
         elev_i = stn.get('elev', 0.0)
@@ -736,9 +736,9 @@ def _downstream_requirement(
             else:
                 tdh_max = 0.0
             req -= tdh_max
-        return max(req, stn.get('min_residual', 0.0))
-
-    return req_entry(idx + 1)
+        req = max(req, int(stn.get('min_residual', 0)))
+        return int(round(req))
+    return int(req_entry(idx + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -906,9 +906,9 @@ def solve_pipeline(
                     else:
                         ppm_val = 0.0
                     try:
-                        ppm = float(ppm_val)
+                        ppm = int(float(ppm_val))
                     except Exception:
-                        ppm = 0.0
+                        ppm = 0
                     linefill_state.append({'volume': vol, 'dra_ppm': ppm})
         elif isinstance(linefill, list):
             for ent in linefill:
@@ -919,9 +919,9 @@ def solve_pipeline(
                 if vol <= 0:
                     continue
                 try:
-                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
+                    ppm = int(float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0))
                 except Exception:
-                    ppm = 0.0
+                    ppm = 0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
@@ -1049,8 +1049,8 @@ def solve_pipeline(
                 for rpm in rpm_opts:
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
-                            ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
-                            ppm_loop = get_ppm_for_dr(kv, dra_loop) if dra_loop > 0 else 0.0
+                            ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                            ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
                             opts.append({
                                 'nop': nop,
                                 'rpm': rpm,
@@ -1065,8 +1065,8 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
+                    'dra_ppm_main': 0,
+                    'dra_ppm_loop': 0,
                 })
         else:
             # Non-pump stations can inject DRA independently whenever a
@@ -1077,14 +1077,14 @@ def solve_pipeline(
             if max_dr_main > 0:
                 dra_vals = _allowed_values(0, max_dr_main, DRA_STEP)
                 for dra_main in dra_vals:
-                    ppm_main = get_ppm_for_dr(kv, dra_main) if dra_main > 0 else 0.0
+                    ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
                         'dra_main': dra_main,
                         'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
-                        'dra_ppm_loop': 0.0,
+                        'dra_ppm_loop': 0,
                     })
             if not non_pump_opts:
                 non_pump_opts.append({
@@ -1092,8 +1092,8 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
+                    'dra_ppm_main': 0,
+                    'dra_ppm_loop': 0,
                 })
             opts.extend(non_pump_opts)
 
@@ -1138,7 +1138,7 @@ def solve_pipeline(
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
-    init_residual = stations[0].get('min_residual', 50.0)
+    init_residual = int(stations[0].get('min_residual', 50))
     # Initial dynamic‑programming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
     # sequence of record dictionaries (one per station), the last MAOP
@@ -1156,23 +1156,23 @@ def solve_pipeline(
     # progressively.
     # Track the mainline injection PPM from the previous station so that
     # downstream segments inherit the same concentration.
-    states: dict[float, dict] = {
-        round(init_residual, 2): {
+    states: dict[int, dict] = {
+        init_residual: {
             'cost': 0.0,
             'residual': init_residual,
             'records': [],
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
-            'carry_loop_dra': 0.0,
-            'prev_ppm_main': linefill_state[0]['dra_ppm'] if linefill_state else 0.0,
+            'carry_loop_dra': 0,
+            'prev_ppm_main': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
             'reach': max(float(dra_reach_km), 0.0),
-            'inj_ppm_main': 0.0,
+            'inj_ppm_main': 0,
         }
     }
 
     for stn_data in station_opts:
-        new_states: dict[float, dict] = {}
+        new_states: dict[int, dict] = {}
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
             for opt in stn_data['options']:
@@ -1188,14 +1188,14 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 reach_prev = state.get('reach', 0.0)
-                ppm_prev = state.get('prev_ppm_main', 0.0)
+                ppm_prev = int(state.get('prev_ppm_main', 0))
                 # Update the mainline DRA concentration.  Pump stations reset the
                 # concentration to the injected value while unpumped segments carry
                 # the upstream level forward until its reach is exhausted.
                 ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
                     ppm_prev, reach_prev, stn_data, opt
                 )
-                eff_dra_main = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
+                eff_dra_main = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
 
                 scenarios = []
                 # Base scenario: flow through mainline only
@@ -1488,9 +1488,9 @@ def solve_pipeline(
                             length_loop_total = stn_data['loopline']['L']
                         # Effective drag reduction for the entire path based on the
                         # inherited mainline PPM
-                        eff_dra_main_tot = get_dr_for_ppm(stn_data['kv'], ppm_main) if ppm_main > 0 else 0.0
+                        eff_dra_main_tot = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
                         # Carry-over drag reduction on the loop from the previous state
-                        carry_prev = state.get('carry_loop_dra', 0.0)
+                        carry_prev = int(state.get('carry_loop_dra', 0))
                         # In bypass mode the loopline may still inject additional DRA.
                         # Combine any upstream carry-over with the current option so
                         # the full effect is considered when splitting flow over the
@@ -1563,7 +1563,7 @@ def solve_pipeline(
                     # upstream station persists.  Otherwise use the station's
                     # prescribed DRA for the loopline.  When there is no loop flow
                     # the value is irrelevant but carried forward.
-                    carry_prev = state.get('carry_loop_dra', 0.0)
+                    carry_prev = int(state.get('carry_loop_dra', 0))
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
                             eff_dra_loop = carry_prev + opt['dra_loop']
@@ -1574,9 +1574,9 @@ def solve_pipeline(
                             inj_loop_current = opt['dra_loop']
                             inj_ppm_loop = opt['dra_ppm_loop']
                     else:
-                        eff_dra_loop = 0.0
-                        inj_loop_current = 0.0
-                        inj_ppm_loop = 0.0
+                        eff_dra_loop = 0
+                        inj_loop_current = 0
+                        inj_ppm_loop = 0
 
                     # Determine next carry-over drag reduction value for the loop.
                     if sc['flow_loop'] > 0:
@@ -1597,7 +1597,7 @@ def solve_pipeline(
                         continue
 
                     # Compute downstream residual head after segment loss and elevation
-                    residual_next = sdh - sc['head_loss'] - stn_data['elev_delta']
+                    residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
 
                     # Recompute downstream flows if bypassing the next station; the flow
                     # through the mainline changes only for a bypass.  ``seg_flows_tmp``
@@ -1726,7 +1726,7 @@ def solve_pipeline(
                         record.update({
                             f"pump_flow_{stn_data['name']}": 0.0,
                             f"num_pumps_{stn_data['name']}": 0,
-                            f"speed_{stn_data['name']}": 0.0,
+                            f"speed_{stn_data['name']}": 0,
                             f"efficiency_{stn_data['name']}": 0.0,
                             f"pump_bkw_{stn_data['name']}": 0.0,
                             f"motor_kw_{stn_data['name']}": 0.0,
@@ -1743,7 +1743,7 @@ def solve_pipeline(
                     # or, when costs tie, the one with higher residual.  Carry
                     # forward the loop DRA carry value and the updated reach.
                     new_cost = state['cost'] + total_cost
-                    bucket = round(residual_next, RESIDUAL_ROUND)
+                    bucket = residual_next
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
@@ -1781,7 +1781,7 @@ def solve_pipeline(
     # prefer the one whose terminal residual head is closest to the
     # user-specified minimum.  This avoids unnecessarily high
     # pressures at the terminal which would otherwise waste energy.
-    term_req = terminal.get('min_residual', 0.0)
+    term_req = int(terminal.get('min_residual', 0))
     best_state = min(
         states.values(),
         key=lambda x: (x['cost'], x['residual'] - term_req),
@@ -1790,7 +1790,7 @@ def solve_pipeline(
     for rec in best_state['records']:
         result.update(rec)
 
-    residual = best_state['residual']
+    residual = int(best_state['residual'])
     total_cost = best_state['cost']
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
@@ -1801,7 +1801,7 @@ def solve_pipeline(
     # the origin.
     pumped_volume = segment_flows[0] * hours
     origin_name = stations[0]['name'].strip().lower().replace(' ', '_') if stations else ''
-    inj_ppm = result.get(f"dra_ppm_{origin_name}", 0.0) if origin_name else 0.0
+    inj_ppm = int(result.get(f"dra_ppm_{origin_name}", 0)) if origin_name else 0
     schedule = [{'volume': pumped_volume, 'dra_ppm': inj_ppm}]
     advance_linefill(linefill_state, schedule, pumped_volume)
     result['linefill'] = linefill_state
@@ -1811,17 +1811,17 @@ def solve_pipeline(
         f"pipeline_flow_{term_name}": segment_flows[-1],
         f"pipeline_flow_in_{term_name}": segment_flows[-2],
         f"pump_flow_{term_name}": 0.0,
-        f"speed_{term_name}": 0.0,
+        f"speed_{term_name}": 0,
         f"num_pumps_{term_name}": 0,
         f"efficiency_{term_name}": 0.0,
         f"pump_bkw_{term_name}": 0.0,
         f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
         f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"dra_ppm_loop_{term_name}": 0.0,
-        f"drag_reduction_{term_name}": 0.0,
-        f"drag_reduction_loop_{term_name}": 0.0,
+        f"dra_ppm_{term_name}": 0,
+        f"dra_ppm_loop_{term_name}": 0,
+        f"drag_reduction_{term_name}": 0,
+        f"drag_reduction_loop_{term_name}": 0,
         f"head_loss_{term_name}": 0.0,
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
