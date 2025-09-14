@@ -269,30 +269,48 @@ if st.session_state.get("should_rerun", False):
 with st.sidebar:
     st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
-        with st.form("global_params"):
-            FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="FLOW_input")
-            RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="RateDRA_input")
-            InitDRAppm = st.number_input("Initial Linefill DRA (ppm)", value=st.session_state.get("InitDRAppm", 4.0), step=0.5, key="InitDRAppm_input")
-            Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="Price_HSD_input")
-            Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="Fuel_density_input")
-            Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="Ambient_temp_input")
-            MOP_val = st.number_input("MOP (kg/cm²)", value=st.session_state.get("MOP_kgcm2", 100.0), step=1.0, key="MOP_input")
-            submitted_glob = st.form_submit_button("Apply")
-        if submitted_glob:
-            st.session_state["FLOW"] = FLOW
-            st.session_state["RateDRA"] = RateDRA
-            st.session_state["InitDRAppm"] = InitDRAppm
-            st.session_state["Price_HSD"] = Price_HSD
-            st.session_state["Fuel_density"] = Fuel_density
-            st.session_state["Ambient_temp"] = Ambient_temp
-            st.session_state["MOP_kgcm2"] = MOP_val
-        FLOW = st.session_state.get("FLOW", 1000.0)
-        RateDRA = st.session_state.get("RateDRA", 500.0)
-        InitDRAppm = st.session_state.get("InitDRAppm", 4.0)
-        Price_HSD = st.session_state.get("Price_HSD", 70.0)
-        Fuel_density = st.session_state.get("Fuel_density", 820.0)
-        Ambient_temp = st.session_state.get("Ambient_temp", 25.0)
-        MOP_val = st.session_state.get("MOP_kgcm2", 100.0)
+        FLOW = st.number_input(
+            "Flow rate (m³/hr)",
+            value=st.session_state.get("FLOW", 1000.0),
+            step=10.0,
+            key="FLOW",
+        )
+        RateDRA = st.number_input(
+            "DRA Cost (INR/L)",
+            value=st.session_state.get("RateDRA", 500.0),
+            step=1.0,
+            key="RateDRA",
+        )
+        InitDRAppm = st.number_input(
+            "Initial Linefill DRA (ppm)",
+            value=st.session_state.get("InitDRAppm", 4.0),
+            step=0.5,
+            key="InitDRAppm",
+        )
+        Price_HSD = st.number_input(
+            "Fuel Price (INR/L)",
+            value=st.session_state.get("Price_HSD", 70.0),
+            step=0.5,
+            key="Price_HSD",
+        )
+        Fuel_density = st.number_input(
+            "Fuel density (kg/m³)",
+            value=st.session_state.get("Fuel_density", 820.0),
+            step=1.0,
+            key="Fuel_density",
+        )
+        Ambient_temp = st.number_input(
+            "Ambient temperature (°C)",
+            value=st.session_state.get("Ambient_temp", 25.0),
+            step=1.0,
+            key="Ambient_temp",
+        )
+        st.number_input(
+            "MOP (kg/cm²)",
+            value=st.session_state.get("MOP_kgcm2", 100.0),
+            step=1.0,
+            key="MOP_kgcm2",
+        )
 
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
