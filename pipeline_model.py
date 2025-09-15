@@ -1,11 +1,4 @@
-"""Simplified pipeline optimisation model without external solvers.
-
-This module replaces the previous Pyomo/NEOS based optimisation with a
-lightweight search that enumerates feasible pump operating points.  The goal is
-not to be perfectly optimal but to provide reasonable results using only the
-standard Python stack so the application can run in environments where no
-solver is available.
-"""
+"""Pipeline Optima"""
 
 from __future__ import annotations
 
