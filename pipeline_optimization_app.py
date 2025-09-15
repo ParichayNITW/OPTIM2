@@ -2095,7 +2095,11 @@ if not auto_batch:
             df_disp_style = df_display.style.format(fmt_disp).background_gradient(
                 cmap="Blues", subset=num_cols_disp
             )
-        st.dataframe(df_disp_style, width='stretch', hide_index=True)
+        st.dataframe(
+            df_disp_style,
+            width='stretch',
+            hide_index=not transpose_view,
+        )
         label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
         st.download_button(
             f"Download {label_prefix} Optimizer Output data",
