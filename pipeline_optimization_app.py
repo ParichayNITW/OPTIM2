@@ -1960,6 +1960,8 @@ if not auto_batch:
                 sdh_hourly = []
                 res = {}
                 block_cost = 0.0
+                power_cost_acc: dict[str, float] = {}
+                dra_cost_acc: dict[str, float] = {}
                 for sub in range(sub_steps):
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
@@ -1998,9 +2000,12 @@ if not auto_batch:
                         error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
                         break
 
-                    # Record SDH for objective calculation
+                    # Record SDH for objective calculation and accumulate per-station costs
                     term_key = term_data["name"].lower().replace(" ", "_")
                     keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
+                    for k in keys:
+                        power_cost_acc[k] = power_cost_acc.get(k, 0.0) + float(res.get(f"power_cost_{k}", 0.0) or 0.0)
+                        dra_cost_acc[k] = dra_cost_acc.get(k, 0.0) + float(res.get(f"dra_cost_{k}", 0.0) or 0.0)
                     sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
                     sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
                     sdh_hourly.append(max(sdh_vals))
@@ -2013,8 +2018,19 @@ if not auto_batch:
                 if error_msg:
                     break
 
+                for k, val in power_cost_acc.items():
+                    res[f"power_cost_{k}"] = val
+                for k, val in dra_cost_acc.items():
+                    res[f"dra_cost_{k}"] = val
                 res["total_cost"] = block_cost
-                reports.append({"time": hr % 24, "result": res, "sdh_hourly": sdh_hourly, "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0})
+                reports.append(
+                    {
+                        "time": hr % 24,
+                        "result": res,
+                        "sdh_hourly": sdh_hourly,
+                        "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
+                    }
+                )
 
         if error_msg:
             st.error(error_msg)
