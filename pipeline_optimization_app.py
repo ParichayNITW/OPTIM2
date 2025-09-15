@@ -2056,12 +2056,12 @@ if not auto_batch:
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        fmt_dict = {c: "{:.2f}" for c in num_cols}
-        df_day_style = (
-            df_day_numeric.style.format(fmt_dict)
-            .background_gradient(cmap="Blues", subset=num_cols)
-        )
-        st.dataframe(df_day_style, width='stretch', hide_index=True)
+        transpose_view = st.checkbox("Transpose output table", key="transpose_day")
+        df_display = df_day_numeric.T if transpose_view else df_day_numeric
+        num_cols_disp = [c for c in df_display.columns if df_display[c].dtype != "object"]
+        fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
+        df_disp_style = df_display.style.format(fmt_disp).background_gradient(cmap="Blues", subset=num_cols_disp)
+        st.dataframe(df_disp_style, width='stretch', hide_index=True)
         label_prefix = "Hourly" if is_hourly else "Daily"
         st.download_button(
             f"Download {label_prefix} Optimizer Output data",
