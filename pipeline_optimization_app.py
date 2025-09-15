@@ -2073,21 +2073,29 @@ if not auto_batch:
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
+        df_display = df_day_numeric.T if transpose_view else df_day_numeric
         if transpose_view:
-            df_display = df_day.T
-            num_rows_disp = [r for r in df_display.index if r not in ["Time", "Pattern", "Station", "Pump Name"]]
+            numeric_rows_mask = df_display.apply(
+                lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
+            )
+            num_rows_disp = df_display.index[numeric_rows_mask].tolist()
+            df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
+                pd.to_numeric, errors="coerce"
+            )
             df_disp_style = (
                 df_display.style
                 .format("{:.2f}", subset=pd.IndexSlice[num_rows_disp, :])
                 .background_gradient(cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :])
             )
-            st.dataframe(df_disp_style, width='stretch')
         else:
-            df_display = df_day_numeric
-            num_cols_disp = [c for c in df_display.columns if c not in ["Time", "Pattern", "Station", "Pump Name"]]
+            num_cols_disp = [
+                c for c in df_display.columns if c not in ["Time", "Pattern", "Station", "Pump Name"]
+            ]
             fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
-            df_disp_style = df_display.style.format(fmt_disp).background_gradient(cmap="Blues", subset=num_cols_disp)
-            st.dataframe(df_disp_style, width='stretch', hide_index=True)
+            df_disp_style = df_display.style.format(fmt_disp).background_gradient(
+                cmap="Blues", subset=num_cols_disp
+            )
+        st.dataframe(df_disp_style, width='stretch', hide_index=True)
         label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
         st.download_button(
             f"Download {label_prefix} Optimizer Output data",
