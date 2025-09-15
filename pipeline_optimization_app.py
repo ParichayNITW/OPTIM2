@@ -2058,16 +2058,21 @@ if not auto_batch:
             {
                 "Time": f"{rec['time']:02d}:00",
                 "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
             }
             for rec in reports
         ]
-        df_cost = pd.DataFrame(cost_rows).round(2)
+        df_cost = pd.DataFrame(cost_rows)
+        df_cost["Total Cost (INR)"] = pd.to_numeric(
+            df_cost["Total Cost (INR)"], errors="coerce"
+        )
+        df_cost = df_cost.round(2)
         df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
         st.dataframe(df_cost_style, width='stretch', hide_index=True)
         total_label = "1h" if is_hourly else "24h"
+        total_cost_value = df_cost["Total Cost (INR)"].sum()
         st.markdown(
-            f"**Total Optimized Cost ({total_label}): {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+            f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**"
         )
         for rec in reports:
             display_pump_type_details(
