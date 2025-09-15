@@ -2056,17 +2056,51 @@ if not auto_batch:
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
-        fmt_dict = {c: "{:.2f}" for c in num_cols}
-        df_day_style = (
-            df_day_numeric.style.format(fmt_dict)
-            .background_gradient(cmap="Blues", subset=num_cols)
-        )
-        st.dataframe(df_day_style, width='stretch', hide_index=True)
-        label_prefix = "Hourly" if is_hourly else "Daily"
+
+        # Persist results for reuse across Streamlit reruns
+        st.session_state["day_df"] = df_day_numeric
+        st.session_state["day_df_raw"] = df_day
+        st.session_state["day_reports"] = reports
+        st.session_state["day_linefill_snaps"] = linefill_snaps
+        st.session_state["day_hours"] = hours
+        st.session_state["day_stations"] = stations_base
+
+    if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
+        df_day_numeric = st.session_state["day_df"]
+        reports = st.session_state.get("day_reports", [])
+        stations_base = st.session_state.get("day_stations", [])
+        linefill_snaps = st.session_state.get("day_linefill_snaps", [])
+        hours = st.session_state.get("day_hours", [])
+        df_day = st.session_state.get("day_df_raw", df_day_numeric)
+        transpose_view = st.checkbox("Transpose output table", key="transpose_day")
+        df_display = df_day_numeric.T if transpose_view else df_day_numeric
+        if transpose_view:
+            numeric_rows_mask = df_display.apply(
+                lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
+            )
+            num_rows_disp = df_display.index[numeric_rows_mask].tolist()
+            df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
+                pd.to_numeric, errors="coerce"
+            )
+            df_disp_style = (
+                df_display.style
+                .format("{:.2f}", subset=pd.IndexSlice[num_rows_disp, :])
+                .background_gradient(cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :])
+            )
+        else:
+            num_cols_disp = [
+                c for c in df_display.columns if c not in ["Time", "Pattern", "Station", "Pump Name"]
+            ]
+            fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
+            df_disp_style = df_display.style.format(fmt_disp).background_gradient(
+                cmap="Blues", subset=num_cols_disp
+            )
+        st.dataframe(df_disp_style, width='stretch', hide_index=True)
+        label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
         st.download_button(
             f"Download {label_prefix} Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
-            file_name="hourly_schedule_results.csv" if is_hourly else "daily_schedule_results.csv",
+            file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
         )
 
         # Display total cost per time slice and global sum
@@ -2080,15 +2114,15 @@ if not auto_batch:
         ]
         df_cost = pd.DataFrame(cost_rows)
         df_cost["Total Cost (INR)"] = pd.to_numeric(
-            df_cost["Total Cost (INR)"], errors="coerce"
+            df_cost["Total Cost (INR)"], errors="coerce",
         )
         df_cost = df_cost.round(2)
         df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
         st.dataframe(df_cost_style, width='stretch', hide_index=True)
-        total_label = "1h" if is_hourly else "24h"
+        total_label = "1h" if st.session_state.get("run_mode") == "hourly" else "24h"
         total_cost_value = df_cost["Total Cost (INR)"].sum()
         st.markdown(
-            f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**"
+            f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
         )
         for rec in reports:
             display_pump_type_details(
@@ -2109,6 +2143,7 @@ if not auto_batch:
             lf_all.to_csv(index=False, float_format="%.2f"),
             file_name="linefill_snapshots.csv",
         )
+
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
     st.markdown("</div>", unsafe_allow_html=True)
