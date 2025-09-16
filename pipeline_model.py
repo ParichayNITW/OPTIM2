@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
-import numpy as np
 import datetime as dt
+from collections.abc import Mapping
+
+import numpy as np
 
 try:
     from numba import njit
@@ -468,17 +470,23 @@ def _split_flow_two_segments(
     return best
 
 
-def _pump_head(stn: dict, flow_m3h: float, rpm: int, nop: int) -> list[dict]:
+def _pump_head(
+    stn: dict,
+    flow_m3h: float,
+    rpm_map: Mapping[str, float | int],
+    nop: int,
+) -> list[dict]:
     """Return per-pump-type head and efficiency information.
 
-    The return value is a list of dictionaries with keys ``tdh`` (total head
-    contributed by that pump type), ``eff`` (efficiency at the operating
-    point), ``count`` (number of pumps of that type), ``power_type`` and the
-    original pump-type data under ``data``.  The pump ``ptype`` identifier and
-    operating ``rpm`` are also included so callers can display detailed
-    information for each pump type.  This allows callers to compute power and
-    cost contributions for each pump type individually instead of relying on
-    an averaged efficiency across all running pumps.
+    ``rpm_map`` should provide the operating speed for each pump type present
+    in the station.  The return value is a list of dictionaries with keys
+    ``tdh`` (total head contributed by that pump type), ``eff`` (efficiency at
+    the operating point), ``count`` (number of pumps of that type),
+    ``power_type`` and the original pump-type data under ``data``.  The pump
+    ``ptype`` identifier and operating ``rpm`` are also included so callers can
+    display detailed information for each pump type.  This allows callers to
+    compute power and cost contributions for each pump type individually instead
+    of relying on an averaged efficiency across all running pumps.
     """
 
     if nop <= 0:
@@ -491,19 +499,54 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: int, nop: int) -> list[dict]:
     )
     ptypes = stn.get("pump_types")
     results: list[dict] = []
+
+    speed_map: dict[str, float | int]
+    if rpm_map is None:
+        speed_map = {}
+    else:
+        speed_map = dict(rpm_map)
+
+    fallback_keys = ("*", "default", "__default__")
+    numeric_values = [
+        float(val)
+        for val in speed_map.values()
+        if isinstance(val, (int, float))
+    ]
+    if numeric_values:
+        default_rpm = numeric_values[0]
+    else:
+        default_rpm = float(stn.get("DOL") or stn.get("MinRPM") or 0.0)
+    for key in fallback_keys:
+        val = speed_map.get(key)
+        if isinstance(val, (int, float)):
+            default_rpm = float(val)
+            break
+
+    def resolve_rpm(ptype: str) -> float:
+        val = speed_map.get(ptype)
+        if isinstance(val, (int, float)):
+            return float(val)
+        for key in fallback_keys:
+            val = speed_map.get(key)
+            if isinstance(val, (int, float)):
+                return float(val)
+        return default_rpm
+
     if combo and ptypes:
         for ptype, count in combo.items():
-            if count <= 0:
+            if not isinstance(count, (int, float)) or count <= 0:
                 continue
             pdata = ptypes.get(ptype, {})
-            dol = pdata.get("DOL", rpm)
-            Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
+            rpm_val = resolve_rpm(ptype)
+            dol = pdata.get("DOL", stn.get("DOL", rpm_val))
+            Q_equiv = flow_m3h * dol / rpm_val if rpm_val > 0 else flow_m3h
             A = pdata.get("A", 0.0)
             B = pdata.get("B", 0.0)
             C = pdata.get("C", 0.0)
             tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
             tdh_single = max(tdh_single, 0.0)
-            tdh_type = tdh_single * (rpm / dol) ** 2 * count
+            speed_ratio_sq = (rpm_val / dol) ** 2 if dol else 0.0
+            tdh_type = tdh_single * speed_ratio_sq * count
             P = pdata.get("P", 0.0)
             Qc = pdata.get("Q", 0.0)
             R = pdata.get("R", 0.0)
@@ -524,21 +567,25 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: int, nop: int) -> list[dict]:
                     "count": count,
                     "power_type": pdata.get("power_type", stn.get("power_type")),
                     "ptype": ptype,
-                    "rpm": int(rpm),
+                    "rpm": int(rpm_val),
                     "data": pdata,
                 }
             )
         return results
 
-    # Single pump type
-    dol = stn.get("DOL", rpm)
-    Q_equiv = flow_m3h * dol / rpm if rpm > 0 else flow_m3h
+    pump_type = stn.get("pump_type", "type1")
+    rpm_single = resolve_rpm(pump_type)
+    if rpm_single <= 0:
+        rpm_single = default_rpm
+    dol = stn.get("DOL", rpm_single if rpm_single > 0 else default_rpm)
+    Q_equiv = flow_m3h * dol / rpm_single if rpm_single > 0 else flow_m3h
     A = stn.get("A", 0.0)
     B = stn.get("B", 0.0)
     C = stn.get("C", 0.0)
     tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
     tdh_single = max(tdh_single, 0.0)
-    tdh = tdh_single * (rpm / dol) ** 2 * nop
+    speed_ratio_sq = (rpm_single / dol) ** 2 if dol else 0.0
+    tdh = tdh_single * speed_ratio_sq * nop
     P = stn.get("P", 0.0)
     Q = stn.get("Q", 0.0)
     R = stn.get("R", 0.0)
@@ -552,8 +599,8 @@ def _pump_head(stn: dict, flow_m3h: float, rpm: int, nop: int) -> list[dict]:
             "eff": eff,
             "count": nop,
             "power_type": stn.get("power_type"),
-            "ptype": stn.get("pump_type", "type1"),
-            "rpm": int(rpm),
+            "ptype": pump_type,
+            "rpm": int(rpm_single),
             "data": stn,
         }
     )
@@ -719,7 +766,28 @@ def _downstream_requirement(
             nop_max = stn.get('max_pumps', 0)
             flow_pump = pump_flow_overrides.get(i, flow) if pump_flow_overrides else flow
             if rpm_max and nop_max:
-                pump_info = _pump_head(stn, flow_pump, rpm_max, nop_max)
+                rpm_map_src = stn.get('rpm_map')
+                if isinstance(rpm_map_src, Mapping):
+                    rpm_map_local = dict(rpm_map_src)
+                else:
+                    rpm_map_local = {}
+                if not rpm_map_local:
+                    combo_local = (
+                        stn.get('active_combo')
+                        or stn.get('combo')
+                        or stn.get('pump_combo')
+                    )
+                    if isinstance(combo_local, dict):
+                        for ptype, count in combo_local.items():
+                            if isinstance(count, (int, float)) and count > 0:
+                                rpm_map_local[ptype] = rpm_max
+                if not rpm_map_local:
+                    pump_type = stn.get('pump_type')
+                    if pump_type:
+                        rpm_map_local[pump_type] = rpm_max
+                if not rpm_map_local:
+                    rpm_map_local = {'default': rpm_max}
+                pump_info = _pump_head(stn, flow_pump, rpm_map_local, nop_max)
                 tdh_max = sum(max(p['tdh'], 0.0) for p in pump_info)
             else:
                 tdh_max = 0.0
@@ -1431,7 +1499,31 @@ def solve_pipeline(
                         'sfc': stn_data.get('sfc'),
                         'engine_params': stn_data.get('engine_params', {}),
                     }
-                    pump_details = _pump_head(pump_def, flow_total, opt['rpm'], opt['nop'])
+                    combo_local = (
+                        pump_def.get('active_combo')
+                        or pump_def.get('combo')
+                        or pump_def.get('pump_combo')
+                    )
+                    rpm_map_local: dict[str, float | int] = {}
+                    for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
+                        if isinstance(source, Mapping):
+                            rpm_map_local.update(dict(source))
+                    if isinstance(combo_local, dict):
+                        for key, value in opt.items():
+                            if (
+                                isinstance(value, (int, float))
+                                and isinstance(key, str)
+                                and key.startswith('rpm_')
+                            ):
+                                ptype = key[4:]
+                                if ptype in combo_local:
+                                    rpm_map_local[ptype] = value
+                        for ptype, count in combo_local.items():
+                            if isinstance(count, (int, float)) and count > 0 and ptype not in rpm_map_local:
+                                rpm_map_local[ptype] = opt['rpm']
+                    if not rpm_map_local:
+                        rpm_map_local = {'default': opt['rpm']}
+                    pump_details = _pump_head(pump_def, flow_total, rpm_map_local, opt['nop'])
                     tdh = sum(p['tdh'] for p in pump_details)
                 else:
                     pump_details = []
