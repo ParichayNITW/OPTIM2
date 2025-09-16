@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping
+from itertools import product
 
 import numpy as np
 
@@ -1200,6 +1201,37 @@ def solve_pipeline(
                 rpm_min = max(rpm_min, rng['rpm'][0])
                 rpm_max = min(rpm_max, rng['rpm'][1])
             rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
+
+            pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
+            combo_source: Mapping[str, float] | None = None
+            if isinstance(stn.get('active_combo'), Mapping):
+                combo_source = stn['active_combo']  # type: ignore[index]
+            elif isinstance(stn.get('pump_combo'), Mapping):
+                combo_source = stn['pump_combo']  # type: ignore[index]
+            elif isinstance(stn.get('combo'), Mapping):
+                combo_source = stn['combo']  # type: ignore[index]
+
+            type_order: list[str] = []
+            type_rpm_lists: dict[str, list[int]] = {}
+            if pump_types_data and combo_source:
+                for ptype in sorted(combo_source):
+                    count = combo_source.get(ptype, 0)
+                    if not isinstance(count, (int, float)) or count <= 0:
+                        continue
+                    pdata = pump_types_data.get(ptype, {})
+                    p_rpm_min = int(pdata.get('MinRPM', rpm_min))
+                    p_rpm_max = int(pdata.get('DOL', rpm_max))
+                    if rng:
+                        key = f'rpm_{ptype}'
+                        if key in rng:
+                            p_rpm_min = max(p_rpm_min, rng[key][0])
+                            p_rpm_max = min(p_rpm_max, rng[key][1])
+                        elif 'rpm' in rng:
+                            p_rpm_min = max(p_rpm_min, rng['rpm'][0])
+                            p_rpm_max = min(p_rpm_max, rng['rpm'][1])
+                    type_order.append(ptype)
+                    type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
+
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = int(stn.get('max_dr', 0))
             if fixed_dr is not None:
@@ -1217,20 +1249,45 @@ def solve_pipeline(
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
             for nop in range(min_p, max_p + 1):
-                rpm_opts = [0] if nop == 0 else rpm_vals
-                for rpm in rpm_opts:
+                if nop == 0:
+                    rpm_iter = [None]
+                elif type_rpm_lists:
+                    rpm_iter = product(*(type_rpm_lists[ptype] for ptype in type_order))
+                else:
+                    rpm_iter = [(rpm,) for rpm in rpm_vals]
+                for rpm_choice in rpm_iter:
+                    if nop == 0:
+                        rpm = 0
+                        rpm_map_choice: dict[str, int] = {}
+                    elif type_rpm_lists:
+                        if isinstance(rpm_choice, tuple):
+                            rpm_map_choice = {
+                                ptype: int(val)
+                                for ptype, val in zip(type_order, rpm_choice)
+                            }
+                        else:
+                            rpm_map_choice = {}
+                        rpm = max(rpm_map_choice.values()) if rpm_map_choice else 0
+                    else:
+                        rpm = int(rpm_choice[0]) if isinstance(rpm_choice, tuple) else int(rpm_choice)
+                        rpm_map_choice = {}
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
                             ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
                             ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
-                            opts.append({
+                            opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
                                 'dra_main': dra_main,
                                 'dra_loop': dra_loop,
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
-                            })
+                            }
+                            if rpm_map_choice:
+                                opt_entry['rpm_map'] = rpm_map_choice.copy()
+                                for ptype, rpm_val in rpm_map_choice.items():
+                                    opt_entry[f'rpm_{ptype}'] = rpm_val
+                            opts.append(opt_entry)
             if not any(o['nop'] == 0 for o in opts):
                 opts.insert(0, {
                     'nop': 0,
@@ -1480,7 +1537,9 @@ def solve_pipeline(
                             'bypass_next': False,
                         })
 
-                if opt['nop'] > 0 and opt['rpm'] > 0:
+                pump_details: list[dict]
+                tdh: float
+                if opt.get('nop', 0) > 0:
                     pump_def = {
                         'A': stn_data['coef_A'],
                         'B': stn_data['coef_B'],
@@ -1507,7 +1566,10 @@ def solve_pipeline(
                     rpm_map_local: dict[str, float | int] = {}
                     for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
                         if isinstance(source, Mapping):
-                            rpm_map_local.update(dict(source))
+                            for key, value in source.items():
+                                if isinstance(value, (int, float)):
+                                    rpm_map_local[key] = value
+                    fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
                     if isinstance(combo_local, dict):
                         for key, value in opt.items():
                             if (
@@ -1519,12 +1581,28 @@ def solve_pipeline(
                                 if ptype in combo_local:
                                     rpm_map_local[ptype] = value
                         for ptype, count in combo_local.items():
-                            if isinstance(count, (int, float)) and count > 0 and ptype not in rpm_map_local:
-                                rpm_map_local[ptype] = opt['rpm']
-                    if not rpm_map_local:
-                        rpm_map_local = {'default': opt['rpm']}
-                    pump_details = _pump_head(pump_def, flow_total, rpm_map_local, opt['nop'])
-                    tdh = sum(p['tdh'] for p in pump_details)
+                            if (
+                                isinstance(count, (int, float))
+                                and count > 0
+                                and ptype not in rpm_map_local
+                                and isinstance(fallback_rpm, (int, float))
+                            ):
+                                rpm_map_local[ptype] = fallback_rpm
+                    if (
+                        not rpm_map_local
+                        and isinstance(fallback_rpm, (int, float))
+                        and fallback_rpm > 0
+                    ):
+                        rpm_map_local = {'default': fallback_rpm}
+                    has_positive_rpm = any(
+                        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
+                    )
+                    if has_positive_rpm:
+                        pump_details = _pump_head(pump_def, flow_total, rpm_map_local, opt['nop'])
+                        tdh = sum(p['tdh'] for p in pump_details)
+                    else:
+                        pump_details = []
+                        tdh = 0.0
                 else:
                     pump_details = []
                     tdh = 0.0
@@ -1547,10 +1625,11 @@ def solve_pipeline(
                     pump_bkw_total += pump_bkw_i
                     pdata = pinfo.get('data', {})
                     rated_rpm = pdata.get('DOL', stn_data['dol'])
+                    rpm_operating = pinfo.get('rpm', opt.get('rpm', 0))
                     if pinfo.get('power_type') == 'Diesel':
                         mech_eff = 0.98
                     else:
-                        mech_eff = 0.95 if opt['rpm'] >= rated_rpm else 0.91
+                        mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
                     prime_kw_i = pump_bkw_i / mech_eff
                     prime_kw_total += prime_kw_i
                     if pinfo.get('power_type') == 'Diesel':
@@ -1560,7 +1639,7 @@ def solve_pipeline(
                         elif mode == 'iso':
                             sfc_val = _compute_iso_sfc(
                                 pdata,
-                                opt['rpm'],
+                                rpm_operating,
                                 pump_bkw_i,
                                 pdata.get('DOL', stn_data['dol']),
                                 stn_data.get('elev', 0.0),
@@ -1900,28 +1979,37 @@ def solve_pipeline(
                             f"maop_loop_{stn_data['name']}": 0.0,
                             f"maop_loop_kgcm2_{stn_data['name']}": 0.0,
                         })
-                    if stn_data['is_pump']:
-                        record.update({
-                            f"pump_flow_{stn_data['name']}": flow_total,
-                            f"num_pumps_{stn_data['name']}": opt['nop'],
-                            f"speed_{stn_data['name']}": opt['rpm'],
-                            f"efficiency_{stn_data['name']}": eff,
-                            f"pump_bkw_{stn_data['name']}": pump_bkw,
-                            f"motor_kw_{stn_data['name']}": motor_kw,
-                            f"power_cost_{stn_data['name']}": power_cost,
-                            f"dra_cost_{stn_data['name']}": dra_cost,
-                            f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
-                            f"dra_ppm_{stn_data['name']}": inj_ppm_main,
-                            f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
-                            f"drag_reduction_{stn_data['name']}": eff_dra_main,
-                            f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
-                        })
-                    else:
-                        record.update({
-                            f"pump_flow_{stn_data['name']}": 0.0,
-                            f"num_pumps_{stn_data['name']}": 0,
-                            f"speed_{stn_data['name']}": 0,
-                            f"efficiency_{stn_data['name']}": 0.0,
+                if stn_data['is_pump']:
+                    speed_display = opt.get('rpm', 0)
+                    if (not speed_display or speed_display <= 0) and isinstance(opt.get('rpm_map'), Mapping):
+                        rpm_values = [
+                            int(val)
+                            for val in opt['rpm_map'].values()
+                            if isinstance(val, (int, float))
+                        ]
+                        if rpm_values:
+                            speed_display = max(rpm_values)
+                    record.update({
+                        f"pump_flow_{stn_data['name']}": flow_total,
+                        f"num_pumps_{stn_data['name']}": opt['nop'],
+                        f"speed_{stn_data['name']}": speed_display,
+                        f"efficiency_{stn_data['name']}": eff,
+                        f"pump_bkw_{stn_data['name']}": pump_bkw,
+                        f"motor_kw_{stn_data['name']}": motor_kw,
+                        f"power_cost_{stn_data['name']}": power_cost,
+                        f"dra_cost_{stn_data['name']}": dra_cost,
+                        f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
+                        f"dra_ppm_{stn_data['name']}": inj_ppm_main,
+                        f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
+                        f"drag_reduction_{stn_data['name']}": eff_dra_main,
+                        f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
+                    })
+                else:
+                    record.update({
+                        f"pump_flow_{stn_data['name']}": 0.0,
+                        f"num_pumps_{stn_data['name']}": 0,
+                        f"speed_{stn_data['name']}": 0,
+                        f"efficiency_{stn_data['name']}": 0.0,
                             f"pump_bkw_{stn_data['name']}": 0.0,
                             f"motor_kw_{stn_data['name']}": 0.0,
                             f"power_cost_{stn_data['name']}": 0.0,
