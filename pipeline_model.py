@@ -1125,6 +1125,7 @@ def solve_pipeline(
         )
         if coarse_res.get("error"):
             return coarse_res
+        window = max(rpm_step, coarse_rpm_step)
         ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
@@ -1139,9 +1140,9 @@ def solve_pipeline(
                     rmin = rmax = 0
                 else:
                     coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
-                    rmin = max(st_rpm_min, coarse_rpm - rpm_step)
+                    rmin = max(st_rpm_min, coarse_rpm - window)
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
-                    rmax = min(upper_bound, coarse_rpm + rpm_step)
+                    rmax = min(upper_bound, coarse_rpm + window)
                 dmin = max(0, coarse_dr_main - dra_step)
                 dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 entry: dict[str, tuple[int, int]] = {
@@ -1195,8 +1196,8 @@ def solve_pipeline(
                                             coarse_type_rpm = coarse_candidate
                                             break
                         if coarse_type_rpm is not None and coarse_type_rpm > 0:
-                            lower_bound = max(p_rmin, coarse_type_rpm - rpm_step)
-                            upper_bound = min(p_rmax, coarse_type_rpm + rpm_step)
+                            lower_bound = max(p_rmin, coarse_type_rpm - window)
+                            upper_bound = min(p_rmax, coarse_type_rpm + window)
                             if upper_bound >= lower_bound:
                                 p_rmin, p_rmax = lower_bound, upper_bound
                         entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
