@@ -1169,6 +1169,36 @@ def solve_pipeline(
                             p_rmax = pmax_default
                         if p_rmax < p_rmin:
                             p_rmin, p_rmax = p_rmax, p_rmin
+                        coarse_type_rpm: int | None = None
+                        if coarse_nop > 0:
+                            suffix = _normalise_speed_suffix(ptype)
+                            coarse_key = f"speed_{name}_{suffix}"
+                            coarse_val = coarse_res.get(coarse_key)
+                            if coarse_val is not None:
+                                coarse_type_rpm = int(round(_coerce_float(coarse_val, default=0.0)))
+                            if coarse_type_rpm is None or coarse_type_rpm <= 0:
+                                details_key = f"pump_details_{name}"
+                                details_val = coarse_res.get(details_key)
+                                if isinstance(details_val, list):
+                                    for detail in details_val:
+                                        if not isinstance(detail, Mapping):
+                                            continue
+                                        detail_ptype = detail.get('ptype')
+                                        detail_str = str(detail_ptype) if detail_ptype is not None else ""
+                                        target_str = str(ptype)
+                                        detail_suffix = _normalise_speed_suffix(detail_str) if detail_str else ""
+                                        if detail_str != target_str and detail_suffix != suffix:
+                                            continue
+                                        rpm_val = detail.get('rpm')
+                                        coarse_candidate = int(round(_coerce_float(rpm_val, default=0.0)))
+                                        if coarse_candidate > 0:
+                                            coarse_type_rpm = coarse_candidate
+                                            break
+                        if coarse_type_rpm is not None and coarse_type_rpm > 0:
+                            lower_bound = max(p_rmin, coarse_type_rpm - rpm_step)
+                            upper_bound = min(p_rmax, coarse_type_rpm + rpm_step)
+                            if upper_bound >= lower_bound:
+                                p_rmin, p_rmax = lower_bound, upper_bound
                         entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
                 loop = stn.get("loopline") or {}
                 if loop:
