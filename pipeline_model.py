@@ -40,6 +40,16 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
     return sorted(combos, key=lambda x: (x[0] + x[1], x))
 
 
+def _normalise_speed_suffix(label: str) -> str:
+    """Return a normalised suffix for per-type speed fields."""
+
+    if not isinstance(label, str):
+        label = str(label or "")
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in label)
+    cleaned = cleaned.strip("_")
+    return cleaned.upper() if cleaned else "TYPE"
+
+
 def _coerce_float(value, default: float = 0.0) -> float:
     """Convert *value* to ``float`` when possible, otherwise return ``default``."""
 
@@ -2117,6 +2127,12 @@ def solve_pipeline(
                         ]
                         if rpm_values:
                             speed_display = max(rpm_values)
+                    speed_fields: dict[str, float] = {}
+                    for pinfo in pump_details:
+                        suffix = _normalise_speed_suffix(pinfo.get('ptype', ''))
+                        rpm_val = pinfo.get('rpm')
+                        if isinstance(rpm_val, (int, float)):
+                            speed_fields[f"speed_{stn_data['name']}_{suffix}"] = float(rpm_val)
                     record.update({
                         f"pump_flow_{stn_data['name']}": flow_total,
                         f"num_pumps_{stn_data['name']}": opt['nop'],
@@ -2132,6 +2148,8 @@ def solve_pipeline(
                         f"drag_reduction_{stn_data['name']}": eff_dra_main,
                         f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                     })
+                    if speed_fields:
+                        record.update(speed_fields)
                 else:
                     record.update({
                         f"pump_flow_{stn_data['name']}": 0.0,
