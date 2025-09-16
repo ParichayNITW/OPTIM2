@@ -2117,45 +2117,45 @@ def solve_pipeline(
                             f"maop_loop_{stn_data['name']}": 0.0,
                             f"maop_loop_kgcm2_{stn_data['name']}": 0.0,
                         })
-                if stn_data['is_pump']:
-                    speed_display = opt.get('rpm', 0)
-                    if (not speed_display or speed_display <= 0) and isinstance(opt.get('rpm_map'), Mapping):
-                        rpm_values = [
-                            int(val)
-                            for val in opt['rpm_map'].values()
-                            if isinstance(val, (int, float))
-                        ]
-                        if rpm_values:
-                            speed_display = max(rpm_values)
-                    speed_fields: dict[str, float] = {}
-                    for pinfo in pump_details:
-                        suffix = _normalise_speed_suffix(pinfo.get('ptype', ''))
-                        rpm_val = pinfo.get('rpm')
-                        if isinstance(rpm_val, (int, float)):
-                            speed_fields[f"speed_{stn_data['name']}_{suffix}"] = float(rpm_val)
-                    record.update({
-                        f"pump_flow_{stn_data['name']}": flow_total,
-                        f"num_pumps_{stn_data['name']}": opt['nop'],
-                        f"speed_{stn_data['name']}": speed_display,
-                        f"efficiency_{stn_data['name']}": eff,
-                        f"pump_bkw_{stn_data['name']}": pump_bkw,
-                        f"motor_kw_{stn_data['name']}": motor_kw,
-                        f"power_cost_{stn_data['name']}": power_cost,
-                        f"dra_cost_{stn_data['name']}": dra_cost,
-                        f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
-                        f"dra_ppm_{stn_data['name']}": inj_ppm_main,
-                        f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
-                        f"drag_reduction_{stn_data['name']}": eff_dra_main,
-                        f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
-                    })
-                    if speed_fields:
-                        record.update(speed_fields)
-                else:
-                    record.update({
-                        f"pump_flow_{stn_data['name']}": 0.0,
-                        f"num_pumps_{stn_data['name']}": 0,
-                        f"speed_{stn_data['name']}": 0,
-                        f"efficiency_{stn_data['name']}": 0.0,
+                    if stn_data['is_pump']:
+                        speed_display = opt.get('rpm', 0)
+                        if (not speed_display or speed_display <= 0) and isinstance(opt.get('rpm_map'), Mapping):
+                            rpm_values = [
+                                int(val)
+                                for val in opt['rpm_map'].values()
+                                if isinstance(val, (int, float))
+                            ]
+                            if rpm_values:
+                                speed_display = max(rpm_values)
+                        speed_fields: dict[str, float] = {}
+                        for pinfo in pump_details:
+                            suffix = _normalise_speed_suffix(pinfo.get('ptype', ''))
+                            rpm_val = pinfo.get('rpm')
+                            if isinstance(rpm_val, (int, float)):
+                                speed_fields[f"speed_{stn_data['name']}_{suffix}"] = float(rpm_val)
+                        record.update({
+                            f"pump_flow_{stn_data['name']}": flow_total,
+                            f"num_pumps_{stn_data['name']}": opt['nop'],
+                            f"speed_{stn_data['name']}": speed_display,
+                            f"efficiency_{stn_data['name']}": eff,
+                            f"pump_bkw_{stn_data['name']}": pump_bkw,
+                            f"motor_kw_{stn_data['name']}": motor_kw,
+                            f"power_cost_{stn_data['name']}": power_cost,
+                            f"dra_cost_{stn_data['name']}": dra_cost,
+                            f"pump_details_{stn_data['name']}": [p.copy() for p in pump_details],
+                            f"dra_ppm_{stn_data['name']}": inj_ppm_main,
+                            f"dra_ppm_loop_{stn_data['name']}": inj_ppm_loop,
+                            f"drag_reduction_{stn_data['name']}": eff_dra_main,
+                            f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
+                        })
+                        if speed_fields:
+                            record.update(speed_fields)
+                    else:
+                        record.update({
+                            f"pump_flow_{stn_data['name']}": 0.0,
+                            f"num_pumps_{stn_data['name']}": 0,
+                            f"speed_{stn_data['name']}": 0,
+                            f"efficiency_{stn_data['name']}": 0.0,
                             f"pump_bkw_{stn_data['name']}": 0.0,
                             f"motor_kw_{stn_data['name']}": 0.0,
                             f"power_cost_{stn_data['name']}": 0.0,
