@@ -1537,6 +1537,20 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
+    # Cache the baseline downstream head requirement for each station using the
+    # unmodified segment flows.  Most scenarios reuse this value directly; only
+    # bypass cases require recomputing the downstream flow profile.
+    baseline_req = [
+        _downstream_requirement(
+            stations,
+            idx,
+            terminal,
+            segment_flows,
+            KV_list,
+            loop_usage_by_station=loop_usage_by_station,
+        )
+        for idx in range(N)
+    ]
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
@@ -2040,26 +2054,23 @@ def solve_pipeline(
                     # Compute downstream residual head after segment loss and elevation
                     residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
 
-                    # Recompute downstream flows if bypassing the next station; the flow
-                    # through the mainline changes only for a bypass.  ``seg_flows_tmp``
-                    # holds the flow after each station.
-                    seg_flows_tmp = segment_flows.copy()
-                    # When bypassing the next station, only the mainline flow enters that station; the
-                    # loopline flow bypasses the pumps and rejoins downstream.  Therefore the flow for
-                    # downstream segments should reflect either the mainline-only flow (in bypass) or the
-                    # total flow (in parallel or loop-only modes).  This ensures head requirements are
-                    # computed against the proper volumetric flow in each pipe.
-                    next_flow = flow_total
-                    seg_flows_tmp[stn_data['idx'] + 1] = next_flow
-                    for j in range(stn_data['idx'] + 1, N):
-                        delivery_j = float(stations[j].get('delivery', 0.0))
-                        supply_j = float(stations[j].get('supply', 0.0))
-                        seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
-
-                    # Compute minimum downstream requirement and skip infeasible states
-                    pump_overrides = None
+                    # Compute minimum downstream requirement.  Use the cached baseline
+                    # unless bypassing the next station, in which case recompute with
+                    # updated flows so downstream pumps see the correct mainline demand.
+                    min_req = baseline_req[stn_data['idx']]
                     if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
-                        pump_overrides = {}
+                        # Recompute downstream flows; the mainline flow changes only
+                        # when bypassing the next station.  ``seg_flows_tmp`` holds the
+                        # flow after each station for this scenario.
+                        seg_flows_tmp = segment_flows.copy()
+                        next_flow = flow_total
+                        seg_flows_tmp[stn_data['idx'] + 1] = next_flow
+                        for j in range(stn_data['idx'] + 1, N):
+                            delivery_j = float(stations[j].get('delivery', 0.0))
+                            supply_j = float(stations[j].get('supply', 0.0))
+                            seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
+
+                        pump_overrides: dict[int, float] = {}
                         next_index = stn_data['idx'] + 1
                         next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
                         j = next_index
@@ -2071,15 +2082,15 @@ def solve_pipeline(
                                 j += 1
                             else:
                                 break
-                    min_req = _downstream_requirement(
-                        stations,
-                        stn_data['idx'],
-                        terminal,
-                        seg_flows_tmp,
-                        KV_list,
-                        loop_usage_by_station=loop_usage_by_station,
-                        pump_flow_overrides=pump_overrides,
-                    )
+                        min_req = _downstream_requirement(
+                            stations,
+                            stn_data['idx'],
+                            terminal,
+                            seg_flows_tmp,
+                            KV_list,
+                            loop_usage_by_station=loop_usage_by_station,
+                            pump_flow_overrides=pump_overrides,
+                        )
                     if residual_next < min_req:
                         continue
 
