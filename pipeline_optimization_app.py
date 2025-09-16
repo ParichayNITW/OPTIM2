@@ -38,6 +38,7 @@ import hashlib
 import uuid
 import json
 import copy
+from collections import OrderedDict
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -1175,6 +1176,136 @@ def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
 
 
 # Build a summary dataframe from solver results
+
+
+def normalize_speed_suffix(label: str) -> str:
+    """Normalise pump-type identifiers for use in speed keys."""
+
+    if not isinstance(label, str):
+        label = str(label or "")
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in label)
+    cleaned = cleaned.strip("_")
+    return cleaned.upper() if cleaned else "DEFAULT"
+
+
+def get_speed_suffixes_and_values(
+    res: dict,
+    key: str,
+    station: dict | None = None,
+) -> tuple[list[str], dict[str, float]]:
+    """Return ordered suffixes and corresponding per-type speeds."""
+
+    prefix = f"speed_{key}_"
+    key_map: dict[str, str] = {}
+    order_extra: list[str] = []
+    for rkey in res.keys():
+        if isinstance(rkey, str) and rkey.startswith(prefix):
+            raw_suffix = rkey[len(prefix) :]
+            norm = normalize_speed_suffix(raw_suffix)
+            if norm not in key_map:
+                key_map[norm] = rkey
+                order_extra.append(norm)
+
+    suffixes: list[str] = []
+    seen: set[str] = set()
+    if station:
+        pump_types = station.get("pump_types")
+        if isinstance(pump_types, dict) and pump_types:
+            for ptype in pump_types.keys():
+                norm = normalize_speed_suffix(ptype)
+                if norm not in seen:
+                    suffixes.append(norm)
+                    seen.add(norm)
+        else:
+            pump_type_single = station.get("pump_type")
+            if pump_type_single:
+                norm = normalize_speed_suffix(pump_type_single)
+                if norm not in seen:
+                    suffixes.append(norm)
+                    seen.add(norm)
+
+    for norm in order_extra:
+        if norm not in seen:
+            suffixes.append(norm)
+            seen.add(norm)
+
+    values: dict[str, float] = {}
+    for norm in suffixes:
+        actual_key = key_map.get(norm)
+        val = None
+        if actual_key:
+            val = res.get(actual_key)
+        if val is None:
+            val = res.get(f"{prefix}{norm}")
+        if val is None and norm.lower() != norm:
+            val = res.get(f"{prefix}{norm.lower()}")
+        try:
+            values[norm] = float(val)
+        except (TypeError, ValueError):
+            values[norm] = np.nan
+    return suffixes, values
+
+
+def get_speed_display_map(
+    res: dict,
+    key: str,
+    station: dict | None = None,
+) -> OrderedDict[str, float]:
+    """Return an ordered mapping of per-type pump speeds for a station."""
+
+    suffixes, values = get_speed_suffixes_and_values(res, key, station)
+    aggregated = res.get(f"speed_{key}")
+    aggregated_val: float | None
+    try:
+        aggregated_val = float(aggregated)
+    except (TypeError, ValueError):
+        aggregated_val = None
+    else:
+        if isinstance(aggregated_val, float) and np.isnan(aggregated_val):
+            aggregated_val = None
+
+    if not suffixes:
+        fallback = None
+        if station:
+            pump_types = station.get("pump_types")
+            if isinstance(pump_types, dict) and pump_types:
+                fallback = next(iter(pump_types.keys()), None)
+            if fallback is None:
+                fallback = station.get("pump_type")
+        if fallback is None:
+            fallback = "DEFAULT"
+        norm = normalize_speed_suffix(fallback)
+        suffixes = [norm]
+        if aggregated_val is not None:
+            values[norm] = aggregated_val
+        else:
+            values.setdefault(norm, np.nan)
+    elif aggregated_val is not None:
+        for norm in suffixes:
+            current = values.get(norm)
+            if current is None or (isinstance(current, float) and np.isnan(current)):
+                values[norm] = aggregated_val
+
+    speed_map: OrderedDict[str, float] = OrderedDict()
+    for norm in suffixes:
+        speed_map[norm] = values.get(norm, np.nan)
+    return speed_map
+
+
+def add_speed_columns(row: dict, res: dict, station: dict | None, prefix: str = "Speed") -> None:
+    """Populate ``row`` with per-type speed columns for ``station``."""
+
+    if not station:
+        return
+    key_raw = station.get("name", "")
+    key = key_raw.lower().replace(" ", "_")
+    speed_map = get_speed_display_map(res, key, station)
+    label_base = station.get("name", key_raw)
+    for suffix, value in speed_map.items():
+        column = f"{prefix} {label_base} ({suffix})"
+        row[column] = value if not (isinstance(value, float) and np.isnan(value)) else np.nan
+
+
 def build_summary_dataframe(
     res: dict,
     stations_data: list[dict],
@@ -1209,18 +1340,33 @@ def build_summary_dataframe(
     loop_flows = [res.get(f"loopline_flow_{k}", np.nan) for k in keys]
     pump_flows = [res.get(f"pump_flow_{k}", np.nan) for k in keys]
 
-    params = [
+    station_speed_maps: dict[str, OrderedDict[str, float]] = {}
+    speed_suffixes: list[str] = []
+    seen_suffixes: set[str] = set()
+    for idx, stn in enumerate(stations_data):
+        key = keys[idx]
+        speed_map = get_speed_display_map(res, key, stn)
+        station_speed_maps[key] = speed_map
+        for suffix in speed_map.keys():
+            if suffix not in seen_suffixes:
+                speed_suffixes.append(suffix)
+                seen_suffixes.add(suffix)
+
+    params_pre = [
         "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Bypass Next?",
-        "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM", "No. of Pumps", "Pump Speed (rpm)",
+        "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM", "No. of Pumps",
+    ]
+    params_post = [
         "Pump Eff (%)", "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
         "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)", "Residual Head (kg/cm²)",
         "SDH (m)", "SDH (kg/cm²)", "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
     ]
+    params = params_pre + [f"Pump Speed {suffix} (rpm)" for suffix in speed_suffixes] + params_post
     summary = {"Parameters": params}
 
     for idx, nm in enumerate(names):
         key = keys[idx]
-        summary[nm] = [
+        pre_values = [
             segment_flows[idx],
             loop_flows[idx],
             pump_flows[idx] if idx < len(pump_flows) and not pd.isna(pump_flows[idx]) else np.nan,
@@ -1229,7 +1375,13 @@ def build_summary_dataframe(
             res.get(f"dra_cost_{key}", 0.0),
             station_ppm.get(key, np.nan),
             int(res.get(f"num_pumps_{key}", 0)),
-            res.get(f"speed_{key}", 0.0),
+        ]
+        if idx < len(stations_data):
+            speed_map = station_speed_maps.get(key, OrderedDict())
+        else:
+            speed_map = OrderedDict()
+        speed_values = [speed_map.get(suffix, np.nan) for suffix in speed_suffixes]
+        post_values = [
             res.get(f"efficiency_{key}", 0.0),
             res.get(f"pump_bkw_{key}", 0.0),
             res.get(f"motor_kw_{key}", 0.0),
@@ -1245,6 +1397,7 @@ def build_summary_dataframe(
             res.get(f"maop_kgcm2_{key}", 0.0),
             res.get(f"drag_reduction_{key}", 0.0),
         ]
+        summary[nm] = pre_values + speed_values + post_values
 
     df_sum = pd.DataFrame(summary)
     if drop_unused:
@@ -1334,7 +1487,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'DRA PPM': res.get(f"dra_ppm_{key}", 0.0),
             'Loop DRA PPM': res.get(f"dra_ppm_loop_{key}", 0.0),
             'No. of Pumps': n_pumps,
-            'Pump Speed (rpm)': float(res.get(f"speed_{key}", 0.0) or 0.0),
             'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
             'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
@@ -1351,6 +1503,15 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
+
+        speed_station = base_stn if base_stn else (stn if isinstance(stn, dict) else None)
+        speed_map = get_speed_display_map(res, key, speed_station)
+        for suffix, value in speed_map.items():
+            col_name = f"Pump Speed {suffix} (rpm)"
+            try:
+                row[col_name] = float(value)
+            except (TypeError, ValueError):
+                row[col_name] = np.nan
 
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
 
@@ -1377,6 +1538,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 def display_pump_type_details(res: dict, stations: list[dict], heading: str | None = None) -> bool:
     """Render a table with per-pump-type metrics for stations with multiple types."""
     multi: list[tuple[str, str, list[dict]]] = []
+    station_lookup = {
+        s.get('name', '').lower().replace(' ', '_'): s for s in stations if isinstance(s, dict)
+    }
     for stn in stations:
         key_raw = stn.get('name', '')
         key = key_raw.lower().replace(' ', '_')
@@ -1393,10 +1557,22 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
     title = heading or "Pump Details by Type"
     st.markdown(f"<div class='section-title'>{title}</div>", unsafe_allow_html=True)
     for name, key, details in multi:
+        stn_info = station_lookup.get(key, {})
+        speed_map = get_speed_display_map(res, key, stn_info)
+        speed_vals: list[float] = []
+        for detail in details:
+            suffix = normalize_speed_suffix(detail.get("ptype", ""))
+            speed_val = speed_map.get(suffix)
+            if speed_val is None or (isinstance(speed_val, float) and np.isnan(speed_val)):
+                speed_val = detail.get("rpm", 0.0)
+            try:
+                speed_vals.append(float(speed_val))
+            except (TypeError, ValueError):
+                speed_vals.append(0.0)
         df_pump = pd.DataFrame({
             "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
             "Count": [d.get("count", 0) for d in details],
-            "Pump Speed (rpm)": [d.get("rpm", res.get(f"speed_{key}", 0.0)) for d in details],
+            "Pump Speed (rpm)": speed_vals,
             "Pump Eff (%)": [d.get("eff", 0.0) for d in details],
             "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
             "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
@@ -1632,7 +1808,7 @@ if auto_batch:
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                        row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                        add_speed_columns(row, res, stn)
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                         row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                         _ppm = res.get(f"dra_ppm_{key}", 0.0)
@@ -1653,7 +1829,7 @@ if auto_batch:
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                        row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                        add_speed_columns(row, res, stn)
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                         row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                         _ppm = res.get(f"dra_ppm_{key}", 0.0)
@@ -1685,7 +1861,7 @@ if auto_batch:
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                            row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                            add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                             row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
@@ -1710,7 +1886,7 @@ if auto_batch:
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                            row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                            add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                             row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
@@ -1749,7 +1925,7 @@ if auto_batch:
                             for idx, stn in enumerate(stations_data, start=1):
                                 key = stn['name'].lower().replace(' ', '_')
                                 row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                                row[f"Speed {stn['name']}"] = res.get(f"speed_{key}", "")
+                                add_speed_columns(row, res, stn)
                                 row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
                                 row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
                                 _ppm = res.get(f"dra_ppm_{key}", 0.0)
@@ -2414,11 +2590,35 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 npump = int(res.get(f"num_pumps_{key}", 0))
                 if npump > 0:
                     total_pumps += npump
-                    eff = float(res.get(f"efficiency_{key}", 0.0))
-                    speed = float(res.get(f"speed_{key}", 0.0))
-                    for _ in range(npump):
-                        effs.append(eff)
-                        speeds.append(speed)
+                    eff_default = float(res.get(f"efficiency_{key}", 0.0))
+                    details = res.get(f"pump_details_{key}", [])
+                    if isinstance(details, list) and details:
+                        for detail in details:
+                            count = int(detail.get("count", 0) or 0)
+                            if count <= 0:
+                                continue
+                            try:
+                                rpm_val = float(detail.get("rpm", 0.0))
+                            except (TypeError, ValueError):
+                                rpm_val = 0.0
+                            try:
+                                eff_val = float(detail.get("eff", eff_default))
+                            except (TypeError, ValueError):
+                                eff_val = eff_default
+                            speeds.extend([rpm_val] * count)
+                            effs.extend([eff_val] * count)
+                    else:
+                        speed_map = get_speed_display_map(res, key, stn)
+                        speed_values = list(speed_map.values())
+                        if speed_values:
+                            try:
+                                base_speed = float(speed_values[0])
+                            except (TypeError, ValueError):
+                                base_speed = float(res.get(f"speed_{key}", 0.0) or 0.0)
+                        else:
+                            base_speed = float(res.get(f"speed_{key}", 0.0) or 0.0)
+                        speeds.extend([base_speed] * npump)
+                        effs.extend([eff_default] * npump)
             avg_eff = sum(effs)/len(effs) if effs else 0.0
             avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
             
