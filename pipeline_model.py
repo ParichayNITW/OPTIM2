@@ -2417,6 +2417,7 @@ def solve_pipeline_with_types(
             availA = stn['pump_types'].get('A', {}).get('available', 0)
             availB = stn['pump_types'].get('B', {}).get('available', 0)
             combos = generate_type_combinations(availA, availB)
+            seen_active: set[tuple[int, int]] = set()
             for numA, numB in combos:
                 total_units = numA + numB
                 if total_units <= 0:
@@ -2427,8 +2428,12 @@ def solve_pipeline_with_types(
                     for actB in range(numB + 1):
                         if actA + actB <= 0:
                             continue
+                        active_key = (actA, actB)
+                        if active_key in seen_active:
+                            continue
+                        seen_active.add(active_key)
                         unit = copy.deepcopy(stn)
-                        unit['pump_combo'] = {'A': numA, 'B': numB}
+                        unit['pump_combo'] = {'A': availA, 'B': availB}
                         unit['active_combo'] = {'A': actA, 'B': actB}
                         if actA > 0 and actB == 0:
                             pdata = pdataA
