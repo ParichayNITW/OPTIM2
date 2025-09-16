@@ -39,6 +39,69 @@ def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, 
     ]
     return sorted(combos, key=lambda x: (x[0] + x[1], x))
 
+
+def _coerce_float(value, default: float = 0.0) -> float:
+    """Convert *value* to ``float`` when possible, otherwise return ``default``."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _extract_rpm(
+    value,
+    *,
+    ptype: str | None = None,
+    default: float = 0.0,
+    prefer: str = 'min',
+) -> float:
+    """Return an RPM value from ``value`` handling scalars and mappings."""
+
+    if isinstance(value, Mapping):
+        if ptype is not None:
+            specific = value.get(ptype)
+            if specific is not None:
+                return _coerce_float(specific, default)
+        numeric: list[float] = []
+        for val in value.values():
+            if isinstance(val, Mapping):
+                continue
+            try:
+                numeric.append(float(val))
+            except (TypeError, ValueError):
+                continue
+        if not numeric:
+            return float(default)
+        if prefer == 'max':
+            return max(numeric)
+        if prefer == 'min':
+            return min(numeric)
+        return numeric[0]
+    return _coerce_float(value, default)
+
+
+def _station_min_rpm(
+    stn: Mapping[str, object],
+    ptype: str | None = None,
+    default: float = 0.0,
+) -> float:
+    """Return the minimum permissible RPM for ``stn`` (optionally per type)."""
+
+    return _extract_rpm(stn.get('MinRPM'), ptype=ptype, default=default, prefer='min')
+
+
+def _station_max_rpm(
+    stn: Mapping[str, object],
+    ptype: str | None = None,
+    default: float = 0.0,
+) -> float:
+    """Return the maximum permissible RPM for ``stn`` (optionally per type)."""
+
+    return _extract_rpm(stn.get('DOL'), ptype=ptype, default=default, prefer='max')
+
 # ---------------------------------------------------------------------------
 # Loop enumeration utilities
 # ---------------------------------------------------------------------------
@@ -516,7 +579,10 @@ def _pump_head(
     if numeric_values:
         default_rpm = numeric_values[0]
     else:
-        default_rpm = float(stn.get("DOL") or stn.get("MinRPM") or 0.0)
+        default_rpm = _station_max_rpm(stn)
+        if default_rpm <= 0:
+            default_rpm = _station_min_rpm(stn)
+    default_rpm = float(default_rpm or 0.0)
     for key in fallback_keys:
         val = speed_map.get(key)
         if isinstance(val, (int, float)):
@@ -539,7 +605,13 @@ def _pump_head(
                 continue
             pdata = ptypes.get(ptype, {})
             rpm_val = resolve_rpm(ptype)
-            dol = pdata.get("DOL", stn.get("DOL", rpm_val))
+            if rpm_val <= 0:
+                rpm_val = float(_station_max_rpm(stn, ptype=ptype) or default_rpm)
+            dol = _extract_rpm(pdata.get("DOL"), default=0.0, prefer='max')
+            if dol <= 0:
+                dol = _station_max_rpm(stn, ptype=ptype, default=rpm_val)
+            if dol <= 0:
+                dol = rpm_val
             Q_equiv = flow_m3h * dol / rpm_val if rpm_val > 0 else flow_m3h
             A = pdata.get("A", 0.0)
             B = pdata.get("B", 0.0)
@@ -577,8 +649,10 @@ def _pump_head(
     pump_type = stn.get("pump_type", "type1")
     rpm_single = resolve_rpm(pump_type)
     if rpm_single <= 0:
-        rpm_single = default_rpm
-    dol = stn.get("DOL", rpm_single if rpm_single > 0 else default_rpm)
+        rpm_single = float(default_rpm or _station_max_rpm(stn))
+    dol = _station_max_rpm(stn, default=rpm_single if rpm_single > 0 else default_rpm)
+    if dol <= 0:
+        dol = rpm_single if rpm_single > 0 else default_rpm
     Q_equiv = flow_m3h * dol / rpm_single if rpm_single > 0 else flow_m3h
     A = stn.get("A", 0.0)
     B = stn.get("B", 0.0)
@@ -763,7 +837,10 @@ def _downstream_requirement(
         req = max(req, peak_req)
 
         if stn.get('is_pump', False):
-            rpm_max = int(stn.get('DOL', stn.get('MinRPM', 0)))
+            rpm_max_val = _station_max_rpm(stn)
+            if rpm_max_val <= 0:
+                rpm_max_val = _station_min_rpm(stn)
+            rpm_max = int(max(rpm_max_val, 0))
             nop_max = stn.get('max_pumps', 0)
             flow_pump = pump_flow_overrides.get(i, flow) if pump_flow_overrides else flow
             if rpm_max and nop_max:
@@ -781,7 +858,13 @@ def _downstream_requirement(
                     if isinstance(combo_local, dict):
                         for ptype, count in combo_local.items():
                             if isinstance(count, (int, float)) and count > 0:
-                                rpm_map_local[ptype] = rpm_max
+                                rpm_map_local[ptype] = int(
+                                    max(
+                                        _station_max_rpm(stn, ptype=ptype, default=rpm_max)
+                                        or rpm_max,
+                                        0,
+                                    )
+                                )
                 if not rpm_map_local:
                     pump_type = stn.get('pump_type')
                     if pump_type:
@@ -1038,18 +1121,45 @@ def solve_pipeline(
             if stn.get("is_pump", False):
                 coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
                 coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                st_rpm_min = int(_station_min_rpm(stn))
+                st_rpm_max = int(_station_max_rpm(stn))
+                if st_rpm_max <= 0 and st_rpm_min > 0:
+                    st_rpm_max = st_rpm_min
                 if coarse_nop == 0:
                     rmin = rmax = 0
                 else:
-                    coarse_rpm = int(coarse_res.get(f"speed_{name}", stn.get("MinRPM", 0)))
-                    rmin = max(int(stn.get("MinRPM", 0)), coarse_rpm - rpm_step)
-                    rmax = min(int(stn.get("DOL", 0)), coarse_rpm + rpm_step)
+                    coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
+                    rmin = max(st_rpm_min, coarse_rpm - rpm_step)
+                    upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
+                    rmax = min(upper_bound, coarse_rpm + rpm_step)
                 dmin = max(0, coarse_dr_main - dra_step)
                 dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 entry: dict[str, tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
                 }
+                pump_types_rng = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
+                combo_rng = None
+                if isinstance(stn.get("active_combo"), Mapping):
+                    combo_rng = stn["active_combo"]  # type: ignore[index]
+                elif isinstance(stn.get("pump_combo"), Mapping):
+                    combo_rng = stn["pump_combo"]  # type: ignore[index]
+                elif isinstance(stn.get("combo"), Mapping):
+                    combo_rng = stn["combo"]  # type: ignore[index]
+                if pump_types_rng and isinstance(combo_rng, Mapping):
+                    for ptype, count in combo_rng.items():
+                        if not isinstance(count, (int, float)) or count <= 0:
+                            continue
+                        pdata = pump_types_rng.get(ptype, {})
+                        pmin_default = int(_station_min_rpm(stn, ptype=ptype, default=st_rpm_min))
+                        pmax_default = int(_station_max_rpm(stn, ptype=ptype, default=st_rpm_max or st_rpm_min))
+                        p_rmin = int(_extract_rpm(pdata.get("MinRPM"), default=pmin_default, prefer='min'))
+                        p_rmax = int(_extract_rpm(pdata.get("DOL"), default=pmax_default, prefer='max'))
+                        if p_rmax <= 0 and pmax_default > 0:
+                            p_rmax = pmax_default
+                        if p_rmax < p_rmin:
+                            p_rmin, p_rmax = p_rmax, p_rmin
+                        entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
                 loop = stn.get("loopline") or {}
                 if loop:
                     coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
@@ -1195,8 +1305,12 @@ def solve_pipeline(
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
-            rpm_min = int(stn.get('MinRPM', 0))
-            rpm_max = int(stn.get('DOL', 0))
+            station_rpm_min = int(_station_min_rpm(stn))
+            station_rpm_max = int(_station_max_rpm(stn))
+            if station_rpm_max <= 0 and station_rpm_min > 0:
+                station_rpm_max = station_rpm_min
+            rpm_min = station_rpm_min
+            rpm_max = station_rpm_max
             if rng and 'rpm' in rng:
                 rpm_min = max(rpm_min, rng['rpm'][0])
                 rpm_max = min(rpm_max, rng['rpm'][1])
@@ -1219,8 +1333,22 @@ def solve_pipeline(
                     if not isinstance(count, (int, float)) or count <= 0:
                         continue
                     pdata = pump_types_data.get(ptype, {})
-                    p_rpm_min = int(pdata.get('MinRPM', rpm_min))
-                    p_rpm_max = int(pdata.get('DOL', rpm_max))
+                    p_rpm_min = int(
+                        _extract_rpm(
+                            pdata.get('MinRPM'),
+                            default=_station_min_rpm(stn, ptype=ptype, default=rpm_min),
+                            prefer='min',
+                        )
+                    )
+                    p_rpm_max = int(
+                        _extract_rpm(
+                            pdata.get('DOL'),
+                            default=_station_max_rpm(stn, ptype=ptype, default=rpm_max),
+                            prefer='max',
+                        )
+                    )
+                    if p_rpm_max <= 0 and rpm_max > 0:
+                        p_rpm_max = rpm_max
                     if rng:
                         key = f'rpm_{ptype}'
                         if key in rng:
@@ -1358,8 +1486,8 @@ def solve_pipeline(
             'coef_R': float(stn.get('R', 0.0)),
             'coef_S': float(stn.get('S', 0.0)),
             'coef_T': float(stn.get('T', 0.0)),
-            'min_rpm': int(stn.get('MinRPM', 0)),
-            'dol': int(stn.get('DOL', 0)),
+            'min_rpm': station_rpm_min,
+            'dol': station_rpm_max,
             'power_type': stn.get('power_type', 'Grid'),
             'rate': float(stn.get('rate', 0.0)),
             'tariffs': stn.get('tariffs'),
@@ -2272,14 +2400,32 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
                         else:
-                            unit['MinRPM'] = min(
-                                pdataA.get('MinRPM', unit.get('MinRPM', 0.0)),
-                                pdataB.get('MinRPM', unit.get('MinRPM', 0.0)),
-                            )
-                            unit['DOL'] = max(
-                                pdataA.get('DOL', unit.get('DOL', 0.0)),
-                                pdataB.get('DOL', unit.get('DOL', 0.0)),
-                            )
+                            min_map: dict[str, float] = {}
+                            dol_map: dict[str, float] = {}
+                            if actA > 0:
+                                min_map['A'] = _extract_rpm(
+                                    pdataA.get('MinRPM'),
+                                    default=_station_min_rpm(stn, ptype='A'),
+                                    prefer='min',
+                                )
+                                dol_map['A'] = _extract_rpm(
+                                    pdataA.get('DOL'),
+                                    default=_station_max_rpm(stn, ptype='A'),
+                                    prefer='max',
+                                )
+                            if actB > 0:
+                                min_map['B'] = _extract_rpm(
+                                    pdataB.get('MinRPM'),
+                                    default=_station_min_rpm(stn, ptype='B'),
+                                    prefer='min',
+                                )
+                                dol_map['B'] = _extract_rpm(
+                                    pdataB.get('DOL'),
+                                    default=_station_max_rpm(stn, ptype='B'),
+                                    prefer='max',
+                                )
+                            unit['MinRPM'] = min_map
+                            unit['DOL'] = dol_map
                             unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
                             unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
                             unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
