@@ -2251,9 +2251,28 @@ def solve_pipeline(
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
         threshold = best_cost_station + STATE_COST_MARGIN
         pruned: dict[int, dict] = {}
+        retained_injections: set[int] = set()
+        best_per_injection: dict[int, tuple[int, dict]] = {}
         for idx, (residual_key, data) in enumerate(items):
+            inj_raw = data.get('inj_ppm_main')
+            try:
+                inj_level = int(inj_raw)
+            except (TypeError, ValueError):
+                inj_level = 0
+            if inj_level > 0 and inj_level not in best_per_injection:
+                best_per_injection[inj_level] = (residual_key, data)
             if idx < STATE_TOP_K or data['cost'] <= threshold:
                 pruned[residual_key] = data
+                if inj_level > 0:
+                    retained_injections.add(inj_level)
+        # Ensure at least one candidate survives for each non-zero injection level
+        # by re-inserting the lowest-cost state that was pruned.  Limiting to a
+        # single residual per injection level prevents the state count from
+        # growing uncontrollably.
+        for inj_level, (residual_key, data) in best_per_injection.items():
+            if inj_level not in retained_injections:
+                pruned[residual_key] = data
+                retained_injections.add(inj_level)
         states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
