@@ -3327,7 +3327,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         stn = stations_data[pump_idx]
         key = stn['name'].lower().replace(' ', '_')
 
-        speed_opt = float(last_res.get(f"speed_{key}", stn.get('DOL', 0)))
+        default_speed = pipeline_model._station_max_rpm(stn)
+        if default_speed <= 0:
+            default_speed = pipeline_model._station_min_rpm(stn)
+        speed_opt = float(last_res.get(f"speed_{key}", default_speed))
         dra_opt = float(last_res.get(f"drag_reduction_{key}", 0.0))
         nopt_opt = int(last_res.get(f"num_pumps_{key}", 1))
         flow_opt = FLOW
@@ -3337,8 +3340,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         delta_nop = 1
         delta_flow = 150
         N = 9
-        N_min = int(stn.get('MinRPM', 1000))
-        N_max = int(stn.get('DOL', 1500))
+        N_min = int(pipeline_model._station_min_rpm(stn, default=1000))
+        N_max = int(pipeline_model._station_max_rpm(stn, default=1500))
+        if N_max <= 0 and N_min > 0:
+            N_max = N_min
         DRA_max = int(stn.get('max_dr', 40))
         max_pumps = int(stn.get('max_pumps', 4))
     
@@ -3372,7 +3377,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
         P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
         S = stn.get('S', 0); T = stn.get('T', 0)
-        DOL = float(stn.get('DOL', N_max))
+        DOL = float(pipeline_model._station_max_rpm(stn, default=N_max) or N_max)
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
         rho = rho_list[pump_idx]
