@@ -9,3 +9,4 @@ scipy
 matplotlib
 streamlit-agraph
 numba
+xlsxwriter

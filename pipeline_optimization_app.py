@@ -2644,20 +2644,37 @@ if not auto_batch:
             file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
         )
 
+        export_df = df_day_export if df_day_export is not None else pd.DataFrame()
         excel_buffer = BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
-            (df_day_export if df_day_export is not None else pd.DataFrame()).to_excel(
-                writer,
-                index=False,
-                sheet_name="Schedule",
+        try:
+            writer = pd.ExcelWriter(excel_buffer, engine="xlsxwriter")
+        except ModuleNotFoundError:
+            excel_buffer = BytesIO()
+            try:
+                writer = pd.ExcelWriter(excel_buffer)
+            except ModuleNotFoundError:
+                writer = None
+        if writer is None:
+            st.error(
+                "Excel export requires the 'xlsxwriter' or 'openpyxl' package. "
+                "Please install one of them to enable downloads."
             )
-        excel_buffer.seek(0)
-        st.download_button(
-            f"Download {label_prefix} Optimizer Output (Excel)",
-            excel_buffer.getvalue(),
-            file_name="hourly_schedule_results.xlsx" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        else:
+            with writer:
+                export_df.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Schedule",
+                )
+            excel_buffer.seek(0)
+            st.download_button(
+                f"Download {label_prefix} Optimizer Output (Excel)",
+                excel_buffer.getvalue(),
+                file_name="hourly_schedule_results.xlsx"
+                if st.session_state.get("run_mode") == "hourly"
+                else "daily_schedule_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
         # Display total cost per time slice and global sum
         cost_rows = []
