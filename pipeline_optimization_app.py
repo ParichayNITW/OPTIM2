@@ -5,7 +5,6 @@ import streamlit as st
 import altair as alt
 import pipeline_model
 import datetime as dt
-from io import BytesIO
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -30,8 +29,6 @@ if "Fuel_density" not in st.session_state:
     st.session_state["Fuel_density"] = 820.0
 if "Ambient_temp" not in st.session_state:
     st.session_state["Ambient_temp"] = 25.0
-if "day_block_hours" not in st.session_state:
-    st.session_state["day_block_hours"] = 1.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -42,9 +39,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
-from collections.abc import Mapping, Iterable
 from plotly.colors import qualitative
-from schedule_utils import format_time_range
 
 # Ensure local modules are importable when the app is run from an arbitrary
 # working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
@@ -1297,291 +1292,6 @@ def get_speed_display_map(
     return speed_map
 
 
-PUMP_SUMMARY_HEADER = "Pump Name/No. of Pumps/Pump Speed \u2018Mention respective type name\u2019"
-
-EXCEL_COLUMN_RENAMES = {
-    "Pump Name": PUMP_SUMMARY_HEADER,
-    "DRA PPM": "DRA Pipeline (PPM)",
-    "Loop DRA PPM": "DRA Loop (PPM)",
-    "Vel (m/s)": "Velocity (m/s)",
-    "Residual Head (m)": "Discharge Head (m)",
-    "Residual Head (kg/cm²)": "Discharge Pressure (kg/cm²)",
-    "SDH (m)": "Suction Head (m)",
-    "SDH (kg/cm²)": "Suction Pressure (kg/cm²)",
-}
-
-EXCEL_COLUMN_ORDER = [
-    "Time",
-    "Pattern",
-    "Station",
-    PUMP_SUMMARY_HEADER,
-    "No. of Pumps",
-    "Pipeline Flow (m³/hr)",
-    "Loopline Flow (m³/hr)",
-    "Pump Flow (m³/hr)",
-    "Power & Fuel Cost (INR)",
-    "DRA Pipeline (PPM)",
-    "DRA Loop (PPM)",
-    "DRA Cost (INR)",
-    "Total Cost (INR)",
-    "Pump Eff (%)",
-    "Pump BKW (kW)",
-    "Motor Input (kW)",
-    "Reynolds No.",
-    "Head Loss (m)",
-    "Head Loss (kg/cm²)",
-    "Velocity (m/s)",
-    "Suction Head (m)",
-    "Suction Pressure (kg/cm²)",
-    "Discharge Head (m)",
-    "Discharge Pressure (kg/cm²)",
-    "MAOP (m)",
-    "MAOP (kg/cm²)",
-    "Available Suction Head (m)",
-    "Available Suction Head (kg/cm²)",
-    "Drag Reduction (%)",
-    "Loop Drag Reduction (%)",
-]
-
-
-def _resolve_pump_type_label(ptype: str, station_info: Mapping | None) -> str:
-    if not isinstance(ptype, str):
-        ptype = str(ptype or "")
-    ptype = ptype.strip()
-    pump_types = None
-    if isinstance(station_info, Mapping):
-        pump_types = station_info.get("pump_types")
-    if isinstance(pump_types, Mapping):
-        meta = (
-            pump_types.get(ptype)
-            or pump_types.get(ptype.upper())
-            or pump_types.get(ptype.lower())
-        )
-        if isinstance(meta, Mapping):
-            for key in ("label", "name", "display_name"):
-                val = meta.get(key)
-                if isinstance(val, str) and val.strip():
-                    return val.strip()
-    if ptype:
-        return f"Type {ptype}"
-    return "Type"
-
-
-def _format_pump_summary_fallback(
-    pump_name: str | None,
-    total_pumps: int | float | None,
-    speed_map: Mapping[str, float] | None,
-) -> str:
-    base = (pump_name or "").strip()
-    if not base and total_pumps not in (None, ""):
-        try:
-            total_val = int(round(float(total_pumps)))
-        except (TypeError, ValueError):
-            total_val = None
-        if total_val and total_val > 0:
-            base = f"{total_val} pump(s)"
-    speeds: list[str] = []
-    if isinstance(speed_map, Mapping):
-        for val in speed_map.values():
-            if isinstance(val, (int, float)):
-                try:
-                    val_float = float(val)
-                except (TypeError, ValueError):
-                    continue
-                if np.isnan(val_float):
-                    continue
-                if float(val_float).is_integer():
-                    speeds.append(str(int(val_float)))
-                else:
-                    speeds.append(f"{val_float:.1f}".rstrip("0").rstrip("."))
-    if base and speeds:
-        return f"{base} @ {'/'.join(speeds)} rpm"
-    if speeds and not base:
-        return f"Speeds: {'/'.join(speeds)} rpm"
-    return base
-
-
-def _format_pump_summary(
-    pump_details: list[dict],
-    station_info: Mapping | None,
-    pump_name: str | None,
-    total_pumps: int | float | None,
-    speed_map: Mapping[str, float] | None,
-) -> str:
-    if not isinstance(pump_details, list) or not pump_details:
-        return _format_pump_summary_fallback(pump_name, total_pumps, speed_map)
-    parts: list[str] = []
-    for detail in pump_details:
-        ptype = detail.get("ptype")
-        if not ptype:
-            continue
-        count_raw = detail.get("count", 0)
-        try:
-            count_val = int(round(float(count_raw)))
-        except (TypeError, ValueError):
-            count_val = 0
-        if count_val <= 0:
-            continue
-        label = _resolve_pump_type_label(ptype, station_info)
-        suffix = normalize_speed_suffix(ptype)
-        speed_val = None
-        if isinstance(speed_map, Mapping):
-            speed_val = speed_map.get(suffix)
-        speed_note = ""
-        if isinstance(speed_val, (int, float)):
-            try:
-                speed_float = float(speed_val)
-            except (TypeError, ValueError):
-                speed_float = None
-            if speed_float is not None and not np.isnan(speed_float):
-                if float(speed_float).is_integer():
-                    speed_repr = str(int(speed_float))
-                else:
-                    speed_repr = f"{speed_float:.1f}".rstrip("0").rstrip(".")
-                speed_note = f" @ {speed_repr} rpm"
-        parts.append(f"{label}: {count_val}{speed_note}")
-    if parts:
-        return "; ".join(parts)
-    return _format_pump_summary_fallback(pump_name, total_pumps, speed_map)
-
-
-def build_pump_summary_strings(
-    res: dict,
-    stations_base: list[dict],
-    df_table: pd.DataFrame,
-) -> list[str]:
-    if df_table is None or df_table.empty:
-        return []
-    base_map: dict[str, dict] = {}
-    for stn in stations_base:
-        if not isinstance(stn, dict):
-            continue
-        name = stn.get("name")
-        if isinstance(name, str):
-            base_map[name] = stn
-        orig = stn.get("orig_name")
-        if isinstance(orig, str) and orig not in base_map:
-            base_map[orig] = stn
-    stations_seq = res.get("stations_used") or stations_base
-    summaries: list[str] = []
-    row_idx = 0
-    for stn in stations_seq:
-        name = stn.get("name", "") if isinstance(stn, dict) else str(stn)
-        key = name.lower().replace(" ", "_")
-        if f"pipeline_flow_{key}" not in res:
-            continue
-        display_name = (
-            stn.get("orig_name", stn.get("name", name))
-            if isinstance(stn, dict)
-            else name
-        )
-        base_ref = base_map.get(display_name) or base_map.get(name)
-        if base_ref is None and isinstance(stn, dict):
-            base_ref = stn
-        pump_details = res.get(f"pump_details_{key}")
-        if pump_details is None:
-            pump_details = res.get(f"pump_details_{name}", [])
-        if not isinstance(pump_details, list):
-            pump_details = []
-        station_info = base_ref if isinstance(base_ref, Mapping) else {}
-        speed_map = get_speed_display_map(res, key, station_info)
-        pump_name = None
-        total_pumps = None
-        if 0 <= row_idx < len(df_table.index):
-            row = df_table.iloc[row_idx]
-            if isinstance(row, pd.Series):
-                pump_name = row.get("Pump Name")
-                total_pumps = row.get("No. of Pumps")
-        summary = _format_pump_summary(
-            pump_details,
-            station_info,
-            pump_name,
-            total_pumps,
-            speed_map,
-        )
-        summaries.append(summary)
-        row_idx += 1
-    return summaries
-
-
-def get_speed_column_names(df: pd.DataFrame) -> list[str]:
-    """Return per-type pump speed columns present in ``df``."""
-
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return []
-    return [
-        col
-        for col in df.columns
-        if isinstance(col, str) and "Pump Speed" in col and "(rpm)" in col
-    ]
-
-
-def mask_zero_speed_columns(
-    df: pd.DataFrame, columns: Iterable[str] | None = None
-) -> pd.DataFrame:
-    """Replace exact-zero entries in pump speed columns with ``NaN``."""
-
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return df
-    if columns is None:
-        columns = get_speed_column_names(df)
-    for col in columns:
-        if col not in df.columns:
-            continue
-        numeric_vals = pd.to_numeric(df[col], errors="coerce")
-        zero_mask = numeric_vals.eq(0)
-        if zero_mask.any():
-            df.loc[zero_mask, col] = np.nan
-    return df
-
-
-def prepare_schedule_export_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
-    if df_raw is None or len(df_raw) == 0:
-        return pd.DataFrame(columns=EXCEL_COLUMN_ORDER)
-    df_excel = df_raw.copy()
-    df_excel = df_excel.rename(columns=EXCEL_COLUMN_RENAMES)
-    for col in EXCEL_COLUMN_ORDER:
-        if col not in df_excel.columns:
-            df_excel[col] = np.nan
-    ordered_cols = [col for col in EXCEL_COLUMN_ORDER if col in df_excel.columns]
-    extra_cols = [col for col in df_excel.columns if col not in ordered_cols]
-    df_excel = df_excel[ordered_cols + extra_cols]
-    return mask_zero_speed_columns(df_excel)
-
-
-def build_schedule_export_dataframe_from_reports(
-    reports: list[dict],
-    stations_base: list[dict],
-    block_hours: float = 1.0,
-) -> pd.DataFrame:
-    export_tables: list[pd.DataFrame] = []
-    for rec in reports or []:
-        res = rec.get("result") if isinstance(rec, Mapping) else None
-        if not isinstance(res, dict):
-            continue
-        time_val = rec.get("time", 0) if isinstance(rec, Mapping) else 0
-        try:
-            start_val = float(time_val)
-        except (TypeError, ValueError):
-            start_val = 0.0
-        time_label = format_time_range(start_val, block_hours)
-        pattern = res.get("flow_pattern_name", "")
-        df_base = build_station_table(res, stations_base)
-        if df_base is None or df_base.empty:
-            continue
-        summary_values = build_pump_summary_strings(res, stations_base, df_base)
-        df_export = df_base.copy()
-        if summary_values:
-            df_export["Pump Name"] = summary_values
-        df_export.insert(0, "Pattern", pattern)
-        df_export.insert(0, "Time", time_label)
-        export_tables.append(df_export)
-    if not export_tables:
-        return pd.DataFrame(columns=EXCEL_COLUMN_ORDER)
-    raw_export = pd.concat(export_tables, ignore_index=True)
-    return prepare_schedule_export_dataframe(raw_export)
-
-
 def add_speed_columns(row: dict, res: dict, station: dict | None, prefix: str = "Speed") -> None:
     """Populate ``row`` with per-type speed columns for ``station``."""
 
@@ -1593,13 +1303,7 @@ def add_speed_columns(row: dict, res: dict, station: dict | None, prefix: str = 
     label_base = station.get("name", key_raw)
     for suffix, value in speed_map.items():
         column = f"{prefix} {label_base} ({suffix})"
-        try:
-            speed_val = float(value)
-        except (TypeError, ValueError):
-            speed_val = np.nan
-        if speed_val == 0:
-            speed_val = np.nan
-        row[column] = speed_val
+        row[column] = value if not (isinstance(value, float) and np.isnan(value)) else np.nan
 
 
 def build_summary_dataframe(
@@ -1805,12 +1509,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         for suffix, value in speed_map.items():
             col_name = f"Pump Speed {suffix} (rpm)"
             try:
-                speed_val = float(value)
+                row[col_name] = float(value)
             except (TypeError, ValueError):
-                speed_val = np.nan
-            if speed_val == 0:
-                speed_val = np.nan
-            row[col_name] = speed_val
+                row[col_name] = np.nan
 
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
 
@@ -1825,10 +1526,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    df = mask_zero_speed_columns(df)
     num_cols = df.select_dtypes(include='number').columns
     df[num_cols] = df[num_cols].round(2)
-    df = mask_zero_speed_columns(df)
     if 'DRA PPM' in df.columns:
         df['DRA PPM'] = df['DRA PPM'].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
     if 'Loop DRA PPM' in df.columns:
@@ -1867,12 +1566,9 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
             if speed_val is None or (isinstance(speed_val, float) and np.isnan(speed_val)):
                 speed_val = detail.get("rpm", 0.0)
             try:
-                numeric_speed = float(speed_val)
+                speed_vals.append(float(speed_val))
             except (TypeError, ValueError):
-                numeric_speed = np.nan
-            if numeric_speed == 0:
-                numeric_speed = np.nan
-            speed_vals.append(numeric_speed)
+                speed_vals.append(0.0)
         df_pump = pd.DataFrame({
             "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
             "Count": [d.get("count", 0) for d in details],
@@ -1881,7 +1577,6 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
             "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
             "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
         })
-        df_pump = mask_zero_speed_columns(df_pump)
         fmt = {c: "{:.2f}" for c in df_pump.columns if c not in ["Pump Type", "Count"]}
         st.markdown(f"**{name}**")
         st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
@@ -2240,7 +1935,6 @@ if auto_batch:
                             row["Total Cost"] = res.get("total_cost", "")
                             result_rows.append(row)
                 df_batch = pd.DataFrame(result_rows)
-                df_batch = mask_zero_speed_columns(df_batch)
                 st.session_state['batch_df'] = df_batch
             except Exception as e:
                 st.session_state.pop('batch_df', None)
@@ -2423,7 +2117,6 @@ if not auto_batch:
 
         hours = [7] if is_hourly else [7, 11, 15, 19, 23, 27]
         sub_steps = 1 if is_hourly else 4
-        block_hours = float(sub_steps or 1.0)
         spinner_msg = "Running 1 optimization (1h)..." if is_hourly else "Running 6 optimizations (07:00 to 03:00)..."
         reports = []
         linefill_snaps = []
@@ -2520,95 +2213,41 @@ if not auto_batch:
             st.stop()
 
         # Build a consolidated station-wise table with flow pattern names
-        station_tables: list[pd.DataFrame] = []
-        export_tables: list[pd.DataFrame] = []
+        station_tables = []
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
-            df_base = build_station_table(res, stations_base)
+            df_int = build_station_table(res, stations_base)
+            # Insert human-readable pattern and time columns
             pattern = res.get('flow_pattern_name', '')
-            time_label = format_time_range(hr, block_hours)
-            df_display = df_base.copy()
-            df_display.insert(0, "Pattern", pattern)
-            df_display.insert(0, "Time", time_label)
-            station_tables.append(df_display)
-
-            summary_values = build_pump_summary_strings(res, stations_base, df_base)
-            df_export = df_base.copy()
-            if summary_values:
-                df_export["Pump Name"] = summary_values
-            df_export.insert(0, "Pattern", pattern)
-            df_export.insert(0, "Time", time_label)
-            export_tables.append(df_export)
-
-        df_day_combined = (
-            pd.concat(station_tables, ignore_index=True) if station_tables else pd.DataFrame()
-        )
-        if not df_day_combined.empty:
-            df_day = df_day_combined.copy()
-            speed_cols_day = get_speed_column_names(df_day)
-            num_cols_day = df_day.select_dtypes(include='number').columns.tolist()
-            non_speed_numeric = [c for c in num_cols_day if c not in speed_cols_day]
-            if non_speed_numeric:
-                df_day[non_speed_numeric] = df_day[non_speed_numeric].fillna(0.0)
-            df_day = mask_zero_speed_columns(df_day, speed_cols_day)
-            if num_cols_day:
-                df_day[num_cols_day] = df_day[num_cols_day].round(2)
-            df_day = mask_zero_speed_columns(df_day, speed_cols_day)
-        else:
-            df_day = df_day_combined
-
-        df_day_export_raw = pd.concat(export_tables, ignore_index=True) if export_tables else pd.DataFrame()
-        df_day_export = prepare_schedule_export_dataframe(df_day_export_raw)
+            df_int.insert(0, "Pattern", pattern)
+            df_int.insert(0, "Time", f"{hr:02d}:00")
+            station_tables.append(df_int)
+        df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
         # Pandas may treat some columns as object if they contain NaN or are newly inserted.
         df_day_numeric = df_day.copy()
         # Identify columns eligible for numeric styling
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
-        speed_cols_numeric = get_speed_column_names(df_day_numeric)
         for c in num_cols:
-            numeric_series = pd.to_numeric(df_day_numeric[c], errors="coerce")
-            if c in speed_cols_numeric:
-                df_day_numeric[c] = numeric_series
-            else:
-                df_day_numeric[c] = numeric_series.fillna(0.0)
-        df_day_numeric = mask_zero_speed_columns(df_day_numeric, speed_cols_numeric)
+            df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
 
         # Persist results for reuse across Streamlit reruns
         st.session_state["day_df"] = df_day_numeric
         st.session_state["day_df_raw"] = df_day
-        st.session_state["day_df_export_raw"] = df_day_export_raw
-        st.session_state["day_df_export"] = df_day_export
         st.session_state["day_reports"] = reports
         st.session_state["day_linefill_snaps"] = linefill_snaps
         st.session_state["day_hours"] = hours
-        st.session_state["day_block_hours"] = block_hours
         st.session_state["day_stations"] = stations_base
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
         df_day_numeric = st.session_state["day_df"]
-        df_day_numeric = mask_zero_speed_columns(df_day_numeric)
         reports = st.session_state.get("day_reports", [])
         stations_base = st.session_state.get("day_stations", [])
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
-        block_hours = float(st.session_state.get("day_block_hours", 1.0) or 1.0)
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
-        df_day = mask_zero_speed_columns(df_day)
-        df_day_export = st.session_state.get("day_df_export")
-        df_day_export = mask_zero_speed_columns(df_day_export)
-        if df_day_export is None or len(df_day_export) == 0:
-            export_raw = st.session_state.get("day_df_export_raw")
-            if isinstance(export_raw, pd.DataFrame) and len(export_raw):
-                df_day_export = prepare_schedule_export_dataframe(export_raw)
-            else:
-                df_day_export = build_schedule_export_dataframe_from_reports(
-                    reports,
-                    stations_base,
-                    block_hours,
-                )
-            st.session_state["day_df_export"] = df_day_export
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
         df_display = df_day_numeric.T if transpose_view else df_day_numeric
         if transpose_view:
@@ -2644,51 +2283,15 @@ if not auto_batch:
             file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
         )
 
-        export_df = df_day_export if df_day_export is not None else pd.DataFrame()
-        excel_buffer = BytesIO()
-        try:
-            writer = pd.ExcelWriter(excel_buffer, engine="xlsxwriter")
-        except ModuleNotFoundError:
-            excel_buffer = BytesIO()
-            try:
-                writer = pd.ExcelWriter(excel_buffer)
-            except ModuleNotFoundError:
-                writer = None
-        if writer is None:
-            st.error(
-                "Excel export requires the 'xlsxwriter' or 'openpyxl' package. "
-                "Please install one of them to enable downloads."
-            )
-        else:
-            with writer:
-                export_df.to_excel(
-                    writer,
-                    index=False,
-                    sheet_name="Schedule",
-                )
-            excel_buffer.seek(0)
-            st.download_button(
-                f"Download {label_prefix} Optimizer Output (Excel)",
-                excel_buffer.getvalue(),
-                file_name="hourly_schedule_results.xlsx"
-                if st.session_state.get("run_mode") == "hourly"
-                else "daily_schedule_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
         # Display total cost per time slice and global sum
-        cost_rows = []
-        for rec in reports:
-            res = rec.get("result", {}) if isinstance(rec, Mapping) else {}
-            time_start = rec.get("time") if isinstance(rec, Mapping) else None
-            time_label = format_time_range(time_start or 0.0, block_hours)
-            cost_rows.append(
-                {
-                    "Time": time_label,
-                    "Pattern": res.get("flow_pattern_name", ""),
-                    "Total Cost (INR)": float(res.get("total_cost", 0.0)),
-                }
-            )
+        cost_rows = [
+            {
+                "Time": f"{rec['time']:02d}:00",
+                "Pattern": rec["result"].get("flow_pattern_name", ""),
+                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
+            }
+            for rec in reports
+        ]
         df_cost = pd.DataFrame(cost_rows)
         df_cost["Total Cost (INR)"] = pd.to_numeric(
             df_cost["Total Cost (INR)"], errors="coerce",
@@ -2702,18 +2305,17 @@ if not auto_batch:
             f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
         )
         for rec in reports:
-            time_label = format_time_range(rec.get("time", 0.0), block_hours)
             display_pump_type_details(
                 rec["result"],
                 stations_base,
-                heading=f"Pump Details by Type ({time_label})",
+                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
             )
 
         combined = []
         for idx, df_line in enumerate(linefill_snaps):
-            hr = hours[idx] if idx < len(hours) else 0
+            hr = hours[idx] % 24
             temp = df_line.copy()
-            temp['Time'] = format_time_range(hr, block_hours)
+            temp['Time'] = f"{hr:02d}:00"
             combined.append(temp)
         lf_all = pd.concat(combined, ignore_index=True).round(2)
         st.download_button(
@@ -2855,29 +2457,13 @@ if not auto_batch:
                 df_int.insert(0, "Pattern", pattern)
                 df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
                 station_tables.append(df_int)
-            df_plan_combined = pd.concat(station_tables, ignore_index=True)
-            speed_cols_plan = get_speed_column_names(df_plan_combined)
-            df_plan = df_plan_combined.copy()
-            num_cols_plan = df_plan.select_dtypes(include='number').columns.tolist()
-            non_speed_plan = [c for c in num_cols_plan if c not in speed_cols_plan]
-            if non_speed_plan:
-                df_plan[non_speed_plan] = df_plan[non_speed_plan].fillna(0.0)
-            df_plan = mask_zero_speed_columns(df_plan, speed_cols_plan)
-            if num_cols_plan:
-                df_plan[num_cols_plan] = df_plan[num_cols_plan].round(2)
-            df_plan = mask_zero_speed_columns(df_plan, speed_cols_plan)
+            df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
             # Exclude non-numeric columns including Pattern for gradient styling
             num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
             df_plan_numeric = df_plan.copy()
-            speed_cols_plan_numeric = get_speed_column_names(df_plan_numeric)
             for c in num_cols:
-                numeric_series = pd.to_numeric(df_plan_numeric[c], errors="coerce")
-                if c in speed_cols_plan_numeric:
-                    df_plan_numeric[c] = numeric_series
-                else:
-                    df_plan_numeric[c] = numeric_series.fillna(0.0)
-            df_plan_numeric = mask_zero_speed_columns(df_plan_numeric, speed_cols_plan_numeric)
+                df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
             fmt_dict = {c: "{:.2f}" for c in num_cols}
             df_plan_style = (
                 df_plan_numeric.style.format(fmt_dict)
@@ -2947,7 +2533,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
             names = [s['name'] for s in stations_data] + [terminal_name]
-            terminal_key = terminal_name.lower().replace(' ', '_')
     
             # --- Display plan timing and table if available ---
             plan_start = st.session_state.get("last_plan_start")
@@ -3036,24 +2621,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         effs.extend([eff_default] * npump)
             avg_eff = sum(effs)/len(effs) if effs else 0.0
             avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
-            try:
-                terminal_suction_press = float(res.get(f"rh_kgcm2_{terminal_key}", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                terminal_suction_press = 0.0
-            else:
-                if isinstance(terminal_suction_press, float) and np.isnan(terminal_suction_press):
-                    terminal_suction_press = 0.0
-
+            
             pattern_name = res.get('flow_pattern_name', 'Mainline Only')
-            summary_metrics = OrderedDict([
-                ("Total Optimized Cost (INR)", total_cost),
-                ("Operating Pumps", total_pumps),
-                ("Average Pump Efficiency (%)", avg_eff),
-                ("Average Pump Speed (rpm)", avg_speed),
-                ("Flow Pattern", pattern_name),
-                ("Terminal Suction Press (kg/cm²)", terminal_suction_press),
-            ])
-            st.session_state["summary_metrics"] = summary_metrics
             st.markdown(
                 f"""<br>
                 <div style='font-size:1.1em;'>
@@ -3061,13 +2630,12 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
                 <b>Average Pump Speed:</b> {avg_speed:.0f} rpm<br>
-                <b>Terminal Suction Press:</b> {terminal_suction_press:.2f} kg/cm²<br>
                 <b>Flow Pattern:</b> {pattern_name}
                 </div>
                 """,
                 unsafe_allow_html=True
             )
-
+    
     # ---- Tab 2: Cost Breakdown ----
     import numpy as np
     import plotly.graph_objects as go
