@@ -30,6 +30,8 @@ if "Fuel_density" not in st.session_state:
     st.session_state["Fuel_density"] = 820.0
 if "Ambient_temp" not in st.session_state:
     st.session_state["Ambient_temp"] = 25.0
+if "day_block_hours" not in st.session_state:
+    st.session_state["day_block_hours"] = 1.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -42,6 +44,7 @@ import copy
 from collections import OrderedDict
 from collections.abc import Mapping
 from plotly.colors import qualitative
+from schedule_utils import format_time_range
 
 # Ensure local modules are importable when the app is run from an arbitrary
 # working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
@@ -1517,6 +1520,7 @@ def prepare_schedule_export_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
 def build_schedule_export_dataframe_from_reports(
     reports: list[dict],
     stations_base: list[dict],
+    block_hours: float = 1.0,
 ) -> pd.DataFrame:
     export_tables: list[pd.DataFrame] = []
     for rec in reports or []:
@@ -1525,10 +1529,10 @@ def build_schedule_export_dataframe_from_reports(
             continue
         time_val = rec.get("time", 0) if isinstance(rec, Mapping) else 0
         try:
-            time_int = int(time_val)
+            start_val = float(time_val)
         except (TypeError, ValueError):
-            time_int = 0
-        time_label = f"{time_int % 24:02d}:00"
+            start_val = 0.0
+        time_label = format_time_range(start_val, block_hours)
         pattern = res.get("flow_pattern_name", "")
         df_base = build_station_table(res, stations_base)
         if df_base is None or df_base.empty:
@@ -2371,6 +2375,7 @@ if not auto_batch:
 
         hours = [7] if is_hourly else [7, 11, 15, 19, 23, 27]
         sub_steps = 1 if is_hourly else 4
+        block_hours = float(sub_steps or 1.0)
         spinner_msg = "Running 1 optimization (1h)..." if is_hourly else "Running 6 optimizations (07:00 to 03:00)..."
         reports = []
         linefill_snaps = []
@@ -2474,7 +2479,7 @@ if not auto_batch:
             hr = rec["time"]
             df_base = build_station_table(res, stations_base)
             pattern = res.get('flow_pattern_name', '')
-            time_label = f"{hr:02d}:00"
+            time_label = format_time_range(hr, block_hours)
             df_display = df_base.copy()
             df_display.insert(0, "Pattern", pattern)
             df_display.insert(0, "Time", time_label)
@@ -2510,6 +2515,7 @@ if not auto_batch:
         st.session_state["day_reports"] = reports
         st.session_state["day_linefill_snaps"] = linefill_snaps
         st.session_state["day_hours"] = hours
+        st.session_state["day_block_hours"] = block_hours
         st.session_state["day_stations"] = stations_base
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
@@ -2518,6 +2524,7 @@ if not auto_batch:
         stations_base = st.session_state.get("day_stations", [])
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
+        block_hours = float(st.session_state.get("day_block_hours", 1.0) or 1.0)
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
         df_day_export = st.session_state.get("day_df_export")
         if df_day_export is None or len(df_day_export) == 0:
@@ -2525,7 +2532,11 @@ if not auto_batch:
             if isinstance(export_raw, pd.DataFrame) and len(export_raw):
                 df_day_export = prepare_schedule_export_dataframe(export_raw)
             else:
-                df_day_export = build_schedule_export_dataframe_from_reports(reports, stations_base)
+                df_day_export = build_schedule_export_dataframe_from_reports(
+                    reports,
+                    stations_base,
+                    block_hours,
+                )
             st.session_state["day_df_export"] = df_day_export
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
         df_display = df_day_numeric.T if transpose_view else df_day_numeric
@@ -2578,14 +2589,18 @@ if not auto_batch:
         )
 
         # Display total cost per time slice and global sum
-        cost_rows = [
-            {
-                "Time": f"{rec['time']:02d}:00",
-                "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
-            }
-            for rec in reports
-        ]
+        cost_rows = []
+        for rec in reports:
+            res = rec.get("result", {}) if isinstance(rec, Mapping) else {}
+            time_start = rec.get("time") if isinstance(rec, Mapping) else None
+            time_label = format_time_range(time_start or 0.0, block_hours)
+            cost_rows.append(
+                {
+                    "Time": time_label,
+                    "Pattern": res.get("flow_pattern_name", ""),
+                    "Total Cost (INR)": float(res.get("total_cost", 0.0)),
+                }
+            )
         df_cost = pd.DataFrame(cost_rows)
         df_cost["Total Cost (INR)"] = pd.to_numeric(
             df_cost["Total Cost (INR)"], errors="coerce",
@@ -2599,17 +2614,18 @@ if not auto_batch:
             f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
         )
         for rec in reports:
+            time_label = format_time_range(rec.get("time", 0.0), block_hours)
             display_pump_type_details(
                 rec["result"],
                 stations_base,
-                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+                heading=f"Pump Details by Type ({time_label})",
             )
 
         combined = []
         for idx, df_line in enumerate(linefill_snaps):
-            hr = hours[idx] % 24
+            hr = hours[idx] if idx < len(hours) else 0
             temp = df_line.copy()
-            temp['Time'] = f"{hr:02d}:00"
+            temp['Time'] = format_time_range(hr, block_hours)
             combined.append(temp)
         lf_all = pd.concat(combined, ignore_index=True).round(2)
         st.download_button(
