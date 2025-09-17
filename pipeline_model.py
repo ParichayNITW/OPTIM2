@@ -355,24 +355,23 @@ def _update_mainline_dra(
     """
 
     inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
+    segment_len = float(stn_data.get("L", 0.0))
+    pump_running = bool(stn_data.get("is_pump")) and opt.get("nop", 0) > 0
 
-    # A pump station resets the DRA concentration to the injected value.  If
-    # the pump runs without injection the downstream concentration drops to
-    # zero.  Non‑pump segments simply carry the upstream concentration forward
-    # until the maximum reach is exhausted.
-    if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
+    # A pump station resets the DRA concentration to the injected value when a
+    # new slug is introduced.  When the pump runs without injection the
+    # upstream concentration should continue downstream instead of being
+    # cleared.  Non-pump segments always carry the upstream concentration
+    # forward until the remaining reach is exhausted.
+    if pump_running and inj_ppm_main > 0:
         ppm_main = inj_ppm_main
-        if ppm_main > 0:
-            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
-            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
-        else:
-            dra_len_main = 0.0
-            reach_after = 0.0
+        dra_len_main = min(segment_len, MAX_DRA_KM)
+        reach_after = max(0.0, MAX_DRA_KM - segment_len)
     else:
         ppm_main = prev_ppm
         if reach_prev > 0 and ppm_main > 0:
-            dra_len_main = min(stn_data["L"], reach_prev)
-            reach_after = max(0.0, reach_prev - stn_data["L"])
+            dra_len_main = min(segment_len, reach_prev)
+            reach_after = max(0.0, reach_prev - segment_len)
         else:
             dra_len_main = 0.0
             reach_after = 0.0
