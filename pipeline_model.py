@@ -327,6 +327,7 @@ def _update_mainline_dra(
     reach_prev: float,
     stn_data: dict,
     opt: dict,
+    distance_covered: float,
 ) -> tuple[int, float, float, int]:
     """Return updated drag‑reduction state for the mainline.
 
@@ -343,15 +344,19 @@ def _update_mainline_dra(
     opt:
         Chosen operating option containing ``dra_ppm_main`` and ``nop``.
 
+    ``distance_covered``
+        Portion of the current segment (km) traversed by the upstream fluid.
+
     Returns
     -------
     tuple
         ``(ppm_main, dra_len_main, reach_after, inj_ppm_main)`` where
         ``ppm_main`` is the effective concentration after any injection,
         ``dra_len_main`` is the length on this segment receiving drag
-        reduction, ``reach_after`` is the remaining downstream reach of that
-        injection, and ``inj_ppm_main`` is the concentration injected at this
-        station.
+        reduction from the upstream fluid, ``reach_after`` is the remaining
+        downstream reach of that injection after accounting for
+        ``distance_covered``, and ``inj_ppm_main`` is the concentration
+        injected at this station.
     """
 
     inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
@@ -360,22 +365,31 @@ def _update_mainline_dra(
     # the pump runs without injection the downstream concentration drops to
     # zero.  Non‑pump segments simply carry the upstream concentration forward
     # until the maximum reach is exhausted.
+    distance_covered = max(float(distance_covered), 0.0)
+
     if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
         ppm_main = inj_ppm_main
         if ppm_main > 0:
-            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
-            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
+            reach_start = MAX_DRA_KM
         else:
-            dra_len_main = 0.0
-            reach_after = 0.0
+            reach_start = 0.0
     else:
         ppm_main = prev_ppm
         if reach_prev > 0 and ppm_main > 0:
-            dra_len_main = min(stn_data["L"], reach_prev)
-            reach_after = max(0.0, reach_prev - stn_data["L"])
+            reach_start = float(reach_prev)
         else:
-            dra_len_main = 0.0
-            reach_after = 0.0
+            reach_start = 0.0
+
+    reach_start = max(reach_start, 0.0)
+    if reach_start > 0:
+        dra_len_main = min(distance_covered, reach_start)
+        if distance_covered <= 0:
+            reach_after = reach_start
+        else:
+            reach_after = max(0.0, reach_start - distance_covered)
+    else:
+        dra_len_main = 0.0
+        reach_after = 0.0
 
     return int(ppm_main), dra_len_main, reach_after, inj_ppm_main
 
@@ -455,44 +469,106 @@ def _segment_profile_hydraulics(
     dra_perc: float,
     dra_length: float | None,
     profile: list[dict[str, float]] | None,
+    dra_segments: list[tuple[float, float]] | None = None,
 ) -> tuple[float, float, float, float]:
     """Evaluate segment hydraulics across ``profile`` slices when provided."""
 
-    if not profile:
+    if not profile and not dra_segments:
         return _segment_hydraulics(flow_m3h, L, d_inner, rough, kv_default, dra_perc, dra_length)
+
+    if dra_segments:
+        segments_master: list[tuple[float, float]] = []
+        remaining_total = float(L)
+        for length, perc in dra_segments:
+            seg_len = min(max(float(length), 0.0), remaining_total)
+            if seg_len <= 0:
+                continue
+            segments_master.append((seg_len, float(perc)))
+            remaining_total -= seg_len
+            if remaining_total <= 1e-9:
+                break
+    else:
+        segments_master = []
+        remaining_total = float(L)
+        if dra_length is not None and dra_length > 0 and dra_perc > 0:
+            seg_len = min(float(dra_length), remaining_total)
+            if seg_len > 0:
+                segments_master.append((seg_len, float(dra_perc)))
+                remaining_total -= seg_len
+
+    def eval_slice(length_km: float, kv_local: float) -> tuple[float, float, float, float]:
+        if not segments_master:
+            hl, v, Re, f = _segment_hydraulics(
+                flow_m3h,
+                length_km,
+                d_inner,
+                rough,
+                kv_local,
+                0.0,
+                0.0,
+            )
+            return float(hl), float(v), float(Re), float(f)
+
+        head_loss_total = 0.0
+        v_last = 0.0
+        Re_min_local = float("inf")
+        f_worst_local = 0.0
+        remaining = length_km
+        segments_local = [[seg_len, seg_perc] for seg_len, seg_perc in segments_master]
+        idx = 0
+        seg_remaining = segments_local[idx][0] if segments_local else 0.0
+        seg_perc = segments_local[idx][1] if segments_local else 0.0
+        while remaining > 1e-9:
+            take = remaining
+            if segments_local:
+                take = min(take, seg_remaining)
+            dra_perc_local = seg_perc if segments_local else 0.0
+            dra_len_local = take if dra_perc_local > 0 else 0.0
+            hl, v, Re, f = _segment_hydraulics(
+                flow_m3h,
+                take,
+                d_inner,
+                rough,
+                kv_local,
+                dra_perc_local,
+                dra_len_local,
+            )
+            head_loss_total += float(hl)
+            v_last = float(v)
+            Re_min_local = min(Re_min_local, float(Re))
+            f_worst_local = max(f_worst_local, float(f))
+            remaining -= take
+            if segments_local:
+                seg_remaining -= take
+                if seg_remaining <= 1e-9:
+                    idx += 1
+                    if idx >= len(segments_local):
+                        break
+                    seg_remaining = segments_local[idx][0]
+                    seg_perc = segments_local[idx][1]
+        if Re_min_local == float("inf"):
+            Re_min_local = 0.0
+        return head_loss_total, v_last, Re_min_local, f_worst_local
+
+    if not profile:
+        total_hl, v_last, Re_min, f_worst = eval_slice(float(L), float(kv_default))
+        return total_hl, v_last, Re_min, f_worst
 
     head_loss_total = 0.0
     v_last = 0.0
     Re_min = float("inf")
     f_worst = 0.0
 
-    dra_remaining = None if dra_length is None else max(float(dra_length), 0.0)
-
     for slice_data in profile:
         length = float(slice_data.get("length_km", 0.0))
         if length <= 1e-9:
             continue
         kv_local = float(slice_data.get("kv", kv_default)) if slice_data.get("kv") is not None else float(kv_default)
-        dra_len_local: float | None
-        if dra_remaining is None:
-            dra_len_local = dra_length
-        else:
-            dra_len_local = min(dra_remaining, length)
-        hl, v, Re, f = _segment_hydraulics(
-            flow_m3h,
-            length,
-            d_inner,
-            rough,
-            kv_local,
-            dra_perc,
-            dra_len_local,
-        )
+        hl, v, Re, f = eval_slice(length, kv_local)
         head_loss_total += float(hl)
         v_last = float(v)
         Re_min = min(Re_min, float(Re))
         f_worst = max(f_worst, float(f))
-        if dra_remaining is not None:
-            dra_remaining = max(dra_remaining - length, 0.0)
 
     if Re_min == float("inf"):
         Re_min = 0.0
@@ -522,6 +598,7 @@ def _parallel_segment_hydraulics_profile(
     loop_props: tuple[float, float, float, float, float],
     kv_default: float,
     profile: list[dict[str, float]] | None,
+    main_dra_segments: list[tuple[float, float]] | None = None,
 ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
     """Parallel hydraulics solver aware of viscosity profiles."""
 
@@ -552,6 +629,7 @@ def _parallel_segment_hydraulics_profile(
             main_dra,
             main_dra_len,
             profile,
+            dra_segments=main_dra_segments,
         )
         hl_loop, v_loop, Re_loop, f_loop = _segment_profile_hydraulics(
             q_loop,
@@ -1734,14 +1812,11 @@ def solve_pipeline(
     # upstream injection when a bypass scenario occurs.  At the origin
     # there is no upstream DRA on the loopline so this value starts at zero.
     #
-    # Note: The earlier implementation tracked the advancement of DRA along the
-    # pipeline via a ``reach`` parameter.  This has been removed because the
-    # entire pipeline is assumed to be treated at the start of the day.  As
-    # such, DRA either applies across an entire segment when injected or is
-    # carried over unchanged on bypassed loops, but it does not advance
-    # progressively.
-    # Track the mainline injection PPM from the previous station so that
-    # downstream segments inherit the same concentration.
+    # The state also tracks two mainline concentrations: ``prev_ppm_main``
+    # for the fluid currently entering the station and ``downstream_ppm``
+    # for the leading slug that originated from the initial linefill.  The
+    # slug is associated with ``downstream_reach`` describing how much of
+    # the downstream line remains occupied by that initial treatment.
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -1754,6 +1829,8 @@ def solve_pipeline(
             'prev_ppm_main': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
             'reach': max(float(dra_reach_km), 0.0),
             'inj_ppm_main': 0,
+            'downstream_ppm': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
+            'downstream_reach': max(float(dra_reach_km), 0.0),
         }
     }
 
@@ -1776,13 +1853,37 @@ def solve_pipeline(
                         continue
                 reach_prev = state.get('reach', 0.0)
                 ppm_prev = int(state.get('prev_ppm_main', 0))
+                slug_ppm = int(state.get('downstream_ppm', 0))
+                slug_reach = max(float(state.get('downstream_reach', 0.0)), 0.0)
+                slug_len = min(float(stn_data['L']), slug_reach) if slug_reach > 0 else 0.0
+                dra_segments: list[tuple[float, float]] = []
+                if slug_len > 0:
+                    eff_dra_slug = int(get_dr_for_ppm(stn_data['kv'], slug_ppm)) if slug_ppm > 0 else 0
+                    if eff_dra_slug > 0:
+                        dra_segments.append((slug_len, eff_dra_slug))
+                segment_length = float(stn_data['L'])
+                distance_after_slug = max(segment_length - slug_len, 0.0)
                 # Update the mainline DRA concentration.  Pump stations reset the
                 # concentration to the injected value while unpumped segments carry
                 # the upstream level forward until its reach is exhausted.
                 ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
-                    ppm_prev, reach_prev, stn_data, opt
+                    ppm_prev, reach_prev, stn_data, opt, distance_after_slug
                 )
                 eff_dra_main = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
+                if distance_after_slug > 0 and dra_len_main > 0 and eff_dra_main > 0:
+                    dra_segments.append((dra_len_main, eff_dra_main))
+                pump_running = bool(stn_data.get('is_pump')) and opt.get('nop', 0) > 0
+                if pump_running:
+                    slug_ppm_next = 0
+                    slug_reach_next = 0.0
+                else:
+                    remaining_slug = max(slug_reach - segment_length, 0.0)
+                    if slug_ppm > 0 and remaining_slug > 1e-9:
+                        slug_ppm_next = slug_ppm
+                        slug_reach_next = remaining_slug
+                    else:
+                        slug_ppm_next = 0
+                        slug_reach_next = 0.0
 
                 scenarios = []
                 # Base scenario: flow through mainline only
@@ -1795,6 +1896,7 @@ def solve_pipeline(
                     eff_dra_main,
                     dra_len_main,
                     stn_data.get('profile'),
+                    dra_segments=dra_segments if dra_segments else None,
                 )
                 scenarios.append({
                     'head_loss': hl_single,
@@ -1815,8 +1917,9 @@ def solve_pipeline(
                     # Drag reduction on loopline applies across the entire loop
                     eff_dra_loop = opt['dra_loop']
                     dra_len_loop = loop['L'] if eff_dra_loop > 0 else 0.0
+                    main_segments_arg = dra_segments if dra_segments else None
                     # Parallel scenario (main + loop split by equal head)
-                    if stn_data.get('profile'):
+                    if stn_data.get('profile') or main_segments_arg:
                         hl_par, main_stats, loop_stats = _parallel_segment_hydraulics_profile(
                             flow_total,
                             (
@@ -1835,6 +1938,7 @@ def solve_pipeline(
                             ),
                             stn_data['kv'],
                             stn_data.get('profile'),
+                            main_dra_segments=main_segments_arg,
                         )
                     else:
                         hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
@@ -2434,6 +2538,8 @@ def solve_pipeline(
                             'prev_ppm_main': ppm_main,
                             'reach': reach_after,
                             'inj_ppm_main': inj_ppm_main,
+                            'downstream_ppm': slug_ppm_next,
+                            'downstream_reach': slug_reach_next,
                         }
 
         if not new_states:
