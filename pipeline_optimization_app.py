@@ -2930,6 +2930,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
             names = [s['name'] for s in stations_data] + [terminal_name]
+            terminal_key = terminal_name.lower().replace(' ', '_')
     
             # --- Display plan timing and table if available ---
             plan_start = st.session_state.get("last_plan_start")
@@ -3018,8 +3019,24 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         effs.extend([eff_default] * npump)
             avg_eff = sum(effs)/len(effs) if effs else 0.0
             avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
-            
+            try:
+                terminal_suction_press = float(res.get(f"rh_kgcm2_{terminal_key}", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                terminal_suction_press = 0.0
+            else:
+                if isinstance(terminal_suction_press, float) and np.isnan(terminal_suction_press):
+                    terminal_suction_press = 0.0
+
             pattern_name = res.get('flow_pattern_name', 'Mainline Only')
+            summary_metrics = OrderedDict([
+                ("Total Optimized Cost (INR)", total_cost),
+                ("Operating Pumps", total_pumps),
+                ("Average Pump Efficiency (%)", avg_eff),
+                ("Average Pump Speed (rpm)", avg_speed),
+                ("Flow Pattern", pattern_name),
+                ("Terminal Suction Press (kg/cm²)", terminal_suction_press),
+            ])
+            st.session_state["summary_metrics"] = summary_metrics
             st.markdown(
                 f"""<br>
                 <div style='font-size:1.1em;'>
@@ -3027,12 +3044,13 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
                 <b>Average Pump Speed:</b> {avg_speed:.0f} rpm<br>
+                <b>Terminal Suction Press:</b> {terminal_suction_press:.2f} kg/cm²<br>
                 <b>Flow Pattern:</b> {pattern_name}
                 </div>
                 """,
                 unsafe_allow_html=True
             )
-    
+
     # ---- Tab 2: Cost Breakdown ----
     import numpy as np
     import plotly.graph_objects as go
