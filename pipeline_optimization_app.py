@@ -42,7 +42,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Iterable
 from plotly.colors import qualitative
 from schedule_utils import format_time_range
 
@@ -1504,6 +1504,37 @@ def build_pump_summary_strings(
     return summaries
 
 
+def get_speed_column_names(df: pd.DataFrame) -> list[str]:
+    """Return per-type pump speed columns present in ``df``."""
+
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    return [
+        col
+        for col in df.columns
+        if isinstance(col, str) and "Pump Speed" in col and "(rpm)" in col
+    ]
+
+
+def mask_zero_speed_columns(
+    df: pd.DataFrame, columns: Iterable[str] | None = None
+) -> pd.DataFrame:
+    """Replace exact-zero entries in pump speed columns with ``NaN``."""
+
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    if columns is None:
+        columns = get_speed_column_names(df)
+    for col in columns:
+        if col not in df.columns:
+            continue
+        numeric_vals = pd.to_numeric(df[col], errors="coerce")
+        zero_mask = numeric_vals.eq(0)
+        if zero_mask.any():
+            df.loc[zero_mask, col] = np.nan
+    return df
+
+
 def prepare_schedule_export_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
     if df_raw is None or len(df_raw) == 0:
         return pd.DataFrame(columns=EXCEL_COLUMN_ORDER)
@@ -1514,7 +1545,8 @@ def prepare_schedule_export_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
             df_excel[col] = np.nan
     ordered_cols = [col for col in EXCEL_COLUMN_ORDER if col in df_excel.columns]
     extra_cols = [col for col in df_excel.columns if col not in ordered_cols]
-    return df_excel[ordered_cols + extra_cols]
+    df_excel = df_excel[ordered_cols + extra_cols]
+    return mask_zero_speed_columns(df_excel)
 
 
 def build_schedule_export_dataframe_from_reports(
@@ -1561,7 +1593,13 @@ def add_speed_columns(row: dict, res: dict, station: dict | None, prefix: str = 
     label_base = station.get("name", key_raw)
     for suffix, value in speed_map.items():
         column = f"{prefix} {label_base} ({suffix})"
-        row[column] = value if not (isinstance(value, float) and np.isnan(value)) else np.nan
+        try:
+            speed_val = float(value)
+        except (TypeError, ValueError):
+            speed_val = np.nan
+        if speed_val == 0:
+            speed_val = np.nan
+        row[column] = speed_val
 
 
 def build_summary_dataframe(
@@ -1767,9 +1805,12 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         for suffix, value in speed_map.items():
             col_name = f"Pump Speed {suffix} (rpm)"
             try:
-                row[col_name] = float(value)
+                speed_val = float(value)
             except (TypeError, ValueError):
-                row[col_name] = np.nan
+                speed_val = np.nan
+            if speed_val == 0:
+                speed_val = np.nan
+            row[col_name] = speed_val
 
         row['Total Cost (INR)'] = row['Power & Fuel Cost (INR)'] + row['DRA Cost (INR)']
 
@@ -1784,8 +1825,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
+    df = mask_zero_speed_columns(df)
     num_cols = df.select_dtypes(include='number').columns
     df[num_cols] = df[num_cols].round(2)
+    df = mask_zero_speed_columns(df)
     if 'DRA PPM' in df.columns:
         df['DRA PPM'] = df['DRA PPM'].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
     if 'Loop DRA PPM' in df.columns:
@@ -1824,9 +1867,12 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
             if speed_val is None or (isinstance(speed_val, float) and np.isnan(speed_val)):
                 speed_val = detail.get("rpm", 0.0)
             try:
-                speed_vals.append(float(speed_val))
+                numeric_speed = float(speed_val)
             except (TypeError, ValueError):
-                speed_vals.append(0.0)
+                numeric_speed = np.nan
+            if numeric_speed == 0:
+                numeric_speed = np.nan
+            speed_vals.append(numeric_speed)
         df_pump = pd.DataFrame({
             "Pump Type": [d.get("ptype", f"Type {i+1}") for i, d in enumerate(details)],
             "Count": [d.get("count", 0) for d in details],
@@ -1835,6 +1881,7 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
             "Pump BKW (kW)": [d.get("pump_bkw", 0.0) for d in details],
             "Motor Input (kW)": [d.get("prime_kw", 0.0) for d in details],
         })
+        df_pump = mask_zero_speed_columns(df_pump)
         fmt = {c: "{:.2f}" for c in df_pump.columns if c not in ["Pump Type", "Count"]}
         st.markdown(f"**{name}**")
         st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
@@ -2193,6 +2240,7 @@ if auto_batch:
                             row["Total Cost"] = res.get("total_cost", "")
                             result_rows.append(row)
                 df_batch = pd.DataFrame(result_rows)
+                df_batch = mask_zero_speed_columns(df_batch)
                 st.session_state['batch_df'] = df_batch
             except Exception as e:
                 st.session_state.pop('batch_df', None)
@@ -2493,8 +2541,22 @@ if not auto_batch:
             df_export.insert(0, "Time", time_label)
             export_tables.append(df_export)
 
-        df_day_combined = pd.concat(station_tables, ignore_index=True) if station_tables else pd.DataFrame()
-        df_day = df_day_combined.fillna(0.0).round(2) if not df_day_combined.empty else df_day_combined
+        df_day_combined = (
+            pd.concat(station_tables, ignore_index=True) if station_tables else pd.DataFrame()
+        )
+        if not df_day_combined.empty:
+            df_day = df_day_combined.copy()
+            speed_cols_day = get_speed_column_names(df_day)
+            num_cols_day = df_day.select_dtypes(include='number').columns.tolist()
+            non_speed_numeric = [c for c in num_cols_day if c not in speed_cols_day]
+            if non_speed_numeric:
+                df_day[non_speed_numeric] = df_day[non_speed_numeric].fillna(0.0)
+            df_day = mask_zero_speed_columns(df_day, speed_cols_day)
+            if num_cols_day:
+                df_day[num_cols_day] = df_day[num_cols_day].round(2)
+            df_day = mask_zero_speed_columns(df_day, speed_cols_day)
+        else:
+            df_day = df_day_combined
 
         df_day_export_raw = pd.concat(export_tables, ignore_index=True) if export_tables else pd.DataFrame()
         df_day_export = prepare_schedule_export_dataframe(df_day_export_raw)
@@ -2504,8 +2566,14 @@ if not auto_batch:
         df_day_numeric = df_day.copy()
         # Identify columns eligible for numeric styling
         num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
+        speed_cols_numeric = get_speed_column_names(df_day_numeric)
         for c in num_cols:
-            df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
+            numeric_series = pd.to_numeric(df_day_numeric[c], errors="coerce")
+            if c in speed_cols_numeric:
+                df_day_numeric[c] = numeric_series
+            else:
+                df_day_numeric[c] = numeric_series.fillna(0.0)
+        df_day_numeric = mask_zero_speed_columns(df_day_numeric, speed_cols_numeric)
 
         # Persist results for reuse across Streamlit reruns
         st.session_state["day_df"] = df_day_numeric
@@ -2520,13 +2588,16 @@ if not auto_batch:
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
         df_day_numeric = st.session_state["day_df"]
+        df_day_numeric = mask_zero_speed_columns(df_day_numeric)
         reports = st.session_state.get("day_reports", [])
         stations_base = st.session_state.get("day_stations", [])
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         block_hours = float(st.session_state.get("day_block_hours", 1.0) or 1.0)
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
+        df_day = mask_zero_speed_columns(df_day)
         df_day_export = st.session_state.get("day_df_export")
+        df_day_export = mask_zero_speed_columns(df_day_export)
         if df_day_export is None or len(df_day_export) == 0:
             export_raw = st.session_state.get("day_df_export_raw")
             if isinstance(export_raw, pd.DataFrame) and len(export_raw):
@@ -2767,13 +2838,29 @@ if not auto_batch:
                 df_int.insert(0, "Pattern", pattern)
                 df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
                 station_tables.append(df_int)
-            df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+            df_plan_combined = pd.concat(station_tables, ignore_index=True)
+            speed_cols_plan = get_speed_column_names(df_plan_combined)
+            df_plan = df_plan_combined.copy()
+            num_cols_plan = df_plan.select_dtypes(include='number').columns.tolist()
+            non_speed_plan = [c for c in num_cols_plan if c not in speed_cols_plan]
+            if non_speed_plan:
+                df_plan[non_speed_plan] = df_plan[non_speed_plan].fillna(0.0)
+            df_plan = mask_zero_speed_columns(df_plan, speed_cols_plan)
+            if num_cols_plan:
+                df_plan[num_cols_plan] = df_plan[num_cols_plan].round(2)
+            df_plan = mask_zero_speed_columns(df_plan, speed_cols_plan)
 
             # Exclude non-numeric columns including Pattern for gradient styling
             num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
             df_plan_numeric = df_plan.copy()
+            speed_cols_plan_numeric = get_speed_column_names(df_plan_numeric)
             for c in num_cols:
-                df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
+                numeric_series = pd.to_numeric(df_plan_numeric[c], errors="coerce")
+                if c in speed_cols_plan_numeric:
+                    df_plan_numeric[c] = numeric_series
+                else:
+                    df_plan_numeric[c] = numeric_series.fillna(0.0)
+            df_plan_numeric = mask_zero_speed_columns(df_plan_numeric, speed_cols_plan_numeric)
             fmt_dict = {c: "{:.2f}" for c in num_cols}
             df_plan_style = (
                 df_plan_numeric.style.format(fmt_dict)
