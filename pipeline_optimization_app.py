@@ -2132,13 +2132,19 @@ if not auto_batch:
 
         with st.spinner(spinner_msg):
             for ti, hr in enumerate(hours):
-                linefill_snaps.append(current_vol.copy())
-                sdh_hourly = []
-                res = {}
-                block_cost = 0.0
-                power_cost_acc: dict[str, float] = {}
-                dra_cost_acc: dict[str, float] = {}
                 for sub in range(sub_steps):
+                    abs_hour = hr + sub
+                    hour_label = int(abs_hour % 24)
+                    start_str = f"{hour_label:02d}:00"
+
+                    linefill_snaps.append(
+                        {
+                            "abs_hour": abs_hour,
+                            "hour": hour_label,
+                            "timestamp": start_str,
+                            "data": current_vol.copy(),
+                        }
+                    )
                     pumped_tmp = FLOW_sched * 1.0
                     future_vol, future_plan = shift_vol_linefill(
                         current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
@@ -2151,7 +2157,6 @@ if not auto_batch:
 
                     stns_run = copy.deepcopy(stations_base)
 
-                    start_str = f"{int((hr + sub) % 24):02d}:00"
                     res = solve_pipeline(
                         stns_run,
                         term_data,
@@ -2169,22 +2174,28 @@ if not auto_batch:
                         start_time=start_str,
                     )
 
-                    block_cost += res.get("total_cost", 0.0)
-
                     if res.get("error"):
-                        cur_hr = (hr + sub) % 24
-                        error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
+                        error_msg = (
+                            f"Optimization failed at {hour_label:02d}:00 -> {res.get('message','')}"
+                        )
                         break
 
-                    # Record SDH for objective calculation and accumulate per-station costs
+                    # Record SDH for objective calculation and assemble hourly result entry
                     term_key = term_data["name"].lower().replace(" ", "_")
                     keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
-                    for k in keys:
-                        power_cost_acc[k] = power_cost_acc.get(k, 0.0) + float(res.get(f"power_cost_{k}", 0.0) or 0.0)
-                        dra_cost_acc[k] = dra_cost_acc.get(k, 0.0) + float(res.get(f"dra_cost_{k}", 0.0) or 0.0)
                     sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
                     sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
-                    sdh_hourly.append(max(sdh_vals))
+                    hour_sdh_max = max(sdh_vals) if sdh_vals else 0.0
+
+                    reports.append(
+                        {
+                            "time": hour_label,
+                            "abs_hour": abs_hour,
+                            "timestamp": start_str,
+                            "result": copy.deepcopy(res),
+                            "sdh_max": hour_sdh_max,
+                        }
+                    )
 
                     dra_linefill = res.get("linefill", dra_linefill)
                     current_vol, plan_df = future_vol, future_plan
@@ -2194,23 +2205,12 @@ if not auto_batch:
                 if error_msg:
                     break
 
-                for k, val in power_cost_acc.items():
-                    res[f"power_cost_{k}"] = val
-                for k, val in dra_cost_acc.items():
-                    res[f"dra_cost_{k}"] = val
-                res["total_cost"] = block_cost
-                reports.append(
-                    {
-                        "time": hr % 24,
-                        "result": res,
-                        "sdh_hourly": sdh_hourly,
-                        "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
-                    }
-                )
-
         if error_msg:
             st.error(error_msg)
             st.stop()
+
+        reports.sort(key=lambda rec: rec.get("abs_hour", rec.get("time", 0)))
+        linefill_snaps.sort(key=lambda snap: snap.get("abs_hour", 0))
 
         # Build a consolidated station-wise table with flow pattern names
         station_tables = []
@@ -2238,15 +2238,22 @@ if not auto_batch:
         st.session_state["day_df_raw"] = df_day
         st.session_state["day_reports"] = reports
         st.session_state["day_linefill_snaps"] = linefill_snaps
-        st.session_state["day_hours"] = hours
+        st.session_state["day_hours"] = [rec["time"] for rec in reports]
+        st.session_state["day_abs_hours"] = [rec.get("abs_hour", rec["time"]) for rec in reports]
+        st.session_state["day_timestamps"] = [rec.get("timestamp", f"{rec['time']:02d}:00") for rec in reports]
         st.session_state["day_stations"] = stations_base
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
         df_day_numeric = st.session_state["day_df"]
-        reports = st.session_state.get("day_reports", [])
+        reports = sorted(
+            st.session_state.get("day_reports", []),
+            key=lambda rec: rec.get("abs_hour", rec.get("time", 0)),
+        )
         stations_base = st.session_state.get("day_stations", [])
-        linefill_snaps = st.session_state.get("day_linefill_snaps", [])
-        hours = st.session_state.get("day_hours", [])
+        linefill_snaps = sorted(
+            st.session_state.get("day_linefill_snaps", []),
+            key=lambda snap: snap.get("abs_hour", 0),
+        )
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
         df_display = df_day_numeric.T if transpose_view else df_day_numeric
@@ -2284,14 +2291,15 @@ if not auto_batch:
         )
 
         # Display total cost per time slice and global sum
-        cost_rows = [
-            {
-                "Time": f"{rec['time']:02d}:00",
-                "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
-            }
-            for rec in reports
-        ]
+        cost_rows = []
+        for rec in reports:
+            cost_rows.append(
+                {
+                    "Time": rec.get("timestamp", f"{rec['time']:02d}:00"),
+                    "Pattern": rec["result"].get("flow_pattern_name", ""),
+                    "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
+                }
+            )
         df_cost = pd.DataFrame(cost_rows)
         df_cost["Total Cost (INR)"] = pd.to_numeric(
             df_cost["Total Cost (INR)"], errors="coerce",
@@ -2305,24 +2313,28 @@ if not auto_batch:
             f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
         )
         for rec in reports:
+            time_label = rec.get("timestamp", f"{rec['time']:02d}:00")
             display_pump_type_details(
                 rec["result"],
                 stations_base,
-                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+                heading=f"Pump Details by Type ({time_label})",
             )
 
         combined = []
-        for idx, df_line in enumerate(linefill_snaps):
-            hr = hours[idx] % 24
+        for snap in linefill_snaps:
+            df_line = snap.get("data")
+            if df_line is None:
+                continue
             temp = df_line.copy()
-            temp['Time'] = f"{hr:02d}:00"
+            temp['Time'] = snap.get("timestamp", f"{snap.get('hour', 0):02d}:00")
             combined.append(temp)
-        lf_all = pd.concat(combined, ignore_index=True).round(2)
-        st.download_button(
-            f"Download {label_prefix} Dynamic Linefill Output",
-            lf_all.to_csv(index=False, float_format="%.2f"),
-            file_name="linefill_snapshots.csv",
-        )
+        if combined:
+            lf_all = pd.concat(combined, ignore_index=True).round(2)
+            st.download_button(
+                f"Download {label_prefix} Dynamic Linefill Output",
+                lf_all.to_csv(index=False, float_format="%.2f"),
+                file_name="linefill_snapshots.csv",
+            )
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
