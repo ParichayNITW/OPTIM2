@@ -786,6 +786,46 @@ def _scale_profile(profile: list[dict[str, float]] | None, scale: float) -> list
     ]
 
 
+def _profile_signature_for_cache(
+    profile: list[dict[str, float]] | None,
+) -> tuple[tuple[float, float, float], ...]:
+    """Return an immutable cache signature for ``profile`` slices."""
+
+    if not profile:
+        return ()
+    signature: list[tuple[float, float, float]] = []
+    for slice_data in profile:
+        try:
+            length_val = float(slice_data.get("length_km", slice_data.get("length", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if length_val <= 1e-9:
+            continue
+        kv_val = float(slice_data.get("kv", 0.0) or 0.0)
+        ppm_val = float(slice_data.get("dra_ppm", 0.0) or 0.0)
+        signature.append((round(length_val, 6), round(kv_val, 6), round(ppm_val, 6)))
+    return tuple(signature)
+
+
+def _dra_segments_signature(
+    dra_segments: list[tuple[float, float]] | None,
+) -> tuple[tuple[float, float], ...]:
+    """Return a stable tuple representing ``dra_segments`` for caching."""
+
+    if not dra_segments:
+        return ()
+    return tuple((round(float(length), 6), round(float(perc), 6)) for length, perc in dra_segments)
+
+
+def _cache_round(value: float, *, places: int = 6) -> float:
+    """Round ``value`` for use in cache keys."""
+
+    try:
+        return round(float(value), places)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _parallel_segment_hydraulics_profile(
     flow_m3h: float,
     main_props: tuple[float, float, float, float, float],
@@ -1982,6 +2022,7 @@ def solve_pipeline(
             'engine_params': stn.get('engine_params', {}),
             'elev': float(stn.get('elev', 0.0)),
             'profile': profile_data,
+            'profile_signature': _profile_signature_for_cache(profile_data),
         })
         cum_dist += L
     # Cache the baseline downstream head requirement for each station using the
@@ -1998,6 +2039,8 @@ def solve_pipeline(
         )
         for idx in range(N)
     ]
+    segment_cache: dict[tuple, tuple[float, float, float, float]] = {}
+    parallel_cache: dict[tuple, tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]] = {}
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
@@ -2068,19 +2111,40 @@ def solve_pipeline(
                 eff_dra_main = weighted_dra / dra_len_main if dra_len_main > 1e-9 else 0.0
                 pump_running = bool(stn_data.get('is_pump')) and opt.get('nop', 0) > 0
 
+                profile_data = stn_data.get('profile')
+                profile_sig = stn_data.get('profile_signature', ())
+                segments_sig = _dra_segments_signature(dra_segments if dra_segments else None)
+                cache_flow = _cache_round(flow_total)
+                cache_dra_main = _cache_round(eff_dra_main)
+                cache_dra_len = _cache_round(dra_len_main)
+
                 scenarios = []
                 # Base scenario: flow through mainline only
-                hl_single, v_single, Re_single, f_single = _segment_profile_hydraulics(
-                    flow_total,
-                    stn_data['L'],
-                    stn_data['d_inner'],
-                    stn_data['rough'],
-                    stn_data['kv'],
-                    eff_dra_main,
-                    dra_len_main,
-                    stn_data.get('profile'),
-                    dra_segments=dra_segments if dra_segments else None,
+                seg_key = (
+                    'segment',
+                    stn_data['idx'],
+                    'main',
+                    cache_flow,
+                    cache_dra_main,
+                    cache_dra_len,
+                    profile_sig,
+                    segments_sig,
                 )
+                cached_seg = segment_cache.get(seg_key)
+                if cached_seg is None:
+                    cached_seg = _segment_profile_hydraulics(
+                        flow_total,
+                        stn_data['L'],
+                        stn_data['d_inner'],
+                        stn_data['rough'],
+                        stn_data['kv'],
+                        eff_dra_main,
+                        dra_len_main,
+                        profile_data,
+                        dra_segments=dra_segments if dra_segments else None,
+                    )
+                    segment_cache[seg_key] = cached_seg
+                hl_single, v_single, Re_single, f_single = cached_seg
                 scenarios.append({
                     'head_loss': hl_single,
                     'v': v_single,
@@ -2101,28 +2165,50 @@ def solve_pipeline(
                     eff_dra_loop = opt['dra_loop']
                     dra_len_loop = loop['L'] if eff_dra_loop > 0 else 0.0
                     main_segments_arg = dra_segments if dra_segments else None
+                    loop_profile_scaled: list[dict[str, float]] | None = None
+                    loop_profile_sig = ()
+                    if profile_data:
+                        scale = loop['L'] / stn_data['L'] if stn_data['L'] > 0 else 0.0
+                        loop_profile_scaled = _scale_profile(profile_data, scale)
+                        loop_profile_sig = _profile_signature_for_cache(loop_profile_scaled)
                     # Parallel scenario (main + loop split by equal head)
                     if stn_data.get('profile') or main_segments_arg:
-                        hl_par, main_stats, loop_stats = _parallel_segment_hydraulics_profile(
-                            flow_total,
-                            (
-                                stn_data['L'],
-                                stn_data['d_inner'],
-                                stn_data['rough'],
-                                eff_dra_main,
-                                dra_len_main,
-                            ),
-                            (
-                                loop['L'],
-                                loop['d_inner'],
-                                loop['rough'],
-                                eff_dra_loop,
-                                dra_len_loop,
-                            ),
-                            stn_data['kv'],
-                            stn_data.get('profile'),
-                            main_dra_segments=main_segments_arg,
+                        par_key = (
+                            'parallel',
+                            stn_data['idx'],
+                            cache_flow,
+                            cache_dra_main,
+                            cache_dra_len,
+                            profile_sig,
+                            segments_sig,
+                            _cache_round(eff_dra_loop),
+                            _cache_round(dra_len_loop),
+                            loop_profile_sig,
                         )
+                        cached_parallel = parallel_cache.get(par_key)
+                        if cached_parallel is None:
+                            cached_parallel = _parallel_segment_hydraulics_profile(
+                                flow_total,
+                                (
+                                    stn_data['L'],
+                                    stn_data['d_inner'],
+                                    stn_data['rough'],
+                                    eff_dra_main,
+                                    dra_len_main,
+                                ),
+                                (
+                                    loop['L'],
+                                    loop['d_inner'],
+                                    loop['rough'],
+                                    eff_dra_loop,
+                                    dra_len_loop,
+                                ),
+                                stn_data['kv'],
+                                profile_data,
+                                main_dra_segments=main_segments_arg,
+                            )
+                            parallel_cache[par_key] = cached_parallel
+                        hl_par, main_stats, loop_stats = cached_parallel
                     else:
                         hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
                             flow_total,
@@ -2174,17 +2260,36 @@ def solve_pipeline(
                     # Only include when diameters differ; otherwise the parallel
                     # scenario already captures equal pipes.
                     if abs(stn_data['d_inner'] - loop['d_inner']) > 1e-6:
-                        loop_profile = _scale_profile(stn_data.get('profile'), loop['L'] / stn_data['L'] if stn_data['L'] > 0 else 0.0)
-                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = _segment_profile_hydraulics(
-                            flow_total,
-                            loop['L'],
-                            loop['d_inner'],
-                            loop['rough'],
-                            stn_data['kv'],
-                            eff_dra_loop,
-                            dra_len_loop,
-                            loop_profile,
+                        if loop_profile_scaled is None:
+                            loop_profile_scaled = _scale_profile(
+                                profile_data,
+                                loop['L'] / stn_data['L'] if stn_data['L'] > 0 else 0.0,
+                            )
+                            loop_profile_sig = _profile_signature_for_cache(loop_profile_scaled)
+                        loop_key = (
+                            'segment',
+                            stn_data['idx'],
+                            'loop',
+                            cache_flow,
+                            _cache_round(eff_dra_loop),
+                            _cache_round(dra_len_loop),
+                            loop_profile_sig,
+                            (),
                         )
+                        cached_loop = segment_cache.get(loop_key)
+                        if cached_loop is None:
+                            cached_loop = _segment_profile_hydraulics(
+                                flow_total,
+                                loop['L'],
+                                loop['d_inner'],
+                                loop['rough'],
+                                stn_data['kv'],
+                                eff_dra_loop,
+                                dra_len_loop,
+                                loop_profile_scaled,
+                            )
+                            segment_cache[loop_key] = cached_loop
+                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = cached_loop
                         scenarios.append({
                             'head_loss': hl_loop,
                             'v': 0.0,
