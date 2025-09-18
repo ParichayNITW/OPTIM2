@@ -113,6 +113,225 @@ def _station_max_rpm(
 
     return _extract_rpm(stn.get('DOL'), ptype=ptype, default=default, prefer='max')
 
+
+def _compose_option_rpm_map(
+    station: Mapping[str, object],
+    opt: Mapping[str, object],
+) -> tuple[dict[str, float | int], bool]:
+    """Return the resolved RPM map for ``opt`` at ``station`` and flag positivity."""
+
+    rpm_map_local: dict[str, float | int] = {}
+    for source in (station.get('rpm_map'), opt.get('rpm_map')):
+        if isinstance(source, Mapping):
+            for key, value in source.items():
+                if isinstance(value, (int, float)):
+                    rpm_map_local[key] = value
+
+    combo_local = (
+        station.get('active_combo')
+        or station.get('combo')
+        or station.get('pump_combo')
+    )
+    fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
+    if isinstance(combo_local, Mapping):
+        for key, value in opt.items():
+            if (
+                isinstance(value, (int, float))
+                and isinstance(key, str)
+                and key.startswith('rpm_')
+            ):
+                ptype = key[4:]
+                if ptype in combo_local:
+                    rpm_map_local[ptype] = value
+        for ptype, count in combo_local.items():
+            if (
+                isinstance(count, (int, float))
+                and count > 0
+                and ptype not in rpm_map_local
+                and isinstance(fallback_rpm, (int, float))
+            ):
+                rpm_map_local[ptype] = fallback_rpm
+    if (
+        not rpm_map_local
+        and isinstance(fallback_rpm, (int, float))
+        and fallback_rpm > 0
+    ):
+        rpm_map_local = {'default': fallback_rpm}
+
+    has_positive_rpm = any(
+        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
+    )
+    return rpm_map_local, has_positive_rpm
+
+
+def _compute_tariff_cost(
+    prime_kw: float,
+    hours: float,
+    start_time: str,
+    tariffs: list | None,
+    default_rate: float,
+) -> float:
+    """Return the electrical energy cost for ``prime_kw`` over ``hours``."""
+
+    remaining = float(hours)
+    cost = 0.0
+    if remaining <= 0 or prime_kw <= 0:
+        return 0.0
+
+    try:
+        current = dt.datetime.strptime(start_time, "%H:%M")
+    except Exception:
+        # Fall back to a zero offset when parsing fails
+        current = dt.datetime.strptime("00:00", "%H:%M")
+    tariff_list = tariffs or []
+    while remaining > 0:
+        applied = False
+        for tr in tariff_list:
+            try:
+                s = dt.datetime.strptime(tr.get('start'), "%H:%M")
+                e = dt.datetime.strptime(tr.get('end'), "%H:%M")
+            except Exception:
+                continue
+            if e <= s:
+                e += dt.timedelta(days=1)
+            if s <= current < e:
+                overlap = min(remaining, (e - current).total_seconds() / 3600.0)
+                rate = float(tr.get('rate', default_rate))
+                cost += prime_kw * overlap * rate
+                remaining -= overlap
+                current += dt.timedelta(hours=overlap)
+                applied = True
+                break
+        if not applied:
+            cost += prime_kw * remaining * float(default_rate)
+            break
+    return max(cost, 0.0)
+
+
+def _build_pump_option_cache(
+    station: Mapping[str, object],
+    opt: Mapping[str, object],
+    *,
+    flow: float,
+    hours: float,
+    start_time: str,
+    price_hsd: float,
+    fuel_density: float,
+    ambient_temp: float,
+) -> dict:
+    """Return cached pump data for ``opt`` at ``station``."""
+
+    rpm_map_local, has_positive_rpm = _compose_option_rpm_map(station, opt)
+    cache: dict[str, object] = {
+        'rpm_map': rpm_map_local,
+        'has_positive_rpm': has_positive_rpm,
+        'flow': float(flow),
+        'pump_details': [],
+        'tdh': 0.0,
+        'eff': 0.0,
+        'pump_bkw_total': 0.0,
+        'prime_kw_total': 0.0,
+        'power_cost': 0.0,
+    }
+
+    nop = int(opt.get('nop', 0))
+    if nop <= 0 or not has_positive_rpm:
+        return cache
+
+    pump_def = {
+        'A': station.get('coef_A', 0.0),
+        'B': station.get('coef_B', 0.0),
+        'C': station.get('coef_C', 0.0),
+        'P': station.get('coef_P', 0.0),
+        'Q': station.get('coef_Q', 0.0),
+        'R': station.get('coef_R', 0.0),
+        'S': station.get('coef_S', 0.0),
+        'T': station.get('coef_T', 0.0),
+        'DOL': station.get('dol', 0.0),
+        'combo': station.get('pump_combo'),
+        'pump_types': station.get('pump_types'),
+        'active_combo': station.get('active_combo'),
+        'power_type': station.get('power_type'),
+        'sfc_mode': station.get('sfc_mode'),
+        'sfc': station.get('sfc'),
+        'engine_params': station.get('engine_params', {}),
+    }
+
+    pump_details = _pump_head(pump_def, float(flow), rpm_map_local, nop)
+    if not pump_details:
+        return cache
+
+    tdh_total = sum(p['tdh'] for p in pump_details)
+    eff_val = sum(p['eff'] * p['count'] for p in pump_details) / nop if nop > 0 else 0.0
+
+    rho = float(station.get('rho', 0.0))
+    rate_default = float(station.get('rate', 0.0))
+    tariffs = station.get('tariffs')
+    elev = float(station.get('elev', 0.0))
+
+    prepared: list[dict] = []
+    pump_bkw_total = 0.0
+    prime_kw_total = 0.0
+    power_cost_total = 0.0
+    for entry in pump_details:
+        detail = dict(entry)
+        eff_local = max(min(detail.get('eff', 0.0), 100.0), 1e-6)
+        tdh_local = max(detail.get('tdh', 0.0), 0.0)
+        pump_bkw_i = (
+            rho * float(flow) * 9.81 * tdh_local
+        ) / (3600.0 * 1000.0 * (eff_local / 100.0)) if eff_local > 0 else 0.0
+        pump_bkw_total += pump_bkw_i
+        pdata = detail.get('data', {}) or {}
+        rated_rpm = pdata.get('DOL', station.get('dol', 0.0))
+        rpm_operating = detail.get('rpm', opt.get('rpm', 0))
+        if detail.get('power_type') == 'Diesel':
+            mech_eff = 0.98
+        else:
+            mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
+        if mech_eff <= 0:
+            prime_kw_i = 0.0
+        else:
+            prime_kw_i = pump_bkw_i / mech_eff
+        prime_kw_total += prime_kw_i
+
+        if detail.get('power_type') == 'Diesel':
+            mode = pdata.get('sfc_mode', station.get('sfc_mode', 'manual'))
+            if mode == 'manual':
+                sfc_val = pdata.get('sfc', station.get('sfc', 0.0))
+            elif mode == 'iso':
+                sfc_val = _compute_iso_sfc(
+                    pdata,
+                    rpm_operating,
+                    pump_bkw_i,
+                    pdata.get('DOL', station.get('dol', 0.0)),
+                    elev,
+                    ambient_temp,
+                )
+            else:
+                sfc_val = 0.0
+            fuel_per_kWh = (sfc_val * 1.34102) / fuel_density if sfc_val else 0.0
+            cost_i = prime_kw_i * hours * fuel_per_kWh * price_hsd
+        else:
+            cost_i = _compute_tariff_cost(prime_kw_i, hours, start_time, tariffs, rate_default)
+        cost_i = max(cost_i, 0.0)
+        power_cost_total += cost_i
+        detail['pump_bkw'] = pump_bkw_i
+        detail['prime_kw'] = prime_kw_i
+        detail['power_cost'] = cost_i
+        prepared.append(detail)
+
+    cache.update(
+        {
+            'pump_details': prepared,
+            'tdh': tdh_total,
+            'eff': eff_val,
+            'pump_bkw_total': pump_bkw_total,
+            'prime_kw_total': prime_kw_total,
+            'power_cost': power_cost_total,
+        }
+    )
+    return cache
+
 # ---------------------------------------------------------------------------
 # Loop enumeration utilities
 # ---------------------------------------------------------------------------
@@ -1942,7 +2161,7 @@ def solve_pipeline(
             rho_display = float(rho)
             dra_display = 0.0
 
-        station_opts.append({
+        station_entry = {
             'name': name,
             'orig_name': stn['name'],
             'idx': i - 1,
@@ -1982,7 +2201,22 @@ def solve_pipeline(
             'engine_params': stn.get('engine_params', {}),
             'elev': float(stn.get('elev', 0.0)),
             'profile': profile_data,
-        })
+        }
+        if station_entry['is_pump']:
+            flow_for_cache = segment_flows[0]
+            station_entry['flow_ref'] = flow_for_cache
+            for opt in station_entry['options']:
+                opt['_pump_cache'] = _build_pump_option_cache(
+                    station_entry,
+                    opt,
+                    flow=flow_for_cache,
+                    hours=hours,
+                    start_time=start_time,
+                    price_hsd=Price_HSD,
+                    fuel_density=Fuel_density,
+                    ambient_temp=Ambient_temp,
+                )
+        station_opts.append(station_entry)
         cum_dist += L
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
@@ -2202,144 +2436,27 @@ def solve_pipeline(
 
                 pump_details: list[dict]
                 tdh: float
-                if opt.get('nop', 0) > 0:
-                    pump_def = {
-                        'A': stn_data['coef_A'],
-                        'B': stn_data['coef_B'],
-                        'C': stn_data['coef_C'],
-                        'P': stn_data['coef_P'],
-                        'Q': stn_data['coef_Q'],
-                        'R': stn_data['coef_R'],
-                        'S': stn_data['coef_S'],
-                        'T': stn_data['coef_T'],
-                        'DOL': stn_data['dol'],
-                        'combo': stn_data.get('pump_combo'),
-                        'pump_types': stn_data.get('pump_types'),
-                        'active_combo': stn_data.get('active_combo'),
-                        'power_type': stn_data.get('power_type'),
-                        'sfc_mode': stn_data.get('sfc_mode'),
-                        'sfc': stn_data.get('sfc'),
-                        'engine_params': stn_data.get('engine_params', {}),
-                    }
-                    combo_local = (
-                        pump_def.get('active_combo')
-                        or pump_def.get('combo')
-                        or pump_def.get('pump_combo')
-                    )
-                    rpm_map_local: dict[str, float | int] = {}
-                    for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
-                        if isinstance(source, Mapping):
-                            for key, value in source.items():
-                                if isinstance(value, (int, float)):
-                                    rpm_map_local[key] = value
-                    fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
-                    if isinstance(combo_local, dict):
-                        for key, value in opt.items():
-                            if (
-                                isinstance(value, (int, float))
-                                and isinstance(key, str)
-                                and key.startswith('rpm_')
-                            ):
-                                ptype = key[4:]
-                                if ptype in combo_local:
-                                    rpm_map_local[ptype] = value
-                        for ptype, count in combo_local.items():
-                            if (
-                                isinstance(count, (int, float))
-                                and count > 0
-                                and ptype not in rpm_map_local
-                                and isinstance(fallback_rpm, (int, float))
-                            ):
-                                rpm_map_local[ptype] = fallback_rpm
-                    if (
-                        not rpm_map_local
-                        and isinstance(fallback_rpm, (int, float))
-                        and fallback_rpm > 0
-                    ):
-                        rpm_map_local = {'default': fallback_rpm}
-                    has_positive_rpm = any(
-                        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
-                    )
-                    if has_positive_rpm:
-                        pump_details = _pump_head(pump_def, flow_total, rpm_map_local, opt['nop'])
-                        tdh = sum(p['tdh'] for p in pump_details)
-                    else:
-                        pump_details = []
-                        tdh = 0.0
-                else:
-                    pump_details = []
-                    tdh = 0.0
-
-                eff = (
-                    sum(p['eff'] * p['count'] for p in pump_details) / opt['nop']
-                    if pump_details and opt['nop'] > 0
-                    else 0.0
-                )
-
+                eff: float
                 pump_bkw_total = 0.0
                 prime_kw_total = 0.0
                 power_cost = 0.0
-                for pinfo in pump_details:
-                    eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
-                    tdh_local = max(pinfo['tdh'], 0.0)
-                    pump_bkw_i = (
-                        stn_data['rho'] * flow_total * 9.81 * tdh_local
-                    ) / (3600.0 * 1000.0 * (eff_local / 100.0))
-                    pump_bkw_total += pump_bkw_i
-                    pdata = pinfo.get('data', {})
-                    rated_rpm = pdata.get('DOL', stn_data['dol'])
-                    rpm_operating = pinfo.get('rpm', opt.get('rpm', 0))
-                    if pinfo.get('power_type') == 'Diesel':
-                        mech_eff = 0.98
+                if opt.get('nop', 0) > 0:
+                    pump_cache = opt.get('_pump_cache') if isinstance(opt.get('_pump_cache'), Mapping) else None
+                    if pump_cache and pump_cache.get('has_positive_rpm'):
+                        pump_details = [dict(p) for p in pump_cache.get('pump_details', [])]
+                        tdh = float(pump_cache.get('tdh', 0.0))
+                        eff = float(pump_cache.get('eff', 0.0))
+                        pump_bkw_total = float(pump_cache.get('pump_bkw_total', 0.0))
+                        prime_kw_total = float(pump_cache.get('prime_kw_total', 0.0))
+                        power_cost = float(pump_cache.get('power_cost', 0.0))
                     else:
-                        mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
-                    prime_kw_i = pump_bkw_i / mech_eff
-                    prime_kw_total += prime_kw_i
-                    if pinfo.get('power_type') == 'Diesel':
-                        mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
-                        if mode == 'manual':
-                            sfc_val = pdata.get('sfc', stn_data.get('sfc', 0.0))
-                        elif mode == 'iso':
-                            sfc_val = _compute_iso_sfc(
-                                pdata,
-                                rpm_operating,
-                                pump_bkw_i,
-                                pdata.get('DOL', stn_data['dol']),
-                                stn_data.get('elev', 0.0),
-                                Ambient_temp,
-                            )
-                        else:
-                            sfc_val = 0.0
-                        fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                        cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
-                    else:
-                        tariffs = stn_data.get('tariffs') or []
-                        rate_default = stn_data.get('rate', 0.0)
-                        remaining = hours
-                        cost_i = 0.0
-                        current = dt.datetime.strptime(start_time, "%H:%M")
-                        while remaining > 0:
-                            applied = False
-                            for tr in tariffs:
-                                s = dt.datetime.strptime(tr.get('start'), "%H:%M")
-                                e = dt.datetime.strptime(tr.get('end'), "%H:%M")
-                                if e <= s:
-                                    e += dt.timedelta(days=1)
-                                if s <= current < e:
-                                    overlap = min(remaining, (e - current).total_seconds() / 3600.0)
-                                    cost_i += prime_kw_i * overlap * float(tr.get('rate', rate_default))
-                                    remaining -= overlap
-                                    current += dt.timedelta(hours=overlap)
-                                    applied = True
-                                    break
-                            if not applied:
-                                cost_i += prime_kw_i * remaining * rate_default
-                                break
-                    cost_i = max(cost_i, 0.0)
-                    pinfo['pump_bkw'] = pump_bkw_i
-                    pinfo['prime_kw'] = prime_kw_i
-                    pinfo['power_cost'] = cost_i
-                    power_cost += cost_i
+                        pump_details = []
+                        tdh = 0.0
+                        eff = 0.0
+                else:
+                    pump_details = []
+                    tdh = 0.0
+                    eff = 0.0
 
                 pump_bkw = pump_bkw_total / opt['nop'] if opt['nop'] > 0 else 0.0
                 motor_kw = prime_kw_total / opt['nop'] if opt['nop'] > 0 else 0.0
