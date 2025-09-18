@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import math
 from collections.abc import Mapping
 from itertools import product
 
@@ -298,7 +299,111 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 25
 DRA_STEP = 2
-MAX_DRA_KM = 250.0
+def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
+    """Return the pipe length in kilometres represented by ``volume_m3``."""
+
+    if volume_m3 <= 0 or diameter_m <= 0:
+        return 0.0
+    area = math.pi * (diameter_m ** 2) / 4.0
+    if area <= 0:
+        return 0.0
+    return max(volume_m3 / area / 1000.0, 0.0)
+
+
+def _normalise_queue(
+    dra_queue: list[dict[str, float]] | None,
+) -> list[dict[str, float]]:
+    """Return a cleaned copy of ``dra_queue`` with positive slices only."""
+
+    cleaned: list[dict[str, float]] = []
+    if not dra_queue:
+        return cleaned
+    for entry in dra_queue:
+        try:
+            length = float(entry.get('length_km', 0.0))
+        except Exception:
+            length = 0.0
+        try:
+            ppm = int(entry.get('dra_ppm', 0) or 0)
+        except Exception:
+            ppm = 0
+        if length <= 1e-9 or ppm <= 0:
+            continue
+        cleaned.append({'length_km': length, 'dra_ppm': ppm})
+    return cleaned
+
+
+def _advance_dra_queue(
+    dra_queue: list[dict[str, float]],
+    advance_km: float,
+) -> list[dict[str, float]]:
+    """Return ``dra_queue`` after removing ``advance_km`` from the head."""
+
+    if advance_km <= 1e-9 or not dra_queue:
+        return [entry.copy() for entry in dra_queue]
+    remaining = float(advance_km)
+    result: list[dict[str, float]] = []
+    for entry in dra_queue:
+        length = float(entry['length_km'])
+        ppm = int(entry['dra_ppm'])
+        if remaining <= 1e-9:
+            result.append({'length_km': length, 'dra_ppm': ppm})
+            continue
+        if length <= remaining + 1e-9:
+            remaining -= length
+            continue
+        trimmed = length - remaining
+        result.append({'length_km': trimmed, 'dra_ppm': ppm})
+        remaining = 0.0
+    return result
+
+
+def _prepend_dra_slice(
+    dra_queue: list[dict[str, float]],
+    length_km: float,
+    dra_ppm: int,
+) -> list[dict[str, float]]:
+    """Prepend a slice to ``dra_queue`` merging with the head when possible."""
+
+    if length_km <= 1e-9 or dra_ppm <= 0:
+        return [entry.copy() for entry in dra_queue]
+    new_entry = {'length_km': float(length_km), 'dra_ppm': int(dra_ppm)}
+    if dra_queue and int(dra_queue[0]['dra_ppm']) == new_entry['dra_ppm']:
+        head = dra_queue[0]
+        merged = {'length_km': float(head['length_km']) + new_entry['length_km'], 'dra_ppm': new_entry['dra_ppm']}
+        return [merged] + [entry.copy() for entry in dra_queue[1:]]
+    return [new_entry] + [entry.copy() for entry in dra_queue]
+
+
+def _consume_segment_queue(
+    dra_queue: list[dict[str, float]],
+    segment_length: float,
+) -> tuple[list[tuple[float, int]], list[dict[str, float]]]:
+    """Split ``dra_queue`` across ``segment_length`` kilometres."""
+
+    remaining = max(float(segment_length), 0.0)
+    if remaining <= 1e-9:
+        return [], [entry.copy() for entry in dra_queue]
+    dra_segments: list[tuple[float, int]] = []
+    result: list[dict[str, float]] = []
+    for entry in dra_queue:
+        length = float(entry['length_km'])
+        ppm = int(entry['dra_ppm'])
+        if remaining <= 1e-9:
+            result.append({'length_km': length, 'dra_ppm': ppm})
+            continue
+        take = min(length, remaining)
+        if ppm > 0 and take > 1e-9:
+            dra_segments.append((take, ppm))
+        remaining -= take
+        leftover = length - take
+        if leftover > 1e-9:
+            result.append({'length_km': leftover, 'dra_ppm': ppm})
+        if remaining <= 1e-9:
+            # Append the untouched tail entries
+            continue
+    # If ``remaining`` is still positive the queue was exhausted; nothing to add.
+    return dra_segments, result
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -323,75 +428,71 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
 
 
 def _update_mainline_dra(
-    prev_ppm: int,
-    reach_prev: float,
+    dra_queue: list[dict[str, float]] | None,
     stn_data: dict,
     opt: dict,
-    distance_covered: float,
-) -> tuple[int, float, float, int]:
-    """Return updated drag‑reduction state for the mainline.
+    segment_length: float,
+    flow_m3h: float,
+    hours: float,
+) -> tuple[list[tuple[float, int]], list[dict[str, float]], int]:
+    """Return the updated DRA slice queue and coverage for this segment."""
 
-    Parameters
-    ----------
-    prev_ppm:
-        Upstream DRA concentration in ppm carried from the previous station.
-    reach_prev:
-        Remaining downstream reach (km) for which the previous injection is
-        effective.
-    stn_data:
-        Dictionary describing the current station with keys ``L`` for the
-        segment length and ``is_pump`` for pump stations.
-    opt:
-        Chosen operating option containing ``dra_ppm_main`` and ``nop``.
-
-    ``distance_covered``
-        Portion of the current segment (km) traversed by the upstream fluid.
-
-    Returns
-    -------
-    tuple
-        ``(ppm_main, dra_len_main, reach_after, inj_ppm_main)`` where
-        ``ppm_main`` is the effective concentration after any injection,
-        ``dra_len_main`` is the length on this segment receiving drag
-        reduction from the upstream fluid, ``reach_after`` is the remaining
-        downstream reach of that injection after accounting for
-        ``distance_covered``, and ``inj_ppm_main`` is the concentration
-        injected at this station.
-    """
-
+    queue = _normalise_queue(dra_queue)
     inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
+    pump_running = bool(stn_data.get("is_pump")) and opt.get("nop", 0) > 0
 
-    # A pump station resets the DRA concentration to the injected value.  If
-    # the pump runs without injection the downstream concentration drops to
-    # zero.  Non‑pump segments simply carry the upstream concentration forward
-    # until the maximum reach is exhausted.
-    distance_covered = max(float(distance_covered), 0.0)
+    if pump_running:
+        pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
+        pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
+        if pumped_length > 0:
+            queue = _advance_dra_queue(queue, pumped_length)
+            if inj_ppm_main > 0:
+                queue = _prepend_dra_slice(queue, pumped_length, inj_ppm_main)
 
-    if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
-        ppm_main = inj_ppm_main
-        if ppm_main > 0:
-            reach_start = MAX_DRA_KM
-        else:
-            reach_start = 0.0
-    else:
-        ppm_main = prev_ppm
-        if reach_prev > 0 and ppm_main > 0:
-            reach_start = float(reach_prev)
-        else:
-            reach_start = 0.0
+    dra_segments, queue_after = _consume_segment_queue(queue, segment_length)
+    return dra_segments, queue_after, inj_ppm_main
 
-    reach_start = max(reach_start, 0.0)
-    if reach_start > 0:
-        dra_len_main = min(distance_covered, reach_start)
-        if distance_covered <= 0:
-            reach_after = reach_start
-        else:
-            reach_after = max(0.0, reach_start - distance_covered)
-    else:
-        dra_len_main = 0.0
-        reach_after = 0.0
 
-    return int(ppm_main), dra_len_main, reach_after, inj_ppm_main
+def _build_initial_dra_queue(
+    linefill_state: list[dict],
+    dra_reach_km: float,
+    first_diameter: float,
+) -> list[dict[str, float]]:
+    """Construct the starting DRA queue from ``linefill_state``."""
+
+    remaining = max(float(dra_reach_km), 0.0)
+    if remaining <= 1e-9:
+        return []
+    queue: list[dict[str, float]] = []
+    for batch in linefill_state:
+        try:
+            ppm = int(batch.get('dra_ppm', 0) or 0)
+        except Exception:
+            ppm = 0
+        if ppm <= 0:
+            continue
+        length = 0.0
+        if 'length_km' in batch:
+            try:
+                length = float(batch['length_km'])
+            except Exception:
+                length = 0.0
+        if length <= 0 and first_diameter > 0:
+            try:
+                vol = float(batch.get('volume', 0.0))
+            except Exception:
+                vol = 0.0
+            length = _km_from_volume(vol, first_diameter)
+        if length <= 0:
+            continue
+        take = min(length, remaining)
+        if take <= 0:
+            continue
+        queue.append({'length_km': take, 'dra_ppm': ppm})
+        remaining -= take
+        if remaining <= 1e-9:
+            break
+    return queue
 
 
 @njit(cache=True, fastmath=True)
@@ -1901,6 +2002,8 @@ def solve_pipeline(
     # Dynamic programming over stations
 
     init_residual = int(stations[0].get('min_residual', 50))
+    origin_diameter = float(station_opts[0]['d_inner']) if station_opts else 0.0
+    initial_queue = _build_initial_dra_queue(linefill_state, dra_reach_km, origin_diameter)
     # Initial dynamic‑programming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
     # sequence of record dictionaries (one per station), the last MAOP
@@ -1910,11 +2013,8 @@ def solve_pipeline(
     # upstream injection when a bypass scenario occurs.  At the origin
     # there is no upstream DRA on the loopline so this value starts at zero.
     #
-    # The state also tracks two mainline concentrations: ``prev_ppm_main``
-    # for the fluid currently entering the station and ``downstream_ppm``
-    # for the leading slug that originated from the initial linefill.  The
-    # slug is associated with ``downstream_reach`` describing how much of
-    # the downstream line remains occupied by that initial treatment.
+    # The mainline DRA profile is represented as a queue of slices, each
+    # describing the downstream length (in km) and the associated ppm.
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -1924,11 +2024,7 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0,
-            'prev_ppm_main': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
-            'reach': max(float(dra_reach_km), 0.0),
-            'inj_ppm_main': 0,
-            'downstream_ppm': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
-            'downstream_reach': max(float(dra_reach_km), 0.0),
+            'dra_queue': initial_queue,
         }
     }
 
@@ -1949,39 +2045,28 @@ def solve_pipeline(
                     usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
-                reach_prev = state.get('reach', 0.0)
-                ppm_prev = int(state.get('prev_ppm_main', 0))
-                slug_ppm = int(state.get('downstream_ppm', 0))
-                slug_reach = max(float(state.get('downstream_reach', 0.0)), 0.0)
-                slug_len = min(float(stn_data['L']), slug_reach) if slug_reach > 0 else 0.0
-                dra_segments: list[tuple[float, float]] = []
-                if slug_len > 0:
-                    eff_dra_slug = int(get_dr_for_ppm(stn_data['kv'], slug_ppm)) if slug_ppm > 0 else 0
-                    if eff_dra_slug > 0:
-                        dra_segments.append((slug_len, eff_dra_slug))
                 segment_length = float(stn_data['L'])
-                distance_after_slug = max(segment_length - slug_len, 0.0)
-                # Update the mainline DRA concentration.  Pump stations reset the
-                # concentration to the injected value while unpumped segments carry
-                # the upstream level forward until its reach is exhausted.
-                ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
-                    ppm_prev, reach_prev, stn_data, opt, distance_after_slug
+                dra_queue_prev = state.get('dra_queue', [])
+                dra_slices, dra_queue_after, inj_ppm_main = _update_mainline_dra(
+                    dra_queue_prev,
+                    stn_data,
+                    opt,
+                    segment_length,
+                    flow_total,
+                    hours,
                 )
-                eff_dra_main = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
-                if distance_after_slug > 0 and dra_len_main > 0 and eff_dra_main > 0:
-                    dra_segments.append((dra_len_main, eff_dra_main))
+                dra_queue_next = _normalise_queue(dra_queue_after)
+                dra_segments: list[tuple[float, float]] = []
+                dra_len_main = 0.0
+                weighted_dra = 0.0
+                for seg_len, ppm_val in dra_slices:
+                    eff = float(get_dr_for_ppm(stn_data['kv'], ppm_val)) if ppm_val > 0 else 0.0
+                    if eff > 0 and seg_len > 1e-9:
+                        dra_segments.append((seg_len, eff))
+                        dra_len_main += seg_len
+                        weighted_dra += eff * seg_len
+                eff_dra_main = weighted_dra / dra_len_main if dra_len_main > 1e-9 else 0.0
                 pump_running = bool(stn_data.get('is_pump')) and opt.get('nop', 0) > 0
-                if pump_running:
-                    slug_ppm_next = 0
-                    slug_reach_next = 0.0
-                else:
-                    remaining_slug = max(slug_reach - segment_length, 0.0)
-                    if slug_ppm > 0 and remaining_slug > 1e-9:
-                        slug_ppm_next = slug_ppm
-                        slug_reach_next = remaining_slug
-                    else:
-                        slug_ppm_next = 0
-                        slug_reach_next = 0.0
 
                 scenarios = []
                 # Base scenario: flow through mainline only
@@ -2634,11 +2719,7 @@ def solve_pipeline(
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            'prev_ppm_main': ppm_main,
-                            'reach': reach_after,
-                            'inj_ppm_main': inj_ppm_main,
-                            'downstream_ppm': slug_ppm_next,
-                            'downstream_reach': slug_reach_next,
+                            'dra_queue': dra_queue_next,
                         }
 
         if not new_states:
@@ -2717,7 +2798,11 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
-    result['dra_front_km'] = best_state.get('reach', 0.0)
+    queue_final = best_state.get('dra_queue', [])
+    if queue_final:
+        result['dra_front_km'] = sum(float(entry.get('length_km', 0.0)) for entry in queue_final)
+    else:
+        result['dra_front_km'] = 0.0
     result['error'] = False
     return result
 
