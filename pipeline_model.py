@@ -297,8 +297,8 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 # Core calculations
 # ---------------------------------------------------------------------------
 
-RPM_STEP = 25
-DRA_STEP = 2
+RPM_STEP = 100
+DRA_STEP = 5
 def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
     """Return the pipe length in kilometres represented by ``volume_m3``."""
 
