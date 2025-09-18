@@ -473,10 +473,10 @@ def _segment_profile_hydraulics(
 ) -> tuple[float, float, float, float]:
     """Evaluate segment hydraulics across ``profile`` slices when provided."""
 
-    if not profile and not dra_segments:
-        return _segment_hydraulics(flow_m3h, L, d_inner, rough, kv_default, dra_perc, dra_length)
+    if not profile:
+        if not dra_segments:
+            return _segment_hydraulics(flow_m3h, L, d_inner, rough, kv_default, dra_perc, dra_length)
 
-    if dra_segments:
         segments_master: list[tuple[float, float]] = []
         remaining_total = float(L)
         for length, perc in dra_segments:
@@ -487,88 +487,180 @@ def _segment_profile_hydraulics(
             remaining_total -= seg_len
             if remaining_total <= 1e-9:
                 break
-    else:
-        segments_master = []
-        remaining_total = float(L)
-        if dra_length is not None and dra_length > 0 and dra_perc > 0:
-            seg_len = min(float(dra_length), remaining_total)
+        if not segments_master and dra_length is not None and dra_length > 0 and dra_perc > 0:
+            seg_len = min(float(dra_length), float(L))
             if seg_len > 0:
                 segments_master.append((seg_len, float(dra_perc)))
-                remaining_total -= seg_len
 
-    def eval_slice(length_km: float, kv_local: float) -> tuple[float, float, float, float]:
-        if not segments_master:
-            hl, v, Re, f = _segment_hydraulics(
-                flow_m3h,
-                length_km,
-                d_inner,
-                rough,
-                kv_local,
-                0.0,
-                0.0,
-            )
-            return float(hl), float(v), float(Re), float(f)
+        def eval_slice(length_km: float, kv_local: float) -> tuple[float, float, float, float]:
+            if not segments_master:
+                hl, v, Re, f = _segment_hydraulics(
+                    flow_m3h,
+                    length_km,
+                    d_inner,
+                    rough,
+                    kv_local,
+                    0.0,
+                    0.0,
+                )
+                return float(hl), float(v), float(Re), float(f)
 
-        head_loss_total = 0.0
-        v_last = 0.0
-        Re_min_local = float("inf")
-        f_worst_local = 0.0
-        remaining = length_km
-        segments_local = [[seg_len, seg_perc] for seg_len, seg_perc in segments_master]
-        idx = 0
-        seg_remaining = segments_local[idx][0] if segments_local else 0.0
-        seg_perc = segments_local[idx][1] if segments_local else 0.0
-        while remaining > 1e-9:
-            take = remaining
-            if segments_local:
-                take = min(take, seg_remaining)
-            dra_perc_local = seg_perc if segments_local else 0.0
-            dra_len_local = take if dra_perc_local > 0 else 0.0
-            hl, v, Re, f = _segment_hydraulics(
-                flow_m3h,
-                take,
-                d_inner,
-                rough,
-                kv_local,
-                dra_perc_local,
-                dra_len_local,
-            )
-            head_loss_total += float(hl)
-            v_last = float(v)
-            Re_min_local = min(Re_min_local, float(Re))
-            f_worst_local = max(f_worst_local, float(f))
-            remaining -= take
-            if segments_local:
-                seg_remaining -= take
-                if seg_remaining <= 1e-9:
-                    idx += 1
-                    if idx >= len(segments_local):
-                        break
-                    seg_remaining = segments_local[idx][0]
-                    seg_perc = segments_local[idx][1]
-        if Re_min_local == float("inf"):
-            Re_min_local = 0.0
-        return head_loss_total, v_last, Re_min_local, f_worst_local
+            head_loss_total = 0.0
+            v_last = 0.0
+            Re_min_local = float("inf")
+            f_worst_local = 0.0
+            remaining = length_km
+            segments_local = [[seg_len, seg_perc] for seg_len, seg_perc in segments_master]
+            idx = 0
+            seg_remaining = segments_local[idx][0] if segments_local else 0.0
+            seg_perc = segments_local[idx][1] if segments_local else 0.0
+            while remaining > 1e-9:
+                take = remaining
+                if segments_local:
+                    take = min(take, seg_remaining)
+                dra_perc_local = seg_perc if segments_local else 0.0
+                dra_len_local = take if dra_perc_local > 0 else 0.0
+                hl, v, Re, f = _segment_hydraulics(
+                    flow_m3h,
+                    take,
+                    d_inner,
+                    rough,
+                    kv_local,
+                    dra_perc_local,
+                    dra_len_local,
+                )
+                head_loss_total += float(hl)
+                v_last = float(v)
+                Re_min_local = min(Re_min_local, float(Re))
+                f_worst_local = max(f_worst_local, float(f))
+                remaining -= take
+                if segments_local:
+                    seg_remaining -= take
+                    if seg_remaining <= 1e-9:
+                        idx += 1
+                        if idx >= len(segments_local):
+                            break
+                        seg_remaining = segments_local[idx][0]
+                        seg_perc = segments_local[idx][1]
+            if Re_min_local == float("inf"):
+                Re_min_local = 0.0
+            return head_loss_total, v_last, Re_min_local, f_worst_local
 
-    if not profile:
         total_hl, v_last, Re_min, f_worst = eval_slice(float(L), float(kv_default))
         return total_hl, v_last, Re_min, f_worst
+
+    total_length = float(L)
+    if total_length <= 0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    tol = 1e-9
+
+    base_slices: list[dict[str, float]] = []
+    for slice_data in profile or []:
+        try:
+            length_val = float(slice_data.get("length_km", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if length_val <= tol:
+            continue
+        kv_val = float(slice_data.get("kv", kv_default)) if slice_data.get("kv") is not None else float(kv_default)
+        ppm_val = float(slice_data.get("dra_ppm", 0.0)) if slice_data.get("dra_ppm") is not None else 0.0
+        base_slices.append({"length": length_val, "kv": kv_val, "ppm": ppm_val})
+    if not base_slices:
+        base_slices = [{"length": total_length, "kv": float(kv_default), "ppm": 0.0}]
+
+    length_sum = sum(slice_entry["length"] for slice_entry in base_slices)
+    if length_sum <= 0:
+        base_slices = [{"length": total_length, "kv": float(kv_default), "ppm": 0.0}]
+        length_sum = total_length
+    if abs(length_sum - total_length) > tol:
+        adjustment = total_length - length_sum
+        base_slices[-1]["length"] = max(base_slices[-1]["length"] + adjustment, tol)
+
+    dra_pieces: list[dict[str, float]] = []
+    remaining_for_dra = total_length
+    if dra_segments:
+        for length, perc in dra_segments:
+            seg_len = min(max(float(length), 0.0), remaining_for_dra)
+            if seg_len <= tol:
+                continue
+            dra_pieces.append({"length": seg_len, "perc": float(perc)})
+            remaining_for_dra -= seg_len
+            if remaining_for_dra <= tol:
+                break
+    elif dra_length is not None and dra_length > 0 and dra_perc > 0:
+        seg_len = min(float(dra_length), remaining_for_dra)
+        if seg_len > tol:
+            dra_pieces.append({"length": seg_len, "perc": float(dra_perc)})
+            remaining_for_dra -= seg_len
 
     head_loss_total = 0.0
     v_last = 0.0
     Re_min = float("inf")
     f_worst = 0.0
 
-    for slice_data in profile:
-        length = float(slice_data.get("length_km", 0.0))
-        if length <= 1e-9:
-            continue
-        kv_local = float(slice_data.get("kv", kv_default)) if slice_data.get("kv") is not None else float(kv_default)
-        hl, v, Re, f = eval_slice(length, kv_local)
+    base_idx = 0
+    dra_idx = 0
+    base_remaining = base_slices[0]["length"] if base_slices else 0.0
+    dra_remaining = dra_pieces[0]["length"] if dra_pieces else total_length
+    dra_current = dra_pieces[0]["perc"] if dra_pieces else 0.0
+    remaining_total = total_length
+
+    while remaining_total > tol and base_idx < len(base_slices):
+        take = min(base_remaining, dra_remaining if dra_pieces else base_remaining, remaining_total)
+        if take <= tol:
+            if base_remaining <= tol and base_idx < len(base_slices) - 1:
+                base_idx += 1
+                base_remaining = base_slices[base_idx]["length"]
+                continue
+            if dra_pieces and dra_remaining <= tol and dra_idx < len(dra_pieces) - 1:
+                dra_idx += 1
+                dra_remaining = dra_pieces[dra_idx]["length"]
+                dra_current = dra_pieces[dra_idx]["perc"]
+                continue
+            break
+
+        slice_entry = base_slices[base_idx]
+        kv_local = slice_entry["kv"]
+        ppm_local = slice_entry.get("ppm", 0.0)
+        base_dra = float(get_dr_for_ppm(kv_local, ppm_local)) if ppm_local > 0 else 0.0
+        dra_from_segments = dra_current if dra_pieces else 0.0
+        eff_dra = max(base_dra, dra_from_segments)
+        dra_len_local = take if eff_dra > 0 else 0.0
+        hl, v, Re, f = _segment_hydraulics(
+            flow_m3h,
+            take,
+            d_inner,
+            rough,
+            kv_local,
+            eff_dra,
+            dra_len_local,
+        )
         head_loss_total += float(hl)
         v_last = float(v)
         Re_min = min(Re_min, float(Re))
         f_worst = max(f_worst, float(f))
+
+        remaining_total -= take
+        base_remaining -= take
+        if base_remaining <= tol:
+            base_idx += 1
+            if base_idx < len(base_slices):
+                base_remaining = base_slices[base_idx]["length"]
+            else:
+                base_remaining = 0.0
+        if dra_pieces:
+            dra_remaining -= take
+            if dra_remaining <= tol:
+                dra_idx += 1
+                if dra_idx < len(dra_pieces):
+                    dra_remaining = dra_pieces[dra_idx]["length"]
+                    dra_current = dra_pieces[dra_idx]["perc"]
+                else:
+                    dra_remaining = remaining_total
+                    dra_current = 0.0
+        else:
+            dra_remaining = remaining_total
 
     if Re_min == float("inf"):
         Re_min = 0.0
@@ -586,6 +678,7 @@ def _scale_profile(profile: list[dict[str, float]] | None, scale: float) -> list
             "length_km": float(slice_data.get("length_km", 0.0)) * scale,
             "kv": float(slice_data.get("kv", 0.0)),
             "rho": float(slice_data.get("rho", 0.0)),
+            "dra_ppm": float(slice_data.get("dra_ppm", 0.0)),
         }
         for slice_data in profile
         if float(slice_data.get("length_km", 0.0)) > 1e-9
@@ -1728,7 +1821,8 @@ def solve_pipeline(
                     continue
                 kv_val = float(slice_data.get('kv', kv)) if slice_data.get('kv') is not None else float(kv)
                 rho_val = float(slice_data.get('rho', rho)) if slice_data.get('rho') is not None else float(rho)
-                cleaned.append({'length_km': length_val, 'kv': kv_val, 'rho': rho_val})
+                ppm_val = float(slice_data.get('dra_ppm', 0.0)) if slice_data.get('dra_ppm') is not None else 0.0
+                cleaned.append({'length_km': length_val, 'kv': kv_val, 'rho': rho_val, 'dra_ppm': ppm_val})
             if cleaned:
                 profile_data = cleaned
 
@@ -1737,12 +1831,15 @@ def solve_pipeline(
             if total_len > 0:
                 kv_display = sum(item['kv'] * item['length_km'] for item in profile_data) / total_len
                 rho_display = sum(item['rho'] * item['length_km'] for item in profile_data) / total_len
+                dra_display = sum(item.get('dra_ppm', 0.0) * item['length_km'] for item in profile_data) / total_len
             else:
                 kv_display = float(kv)
                 rho_display = float(rho)
+                dra_display = 0.0
         else:
             kv_display = float(kv)
             rho_display = float(rho)
+            dra_display = 0.0
 
         station_opts.append({
             'name': name,
@@ -1752,6 +1849,7 @@ def solve_pipeline(
             'kv_display': kv_display,
             'rho': rho,
             'rho_display': rho_display,
+            'dra_display': dra_display,
             'L': L,
             'd_inner': d_inner,
             'rough': rough,
@@ -2425,6 +2523,7 @@ def solve_pipeline(
                         ),
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"density_display_{stn_data['name']}": stn_data.get('rho_display', stn_data['rho']),
+                        f"dra_ppm_display_{stn_data['name']}": stn_data.get('dra_display', 0.0),
                         f"viscosity_{stn_data['name']}": stn_data.get('kv_display', stn_data['kv']),
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
