@@ -84,8 +84,8 @@ def test_sdh_varies_smoothly_with_downstream_slug():
             hours=1.0,
             start_time="00:00",
             enumerate_loops=False,
-            rpm_step=50,
-            dra_step=1,
+            rpm_step=100,
+            dra_step=5,
         )
         sdh_values.append(result["sdh_origin_pump"])
 
@@ -150,8 +150,8 @@ def test_partial_slug_advances_with_positive_injection() -> None:
             hours=hours,
             start_time="00:00",
             enumerate_loops=False,
-            rpm_step=50,
-            dra_step=1,
+            rpm_step=100,
+            dra_step=5,
         )
         assert not result.get("error"), result.get("message")
         assert result["dra_ppm_origin_pump"] > 0
