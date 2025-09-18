@@ -1056,7 +1056,8 @@ def map_vol_linefill_to_segments(
         length_km = (vol / A) / 1000.0  # m / 1000 => km
         visc = float(r.get("Viscosity (cSt)", 0.0))
         dens = float(r.get("Density (kg/m³)", 0.0))
-        batches.append({"len_km": length_km, "kv": visc, "rho": dens})
+        ppm = float(r.get("DRA ppm", r.get("dra_ppm", 0.0)) or 0.0)
+        batches.append({"len_km": length_km, "kv": visc, "rho": dens, "ppm": ppm})
 
     # Map to segments (each station defines a segment length L)
     seg_kv: list[float] = []
@@ -1067,6 +1068,7 @@ def map_vol_linefill_to_segments(
     remaining = batches[0]["len_km"] if batches else 0.0
     kv_cur = batches[0]["kv"] if batches else 0.0
     rho_cur = batches[0]["rho"] if batches else 0.0
+    ppm_cur = batches[0]["ppm"] if batches else 0.0
 
     for L in seg_lengths:
         need = float(L)
@@ -1084,6 +1086,7 @@ def map_vol_linefill_to_segments(
                     remaining = batches[i_batch]["len_km"]
                     kv_cur = batches[i_batch]["kv"]
                     rho_cur = batches[i_batch]["rho"]
+                    ppm_cur = batches[i_batch]["ppm"]
             take = min(need, remaining if remaining > 0 else need)
             if take <= 1e-9:
                 break
@@ -1096,6 +1099,7 @@ def map_vol_linefill_to_segments(
                     "length_km": float(take),
                     "kv": float(kv_cur),
                     "rho": float(rho_cur),
+                    "dra_ppm": float(ppm_cur),
                 }
             )
             need -= take
@@ -1110,6 +1114,7 @@ def map_vol_linefill_to_segments(
                     "length_km": float(L),
                     "kv": float(kv_cur),
                     "rho": float(rho_cur),
+                    "dra_ppm": float(ppm_cur),
                 }
             )
 
@@ -1124,6 +1129,7 @@ def _normalise_segment_profile(profile: list[dict[str, float]] | None) -> list[d
     cleaned: list[dict[str, float]] = []
     last_kv = 0.0
     last_rho = 0.0
+    last_ppm = 0.0
     if not profile:
         return cleaned
     for slice_data in profile:
@@ -1132,9 +1138,11 @@ def _normalise_segment_profile(profile: list[dict[str, float]] | None) -> list[d
             continue
         kv = float(slice_data.get("kv", last_kv))
         rho = float(slice_data.get("rho", last_rho))
-        cleaned.append({"length_km": length, "kv": kv, "rho": rho})
+        ppm = float(slice_data.get("dra_ppm", last_ppm))
+        cleaned.append({"length_km": length, "kv": kv, "rho": rho, "dra_ppm": ppm})
         last_kv = kv
         last_rho = rho
+        last_ppm = ppm
     return cleaned
 
 
@@ -1156,19 +1164,23 @@ def merge_segment_profiles(
     if not clean_now:
         base_kv = clean_next[0]["kv"] if clean_next else 0.0
         base_rho = clean_next[0]["rho"] if clean_next else 0.0
-        clean_now = [{"length_km": total_len, "kv": base_kv, "rho": base_rho}]
+        base_ppm = clean_next[0].get("dra_ppm", 0.0) if clean_next else 0.0
+        clean_now = [{"length_km": total_len, "kv": base_kv, "rho": base_rho, "dra_ppm": base_ppm}]
     if not clean_next:
         base_kv = clean_now[0]["kv"] if clean_now else 0.0
         base_rho = clean_now[0]["rho"] if clean_now else 0.0
-        clean_next = [{"length_km": total_len, "kv": base_kv, "rho": base_rho}]
+        base_ppm = clean_now[0].get("dra_ppm", 0.0) if clean_now else 0.0
+        clean_next = [{"length_km": total_len, "kv": base_kv, "rho": base_rho, "dra_ppm": base_ppm}]
 
     idx_now = idx_next = 0
     rem_now = clean_now[0]["length_km"]
     rem_next = clean_next[0]["length_km"]
     kv_now = clean_now[0]["kv"]
     rho_now = clean_now[0]["rho"]
+    ppm_now = clean_now[0].get("dra_ppm", 0.0)
     kv_next = clean_next[0]["kv"]
     rho_next = clean_next[0]["rho"]
+    ppm_next = clean_next[0].get("dra_ppm", 0.0)
 
     merged: list[dict[str, float]] = []
     processed = 0.0
@@ -1200,6 +1212,7 @@ def merge_segment_profiles(
                 "length_km": take,
                 "kv": max(kv_now, kv_next),
                 "rho": max(rho_now, rho_next),
+                "dra_ppm": min(ppm_now, ppm_next),
             }
         )
         processed += take
@@ -1211,11 +1224,13 @@ def merge_segment_profiles(
             rem_now = clean_now[idx_now]["length_km"]
             kv_now = clean_now[idx_now]["kv"]
             rho_now = clean_now[idx_now]["rho"]
+            ppm_now = clean_now[idx_now].get("dra_ppm", ppm_now)
         if rem_next <= tol and idx_next < len(clean_next) - 1:
             idx_next += 1
             rem_next = clean_next[idx_next]["length_km"]
             kv_next = clean_next[idx_next]["kv"]
             rho_next = clean_next[idx_next]["rho"]
+            ppm_next = clean_next[idx_next].get("dra_ppm", ppm_next)
 
     return merged
 
@@ -1223,7 +1238,14 @@ def merge_segment_profiles(
 def build_worst_case_profiles(
     profiles_now: list[list[dict[str, float]]],
     profiles_next: list[list[dict[str, float]]],
-) -> tuple[list[float], list[float], list[float], list[float], list[list[dict[str, float]]]]:
+) -> tuple[
+    list[float],
+    list[float],
+    list[float],
+    list[float],
+    list[float],
+    list[list[dict[str, float]]],
+]:
     """Align two profile sets, returning solver maxima, display means, and merged slices."""
 
     count = max(len(profiles_now), len(profiles_next))
@@ -1231,6 +1253,7 @@ def build_worst_case_profiles(
     rho_solver: list[float] = []
     kv_display: list[float] = []
     rho_display: list[float] = []
+    dra_display: list[float] = []
     merged_profiles: list[list[dict[str, float]]] = []
 
     for idx in range(count):
@@ -1247,9 +1270,16 @@ def build_worst_case_profiles(
                 rho_display.append(
                     sum(slice["rho"] * slice["length_km"] for slice in merged) / total_len
                 )
+                dra_display.append(
+                    sum(
+                        float(slice.get("dra_ppm", 0.0)) * slice["length_km"] for slice in merged
+                    )
+                    / total_len
+                )
             else:
                 kv_display.append(0.0)
                 rho_display.append(0.0)
+                dra_display.append(0.0)
             kv_solver.append(max(slice["kv"] for slice in merged))
             rho_solver.append(max(slice["rho"] for slice in merged))
         else:
@@ -1257,8 +1287,9 @@ def build_worst_case_profiles(
             rho_solver.append(0.0)
             kv_display.append(0.0)
             rho_display.append(0.0)
+            dra_display.append(0.0)
 
-    return kv_solver, rho_solver, kv_display, rho_display, merged_profiles
+    return kv_solver, rho_solver, kv_display, rho_display, dra_display, merged_profiles
 
 
 def shift_vol_linefill(
@@ -1664,6 +1695,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
             'DRA PPM': res.get(f"dra_ppm_{key}", 0.0),
             'Loop DRA PPM': res.get(f"dra_ppm_loop_{key}", 0.0),
+            'Linefill DRA PPM': res.get(f"dra_ppm_display_{key}", res.get(f"dra_ppm_{key}", 0.0)),
             'No. of Pumps': n_pumps,
             'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
@@ -2341,6 +2373,7 @@ if not auto_batch:
                         rho_list,
                         kv_display,
                         rho_display,
+                        _dra_display,
                         merged_profiles,
                     ) = build_worst_case_profiles(prof_now, prof_next)
 
@@ -2611,6 +2644,7 @@ if not auto_batch:
                         rho_run,
                         kv_display,
                         rho_display,
+                        _dra_display,
                         merged_profiles,
                     ) = build_worst_case_profiles(prof_now, prof_next)
 
