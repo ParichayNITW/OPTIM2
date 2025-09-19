@@ -2102,7 +2102,12 @@ def solve_pipeline(
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
             combo_options_built = False
-            if type_availability and len(type_availability) <= 2:
+            if not type_availability:
+                # No pump types remain after availability filtering; fall back to
+                # the generic enumeration below which covers the zero-availability
+                # case and produces a structured error when nothing is feasible.
+                pass
+            elif len(type_availability) <= 2:
                 ordered_types = sorted(type_availability)
                 primary = ordered_types[0]
                 secondary = ordered_types[1] if len(ordered_types) > 1 else None

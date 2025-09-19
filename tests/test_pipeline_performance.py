@@ -111,6 +111,63 @@ def test_daily_scheduler_path_completes_promptly() -> None:
     assert duration < 15.0, f"Optimizer took too long: {duration:.2f}s"
 
 
+def test_no_available_pump_types_returns_structured_error() -> None:
+    """Stations with zero available pump units should not raise exceptions."""
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 0,
+            "max_pumps": 0,
+            "MinRPM": 1200,
+            "DOL": 1600,
+            "pump_types": {
+                "A": {
+                    "available": 0,
+                    "MinRPM": 1200,
+                    "DOL": 1600,
+                }
+            },
+            "A": 0.0,
+            "B": 0.0,
+            "C": 200.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 10.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 30,
+            "max_dr": 0,
+            "power_type": "Grid",
+            "rate": 0.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 30}
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=1200.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        enumerate_loops=False,
+    )
+
+    assert result.get("error"), "Solver should return a structured error"
+    assert "Origin Pump" in (result.get("message") or "")
+
+
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
     """Refinement should revisit the full DRA range when coarse hits an edge."""
 
