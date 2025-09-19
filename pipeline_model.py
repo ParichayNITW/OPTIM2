@@ -24,6 +24,11 @@ from linefill_utils import advance_linefill
 HYDRAULICS_CACHE_ENABLED = True
 CACHE_ROUND_DIGITS = 9
 
+
+class ProfileDataError(Exception):
+    """Raised when hydraulic profile inputs are inconsistent with station count."""
+
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -1441,6 +1446,24 @@ def _downstream_requirement(
             raise ValueError("segment_flows or flow_override must be provided")
         flows = segment_flows
 
+    # ``flows`` may be provided as a non-list sequence (e.g. numpy array).  Convert to a
+    # list so we can safely compute its length and index into it without risking
+    # ``IndexError`` from short iterables.  Validate that both viscosity data and
+    # flows cover all stations before recursing downstream.
+    flows = list(flows)
+    if len(KV_list) < N:
+        raise ProfileDataError(
+            "Viscosity list length ({}) is shorter than station count ({}).".format(
+                len(KV_list), N
+            )
+        )
+    if len(flows) < N + 1:
+        raise ProfileDataError(
+            "Segment flow profile length ({}) is shorter than required segments ({}).".format(
+                len(flows), N + 1
+            )
+        )
+
     @lru_cache(None)
     def req_entry(i: int) -> int:
         if i >= N:
@@ -1703,6 +1726,8 @@ def solve_pipeline(
                 dra_step=dra_step,
             )
             if res.get('error'):
+                if res.get('code') == 'profile_length':
+                    return res
                 continue
             if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
                 # Track which loop usage produced the best result.  Store a
@@ -1965,6 +1990,23 @@ def solve_pipeline(
         supply = float(stn.get('supply', 0.0))
         prev_flow = segment_flows[-1]
         segment_flows.append(prev_flow - delivery + supply)
+
+    if len(KV_list) < N:
+        return {
+            "error": True,
+            "message": "Viscosity list length ({}) is shorter than station count ({}).".format(
+                len(KV_list), N
+            ),
+            "code": "profile_length",
+        }
+    if len(rho_list) < N:
+        return {
+            "error": True,
+            "message": "Density list length ({}) is shorter than station count ({}).".format(
+                len(rho_list), N
+            ),
+            "code": "profile_length",
+        }
 
     default_t = 0.007
     default_e = 0.00004
@@ -2326,17 +2368,21 @@ def solve_pipeline(
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
     # bypass cases require recomputing the downstream flow profile.
-    baseline_req = [
-        _downstream_requirement(
-            stations,
-            idx,
-            terminal,
-            segment_flows,
-            KV_list,
-            loop_usage_by_station=loop_usage_by_station,
-        )
-        for idx in range(N)
-    ]
+    baseline_req: list[int] = []
+    try:
+        for idx in range(N):
+            baseline_req.append(
+                _downstream_requirement(
+                    stations,
+                    idx,
+                    terminal,
+                    segment_flows,
+                    KV_list,
+                    loop_usage_by_station=loop_usage_by_station,
+                )
+            )
+    except ProfileDataError as exc:
+        return {"error": True, "message": str(exc), "code": "profile_length"}
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
@@ -2868,15 +2914,18 @@ def solve_pipeline(
                                 j += 1
                             else:
                                 break
-                        min_req = _downstream_requirement(
-                            stations,
-                            stn_data['idx'],
-                            terminal,
-                            seg_flows_tmp,
-                            KV_list,
-                            loop_usage_by_station=loop_usage_by_station,
-                            pump_flow_overrides=pump_overrides,
-                        )
+                        try:
+                            min_req = _downstream_requirement(
+                                stations,
+                                stn_data['idx'],
+                                terminal,
+                                seg_flows_tmp,
+                                KV_list,
+                                loop_usage_by_station=loop_usage_by_station,
+                                pump_flow_overrides=pump_overrides,
+                            )
+                        except ProfileDataError as exc:
+                            return {"error": True, "message": str(exc), "code": "profile_length"}
                     if residual_next < min_req:
                         continue
 
