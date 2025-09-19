@@ -39,7 +39,6 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
-from collections.abc import Mapping
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -1823,105 +1822,6 @@ def fmt_pressure(res, key_m, key_kg):
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
-
-def _curve_table_to_df(table):
-    """Return ``table`` as a DataFrame along with the original payload."""
-
-    if table is None:
-        return None, None
-    if isinstance(table, pd.DataFrame):
-        return table, table
-    try:
-        df = pd.DataFrame(table)
-    except Exception:
-        return None, table
-    return df, table
-
-
-def _fit_curve_coeffs(df: pd.DataFrame | None, degree: int):
-    """Return polynomial coefficients of ``degree`` for the first two columns of ``df``."""
-
-    if df is None or df.shape[1] < 2:
-        return None
-    data = df.iloc[:, :2].apply(pd.to_numeric, errors="coerce").dropna()
-    if len(data) < degree + 1:
-        return None
-    try:
-        return np.polyfit(data.iloc[:, 0].to_numpy(), data.iloc[:, 1].to_numpy(), degree)
-    except (TypeError, ValueError, np.linalg.LinAlgError):
-        return None
-
-
-def _update_curve_coefficients(target: dict, head_source, eff_source):
-    """Populate ``target`` with curve coefficients based on stored head/efficiency data."""
-
-    df_head, head_payload = _curve_table_to_df(head_source)
-    df_eff, eff_payload = _curve_table_to_df(eff_source)
-
-    coeff_head = _fit_curve_coeffs(df_head, 2)
-    if coeff_head is not None:
-        target["A"], target["B"], target["C"] = [float(c) for c in coeff_head]
-
-    coeff_eff = _fit_curve_coeffs(df_eff, 4)
-    if coeff_eff is not None:
-        target["P"], target["Q"], target["R"], target["S"], target["T"] = [float(c) for c in coeff_eff]
-
-    if head_payload is not None:
-        target["head_data"] = head_payload
-    if eff_payload is not None:
-        target["eff_data"] = eff_payload
-
-
-def _pump_type_enabled(stn: dict, ptype: str, pdata: dict) -> bool:
-    """Return ``True`` when ``ptype`` should be considered active for ``stn``."""
-
-    combo = stn.get("active_combo") or stn.get("combo") or stn.get("pump_combo")
-    if isinstance(combo, Mapping):
-        count = combo.get(ptype)
-        if isinstance(count, (int, float)) and count > 0:
-            return True
-
-    avail = pdata.get("available")
-    if avail is None:
-        return True
-    try:
-        return int(avail) > 0
-    except (TypeError, ValueError):
-        return bool(avail)
-
-
-def _prepare_pump_curves_for_solver(stations: list[dict]):
-    """Ensure pump curve coefficients and raw data are present for ``stations``."""
-
-    for idx, stn in enumerate(stations, start=1):
-        if not stn.get("is_pump", False):
-            continue
-
-        pump_types = stn.get("pump_types")
-        if pump_types:
-            for ptype, pdata in list(pump_types.items()):
-                if not isinstance(pdata, dict):
-                    continue
-                if not _pump_type_enabled(stn, ptype, pdata):
-                    continue
-                head_source = st.session_state.get(f"head_data_{idx}{ptype}")
-                if head_source is None:
-                    head_source = pdata.get("head_data")
-                eff_source = st.session_state.get(f"eff_data_{idx}{ptype}")
-                if eff_source is None:
-                    eff_source = pdata.get("eff_data")
-                _update_curve_coefficients(pdata, head_source, eff_source)
-                pump_types[ptype] = pdata
-            continue
-
-        head_source = st.session_state.get(f"head_data_{idx}")
-        if head_source is None:
-            head_source = stn.get("head_data")
-        eff_source = st.session_state.get(f"eff_data_{idx}")
-        if eff_source is None:
-            eff_source = stn.get("eff_data")
-        _update_curve_coefficients(stn, head_source, eff_source)
-
 def solve_pipeline(
     stations,
     terminal,
@@ -1942,35 +1842,58 @@ def solve_pipeline(
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
+    import pipeline_model
+    import importlib
+    import copy
+
+    importlib.reload(pipeline_model)
+
     stations = copy.deepcopy(stations)
     first_pump = next((s for s in stations if s.get('is_pump')), None)
     if first_pump and first_pump.get('min_pumps', 0) < 1:
         first_pump['min_pumps'] = 1
-
-    _prepare_pump_curves_for_solver(stations)
 
     if mop_kgcm2 is None:
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
     try:
         # Delegate to the backend optimiser
-        res = pipeline_model.solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill_dict,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-            start_time=start_time,
-            segment_profiles=segment_profiles,
-        )
+        if any(s.get('pump_types') for s in stations):
+            res = pipeline_model.solve_pipeline_with_types(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time=start_time,
+                segment_profiles=segment_profiles,
+            )
+        else:
+            res = pipeline_model.solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill_dict,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time=start_time,
+                segment_profiles=segment_profiles,
+            )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
             usage = res.get("loop_usage", [])
@@ -2034,6 +1957,8 @@ if auto_batch:
     batch_run = st.button("Run Batch Optimization", key="runbatchbtn", type="primary")
 
     if batch_run:
+        import pandas as pd
+        import numpy as np
         with st.spinner("Running batch optimization..."):
             import copy
             stations_data = copy.deepcopy(st.session_state.stations)
@@ -2048,7 +1973,42 @@ if auto_batch:
             result_rows = []
             segs = int(100 // step_size)
             try:
-                _prepare_pump_curves_for_solver(stations_data)
+                # Ensure pump coefficients are updated for all stations
+                for idx, stn in enumerate(stations_data, start=1):
+                    if stn.get('pump_types'):
+                        for ptype in ['A', 'B']:
+                            pdata = stn['pump_types'].get(ptype)
+                            if not pdata:
+                                continue
+                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            if dfh is not None and len(dfh) >= 3:
+                                Qh = dfh.iloc[:, 0].values
+                                Hh = dfh.iloc[:, 1].values
+                                coeff = np.polyfit(Qh, Hh, 2)
+                                pdata['A'], pdata['B'], pdata['C'] = [float(c) for c in coeff]
+                            if dfe is not None and len(dfe) >= 5:
+                                Qe = dfe.iloc[:, 0].values
+                                Ee = dfe.iloc[:, 1].values
+                                coeff_e = np.polyfit(Qe, Ee, 4)
+                                pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
+                    elif stn.get('is_pump', False):
+                        dfh = st.session_state.get(f"head_data_{idx}")
+                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        if dfh is None and "head_data" in stn:
+                            dfh = pd.DataFrame(stn["head_data"])
+                        if dfe is None and "eff_data" in stn:
+                            dfe = pd.DataFrame(stn["eff_data"])
+                        if dfh is not None and len(dfh) >= 3:
+                            Qh = dfh.iloc[:, 0].values
+                            Hh = dfh.iloc[:, 1].values
+                            coeff = np.polyfit(Qh, Hh, 2)
+                            stn['A'], stn['B'], stn['C'] = [float(c) for c in coeff]
+                        if dfe is not None and len(dfe) >= 5:
+                            Qe = dfe.iloc[:, 0].values
+                            Ee = dfe.iloc[:, 1].values
+                            coeff_e = np.polyfit(Qe, Ee, 4)
+                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
 
                 # -- 2 product batch --
                 if num_products == 2:
@@ -2255,10 +2215,38 @@ def run_all_updates():
     linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
     kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
 
-    _prepare_pump_curves_for_solver(stations_data)
+    for idx, stn in enumerate(stations_data, start=1):
+        if stn.get("is_pump", False):
+            if "pump_types" in stn:
+                for ptype in ["A", "B"]:
+                    if ptype not in stn["pump_types"]:
+                        continue
+                    if stn["pump_types"][ptype].get("available", 0) == 0:
+                        continue
+                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                    stn["pump_types"][ptype]["head_data"] = dfh
+                    stn["pump_types"][ptype]["eff_data"] = dfe
+            else:
+                dfh = st.session_state.get(f"head_data_{idx}")
+                dfe = st.session_state.get(f"eff_data_{idx}")
+                if dfh is None and "head_data" in stn:
+                    dfh = pd.DataFrame(stn["head_data"])
+                if dfe is None and "eff_data" in stn:
+                    dfe = pd.DataFrame(stn["eff_data"])
+                if dfh is not None and len(dfh) >= 3:
+                    Qh = dfh.iloc[:, 0].values
+                    Hh = dfh.iloc[:, 1].values
+                    coeff = np.polyfit(Qh, Hh, 2)
+                    stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+                if dfe is not None and len(dfe) >= 5:
+                    Qe = dfe.iloc[:, 0].values
+                    Ee = dfe.iloc[:, 1].values
+                    coeff_e = np.polyfit(Qe, Ee, 4)
+                    stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
 
     with st.spinner("Solving optimization..."):
-        res = pipeline_model.solve_pipeline(
+        res = pipeline_model.solve_pipeline_with_types(
             stations_data,
             term_data,
             st.session_state.get("FLOW", 1000.0),
