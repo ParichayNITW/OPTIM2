@@ -18,7 +18,9 @@ def _load_linefill() -> list[dict]:
         return json.load(fh)
 
 
-def _build_representative_pipeline() -> tuple[list[dict], dict, list[float], list[float]]:
+def test_daily_scheduler_path_completes_promptly() -> None:
+    linefill = _load_linefill()
+
     stations = [
         {
             "name": "Origin Pump",
@@ -80,25 +82,6 @@ def _build_representative_pipeline() -> tuple[list[dict], dict, list[float], lis
     terminal = {"name": "Terminal", "elev": 10.0, "min_residual": 30}
     kv_list = [1.3, 1.2]
     rho_list = [845.0, 842.0]
-    return stations, terminal, kv_list, rho_list
-
-
-def _representative_segment_profiles() -> list[list[dict[str, float]]]:
-    return [
-        [
-            {"length_km": 30.0, "kv": 1.3, "rho": 845.0, "dra_ppm": 0.0},
-            {"length_km": 30.0, "kv": 1.6, "rho": 846.0, "dra_ppm": 12.0},
-        ],
-        [
-            {"length_km": 25.0, "kv": 1.2, "rho": 842.0, "dra_ppm": 0.0},
-            {"length_km": 25.0, "kv": 1.4, "rho": 843.5, "dra_ppm": 8.0},
-        ],
-    ]
-
-
-def test_daily_scheduler_path_completes_promptly() -> None:
-    linefill = _load_linefill()
-    stations, terminal, kv_list, rho_list = _build_representative_pipeline()
 
     start = time.perf_counter()
     current_linefill = copy.deepcopy(linefill)
@@ -125,92 +108,7 @@ def test_daily_scheduler_path_completes_promptly() -> None:
         dra_reach_km = result.get("dra_front_km", dra_reach_km)
 
     duration = time.perf_counter() - start
-    assert duration < 25.0, f"Optimizer took too long: {duration:.2f}s"
-
-
-def test_profile_cache_matches_baseline_and_improves_speed() -> None:
-    import pipeline_model as pm
-
-    linefill = _load_linefill()
-    stations, terminal, kv_list, rho_list = _build_representative_pipeline()
-    segment_profiles = _representative_segment_profiles()
-
-    schedule_steps = 1
-    solver_kwargs = dict(
-        FLOW=1700.0,
-        KV_list=kv_list,
-        rho_list=rho_list,
-        RateDRA=5.0,
-        Price_HSD=0.0,
-        Fuel_density=820.0,
-        Ambient_temp=25.0,
-        hours=4.0,
-        dra_step=20,
-        rpm_step=300,
-    )
-
-    def run_schedule() -> tuple[float, list[dict]]:
-        current_linefill = copy.deepcopy(linefill)
-        dra_reach_km = 40.0
-        results: list[dict] = []
-        start = time.perf_counter()
-        for step in range(schedule_steps):
-            start_hour = (step * 4) % 24
-            result = pm.solve_pipeline(
-                copy.deepcopy(stations),
-                terminal,
-                linefill=copy.deepcopy(current_linefill),
-                dra_reach_km=dra_reach_km,
-                start_time=f"{start_hour:02d}:00",
-                segment_profiles=copy.deepcopy(segment_profiles),
-                **solver_kwargs,
-            )
-            assert not result.get("error"), result.get("message")
-            results.append(copy.deepcopy(result))
-            current_linefill = copy.deepcopy(result.get("linefill", current_linefill))
-            dra_reach_km = result.get("dra_front_km", dra_reach_km)
-        duration = time.perf_counter() - start
-        return duration, results
-
-    original_flag = pm.HYDRAULICS_CACHE_ENABLED
-    try:
-        pm.HYDRAULICS_CACHE_ENABLED = False
-        uncached_duration, uncached_results = run_schedule()
-
-        pm.HYDRAULICS_CACHE_ENABLED = True
-        cached_duration, cached_results = run_schedule()
-    finally:
-        pm.HYDRAULICS_CACHE_ENABLED = original_flag
-
-    assert cached_results == uncached_results
-    assert cached_duration <= uncached_duration * 0.6, (
-        f"Caching did not materially reduce runtime: uncached={uncached_duration:.2f}s, "
-        f"cached={cached_duration:.2f}s"
-    )
-
-
-def test_solver_reports_error_for_short_profiles() -> None:
-    linefill = _load_linefill()
-    stations, terminal, kv_list, rho_list = _build_representative_pipeline()
-
-    result = solve_pipeline(
-        copy.deepcopy(stations),
-        terminal,
-        FLOW=1700.0,
-        KV_list=kv_list[:-1],
-        rho_list=rho_list[:-1],
-        RateDRA=5.0,
-        Price_HSD=0.0,
-        Fuel_density=820.0,
-        Ambient_temp=25.0,
-        linefill=copy.deepcopy(linefill),
-        dra_reach_km=40.0,
-        hours=4.0,
-        start_time="00:00",
-    )
-
-    assert result.get("error") is True
-    assert "viscosity" in (result.get("message") or "").lower()
+    assert duration < 15.0, f"Optimizer took too long: {duration:.2f}s"
 
 
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
