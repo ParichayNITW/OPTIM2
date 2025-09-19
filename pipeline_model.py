@@ -1753,6 +1753,7 @@ def solve_pipeline(
         if coarse_res.get("error"):
             return coarse_res
         window = max(rpm_step, coarse_rpm_step)
+        dra_window = max(dra_step, coarse_dra_step)
         ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
@@ -1770,8 +1771,8 @@ def solve_pipeline(
                     rmin = max(st_rpm_min, coarse_rpm - window)
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
                     rmax = min(upper_bound, coarse_rpm + window)
-                dmin = max(0, coarse_dr_main - dra_step)
-                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
+                dmin = max(0, coarse_dr_main - dra_window)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_window)
                 entry: dict[str, tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
@@ -1831,14 +1832,14 @@ def solve_pipeline(
                 loop = stn.get("loopline") or {}
                 if loop:
                     coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
-                    lmin = max(0, coarse_dr_loop - dra_step)
-                    lmax = min(int(loop.get("max_dr", 0)), coarse_dr_loop + dra_step)
+                    lmin = max(0, coarse_dr_loop - dra_window)
+                    lmax = min(int(loop.get("max_dr", 0)), coarse_dr_loop + dra_window)
                     entry["dra_loop"] = (lmin, lmax)
                 ranges[idx] = entry
             else:
                 coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                dmin = max(0, coarse_dr_main - dra_step)
-                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
+                dmin = max(0, coarse_dr_main - dra_window)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_window)
                 ranges[idx] = {"dra_main": (dmin, dmax)}
         return solve_pipeline(
             stations,
