@@ -1753,19 +1753,6 @@ def solve_pipeline(
         if coarse_res.get("error"):
             return coarse_res
         window = max(rpm_step, coarse_rpm_step)
-
-        def _coarse_boundary_hit(value: int, min_val: int, max_val: int, step: int) -> bool:
-            """Return True when ``value`` is the first or last coarse candidate."""
-
-            if max_val < min_val:
-                min_val, max_val = max_val, min_val
-            if step <= 0:
-                return value <= min_val or value >= max_val
-            vals = _allowed_values(min_val, max_val, step)
-            if not vals:
-                return False
-            return value == vals[0] or value == vals[-1]
-
         ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
@@ -1780,22 +1767,11 @@ def solve_pipeline(
                     rmin = rmax = 0
                 else:
                     coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
+                    rmin = max(st_rpm_min, coarse_rpm - window)
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
-                    full_rmin = min(st_rpm_min, upper_bound)
-                    full_rmax = max(st_rpm_min, upper_bound)
-                    rmin = max(full_rmin, coarse_rpm - window)
-                    rmax = min(full_rmax, coarse_rpm + window)
-                    if _coarse_boundary_hit(coarse_rpm, full_rmin, full_rmax, coarse_rpm_step):
-                        rmin, rmax = full_rmin, full_rmax
-                if rmax < rmin:
-                    rmin, rmax = rmax, rmin
+                    rmax = min(upper_bound, coarse_rpm + window)
                 dmin = max(0, coarse_dr_main - dra_step)
-                max_dr_main = int(stn.get("max_dr", 0))
-                if max_dr_main < 0:
-                    max_dr_main = 0
-                dmax = min(max_dr_main, coarse_dr_main + dra_step)
-                if max_dr_main > 0 and _coarse_boundary_hit(coarse_dr_main, 0, max_dr_main, coarse_dra_step):
-                    dmin, dmax = 0, max_dr_main
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 entry: dict[str, tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
@@ -1821,8 +1797,6 @@ def solve_pipeline(
                             p_rmax = pmax_default
                         if p_rmax < p_rmin:
                             p_rmin, p_rmax = p_rmax, p_rmin
-                        full_type_min = p_rmin
-                        full_type_max = p_rmax
                         coarse_type_rpm: int | None = None
                         if coarse_nop > 0:
                             suffix = _normalise_speed_suffix(ptype)
@@ -1849,34 +1823,22 @@ def solve_pipeline(
                                             coarse_type_rpm = coarse_candidate
                                             break
                         if coarse_type_rpm is not None and coarse_type_rpm > 0:
-                            lower_bound = max(full_type_min, coarse_type_rpm - window)
-                            upper_bound = min(full_type_max, coarse_type_rpm + window)
+                            lower_bound = max(p_rmin, coarse_type_rpm - window)
+                            upper_bound = min(p_rmax, coarse_type_rpm + window)
                             if upper_bound >= lower_bound:
                                 p_rmin, p_rmax = lower_bound, upper_bound
-                            if _coarse_boundary_hit(coarse_type_rpm, full_type_min, full_type_max, coarse_rpm_step):
-                                p_rmin, p_rmax = full_type_min, full_type_max
                         entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
                 loop = stn.get("loopline") or {}
                 if loop:
                     coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
-                    loop_max = int(loop.get("max_dr", 0))
-                    if loop_max < 0:
-                        loop_max = 0
                     lmin = max(0, coarse_dr_loop - dra_step)
-                    lmax = min(loop_max, coarse_dr_loop + dra_step)
-                    if loop_max > 0 and _coarse_boundary_hit(coarse_dr_loop, 0, loop_max, coarse_dra_step):
-                        lmin, lmax = 0, loop_max
+                    lmax = min(int(loop.get("max_dr", 0)), coarse_dr_loop + dra_step)
                     entry["dra_loop"] = (lmin, lmax)
                 ranges[idx] = entry
             else:
                 coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                max_dr_main = int(stn.get("max_dr", 0))
-                if max_dr_main < 0:
-                    max_dr_main = 0
                 dmin = max(0, coarse_dr_main - dra_step)
-                dmax = min(max_dr_main, coarse_dr_main + dra_step)
-                if max_dr_main > 0 and _coarse_boundary_hit(coarse_dr_main, 0, max_dr_main, coarse_dra_step):
-                    dmin, dmax = 0, max_dr_main
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 ranges[idx] = {"dra_main": (dmin, dmax)}
         return solve_pipeline(
             stations,
