@@ -208,3 +208,109 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
 
     assert final_result.get("total_cost") == pytest.approx(cost_map[15])
     assert final_result.get("total_cost") < coarse_cost
+
+
+def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
+    """Refinement should explore coarse DRA neighbours even with tiny user steps."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1200,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 200.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 50.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 35,
+            "max_dr": 10,
+            "power_type": "Grid",
+            "rate": 5.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 35, "elev": 0.0}
+
+    common_kwargs = dict(
+        FLOW=1500.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        dra_step=2,
+        rpm_step=50,
+        enumerate_loops=False,
+    )
+
+    original_cache = pm._build_pump_option_cache
+    original_solve = pm.solve_pipeline
+
+    stage_state = {"value": "outer"}
+
+    stage_costs = {
+        "coarse": {0: 900.0, 10: 1300.0},
+        "refine": {0: 1400.0, 2: 1300.0, 4: 1200.0, 6: 1100.0, 8: 1000.0, 10: 800.0},
+    }
+
+    def staged_cache(station, opt, **kwargs):
+        cache = original_cache(station, opt, **kwargs)
+        dr_val = int(opt.get("dra_main", 0) or 0)
+        stage_map = stage_costs.get(stage_state["value"], stage_costs["refine"])
+        target = stage_map.get(dr_val)
+        if target is not None:
+            delta = target - cache.get("power_cost", 0.0)
+            cache["power_cost"] = target
+            details = cache.get("pump_details")
+            if isinstance(details, list) and details:
+                per_detail = delta / len(details)
+                for detail in details:
+                    detail["power_cost"] = detail.get("power_cost", 0.0) + per_detail
+        return cache
+
+    coarse_results: list[dict] = []
+
+    def tracking_solve(*args, **kwargs):  # type: ignore[override]
+        prev_stage = stage_state["value"]
+        if kwargs.get("_internal_pass"):
+            stage_state["value"] = "refine" if kwargs.get("narrow_ranges") else "coarse"
+        else:
+            stage_state["value"] = "outer"
+        try:
+            result = original_solve(*args, **kwargs)
+        finally:
+            stage_state["value"] = prev_stage
+        if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is None:
+            coarse_results.append(result)
+        return result
+
+    with patch.object(pm, "_build_pump_option_cache", new=staged_cache):
+        with patch.object(pm, "solve_pipeline", new=tracking_solve):
+            final_result = pm.solve_pipeline(stations, terminal, **common_kwargs)
+
+    assert coarse_results, "Coarse optimisation did not run"
+    coarse_result = coarse_results[0]
+    assert coarse_result.get("drag_reduction_origin_pump") == 0
+    assert coarse_result.get("total_cost") == pytest.approx(stage_costs["coarse"][0])
+
+    assert final_result.get("dra_ppm_origin_pump") == 1
+    assert final_result.get("drag_reduction_origin_pump") > coarse_result.get("drag_reduction_origin_pump")
+    assert final_result.get("total_cost") == pytest.approx(stage_costs["refine"][10])
+    assert final_result.get("total_cost") < coarse_result.get("total_cost")
