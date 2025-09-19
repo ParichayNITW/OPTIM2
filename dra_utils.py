@@ -84,24 +84,15 @@ def _nearest_bounds(visc: float, data: Dict[float, pd.DataFrame | None]) -> Tupl
     return (lower, upper)
 
 
-_DEFAULT_CURVE_SENTINEL = object()
-_PPM_CACHE: Dict[tuple[float, ...], float] = {}
-_DR_CACHE: Dict[tuple[float, ...], float] = {}
-
-
-def _round_cache_key(*values: float, precision: int = 2) -> tuple[float, ...]:
-    """Return a tuple suitable for memoisation keyed by rounded ``values``."""
-
-    return tuple(round(float(val), precision) for val in values)
-
-
-def _compute_ppm_for_dr(
+def get_ppm_for_dr(
     visc: float,
     dr: float,
-    dra_curve_data: Dict[float, pd.DataFrame | None],
+    dra_curve_data: Dict[float, pd.DataFrame | None] = DRA_CURVE_DATA,
 ) -> float:
-    """Internal helper implementing :func:`get_ppm_for_dr` without caching."""
+    """Interpolate PPM for a given drag reduction and viscosity.
 
+    Returns the PPM value rounded to the nearest 0.5.
+    """
     visc = float(visc)
     lower, upper = _nearest_bounds(visc, dra_curve_data)
     if lower not in dra_curve_data or dra_curve_data[lower] is None:
@@ -121,38 +112,12 @@ def _compute_ppm_for_dr(
     return round_ppm(float(ppm_interp))
 
 
-def get_ppm_for_dr(
-    visc: float,
-    dr: float,
-    dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
-) -> float:
-    """Interpolate PPM for a given drag reduction and viscosity.
-
-    Returns the PPM value rounded to the nearest 0.5.
-    """
-
-    if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
-        dra_curve_data = DRA_CURVE_DATA
-        key = _round_cache_key(visc, dr)
-        cached = _PPM_CACHE.get(key)
-        if cached is not None:
-            return cached
-        result = _compute_ppm_for_dr(visc, dr, dra_curve_data)
-        if len(_PPM_CACHE) > 8192:
-            _PPM_CACHE.clear()
-        _PPM_CACHE[key] = result
-        return result
-
-    return _compute_ppm_for_dr(visc, dr, dra_curve_data)
-
-
-def _compute_dr_for_ppm(
+def get_dr_for_ppm(
     visc: float,
     ppm: float,
-    dra_curve_data: Dict[float, pd.DataFrame | None],
+    dra_curve_data: Dict[float, pd.DataFrame | None] = DRA_CURVE_DATA,
 ) -> float:
-    """Internal helper implementing :func:`get_dr_for_ppm` without caching."""
-
+    """Inverse: interpolate %Drag Reduction for a given PPM and viscosity."""
     visc = float(visc)
     lower, upper = _nearest_bounds(visc, dra_curve_data)
     if lower not in dra_curve_data or dra_curve_data[lower] is None:
@@ -167,28 +132,6 @@ def _compute_dr_for_ppm(
     dr_upper = _dr_from_df(df_upper, ppm)
     dr_interp = np.interp(visc, [lower, upper], [dr_lower, dr_upper])
     return float(dr_interp)
-
-
-def get_dr_for_ppm(
-    visc: float,
-    ppm: float,
-    dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
-) -> float:
-    """Inverse: interpolate %Drag Reduction for a given PPM and viscosity."""
-
-    if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
-        dra_curve_data = DRA_CURVE_DATA
-        key = _round_cache_key(visc, ppm)
-        cached = _DR_CACHE.get(key)
-        if cached is not None:
-            return cached
-        result = _compute_dr_for_ppm(visc, ppm, dra_curve_data)
-        if len(_DR_CACHE) > 8192:
-            _DR_CACHE.clear()
-        _DR_CACHE[key] = result
-        return result
-
-    return _compute_dr_for_ppm(visc, ppm, dra_curve_data)
 
 
 def compute_drag_reduction(visc: float, ppm: float) -> float:
