@@ -189,6 +189,30 @@ def test_profile_cache_matches_baseline_and_improves_speed() -> None:
     )
 
 
+def test_solver_reports_error_for_short_profiles() -> None:
+    linefill = _load_linefill()
+    stations, terminal, kv_list, rho_list = _build_representative_pipeline()
+
+    result = solve_pipeline(
+        copy.deepcopy(stations),
+        terminal,
+        FLOW=1700.0,
+        KV_list=kv_list[:-1],
+        rho_list=rho_list[:-1],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=820.0,
+        Ambient_temp=25.0,
+        linefill=copy.deepcopy(linefill),
+        dra_reach_km=40.0,
+        hours=4.0,
+        start_time="00:00",
+    )
+
+    assert result.get("error") is True
+    assert "viscosity" in (result.get("message") or "").lower()
+
+
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
     """Refinement should revisit the full DRA range when coarse hits an edge."""
 
