@@ -1,4 +1,4 @@
-"""Pipeline Optima"""
+"""Pipeline Optima v1.0"""
 
 from __future__ import annotations
 
