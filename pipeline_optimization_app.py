@@ -1839,6 +1839,7 @@ def solve_pipeline(
     start_time: str = "00:00",
     *,
     segment_profiles: list[list[dict[str, float]]] | None = None,
+    dra_shear_factor: float = 0.0,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1875,6 +1876,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 segment_profiles=segment_profiles,
+                dra_shear_factor=dra_shear_factor,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1893,6 +1895,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 segment_profiles=segment_profiles,
+                dra_shear_factor=dra_shear_factor,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):

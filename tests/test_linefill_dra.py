@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dra_utils import get_ppm_for_dr
+from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from pipeline_model import _km_from_volume, _update_mainline_dra, solve_pipeline
 
 
@@ -209,6 +209,69 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
     )
 
 
+def test_running_pump_shears_trimmed_slug() -> None:
+    """Shear factor should attenuate the slug passing through an active pump."""
+
+    initial_queue = [{"length_km": 8.0, "dra_ppm": 40}]
+    stn_data = {"is_pump": True, "d_inner": 0.7}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 0.5
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+
+    dra_segments, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        pumped_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=0.25,
+    )
+
+    expected_ppm = int(round(initial_queue[0]["dra_ppm"] * 0.75))
+    assert dra_segments
+    assert dra_segments[0][1] == expected_ppm
+    assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after
+    assert queue_after[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[0]["length_km"] == pytest.approx(
+        max(initial_queue[0]["length_km"] - pumped_length, 0.0),
+        rel=1e-6,
+    )
+
+
+def test_injected_slug_respects_shear_when_upstream() -> None:
+    """Injection upstream of pumps should emerge at reduced ppm."""
+
+    stn_data = {"is_pump": True, "d_inner": 0.7, "dra_injector_position": "upstream"}
+    opt = {"nop": 1, "dra_ppm_main": 60}
+    flow_m3h = 2400.0
+    hours = 0.25
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+
+    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+        [],
+        stn_data,
+        opt,
+        pumped_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=0.2,
+        shear_injection=True,
+    )
+
+    assert inj_ppm == opt["dra_ppm_main"]
+    expected_ppm = int(round(opt["dra_ppm_main"] * 0.8))
+    assert dra_segments
+    assert dra_segments[0][1] == expected_ppm
+    assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    if queue_after:
+        assert queue_after[0]["dra_ppm"] == expected_ppm
+
+
 def test_idle_pump_injection_reflected_in_results() -> None:
     """Idle pump injections should incur cost and appear in reporting."""
 
@@ -259,3 +322,54 @@ def test_idle_pump_injection_reflected_in_results() -> None:
         expected_ppm * (flow_station_b * 1000.0 * hours / 1e6) * rate_dra,
         rel=1e-6,
     )
+
+
+def test_shear_factor_reduces_downstream_effective_ppm() -> None:
+    """Repeated pump stages should attenuate the slug according to shear."""
+
+    shear_factor = 0.3
+    initial_ppm = 12
+    queue = [{"length_km": 20.0, "dra_ppm": initial_ppm}]
+    stn_data = {"is_pump": True, "d_inner": 0.7}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 0.5
+
+    # Advance through the first pump stage without consuming segment length so the sheared
+    # slug remains available for the next stage.
+    _, queue_after_stage1, _ = _update_mainline_dra(
+        queue,
+        stn_data,
+        opt,
+        0.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=shear_factor,
+    )
+    assert queue_after_stage1, "Expected a sheared slug after first stage"
+    ppm_stage1 = int(queue_after_stage1[0]["dra_ppm"])
+    expected_stage1 = int(round(initial_ppm * (1 - shear_factor)))
+    assert ppm_stage1 == expected_stage1
+
+    # Repeat for the second pump stage.
+    _, queue_after_stage2, _ = _update_mainline_dra(
+        queue_after_stage1,
+        stn_data,
+        opt,
+        0.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=shear_factor,
+    )
+    assert queue_after_stage2, "Expected slug to persist after second stage"
+    ppm_stage2 = int(queue_after_stage2[0]["dra_ppm"])
+    expected_stage2 = int(round(expected_stage1 * (1 - shear_factor)))
+    assert ppm_stage2 == expected_stage2
+
+    kv = 3.0
+    base_dr = float(get_dr_for_ppm(kv, initial_ppm))
+    stage2_dr = float(get_dr_for_ppm(kv, ppm_stage2))
+    assert stage2_dr <= base_dr
+    assert stage2_dr == pytest.approx(float(get_dr_for_ppm(kv, expected_stage2)), rel=1e-6)
