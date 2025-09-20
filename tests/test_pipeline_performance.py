@@ -9,7 +9,7 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from pipeline_model import solve_pipeline
+from pipeline_model import solve_pipeline, solve_pipeline_with_types
 
 
 def _load_linefill() -> list[dict]:
@@ -314,3 +314,78 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert final_result.get("drag_reduction_origin_pump") > coarse_result.get("drag_reduction_origin_pump")
     assert final_result.get("total_cost") == pytest.approx(stage_costs["refine"][10])
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
+
+
+def test_type_expansion_respects_station_maximum() -> None:
+    """Enumerated pump-type combinations must obey the station-level cap."""
+
+    station = {
+        "name": "Origin Pump",
+        "is_pump": True,
+        "min_pumps": 1,
+        "max_pumps": 2,
+        "MinRPM": 1100,
+        "DOL": 2800,
+        "A": 0.0,
+        "B": 0.0,
+        "C": 180.0,
+        "P": 0.0,
+        "Q": 0.0,
+        "R": 0.0,
+        "S": 0.0,
+        "T": 82.0,
+        "L": 45.0,
+        "d": 0.7,
+        "rough": 4.0e-05,
+        "elev": 0.0,
+        "min_residual": 30,
+        "max_dr": 20,
+        "power_type": "Grid",
+        "rate": 0.0,
+        "pump_types": {
+            "A": {"available": 2, "MinRPM": 1100, "DOL": 2800},
+            "B": {"available": 1, "MinRPM": 1100, "DOL": 2800},
+        },
+    }
+    terminal = {"name": "Terminal", "min_residual": 25, "elev": 0.0}
+    kv_list = [3.0]
+    rho_list = [850.0]
+    origin_key = station["name"].strip().lower().replace(" ", "_")
+
+    captured_totals: list[list[int]] = []
+
+    def fake_solver(stations_arg, *_args, **_kwargs):
+        totals = []
+        for unit in stations_arg:
+            combo = unit.get("active_combo") or {}
+            totals.append(int(combo.get("A", 0)) + int(combo.get("B", 0)))
+        captured_totals.append(totals)
+        active = totals[0] if totals else 0
+        return {
+            "error": False,
+            "total_cost": 100 - active,
+            f"num_pumps_{origin_key}": active,
+        }
+
+    with patch("pipeline_model.solve_pipeline", side_effect=fake_solver):
+        result = solve_pipeline_with_types(
+            stations=[copy.deepcopy(station)],
+            terminal=terminal,
+            FLOW=1500.0,
+            KV_list=kv_list,
+            rho_list=rho_list,
+            RateDRA=0.0,
+            Price_HSD=0.0,
+            Fuel_density=0.85,
+            Ambient_temp=25.0,
+            linefill=[],
+            dra_reach_km=0.0,
+            hours=12.0,
+            start_time="00:00",
+        )
+
+    assert not result.get("error"), result.get("message")
+    assert result[f"num_pumps_{origin_key}"] <= 2
+    assert captured_totals, "No solve_pipeline calls captured"
+    for totals in captured_totals:
+        assert all(total <= 2 for total in totals)

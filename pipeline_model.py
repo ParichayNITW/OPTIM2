@@ -3187,6 +3187,19 @@ def solve_pipeline_with_types(
             # Determine available counts for each type
             availA = stn['pump_types'].get('A', {}).get('available', 0)
             availB = stn['pump_types'].get('B', {}).get('available', 0)
+            max_raw = stn.get('max_pumps', None)
+            if max_raw is None:
+                limit = math.inf
+            else:
+                try:
+                    limit = int(max_raw)
+                except (TypeError, ValueError, OverflowError):
+                    try:
+                        limit = int(float(max_raw))
+                    except (TypeError, ValueError, OverflowError):
+                        limit = math.inf
+            if math.isfinite(limit) and limit < 0:
+                limit = 0
             combos = generate_type_combinations(availA, availB)
             seen_active: set[tuple[int, int]] = set()
             for numA, numB in combos:
@@ -3197,7 +3210,10 @@ def solve_pipeline_with_types(
                 pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
-                        if actA + actB <= 0:
+                        total_active = actA + actB
+                        if total_active <= 0:
+                            continue
+                        if math.isfinite(limit) and total_active > limit:
                             continue
                         active_key = (actA, actB)
                         if active_key in seen_active:
@@ -3206,6 +3222,8 @@ def solve_pipeline_with_types(
                         unit = copy.deepcopy(stn)
                         unit['pump_combo'] = {'A': availA, 'B': availB}
                         unit['active_combo'] = {'A': actA, 'B': actB}
+                        if math.isfinite(limit):
+                            unit['max_pumps'] = int(limit)
                         if actA > 0 and actB == 0:
                             pdata = pdataA
                         elif actB > 0 and actA == 0:
@@ -3256,8 +3274,8 @@ def solve_pipeline_with_types(
                             unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
-                        unit['max_pumps'] = actA + actB
-                        unit['min_pumps'] = actA + actB
+                        if total_active > 0:
+                            unit['min_pumps'] = total_active
                 expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
