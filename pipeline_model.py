@@ -546,7 +546,7 @@ def _normalise_queue(
             ppm = int(entry.get('dra_ppm', 0) or 0)
         except Exception:
             ppm = 0
-        if length <= 1e-9 or ppm <= 0:
+        if length <= 1e-9 or ppm < 0:
             continue
         cleaned.append({'length_km': length, 'dra_ppm': ppm})
     return cleaned
@@ -590,9 +590,12 @@ def _prepend_dra_slice(
 ) -> list[dict[str, float]]:
     """Prepend a slice to ``dra_queue`` merging with the head when possible."""
 
-    if length_km <= 1e-9 or dra_ppm <= 0:
+    if length_km <= 1e-9:
         return [entry.copy() for entry in dra_queue]
-    new_entry = {'length_km': float(length_km), 'dra_ppm': int(dra_ppm)}
+    ppm = int(dra_ppm)
+    if ppm < 0:
+        return [entry.copy() for entry in dra_queue]
+    new_entry = {'length_km': float(length_km), 'dra_ppm': ppm}
     if dra_queue and int(dra_queue[0]['dra_ppm']) == new_entry['dra_ppm']:
         head = dra_queue[0]
         merged = {'length_km': float(head['length_km']) + new_entry['length_km'], 'dra_ppm': new_entry['dra_ppm']}
@@ -744,24 +747,48 @@ def _update_mainline_dra(
     pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
     pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
 
-    shear_multiplier = max(0.0, 1.0 - float(dra_shear_factor or 0.0))
+    shear_factor = float(dra_shear_factor or 0.0)
+    shear_multiplier = 1.0 - shear_factor
+    if shear_multiplier < 0.0:
+        shear_multiplier = 0.0
+    elif shear_multiplier > 1.0:
+        shear_multiplier = 1.0
 
     trimmed: list[dict[str, float]] = []
     if pumped_length > 1e-9:
         queue, trimmed = _advance_dra_queue(queue, pumped_length)
 
-    if pump_running and trimmed and shear_multiplier < 1.0:
+    if pump_running and trimmed:
         sheared_head = queue
+        idx_val = stn_data.get('idx')
+        try:
+            is_origin = int(idx_val) == 0
+        except (TypeError, ValueError):
+            is_origin = False
         for entry in reversed(trimmed):
-            ppm = int(entry['dra_ppm'])
-            if ppm <= 0:
+            try:
+                length = float(entry.get('length_km', 0.0))
+            except Exception:
+                length = 0.0
+            if length <= 1e-9:
                 continue
-            new_ppm = int(round(ppm * shear_multiplier))
-            if new_ppm <= 0:
-                continue
+            try:
+                ppm = int(entry.get('dra_ppm', 0) or 0)
+            except Exception:
+                ppm = 0
+            if ppm < 0:
+                ppm = 0
+            if is_origin and inj_ppm_main <= 0:
+                new_ppm = 0
+            elif shear_multiplier <= 0.0:
+                new_ppm = 0
+            else:
+                new_ppm = int(round(ppm * shear_multiplier))
+                if new_ppm < 0:
+                    new_ppm = 0
             sheared_head = _prepend_dra_slice(
                 sheared_head,
-                entry['length_km'],
+                length,
                 new_ppm,
             )
         queue = sheared_head
