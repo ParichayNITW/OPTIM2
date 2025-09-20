@@ -373,3 +373,151 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
     stage2_dr = float(get_dr_for_ppm(kv, ppm_stage2))
     assert stage2_dr <= base_dr
     assert stage2_dr == pytest.approx(float(get_dr_for_ppm(kv, expected_stage2)), rel=1e-6)
+
+
+def test_full_shear_zeroes_trimmed_slug() -> None:
+    """A 100% shear factor should erase the trimmed slug for the segment."""
+
+    initial_queue = [{"length_km": 6.0, "dra_ppm": 40}]
+    stn_data = {"is_pump": True, "d_inner": 0.7, "idx": 1}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 0.5
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+
+    dra_segments, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        pumped_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=1.0,
+    )
+
+    assert not dra_segments
+    assert queue_after
+    assert queue_after[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[0]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length,
+        rel=1e-6,
+    )
+
+
+def test_full_shear_retains_zero_front_for_partial_segment() -> None:
+    """When the segment is shorter than the trimmed slug the 0 ppm zone persists."""
+
+    initial_queue = [{"length_km": 10.0, "dra_ppm": 55}]
+    stn_data = {"is_pump": True, "d_inner": 0.7, "idx": 2}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 0.25
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+    segment_length = pumped_length / 2.0
+
+    dra_segments, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=1.0,
+    )
+
+    assert not dra_segments
+    assert queue_after
+    assert queue_after[0]["dra_ppm"] == 0
+    assert queue_after[0]["length_km"] == pytest.approx(
+        pumped_length - segment_length,
+        rel=1e-6,
+    )
+    assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[1]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length,
+        rel=1e-6,
+    )
+
+
+def test_origin_station_without_injection_zeroes_slug() -> None:
+    """Origin pumps should drop inherited slugs to 0 ppm when not injecting."""
+
+    initial_queue = [{"length_km": 5.0, "dra_ppm": 30}]
+    stn_data = {"is_pump": True, "d_inner": 0.7, "idx": 0}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 2400.0
+    hours = 0.25
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+    segment_length = pumped_length / 2.0
+
+    for shear_factor in (1.0, 0.25):
+        dra_segments, queue_after, _ = _update_mainline_dra(
+            initial_queue,
+            stn_data,
+            opt,
+            segment_length,
+            flow_m3h,
+            hours,
+            pump_running=True,
+            dra_shear_factor=shear_factor,
+        )
+
+        assert not dra_segments
+        assert queue_after
+        assert queue_after[0]["dra_ppm"] == 0
+        assert queue_after[0]["length_km"] == pytest.approx(
+            pumped_length - segment_length,
+            rel=1e-6,
+        )
+
+
+def test_full_shear_zero_front_propagates_downstream() -> None:
+    """Downstream segments should consume the 0 ppm zone before any treated slug."""
+
+    initial_queue = [{"length_km": 9.0, "dra_ppm": 60}]
+    stn_data = {"is_pump": True, "d_inner": 0.7, "idx": 1}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 0.5
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+    segment_length = pumped_length / 3.0
+
+    _, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=1.0,
+    )
+
+    assert queue_after
+    zero_front = queue_after[0]
+    assert zero_front["dra_ppm"] == 0
+    zero_length = zero_front["length_km"]
+
+    downstream_segment = zero_length + 1.0
+    dra_segments, queue_final, _ = _update_mainline_dra(
+        queue_after,
+        {"is_pump": False, "d_inner": stn_data["d_inner"], "idx": 2},
+        {"nop": 0, "dra_ppm_main": 0},
+        downstream_segment,
+        0.0,
+        1.0,
+        pump_running=False,
+        dra_shear_factor=0.0,
+    )
+
+    assert dra_segments
+    assert dra_segments[0][0] == pytest.approx(1.0, rel=1e-6)
+    assert dra_segments[0][1] == initial_queue[0]["dra_ppm"]
+    assert queue_final
+    assert queue_final[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_final[0]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length - 1.0,
+        rel=1e-6,
+    )
