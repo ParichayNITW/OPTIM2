@@ -555,13 +555,14 @@ def _normalise_queue(
 def _advance_dra_queue(
     dra_queue: list[dict[str, float]],
     advance_km: float,
-) -> list[dict[str, float]]:
-    """Return ``dra_queue`` after removing ``advance_km`` from the head."""
+) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    """Return ``dra_queue`` and trimmed slices after removing ``advance_km``."""
 
     if advance_km <= 1e-9 or not dra_queue:
-        return [entry.copy() for entry in dra_queue]
+        return [entry.copy() for entry in dra_queue], []
     remaining = float(advance_km)
     result: list[dict[str, float]] = []
+    trimmed: list[dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
         ppm = int(entry['dra_ppm'])
@@ -569,12 +570,17 @@ def _advance_dra_queue(
             result.append({'length_km': length, 'dra_ppm': ppm})
             continue
         if length <= remaining + 1e-9:
+            trimmed.append({'length_km': length, 'dra_ppm': ppm})
             remaining -= length
             continue
-        trimmed = length - remaining
-        result.append({'length_km': trimmed, 'dra_ppm': ppm})
+        take = remaining
+        if take > 1e-9:
+            trimmed.append({'length_km': take, 'dra_ppm': ppm})
+        leftover = length - take
+        if leftover > 1e-9:
+            result.append({'length_km': leftover, 'dra_ppm': ppm})
         remaining = 0.0
-    return result
+    return result, trimmed
 
 
 def _prepend_dra_slice(
@@ -623,6 +629,79 @@ def _consume_segment_queue(
             continue
     # If ``remaining`` is still positive the queue was exhausted; nothing to add.
     return dra_segments, result
+
+
+def _value_to_bool(value) -> bool | None:
+    """Interpret ``value`` as a boolean flag when possible."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value > 0:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        norm = value.strip().lower()
+        if norm in {'upstream', 'before', 'pre', 'pre_pump', 'upstream_of_pumps', 'before_pumps'}:
+            return True
+        if norm in {'downstream', 'after', 'post', 'post_pump', 'downstream_of_pumps', 'after_pumps'}:
+            return False
+        if norm in {'true', 'yes', 'y'}:
+            return True
+        if norm in {'false', 'no', 'n'}:
+            return False
+    return None
+
+
+def _injector_upstream_of_pumps(stn_data: Mapping[str, object]) -> bool:
+    """Return ``True`` when station metadata places injection before pumps."""
+
+    for key in (
+        'shear_new_injection',
+        'shear_injection',
+        'dra_injector_upstream',
+        'dra_injector_upstream_pumps',
+        'injector_upstream_pumps',
+        'dra_upstream_pumps',
+    ):
+        if key in stn_data:
+            flag = _value_to_bool(stn_data.get(key))
+            if flag is not None:
+                return flag
+    for key in (
+        'dra_injector_position',
+        'dra_position',
+        'injection_position',
+        'dra_main_position',
+    ):
+        if key in stn_data:
+            flag = _value_to_bool(stn_data.get(key))
+            if flag is not None:
+                return flag
+    for key in (
+        'dra_injector_downstream_pumps',
+        'downstream_pump_stages_after_injector',
+        'pump_stages_after_injector',
+        'remaining_pump_stages',
+    ):
+        if key in stn_data:
+            flag = _value_to_bool(stn_data.get(key))
+            if flag is not None:
+                return flag
+    layout = stn_data.get('station_layout')
+    if isinstance(layout, Mapping):
+        for key in (
+            'dra_injector_upstream',
+            'dra_injector_position',
+            'injection_position',
+        ):
+            if key in layout:
+                flag = _value_to_bool(layout.get(key))
+                if flag is not None:
+                    return flag
+    return bool(stn_data.get('is_pump', False))
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -653,6 +732,10 @@ def _update_mainline_dra(
     segment_length: float,
     flow_m3h: float,
     hours: float,
+    *,
+    pump_running: bool = False,
+    dra_shear_factor: float = 0.0,
+    shear_injection: bool | None = None,
 ) -> tuple[list[tuple[float, int]], list[dict[str, float]], int]:
     """Return the updated DRA slice queue and coverage for this segment."""
 
@@ -661,11 +744,38 @@ def _update_mainline_dra(
     pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
     pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
 
+    shear_multiplier = max(0.0, 1.0 - float(dra_shear_factor or 0.0))
+
+    trimmed: list[dict[str, float]] = []
     if pumped_length > 1e-9:
-        queue = _advance_dra_queue(queue, pumped_length)
+        queue, trimmed = _advance_dra_queue(queue, pumped_length)
+
+    if pump_running and trimmed and shear_multiplier < 1.0:
+        sheared_head = queue
+        for entry in reversed(trimmed):
+            ppm = int(entry['dra_ppm'])
+            if ppm <= 0:
+                continue
+            new_ppm = int(round(ppm * shear_multiplier))
+            if new_ppm <= 0:
+                continue
+            sheared_head = _prepend_dra_slice(
+                sheared_head,
+                entry['length_km'],
+                new_ppm,
+            )
+        queue = sheared_head
 
     if inj_ppm_main > 0:
-        queue = _prepend_dra_slice(queue, pumped_length, inj_ppm_main)
+        apply_shear = shear_injection
+        if apply_shear is None:
+            apply_shear = _injector_upstream_of_pumps(stn_data)
+        apply_shear = bool(apply_shear) and pump_running
+        effective_ppm = inj_ppm_main
+        if apply_shear and shear_multiplier < 1.0:
+            effective_ppm = int(round(inj_ppm_main * shear_multiplier))
+        if effective_ppm > 0:
+            queue = _prepend_dra_slice(queue, pumped_length, effective_ppm)
 
     dra_segments, queue_after = _consume_segment_queue(queue, segment_length)
     return dra_segments, queue_after, inj_ppm_main
@@ -1540,6 +1650,7 @@ def solve_pipeline(
     _internal_pass: bool = False,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
+    dra_shear_factor: float = 0.0,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
@@ -1602,6 +1713,7 @@ def solve_pipeline(
                 enumerate_loops=False,
                 rpm_step=rpm_step,
                 dra_step=dra_step,
+                dra_shear_factor=dra_shear_factor,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -1659,6 +1771,7 @@ def solve_pipeline(
                 enumerate_loops=False,
                 rpm_step=rpm_step,
                 dra_step=dra_step,
+                dra_shear_factor=dra_shear_factor,
             )
             if res.get('error'):
                 continue
@@ -1748,6 +1861,7 @@ def solve_pipeline(
             _internal_pass=True,
             rpm_step=coarse_rpm_step,
             dra_step=coarse_dra_step,
+            dra_shear_factor=dra_shear_factor,
         )
         if coarse_res.get("error"):
             return coarse_res
@@ -2281,6 +2395,7 @@ def solve_pipeline(
                         continue
                 segment_length = float(stn_data['L'])
                 dra_queue_prev = state.get('dra_queue', [])
+                pump_running = bool(stn_data.get('is_pump')) and opt.get('nop', 0) > 0
                 dra_slices, dra_queue_after, inj_ppm_main = _update_mainline_dra(
                     dra_queue_prev,
                     stn_data,
@@ -2288,6 +2403,9 @@ def solve_pipeline(
                     segment_length,
                     flow_total,
                     hours,
+                    pump_running=pump_running,
+                    dra_shear_factor=dra_shear_factor,
+                    shear_injection=_injector_upstream_of_pumps(stn_data),
                 )
                 dra_queue_next = _normalise_queue(dra_queue_after)
                 dra_segments: list[tuple[float, float]] = []
@@ -2300,8 +2418,6 @@ def solve_pipeline(
                         dra_len_main += seg_len
                         weighted_dra += eff * seg_len
                 eff_dra_main = weighted_dra / dra_len_main if dra_len_main > 1e-9 else 0.0
-                pump_running = bool(stn_data.get('is_pump')) and opt.get('nop', 0) > 0
-
                 scenarios = []
                 # Base scenario: flow through mainline only
                 hl_single, v_single, Re_single, f_single = _segment_profile_hydraulics(
@@ -2941,6 +3057,7 @@ def solve_pipeline_with_types(
     start_time: str = "00:00",
     *,
     segment_profiles: list[list[dict[str, float]]] | None = None,
+    dra_shear_factor: float = 0.0,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -3020,6 +3137,7 @@ def solve_pipeline_with_types(
                     segment_profiles=[p or [] for p in profile_acc],
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
+                    dra_shear_factor=dra_shear_factor,
                 )
                 if result.get("error"):
                     continue
