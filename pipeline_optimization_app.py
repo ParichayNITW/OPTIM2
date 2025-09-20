@@ -39,6 +39,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
+from collections.abc import Mapping
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -1654,11 +1655,16 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
 
         combo = None
+        combo_res = res.get(f"combo_choice_{key}")
+        if isinstance(combo_res, Mapping):
+            combo = {str(pt): int(combo_res[pt]) for pt in combo_res}
+        pump_types = None
         if isinstance(stn, dict):
-            combo = stn.get('active_combo') or stn.get('pump_combo')
-            pump_types = stn.get('pump_types') or base_stn.get('pump_types')
-        else:
-            pump_types = base_stn.get('pump_types') if base_stn else None
+            if combo is None:
+                combo = stn.get('active_combo') or stn.get('pump_combo')
+            pump_types = stn.get('pump_types')
+        if pump_types is None and base_stn:
+            pump_types = base_stn.get('pump_types')
         if combo is None and base_stn:
             combo = base_stn.get('active_combo') or base_stn.get('pump_combo')
 

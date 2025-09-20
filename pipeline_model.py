@@ -127,11 +127,16 @@ def _compose_option_rpm_map(
                 if isinstance(value, (int, float)):
                     rpm_map_local[key] = value
 
-    combo_local = (
-        station.get('active_combo')
-        or station.get('combo')
-        or station.get('pump_combo')
-    )
+    combo_local: Mapping[str, object] | None
+    if isinstance(opt.get('combo_choice'), Mapping):
+        combo_local = opt['combo_choice']  # type: ignore[index]
+    else:
+        combo_candidate = (
+            station.get('active_combo')
+            or station.get('combo')
+            or station.get('pump_combo')
+        )
+        combo_local = combo_candidate if isinstance(combo_candidate, Mapping) else None
     fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
     if isinstance(combo_local, Mapping):
         for key, value in opt.items():
@@ -238,6 +243,8 @@ def _build_pump_option_cache(
     if nop <= 0 or not has_positive_rpm:
         return cache
 
+    combo_choice = opt.get('combo_choice') if isinstance(opt.get('combo_choice'), Mapping) else None
+
     pump_def = {
         'A': station.get('coef_A', 0.0),
         'B': station.get('coef_B', 0.0),
@@ -248,9 +255,9 @@ def _build_pump_option_cache(
         'S': station.get('coef_S', 0.0),
         'T': station.get('coef_T', 0.0),
         'DOL': station.get('dol', 0.0),
-        'combo': station.get('pump_combo'),
+        'combo': station.get('pump_combo') or station.get('combo') or combo_choice,
         'pump_types': station.get('pump_types'),
-        'active_combo': station.get('active_combo'),
+        'active_combo': combo_choice or station.get('active_combo'),
         'power_type': station.get('power_type'),
         'sfc_mode': station.get('sfc_mode'),
         'sfc': station.get('sfc'),
@@ -1986,21 +1993,35 @@ def solve_pipeline(
             rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
 
             pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
+            combo_capacity: dict[str, int] = {}
             combo_source: Mapping[str, float] | None = None
-            if isinstance(stn.get('active_combo'), Mapping):
-                combo_source = stn['active_combo']  # type: ignore[index]
-            elif isinstance(stn.get('pump_combo'), Mapping):
+            if isinstance(stn.get('pump_combo'), Mapping):
                 combo_source = stn['pump_combo']  # type: ignore[index]
             elif isinstance(stn.get('combo'), Mapping):
                 combo_source = stn['combo']  # type: ignore[index]
+            elif isinstance(stn.get('active_combo'), Mapping):
+                combo_source = stn['active_combo']  # type: ignore[index]
 
-            type_order: list[str] = []
-            type_rpm_lists: dict[str, list[int]] = {}
-            if pump_types_data and combo_source:
-                for ptype in sorted(combo_source):
-                    count = combo_source.get(ptype, 0)
-                    if not isinstance(count, (int, float)) or count <= 0:
+            if pump_types_data:
+                for ptype, pdata in pump_types_data.items():
+                    avail_val = pdata.get('available')
+                    if avail_val is None and combo_source is not None:
+                        avail_val = combo_source.get(ptype, 0)
+                    avail = int(round(_coerce_float(avail_val, default=0.0)))
+                    if avail <= 0:
                         continue
+                    combo_capacity[ptype] = min(avail, int(max_p))
+            elif isinstance(combo_source, Mapping):
+                for ptype, count in combo_source.items():
+                    avail = int(round(_coerce_float(count, default=0.0)))
+                    if avail <= 0:
+                        continue
+                    combo_capacity[ptype] = min(avail, int(max_p))
+
+            type_order = sorted(combo_capacity)
+            type_rpm_lists: dict[str, list[int]] = {}
+            if pump_types_data:
+                for ptype in type_order:
                     pdata = pump_types_data.get(ptype, {})
                     p_rpm_min = int(
                         _extract_rpm(
@@ -2026,8 +2047,25 @@ def solve_pipeline(
                         elif 'rpm' in rng:
                             p_rpm_min = max(p_rpm_min, rng['rpm'][0])
                             p_rpm_max = min(p_rpm_max, rng['rpm'][1])
-                    type_order.append(ptype)
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
+
+            combo_combinations: list[dict[str, int]] = []
+            if type_order:
+                primary = type_order[0]
+                secondary = type_order[1] if len(type_order) > 1 else None
+                max_primary = combo_capacity.get(primary, 0)
+                max_secondary = combo_capacity.get(secondary, 0) if secondary else 0
+                for count_primary, count_secondary in generate_type_combinations(max_primary, max_secondary):
+                    combo_map: dict[str, int] = {}
+                    combo_map[primary] = int(count_primary)
+                    if secondary:
+                        combo_map[secondary] = int(count_secondary)
+                    for extra in type_order[2:]:
+                        combo_map.setdefault(extra, 0)
+                    total_units = sum(max(int(c), 0) for c in combo_map.values())
+                    if total_units <= 0 or total_units > int(max_p):
+                        continue
+                    combo_combinations.append(combo_map)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = int(stn.get('max_dr', 0))
@@ -2045,46 +2083,87 @@ def solve_pipeline(
                 dr_loop_min = max(0, rng['dra_loop'][0])
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
-            for nop in range(min_p, max_p + 1):
-                if nop == 0:
-                    rpm_iter = [None]
-                elif type_rpm_lists:
-                    rpm_iter = product(*(type_rpm_lists[ptype] for ptype in type_order))
-                else:
-                    rpm_iter = [(rpm,) for rpm in rpm_vals]
-                for rpm_choice in rpm_iter:
-                    if nop == 0:
-                        rpm = 0
-                        rpm_map_choice: dict[str, int] = {}
-                    elif type_rpm_lists:
-                        if isinstance(rpm_choice, tuple):
+            combos_used = False
+            if combo_combinations:
+                for combo_map in combo_combinations:
+                    active_combo = {
+                        ptype: int(count)
+                        for ptype, count in combo_map.items()
+                        if int(count) > 0
+                    }
+                    nop = sum(active_combo.values())
+                    if nop < int(min_p) or nop > int(max_p):
+                        continue
+                    active_types = list(active_combo.keys())
+                    rpm_lists_local: list[list[int]] = []
+                    for ptype in active_types:
+                        rpm_list = type_rpm_lists.get(ptype)
+                        if not rpm_list:
+                            rpm_list = rpm_vals
+                        if not rpm_list:
+                            rpm_lists_local = []
+                            break
+                        rpm_lists_local.append(rpm_list)
+                    if active_types and not rpm_lists_local:
+                        continue
+                    if active_types:
+                        rpm_iter = product(*rpm_lists_local)
+                    else:
+                        rpm_iter = [(rpm,) for rpm in rpm_vals]
+                    for rpm_choice in rpm_iter:
+                        rpm_choice_tuple = rpm_choice if isinstance(rpm_choice, tuple) else (rpm_choice,)
+                        if active_types:
                             rpm_map_choice = {
                                 ptype: int(val)
-                                for ptype, val in zip(type_order, rpm_choice)
+                                for ptype, val in zip(active_types, rpm_choice_tuple)
                             }
+                            rpm = max(rpm_map_choice.values()) if rpm_map_choice else 0
                         else:
                             rpm_map_choice = {}
-                        rpm = max(rpm_map_choice.values()) if rpm_map_choice else 0
+                            rpm = int(rpm_choice_tuple[0]) if rpm_choice_tuple else 0
+                        for dra_main in dra_main_vals:
+                            for dra_loop in dra_loop_vals:
+                                ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                                ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
+                                opt_entry = {
+                                    'nop': nop,
+                                    'rpm': rpm,
+                                    'dra_main': dra_main,
+                                    'dra_loop': dra_loop,
+                                    'dra_ppm_main': ppm_main,
+                                    'dra_ppm_loop': ppm_loop,
+                                    'combo_choice': active_combo.copy(),
+                                }
+                                if rpm_map_choice:
+                                    opt_entry['rpm_map'] = rpm_map_choice.copy()
+                                    for ptype, rpm_val in rpm_map_choice.items():
+                                        opt_entry[f'rpm_{ptype}'] = rpm_val
+                                opts.append(opt_entry)
+                                combos_used = True
+            if not combos_used:
+                for nop in range(min_p, max_p + 1):
+                    if nop == 0:
+                        rpm_iter = [None]
                     else:
-                        rpm = int(rpm_choice[0]) if isinstance(rpm_choice, tuple) else int(rpm_choice)
-                        rpm_map_choice = {}
-                    for dra_main in dra_main_vals:
-                        for dra_loop in dra_loop_vals:
-                            ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
-                            ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
-                            opt_entry = {
-                                'nop': nop,
-                                'rpm': rpm,
-                                'dra_main': dra_main,
-                                'dra_loop': dra_loop,
-                                'dra_ppm_main': ppm_main,
-                                'dra_ppm_loop': ppm_loop,
-                            }
-                            if rpm_map_choice:
-                                opt_entry['rpm_map'] = rpm_map_choice.copy()
-                                for ptype, rpm_val in rpm_map_choice.items():
-                                    opt_entry[f'rpm_{ptype}'] = rpm_val
-                            opts.append(opt_entry)
+                        rpm_iter = [(rpm,) for rpm in rpm_vals]
+                    for rpm_choice in rpm_iter:
+                        if nop == 0:
+                            rpm = 0
+                        else:
+                            rpm = int(rpm_choice[0]) if isinstance(rpm_choice, tuple) else int(rpm_choice)
+                        for dra_main in dra_main_vals:
+                            for dra_loop in dra_loop_vals:
+                                ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                                ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
+                                opt_entry = {
+                                    'nop': int(nop),
+                                    'rpm': rpm,
+                                    'dra_main': dra_main,
+                                    'dra_loop': dra_loop,
+                                    'dra_ppm_main': ppm_main,
+                                    'dra_ppm_loop': ppm_loop,
+                                }
+                                opts.append(opt_entry)
             if not any(o['nop'] == 0 for o in opts):
                 opts.insert(0, {
                     'nop': 0,
@@ -2760,6 +2839,13 @@ def solve_pipeline(
                             f"maop_loop_kgcm2_{stn_data['name']}": 0.0,
                         })
                     if stn_data['is_pump']:
+                        combo_choice = opt.get('combo_choice')
+                        if isinstance(combo_choice, Mapping):
+                            record[f"combo_choice_{stn_data['name']}"] = {
+                                str(ptype): int(val)
+                                for ptype, val in combo_choice.items()
+                                if int(val) > 0
+                            }
                         speed_display = opt.get('rpm', 0)
                         if (not speed_display or speed_display <= 0) and isinstance(opt.get('rpm_map'), Mapping):
                             rpm_values = [
@@ -2921,6 +3007,7 @@ def solve_pipeline(
     else:
         result['dra_front_km'] = 0.0
     result['error'] = False
+    result['stations_used'] = copy.deepcopy(stations)
     return result
 
 
@@ -2942,188 +3029,22 @@ def solve_pipeline_with_types(
     *,
     segment_profiles: list[list[dict[str, float]]] | None = None,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+    """Compatibility wrapper that now delegates directly to :func:`solve_pipeline`."""
 
-    best_result = None
-    best_cost = float('inf')
-    best_stations = None
-    N = len(stations)
-
-    def expand_all(
-        pos: int,
-        stn_acc: list[dict],
-        kv_acc: list[float],
-        rho_acc: list[float],
-        profile_acc: list[list[dict[str, float]] | None],
-    ):
-        nonlocal best_result, best_cost, best_stations
-        if pos >= N:
-            # When all stations have been expanded into individual pump units,
-            # perform loop-case enumeration explicitly.  We determine the
-            # positions of units with looplines (typically the last unit of each
-            # physical station) and then build loop usage directives for each
-            # representative case.  This avoids relying on the internal
-            # loop-enumeration of ``solve_pipeline``, which can behave
-            # unpredictably when stations are split into multiple units.
-            loop_positions = [idx for idx, u in enumerate(stn_acc) if u.get('loopline')]
-            # Always run at least once even if no loops exist
-            if not loop_positions:
-                cases = [[]]
-            else:
-                # Determine per-loop diameter equality flags for the expanded stations.
-                default_t_local = 0.007
-                flags_expanded: list[bool] = []
-                for pidx in loop_positions:
-                    stn_e = stn_acc[pidx]
-                    # Inner diameter of the mainline segment
-                    if stn_e.get('D') is not None:
-                        d_main_outer = stn_e['D']
-                        t_main = stn_e.get('t', default_t_local)
-                        d_inner_main = d_main_outer - 2 * t_main
-                    else:
-                        d_inner_main = stn_e.get('d', 0.0)
-                    lp = stn_e.get('loopline') or {}
-                    if lp:
-                        if lp.get('D') is not None:
-                            d_loop_outer = lp['D']
-                            t_loop = lp.get('t', stn_e.get('t', default_t_local))
-                            d_inner_loop = d_loop_outer - 2 * t_loop
-                        else:
-                            d_inner_loop = lp.get('d', d_inner_main)
-                    else:
-                        d_inner_loop = d_inner_main
-                    flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-                # Generate loop-case combinations based on flags
-                cases = _generate_loop_cases_by_flags(flags_expanded)
-            for case in cases:
-                usage = [0] * len(stn_acc)
-                for pidx, val in zip(loop_positions, case):
-                    usage[pidx] = val
-                # Call solve_pipeline with explicit loop usage and disable
-                # internal enumeration.  This ensures the provided directives
-                # are respected even for split stations.
-                result = solve_pipeline(
-                    stn_acc,
-                    terminal,
-                    FLOW,
-                    kv_acc,
-                    rho_acc,
-                    RateDRA,
-                    Price_HSD,
-                    Fuel_density,
-                    Ambient_temp,
-                    linefill,
-                    dra_reach_km,
-                    mop_kgcm2,
-                    hours,
-                    start_time,
-                    segment_profiles=[p or [] for p in profile_acc],
-                    loop_usage_by_station=usage,
-                    enumerate_loops=False,
-                )
-                if result.get("error"):
-                    continue
-                cost = result.get("total_cost", float('inf'))
-                if cost < best_cost:
-                    # Preserve usage directive for later labelling
-                    result_with_usage = result.copy()
-                    result_with_usage['loop_usage'] = usage.copy()
-                    best_cost = cost
-                    best_result = result_with_usage
-                    best_stations = stn_acc
-            return
-
-        stn = stations[pos]
-        kv = KV_list[pos]
-        rho = rho_list[pos]
-        profile = segment_profiles[pos] if segment_profiles and pos < len(segment_profiles) else []
-
-        if stn.get('pump_types'):
-            # Determine available counts for each type
-            availA = stn['pump_types'].get('A', {}).get('available', 0)
-            availB = stn['pump_types'].get('B', {}).get('available', 0)
-            combos = generate_type_combinations(availA, availB)
-            seen_active: set[tuple[int, int]] = set()
-            for numA, numB in combos:
-                total_units = numA + numB
-                if total_units <= 0:
-                    continue
-                pdataA = stn['pump_types'].get('A', {})
-                pdataB = stn['pump_types'].get('B', {})
-                for actA in range(numA + 1):
-                    for actB in range(numB + 1):
-                        if actA + actB <= 0:
-                            continue
-                        active_key = (actA, actB)
-                        if active_key in seen_active:
-                            continue
-                        seen_active.add(active_key)
-                        unit = copy.deepcopy(stn)
-                        unit['pump_combo'] = {'A': availA, 'B': availB}
-                        unit['active_combo'] = {'A': actA, 'B': actB}
-                        if actA > 0 and actB == 0:
-                            pdata = pdataA
-                        elif actB > 0 and actA == 0:
-                            pdata = pdataB
-                        else:
-                            pdata = None
-                        if pdata is not None:
-                            for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
-                                unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
-                            unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
-                            unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
-                            unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
-                            unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
-                            unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
-                            unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
-                            unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                            unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
-                        else:
-                            min_map: dict[str, float] = {}
-                            dol_map: dict[str, float] = {}
-                            if actA > 0:
-                                min_map['A'] = _extract_rpm(
-                                    pdataA.get('MinRPM'),
-                                    default=_station_min_rpm(stn, ptype='A'),
-                                    prefer='min',
-                                )
-                                dol_map['A'] = _extract_rpm(
-                                    pdataA.get('DOL'),
-                                    default=_station_max_rpm(stn, ptype='A'),
-                                    prefer='max',
-                                )
-                            if actB > 0:
-                                min_map['B'] = _extract_rpm(
-                                    pdataB.get('MinRPM'),
-                                    default=_station_min_rpm(stn, ptype='B'),
-                                    prefer='min',
-                                )
-                                dol_map['B'] = _extract_rpm(
-                                    pdataB.get('DOL'),
-                                    default=_station_max_rpm(stn, ptype='B'),
-                                    prefer='max',
-                                )
-                            unit['MinRPM'] = min_map
-                            unit['DOL'] = dol_map
-                            unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
-                            unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
-                            unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
-                            unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
-                            unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                            unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
-                        unit['max_pumps'] = actA + actB
-                        unit['min_pumps'] = actA + actB
-                expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
-        else:
-            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
-
-    expand_all(0, [], [], [], [])
-
-    if best_result is None:
-        return {
-            "error": True,
-            "message": "No feasible pump combination found for stations.",
-        }
-
-    best_result['stations_used'] = best_stations
-    return best_result
+    return solve_pipeline(
+        stations,
+        terminal,
+        FLOW,
+        KV_list,
+        rho_list,
+        RateDRA,
+        Price_HSD,
+        Fuel_density,
+        Ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours,
+        start_time,
+        segment_profiles=segment_profiles,
+    )
