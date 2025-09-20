@@ -1858,42 +1858,23 @@ def solve_pipeline(
 
     try:
         # Delegate to the backend optimiser
-        if any(s.get('pump_types') for s in stations):
-            res = pipeline_model.solve_pipeline_with_types(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill_dict,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time=start_time,
-                segment_profiles=segment_profiles,
-            )
-        else:
-            res = pipeline_model.solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill_dict,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time=start_time,
-                segment_profiles=segment_profiles,
-            )
+        res = pipeline_model.solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill_dict,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            start_time=start_time,
+            segment_profiles=segment_profiles,
+        )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
             usage = res.get("loop_usage", [])
@@ -2246,7 +2227,7 @@ def run_all_updates():
                     stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
 
     with st.spinner("Solving optimization..."):
-        res = pipeline_model.solve_pipeline_with_types(
+        res = pipeline_model.solve_pipeline(
             stations_data,
             term_data,
             st.session_state.get("FLOW", 1000.0),
