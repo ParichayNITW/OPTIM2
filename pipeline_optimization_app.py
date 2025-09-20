@@ -29,6 +29,8 @@ if "Fuel_density" not in st.session_state:
     st.session_state["Fuel_density"] = 820.0
 if "Ambient_temp" not in st.session_state:
     st.session_state["Ambient_temp"] = 25.0
+if "dra_shear_factor" not in st.session_state:
+    st.session_state["dra_shear_factor"] = 0.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -305,6 +307,15 @@ with st.sidebar:
             value=st.session_state.get("Ambient_temp", 25.0),
             step=1.0,
             key="Ambient_temp",
+        )
+        dra_shear_factor = st.number_input(
+            "DRA shear factor",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state.get("dra_shear_factor", 0.0) or 0.0),
+            step=0.05,
+            key="dra_shear_factor",
+            help="0 = nil shear, 1 = full shear",
         )
         st.number_input(
             "MOP (kg/cm²)",
@@ -2022,7 +2033,19 @@ if auto_batch:
                         prod_row = product_table.iloc[0]
                         kv_list.append(prod_row["Viscosity (cSt)"])
                         rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
+                    res = solve_pipeline(
+                        stations_data,
+                        term_data,
+                        FLOW,
+                        kv_list,
+                        rho_list,
+                        RateDRA,
+                        Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
+                        {},
+                        dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                    )
                     row = {"Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
@@ -2043,7 +2066,19 @@ if auto_batch:
                         prod_row = product_table.iloc[1]
                         kv_list.append(prod_row["Viscosity (cSt)"])
                         rho_list.append(prod_row["Density (kg/m³)"])
-                    res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
+                    res = solve_pipeline(
+                        stations_data,
+                        term_data,
+                        FLOW,
+                        kv_list,
+                        rho_list,
+                        RateDRA,
+                        Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
+                        {},
+                        dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                    )
                     row = {"Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
                         key = stn['name'].lower().replace(' ', '_')
@@ -2075,7 +2110,19 @@ if auto_batch:
                                 prod_row = product_table.iloc[1]
                             kv_list.append(prod_row["Viscosity (cSt)"])
                             rho_list.append(prod_row["Density (kg/m³)"])
-                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
+                        res = solve_pipeline(
+                            stations_data,
+                            term_data,
+                            FLOW,
+                            kv_list,
+                            rho_list,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
+                            {},
+                            dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                        )
                         row = {"Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}"}
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
@@ -2101,7 +2148,19 @@ if auto_batch:
                         scenario_labels = ["0%"] * 3
                         scenario_labels[first] = "100%"
                         row = {"Scenario": f"{scenario_labels[0]} {product_table.iloc[0]['Product']}, {scenario_labels[1]} {product_table.iloc[1]['Product']}, {scenario_labels[2]} {product_table.iloc[2]['Product']}"}
-                        res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
+                        res = solve_pipeline(
+                            stations_data,
+                            term_data,
+                            FLOW,
+                            kv_list,
+                            rho_list,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
+                            {},
+                            dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                        )
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -2140,7 +2199,19 @@ if auto_batch:
                             row = {
                                 "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
                             }
-                            res = solve_pipeline(stations_data, term_data, FLOW, kv_list, rho_list, RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), {})
+                            res = solve_pipeline(
+                                stations_data,
+                                term_data,
+                                FLOW,
+                                kv_list,
+                                rho_list,
+                                RateDRA,
+                                Price_HSD,
+                                st.session_state.get("Fuel_density", 820.0),
+                                st.session_state.get("Ambient_temp", 25.0),
+                                {},
+                                dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                            )
                             for idx, stn in enumerate(stations_data, start=1):
                                 key = stn['name'].lower().replace(' ', '_')
                                 row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
@@ -2263,6 +2334,7 @@ def run_all_updates():
             200.0,
             st.session_state.get("MOP_kgcm2"),
             24.0,
+            dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
         )
     if not res or res.get("error"):
         msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
@@ -2398,6 +2470,7 @@ if not auto_batch:
                         hours=1.0,
                         start_time=start_str,
                         segment_profiles=merged_profiles,
+                        dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
                     )
 
                     if res.get("error"):
@@ -2667,6 +2740,7 @@ if not auto_batch:
                         st.session_state.get("MOP_kgcm2"),
                         hours=duration_hr,
                         segment_profiles=merged_profiles,
+                        dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
                     )
                     if res.get("error"):
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
@@ -4210,7 +4284,19 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         this_Price_HSD = val
                     elif param == "DRA Cost (INR/L)":
                         this_RateDRA = val
-                    resi = solve_pipeline(stations_data, term_data, this_FLOW, kv_list, rho_list, this_RateDRA, this_Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), this_linefill_df.to_dict())
+                    resi = solve_pipeline(
+                        stations_data,
+                        term_data,
+                        this_FLOW,
+                        kv_list,
+                        rho_list,
+                        this_RateDRA,
+                        this_Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
+                        this_linefill_df.to_dict(),
+                        dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                    )
                     total_cost = power_cost = dra_cost = rh = eff = 0
                     for idx, stn in enumerate(stations_data):
                         key = stn['name'].lower().replace(' ', '_')
@@ -4337,7 +4423,19 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
                 new_FLOW = FLOW * (1 + flow_change / 100)
                 kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
-                res2 = solve_pipeline(stations_data, term_data, new_FLOW, kv_list, rho_list, new_RateDRA, Price_HSD, st.session_state.get("Fuel_density", 820.0), st.session_state.get("Ambient_temp", 25.0), linefill_df.to_dict())
+                res2 = solve_pipeline(
+                    stations_data,
+                    term_data,
+                    new_FLOW,
+                    kv_list,
+                    rho_list,
+                    new_RateDRA,
+                    Price_HSD,
+                    st.session_state.get("Fuel_density", 820.0),
+                    st.session_state.get("Ambient_temp", 25.0),
+                    linefill_df.to_dict(),
+                    dra_shear_factor=st.session_state.get("dra_shear_factor", 0.0),
+                )
                 total_cost, new_cost = 0, 0
                 for idx, stn in enumerate(stations_data):
                     key = stn['name'].lower().replace(' ', '_')
