@@ -658,15 +658,14 @@ def _update_mainline_dra(
 
     queue = _normalise_queue(dra_queue)
     inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
-    pump_running = bool(stn_data.get("is_pump")) and opt.get("nop", 0) > 0
+    pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
+    pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
 
-    if pump_running:
-        pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
-        pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
-        if pumped_length > 0:
-            queue = _advance_dra_queue(queue, pumped_length)
-            if inj_ppm_main > 0:
-                queue = _prepend_dra_slice(queue, pumped_length, inj_ppm_main)
+    if pumped_length > 1e-9:
+        queue = _advance_dra_queue(queue, pumped_length)
+
+    if inj_ppm_main > 0:
+        queue = _prepend_dra_slice(queue, pumped_length, inj_ppm_main)
 
     dra_segments, queue_after = _consume_segment_queue(queue, segment_length)
     return dra_segments, queue_after, inj_ppm_main
