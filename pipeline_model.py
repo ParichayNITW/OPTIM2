@@ -1679,6 +1679,7 @@ def solve_pipeline(
     dra_step: int = DRA_STEP,
     coarse_passes: int = 1,
     coarse_window_padding: float = 0.8,
+    use_coarse_window: bool = True,
     dra_shear_factor: float = 0.0,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
 ) -> dict:
@@ -1747,6 +1748,7 @@ def solve_pipeline(
                 rpm_step=rpm_step,
                 dra_step=dra_step,
                 dra_shear_factor=dra_shear_factor,
+                use_coarse_window=use_coarse_window,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -1805,6 +1807,7 @@ def solve_pipeline(
                 rpm_step=rpm_step,
                 dra_step=dra_step,
                 dra_shear_factor=dra_shear_factor,
+                use_coarse_window=use_coarse_window,
             )
             if res.get('error'):
                 continue
@@ -1864,6 +1867,100 @@ def solve_pipeline(
     linefill_state = copy.deepcopy(linefill_state)
 
     N = len(stations)
+    coarse_bound: float | None = None
+
+    if not _internal_pass and not use_coarse_window:
+        max_passes = max(int(coarse_passes), 1)
+        base_coarse_rpm_step = max(rpm_step * 5, rpm_step)
+        base_coarse_dra_step = max(dra_step * 5, dra_step)
+        spread = 0.25
+
+        factors_set: set[float] = {1.0}
+        if max_passes > 1:
+            slots_each_side = max(1, math.ceil((max_passes - 1) / 2))
+            step = spread / slots_each_side if slots_each_side > 0 else spread
+            for offset in range(1, slots_each_side + 1):
+                lower = max(0.1, 1.0 - step * offset)
+                upper = max(0.1, 1.0 + step * offset)
+                factors_set.add(lower)
+                factors_set.add(upper)
+
+        factors = sorted(factors_set)
+        while len(factors) > max_passes:
+            removable = [idx for idx, val in enumerate(factors) if abs(val - 1.0) > 1e-9]
+            if not removable:
+                break
+            removal_idx = min(
+                removable,
+                key=lambda idx: (
+                    abs(factors[idx] - 1.0),
+                    0 if factors[idx] > 1.0 else 1,
+                    factors[idx],
+                ),
+            )
+            factors.pop(removal_idx)
+
+        below_factors = sorted(
+            (val for val in factors if val < 1.0 - 1e-9),
+            reverse=True,
+        )
+        above_factors = sorted(
+            (val for val in factors if val > 1.0 + 1e-9),
+            key=lambda v: v - 1.0,
+        )
+
+        ordered_factors: list[float] = [1.0]
+        idx = 0
+        while len(ordered_factors) < max_passes and (
+            idx < len(above_factors) or idx < len(below_factors)
+        ):
+            if idx < len(above_factors):
+                ordered_factors.append(above_factors[idx])
+                if len(ordered_factors) >= max_passes:
+                    break
+            if idx < len(below_factors):
+                ordered_factors.append(below_factors[idx])
+            idx += 1
+
+        best_incumbent = float('inf')
+        for factor in ordered_factors:
+            coarse_rpm_step = max(int(round(base_coarse_rpm_step * factor)), 1)
+            coarse_dra_step = max(int(round(base_coarse_dra_step * factor)), 1)
+            coarse_res = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=True,
+                rpm_step=coarse_rpm_step,
+                dra_step=coarse_dra_step,
+                coarse_passes=coarse_passes,
+                coarse_window_padding=coarse_window_padding,
+                dra_shear_factor=dra_shear_factor,
+                narrow_ranges=None,
+                segment_profiles=segment_profiles,
+                use_coarse_window=True,
+            )
+            if coarse_res.get('error'):
+                continue
+            total_cost = float(coarse_res.get('total_cost', float('inf')))
+            if total_cost < best_incumbent:
+                best_incumbent = total_cost
+
+        if math.isfinite(best_incumbent):
+            coarse_bound = best_incumbent
 
     # ------------------------------------------------------------------
     # Two-pass optimisation: first run a coarse search with enlarged
@@ -1871,7 +1968,7 @@ def solve_pipeline(
     # solution using the user-provided steps.  The recursion is controlled
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
-    if not _internal_pass:
+    if not _internal_pass and use_coarse_window:
         max_passes = max(int(coarse_passes), 1)
         base_coarse_rpm_step = max(rpm_step * 5, rpm_step)
         base_coarse_dra_step = max(dra_step * 5, dra_step)
@@ -1910,6 +2007,7 @@ def solve_pipeline(
                 coarse_passes=coarse_passes,
                 coarse_window_padding=coarse_window_padding,
                 dra_shear_factor=dra_shear_factor,
+                use_coarse_window=use_coarse_window,
             )
             if coarse_res.get("error"):
                 return coarse_res
@@ -2039,12 +2137,13 @@ def solve_pipeline(
                 enumerate_loops=False,
                 _internal_pass=True,
                 rpm_step=rpm_step,
-                dra_step=dra_step,
-                coarse_passes=coarse_passes,
-                coarse_window_padding=coarse_window_padding,
-                narrow_ranges=ranges,
-                segment_profiles=segment_profiles,
-            )
+            dra_step=dra_step,
+            coarse_passes=coarse_passes,
+            coarse_window_padding=coarse_window_padding,
+            narrow_ranges=ranges,
+            segment_profiles=segment_profiles,
+            use_coarse_window=use_coarse_window,
+        )
 
         if max_passes == 1:
             slots_each_side = 1
@@ -2269,6 +2368,7 @@ def solve_pipeline(
                 coarse_passes=coarse_passes,
                 coarse_window_padding=coarse_window_padding,
                 dra_shear_factor=dra_shear_factor,
+                use_coarse_window=use_coarse_window,
             )
             if coarse_res.get("error"):
                 last_error = coarse_res
@@ -2426,12 +2526,13 @@ def solve_pipeline(
             enumerate_loops=False,
             _internal_pass=True,
             rpm_step=rpm_step,
-            dra_step=dra_step,
-            coarse_passes=coarse_passes,
-            coarse_window_padding=coarse_window_padding,
-            narrow_ranges=ranges_for_refine,
-            segment_profiles=segment_profiles,
-        )
+        dra_step=dra_step,
+        coarse_passes=coarse_passes,
+        coarse_window_padding=coarse_window_padding,
+        narrow_ranges=ranges_for_refine,
+        segment_profiles=segment_profiles,
+        use_coarse_window=use_coarse_window,
+    )
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
@@ -3384,6 +3485,8 @@ def solve_pipeline(
                     # or, when costs tie, the one with higher residual.  Carry
                     # forward the loop DRA carry value and the updated reach.
                     new_cost = state['cost'] + total_cost
+                    if coarse_bound is not None and new_cost > coarse_bound + 1e-9:
+                        continue
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
                     bucket = residual_next
@@ -3419,6 +3522,8 @@ def solve_pipeline(
         # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
         threshold = best_cost_station + STATE_COST_MARGIN
+        if coarse_bound is not None:
+            threshold = min(threshold, coarse_bound)
         pruned: dict[int, dict] = {}
         for idx, (residual_key, data) in enumerate(items):
             if idx < STATE_TOP_K or data['cost'] <= threshold:
@@ -3515,6 +3620,7 @@ def solve_pipeline_with_types(
     dra_shear_factor: float = 0.0,
     coarse_passes: int = 1,
     coarse_window_padding: float = 0.8,
+    use_coarse_window: bool = True,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -3597,6 +3703,7 @@ def solve_pipeline_with_types(
                     coarse_passes=coarse_passes,
                     coarse_window_padding=coarse_window_padding,
                     dra_shear_factor=dra_shear_factor,
+                    use_coarse_window=use_coarse_window,
                 )
                 if result.get("error"):
                     continue
