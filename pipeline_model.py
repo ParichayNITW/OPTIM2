@@ -2175,12 +2175,40 @@ def solve_pipeline(
 
             pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
             combo_source: Mapping[str, float] | None = None
+            # Preferred combination fields provided by the case file.
             if isinstance(stn.get('active_combo'), Mapping):
                 combo_source = stn['active_combo']  # type: ignore[index]
             elif isinstance(stn.get('pump_combo'), Mapping):
                 combo_source = stn['pump_combo']  # type: ignore[index]
             elif isinstance(stn.get('combo'), Mapping):
                 combo_source = stn['combo']  # type: ignore[index]
+
+            # If no explicit combo is provided, derive a default from the available
+            # pump types.  Many case files omit the ``pump_combo`` field and
+            # instead specify an ``available`` count on each entry in
+            # ``pump_types``.  Without a combo, the optimiser falls back to a
+            # dummy pump type which yields zero head and efficiency.  To avoid
+            # that misbehaviour we synthesise a ``combo_source`` mapping here,
+            # enumerating the maximum available units of each pump type.
+            if combo_source is None and pump_types_data:
+                default_combo: dict[str, int] = {}
+                for ptype, pdata in pump_types_data.items():
+                    avail = pdata.get('available')
+                    try:
+                        count = int(avail) if avail is not None else 0
+                    except Exception:
+                        count = 0
+                    if count > 0:
+                        default_combo[ptype] = count
+                if default_combo:
+                    combo_source = default_combo
+                    # Propagate the derived combo to the station itself.  This
+                    # ensures downstream helpers (e.g., ``_build_pump_option_cache``)
+                    # see the correct pump combination instead of defaulting
+                    # to a dummy pump.  Without this assignment the pump head
+                    # calculation uses a zero‑head placeholder and makes all
+                    # options infeasible.
+                    stn['pump_combo'] = default_combo
 
             type_order: list[str] = []
             type_rpm_lists: dict[str, list[int]] = {}
