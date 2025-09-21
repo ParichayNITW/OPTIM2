@@ -47,6 +47,14 @@ def _make_pump_station(name: str, *, max_dr: int = 0) -> dict:
     }
 
 
+def test_get_ppm_for_known_drag_reduction_positive() -> None:
+    """Lookup tables should return positive PPM for known drag reductions."""
+
+    ppm = get_ppm_for_dr(3.0, 12.0)
+    assert ppm > 0
+    assert ppm == pytest.approx(1.0)
+
+
 def test_linefill_dra_persists_through_running_pumps() -> None:
     """Initial linefill DRA should reduce SDH even without new injections."""
 
@@ -314,9 +322,11 @@ def test_idle_pump_injection_reflected_in_results() -> None:
     assert not result.get("error"), result.get("message")
 
     expected_ppm = int(get_ppm_for_dr(3.0, 12))
+    assert expected_ppm > 0
     flow_station_b = result["pipeline_flow_station_b"]
     assert result["num_pumps_station_b"] == 0
     assert result["dra_ppm_station_b"] == expected_ppm
+    assert result["dra_ppm_station_b"] > 0
     assert result["drag_reduction_station_b"] > 0.0
     assert result["dra_cost_station_b"] == pytest.approx(
         expected_ppm * (flow_station_b * 1000.0 * hours / 1e6) * rate_dra,
