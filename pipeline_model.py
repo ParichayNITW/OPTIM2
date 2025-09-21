@@ -2725,6 +2725,8 @@ def solve_pipeline(
                     filtered_scenarios = scenarios
                 loop_dra_current = _coerce_float(opt.get('dra_loop', 0.0), 0.0)
                 for sc in filtered_scenarios:
+                    # Initialise DRA cost for each scenario to avoid unbound variable errors
+                    dra_cost = 0.0
                     # Skip scenarios with unacceptable velocities
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
