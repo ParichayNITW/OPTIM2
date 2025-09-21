@@ -21,6 +21,11 @@ except Exception:  # pragma: no cover - numba may be unavailable
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from linefill_utils import advance_linefill
 
+# ---- Velocity defaults (added) ----
+DEFAULT_MIN_VELOCITY_MS = 0.0
+DEFAULT_MAX_VELOCITY_MS = 4.0
+
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -709,8 +714,8 @@ def _injector_upstream_of_pumps(stn_data: Mapping[str, object]) -> bool:
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 0
-DEFAULT_MIN_VELOCITY_MS = 0.0
-DEFAULT_MAX_VELOCITY_MS = 4.0
+V_MIN = 0.5
+V_MAX = 2.5
 
 # Limit the number of dynamic-programming states carried forward after
 # each station.  ``STATE_TOP_K`` bounds the total states retained while
@@ -1679,8 +1684,6 @@ def solve_pipeline(
     dra_step: int = DRA_STEP,
     dra_shear_factor: float = 0.0,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
-    V_MIN: float | None = None,
-    V_MAX: float | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1709,13 +1712,6 @@ def solve_pipeline(
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
     """
-
-    # Apply global velocity limits to stations (configurable)
-    global_min_v = DEFAULT_MIN_VELOCITY_MS if V_MIN is None else float(V_MIN)
-    global_max_v = DEFAULT_MAX_VELOCITY_MS if V_MAX is None else float(V_MAX)
-    for _st in stations:
-        _st.setdefault('V_MIN', global_min_v)
-        _st.setdefault('V_MAX', global_max_v)
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -1785,7 +1781,20 @@ def solve_pipeline(
         best_res: dict | None = None
         for case in cases:
             usage = [0] * len(stations)
-            for pos, val in zip(loop_positions, case):
+            for pos, val in zip(loop_positions, case, V_MIN: float | None = None, V_MAX: float | None = None):
+    # ---- injected: set station velocity defaults ----
+    try:
+        _global_vmin = DEFAULT_MIN_VELOCITY_MS if V_MIN is None else float(V_MIN)
+        _global_vmax = DEFAULT_MAX_VELOCITY_MS if V_MAX is None else float(V_MAX)
+    except Exception:
+        _global_vmin, _global_vmax = DEFAULT_MIN_VELOCITY_MS, DEFAULT_MAX_VELOCITY_MS
+    try:
+        for _stn in stations:
+            if isinstance(_stn, dict):
+                _stn.setdefault('V_MIN', _global_vmin)
+                _stn.setdefault('V_MAX', _global_vmax)
+    except Exception:
+        pass
                 usage[pos] = val
             res = solve_pipeline(
                 stations,
@@ -2385,7 +2394,7 @@ def solve_pipeline(
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
-    init_residual = int(stations[0].get('min_residual', 0))
+    init_residual = int(stations[0].get('min_residual', 50))
     origin_diameter = float(station_opts[0]['d_inner']) if station_opts else 0.0
     initial_queue = _build_initial_dra_queue(linefill_state, dra_reach_km, origin_diameter)
     # Initial dynamic‑programming state.  Each state carries the cumulative
@@ -2652,9 +2661,9 @@ def solve_pipeline(
                     filtered_scenarios = scenarios
                 for sc in filtered_scenarios:
                     # Skip scenarios with unacceptable velocities
-                    if sc['flow_main'] > 0 and not ((stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS) <= 0 or sc['v'] >= stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS)) and (stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS) <= 0 or sc['v'] <= stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS))):
+                    if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
-                    if sc['flow_loop'] > 0 and not ((stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS) <= 0 or sc['v_loop'] >= stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS)) and (stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS) <= 0 or sc['v_loop'] <= stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS))):
+                    if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
                         continue
 
                     # -----------------------------------------------------------------
@@ -3196,10 +3205,6 @@ def solve_pipeline_with_types(
             # Determine available counts for each type
             availA = stn['pump_types'].get('A', {}).get('available', 0)
             availB = stn['pump_types'].get('B', {}).get('available', 0)
-            # Guard: if nothing available, skip type-combo path
-            if (availA or 0) + (availB or 0) <= 0:
-                expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
-                return
             max_raw = stn.get('max_pumps', None)
             if max_raw is None:
                 limit = math.inf
