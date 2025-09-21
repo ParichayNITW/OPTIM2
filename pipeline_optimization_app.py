@@ -1,4 +1,3 @@
-
 import os
 import sys
 from pathlib import Path
@@ -324,20 +323,6 @@ with st.sidebar:
             step=1.0,
             key="MOP_kgcm2",
         )
-    with st.expander("Hydraulic Constraints", expanded=False):
-        st.session_state["V_MIN"] = st.number_input(
-            "Minimum allowable velocity (m/s, 0 = no floor)",
-            min_value=0.0, max_value=5.0,
-            value=float(st.session_state.get("V_MIN", 0.0) or 0.0),
-            step=0.05, key="V_MIN_input",
-        )
-        st.session_state["V_MAX"] = st.number_input(
-            "Maximum allowable velocity (m/s, 0 = no cap)",
-            min_value=0.0, max_value=10.0,
-            value=float(st.session_state.get("V_MAX", 4.0) or 4.0),
-            step=0.1, key="V_MAX_input",
-        )
-
 
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
@@ -1007,8 +992,8 @@ def map_linefill_to_segments(linefill_df, stations):
         # When no linefill information is provided, return conservative defaults
         # rather than zeros.  Zero viscosities and densities result in
         # non-physical conditions that cause the optimiser to reject all
-        # scenarios.  Here we assume a light refined product of 1.0 cSt and
-        # density 850 kg/m³ across all segments.
+        # scenarios.  Here we assume a light refined product of 1.0 cSt and
+        # density 850 kg/m³ across all segments.
         return [1.0] * len(stations), [850.0] * len(stations)
 
     cols = set(linefill_df.columns)
@@ -1922,10 +1907,10 @@ def solve_pipeline(
                 start_time=start_time,
                 segment_profiles=segment_profiles,
                 dra_shear_factor=dra_shear_factor,
-                V_MIN=st.session_state.get("V_MIN", 0.0),
-                V_MAX=st.session_state.get("V_MAX", 4.0),
-            )
-        # Append a human-readable flow pattern name based on loop usage
+            ,
+    V_MIN=st.session_state.get("V_MIN", 0.0),
+    V_MAX=st.session_state.get("V_MAX", 4.0),
+)# Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
             usage = res.get("loop_usage", [])
             # Build segment-based descriptors for each looped section
