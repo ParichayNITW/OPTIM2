@@ -2218,16 +2218,48 @@ def solve_pipeline(
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
-            max_dr_main = int(stn.get('max_dr', 0))
+            # read maximum drag‑reduction percentage without truncating fractional values
+            max_dr_main_raw = stn.get('max_dr', 0)
+            try:
+                max_dr_main = int(float(max_dr_main_raw))
+            except Exception:
+                max_dr_main = 0
             if fixed_dr is not None:
-                dra_main_vals = [int(round(fixed_dr))]
+                dra_main_vals = [int(round(float(fixed_dr)))]
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
-            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
+                # Ensure at least one non-zero injection option is considered when max_dr_main > 0.
+                # If all enumerated drag-reduction values yield zero PPM at this viscosity, attempt to
+                # include a higher DR value (up to 100%) that produces a positive PPM.  This avoids
+                # missing feasible DRA injection simply because the max_dr or dra_step are too low.
+                if max_dr_main > 0 and not any(
+                    get_ppm_for_dr(kv, dr) > DRA_PPM_TOL for dr in dra_main_vals if dr > 0
+                ):
+                    # Try the maximum allowed DR first
+                    candidate_dr = max_dr_main
+                    if get_ppm_for_dr(kv, candidate_dr) > DRA_PPM_TOL:
+                        if candidate_dr not in dra_main_vals:
+                            dra_main_vals.append(candidate_dr)
+                    else:
+                        # Incrementally search for a DR value with non-zero PPM
+                        search_dr = candidate_dr + dra_step
+                        while search_dr <= 100:
+                            if get_ppm_for_dr(kv, search_dr) > DRA_PPM_TOL:
+                                dra_main_vals.append(search_dr)
+                                break
+                            search_dr += dra_step
+            if loop_dict:
+                max_dr_loop_raw = loop_dict.get('max_dr', 0)
+                try:
+                    max_dr_loop = int(float(max_dr_loop_raw))
+                except Exception:
+                    max_dr_loop = 0
+            else:
+                max_dr_loop = 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
@@ -2299,7 +2331,12 @@ def solve_pipeline(
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
-            max_dr_main = int(stn.get('max_dr', 0))
+            # read maximum drag‑reduction percentage for non-pump stations
+            max_dr_main_raw = stn.get('max_dr', 0)
+            try:
+                max_dr_main = int(float(max_dr_main_raw))
+            except Exception:
+                max_dr_main = 0
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
@@ -2307,6 +2344,21 @@ def solve_pipeline(
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
+                # Ensure at least one non-zero injection option is considered when max_dr_main > 0.
+                if max_dr_main > 0 and not any(
+                    get_ppm_for_dr(kv, dr) > DRA_PPM_TOL for dr in dra_vals if dr > 0
+                ):
+                    candidate_dr = max_dr_main
+                    if get_ppm_for_dr(kv, candidate_dr) > DRA_PPM_TOL:
+                        if candidate_dr not in dra_vals:
+                            dra_vals.append(candidate_dr)
+                    else:
+                        search_dr = candidate_dr + dra_step
+                        while search_dr <= 100:
+                            if get_ppm_for_dr(kv, search_dr) > DRA_PPM_TOL:
+                                dra_vals.append(search_dr)
+                                break
+                            search_dr += dra_step
                 for dra_main in dra_vals:
                     ppm_main = (
                         float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
@@ -2708,6 +2760,8 @@ def solve_pipeline(
                     filtered_scenarios = scenarios
                 loop_dra_current = _coerce_float(opt.get('dra_loop', 0.0), 0.0)
                 for sc in filtered_scenarios:
+                    # Initialise DRA cost for each scenario to avoid unbound variable errors
+                    dra_cost = 0.0
                     # Skip scenarios with unacceptable velocities
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
                         continue
@@ -2752,85 +2806,12 @@ def solve_pipeline(
                         # treat the loopline length as only the current segment
                         if length_loop_total <= 0.0:
                             length_loop_total = stn_data['loopline']['L']
-                        # Construct the downstream mainline ppm profile by combining the
-                        # coverage for this segment with the remaining queued slices.
-                        profile_main: list[tuple[float, float]] = []
-                        remaining_main = length_main_total
-                        for seg_len, ppm_val in dra_slices:
-                            if remaining_main <= 1e-9:
-                                break
-                            seg_length = float(seg_len)
-                            if seg_length <= 1e-9:
-                                continue
-                            take = seg_length if seg_length <= remaining_main else remaining_main
-                            if take <= 1e-9:
-                                continue
-                            try:
-                                ppm_slice = float(ppm_val or 0.0)
-                            except Exception:
-                                ppm_slice = 0.0
-                            profile_main.append((take, ppm_slice))
-                            remaining_main -= take
-                        if remaining_main > 1e-9 and dra_queue_next:
-                            for entry in _normalise_queue(dra_queue_next):
-                                if remaining_main <= 1e-9:
-                                    break
-                                seg_length = float(entry.get('length_km', 0.0))
-                                if seg_length <= 1e-9:
-                                    continue
-                                take = seg_length if seg_length <= remaining_main else remaining_main
-                                if take <= 1e-9:
-                                    continue
-                                try:
-                                    ppm_slice = float(entry.get('dra_ppm', 0.0) or 0.0)
-                                except Exception:
-                                    ppm_slice = 0.0
-                                profile_main.append((take, ppm_slice))
-                                remaining_main -= take
-                        if not profile_main and remaining_main > 1e-9:
-                            upstream_queue = _normalise_queue(state.get('dra_queue'))
-                            if upstream_queue:
-                                for entry in upstream_queue:
-                                    if remaining_main <= 1e-9:
-                                        break
-                                    seg_length = float(entry.get('length_km', 0.0))
-                                    if seg_length <= 1e-9:
-                                        continue
-                                    take = seg_length if seg_length <= remaining_main else remaining_main
-                                    if take <= 1e-9:
-                                        continue
-                                    try:
-                                        ppm_slice = float(entry.get('dra_ppm', 0.0) or 0.0)
-                                    except Exception:
-                                        ppm_slice = 0.0
-                                    profile_main.append((take, ppm_slice))
-                                    remaining_main -= take
-                        if (
-                            not any(abs(ppm_val) > DRA_PPM_TOL for _, ppm_val in profile_main)
-                            and inj_ppm_main > DRA_PPM_TOL
-                        ):
-                            profile_main = [(length_main_total, float(inj_ppm_main))]
-                            remaining_main = 0.0
-
                         # Effective drag reduction for the entire path based on the
-                        # combined ppm coverage (including inherited carry-over).
-                        weighted_main_tot = 0.0
-                        dra_len_main_tot = 0.0
-                        for seg_len, ppm_val in profile_main:
-                            ppm_slice = float(ppm_val or 0.0)
-                            if ppm_slice < -DRA_PPM_TOL:
-                                ppm_slice = 0.0
-                            elif abs(ppm_slice) <= DRA_PPM_TOL:
-                                ppm_slice = 0.0
-                            if ppm_slice <= 0.0 or seg_len <= 1e-9:
-                                continue
-                            eff_slice = float(get_dr_for_ppm(stn_data['kv'], ppm_slice))
-                            if eff_slice <= 0.0:
-                                continue
-                            dra_len_main_tot += seg_len
-                            weighted_main_tot += eff_slice * seg_len
+                        # inherited mainline PPM
                         eff_dra_main_tot = (
-                            weighted_main_tot / dra_len_main_tot if dra_len_main_tot > 1e-9 else 0.0
+                            float(get_dr_for_ppm(stn_data['kv'], ppm_main))
+                            if ppm_main > 0
+                            else 0.0
                         )
                         # Carry-over drag reduction on the loop from the previous state
                         carry_prev = _coerce_float(state.get('carry_loop_dra', 0.0), 0.0)
@@ -2850,7 +2831,7 @@ def solve_pipeline(
                             stn_data['d_inner'],
                             stn_data['rough'],
                             eff_dra_main_tot,
-                            dra_len_main_tot if eff_dra_main_tot > 0 else 0.0,
+                            length_main_total if eff_dra_main_tot > 0 else 0.0,
                             length_loop_total,
                             stn_data['loopline']['d_inner'],
                             stn_data['loopline']['rough'],
@@ -2985,8 +2966,7 @@ def solve_pipeline(
                     dra_cost = 0.0
                     if inj_ppm_main > 0:
                         dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
-                    # Loopline injection uses ``inj_ppm_loop`` computed
-                    # earlier.  Charge cost only when an actual injection is
+                    # Loopline injection uses ``inj_ppm_loop`` computed earlier.  Charge cost only when an actual injection is
                     # performed at this station.
                     if sc['flow_loop'] > 0 and inj_loop_current > 0:
                         dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
