@@ -2787,6 +2787,30 @@ def solve_pipeline(
                                     ppm_slice = 0.0
                                 profile_main.append((take, ppm_slice))
                                 remaining_main -= take
+                        if not profile_main and remaining_main > 1e-9:
+                            upstream_queue = _normalise_queue(state.get('dra_queue'))
+                            if upstream_queue:
+                                for entry in upstream_queue:
+                                    if remaining_main <= 1e-9:
+                                        break
+                                    seg_length = float(entry.get('length_km', 0.0))
+                                    if seg_length <= 1e-9:
+                                        continue
+                                    take = seg_length if seg_length <= remaining_main else remaining_main
+                                    if take <= 1e-9:
+                                        continue
+                                    try:
+                                        ppm_slice = float(entry.get('dra_ppm', 0.0) or 0.0)
+                                    except Exception:
+                                        ppm_slice = 0.0
+                                    profile_main.append((take, ppm_slice))
+                                    remaining_main -= take
+                        if (
+                            not any(abs(ppm_val) > DRA_PPM_TOL for _, ppm_val in profile_main)
+                            and inj_ppm_main > DRA_PPM_TOL
+                        ):
+                            profile_main = [(length_main_total, float(inj_ppm_main))]
+                            remaining_main = 0.0
 
                         # Effective drag reduction for the entire path based on the
                         # combined ppm coverage (including inherited carry-over).

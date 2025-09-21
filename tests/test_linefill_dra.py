@@ -712,6 +712,100 @@ def test_bypass_with_fractional_dra_adjusts_flow_split(monkeypatch) -> None:
     assert any(call["eff_dra_main"] >= 0.0 for call in relevant)
 
 
+def test_bypass_injection_without_queue_uses_setpoint(monkeypatch) -> None:
+    """When no slices remain the bypass should fall back to the injection setpoint."""
+
+    stations = [
+        _make_pump_station("Station A", max_dr=12),
+        _make_pump_station("Station B"),
+    ]
+    stations[0]["loopline"] = {"L": 12.0, "d": 0.7, "rough": 4.0e-05, "max_dr": 0}
+    terminal = {"name": "Terminal", "min_residual": 40, "elev": 0.0}
+
+    kv = 3.0
+    dr_target = 8
+    inj_ppm = float(get_ppm_for_dr(kv, dr_target))
+    expected_dr = float(get_dr_for_ppm(kv, inj_ppm))
+
+    def fake_update(*args, **kwargs):
+        return [], [], inj_ppm
+
+    calls: list[dict[str, float]] = []
+
+    def fake_parallel(
+        flow_total: float,
+        length_main: float,
+        d_inner_main: float,
+        rough_main: float,
+        eff_dra_main: float,
+        dra_len_main: float,
+        length_loop: float,
+        d_inner_loop: float,
+        rough_loop: float,
+        eff_dra_loop: float,
+        dra_len_loop: float,
+        kv_local: float,
+    ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+        calls.append(
+            {
+                "length_main": length_main,
+                "eff_dra_main": eff_dra_main,
+                "dra_len_main": dra_len_main,
+            }
+        )
+        return (
+            1.0,
+            (1.0, 1.0, 0.01, flow_total * 0.6),
+            (1.0, 1.0, 0.01, flow_total * 0.4),
+        )
+
+    def fake_segment(
+        flow_total: float,
+        length: float,
+        diameter: float,
+        roughness: float,
+        kv_local: float,
+        eff_dra: float,
+        dra_length: float,
+    ) -> tuple[float, float, float, float]:
+        return (1.0, 1.0, 1.0, 0.01)
+
+    monkeypatch.setattr(pm, "_update_mainline_dra", fake_update)
+    monkeypatch.setattr(pm, "_parallel_segment_hydraulics", fake_parallel)
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+
+    result = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        FLOW=2100.0,
+        KV_list=[kv, kv, kv],
+        rho_list=[850.0, 850.0, 850.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=6.0,
+        start_time="00:00",
+        loop_usage_by_station=[2, 0],
+        enumerate_loops=False,
+        narrow_ranges={0: {"dra_main": (dr_target, dr_target)}},
+        _internal_pass=True,
+    )
+
+    assert not result.get("error"), result.get("message")
+    total_length = stations[0]["L"] + stations[1]["L"]
+    relevant = [
+        entry
+        for entry in calls
+        if abs(entry["length_main"] - total_length) <= 1e-6
+    ]
+    assert relevant, "Bypass hydraulic recalculation was not invoked"
+    assert any(entry["eff_dra_main"] == pytest.approx(expected_dr, rel=1e-6) for entry in relevant)
+    assert any(entry["dra_len_main"] == pytest.approx(total_length, rel=1e-6) for entry in relevant)
+
+
 def test_bypass_linefill_slug_preserves_drag_reduction(monkeypatch) -> None:
     """Linefill DRA should inform bypass hydraulics even without new injection."""
 
