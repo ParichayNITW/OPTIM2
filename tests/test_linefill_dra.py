@@ -14,6 +14,9 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from pipeline_model import _km_from_volume, _update_mainline_dra, solve_pipeline
 
 
+PPM_TOL = 1e-6
+
+
 def _make_pump_station(name: str, *, max_dr: int = 0) -> dict:
     """Return a minimal pump-station definition for regression tests."""
 
@@ -95,8 +98,8 @@ def test_linefill_dra_persists_through_running_pumps() -> None:
     assert not dra_result.get("error"), dra_result.get("message")
 
     # No new DRA should have been injected at either pump station.
-    assert dra_result["dra_ppm_station_a"] == 0
-    assert dra_result["dra_ppm_station_b"] == 0
+    assert abs(dra_result["dra_ppm_station_a"]) <= PPM_TOL
+    assert abs(dra_result["dra_ppm_station_b"]) <= PPM_TOL
 
     # The carried slug reduces the SDH at the downstream station and continues
     # travelling through the line (positive treated volume remains).
@@ -104,7 +107,7 @@ def test_linefill_dra_persists_through_running_pumps() -> None:
     treated_volume = sum(
         float(batch.get("volume", 0.0))
         for batch in dra_result["linefill"]
-        if int(batch.get("dra_ppm", 0) or 0) > 0
+        if float(batch.get("dra_ppm", 0.0) or 0.0) > PPM_TOL
     )
     assert treated_volume > 0.0
 
@@ -119,10 +122,10 @@ def test_zero_injection_benefits_from_inherited_slug() -> None:
         total = 0.0
         for batch in linefill_state:
             try:
-                ppm = int(batch.get("dra_ppm", 0) or 0)
+                ppm = float(batch.get("dra_ppm", 0.0) or 0.0)
             except Exception:
-                ppm = 0
-            if ppm <= 0:
+                ppm = 0.0
+            if ppm <= PPM_TOL:
                 continue
             try:
                 vol = float(batch.get("volume", 0.0))
@@ -171,8 +174,8 @@ def test_zero_injection_benefits_from_inherited_slug() -> None:
             **common_kwargs,
         )
         assert not result.get("error"), result.get("message")
-        assert result["dra_ppm_station_a"] == 0
-        assert result["dra_ppm_station_b"] == 0
+        assert abs(result["dra_ppm_station_a"]) <= PPM_TOL
+        assert abs(result["dra_ppm_station_b"]) <= PPM_TOL
         sdh_history.append(result["sdh_station_b"])
         linefill_state = copy.deepcopy(result["linefill"])
 
@@ -201,16 +204,18 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
         hours,
     )
 
-    assert inj_ppm == opt["dra_ppm_main"]
+    assert inj_ppm == pytest.approx(opt["dra_ppm_main"], rel=1e-9, abs=PPM_TOL)
     assert dra_segments
-    assert dra_segments[0][1] == inj_ppm
+    assert dra_segments[0][1] == pytest.approx(inj_ppm, rel=1e-9, abs=PPM_TOL)
     assert dra_segments[0][0] == pytest.approx(segment_length, rel=1e-6)
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == inj_ppm
+    assert queue_after[0]["dra_ppm"] == pytest.approx(inj_ppm, rel=1e-9, abs=PPM_TOL)
     assert queue_after[0]["length_km"] == pytest.approx(
         pumped_length - segment_length, rel=1e-6
     )
-    assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[1]["dra_ppm"] == pytest.approx(
+        initial_queue[0]["dra_ppm"], rel=1e-9, abs=PPM_TOL
+    )
     assert queue_after[1]["length_km"] == pytest.approx(
         initial_queue[0]["length_km"] - pumped_length,
         rel=1e-6,
@@ -238,12 +243,14 @@ def test_running_pump_shears_trimmed_slug() -> None:
         dra_shear_factor=0.25,
     )
 
-    expected_ppm = int(round(initial_queue[0]["dra_ppm"] * 0.75))
+    expected_ppm = initial_queue[0]["dra_ppm"] * 0.75
     assert dra_segments
-    assert dra_segments[0][1] == expected_ppm
+    assert dra_segments[0][1] == pytest.approx(expected_ppm, rel=1e-9, abs=PPM_TOL)
     assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[0]["dra_ppm"] == pytest.approx(
+        initial_queue[0]["dra_ppm"], rel=1e-9, abs=PPM_TOL
+    )
     assert queue_after[0]["length_km"] == pytest.approx(
         max(initial_queue[0]["length_km"] - pumped_length, 0.0),
         rel=1e-6,
@@ -271,13 +278,15 @@ def test_injected_slug_respects_shear_when_upstream() -> None:
         shear_injection=True,
     )
 
-    assert inj_ppm == opt["dra_ppm_main"]
-    expected_ppm = int(round(opt["dra_ppm_main"] * 0.8))
+    assert inj_ppm == pytest.approx(opt["dra_ppm_main"], rel=1e-9, abs=PPM_TOL)
+    expected_ppm = opt["dra_ppm_main"] * 0.8
     assert dra_segments
-    assert dra_segments[0][1] == expected_ppm
+    assert dra_segments[0][1] == pytest.approx(expected_ppm, rel=1e-9, abs=PPM_TOL)
     assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
     if queue_after:
-        assert queue_after[0]["dra_ppm"] == expected_ppm
+        assert queue_after[0]["dra_ppm"] == pytest.approx(
+            expected_ppm, rel=1e-9, abs=PPM_TOL
+        )
 
 
 def test_idle_pump_injection_reflected_in_results() -> None:
@@ -290,7 +299,7 @@ def test_idle_pump_injection_reflected_in_results() -> None:
     stations[1]["min_pumps"] = 0
     stations[1]["max_pumps"] = 0
 
-    terminal = {"name": "Terminal", "min_residual": 5, "elev": 0.0}
+    terminal = {"name": "Terminal", "min_residual": 35, "elev": 0.0}
 
     hours = 12.0
     rate_dra = 5.0
@@ -321,16 +330,80 @@ def test_idle_pump_injection_reflected_in_results() -> None:
 
     assert not result.get("error"), result.get("message")
 
-    expected_ppm = int(get_ppm_for_dr(3.0, 12))
+    expected_ppm = float(get_ppm_for_dr(3.0, 12))
     assert expected_ppm > 0
     flow_station_b = result["pipeline_flow_station_b"]
     assert result["num_pumps_station_b"] == 0
-    assert result["dra_ppm_station_b"] == expected_ppm
-    assert result["dra_ppm_station_b"] > 0
+    assert result["dra_ppm_station_b"] == pytest.approx(
+        expected_ppm, rel=1e-9, abs=PPM_TOL
+    )
+    assert result["dra_ppm_station_b"] > PPM_TOL
     assert result["drag_reduction_station_b"] > 0.0
     assert result["dra_cost_station_b"] == pytest.approx(
         expected_ppm * (flow_station_b * 1000.0 * hours / 1e6) * rate_dra,
         rel=1e-6,
+    )
+
+
+def test_fractional_dra_ppm_produces_benefit() -> None:
+    """Stations with small DR should retain fractional ppm and improve hydraulics."""
+
+    station = _make_pump_station("Station A", max_dr=4)
+    station["min_pumps"] = 1
+    station["max_pumps"] = 1
+    terminal = {"name": "Terminal", "min_residual": 35, "elev": 0.0}
+
+    common_kwargs = dict(
+        FLOW=2500.0,
+        KV_list=[3.0, 3.0],
+        rho_list=[850.0, 850.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=12.0,
+        start_time="00:00",
+        enumerate_loops=False,
+    )
+
+    fractional_result = solve_pipeline(
+        stations=[copy.deepcopy(station)],
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        narrow_ranges={0: {"dra_main": (4, 4)}},
+        dra_step=1,
+        _internal_pass=True,
+        **common_kwargs,
+    )
+    assert not fractional_result.get("error"), fractional_result.get("message")
+
+    baseline_station = copy.deepcopy(station)
+    baseline_station["max_dr"] = 0
+    baseline_result = solve_pipeline(
+        stations=[baseline_station],
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        dra_step=1,
+        _internal_pass=True,
+        **common_kwargs,
+    )
+    assert not baseline_result.get("error"), baseline_result.get("message")
+    assert abs(baseline_result["dra_ppm_station_a"]) <= PPM_TOL
+
+    ppm = fractional_result["dra_ppm_station_a"]
+    expected_ppm = float(get_ppm_for_dr(3.0, 4))
+    expected_dr = float(get_dr_for_ppm(3.0, expected_ppm))
+    assert ppm > PPM_TOL
+    assert ppm == pytest.approx(expected_ppm, rel=1e-9, abs=PPM_TOL)
+    assert ppm < 1.0
+    assert fractional_result["drag_reduction_station_a"] == pytest.approx(
+        expected_dr, rel=1e-9
+    )
+    assert (
+        fractional_result["head_loss_station_a"]
+        < baseline_result["head_loss_station_a"]
     )
 
 
@@ -358,9 +431,9 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
         dra_shear_factor=shear_factor,
     )
     assert queue_after_stage1, "Expected a sheared slug after first stage"
-    ppm_stage1 = int(queue_after_stage1[0]["dra_ppm"])
-    expected_stage1 = int(round(initial_ppm * (1 - shear_factor)))
-    assert ppm_stage1 == expected_stage1
+    ppm_stage1 = queue_after_stage1[0]["dra_ppm"]
+    expected_stage1 = initial_ppm * (1 - shear_factor)
+    assert ppm_stage1 == pytest.approx(expected_stage1, rel=1e-9, abs=PPM_TOL)
 
     # Repeat for the second pump stage.
     _, queue_after_stage2, _ = _update_mainline_dra(
@@ -374,9 +447,9 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
         dra_shear_factor=shear_factor,
     )
     assert queue_after_stage2, "Expected slug to persist after second stage"
-    ppm_stage2 = int(queue_after_stage2[0]["dra_ppm"])
-    expected_stage2 = int(round(expected_stage1 * (1 - shear_factor)))
-    assert ppm_stage2 == expected_stage2
+    ppm_stage2 = queue_after_stage2[0]["dra_ppm"]
+    expected_stage2 = expected_stage1 * (1 - shear_factor)
+    assert ppm_stage2 == pytest.approx(expected_stage2, rel=1e-9, abs=PPM_TOL)
 
     kv = 3.0
     base_dr = float(get_dr_for_ppm(kv, initial_ppm))
@@ -408,7 +481,9 @@ def test_full_shear_zeroes_trimmed_slug() -> None:
 
     assert not dra_segments
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[0]["dra_ppm"] == pytest.approx(
+        initial_queue[0]["dra_ppm"], rel=1e-9, abs=PPM_TOL
+    )
     assert queue_after[0]["length_km"] == pytest.approx(
         initial_queue[0]["length_km"] - pumped_length,
         rel=1e-6,
@@ -439,12 +514,14 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
 
     assert not dra_segments
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == 0
+    assert abs(queue_after[0]["dra_ppm"]) <= PPM_TOL
     assert queue_after[0]["length_km"] == pytest.approx(
         pumped_length - segment_length,
         rel=1e-6,
     )
-    assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[1]["dra_ppm"] == pytest.approx(
+        initial_queue[0]["dra_ppm"], rel=1e-9, abs=PPM_TOL
+    )
     assert queue_after[1]["length_km"] == pytest.approx(
         initial_queue[0]["length_km"] - pumped_length,
         rel=1e-6,
@@ -476,7 +553,7 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
 
         assert not dra_segments
         assert queue_after
-        assert queue_after[0]["dra_ppm"] == 0
+        assert abs(queue_after[0]["dra_ppm"]) <= PPM_TOL
         assert queue_after[0]["length_km"] == pytest.approx(
             pumped_length - segment_length,
             rel=1e-6,
@@ -507,7 +584,7 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
 
     assert queue_after
     zero_front = queue_after[0]
-    assert zero_front["dra_ppm"] == 0
+    assert abs(zero_front["dra_ppm"]) <= PPM_TOL
     zero_length = zero_front["length_km"]
 
     downstream_segment = zero_length + 1.0
@@ -524,9 +601,13 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
 
     assert dra_segments
     assert dra_segments[0][0] == pytest.approx(1.0, rel=1e-6)
-    assert dra_segments[0][1] == initial_queue[0]["dra_ppm"]
+    assert dra_segments[0][1] == pytest.approx(
+        initial_queue[0]["dra_ppm"], rel=1e-9, abs=PPM_TOL
+    )
     assert queue_final
-    assert queue_final[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_final[0]["dra_ppm"] == pytest.approx(
+        initial_queue[0]["dra_ppm"], rel=1e-9, abs=PPM_TOL
+    )
     assert queue_final[0]["length_km"] == pytest.approx(
         initial_queue[0]["length_km"] - pumped_length - 1.0,
         rel=1e-6,
