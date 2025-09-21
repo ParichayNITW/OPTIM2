@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import math
+from collections import Counter
 from collections.abc import Mapping
 from itertools import product
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -2416,6 +2417,7 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
+        failure_reasons = Counter()
         new_states: Dict[int, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
@@ -2656,8 +2658,10 @@ def solve_pipeline(
                 for sc in filtered_scenarios:
                     # Skip scenarios with unacceptable velocities
                     if sc['flow_main'] > 0 and not ((stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS) <= 0 or sc['v'] >= stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS)) and (stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS) <= 0 or sc['v'] <= stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS))):
+                        failure_reasons['velocity_main'] += 1
                         continue
                     if sc['flow_loop'] > 0 and not ((stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS) <= 0 or sc['v_loop'] >= stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS)) and (stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS) <= 0 or sc['v_loop'] <= stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS))):
+                        failure_reasons['velocity_loop'] += 1
                         continue
 
                     # -----------------------------------------------------------------
@@ -2802,6 +2806,7 @@ def solve_pipeline(
                     if sdh > stn_data['maop_head'] or (
                         sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
                     ):
+                        failure_reasons['maop'] += 1
                         continue
 
                     # Compute downstream residual head after segment loss and elevation
@@ -2845,6 +2850,7 @@ def solve_pipeline(
                             pump_flow_overrides=pump_overrides,
                         )
                     if residual_next < min_req:
+                        failure_reasons['downstream'] += 1
                         continue
 
                     # Compute DRA costs.  Only charge for injections performed at this
@@ -2995,7 +3001,35 @@ def solve_pipeline(
                         }
 
         if not new_states:
-            return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
+            name = stn_data['orig_name']
+            if failure_reasons.get('maop'):
+                limit = stn_data.get('maop_kgcm2')
+                if isinstance(limit, (int, float)):
+                    return {
+                        "error": True,
+                        "message": f"MAOP limit ({limit:.2f} kg/cm²) prevents operation at {name}.",
+                    }
+                return {
+                    "error": True,
+                    "message": f"MAOP limit prevents operation at {name}.",
+                }
+            if failure_reasons.get('velocity_main') or failure_reasons.get('velocity_loop'):
+                parts: List[str] = []
+                if failure_reasons.get('velocity_main'):
+                    parts.append('mainline velocity')
+                if failure_reasons.get('velocity_loop'):
+                    parts.append('loopline velocity')
+                detail = ' and '.join(parts)
+                return {
+                    "error": True,
+                    "message": f"Velocity constraint ({detail}) prevents operation at {name}.",
+                }
+            if failure_reasons.get('downstream'):
+                return {
+                    "error": True,
+                    "message": f"Insufficient head to satisfy downstream requirements at {name}.",
+                }
+            return {"error": True, "message": f"No feasible operating point for {name}"}
         # After evaluating all options for this station retain only the
         # lowest-cost state for each residual (already enforced by ``bucket``)
         # and globally prune to the top ``STATE_TOP_K`` states or those within
@@ -3103,6 +3137,7 @@ def solve_pipeline_with_types(
     best_result = None
     best_cost = float('inf')
     best_stations = None
+    failure_messages = Counter()
     N = len(stations)
 
     def expand_all(
@@ -3112,7 +3147,7 @@ def solve_pipeline_with_types(
         rho_acc: List[float],
         profile_acc: List[Optional[List[Dict[str, float]]]],
     ):
-        nonlocal best_result, best_cost, best_stations
+        nonlocal best_result, best_cost, best_stations, failure_messages
         if pos >= N:
             # When all stations have been expanded into individual pump units,
             # perform loop-case enumeration explicitly.  We determine the
@@ -3179,6 +3214,9 @@ def solve_pipeline_with_types(
                     dra_shear_factor=dra_shear_factor,
                 )
                 if result.get("error"):
+                    msg = result.get("message")
+                    if msg:
+                        failure_messages[msg] += 1
                     continue
                 cost = result.get("total_cost", float('inf'))
                 if cost < best_cost:
@@ -3299,6 +3337,28 @@ def solve_pipeline_with_types(
     expand_all(0, [], [], [], [])
 
     if best_result is None:
+        if failure_messages:
+            most_common = failure_messages.most_common(3)
+            if len(failure_messages) == 1:
+                return {"error": True, "message": most_common[0][0]}
+
+            def _format_issue(msg: str, count: int) -> str:
+                if count <= 1:
+                    return msg
+                if msg.endswith("."):
+                    return f"{msg[:-1]} (seen {count}×)."
+                return f"{msg} (seen {count}×)"
+
+            detail_parts = [_format_issue(msg, count) for msg, count in most_common]
+            extra_types = len(failure_messages) - len(most_common)
+            if extra_types > 0:
+                suffix = "issue" if extra_types == 1 else "issues"
+                detail_parts.append(f"...and {extra_types} other {suffix}")
+            detail = "; ".join(detail_parts)
+            return {
+                "error": True,
+                "message": f"No feasible pump combination found for stations. Frequent issues: {detail}",
+            }
         return {
             "error": True,
             "message": "No feasible pump combination found for stations.",
