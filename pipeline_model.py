@@ -2928,16 +2928,13 @@ def solve_pipeline(
                     # station.  Mainline and loopline injections are handled
                     # separately and loopline cost is incurred only when
                     # an injection is made.
-                        dra_cost = 0.0
-                        # Convert PPM into a true fraction of the pumped volume (ppm = parts per million)
-                        # Volume in litres = flow (m³/h) × hours × 1000
-                        if inj_ppm_main > 0:
-                            dra_volume_main_l = (inj_ppm_main / 1e6) * (sc['flow_main'] * 1000.0 * hours)
-                            dra_cost += dra_volume_main_l * RateDRA
-                        # Loopline injection uses ``inj_ppm_loop``. Only charge cost when actually injecting.
-                        if sc['flow_loop'] > 0 and inj_loop_current > 0:
-                            dra_volume_loop_l = (inj_ppm_loop / 1e6) * (sc['flow_loop'] * 1000.0 * hours)
-                            dra_cost += dra_volume_loop_l * RateDRA
+                    dra_cost = 0.0
+                    if inj_ppm_main > 0:
+                        dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                    # Loopline injection uses ``inj_ppm_loop`` computed earlier.  Charge cost only when an actual injection is
+                    # performed at this station.
+                    if sc['flow_loop'] > 0 and inj_loop_current > 0:
+                        dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
 
                     total_cost = power_cost + dra_cost
 
