@@ -6,7 +6,7 @@ Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Dict, Tuple
 
 import numpy as np
@@ -30,16 +30,12 @@ DRA_CSV_FILES: Dict[float, str] = {
     40: "40 cst.csv",
 }
 
-# Directory containing CSV lookup tables distributed with the module
-DATA_DIR = Path(__file__).resolve().parent
-
 # Load the drag-reducer curves lazily at import time
 DRA_CURVE_DATA: Dict[float, pd.DataFrame | None] = {}
 for cst, fname in DRA_CSV_FILES.items():
-    csv_path = DATA_DIR / fname
-    if csv_path.exists():
+    if os.path.exists(fname):
         try:
-            df = pd.read_csv(csv_path)
+            df = pd.read_csv(fname)
             # Ensure required columns exist
             if "%Drag Reduction" in df.columns and "PPM" in df.columns:
                 df = df[["%Drag Reduction", "PPM"]].dropna().sort_values("%Drag Reduction")
