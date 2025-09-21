@@ -7,6 +7,9 @@ import datetime as dt
 import math
 from collections.abc import Mapping
 from itertools import product
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+FloatOrInt = Union[float, int]
 
 import numpy as np
 
@@ -30,7 +33,7 @@ def head_to_kgcm2(head_m: float, rho: float) -> float:
     return head_m * rho / 10000.0
 
 
-def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, int]]:
+def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> List[Tuple[int, int]]:
     """Return all feasible pump count combinations for two pump types."""
     combos = [
         (a, b)
@@ -65,7 +68,7 @@ def _coerce_float(value, default: float = 0.0) -> float:
 def _extract_rpm(
     value,
     *,
-    ptype: str | None = None,
+    ptype: Optional[str] = None,
     default: float = 0.0,
     prefer: str = 'min',
 ) -> float:
@@ -76,7 +79,7 @@ def _extract_rpm(
             specific = value.get(ptype)
             if specific is not None:
                 return _coerce_float(specific, default)
-        numeric: list[float] = []
+        numeric: List[float] = []
         for val in value.values():
             if isinstance(val, Mapping):
                 continue
@@ -96,7 +99,7 @@ def _extract_rpm(
 
 def _station_min_rpm(
     stn: Mapping[str, object],
-    ptype: str | None = None,
+    ptype: Optional[str] = None,
     default: float = 0.0,
 ) -> float:
     """Return the minimum permissible RPM for ``stn`` (optionally per type)."""
@@ -106,7 +109,7 @@ def _station_min_rpm(
 
 def _station_max_rpm(
     stn: Mapping[str, object],
-    ptype: str | None = None,
+    ptype: Optional[str] = None,
     default: float = 0.0,
 ) -> float:
     """Return the maximum permissible RPM for ``stn`` (optionally per type)."""
@@ -117,10 +120,10 @@ def _station_max_rpm(
 def _compose_option_rpm_map(
     station: Mapping[str, object],
     opt: Mapping[str, object],
-) -> tuple[dict[str, float | int], bool]:
+) -> Tuple[Dict[str, FloatOrInt], bool]:
     """Return the resolved RPM map for ``opt`` at ``station`` and flag positivity."""
 
-    rpm_map_local: dict[str, float | int] = {}
+    rpm_map_local: Dict[str, FloatOrInt] = {}
     for source in (station.get('rpm_map'), opt.get('rpm_map')):
         if isinstance(source, Mapping):
             for key, value in source.items():
@@ -168,7 +171,7 @@ def _compute_tariff_cost(
     prime_kw: float,
     hours: float,
     start_time: str,
-    tariffs: list | None,
+    tariffs: Optional[List[Any]],
     default_rate: float,
 ) -> float:
     """Return the electrical energy cost for ``prime_kw`` over ``hours``."""
@@ -222,7 +225,7 @@ def _build_pump_option_cache(
     """Return cached pump data for ``opt`` at ``station``."""
 
     rpm_map_local, has_positive_rpm = _compose_option_rpm_map(station, opt)
-    cache: dict[str, object] = {
+    cache: Dict[str, object] = {
         'rpm_map': rpm_map_local,
         'has_positive_rpm': has_positive_rpm,
         'flow': float(flow),
@@ -269,7 +272,7 @@ def _build_pump_option_cache(
     tariffs = station.get('tariffs')
     elev = float(station.get('elev', 0.0))
 
-    prepared: list[dict] = []
+    prepared: List[dict] = []
     pump_bkw_total = 0.0
     prime_kw_total = 0.0
     power_cost_total = 0.0
@@ -336,7 +339,7 @@ def _build_pump_option_cache(
 # Loop enumeration utilities
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases(num_loops: int) -> list[list[int]]:
+def _generate_loop_cases(num_loops: int) -> List[List[int]]:
     """Return a small set of representative loop-usage combinations.
 
     This helper produces a variety of loop-use vectors that are independent of
@@ -367,7 +370,7 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
         return [[0, 0], [1, 1], [2, 0], [0, 1], [1, 0], [3, 3]]
     # More loops: all off, all parallel, each single loop in parallel,
     # first bypass, last bypass, and all loop-only
-    combos: list[list[int]] = []
+    combos: List[List[int]] = []
     combos.append([0] * num_loops)
     combos.append([1] * num_loops)
     for i in range(num_loops):
@@ -384,7 +387,7 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
     combos.append(c)
     combos.append([3] * num_loops)
     # Remove duplicates while preserving order
-    unique: list[list[int]] = []
+    unique: List[List[int]] = []
     for c in combos:
         if c not in unique:
             unique.append(c)
@@ -394,7 +397,7 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
 # Custom loop-case enumeration respecting pipe diameters
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> list[list[int]]:
+def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> List[List[int]]:
     """Generate loop usage patterns tailored to pipe diameter equality.
 
     When ``equal_diameter`` is ``True`` the returned cases correspond to
@@ -419,7 +422,7 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
         return [[]]
     if equal_diameter:
         # Case‑1: only consider off/on combinations without bypass or loop-only.
-        cases: list[list[int]] = []
+        cases: List[List[int]] = []
         # All loops off
         cases.append([0] * num_loops)
         # All loops on (parallel)
@@ -433,7 +436,7 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
         return cases
     else:
         # Case‑2: consider mainline‑only, loop‑only and bypass for first loop.
-        cases: list[list[int]] = []
+        cases: List[List[int]] = []
         # All loops off (mainline only)
         cases.append([0] * num_loops)
         # All loops loop‑only
@@ -448,7 +451,7 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
 # Fine-grained loop-case enumeration based on per-loop diameter equality
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
+def _generate_loop_cases_by_flags(flags: List[bool]) -> List[List[int]]:
     """Return loop usage cases for pipelines with mixed diameter equality.
 
     ``flags`` contains one boolean per looped segment indicating whether the
@@ -477,7 +480,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
         # All loops have equal diameter → reuse simpler helper
         return _generate_loop_cases_by_diameter(len(flags), True)
 
-    combos: list[list[int]] = []
+    combos: List[List[int]] = []
     n = len(flags)
     # Base case: all loops off
     combos.append([0] * n)
@@ -506,7 +509,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
         combos.append(bypass_first)
 
     # Remove duplicates while preserving order
-    unique: list[list[int]] = []
+    unique: List[List[int]] = []
     for c in combos:
         if c not in unique:
             unique.append(c)
@@ -530,11 +533,11 @@ def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
 
 
 def _normalise_queue(
-    dra_queue: list[dict[str, float]] | None,
-) -> list[dict[str, float]]:
+    dra_queue: Optional[List[Dict[str, float]]],
+) -> List[Dict[str, float]]:
     """Return a cleaned copy of ``dra_queue`` with positive slices only."""
 
-    cleaned: list[dict[str, float]] = []
+    cleaned: List[Dict[str, float]] = []
     if not dra_queue:
         return cleaned
     for entry in dra_queue:
@@ -553,16 +556,16 @@ def _normalise_queue(
 
 
 def _advance_dra_queue(
-    dra_queue: list[dict[str, float]],
+    dra_queue: List[Dict[str, float]],
     advance_km: float,
-) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+) -> Tuple[List[Dict[str, float]], List[Dict[str, float]]]:
     """Return ``dra_queue`` and trimmed slices after removing ``advance_km``."""
 
     if advance_km <= 1e-9 or not dra_queue:
         return [entry.copy() for entry in dra_queue], []
     remaining = float(advance_km)
-    result: list[dict[str, float]] = []
-    trimmed: list[dict[str, float]] = []
+    result: List[Dict[str, float]] = []
+    trimmed: List[Dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
         ppm = int(entry['dra_ppm'])
@@ -584,10 +587,10 @@ def _advance_dra_queue(
 
 
 def _prepend_dra_slice(
-    dra_queue: list[dict[str, float]],
+    dra_queue: List[Dict[str, float]],
     length_km: float,
     dra_ppm: int,
-) -> list[dict[str, float]]:
+) -> List[Dict[str, float]]:
     """Prepend a slice to ``dra_queue`` merging with the head when possible."""
 
     if length_km <= 1e-9:
@@ -604,16 +607,16 @@ def _prepend_dra_slice(
 
 
 def _consume_segment_queue(
-    dra_queue: list[dict[str, float]],
+    dra_queue: List[Dict[str, float]],
     segment_length: float,
-) -> tuple[list[tuple[float, int]], list[dict[str, float]]]:
+) -> Tuple[List[Tuple[float, int]], List[Dict[str, float]]]:
     """Split ``dra_queue`` across ``segment_length`` kilometres."""
 
     remaining = max(float(segment_length), 0.0)
     if remaining <= 1e-9:
         return [], [entry.copy() for entry in dra_queue]
-    dra_segments: list[tuple[float, int]] = []
-    result: list[dict[str, float]] = []
+    dra_segments: List[Tuple[float, int]] = []
+    result: List[Dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
         ppm = int(entry['dra_ppm'])
@@ -634,7 +637,7 @@ def _consume_segment_queue(
     return dra_segments, result
 
 
-def _value_to_bool(value) -> bool | None:
+def _value_to_bool(value) -> Optional[bool]:
     """Interpret ``value`` as a boolean flag when possible."""
 
     if isinstance(value, bool):
@@ -719,7 +722,7 @@ DEFAULT_MAX_VELOCITY_MS = 4.0
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
 
-def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+def _allowed_values(min_val: int, max_val: int, step: int) -> List[int]:
     if min_val > max_val:
         return [min_val]
     vals = list(range(min_val, max_val + 1, step))
@@ -729,7 +732,7 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
 
 
 def _update_mainline_dra(
-    dra_queue: list[dict[str, float]] | None,
+    dra_queue: Optional[List[Dict[str, float]]],
     stn_data: dict,
     opt: dict,
     segment_length: float,
@@ -738,8 +741,8 @@ def _update_mainline_dra(
     *,
     pump_running: bool = False,
     dra_shear_factor: float = 0.0,
-    shear_injection: bool | None = None,
-) -> tuple[list[tuple[float, int]], list[dict[str, float]], int]:
+    shear_injection: Optional[bool] = None,
+) -> Tuple[List[Tuple[float, int]], List[Dict[str, float]], int]:
     """Return the updated DRA slice queue and coverage for this segment."""
 
     queue = _normalise_queue(dra_queue)
@@ -754,7 +757,7 @@ def _update_mainline_dra(
     elif shear_multiplier > 1.0:
         shear_multiplier = 1.0
 
-    trimmed: list[dict[str, float]] = []
+    trimmed: List[Dict[str, float]] = []
     if pumped_length > 1e-9:
         queue, trimmed = _advance_dra_queue(queue, pumped_length)
 
@@ -809,16 +812,16 @@ def _update_mainline_dra(
 
 
 def _build_initial_dra_queue(
-    linefill_state: list[dict],
+    linefill_state: List[dict],
     dra_reach_km: float,
     first_diameter: float,
-) -> list[dict[str, float]]:
+) -> List[Dict[str, float]]:
     """Construct the starting DRA queue from ``linefill_state``."""
 
     remaining = max(float(dra_reach_km), 0.0)
     if remaining <= 1e-9:
         return []
-    queue: list[dict[str, float]] = []
+    queue: List[Dict[str, float]] = []
     for batch in linefill_state:
         try:
             ppm = int(batch.get('dra_ppm', 0) or 0)
@@ -858,8 +861,8 @@ def _segment_hydraulics(
     rough: float,
     kv: float,
     dra_perc: float,
-    dra_length: float | None = None,
-) -> tuple[float, float, float, float]:
+    dra_length: Optional[float] = None,
+) -> Tuple[float, float, float, float]:
     """Return (head_loss, velocity, reynolds, friction_factor).
 
     ``dra_length`` expresses the portion of the segment length ``L`` (in km)
@@ -923,17 +926,17 @@ def _segment_profile_hydraulics(
     rough: float,
     kv_default: float,
     dra_perc: float,
-    dra_length: float | None,
-    profile: list[dict[str, float]] | None,
-    dra_segments: list[tuple[float, float]] | None = None,
-) -> tuple[float, float, float, float]:
+    dra_length: Optional[float],
+    profile: Optional[List[Dict[str, float]]],
+    dra_segments: Optional[List[Tuple[float, float]]] = None,
+) -> Tuple[float, float, float, float]:
     """Evaluate segment hydraulics across ``profile`` slices when provided."""
 
     if not profile:
         if not dra_segments:
             return _segment_hydraulics(flow_m3h, L, d_inner, rough, kv_default, dra_perc, dra_length)
 
-        segments_master: list[tuple[float, float]] = []
+        segments_master: List[Tuple[float, float]] = []
         remaining_total = float(L)
         for length, perc in dra_segments:
             seg_len = min(max(float(length), 0.0), remaining_total)
@@ -948,7 +951,7 @@ def _segment_profile_hydraulics(
             if seg_len > 0:
                 segments_master.append((seg_len, float(dra_perc)))
 
-        def eval_slice(length_km: float, kv_local: float) -> tuple[float, float, float, float]:
+        def eval_slice(length_km: float, kv_local: float) -> Tuple[float, float, float, float]:
             if not segments_master:
                 hl, v, Re, f = _segment_hydraulics(
                     flow_m3h,
@@ -1011,7 +1014,7 @@ def _segment_profile_hydraulics(
 
     tol = 1e-9
 
-    base_slices: list[dict[str, float]] = []
+    base_slices: List[Dict[str, float]] = []
     for slice_data in profile or []:
         try:
             length_val = float(slice_data.get("length_km", 0.0))
@@ -1033,7 +1036,7 @@ def _segment_profile_hydraulics(
         adjustment = total_length - length_sum
         base_slices[-1]["length"] = max(base_slices[-1]["length"] + adjustment, tol)
 
-    dra_pieces: list[dict[str, float]] = []
+    dra_pieces: List[Dict[str, float]] = []
     remaining_for_dra = total_length
     if dra_segments:
         for length, perc in dra_segments:
@@ -1124,7 +1127,7 @@ def _segment_profile_hydraulics(
     return head_loss_total, v_last, Re_min, f_worst
 
 
-def _scale_profile(profile: list[dict[str, float]] | None, scale: float) -> list[dict[str, float]]:
+def _scale_profile(profile: Optional[List[Dict[str, float]]], scale: float) -> List[Dict[str, float]]:
     """Return ``profile`` with lengths multiplied by ``scale`` (non-negative)."""
 
     if not profile or scale <= 0:
@@ -1143,12 +1146,12 @@ def _scale_profile(profile: list[dict[str, float]] | None, scale: float) -> list
 
 def _parallel_segment_hydraulics_profile(
     flow_m3h: float,
-    main_props: tuple[float, float, float, float, float],
-    loop_props: tuple[float, float, float, float, float],
+    main_props: Tuple[float, float, float, float, float],
+    loop_props: Tuple[float, float, float, float, float],
     kv_default: float,
-    profile: list[dict[str, float]] | None,
-    main_dra_segments: list[tuple[float, float]] | None = None,
-) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+    profile: Optional[List[Dict[str, float]]],
+    main_dra_segments: Optional[List[Tuple[float, float]]] = None,
+) -> Tuple[float, Tuple[float, float, float, float], Tuple[float, float, float, float]]:
     """Parallel hydraulics solver aware of viscosity profiles."""
 
     main_L, main_d_inner, main_rough, main_dra, main_dra_len = main_props
@@ -1220,7 +1223,7 @@ def _parallel_segment_hydraulics(
     loop_dra: float,
     loop_dra_len: float,
     kv: float,
-) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+) -> Tuple[float, Tuple[float, float, float, float], Tuple[float, float, float, float]]:
     """Split ``flow_m3h`` between mainline and loopline so both see equal head loss."""
 
     flow_m3h = np.float64(flow_m3h)
@@ -1236,7 +1239,7 @@ def _parallel_segment_hydraulics(
     loop_dra_len = np.float64(loop_dra_len)
     kv = np.float64(kv)
 
-    def calc(line_flow: float, L: float, d_inner: float, rough: float, dra: float, dra_len: float) -> tuple[float, float, float, float]:
+    def calc(line_flow: float, L: float, d_inner: float, rough: float, dra: float, dra_len: float) -> Tuple[float, float, float, float]:
         return _segment_hydraulics(line_flow, L, d_inner, rough, kv, dra, dra_len)
 
     lo = np.float64(0.0)
@@ -1271,11 +1274,11 @@ def _parallel_segment_hydraulics(
 def _split_flow_two_segments(
     flow_m3h: float,
     kv: float,
-    main1: tuple[float, float, float, float, float],
-    main2: tuple[float, float, float, float, float],
-    loop1: tuple[float, float, float, float, float],
-    loop2: tuple[float, float, float, float, float],
-) -> tuple[float, float, float, float, float, float]:
+    main1: Tuple[float, float, float, float, float],
+    main2: Tuple[float, float, float, float, float],
+    loop1: Tuple[float, float, float, float, float],
+    loop2: Tuple[float, float, float, float, float],
+) -> Tuple[float, float, float, float, float, float]:
     """Split ``flow_m3h`` between mainline and loopline over two segments."""
 
     flow_m3h = np.float64(flow_m3h)
@@ -1307,9 +1310,9 @@ def _split_flow_two_segments(
 def _pump_head(
     stn: dict,
     flow_m3h: float,
-    rpm_map: Mapping[str, float | int],
+    rpm_map: Mapping[str, FloatOrInt],
     nop: int,
-) -> list[dict]:
+) -> List[dict]:
     """Return per-pump-type head and efficiency information.
 
     ``rpm_map`` should provide the operating speed for each pump type present
@@ -1332,9 +1335,9 @@ def _pump_head(
         or stn.get("pump_combo")
     )
     ptypes = stn.get("pump_types")
-    results: list[dict] = []
+    results: List[dict] = []
 
-    speed_map: dict[str, float | int]
+    speed_map: Dict[str, FloatOrInt]
     if rpm_map is None:
         speed_map = {}
     else:
@@ -1493,14 +1496,14 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
 # ---------------------------------------------------------------------------
 
 def _downstream_requirement(
-    stations: list[dict],
+    stations: List[dict],
     idx: int,
     terminal: dict,
-    segment_flows: list[float] | None,
-    KV_list: list[float],
-    flow_override: float | list[float] | None = None,
-    loop_usage_by_station: list[int] | None = None,
-    pump_flow_overrides: dict[int, float] | None = None,
+    segment_flows: Optional[List[float]],
+    KV_list: List[float],
+    flow_override: Optional[Union[float, List[float]]] = None,
+    loop_usage_by_station: Optional[List[int]] = None,
+    pump_flow_overrides: Optional[Dict[int, float]] = None,
 ) -> int:
     """Return minimum residual head needed immediately after station ``idx``.
 
@@ -1656,31 +1659,31 @@ def _downstream_requirement(
 # ---------------------------------------------------------------------------
 
 def solve_pipeline(
-    stations: list[dict],
+    stations: List[dict],
     terminal: dict,
     FLOW: float,
-    KV_list: list[float],
-    rho_list: list[float],
+    KV_list: List[float],
+    rho_list: List[float],
     RateDRA: float,
     Price_HSD: float,
     Fuel_density: float,
     Ambient_temp: float,
-    linefill: list[dict] | dict | None = None,
+    linefill: Optional[Union[List[dict], dict]] = None,
     dra_reach_km: float = 0.0,
-    mop_kgcm2: float | None = None,
+    mop_kgcm2: Optional[float] = None,
     hours: float = 24.0,
     start_time: str = "00:00",
     *,
-    segment_profiles: list[list[dict[str, float]]] | None = None,
-    loop_usage_by_station: list[int] | None = None,
+    segment_profiles: Optional[List[List[Dict[str, float]]]] = None,
+    loop_usage_by_station: Optional[List[int]] = None,
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     dra_shear_factor: float = 0.0,
-    narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
-    V_MIN: float | None = None,
-    V_MAX: float | None = None,
+    narrow_ranges: Optional[Dict[int, Dict[str, Tuple[int, int]]]] = None,
+    V_MIN: Optional[float] = None,
+    V_MAX: Optional[float] = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1757,7 +1760,7 @@ def solve_pipeline(
         # optimiser to apply Case‑1 logic on loops with equal pipes and
         # Case‑2 logic on those with differing pipes independently.
         default_t_local = 0.007
-        flags: list[bool] = []
+        flags: List[bool] = []
         for idx in loop_positions:
             stn = stations[idx]
             # Inner diameter of mainline
@@ -1782,7 +1785,7 @@ def solve_pipeline(
             flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
         # Generate loop-usage patterns based on per-loop diameter equality
         cases = _generate_loop_cases_by_flags(flags)
-        best_res: dict | None = None
+        best_res: Optional[dict] = None
         for case in cases:
             usage = [0] * len(stations)
             for pos, val in zip(loop_positions, case):
@@ -1826,7 +1829,7 @@ def solve_pipeline(
     # DRA concentration.  Accepts either a list of dictionaries or a dict of
     # columns as produced by ``DataFrame.to_dict()``.  The linefill is copied
     # so callers are not mutated.
-    linefill_state: list[dict] = []
+    linefill_state: List[dict] = []
     if linefill:
         if isinstance(linefill, dict):
             vols = linefill.get('volume') or linefill.get('Volume (m³)') or linefill.get('Volume')
@@ -1903,7 +1906,7 @@ def solve_pipeline(
             return coarse_res
         window = max(rpm_step, coarse_rpm_step)
         dra_window = max(dra_step, coarse_dra_step)
-        ranges: dict[int, dict[str, tuple[int, int]]] = {}
+        ranges: Dict[int, Dict[str, Tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
             if stn.get("is_pump", False):
@@ -1922,7 +1925,7 @@ def solve_pipeline(
                     rmax = min(upper_bound, coarse_rpm + window)
                 dmin = max(0, coarse_dr_main - dra_window)
                 dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_window)
-                entry: dict[str, tuple[int, int]] = {
+                entry: Dict[str, Tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
                 }
@@ -1947,7 +1950,7 @@ def solve_pipeline(
                             p_rmax = pmax_default
                         if p_rmax < p_rmin:
                             p_rmin, p_rmax = p_rmax, p_rmin
-                        coarse_type_rpm: int | None = None
+                        coarse_type_rpm: Optional[int] = None
                         if coarse_nop > 0:
                             suffix = _normalise_speed_suffix(ptype)
                             coarse_key = f"speed_{name}_{suffix}"
@@ -2136,7 +2139,7 @@ def solve_pipeline(
             rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
 
             pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
-            combo_source: Mapping[str, float] | None = None
+            combo_source: Optional[Mapping[str, float]] = None
             if isinstance(stn.get('active_combo'), Mapping):
                 combo_source = stn['active_combo']  # type: ignore[index]
             elif isinstance(stn.get('pump_combo'), Mapping):
@@ -2144,8 +2147,8 @@ def solve_pipeline(
             elif isinstance(stn.get('combo'), Mapping):
                 combo_source = stn['combo']  # type: ignore[index]
 
-            type_order: list[str] = []
-            type_rpm_lists: dict[str, list[int]] = {}
+            type_order: List[str] = []
+            type_rpm_lists: Dict[str, List[int]] = {}
             if pump_types_data and combo_source:
                 for ptype in sorted(combo_source):
                     count = combo_source.get(ptype, 0)
@@ -2205,7 +2208,7 @@ def solve_pipeline(
                 for rpm_choice in rpm_iter:
                     if nop == 0:
                         rpm = 0
-                        rpm_map_choice: dict[str, int] = {}
+                        rpm_map_choice: Dict[str, int] = {}
                     elif type_rpm_lists:
                         if isinstance(rpm_choice, tuple):
                             rpm_map_choice = {
@@ -2248,7 +2251,7 @@ def solve_pipeline(
             # Non-pump stations can inject DRA independently whenever a
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
-            non_pump_opts: list[dict] = []
+            non_pump_opts: List[dict] = []
             max_dr_main = int(stn.get('max_dr', 0))
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
@@ -2278,10 +2281,10 @@ def solve_pipeline(
                 })
             opts.extend(non_pump_opts)
 
-        profile_data: list[dict[str, float]] | None = None
+        profile_data: Optional[List[Dict[str, float]]] = None
         if segment_profiles and i - 1 < len(segment_profiles):
             raw_profile = segment_profiles[i - 1] or []
-            cleaned: list[dict[str, float]] = []
+            cleaned: List[Dict[str, float]] = []
             for slice_data in raw_profile:
                 try:
                     length_val = float(slice_data.get('length_km', 0.0))
@@ -2399,7 +2402,7 @@ def solve_pipeline(
     #
     # The mainline DRA profile is represented as a queue of slices, each
     # describing the downstream length (in km) and the associated ppm.
-    states: dict[int, dict] = {
+    states: Dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
             'residual': init_residual,
@@ -2413,7 +2416,7 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
-        new_states: dict[int, dict] = {}
+        new_states: Dict[int, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -2444,7 +2447,7 @@ def solve_pipeline(
                     shear_injection=_injector_upstream_of_pumps(stn_data),
                 )
                 dra_queue_next = _normalise_queue(dra_queue_after)
-                dra_segments: list[tuple[float, float]] = []
+                dra_segments: List[Tuple[float, float]] = []
                 dra_len_main = 0.0
                 weighted_dra = 0.0
                 for seg_len, ppm_val in dra_slices:
@@ -2586,7 +2589,7 @@ def solve_pipeline(
                             'bypass_next': False,
                         })
 
-                pump_details: list[dict]
+                pump_details: List[dict]
                 tdh: float
                 eff: float
                 pump_bkw_total = 0.0
@@ -2820,7 +2823,7 @@ def solve_pipeline(
                             supply_j = float(stations[j].get('supply', 0.0))
                             seg_flows_tmp[j + 1] = seg_flows_tmp[j] - delivery_j + supply_j
 
-                        pump_overrides: dict[int, float] = {}
+                        pump_overrides: Dict[int, float] = {}
                         next_index = stn_data['idx'] + 1
                         next_orig = stations[next_index].get('orig_name') or stations[next_index].get('name')
                         j = next_index
@@ -2921,7 +2924,7 @@ def solve_pipeline(
                             ]
                             if rpm_values:
                                 speed_display = max(rpm_values)
-                        speed_fields: dict[str, float] = {}
+                        speed_fields: Dict[str, float] = {}
                         for pinfo in pump_details:
                             suffix = _normalise_speed_suffix(pinfo.get('ptype', ''))
                             rpm_val = pinfo.get('rpm')
@@ -3000,7 +3003,7 @@ def solve_pipeline(
         # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
         threshold = best_cost_station + STATE_COST_MARGIN
-        pruned: dict[int, dict] = {}
+        pruned: Dict[int, dict] = {}
         for idx, (residual_key, data) in enumerate(items):
             if idx < STATE_TOP_K or data['cost'] <= threshold:
                 pruned[residual_key] = data
@@ -3077,22 +3080,22 @@ def solve_pipeline(
 
 
 def solve_pipeline_with_types(
-    stations: list[dict],
+    stations: List[dict],
     terminal: dict,
     FLOW: float,
-    KV_list: list[float],
-    rho_list: list[float],
+    KV_list: List[float],
+    rho_list: List[float],
     RateDRA: float,
     Price_HSD: float,
     Fuel_density: float,
     Ambient_temp: float,
-    linefill: list[dict] | dict | None = None,
+    linefill: Optional[Union[List[dict], dict]] = None,
     dra_reach_km: float = 0.0,
-    mop_kgcm2: float | None = None,
+    mop_kgcm2: Optional[float] = None,
     hours: float = 24.0,
     start_time: str = "00:00",
     *,
-    segment_profiles: list[list[dict[str, float]]] | None = None,
+    segment_profiles: Optional[List[List[Dict[str, float]]]] = None,
     dra_shear_factor: float = 0.0,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
@@ -3104,10 +3107,10 @@ def solve_pipeline_with_types(
 
     def expand_all(
         pos: int,
-        stn_acc: list[dict],
-        kv_acc: list[float],
-        rho_acc: list[float],
-        profile_acc: list[list[dict[str, float]] | None],
+        stn_acc: List[dict],
+        kv_acc: List[float],
+        rho_acc: List[float],
+        profile_acc: List[Optional[List[Dict[str, float]]]],
     ):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
@@ -3125,7 +3128,7 @@ def solve_pipeline_with_types(
             else:
                 # Determine per-loop diameter equality flags for the expanded stations.
                 default_t_local = 0.007
-                flags_expanded: list[bool] = []
+                flags_expanded: List[bool] = []
                 for pidx in loop_positions:
                     stn_e = stn_acc[pidx]
                     # Inner diameter of the mainline segment
@@ -3214,7 +3217,7 @@ def solve_pipeline_with_types(
             if math.isfinite(limit) and limit < 0:
                 limit = 0
             combos = generate_type_combinations(availA, availB)
-            seen_active: set[tuple[int, int]] = set()
+            seen_active: set[Tuple[int, int]] = set()
             for numA, numB in combos:
                 total_units = numA + numB
                 if total_units <= 0:
@@ -3255,8 +3258,8 @@ def solve_pipeline_with_types(
                             unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
                         else:
-                            min_map: dict[str, float] = {}
-                            dol_map: dict[str, float] = {}
+                            min_map: Dict[str, float] = {}
+                            dol_map: Dict[str, float] = {}
                             if actA > 0:
                                 min_map['A'] = _extract_rpm(
                                     pdataA.get('MinRPM'),
