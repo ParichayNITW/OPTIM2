@@ -2218,7 +2218,12 @@ def solve_pipeline(
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
-            max_dr_main = int(stn.get('max_dr', 0))
+            # read maximum drag‑reduction percentage without truncating fractional values
+            max_dr_main_raw = stn.get('max_dr', 0)
+            try:
+                max_dr_main = int(float(max_dr_main_raw))
+            except Exception:
+                max_dr_main = 0
             if fixed_dr is not None:
                 dra_main_vals = [int(round(fixed_dr))]
             else:
@@ -2227,7 +2232,14 @@ def solve_pipeline(
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
-            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
+            if loop_dict:
+                max_dr_loop_raw = loop_dict.get('max_dr', 0)
+                try:
+                    max_dr_loop = int(float(max_dr_loop_raw))
+                except Exception:
+                    max_dr_loop = 0
+            else:
+                max_dr_loop = 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
@@ -2299,7 +2311,12 @@ def solve_pipeline(
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
-            max_dr_main = int(stn.get('max_dr', 0))
+            # read maximum drag‑reduction percentage for non-pump stations
+            max_dr_main_raw = stn.get('max_dr', 0)
+            try:
+                max_dr_main = int(float(max_dr_main_raw))
+            except Exception:
+                max_dr_main = 0
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
@@ -2909,14 +2926,16 @@ def solve_pipeline(
                     # station.  Mainline and loopline injections are handled
                     # separately and loopline cost is incurred only when
                     # an injection is made.
-                    dra_cost = 0.0
-                    if inj_ppm_main > 0:
-                        dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
-                    # Loopline injection uses ``inj_ppm_loop`` computed
-                    # earlier.  Charge cost only when an actual injection is
-                    # performed at this station.
-                    if sc['flow_loop'] > 0 and inj_loop_current > 0:
-                        dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
+                        dra_cost = 0.0
+                        # Convert PPM into a true fraction of the pumped volume (ppm = parts per million)
+                        # Volume in litres = flow (m³/h) × hours × 1000
+                        if inj_ppm_main > 0:
+                            dra_volume_main_l = (inj_ppm_main / 1e6) * (sc['flow_main'] * 1000.0 * hours)
+                            dra_cost += dra_volume_main_l * RateDRA
+                        # Loopline injection uses ``inj_ppm_loop``. Only charge cost when actually injecting.
+                        if sc['flow_loop'] > 0 and inj_loop_current > 0:
+                            dra_volume_loop_l = (inj_ppm_loop / 1e6) * (sc['flow_loop'] * 1000.0 * hours)
+                            dra_cost += dra_volume_loop_l * RateDRA
 
                     total_cost = power_cost + dra_cost
 
