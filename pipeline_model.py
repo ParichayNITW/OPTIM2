@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import datetime as dt
 import math
 from collections.abc import Mapping
@@ -708,35 +707,17 @@ def _injector_upstream_of_pumps(stn_data: Mapping[str, object]) -> bool:
     return bool(stn_data.get('is_pump', False))
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
-# tractable while still providing near-global optimality.  Users can tune this
-# constant to increase accuracy (at the cost of a larger state space).
+# tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
 
-def _round_residual(value: float) -> float:
-    """Return *value* rounded according to :data:`RESIDUAL_ROUND`."""
-
-    try:
-        digits = int(RESIDUAL_ROUND)
-    except (TypeError, ValueError):
-        digits = 0
-    if digits < 0:
-        digits = 0
-    return round(float(value), digits)
-
-# Control the pruning of dynamic-programming states carried forward after
-# each station.  ``STATE_REL_COST_BAND`` retains all states whose cost lies
-# within a relative band of the best state observed at the station, while
-# ``STATE_COST_MARGIN`` can be used to add an absolute margin.  Both values
-# can be overridden at runtime via ``pruning_options`` passed to
-# :func:`solve_pipeline`.  ``STATE_MAX_STATES_DEFAULT`` mirrors the
-# historical ``STATE_TOP_K`` limit.
-STATE_REL_COST_BAND = 0.01
+# Limit the number of dynamic-programming states carried forward after
+# each station.  ``STATE_TOP_K`` bounds the total states retained while
+# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
+# this many currency units of the best state for the current station.
+STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
-STATE_MAX_STATES_DEFAULT = 50
-
-_DEFAULT_PRUNING_CACHE: dict[str, tuple[float, list[float]]] = {}
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -745,72 +726,6 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return vals
-
-
-def _build_incumbent_lower_bounds(
-    result: Mapping[str, object] | None,
-    stations: list[dict],
-    *,
-    scale: float = 1.0,
-    slack: float = 0.0,
-) -> list[float]:
-    """Return cumulative downstream cost estimates derived from ``result``."""
-
-    if not stations:
-        return [0.0]
-
-    try:
-        scale_val = float(scale)
-    except (TypeError, ValueError):
-        scale_val = 1.0
-    scale_val = max(0.0, min(scale_val, 1.0))
-
-    try:
-        slack_val = float(slack)
-    except (TypeError, ValueError):
-        slack_val = 0.0
-    slack_val = max(0.0, slack_val)
-
-    per_station: list[float] = []
-    if result is None:
-        per_station = [0.0 for _ in stations]
-    else:
-        for stn in stations:
-            name = stn.get('name', '')
-            norm = str(name).strip().lower().replace(' ', '_')
-            power_cost = _coerce_float(result.get(f"power_cost_{norm}"), 0.0) if isinstance(result, Mapping) else 0.0
-            dra_cost = _coerce_float(result.get(f"dra_cost_{norm}"), 0.0) if isinstance(result, Mapping) else 0.0
-            per_station.append(max(power_cost + dra_cost, 0.0))
-
-    suffix = [0.0] * (len(per_station) + 1)
-    for idx in range(len(per_station) - 1, -1, -1):
-        suffix[idx] = suffix[idx + 1] + per_station[idx]
-
-    if scale_val != 1.0 or slack_val > 0.0:
-        for idx, value in enumerate(suffix):
-            scaled = value * scale_val
-            if slack_val > 0.0:
-                scaled = max(0.0, scaled - slack_val)
-            suffix[idx] = scaled
-
-    return suffix
-
-
-def _pruning_cache_key(
-    stations: list[dict], terminal: dict, *, rpm_step: int, dra_step: int
-) -> str:
-    """Return a stable cache key for the pruning-incumbent cache."""
-
-    payload = {
-        "stations": stations,
-        "terminal": terminal,
-        "rpm_step": int(rpm_step),
-        "dra_step": int(dra_step),
-    }
-    try:
-        return json.dumps(payload, sort_keys=True)
-    except TypeError:
-        return repr(payload)
 
 
 def _update_mainline_dra(
@@ -1611,16 +1526,6 @@ def _downstream_requirement(
     from functools import lru_cache
 
     N = len(stations)
-
-    if flow_override is not None:
-        if isinstance(flow_override, list):
-            flows = flow_override
-        else:
-            flows = [flow_override] * (N + 1)
-    else:
-        if segment_flows is None:
-            raise ValueError("segment_flows or flow_override must be provided")
-        flows = segment_flows
     if flow_override is not None:
         if isinstance(flow_override, list):
             flows = flow_override
@@ -1776,9 +1681,6 @@ def solve_pipeline(
     coarse_window_padding: float = 0.8,
     dra_shear_factor: float = 0.0,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
-    pruning_options: dict | None = None,
-    incumbent_cost: float | None = None,
-    downstream_cost_floor: list[float] | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1811,105 +1713,6 @@ def solve_pipeline(
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
     """
-
-    N = len(stations)
-
-    if isinstance(pruning_options, Mapping):
-        pruning_cfg = dict(pruning_options)
-    else:
-        pruning_cfg = {}
-
-    rel_band_raw = pruning_cfg.get('relative_band', STATE_REL_COST_BAND)
-    if rel_band_raw is None:
-        state_rel_band = None
-    else:
-        try:
-            state_rel_band = float(rel_band_raw)
-        except (TypeError, ValueError):
-            state_rel_band = STATE_REL_COST_BAND
-        if state_rel_band < 0:
-            state_rel_band = 0.0
-
-    abs_margin_raw = pruning_cfg.get('absolute_margin', STATE_COST_MARGIN)
-    if abs_margin_raw is None:
-        state_abs_margin = None
-    else:
-        try:
-            state_abs_margin = float(abs_margin_raw)
-        except (TypeError, ValueError):
-            state_abs_margin = STATE_COST_MARGIN
-        if state_abs_margin < 0:
-            state_abs_margin = 0.0
-
-    retain_outside_band = bool(pruning_cfg.get('retain_outside_band', False))
-
-    tol_raw = pruning_cfg.get('incumbent_tolerance', 0.05)
-    try:
-        incumbent_tolerance = float(tol_raw)
-    except (TypeError, ValueError):
-        incumbent_tolerance = 0.05
-    if incumbent_tolerance < 0:
-        incumbent_tolerance = 0.0
-
-    scale_raw = pruning_cfg.get('lower_bound_scale', 1.0)
-    try:
-        lower_bound_scale = float(scale_raw)
-    except (TypeError, ValueError):
-        lower_bound_scale = 1.0
-    if not math.isfinite(lower_bound_scale):
-        lower_bound_scale = 1.0
-    lower_bound_scale = max(0.0, min(lower_bound_scale, 1.0))
-
-    slack_raw = pruning_cfg.get('lower_bound_slack', 0.0)
-    try:
-        lower_bound_slack = float(slack_raw)
-    except (TypeError, ValueError):
-        lower_bound_slack = 0.0
-    if lower_bound_slack < 0:
-        lower_bound_slack = 0.0
-
-    max_states_raw = pruning_cfg.get('max_states', STATE_MAX_STATES_DEFAULT)
-    state_max_states: int | None = None
-    if max_states_raw is not None:
-        try:
-            candidate = int(max_states_raw)
-        except (TypeError, ValueError):
-            candidate = STATE_MAX_STATES_DEFAULT
-        if candidate > 0:
-            state_max_states = candidate
-
-    incumbent_bound_input = incumbent_cost
-    incumbent_bound_val = float('inf')
-    if incumbent_bound_input is not None:
-        incumbent_bound_val = _coerce_float(incumbent_bound_input, float('inf'))
-    if not math.isfinite(incumbent_bound_val):
-        incumbent_bound_val = float('inf')
-        incumbent_bound_input = None
-
-    state_lower_bounds: list[float] | None = None
-    if isinstance(downstream_cost_floor, list) and len(downstream_cost_floor) == N + 1:
-        state_lower_bounds = list(downstream_cost_floor)
-
-    cache_key: str | None = None
-    use_cached_bounds = False
-    if not _internal_pass:
-        cache_key = _pruning_cache_key(
-            stations,
-            terminal,
-            rpm_step=rpm_step,
-            dra_step=dra_step,
-        )
-        if incumbent_bound_input is None:
-            cached_entry = _DEFAULT_PRUNING_CACHE.get(cache_key)
-            if cached_entry:
-                cached_incumbent, cached_floor = cached_entry
-                incumbent_bound_input = cached_incumbent
-                incumbent_bound_val = _coerce_float(cached_incumbent, float('inf'))
-                if not math.isfinite(incumbent_bound_val):
-                    incumbent_bound_val = float('inf')
-                    incumbent_bound_input = None
-                state_lower_bounds = list(cached_floor)
-                use_cached_bounds = True
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -1944,9 +1747,6 @@ def solve_pipeline(
                 rpm_step=rpm_step,
                 dra_step=dra_step,
                 dra_shear_factor=dra_shear_factor,
-                pruning_options=pruning_options,
-                incumbent_cost=incumbent_bound_input,
-                downstream_cost_floor=downstream_cost_floor,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -2005,9 +1805,6 @@ def solve_pipeline(
                 rpm_step=rpm_step,
                 dra_step=dra_step,
                 dra_shear_factor=dra_shear_factor,
-                pruning_options=pruning_options,
-                incumbent_cost=incumbent_bound_input,
-                downstream_cost_floor=downstream_cost_floor,
             )
             if res.get('error'):
                 continue
@@ -2066,6 +1863,8 @@ def solve_pipeline(
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
+    N = len(stations)
+
     # ------------------------------------------------------------------
     # Two-pass optimisation: first run a coarse search with enlarged
     # step sizes to find a near-optimal solution, then refine around that
@@ -2073,36 +1872,6 @@ def solve_pipeline(
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
     if not _internal_pass:
-        if use_cached_bounds and state_lower_bounds is not None:
-            return solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time,
-                loop_usage_by_station=loop_usage_by_station,
-                enumerate_loops=False,
-                _internal_pass=True,
-                rpm_step=rpm_step,
-                dra_step=dra_step,
-                coarse_passes=coarse_passes,
-                coarse_window_padding=coarse_window_padding,
-                narrow_ranges=narrow_ranges,
-                segment_profiles=segment_profiles,
-                pruning_options=pruning_options,
-                incumbent_cost=incumbent_bound_input,
-                downstream_cost_floor=state_lower_bounds,
-                dra_shear_factor=dra_shear_factor,
-            )
         max_passes = max(int(coarse_passes), 1)
         base_coarse_rpm_step = max(rpm_step * 5, rpm_step)
         base_coarse_dra_step = max(dra_step * 5, dra_step)
@@ -2141,29 +1910,9 @@ def solve_pipeline(
                 coarse_passes=coarse_passes,
                 coarse_window_padding=coarse_window_padding,
                 dra_shear_factor=dra_shear_factor,
-                pruning_options=pruning_options,
-                incumbent_cost=incumbent_bound_input,
-                downstream_cost_floor=downstream_cost_floor,
             )
             if coarse_res.get("error"):
                 return coarse_res
-            coarse_cost = _coerce_float(coarse_res.get("total_cost"), float('inf'))
-            if math.isfinite(coarse_cost):
-                if incumbent_bound_val == float('inf') or coarse_cost < incumbent_bound_val - 1e-9:
-                    incumbent_bound_val = coarse_cost
-                    state_lower_bounds = _build_incumbent_lower_bounds(
-                        coarse_res,
-                        stations,
-                        scale=lower_bound_scale,
-                        slack=lower_bound_slack,
-                    )
-                elif state_lower_bounds is None:
-                    state_lower_bounds = _build_incumbent_lower_bounds(
-                        coarse_res,
-                        stations,
-                        scale=lower_bound_scale,
-                        slack=lower_bound_slack,
-                    )
             rpm_padding = padding
             dra_padding = padding if padding >= 1.0 else 1.0
             window = compute_window(max(rpm_step, coarse_rpm_step), rpm_padding)
@@ -2335,8 +2084,6 @@ def solve_pipeline(
         merged_ranges: dict[int, dict[str, tuple[int, int]]] = {}
         last_error: dict | None = None
         feasible_found = False
-        best_coarse_result: dict | None = None
-        best_coarse_cost = incumbent_bound_val if math.isfinite(incumbent_bound_val) else float('inf')
 
         def merge_bounds(st_idx: int, key: str, lower: int, upper: int) -> bool:
             if lower > upper:
@@ -2522,21 +2269,11 @@ def solve_pipeline(
                 coarse_passes=coarse_passes,
                 coarse_window_padding=coarse_window_padding,
                 dra_shear_factor=dra_shear_factor,
-                pruning_options=pruning_options,
-                incumbent_cost=(
-                    incumbent_bound_val if math.isfinite(incumbent_bound_val) else None
-                ),
-                downstream_cost_floor=downstream_cost_floor,
             )
             if coarse_res.get("error"):
                 last_error = coarse_res
                 continue
             feasible_found = True
-            coarse_cost = _coerce_float(coarse_res.get("total_cost"), float('inf'))
-            if math.isfinite(coarse_cost):
-                if best_coarse_result is None or coarse_cost < best_coarse_cost - 1e-9:
-                    best_coarse_cost = coarse_cost
-                    best_coarse_result = coarse_res
             rpm_padding = padding
             dra_padding = padding if padding >= 1.0 else 1.0
             base_window = max(rpm_step, coarse_rpm_step)
@@ -2670,28 +2407,6 @@ def solve_pipeline(
         else:
             ranges_for_refine = merged_ranges or None
 
-        if best_coarse_result is not None and math.isfinite(best_coarse_cost):
-            if incumbent_bound_val == float('inf') or best_coarse_cost < incumbent_bound_val - 1e-9:
-                incumbent_bound_val = best_coarse_cost
-                state_lower_bounds = _build_incumbent_lower_bounds(
-                    best_coarse_result,
-                    stations,
-                    scale=lower_bound_scale,
-                    slack=lower_bound_slack,
-                )
-            elif state_lower_bounds is None:
-                state_lower_bounds = _build_incumbent_lower_bounds(
-                    best_coarse_result,
-                    stations,
-                    scale=lower_bound_scale,
-                    slack=lower_bound_slack,
-                )
-
-        incumbent_arg = incumbent_bound_val if math.isfinite(incumbent_bound_val) else None
-        lower_bounds_arg = state_lower_bounds
-        if lower_bounds_arg is None or len(lower_bounds_arg) != N + 1:
-            lower_bounds_arg = _build_incumbent_lower_bounds(None, stations)
-
         return solve_pipeline(
             stations,
             terminal,
@@ -2716,9 +2431,6 @@ def solve_pipeline(
             coarse_window_padding=coarse_window_padding,
             narrow_ranges=ranges_for_refine,
             segment_profiles=segment_profiles,
-            pruning_options=pruning_options,
-            incumbent_cost=incumbent_arg,
-            downstream_cost_floor=lower_bounds_arg,
         )
 
     # -----------------------------------------------------------------------
@@ -3089,12 +2801,10 @@ def solve_pipeline(
         )
         for idx in range(N)
     ]
-    if state_lower_bounds is None or len(state_lower_bounds) != N + 1:
-        state_lower_bounds = _build_incumbent_lower_bounds(None, stations)
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
-    init_residual = _round_residual(float(stations[0].get('min_residual', 50)))
+    init_residual = int(stations[0].get('min_residual', 50))
     origin_diameter = float(station_opts[0]['d_inner']) if station_opts else 0.0
     initial_queue = _build_initial_dra_queue(linefill_state, dra_reach_km, origin_diameter)
     # Initial dynamic‑programming state.  Each state carries the cumulative
@@ -3108,7 +2818,7 @@ def solve_pipeline(
     #
     # The mainline DRA profile is represented as a queue of slices, each
     # describing the downstream length (in km) and the associated ppm.
-    states: dict[float, dict] = {
+    states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
             'residual': init_residual,
@@ -3122,7 +2832,7 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
-        new_states: dict[float, dict] = {}
+        new_states: dict[int, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -3511,9 +3221,7 @@ def solve_pipeline(
                         continue
 
                     # Compute downstream residual head after segment loss and elevation
-                    residual_next = _round_residual(
-                        sdh - sc['head_loss'] - stn_data['elev_delta']
-                    )
+                    residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
 
                     # Compute minimum downstream requirement.  Use the cached baseline
                     # unless bypassing the next station, in which case recompute with
@@ -3704,61 +3412,17 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # After evaluating all options for this station retain the lowest-cost
-        # state for each residual (already enforced by ``bucket``) and apply
-        # adaptive pruning driven by the configured band and incumbent bounds.
+        # After evaluating all options for this station retain only the
+        # lowest-cost state for each residual (already enforced by ``bucket``)
+        # and globally prune to the top ``STATE_TOP_K`` states or those within
+        # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
+        # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-        band_threshold = float('inf')
-        if math.isfinite(best_cost_station):
-            threshold_candidates: list[float] = []
-            if state_rel_band is not None:
-                threshold_candidates.append(best_cost_station * (1.0 + state_rel_band))
-            if state_abs_margin is not None:
-                threshold_candidates.append(best_cost_station + state_abs_margin)
-            if threshold_candidates:
-                band_threshold = max(min(threshold_candidates), best_cost_station)
-
-        incumbent_limit = incumbent_bound_val if math.isfinite(incumbent_bound_val) else None
-        incumbent_threshold = None
-        if incumbent_limit is not None:
-            incumbent_threshold = incumbent_limit * (1.0 + incumbent_tolerance)
-
-        next_index = stn_data['idx'] + 1
-        downstream_lb = 0.0
-        if state_lower_bounds and 0 <= next_index < len(state_lower_bounds):
-            downstream_lb = max(state_lower_bounds[next_index], 0.0)
-
-        pruned: dict[float, dict] = {}
-        for residual_key, data in items:
-            cost_val = data['cost']
-
-            if incumbent_threshold is not None:
-                if cost_val + downstream_lb > incumbent_threshold + 1e-9:
-                    continue
-
-            within_band = True
-            if math.isfinite(band_threshold):
-                within_band = cost_val <= band_threshold + 1e-9
-
-            if not within_band and not retain_outside_band:
-                continue
-
-            pruned[residual_key] = data
-            if (
-                state_max_states is not None
-                and len(pruned) >= state_max_states
-                and (not math.isfinite(band_threshold) or cost_val >= band_threshold - 1e-9)
-            ):
-                break
-
-        if state_max_states is not None and len(pruned) > state_max_states:
-            limited: dict[float, dict] = {}
-            for residual_key, data in items:
-                if residual_key in pruned:
-                    limited[residual_key] = pruned[residual_key]
-                    if len(limited) >= state_max_states:
-                        break
-            pruned = limited
+        threshold = best_cost_station + STATE_COST_MARGIN
+        pruned: dict[int, dict] = {}
+        for idx, (residual_key, data) in enumerate(items):
+            if idx < STATE_TOP_K or data['cost'] <= threshold:
+                pruned[residual_key] = data
         states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
@@ -3774,13 +3438,10 @@ def solve_pipeline(
     for rec in best_state['records']:
         result.update(rec)
 
-    residual = _round_residual(best_state['residual'])
+    residual = int(best_state['residual'])
     total_cost = best_state['cost']
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
-
-    if total_cost < incumbent_bound_val or not math.isfinite(incumbent_bound_val):
-        incumbent_bound_val = total_cost
 
     # Advance the linefill based on the selected origin injection.  The pumped
     # volume is the flow entering the first segment multiplied by the run
@@ -3825,20 +3486,12 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
-    incumbent_limit_final = incumbent_bound_val if math.isfinite(incumbent_bound_val) else None
-    result['incumbent_cost'] = float(incumbent_limit_final) if incumbent_limit_final is not None else float(total_cost)
-    result['downstream_cost_floor'] = list(state_lower_bounds)
     queue_final = best_state.get('dra_queue', [])
     if queue_final:
         result['dra_front_km'] = sum(float(entry.get('length_km', 0.0)) for entry in queue_final)
     else:
         result['dra_front_km'] = 0.0
     result['error'] = False
-    if cache_key:
-        _DEFAULT_PRUNING_CACHE[cache_key] = (
-            result['incumbent_cost'],
-            list(state_lower_bounds),
-        )
     return result
 
 
@@ -3862,14 +3515,8 @@ def solve_pipeline_with_types(
     dra_shear_factor: float = 0.0,
     coarse_passes: int = 1,
     coarse_window_padding: float = 0.8,
-    pruning_options: dict | None = None,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
-
-    ``pruning_options`` is forwarded to :func:`solve_pipeline` allowing the
-    caller to reuse the same pruning configuration for each expanded
-    combination.
-    """
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
     best_result = None
     best_cost = float('inf')
@@ -3950,7 +3597,6 @@ def solve_pipeline_with_types(
                     coarse_passes=coarse_passes,
                     coarse_window_padding=coarse_window_padding,
                     dra_shear_factor=dra_shear_factor,
-                    pruning_options=pruning_options,
                 )
                 if result.get("error"):
                     continue
