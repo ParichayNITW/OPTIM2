@@ -2199,55 +2199,56 @@ def solve_pipeline(
                 dr_loop_min = max(0, rng['dra_loop'][0])
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
-            for nop in range(min_p, max_p + 1):
-                if nop == 0:
-                    rpm_iter = [None]
-                elif type_rpm_lists:
-                    rpm_iter = product(*(type_rpm_lists[ptype] for ptype in type_order))
-                else:
-                    rpm_iter = [(rpm,) for rpm in rpm_vals]
-                for rpm_choice in rpm_iter:
+            if max_p >= min_p:
+                for nop in range(min_p, max_p + 1):
                     if nop == 0:
-                        rpm = 0
-                        rpm_map_choice: Dict[str, int] = {}
+                        rpm_iter = [None]
                     elif type_rpm_lists:
-                        if isinstance(rpm_choice, tuple):
-                            rpm_map_choice = {
-                                ptype: int(val)
-                                for ptype, val in zip(type_order, rpm_choice)
-                            }
-                        else:
-                            rpm_map_choice = {}
-                        rpm = max(rpm_map_choice.values()) if rpm_map_choice else 0
+                        rpm_iter = product(*(type_rpm_lists[ptype] for ptype in type_order))
                     else:
-                        rpm = int(rpm_choice[0]) if isinstance(rpm_choice, tuple) else int(rpm_choice)
-                        rpm_map_choice = {}
-                    for dra_main in dra_main_vals:
-                        for dra_loop in dra_loop_vals:
-                            ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
-                            ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
-                            opt_entry = {
-                                'nop': nop,
-                                'rpm': rpm,
-                                'dra_main': dra_main,
-                                'dra_loop': dra_loop,
-                                'dra_ppm_main': ppm_main,
-                                'dra_ppm_loop': ppm_loop,
-                            }
-                            if rpm_map_choice:
-                                opt_entry['rpm_map'] = rpm_map_choice.copy()
-                                for ptype, rpm_val in rpm_map_choice.items():
-                                    opt_entry[f'rpm_{ptype}'] = rpm_val
-                            opts.append(opt_entry)
-            if not any(o['nop'] == 0 for o in opts):
-                opts.insert(0, {
-                    'nop': 0,
-                    'rpm': 0,
-                    'dra_main': 0,
-                    'dra_loop': 0,
-                    'dra_ppm_main': 0,
-                    'dra_ppm_loop': 0,
-                })
+                        rpm_iter = [(rpm,) for rpm in rpm_vals]
+                    for rpm_choice in rpm_iter:
+                        if nop == 0:
+                            rpm = 0
+                            rpm_map_choice: Dict[str, int] = {}
+                        elif type_rpm_lists:
+                            if isinstance(rpm_choice, tuple):
+                                rpm_map_choice = {
+                                    ptype: int(val)
+                                    for ptype, val in zip(type_order, rpm_choice)
+                                }
+                            else:
+                                rpm_map_choice = {}
+                            rpm = max(rpm_map_choice.values()) if rpm_map_choice else 0
+                        else:
+                            rpm = int(rpm_choice[0]) if isinstance(rpm_choice, tuple) else int(rpm_choice)
+                            rpm_map_choice = {}
+                        for dra_main in dra_main_vals:
+                            for dra_loop in dra_loop_vals:
+                                ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                                ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
+                                opt_entry = {
+                                    'nop': nop,
+                                    'rpm': rpm,
+                                    'dra_main': dra_main,
+                                    'dra_loop': dra_loop,
+                                    'dra_ppm_main': ppm_main,
+                                    'dra_ppm_loop': ppm_loop,
+                                }
+                                if rpm_map_choice:
+                                    opt_entry['rpm_map'] = rpm_map_choice.copy()
+                                    for ptype, rpm_val in rpm_map_choice.items():
+                                        opt_entry[f'rpm_{ptype}'] = rpm_val
+                                opts.append(opt_entry)
+                if not any(o['nop'] == 0 for o in opts):
+                    opts.insert(0, {
+                        'nop': 0,
+                        'rpm': 0,
+                        'dra_main': 0,
+                        'dra_loop': 0,
+                        'dra_ppm_main': 0,
+                        'dra_ppm_loop': 0,
+                    })
         else:
             # Non-pump stations can inject DRA independently whenever a
             # facility exists (max_dr > 0).  If no injection is available the
@@ -3278,6 +3279,14 @@ def solve_pipeline_with_types(
                         unit['active_combo'] = {'A': actA, 'B': actB}
                         if math.isfinite(limit):
                             unit['max_pumps'] = int(limit)
+                        else:
+                            existing_max = unit.get('max_pumps')
+                            try:
+                                existing_max_val = float(existing_max)
+                            except (TypeError, ValueError):
+                                existing_max_val = math.inf
+                            if (not math.isfinite(existing_max_val)) or existing_max_val < total_active:
+                                unit['max_pumps'] = total_active
                         if actA > 0 and actB == 0:
                             pdata = pdataA
                         elif actB > 0 and actA == 0:
