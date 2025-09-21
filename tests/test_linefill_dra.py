@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import pipeline_model as pm
+
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from pipeline_model import _km_from_volume, _update_mainline_dra, solve_pipeline
 
@@ -612,3 +614,98 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
         initial_queue[0]["length_km"] - pumped_length - 1.0,
         rel=1e-6,
     )
+
+
+def test_bypass_with_fractional_dra_adjusts_flow_split(monkeypatch) -> None:
+    """Two-station bypass should propagate fractional mainline drag reduction."""
+
+    stations = [
+        _make_pump_station("Station A"),
+        _make_pump_station("Station B"),
+    ]
+    stations[0]["loopline"] = {"L": 12.0, "d": 0.7, "rough": 4.0e-05, "max_dr": 0}
+    terminal = {"name": "Terminal", "min_residual": 5, "elev": 0.0}
+
+    calls: list[dict[str, float]] = []
+
+    def fake_parallel(
+        flow_total: float,
+        length_main: float,
+        d_inner_main: float,
+        rough_main: float,
+        eff_dra_main: float,
+        dra_len_main: float,
+        length_loop: float,
+        d_inner_loop: float,
+        rough_loop: float,
+        eff_dra_loop: float,
+        dra_len_loop: float,
+        kv: float,
+    ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+        calls.append(
+            {
+                "length_main": length_main,
+                "eff_dra_main": eff_dra_main,
+                "eff_dra_loop": eff_dra_loop,
+                "dra_len_main": dra_len_main,
+                "dra_len_loop": dra_len_loop,
+            }
+        )
+        if eff_dra_main <= 0.0:
+            vel_main = 3.5
+            vel_loop = 3.5
+        else:
+            vel_main = 1.0
+            vel_loop = 1.0
+        return (
+            1.0,
+            (vel_main, 1.0, 0.01, flow_total * 0.6),
+            (vel_loop, 1.0, 0.01, flow_total * 0.4),
+        )
+
+    def fake_segment(
+        flow_total: float,
+        length: float,
+        diameter: float,
+        roughness: float,
+        kv: float,
+        eff_dra: float,
+        dra_length: float,
+    ) -> tuple[float, float, float, float]:
+        return (1.0, 1.0, 1.0, 0.01)
+
+    monkeypatch.setattr(pm, "_parallel_segment_hydraulics", fake_parallel)
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+
+    result = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        FLOW=2000.0,
+        KV_list=[3.0, 3.0, 3.0],
+        rho_list=[850.0, 850.0, 850.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        loop_usage_by_station=[2, 0],
+        enumerate_loops=False,
+        _internal_pass=True,
+        narrow_ranges={0: {"dra_main": (5, 5)}},
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result["bypass_next_station_a"] == 1
+    assert result["drag_reduction_station_a"] > 0
+
+    total_length = stations[0]["L"] + stations[1]["L"]
+    relevant = [
+        call
+        for call in calls
+        if call["length_main"] == pytest.approx(total_length, rel=1e-6)
+    ]
+    assert relevant, "Bypass hydraulic recalculation was not invoked"
+    assert any(call["eff_dra_main"] >= 0.0 for call in relevant)
