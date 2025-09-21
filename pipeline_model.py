@@ -2463,7 +2463,7 @@ def solve_pipeline(
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
-            'carry_loop_dra': 0,
+            'carry_loop_dra': 0.0,
             'dra_queue': initial_queue,
         }
     }
@@ -2706,6 +2706,7 @@ def solve_pipeline(
                                 break
                 else:
                     filtered_scenarios = scenarios
+                loop_dra_current = _coerce_float(opt.get('dra_loop', 0.0), 0.0)
                 for sc in filtered_scenarios:
                     # Skip scenarios with unacceptable velocities
                     if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
@@ -2753,17 +2754,21 @@ def solve_pipeline(
                             length_loop_total = stn_data['loopline']['L']
                         # Effective drag reduction for the entire path based on the
                         # inherited mainline PPM
-                        eff_dra_main_tot = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
+                        eff_dra_main_tot = (
+                            float(get_dr_for_ppm(stn_data['kv'], ppm_main))
+                            if ppm_main > 0
+                            else 0.0
+                        )
                         # Carry-over drag reduction on the loop from the previous state
-                        carry_prev = int(state.get('carry_loop_dra', 0))
+                        carry_prev = _coerce_float(state.get('carry_loop_dra', 0.0), 0.0)
                         # In bypass mode the loopline may still inject additional DRA.
                         # Combine any upstream carry-over with the current option so
                         # the full effect is considered when splitting flow over the
                         # total path.
                         eff_dra_loop_tot = (
-                            carry_prev + opt['dra_loop']
+                            carry_prev + loop_dra_current
                             if sc.get('bypass_next')
-                            else opt['dra_loop']
+                            else loop_dra_current
                         )
                         # Compute flow split to equalise head loss over the entire path
                         hl_tot, main_stats_tot, loop_stats_tot = _parallel_segment_hydraulics(
@@ -2824,27 +2829,27 @@ def solve_pipeline(
                     # upstream station persists.  Otherwise use the station's
                     # prescribed DRA for the loopline.  When there is no loop flow
                     # the value is irrelevant but carried forward.
-                    carry_prev = int(state.get('carry_loop_dra', 0))
+                    carry_prev = _coerce_float(state.get('carry_loop_dra', 0.0), 0.0)
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
-                            eff_dra_loop = carry_prev + opt['dra_loop']
-                            inj_loop_current = opt['dra_loop']
+                            eff_dra_loop = carry_prev + loop_dra_current
+                            inj_loop_current = loop_dra_current
                             inj_ppm_loop = opt['dra_ppm_loop']
                         else:
-                            eff_dra_loop = opt['dra_loop']
-                            inj_loop_current = opt['dra_loop']
+                            eff_dra_loop = loop_dra_current
+                            inj_loop_current = loop_dra_current
                             inj_ppm_loop = opt['dra_ppm_loop']
                     else:
-                        eff_dra_loop = 0
-                        inj_loop_current = 0
-                        inj_ppm_loop = 0
+                        eff_dra_loop = 0.0
+                        inj_loop_current = 0.0
+                        inj_ppm_loop = 0.0
 
                     # Determine next carry-over drag reduction value for the loop.
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
-                            new_carry = carry_prev + opt['dra_loop']
+                            new_carry = carry_prev + loop_dra_current
                         else:
-                            new_carry = opt['dra_loop']
+                            new_carry = loop_dra_current
                     else:
                         new_carry = carry_prev
 
