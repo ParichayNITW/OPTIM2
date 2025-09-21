@@ -2752,12 +2752,61 @@ def solve_pipeline(
                         # treat the loopline length as only the current segment
                         if length_loop_total <= 0.0:
                             length_loop_total = stn_data['loopline']['L']
+                        # Construct the downstream mainline ppm profile by combining the
+                        # coverage for this segment with the remaining queued slices.
+                        profile_main: list[tuple[float, float]] = []
+                        remaining_main = length_main_total
+                        for seg_len, ppm_val in dra_slices:
+                            if remaining_main <= 1e-9:
+                                break
+                            seg_length = float(seg_len)
+                            if seg_length <= 1e-9:
+                                continue
+                            take = seg_length if seg_length <= remaining_main else remaining_main
+                            if take <= 1e-9:
+                                continue
+                            try:
+                                ppm_slice = float(ppm_val or 0.0)
+                            except Exception:
+                                ppm_slice = 0.0
+                            profile_main.append((take, ppm_slice))
+                            remaining_main -= take
+                        if remaining_main > 1e-9 and dra_queue_next:
+                            for entry in _normalise_queue(dra_queue_next):
+                                if remaining_main <= 1e-9:
+                                    break
+                                seg_length = float(entry.get('length_km', 0.0))
+                                if seg_length <= 1e-9:
+                                    continue
+                                take = seg_length if seg_length <= remaining_main else remaining_main
+                                if take <= 1e-9:
+                                    continue
+                                try:
+                                    ppm_slice = float(entry.get('dra_ppm', 0.0) or 0.0)
+                                except Exception:
+                                    ppm_slice = 0.0
+                                profile_main.append((take, ppm_slice))
+                                remaining_main -= take
+
                         # Effective drag reduction for the entire path based on the
-                        # inherited mainline PPM
+                        # combined ppm coverage (including inherited carry-over).
+                        weighted_main_tot = 0.0
+                        dra_len_main_tot = 0.0
+                        for seg_len, ppm_val in profile_main:
+                            ppm_slice = float(ppm_val or 0.0)
+                            if ppm_slice < -DRA_PPM_TOL:
+                                ppm_slice = 0.0
+                            elif abs(ppm_slice) <= DRA_PPM_TOL:
+                                ppm_slice = 0.0
+                            if ppm_slice <= 0.0 or seg_len <= 1e-9:
+                                continue
+                            eff_slice = float(get_dr_for_ppm(stn_data['kv'], ppm_slice))
+                            if eff_slice <= 0.0:
+                                continue
+                            dra_len_main_tot += seg_len
+                            weighted_main_tot += eff_slice * seg_len
                         eff_dra_main_tot = (
-                            float(get_dr_for_ppm(stn_data['kv'], ppm_main))
-                            if ppm_main > 0
-                            else 0.0
+                            weighted_main_tot / dra_len_main_tot if dra_len_main_tot > 1e-9 else 0.0
                         )
                         # Carry-over drag reduction on the loop from the previous state
                         carry_prev = _coerce_float(state.get('carry_loop_dra', 0.0), 0.0)
@@ -2777,7 +2826,7 @@ def solve_pipeline(
                             stn_data['d_inner'],
                             stn_data['rough'],
                             eff_dra_main_tot,
-                            length_main_total if eff_dra_main_tot > 0 else 0.0,
+                            dra_len_main_tot if eff_dra_main_tot > 0 else 0.0,
                             length_loop_total,
                             stn_data['loopline']['d_inner'],
                             stn_data['loopline']['rough'],

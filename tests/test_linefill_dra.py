@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import sys
 from pathlib import Path
 
@@ -709,3 +710,96 @@ def test_bypass_with_fractional_dra_adjusts_flow_split(monkeypatch) -> None:
     ]
     assert relevant, "Bypass hydraulic recalculation was not invoked"
     assert any(call["eff_dra_main"] >= 0.0 for call in relevant)
+
+
+def test_bypass_linefill_slug_preserves_drag_reduction(monkeypatch) -> None:
+    """Linefill DRA should inform bypass hydraulics even without new injection."""
+
+    stations = [
+        _make_pump_station("Station A"),
+        _make_pump_station("Station B"),
+    ]
+    diameter = stations[0]["d"]
+    stations[0]["loopline"] = {"L": 12.0, "d": diameter, "rough": 4.0e-05, "max_dr": 0}
+    terminal = {"name": "Terminal", "min_residual": 40, "elev": 0.0}
+
+    slug_length = 20.0
+    area = math.pi * (diameter ** 2) / 4.0
+    slug_volume = area * slug_length * 1000.0
+    linefill = [{"volume": slug_volume, "dra_ppm": 0.8}]
+
+    calls: list[dict[str, float]] = []
+    original_parallel = pm._parallel_segment_hydraulics
+
+    def capture_parallel(
+        flow_total: float,
+        length_main: float,
+        d_inner_main: float,
+        rough_main: float,
+        eff_dra_main: float,
+        dra_len_main: float,
+        length_loop: float,
+        d_inner_loop: float,
+        rough_loop: float,
+        eff_dra_loop: float,
+        dra_len_loop: float,
+        kv: float,
+    ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+        calls.append(
+            {
+                "length_main": length_main,
+                "eff_dra_main": eff_dra_main,
+                "dra_len_main": dra_len_main,
+            }
+        )
+        return original_parallel(
+            flow_total,
+            length_main,
+            d_inner_main,
+            rough_main,
+            eff_dra_main,
+            dra_len_main,
+            length_loop,
+            d_inner_loop,
+            rough_loop,
+            eff_dra_loop,
+            dra_len_loop,
+            kv,
+        )
+
+    monkeypatch.setattr(pm, "_parallel_segment_hydraulics", capture_parallel)
+
+    result = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        FLOW=2200.0,
+        KV_list=[3.0, 3.0, 3.0],
+        rho_list=[850.0, 850.0, 850.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=linefill,
+        dra_reach_km=slug_length,
+        hours=1.0,
+        start_time="00:00",
+        loop_usage_by_station=[2, 0],
+        enumerate_loops=False,
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result.get("message") != "No feasible pump combination found for stations."
+    assert result["bypass_next_station_a"] == 1
+    assert abs(result["dra_ppm_station_a"]) <= PPM_TOL
+    assert abs(result["dra_ppm_station_b"]) <= PPM_TOL
+    assert result["drag_reduction_station_a"] > 0.0
+
+    total_length = stations[0]["L"] + stations[1]["L"]
+    relevant = [
+        entry
+        for entry in calls
+        if abs(entry["length_main"] - total_length) <= 1e-6
+    ]
+    assert relevant, "Bypass hydraulic recalculation was not invoked"
+    assert any(entry["eff_dra_main"] > 0.0 for entry in relevant)
+    assert any(entry["dra_len_main"] > 0.0 for entry in relevant)
