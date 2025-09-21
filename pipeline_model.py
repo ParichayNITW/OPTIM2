@@ -518,6 +518,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 50
 DRA_STEP = 2
+DRA_PPM_TOL = 1e-6
 def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
     """Return the pipe length in kilometres represented by ``volume_m3``."""
 
@@ -543,11 +544,15 @@ def _normalise_queue(
         except Exception:
             length = 0.0
         try:
-            ppm = int(entry.get('dra_ppm', 0) or 0)
+            ppm = float(entry.get('dra_ppm', 0.0) or 0.0)
         except Exception:
-            ppm = 0
-        if length <= 1e-9 or ppm < 0:
+            ppm = 0.0
+        if length <= 1e-9:
             continue
+        if ppm < -DRA_PPM_TOL:
+            continue
+        if abs(ppm) <= DRA_PPM_TOL:
+            ppm = 0.0
         cleaned.append({'length_km': length, 'dra_ppm': ppm})
     return cleaned
 
@@ -565,7 +570,11 @@ def _advance_dra_queue(
     trimmed: list[dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
-        ppm = int(entry['dra_ppm'])
+        ppm = float(entry['dra_ppm'])
+        if ppm < -DRA_PPM_TOL:
+            ppm = 0.0
+        elif abs(ppm) <= DRA_PPM_TOL:
+            ppm = 0.0
         if remaining <= 1e-9:
             result.append({'length_km': length, 'dra_ppm': ppm})
             continue
@@ -586,42 +595,58 @@ def _advance_dra_queue(
 def _prepend_dra_slice(
     dra_queue: list[dict[str, float]],
     length_km: float,
-    dra_ppm: int,
+    dra_ppm: float,
 ) -> list[dict[str, float]]:
     """Prepend a slice to ``dra_queue`` merging with the head when possible."""
 
     if length_km <= 1e-9:
         return [entry.copy() for entry in dra_queue]
-    ppm = int(dra_ppm)
-    if ppm < 0:
+    try:
+        ppm = float(dra_ppm or 0.0)
+    except Exception:
+        ppm = 0.0
+    if ppm < -DRA_PPM_TOL:
         return [entry.copy() for entry in dra_queue]
+    if abs(ppm) <= DRA_PPM_TOL:
+        ppm = 0.0
     new_entry = {'length_km': float(length_km), 'dra_ppm': ppm}
-    if dra_queue and int(dra_queue[0]['dra_ppm']) == new_entry['dra_ppm']:
-        head = dra_queue[0]
-        merged = {'length_km': float(head['length_km']) + new_entry['length_km'], 'dra_ppm': new_entry['dra_ppm']}
-        return [merged] + [entry.copy() for entry in dra_queue[1:]]
+    if dra_queue:
+        head_ppm = float(dra_queue[0].get('dra_ppm', 0.0) or 0.0)
+        if abs(head_ppm) <= DRA_PPM_TOL:
+            head_ppm = 0.0
+        if math.isclose(head_ppm, new_entry['dra_ppm'], rel_tol=1e-9, abs_tol=DRA_PPM_TOL):
+            head = dra_queue[0]
+            merged = {
+                'length_km': float(head['length_km']) + new_entry['length_km'],
+                'dra_ppm': new_entry['dra_ppm'],
+            }
+            return [merged] + [entry.copy() for entry in dra_queue[1:]]
     return [new_entry] + [entry.copy() for entry in dra_queue]
 
 
 def _consume_segment_queue(
     dra_queue: list[dict[str, float]],
     segment_length: float,
-) -> tuple[list[tuple[float, int]], list[dict[str, float]]]:
+) -> tuple[list[tuple[float, float]], list[dict[str, float]]]:
     """Split ``dra_queue`` across ``segment_length`` kilometres."""
 
     remaining = max(float(segment_length), 0.0)
     if remaining <= 1e-9:
         return [], [entry.copy() for entry in dra_queue]
-    dra_segments: list[tuple[float, int]] = []
+    dra_segments: list[tuple[float, float]] = []
     result: list[dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
-        ppm = int(entry['dra_ppm'])
+        ppm = float(entry['dra_ppm'])
+        if ppm < -DRA_PPM_TOL:
+            ppm = 0.0
+        elif abs(ppm) <= DRA_PPM_TOL:
+            ppm = 0.0
         if remaining <= 1e-9:
             result.append({'length_km': length, 'dra_ppm': ppm})
             continue
         take = min(length, remaining)
-        if ppm > 0 and take > 1e-9:
+        if ppm > DRA_PPM_TOL and take > 1e-9:
             dra_segments.append((take, ppm))
         remaining -= take
         leftover = length - take
@@ -739,11 +764,15 @@ def _update_mainline_dra(
     pump_running: bool = False,
     dra_shear_factor: float = 0.0,
     shear_injection: bool | None = None,
-) -> tuple[list[tuple[float, int]], list[dict[str, float]], int]:
+) -> tuple[list[tuple[float, float]], list[dict[str, float]], float]:
     """Return the updated DRA slice queue and coverage for this segment."""
 
     queue = _normalise_queue(dra_queue)
-    inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
+    inj_ppm_main = float(opt.get("dra_ppm_main", 0.0) or 0.0)
+    if inj_ppm_main < -DRA_PPM_TOL:
+        inj_ppm_main = 0.0
+    elif abs(inj_ppm_main) <= DRA_PPM_TOL:
+        inj_ppm_main = 0.0
     pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
     pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
 
@@ -773,19 +802,23 @@ def _update_mainline_dra(
             if length <= 1e-9:
                 continue
             try:
-                ppm = int(entry.get('dra_ppm', 0) or 0)
+                ppm = float(entry.get('dra_ppm', 0.0) or 0.0)
             except Exception:
-                ppm = 0
-            if ppm < 0:
-                ppm = 0
-            if is_origin and inj_ppm_main <= 0:
-                new_ppm = 0
+                ppm = 0.0
+            if ppm < -DRA_PPM_TOL:
+                ppm = 0.0
+            elif abs(ppm) <= DRA_PPM_TOL:
+                ppm = 0.0
+            if is_origin and inj_ppm_main <= DRA_PPM_TOL:
+                new_ppm = 0.0
             elif shear_multiplier <= 0.0:
-                new_ppm = 0
+                new_ppm = 0.0
             else:
-                new_ppm = int(round(ppm * shear_multiplier))
-                if new_ppm < 0:
-                    new_ppm = 0
+                new_ppm = ppm * shear_multiplier
+                if new_ppm < -DRA_PPM_TOL:
+                    new_ppm = 0.0
+                elif abs(new_ppm) <= DRA_PPM_TOL:
+                    new_ppm = 0.0
             sheared_head = _prepend_dra_slice(
                 sheared_head,
                 length,
@@ -793,15 +826,19 @@ def _update_mainline_dra(
             )
         queue = sheared_head
 
-    if inj_ppm_main > 0:
+    if inj_ppm_main > DRA_PPM_TOL:
         apply_shear = shear_injection
         if apply_shear is None:
             apply_shear = _injector_upstream_of_pumps(stn_data)
         apply_shear = bool(apply_shear) and pump_running
         effective_ppm = inj_ppm_main
         if apply_shear and shear_multiplier < 1.0:
-            effective_ppm = int(round(inj_ppm_main * shear_multiplier))
-        if effective_ppm > 0:
+            effective_ppm = inj_ppm_main * shear_multiplier
+            if effective_ppm < -DRA_PPM_TOL:
+                effective_ppm = 0.0
+            elif abs(effective_ppm) <= DRA_PPM_TOL:
+                effective_ppm = 0.0
+        if effective_ppm > DRA_PPM_TOL:
             queue = _prepend_dra_slice(queue, pumped_length, effective_ppm)
 
     dra_segments, queue_after = _consume_segment_queue(queue, segment_length)
@@ -821,10 +858,12 @@ def _build_initial_dra_queue(
     queue: list[dict[str, float]] = []
     for batch in linefill_state:
         try:
-            ppm = int(batch.get('dra_ppm', 0) or 0)
+            ppm = float(batch.get('dra_ppm', 0.0) or 0.0)
         except Exception:
-            ppm = 0
-        if ppm <= 0:
+            ppm = 0.0
+        if ppm < -DRA_PPM_TOL:
+            continue
+        if abs(ppm) <= DRA_PPM_TOL:
             continue
         length = 0.0
         if 'length_km' in batch:
@@ -1838,9 +1877,13 @@ def solve_pipeline(
                     else:
                         ppm_val = 0.0
                     try:
-                        ppm = int(float(ppm_val))
+                        ppm = float(ppm_val or 0.0)
                     except Exception:
-                        ppm = 0
+                        ppm = 0.0
+                    if ppm < -DRA_PPM_TOL:
+                        continue
+                    if abs(ppm) <= DRA_PPM_TOL:
+                        ppm = 0.0
                     linefill_state.append({'volume': vol, 'dra_ppm': ppm})
         elif isinstance(linefill, list):
             for ent in linefill:
@@ -1851,9 +1894,13 @@ def solve_pipeline(
                 if vol <= 0:
                     continue
                 try:
-                    ppm = int(float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0))
+                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
                 except Exception:
-                    ppm = 0
+                    ppm = 0.0
+                if ppm < -DRA_PPM_TOL:
+                    continue
+                if abs(ppm) <= DRA_PPM_TOL:
+                    ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
@@ -2211,8 +2258,20 @@ def solve_pipeline(
                         rpm_map_choice = {}
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
-                            ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
-                            ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
+                            ppm_main = (
+                                float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                            )
+                            ppm_loop = (
+                                float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
+                            )
+                            if ppm_main < 0.0:
+                                ppm_main = 0.0
+                            if ppm_loop < 0.0:
+                                ppm_loop = 0.0
+                            if ppm_main <= DRA_PPM_TOL:
+                                ppm_main = 0.0
+                            if ppm_loop <= DRA_PPM_TOL:
+                                ppm_loop = 0.0
                             opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
@@ -2232,8 +2291,8 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'dra_ppm_main': 0,
-                    'dra_ppm_loop': 0,
+                    'dra_ppm_main': 0.0,
+                    'dra_ppm_loop': 0.0,
                 })
         else:
             # Non-pump stations can inject DRA independently whenever a
@@ -2249,14 +2308,20 @@ def solve_pipeline(
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 for dra_main in dra_vals:
-                    ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                    ppm_main = (
+                        float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                    )
+                    if ppm_main < 0.0:
+                        ppm_main = 0.0
+                    if ppm_main <= DRA_PPM_TOL:
+                        ppm_main = 0.0
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
                         'dra_main': dra_main,
                         'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
-                        'dra_ppm_loop': 0,
+                        'dra_ppm_loop': 0.0,
                     })
             if not non_pump_opts:
                 non_pump_opts.append({
@@ -2264,8 +2329,8 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'dra_ppm_main': 0,
-                    'dra_ppm_loop': 0,
+                    'dra_ppm_main': 0.0,
+                    'dra_ppm_loop': 0.0,
                 })
             opts.extend(non_pump_opts)
 
@@ -3021,7 +3086,11 @@ def solve_pipeline(
     # the origin.
     pumped_volume = segment_flows[0] * hours
     origin_name = stations[0]['name'].strip().lower().replace(' ', '_') if stations else ''
-    inj_ppm = int(result.get(f"dra_ppm_{origin_name}", 0)) if origin_name else 0
+    inj_ppm = float(result.get(f"dra_ppm_{origin_name}", 0.0)) if origin_name else 0.0
+    if inj_ppm < 0.0:
+        inj_ppm = 0.0
+    if inj_ppm <= DRA_PPM_TOL:
+        inj_ppm = 0.0
     schedule = [{'volume': pumped_volume, 'dra_ppm': inj_ppm}]
     advance_linefill(linefill_state, schedule, pumped_volume)
     result['linefill'] = linefill_state
@@ -3038,8 +3107,8 @@ def solve_pipeline(
         f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
         f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0,
-        f"dra_ppm_loop_{term_name}": 0,
+        f"dra_ppm_{term_name}": 0.0,
+        f"dra_ppm_loop_{term_name}": 0.0,
         f"drag_reduction_{term_name}": 0,
         f"drag_reduction_loop_{term_name}": 0,
         f"head_loss_{term_name}": 0.0,
