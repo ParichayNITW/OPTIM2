@@ -1,6 +1,5 @@
 import copy
 import json
-import math
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -87,7 +86,6 @@ def test_daily_scheduler_path_completes_promptly() -> None:
     start = time.perf_counter()
     current_linefill = copy.deepcopy(linefill)
     dra_reach_km = 40.0
-    incumbent_cost: float | None = None
     for step in range(6):
         start_hour = (step * 4) % 24
         result = solve_pipeline(
@@ -104,19 +102,13 @@ def test_daily_scheduler_path_completes_promptly() -> None:
             dra_reach_km=dra_reach_km,
             hours=4.0,
             start_time=f"{start_hour:02d}:00",
-            prune_using_cost_bound=True,
-            state_cost_margin=5000.0,
-            state_cost_upper_bound=incumbent_cost,
         )
         assert not result.get("error"), result.get("message")
         current_linefill = copy.deepcopy(result.get("linefill", current_linefill))
         dra_reach_km = result.get("dra_front_km", dra_reach_km)
-        total_cost = result.get("total_cost")
-        if isinstance(total_cost, (int, float)) and math.isfinite(total_cost):
-            incumbent_cost = float(total_cost)
 
     duration = time.perf_counter() - start
-    assert duration < 25.0, f"Optimizer took too long: {duration:.2f}s"
+    assert duration < 15.0, f"Optimizer took too long: {duration:.2f}s"
 
 
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
