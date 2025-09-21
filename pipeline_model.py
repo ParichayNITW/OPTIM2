@@ -712,12 +712,11 @@ RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
 
-# Limit the number of dynamic-programming states carried forward after
-# each station.  ``STATE_TOP_K`` bounds the total states retained while
-# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
-# this many currency units of the best state for the current station.
-STATE_TOP_K = 50
-STATE_COST_MARGIN = 5000.0
+# Optional heuristic for pruning dynamic-programming states when an
+# incumbent solution cost is available.  ``STATE_PRUNE_COST_MARGIN``
+# expands the strict cost bound by this many currency units when the
+# pruning mode is enabled.  The exhaustive solver ignores this margin.
+STATE_PRUNE_COST_MARGIN = 0.0
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -1682,6 +1681,9 @@ def solve_pipeline(
     use_coarse_window: bool = True,
     dra_shear_factor: float = 0.0,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
+    prune_using_cost_bound: bool = False,
+    state_cost_margin: float | None = None,
+    state_cost_upper_bound: float | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1713,6 +1715,17 @@ def solve_pipeline(
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
+
+    The dynamic-programming search now retains every deduplicated
+    residual state by default, providing an exhaustive enumeration
+    suitable for global optimisation runs.  When
+    ``prune_using_cost_bound`` is enabled the solver performs an
+    additional dominance check that discards states whose accumulated
+    cost already exceeds the tightest available incumbent bound (either
+    ``state_cost_upper_bound`` supplied by the caller or the coarse-pass
+    incumbent when available) plus ``state_cost_margin``.  This
+    heuristic never removes states that could beat the incumbent but can
+    materially reduce runtime when a high-quality bound is supplied.
     """
 
     # When requested, perform an outer enumeration over loop usage patterns.
@@ -1749,6 +1762,9 @@ def solve_pipeline(
                 dra_step=dra_step,
                 dra_shear_factor=dra_shear_factor,
                 use_coarse_window=use_coarse_window,
+                prune_using_cost_bound=prune_using_cost_bound,
+                state_cost_margin=state_cost_margin,
+                state_cost_upper_bound=state_cost_upper_bound,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -1808,6 +1824,9 @@ def solve_pipeline(
                 dra_step=dra_step,
                 dra_shear_factor=dra_shear_factor,
                 use_coarse_window=use_coarse_window,
+                prune_using_cost_bound=prune_using_cost_bound,
+                state_cost_margin=state_cost_margin,
+                state_cost_upper_bound=state_cost_upper_bound,
             )
             if res.get('error'):
                 continue
@@ -1952,6 +1971,9 @@ def solve_pipeline(
                 narrow_ranges=None,
                 segment_profiles=segment_profiles,
                 use_coarse_window=True,
+                prune_using_cost_bound=prune_using_cost_bound,
+                state_cost_margin=state_cost_margin,
+                state_cost_upper_bound=state_cost_upper_bound,
             )
             if coarse_res.get('error'):
                 continue
@@ -2008,6 +2030,9 @@ def solve_pipeline(
                 coarse_window_padding=coarse_window_padding,
                 dra_shear_factor=dra_shear_factor,
                 use_coarse_window=use_coarse_window,
+                prune_using_cost_bound=prune_using_cost_bound,
+                state_cost_margin=state_cost_margin,
+                state_cost_upper_bound=state_cost_upper_bound,
             )
             if coarse_res.get("error"):
                 return coarse_res
@@ -2137,13 +2162,16 @@ def solve_pipeline(
                 enumerate_loops=False,
                 _internal_pass=True,
                 rpm_step=rpm_step,
-            dra_step=dra_step,
-            coarse_passes=coarse_passes,
-            coarse_window_padding=coarse_window_padding,
-            narrow_ranges=ranges,
-            segment_profiles=segment_profiles,
-            use_coarse_window=use_coarse_window,
-        )
+                dra_step=dra_step,
+                coarse_passes=coarse_passes,
+                coarse_window_padding=coarse_window_padding,
+                narrow_ranges=ranges,
+                segment_profiles=segment_profiles,
+                use_coarse_window=use_coarse_window,
+                prune_using_cost_bound=prune_using_cost_bound,
+                state_cost_margin=state_cost_margin,
+                state_cost_upper_bound=state_cost_upper_bound,
+            )
 
         if max_passes == 1:
             slots_each_side = 1
@@ -2369,6 +2397,9 @@ def solve_pipeline(
                 coarse_window_padding=coarse_window_padding,
                 dra_shear_factor=dra_shear_factor,
                 use_coarse_window=use_coarse_window,
+                prune_using_cost_bound=prune_using_cost_bound,
+                state_cost_margin=state_cost_margin,
+                state_cost_upper_bound=state_cost_upper_bound,
             )
             if coarse_res.get("error"):
                 last_error = coarse_res
@@ -2526,13 +2557,16 @@ def solve_pipeline(
             enumerate_loops=False,
             _internal_pass=True,
             rpm_step=rpm_step,
-        dra_step=dra_step,
-        coarse_passes=coarse_passes,
-        coarse_window_padding=coarse_window_padding,
-        narrow_ranges=ranges_for_refine,
-        segment_profiles=segment_profiles,
-        use_coarse_window=use_coarse_window,
-    )
+            dra_step=dra_step,
+            coarse_passes=coarse_passes,
+            coarse_window_padding=coarse_window_padding,
+            narrow_ranges=ranges_for_refine,
+            segment_profiles=segment_profiles,
+            use_coarse_window=use_coarse_window,
+            prune_using_cost_bound=prune_using_cost_bound,
+            state_cost_margin=state_cost_margin,
+            state_cost_upper_bound=state_cost_upper_bound,
+        )
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
@@ -3515,20 +3549,29 @@ def solve_pipeline(
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        # After evaluating all options for this station retain only the
-        # lowest-cost state for each residual (already enforced by ``bucket``)
-        # and globally prune to the top ``STATE_TOP_K`` states or those within
-        # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
-        # manageable while preserving near-optimal candidates.
-        items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-        threshold = best_cost_station + STATE_COST_MARGIN
-        if coarse_bound is not None:
-            threshold = min(threshold, coarse_bound)
-        pruned: dict[int, dict] = {}
-        for idx, (residual_key, data) in enumerate(items):
-            if idx < STATE_TOP_K or data['cost'] <= threshold:
-                pruned[residual_key] = data
-        states = pruned
+        if prune_using_cost_bound:
+            margin = (
+                STATE_PRUNE_COST_MARGIN
+                if state_cost_margin is None
+                else max(float(state_cost_margin), 0.0)
+            )
+            bound_candidates: list[float] = []
+            if state_cost_upper_bound is not None and math.isfinite(state_cost_upper_bound):
+                bound_candidates.append(float(state_cost_upper_bound))
+            if coarse_bound is not None and math.isfinite(coarse_bound):
+                bound_candidates.append(float(coarse_bound))
+            if bound_candidates:
+                cutoff = min(bound_candidates) + margin
+                pruned = {
+                    key: data
+                    for key, data in new_states.items()
+                    if data['cost'] <= cutoff + 1e-9
+                }
+                states = pruned or new_states
+            else:
+                states = new_states
+        else:
+            states = new_states
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -3621,8 +3664,16 @@ def solve_pipeline_with_types(
     coarse_passes: int = 1,
     coarse_window_padding: float = 0.8,
     use_coarse_window: bool = True,
+    prune_using_cost_bound: bool = False,
+    state_cost_margin: float | None = None,
+    state_cost_upper_bound: float | None = None,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
+
+    Parameters controlling cost-bound pruning are forwarded to
+    :func:`solve_pipeline`; see that function's documentation for the
+    exhaustive versus heuristic runtime trade-offs.
+    """
 
     best_result = None
     best_cost = float('inf')
@@ -3704,6 +3755,9 @@ def solve_pipeline_with_types(
                     coarse_window_padding=coarse_window_padding,
                     dra_shear_factor=dra_shear_factor,
                     use_coarse_window=use_coarse_window,
+                    prune_using_cost_bound=prune_using_cost_bound,
+                    state_cost_margin=state_cost_margin,
+                    state_cost_upper_bound=state_cost_upper_bound,
                 )
                 if result.get("error"):
                     continue
