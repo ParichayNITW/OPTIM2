@@ -1907,10 +1907,9 @@ def solve_pipeline(
                 start_time=start_time,
                 segment_profiles=segment_profiles,
                 dra_shear_factor=dra_shear_factor,
-            ,
-    V_MIN=st.session_state.get("V_MIN", 0.0),
-    V_MAX=st.session_state.get("V_MAX", 4.0),
-)# Append a human-readable flow pattern name based on loop usage
+                V_MIN=st.session_state.get("V_MIN", 0.0),
+                V_MAX=st.session_state.get("V_MAX", 4.0),
+            )
         if not res.get("error"):
             usage = res.get("loop_usage", [])
             # Build segment-based descriptors for each looped section
