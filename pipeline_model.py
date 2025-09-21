@@ -518,7 +518,6 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 50
 DRA_STEP = 2
-DRA_PPM_TOL = 1e-6
 def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
     """Return the pipe length in kilometres represented by ``volume_m3``."""
 
@@ -544,15 +543,11 @@ def _normalise_queue(
         except Exception:
             length = 0.0
         try:
-            ppm = float(entry.get('dra_ppm', 0.0) or 0.0)
+            ppm = int(entry.get('dra_ppm', 0) or 0)
         except Exception:
-            ppm = 0.0
-        if length <= 1e-9:
+            ppm = 0
+        if length <= 1e-9 or ppm < 0:
             continue
-        if ppm < -DRA_PPM_TOL:
-            continue
-        if abs(ppm) <= DRA_PPM_TOL:
-            ppm = 0.0
         cleaned.append({'length_km': length, 'dra_ppm': ppm})
     return cleaned
 
@@ -570,11 +565,7 @@ def _advance_dra_queue(
     trimmed: list[dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
-        ppm = float(entry['dra_ppm'])
-        if ppm < -DRA_PPM_TOL:
-            ppm = 0.0
-        elif abs(ppm) <= DRA_PPM_TOL:
-            ppm = 0.0
+        ppm = int(entry['dra_ppm'])
         if remaining <= 1e-9:
             result.append({'length_km': length, 'dra_ppm': ppm})
             continue
@@ -595,58 +586,42 @@ def _advance_dra_queue(
 def _prepend_dra_slice(
     dra_queue: list[dict[str, float]],
     length_km: float,
-    dra_ppm: float,
+    dra_ppm: int,
 ) -> list[dict[str, float]]:
     """Prepend a slice to ``dra_queue`` merging with the head when possible."""
 
     if length_km <= 1e-9:
         return [entry.copy() for entry in dra_queue]
-    try:
-        ppm = float(dra_ppm or 0.0)
-    except Exception:
-        ppm = 0.0
-    if ppm < -DRA_PPM_TOL:
+    ppm = int(dra_ppm)
+    if ppm < 0:
         return [entry.copy() for entry in dra_queue]
-    if abs(ppm) <= DRA_PPM_TOL:
-        ppm = 0.0
     new_entry = {'length_km': float(length_km), 'dra_ppm': ppm}
-    if dra_queue:
-        head_ppm = float(dra_queue[0].get('dra_ppm', 0.0) or 0.0)
-        if abs(head_ppm) <= DRA_PPM_TOL:
-            head_ppm = 0.0
-        if math.isclose(head_ppm, new_entry['dra_ppm'], rel_tol=1e-9, abs_tol=DRA_PPM_TOL):
-            head = dra_queue[0]
-            merged = {
-                'length_km': float(head['length_km']) + new_entry['length_km'],
-                'dra_ppm': new_entry['dra_ppm'],
-            }
-            return [merged] + [entry.copy() for entry in dra_queue[1:]]
+    if dra_queue and int(dra_queue[0]['dra_ppm']) == new_entry['dra_ppm']:
+        head = dra_queue[0]
+        merged = {'length_km': float(head['length_km']) + new_entry['length_km'], 'dra_ppm': new_entry['dra_ppm']}
+        return [merged] + [entry.copy() for entry in dra_queue[1:]]
     return [new_entry] + [entry.copy() for entry in dra_queue]
 
 
 def _consume_segment_queue(
     dra_queue: list[dict[str, float]],
     segment_length: float,
-) -> tuple[list[tuple[float, float]], list[dict[str, float]]]:
+) -> tuple[list[tuple[float, int]], list[dict[str, float]]]:
     """Split ``dra_queue`` across ``segment_length`` kilometres."""
 
     remaining = max(float(segment_length), 0.0)
     if remaining <= 1e-9:
         return [], [entry.copy() for entry in dra_queue]
-    dra_segments: list[tuple[float, float]] = []
+    dra_segments: list[tuple[float, int]] = []
     result: list[dict[str, float]] = []
     for entry in dra_queue:
         length = float(entry['length_km'])
-        ppm = float(entry['dra_ppm'])
-        if ppm < -DRA_PPM_TOL:
-            ppm = 0.0
-        elif abs(ppm) <= DRA_PPM_TOL:
-            ppm = 0.0
+        ppm = int(entry['dra_ppm'])
         if remaining <= 1e-9:
             result.append({'length_km': length, 'dra_ppm': ppm})
             continue
         take = min(length, remaining)
-        if ppm > DRA_PPM_TOL and take > 1e-9:
+        if ppm > 0 and take > 1e-9:
             dra_segments.append((take, ppm))
         remaining -= take
         leftover = length - take
@@ -734,8 +709,8 @@ def _injector_upstream_of_pumps(stn_data: Mapping[str, object]) -> bool:
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
 RESIDUAL_ROUND = 0
-V_MIN = 0.5
-V_MAX = 2.5
+DEFAULT_MIN_VELOCITY_MS = 0.0
+DEFAULT_MAX_VELOCITY_MS = 4.0
 
 # Limit the number of dynamic-programming states carried forward after
 # each station.  ``STATE_TOP_K`` bounds the total states retained while
@@ -764,15 +739,11 @@ def _update_mainline_dra(
     pump_running: bool = False,
     dra_shear_factor: float = 0.0,
     shear_injection: bool | None = None,
-) -> tuple[list[tuple[float, float]], list[dict[str, float]], float]:
+) -> tuple[list[tuple[float, int]], list[dict[str, float]], int]:
     """Return the updated DRA slice queue and coverage for this segment."""
 
     queue = _normalise_queue(dra_queue)
-    inj_ppm_main = float(opt.get("dra_ppm_main", 0.0) or 0.0)
-    if inj_ppm_main < -DRA_PPM_TOL:
-        inj_ppm_main = 0.0
-    elif abs(inj_ppm_main) <= DRA_PPM_TOL:
-        inj_ppm_main = 0.0
+    inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
     pumped_volume = max(float(flow_m3h), 0.0) * max(float(hours), 0.0)
     pumped_length = _km_from_volume(pumped_volume, float(stn_data.get("d_inner", 0.0)))
 
@@ -802,23 +773,19 @@ def _update_mainline_dra(
             if length <= 1e-9:
                 continue
             try:
-                ppm = float(entry.get('dra_ppm', 0.0) or 0.0)
+                ppm = int(entry.get('dra_ppm', 0) or 0)
             except Exception:
-                ppm = 0.0
-            if ppm < -DRA_PPM_TOL:
-                ppm = 0.0
-            elif abs(ppm) <= DRA_PPM_TOL:
-                ppm = 0.0
-            if is_origin and inj_ppm_main <= DRA_PPM_TOL:
-                new_ppm = 0.0
+                ppm = 0
+            if ppm < 0:
+                ppm = 0
+            if is_origin and inj_ppm_main <= 0:
+                new_ppm = 0
             elif shear_multiplier <= 0.0:
-                new_ppm = 0.0
+                new_ppm = 0
             else:
-                new_ppm = ppm * shear_multiplier
-                if new_ppm < -DRA_PPM_TOL:
-                    new_ppm = 0.0
-                elif abs(new_ppm) <= DRA_PPM_TOL:
-                    new_ppm = 0.0
+                new_ppm = int(round(ppm * shear_multiplier))
+                if new_ppm < 0:
+                    new_ppm = 0
             sheared_head = _prepend_dra_slice(
                 sheared_head,
                 length,
@@ -826,19 +793,15 @@ def _update_mainline_dra(
             )
         queue = sheared_head
 
-    if inj_ppm_main > DRA_PPM_TOL:
+    if inj_ppm_main > 0:
         apply_shear = shear_injection
         if apply_shear is None:
             apply_shear = _injector_upstream_of_pumps(stn_data)
         apply_shear = bool(apply_shear) and pump_running
         effective_ppm = inj_ppm_main
         if apply_shear and shear_multiplier < 1.0:
-            effective_ppm = inj_ppm_main * shear_multiplier
-            if effective_ppm < -DRA_PPM_TOL:
-                effective_ppm = 0.0
-            elif abs(effective_ppm) <= DRA_PPM_TOL:
-                effective_ppm = 0.0
-        if effective_ppm > DRA_PPM_TOL:
+            effective_ppm = int(round(inj_ppm_main * shear_multiplier))
+        if effective_ppm > 0:
             queue = _prepend_dra_slice(queue, pumped_length, effective_ppm)
 
     dra_segments, queue_after = _consume_segment_queue(queue, segment_length)
@@ -858,12 +821,10 @@ def _build_initial_dra_queue(
     queue: list[dict[str, float]] = []
     for batch in linefill_state:
         try:
-            ppm = float(batch.get('dra_ppm', 0.0) or 0.0)
+            ppm = int(batch.get('dra_ppm', 0) or 0)
         except Exception:
-            ppm = 0.0
-        if ppm < -DRA_PPM_TOL:
-            continue
-        if abs(ppm) <= DRA_PPM_TOL:
+            ppm = 0
+        if ppm <= 0:
             continue
         length = 0.0
         if 'length_km' in batch:
@@ -1718,6 +1679,8 @@ def solve_pipeline(
     dra_step: int = DRA_STEP,
     dra_shear_factor: float = 0.0,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
+    V_MIN: float | None = None,
+    V_MAX: float | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1746,6 +1709,13 @@ def solve_pipeline(
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
     """
+
+    # Apply global velocity limits to stations (configurable)
+    global_min_v = DEFAULT_MIN_VELOCITY_MS if V_MIN is None else float(V_MIN)
+    global_max_v = DEFAULT_MAX_VELOCITY_MS if V_MAX is None else float(V_MAX)
+    for _st in stations:
+        _st.setdefault('V_MIN', global_min_v)
+        _st.setdefault('V_MAX', global_max_v)
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -1877,13 +1847,9 @@ def solve_pipeline(
                     else:
                         ppm_val = 0.0
                     try:
-                        ppm = float(ppm_val or 0.0)
+                        ppm = int(float(ppm_val))
                     except Exception:
-                        ppm = 0.0
-                    if ppm < -DRA_PPM_TOL:
-                        continue
-                    if abs(ppm) <= DRA_PPM_TOL:
-                        ppm = 0.0
+                        ppm = 0
                     linefill_state.append({'volume': vol, 'dra_ppm': ppm})
         elif isinstance(linefill, list):
             for ent in linefill:
@@ -1894,13 +1860,9 @@ def solve_pipeline(
                 if vol <= 0:
                     continue
                 try:
-                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
+                    ppm = int(float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0))
                 except Exception:
-                    ppm = 0.0
-                if ppm < -DRA_PPM_TOL:
-                    continue
-                if abs(ppm) <= DRA_PPM_TOL:
-                    ppm = 0.0
+                    ppm = 0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
@@ -2175,40 +2137,12 @@ def solve_pipeline(
 
             pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
             combo_source: Mapping[str, float] | None = None
-            # Preferred combination fields provided by the case file.
             if isinstance(stn.get('active_combo'), Mapping):
                 combo_source = stn['active_combo']  # type: ignore[index]
             elif isinstance(stn.get('pump_combo'), Mapping):
                 combo_source = stn['pump_combo']  # type: ignore[index]
             elif isinstance(stn.get('combo'), Mapping):
                 combo_source = stn['combo']  # type: ignore[index]
-
-            # If no explicit combo is provided, derive a default from the available
-            # pump types.  Many case files omit the ``pump_combo`` field and
-            # instead specify an ``available`` count on each entry in
-            # ``pump_types``.  Without a combo, the optimiser falls back to a
-            # dummy pump type which yields zero head and efficiency.  To avoid
-            # that misbehaviour we synthesise a ``combo_source`` mapping here,
-            # enumerating the maximum available units of each pump type.
-            if combo_source is None and pump_types_data:
-                default_combo: dict[str, int] = {}
-                for ptype, pdata in pump_types_data.items():
-                    avail = pdata.get('available')
-                    try:
-                        count = int(avail) if avail is not None else 0
-                    except Exception:
-                        count = 0
-                    if count > 0:
-                        default_combo[ptype] = count
-                if default_combo:
-                    combo_source = default_combo
-                    # Propagate the derived combo to the station itself.  This
-                    # ensures downstream helpers (e.g., ``_build_pump_option_cache``)
-                    # see the correct pump combination instead of defaulting
-                    # to a dummy pump.  Without this assignment the pump head
-                    # calculation uses a zero‑head placeholder and makes all
-                    # options infeasible.
-                    stn['pump_combo'] = default_combo
 
             type_order: list[str] = []
             type_rpm_lists: dict[str, list[int]] = {}
@@ -2246,48 +2180,16 @@ def solve_pipeline(
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
-            # read maximum drag‑reduction percentage without truncating fractional values
-            max_dr_main_raw = stn.get('max_dr', 0)
-            try:
-                max_dr_main = int(float(max_dr_main_raw))
-            except Exception:
-                max_dr_main = 0
+            max_dr_main = int(stn.get('max_dr', 0))
             if fixed_dr is not None:
-                dra_main_vals = [int(round(float(fixed_dr)))]
+                dra_main_vals = [int(round(fixed_dr))]
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
-                # Ensure at least one non-zero injection option is considered when max_dr_main > 0.
-                # If all enumerated drag-reduction values yield zero PPM at this viscosity, attempt to
-                # include a higher DR value (up to 100%) that produces a positive PPM.  This avoids
-                # missing feasible DRA injection simply because the max_dr or dra_step are too low.
-                if max_dr_main > 0 and not any(
-                    get_ppm_for_dr(kv, dr) > DRA_PPM_TOL for dr in dra_main_vals if dr > 0
-                ):
-                    # Try the maximum allowed DR first
-                    candidate_dr = max_dr_main
-                    if get_ppm_for_dr(kv, candidate_dr) > DRA_PPM_TOL:
-                        if candidate_dr not in dra_main_vals:
-                            dra_main_vals.append(candidate_dr)
-                    else:
-                        # Incrementally search for a DR value with non-zero PPM
-                        search_dr = candidate_dr + dra_step
-                        while search_dr <= 100:
-                            if get_ppm_for_dr(kv, search_dr) > DRA_PPM_TOL:
-                                dra_main_vals.append(search_dr)
-                                break
-                            search_dr += dra_step
-            if loop_dict:
-                max_dr_loop_raw = loop_dict.get('max_dr', 0)
-                try:
-                    max_dr_loop = int(float(max_dr_loop_raw))
-                except Exception:
-                    max_dr_loop = 0
-            else:
-                max_dr_loop = 0
+            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
@@ -2318,20 +2220,8 @@ def solve_pipeline(
                         rpm_map_choice = {}
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
-                            ppm_main = (
-                                float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
-                            )
-                            ppm_loop = (
-                                float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
-                            )
-                            if ppm_main < 0.0:
-                                ppm_main = 0.0
-                            if ppm_loop < 0.0:
-                                ppm_loop = 0.0
-                            if ppm_main <= DRA_PPM_TOL:
-                                ppm_main = 0.0
-                            if ppm_loop <= DRA_PPM_TOL:
-                                ppm_loop = 0.0
+                            ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                            ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
                             opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
@@ -2351,20 +2241,15 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
+                    'dra_ppm_main': 0,
+                    'dra_ppm_loop': 0,
                 })
         else:
             # Non-pump stations can inject DRA independently whenever a
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
-            # read maximum drag‑reduction percentage for non-pump stations
-            max_dr_main_raw = stn.get('max_dr', 0)
-            try:
-                max_dr_main = int(float(max_dr_main_raw))
-            except Exception:
-                max_dr_main = 0
+            max_dr_main = int(stn.get('max_dr', 0))
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
@@ -2372,36 +2257,15 @@ def solve_pipeline(
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
-                # Ensure at least one non-zero injection option is considered when max_dr_main > 0.
-                if max_dr_main > 0 and not any(
-                    get_ppm_for_dr(kv, dr) > DRA_PPM_TOL for dr in dra_vals if dr > 0
-                ):
-                    candidate_dr = max_dr_main
-                    if get_ppm_for_dr(kv, candidate_dr) > DRA_PPM_TOL:
-                        if candidate_dr not in dra_vals:
-                            dra_vals.append(candidate_dr)
-                    else:
-                        search_dr = candidate_dr + dra_step
-                        while search_dr <= 100:
-                            if get_ppm_for_dr(kv, search_dr) > DRA_PPM_TOL:
-                                dra_vals.append(search_dr)
-                                break
-                            search_dr += dra_step
                 for dra_main in dra_vals:
-                    ppm_main = (
-                        float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
-                    )
-                    if ppm_main < 0.0:
-                        ppm_main = 0.0
-                    if ppm_main <= DRA_PPM_TOL:
-                        ppm_main = 0.0
+                    ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
                         'dra_main': dra_main,
                         'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
-                        'dra_ppm_loop': 0.0,
+                        'dra_ppm_loop': 0,
                     })
             if not non_pump_opts:
                 non_pump_opts.append({
@@ -2409,8 +2273,8 @@ def solve_pipeline(
                     'rpm': 0,
                     'dra_main': 0,
                     'dra_loop': 0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
+                    'dra_ppm_main': 0,
+                    'dra_ppm_loop': 0,
                 })
             opts.extend(non_pump_opts)
 
@@ -2521,7 +2385,7 @@ def solve_pipeline(
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
-    init_residual = int(stations[0].get('min_residual', 50))
+    init_residual = int(stations[0].get('min_residual', 0))
     origin_diameter = float(station_opts[0]['d_inner']) if station_opts else 0.0
     initial_queue = _build_initial_dra_queue(linefill_state, dra_reach_km, origin_diameter)
     # Initial dynamic‑programming state.  Each state carries the cumulative
@@ -2543,7 +2407,7 @@ def solve_pipeline(
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
-            'carry_loop_dra': 0.0,
+            'carry_loop_dra': 0,
             'dra_queue': initial_queue,
         }
     }
@@ -2562,16 +2426,7 @@ def solve_pipeline(
                 # drag reduction is used instead.  We detect bypass using
                 # ``loop_usage_by_station`` when provided.
                 if stn_data['idx'] > 0 and loop_usage_by_station is not None:
-                    # Guard against ``loop_usage_by_station`` being shorter than
-                    # the number of stations.  Out‑of‑range indices can occur
-                    # when a case file omits loop usage entries for some
-                    # stations or when earlier enumeration created a shorter
-                    # vector.  In such cases treat the previous usage as
-                    # undefined (``None``) and do not block loop injection.
-                    if stn_data['idx'] - 1 < len(loop_usage_by_station):
-                        usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
-                    else:
-                        usage_prev = None
+                    usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 segment_length = float(stn_data['L'])
@@ -2761,13 +2616,7 @@ def solve_pipeline(
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
                 if loop_usage_by_station is not None and stn_data.get('loopline'):
-                    # Protect against index overflow: when the loop usage list
-                    # is shorter than the number of stations, fall back to
-                    # ``None`` (i.e. no specific loop case) for this station.
-                    if stn_data['idx'] < len(loop_usage_by_station):
-                        usage = loop_usage_by_station[stn_data['idx']]
-                    else:
-                        usage = None
+                    usage = loop_usage_by_station[stn_data['idx']]
                     if usage == 0:
                         # Only the base (no-loop) scenario is allowed.  Pick the first
                         # scenario with zero loop flow.
@@ -2801,14 +2650,11 @@ def solve_pipeline(
                                 break
                 else:
                     filtered_scenarios = scenarios
-                loop_dra_current = _coerce_float(opt.get('dra_loop', 0.0), 0.0)
                 for sc in filtered_scenarios:
-                    # Initialise DRA cost for each scenario to avoid unbound variable errors
-                    dra_cost = 0.0
                     # Skip scenarios with unacceptable velocities
-                    if sc['flow_main'] > 0 and not (V_MIN <= sc['v'] <= V_MAX):
+                    if sc['flow_main'] > 0 and not ((stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS) <= 0 or sc['v'] >= stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS)) and (stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS) <= 0 or sc['v'] <= stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS))):
                         continue
-                    if sc['flow_loop'] > 0 and not (V_MIN <= sc['v_loop'] <= V_MAX):
+                    if sc['flow_loop'] > 0 and not ((stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS) <= 0 or sc['v_loop'] >= stn_data.get('V_MIN', DEFAULT_MIN_VELOCITY_MS)) and (stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS) <= 0 or sc['v_loop'] <= stn_data.get('V_MAX', DEFAULT_MAX_VELOCITY_MS))):
                         continue
 
                     # -----------------------------------------------------------------
@@ -2851,21 +2697,17 @@ def solve_pipeline(
                             length_loop_total = stn_data['loopline']['L']
                         # Effective drag reduction for the entire path based on the
                         # inherited mainline PPM
-                        eff_dra_main_tot = (
-                            float(get_dr_for_ppm(stn_data['kv'], ppm_main))
-                            if ppm_main > 0
-                            else 0.0
-                        )
+                        eff_dra_main_tot = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
                         # Carry-over drag reduction on the loop from the previous state
-                        carry_prev = _coerce_float(state.get('carry_loop_dra', 0.0), 0.0)
+                        carry_prev = int(state.get('carry_loop_dra', 0))
                         # In bypass mode the loopline may still inject additional DRA.
                         # Combine any upstream carry-over with the current option so
                         # the full effect is considered when splitting flow over the
                         # total path.
                         eff_dra_loop_tot = (
-                            carry_prev + loop_dra_current
+                            carry_prev + opt['dra_loop']
                             if sc.get('bypass_next')
-                            else loop_dra_current
+                            else opt['dra_loop']
                         )
                         # Compute flow split to equalise head loss over the entire path
                         hl_tot, main_stats_tot, loop_stats_tot = _parallel_segment_hydraulics(
@@ -2926,27 +2768,27 @@ def solve_pipeline(
                     # upstream station persists.  Otherwise use the station's
                     # prescribed DRA for the loopline.  When there is no loop flow
                     # the value is irrelevant but carried forward.
-                    carry_prev = _coerce_float(state.get('carry_loop_dra', 0.0), 0.0)
+                    carry_prev = int(state.get('carry_loop_dra', 0))
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
-                            eff_dra_loop = carry_prev + loop_dra_current
-                            inj_loop_current = loop_dra_current
+                            eff_dra_loop = carry_prev + opt['dra_loop']
+                            inj_loop_current = opt['dra_loop']
                             inj_ppm_loop = opt['dra_ppm_loop']
                         else:
-                            eff_dra_loop = loop_dra_current
-                            inj_loop_current = loop_dra_current
+                            eff_dra_loop = opt['dra_loop']
+                            inj_loop_current = opt['dra_loop']
                             inj_ppm_loop = opt['dra_ppm_loop']
                     else:
-                        eff_dra_loop = 0.0
-                        inj_loop_current = 0.0
-                        inj_ppm_loop = 0.0
+                        eff_dra_loop = 0
+                        inj_loop_current = 0
+                        inj_ppm_loop = 0
 
                     # Determine next carry-over drag reduction value for the loop.
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
-                            new_carry = carry_prev + loop_dra_current
+                            new_carry = carry_prev + opt['dra_loop']
                         else:
-                            new_carry = loop_dra_current
+                            new_carry = opt['dra_loop']
                     else:
                         new_carry = carry_prev
 
@@ -3009,7 +2851,8 @@ def solve_pipeline(
                     dra_cost = 0.0
                     if inj_ppm_main > 0:
                         dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
-                    # Loopline injection uses ``inj_ppm_loop`` computed earlier.  Charge cost only when an actual injection is
+                    # Loopline injection uses ``inj_ppm_loop`` computed
+                    # earlier.  Charge cost only when an actual injection is
                     # performed at this station.
                     if sc['flow_loop'] > 0 and inj_loop_current > 0:
                         dra_cost += inj_ppm_loop * (sc['flow_loop'] * 1000.0 * hours / 1e6) * RateDRA
@@ -3187,11 +3030,7 @@ def solve_pipeline(
     # the origin.
     pumped_volume = segment_flows[0] * hours
     origin_name = stations[0]['name'].strip().lower().replace(' ', '_') if stations else ''
-    inj_ppm = float(result.get(f"dra_ppm_{origin_name}", 0.0)) if origin_name else 0.0
-    if inj_ppm < 0.0:
-        inj_ppm = 0.0
-    if inj_ppm <= DRA_PPM_TOL:
-        inj_ppm = 0.0
+    inj_ppm = int(result.get(f"dra_ppm_{origin_name}", 0)) if origin_name else 0
     schedule = [{'volume': pumped_volume, 'dra_ppm': inj_ppm}]
     advance_linefill(linefill_state, schedule, pumped_volume)
     result['linefill'] = linefill_state
@@ -3208,8 +3047,8 @@ def solve_pipeline(
         f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
         f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"dra_ppm_loop_{term_name}": 0.0,
+        f"dra_ppm_{term_name}": 0,
+        f"dra_ppm_loop_{term_name}": 0,
         f"drag_reduction_{term_name}": 0,
         f"drag_reduction_loop_{term_name}": 0,
         f"head_loss_{term_name}": 0.0,
@@ -3357,6 +3196,10 @@ def solve_pipeline_with_types(
             # Determine available counts for each type
             availA = stn['pump_types'].get('A', {}).get('available', 0)
             availB = stn['pump_types'].get('B', {}).get('available', 0)
+            # Guard: if nothing available, skip type-combo path
+            if (availA or 0) + (availB or 0) <= 0:
+                expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
+                return
             max_raw = stn.get('max_pumps', None)
             if max_raw is None:
                 limit = math.inf
