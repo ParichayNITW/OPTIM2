@@ -708,10 +708,22 @@ def _injector_upstream_of_pumps(stn_data: Mapping[str, object]) -> bool:
     return bool(stn_data.get('is_pump', False))
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
-# tractable while still providing near-global optimality.
+# tractable while still providing near-global optimality.  Users can tune this
+# constant to increase accuracy (at the cost of a larger state space).
 RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
+
+def _round_residual(value: float) -> float:
+    """Return *value* rounded according to :data:`RESIDUAL_ROUND`."""
+
+    try:
+        digits = int(RESIDUAL_ROUND)
+    except (TypeError, ValueError):
+        digits = 0
+    if digits < 0:
+        digits = 0
+    return round(float(value), digits)
 
 # Control the pruning of dynamic-programming states carried forward after
 # each station.  ``STATE_REL_COST_BAND`` retains all states whose cost lies
@@ -3082,7 +3094,7 @@ def solve_pipeline(
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
-    init_residual = int(stations[0].get('min_residual', 50))
+    init_residual = _round_residual(float(stations[0].get('min_residual', 50)))
     origin_diameter = float(station_opts[0]['d_inner']) if station_opts else 0.0
     initial_queue = _build_initial_dra_queue(linefill_state, dra_reach_km, origin_diameter)
     # Initial dynamic‑programming state.  Each state carries the cumulative
@@ -3096,7 +3108,7 @@ def solve_pipeline(
     #
     # The mainline DRA profile is represented as a queue of slices, each
     # describing the downstream length (in km) and the associated ppm.
-    states: dict[int, dict] = {
+    states: dict[float, dict] = {
         init_residual: {
             'cost': 0.0,
             'residual': init_residual,
@@ -3110,7 +3122,7 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
-        new_states: dict[int, dict] = {}
+        new_states: dict[float, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -3499,7 +3511,9 @@ def solve_pipeline(
                         continue
 
                     # Compute downstream residual head after segment loss and elevation
-                    residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
+                    residual_next = _round_residual(
+                        sdh - sc['head_loss'] - stn_data['elev_delta']
+                    )
 
                     # Compute minimum downstream requirement.  Use the cached baseline
                     # unless bypassing the next station, in which case recompute with
@@ -3714,7 +3728,7 @@ def solve_pipeline(
         if state_lower_bounds and 0 <= next_index < len(state_lower_bounds):
             downstream_lb = max(state_lower_bounds[next_index], 0.0)
 
-        pruned: dict[int, dict] = {}
+        pruned: dict[float, dict] = {}
         for residual_key, data in items:
             cost_val = data['cost']
 
@@ -3738,7 +3752,7 @@ def solve_pipeline(
                 break
 
         if state_max_states is not None and len(pruned) > state_max_states:
-            limited: dict[int, dict] = {}
+            limited: dict[float, dict] = {}
             for residual_key, data in items:
                 if residual_key in pruned:
                     limited[residual_key] = pruned[residual_key]
@@ -3760,7 +3774,7 @@ def solve_pipeline(
     for rec in best_state['records']:
         result.update(rec)
 
-    residual = int(best_state['residual'])
+    residual = _round_residual(best_state['residual'])
     total_cost = best_state['cost']
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
