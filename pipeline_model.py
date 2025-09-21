@@ -2562,7 +2562,16 @@ def solve_pipeline(
                 # drag reduction is used instead.  We detect bypass using
                 # ``loop_usage_by_station`` when provided.
                 if stn_data['idx'] > 0 and loop_usage_by_station is not None:
-                    usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
+                    # Guard against ``loop_usage_by_station`` being shorter than
+                    # the number of stations.  Out‑of‑range indices can occur
+                    # when a case file omits loop usage entries for some
+                    # stations or when earlier enumeration created a shorter
+                    # vector.  In such cases treat the previous usage as
+                    # undefined (``None``) and do not block loop injection.
+                    if stn_data['idx'] - 1 < len(loop_usage_by_station):
+                        usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
+                    else:
+                        usage_prev = None
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 segment_length = float(stn_data['L'])
@@ -2752,7 +2761,13 @@ def solve_pipeline(
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
                 if loop_usage_by_station is not None and stn_data.get('loopline'):
-                    usage = loop_usage_by_station[stn_data['idx']]
+                    # Protect against index overflow: when the loop usage list
+                    # is shorter than the number of stations, fall back to
+                    # ``None`` (i.e. no specific loop case) for this station.
+                    if stn_data['idx'] < len(loop_usage_by_station):
+                        usage = loop_usage_by_station[stn_data['idx']]
+                    else:
+                        usage = None
                     if usage == 0:
                         # Only the base (no-loop) scenario is allowed.  Pick the first
                         # scenario with zero loop flow.
