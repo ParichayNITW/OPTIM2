@@ -29,6 +29,8 @@ if "Fuel_density" not in st.session_state:
     st.session_state["Fuel_density"] = 820.0
 if "Ambient_temp" not in st.session_state:
     st.session_state["Ambient_temp"] = 25.0
+if "pump_shear_rate" not in st.session_state:
+    st.session_state["pump_shear_rate"] = 1.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -176,6 +178,12 @@ def restore_case_dict(loaded_data):
     st.session_state['Price_HSD'] = loaded_data.get('Price_HSD', 70.0)
     st.session_state['Fuel_density'] = loaded_data.get('Fuel_density', 820.0)
     st.session_state['Ambient_temp'] = loaded_data.get('Ambient_temp', 25.0)
+    shear_val = loaded_data.get('pump_shear_rate', 1.0)
+    try:
+        shear_val = float(shear_val)
+    except (TypeError, ValueError):
+        shear_val = 1.0
+    st.session_state['pump_shear_rate'] = min(1.0, max(0.0, shear_val))
     st.session_state['MOP_kgcm2'] = loaded_data.get('MOP_kgcm2', 100.0)
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
     if loaded_data.get("linefill_vol"):
@@ -305,6 +313,15 @@ with st.sidebar:
             value=st.session_state.get("Ambient_temp", 25.0),
             step=1.0,
             key="Ambient_temp",
+        )
+        st.slider(
+            "Pump shear rate",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state.get("pump_shear_rate", 1.0)),
+            step=0.05,
+            key="pump_shear_rate",
+            help="Fraction of injected DRA that remains effective after pump shear.",
         )
         st.number_input(
             "MOP (kg/cm²)",
@@ -880,6 +897,12 @@ def get_full_case_dict():
 
     stations = st.session_state.get('stations', [])
     first_station = stations[0] if stations else {}
+    shear_val = st.session_state.get('pump_shear_rate', 1.0)
+    try:
+        shear_val = float(shear_val)
+    except (TypeError, ValueError):
+        shear_val = 1.0
+    shear_val = min(1.0, max(0.0, shear_val))
     return {
         "stations": stations,
         "terminal": {
@@ -893,6 +916,7 @@ def get_full_case_dict():
         "Price_HSD": st.session_state.get('Price_HSD', 70.0),
         "Fuel_density": st.session_state.get('Fuel_density', 820.0),
         "Ambient_temp": st.session_state.get('Ambient_temp', 25.0),
+        "pump_shear_rate": shear_val,
         "MOP_kgcm2": st.session_state.get('MOP_kgcm2', 100.0),
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
@@ -1642,6 +1666,13 @@ def solve_pipeline(
     if mop_kgcm2 is None:
         mop_kgcm2 = st.session_state.get("MOP_kgcm2")
 
+    shear_val = st.session_state.get("pump_shear_rate", 1.0)
+    try:
+        shear_val = float(shear_val)
+    except (TypeError, ValueError):
+        shear_val = 1.0
+    pump_shear_rate = min(1.0, max(0.0, shear_val))
+
     try:
         # Delegate to the backend optimiser
         if any(s.get('pump_types') for s in stations):
@@ -1660,6 +1691,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time=start_time,
+                pump_shear_rate=pump_shear_rate,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1677,6 +1709,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time=start_time,
+                pump_shear_rate=pump_shear_rate,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -2029,6 +2062,13 @@ def run_all_updates():
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
 
+    shear_val = st.session_state.get("pump_shear_rate", 1.0)
+    try:
+        shear_val = float(shear_val)
+    except (TypeError, ValueError):
+        shear_val = 1.0
+    pump_shear_rate = min(1.0, max(0.0, shear_val))
+
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
@@ -2044,6 +2084,7 @@ def run_all_updates():
             200.0,
             st.session_state.get("MOP_kgcm2"),
             24.0,
+            pump_shear_rate=pump_shear_rate,
         )
     if not res or res.get("error"):
         msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
