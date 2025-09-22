@@ -9,7 +9,6 @@ parts-per-million for that batch.
 
 from __future__ import annotations
 
-from math import pi
 from typing import List, Dict
 
 
@@ -35,12 +34,14 @@ def linefill_lengths(linefill: List[Dict], diameter: float) -> List[Dict]:
     """
     if diameter <= 0:
         raise ValueError("Pipe diameter must be positive")
-    area = pi * (diameter ** 2) / 4.0
+    from pipeline_model import _km_from_volume
+
+    km_from_volume = _km_from_volume
     result = []
     cum_len = 0.0
     for entry in linefill:
         vol = float(entry.get("volume", 0.0))
-        length_km = vol / area / 1000.0
+        length_km = km_from_volume(vol, diameter)
         new_entry = entry.copy()
         new_entry.update(
             {

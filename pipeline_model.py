@@ -6,6 +6,7 @@ import copy
 import datetime as dt
 from collections.abc import Mapping
 from itertools import product
+import math
 
 import numpy as np
 
@@ -27,6 +28,44 @@ from linefill_utils import advance_linefill
 def head_to_kgcm2(head_m: float, rho: float) -> float:
     """Convert a head value in metres to kg/cm²."""
     return head_m * rho / 10000.0
+
+
+def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
+    """Return the pipeline length in kilometres occupied by ``volume_m3``."""
+
+    try:
+        volume = float(volume_m3)
+    except (TypeError, ValueError):
+        return 0.0
+    try:
+        diameter = float(diameter_m)
+    except (TypeError, ValueError):
+        return 0.0
+    if diameter <= 0:
+        return 0.0
+    area = math.pi * (diameter ** 2) / 4.0
+    if area <= 0:
+        return 0.0
+    return volume / area / 1000.0
+
+
+def _volume_from_km(length_km: float, diameter_m: float) -> float:
+    """Return the volume in cubic metres for ``length_km`` of pipe."""
+
+    try:
+        length = float(length_km)
+    except (TypeError, ValueError):
+        return 0.0
+    try:
+        diameter = float(diameter_m)
+    except (TypeError, ValueError):
+        return 0.0
+    if diameter <= 0:
+        return 0.0
+    area = math.pi * (diameter ** 2) / 4.0
+    if area <= 0:
+        return 0.0
+    return length * 1000.0 * area
 
 
 def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, int]]:
@@ -2513,3 +2552,8 @@ def solve_pipeline_with_types(
 
     best_result['stations_used'] = best_stations
     return best_result
+
+
+_exported_names = [name for name in globals() if not name.startswith('_')]
+_exported_names.extend(['_km_from_volume', '_volume_from_km'])
+__all__ = list(dict.fromkeys(_exported_names))
