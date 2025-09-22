@@ -61,6 +61,22 @@ def _coerce_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
+def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
+    """Return the pipeline length in kilometres for ``volume_m3`` at ``diameter_m``."""
+
+    try:
+        volume = float(volume_m3)
+        diameter = float(diameter_m)
+    except (TypeError, ValueError):
+        return 0.0
+    if diameter <= 0:
+        return 0.0
+    area = np.pi * (diameter ** 2) / 4.0
+    if area <= 0:
+        return 0.0
+    return volume / area / 1000.0
+
+
 def _extract_rpm(
     value,
     *,
@@ -327,6 +343,7 @@ def _update_mainline_dra(
     reach_prev: float,
     stn_data: dict,
     opt: dict,
+    pump_shear_rate: float,
 ) -> tuple[int, float, float, int]:
     """Return updated drag‑reduction state for the mainline.
 
@@ -342,6 +359,8 @@ def _update_mainline_dra(
         segment length and ``is_pump`` for pump stations.
     opt:
         Chosen operating option containing ``dra_ppm_main`` and ``nop``.
+    pump_shear_rate:
+        Fraction of injected DRA that survives pump shear (0.0 – 1.0).
 
     Returns
     -------
@@ -361,7 +380,7 @@ def _update_mainline_dra(
     # zero.  Non‑pump segments simply carry the upstream concentration forward
     # until the maximum reach is exhausted.
     if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
-        ppm_main = inj_ppm_main
+        ppm_main = int(round(inj_ppm_main * pump_shear_rate))
         if ppm_main > 0:
             dra_len_main = min(stn_data["L"], MAX_DRA_KM)
             reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
@@ -911,6 +930,7 @@ def solve_pipeline(
     hours: float = 24.0,
     start_time: str = "00:00",
     *,
+    pump_shear_rate: float = 1.0,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
@@ -933,7 +953,9 @@ def solve_pipeline(
     pass then narrows the RPM and DRA ranges around that coarse solution
     and re-solves using the user-provided ``rpm_step`` and ``dra_step``.
     ``narrow_ranges`` is an internal helper used to restrict the values
-    considered during the refinement stage.
+    considered during the refinement stage.  ``pump_shear_rate`` expresses
+    the fraction of injected DRA that survives pump shear at pump stations
+    and is clamped to the range [0, 1].
 
     This function supports optional loop-use directives.  When
     ``enumerate_loops`` is ``True`` and no explicit
@@ -945,6 +967,11 @@ def solve_pipeline(
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
     """
+
+    pump_shear_rate = _coerce_float(pump_shear_rate, 1.0)
+    if not np.isfinite(pump_shear_rate):
+        pump_shear_rate = 1.0
+    pump_shear_rate = min(1.0, max(0.0, pump_shear_rate))
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -973,6 +1000,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                pump_shear_rate=pump_shear_rate,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1029,6 +1057,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                pump_shear_rate=pump_shear_rate,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1117,6 +1146,7 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
             start_time,
+            pump_shear_rate=pump_shear_rate,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -1228,6 +1258,7 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
             start_time,
+            pump_shear_rate=pump_shear_rate,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -1611,7 +1642,11 @@ def solve_pipeline(
                 # concentration to the injected value while unpumped segments carry
                 # the upstream level forward until its reach is exhausted.
                 ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
-                    ppm_prev, reach_prev, stn_data, opt
+                    ppm_prev,
+                    reach_prev,
+                    stn_data,
+                    opt,
+                    pump_shear_rate,
                 )
                 eff_dra_main = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
 
@@ -2335,8 +2370,19 @@ def solve_pipeline_with_types(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     start_time: str = "00:00",
+    *,
+    pump_shear_rate: float = 1.0,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
+
+    ``pump_shear_rate`` is forwarded to :func:`solve_pipeline` and clamps to
+    the [0, 1] interval.
+    """
+
+    pump_shear_rate = _coerce_float(pump_shear_rate, 1.0)
+    if not np.isfinite(pump_shear_rate):
+        pump_shear_rate = 1.0
+    pump_shear_rate = min(1.0, max(0.0, pump_shear_rate))
 
     best_result = None
     best_cost = float('inf')
@@ -2405,6 +2451,7 @@ def solve_pipeline_with_types(
                     mop_kgcm2,
                     hours,
                     start_time,
+                    pump_shear_rate=pump_shear_rate,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                 )
