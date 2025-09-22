@@ -630,35 +630,51 @@ def _update_mainline_dra(
         else:
             pumped_slices.extend(incoming_slices)
     else:
-        inj_effective = float(inj_ppm_main)
-        if inj_effective > 0 and apply_injection_shear:
-            inj_effective *= 1.0 - shear
-        inj_dr = 0.0
+        inj_requested = max(float(inj_ppm_main), 0.0)
         inj_curve_ok = False
-        if inj_effective > 0:
+        inj_dr = 0.0
+        if inj_requested > 0:
             try:
-                inj_dr = float(get_dr_for_ppm(kv, inj_effective))
+                inj_dr = float(get_dr_for_ppm(kv, inj_requested))
                 inj_curve_ok = inj_dr > 0
             except Exception:
                 inj_curve_ok = False
                 inj_dr = 0.0
+        if inj_curve_ok and inj_dr > 0 and apply_injection_shear and shear > 0:
+            inj_dr *= 1.0 - shear
+            if inj_dr < 0:
+                inj_dr = 0.0
+        if inj_curve_ok:
+            if inj_dr > 0:
+                try:
+                    inj_effective = float(get_ppm_for_dr(kv, inj_dr))
+                except Exception:
+                    inj_curve_ok = False
+                    inj_effective = inj_requested * (1.0 - shear if apply_injection_shear and shear > 0 else 1.0)
+            else:
+                inj_effective = 0.0
+        else:
+            inj_effective = inj_requested
+            if apply_injection_shear and shear > 0 and inj_effective > 0:
+                inj_effective *= 1.0 - shear
         base_curve_cache: dict[float, tuple[bool, float]] = {}
         for length, base_ppm in incoming_slices:
             if length <= 0:
                 continue
+            base_curve_ok = False
+            base_dr = 0.0
+            sheared_dr = 0.0
             if is_origin and inj_ppm_main <= 0:
+                base_curve_ok = True
                 base_sheared = 0.0
             else:
-                base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
-            if inj_ppm_main <= 0:
-                combined_ppm = base_sheared
-            else:
-                if base_sheared > 0:
-                    key = round(base_sheared, 6)
+                base_ppm = float(base_ppm)
+                if base_ppm > 0:
+                    key = round(base_ppm, 6)
                     cached = base_curve_cache.get(key)
                     if cached is None:
                         try:
-                            base_dr_val = float(get_dr_for_ppm(kv, base_sheared))
+                            base_dr_val = float(get_dr_for_ppm(kv, base_ppm))
                             cached = (base_dr_val > 0, base_dr_val if base_dr_val > 0 else 0.0)
                         except Exception:
                             cached = (False, 0.0)
@@ -666,10 +682,29 @@ def _update_mainline_dra(
                     base_curve_ok, base_dr = cached
                 else:
                     base_curve_ok, base_dr = True, 0.0
+                if base_curve_ok:
+                    sheared_dr = base_dr * (1.0 - shear) if shear > 0 else base_dr
+                    if sheared_dr < 0:
+                        sheared_dr = 0.0
+                    if sheared_dr > 0:
+                        try:
+                            base_sheared = float(get_ppm_for_dr(kv, sheared_dr))
+                        except Exception:
+                            base_curve_ok = False
+                            base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                            sheared_dr = 0.0
+                    else:
+                        base_sheared = 0.0
+                else:
+                    base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                    sheared_dr = 0.0
+            if inj_ppm_main <= 0:
+                combined_ppm = base_sheared
+            else:
                 if base_sheared <= 1e-9:
                     combined_ppm = base_sheared + inj_effective
                 elif base_curve_ok and inj_curve_ok:
-                    combined_dr = base_dr + inj_dr
+                    combined_dr = sheared_dr + inj_dr
                     if combined_dr > 0:
                         try:
                             combined_ppm = float(get_ppm_for_dr(kv, combined_dr))
