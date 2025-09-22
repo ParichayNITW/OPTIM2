@@ -5,7 +5,11 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from pipeline_model import solve_pipeline
+from pipeline_model import (
+    solve_pipeline,
+    _prepare_dra_queue_consumption,
+    _update_mainline_dra,
+)
 
 
 def _dra_length_km(linefill: list[dict], diameter: float) -> float:
@@ -32,6 +36,47 @@ def _dra_length_km(linefill: list[dict], diameter: float) -> float:
             continue
         total += vol / area / 1000.0
     return total
+
+
+def _total_queue_length(queue: list[dict]) -> float:
+    """Return the total length represented by ``queue`` entries."""
+
+    total = 0.0
+    for entry in queue:
+        try:
+            length = float(entry.get("length_km", 0.0) or 0.0)
+        except Exception:
+            length = 0.0
+        if length <= 0:
+            continue
+        total += length
+    return total
+
+
+def _zero_front_within_segment(queue: list[dict], segment_length: float) -> float:
+    """Return the distance from the segment inlet to the first 0-ppm slice."""
+
+    remaining = float(segment_length)
+    distance = 0.0
+    for entry in queue:
+        if remaining <= 0:
+            break
+        try:
+            length = float(entry.get("length_km", 0.0) or 0.0)
+        except Exception:
+            length = 0.0
+        if length <= 0:
+            continue
+        take = length if length <= remaining else remaining
+        try:
+            ppm_val = int(entry.get("dra_ppm", 0) or 0)
+        except Exception:
+            ppm_val = 0
+        if ppm_val == 0:
+            return distance
+        distance += take
+        remaining -= take
+    return distance
 
 
 def test_sdh_varies_smoothly_with_downstream_slug():
@@ -162,3 +207,74 @@ def test_partial_slug_advances_with_positive_injection() -> None:
     diffs = [b - a for a, b in zip(sdh_progression, sdh_progression[1:])]
     assert diffs, "Expected SDH to change over successive hours"
     assert max(diffs) <= 6.0
+
+
+def test_queue_preserves_length_and_zero_front_progression() -> None:
+    """Low pumped lengths should not shorten the queue or skip 0-ppm fronts."""
+
+    segment_length = 40.0
+    flow_m3h = 1200.0
+    hours = 0.25
+    diameter = 0.7
+
+    queue_state = [
+        {"length_km": 10.0, "dra_ppm": 0},
+        {"length_km": 30.0, "dra_ppm": 18},
+    ]
+
+    stn_data = {
+        "idx": 0,
+        "L": segment_length,
+        "d_inner": diameter,
+        "d": diameter,
+        "kv": 3.0,
+    }
+    opt = {"dra_ppm_main": 18, "nop": 0}
+
+    total_length = _total_queue_length(queue_state)
+    zero_positions = [_zero_front_within_segment(queue_state, segment_length)]
+    pumped_lengths: list[float] = []
+
+    for _ in range(4):
+        precomputed = _prepare_dra_queue_consumption(
+            queue_state,
+            segment_length,
+            flow_m3h,
+            hours,
+            diameter,
+        )
+        pumped_length, _, _ = precomputed
+        pumped_lengths.append(pumped_length)
+        _, queue_after, _ = _update_mainline_dra(
+            queue_state,
+            stn_data,
+            opt,
+            segment_length,
+            flow_m3h,
+            hours,
+            pump_running=False,
+            pump_shear_rate=0.0,
+            dra_shear_factor=0.0,
+            shear_injection=False,
+            is_origin=True,
+            precomputed=precomputed,
+        )
+        assert math.isclose(
+            _total_queue_length(queue_after),
+            total_length,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        queue_state = queue_after
+        zero_positions.append(_zero_front_within_segment(queue_state, segment_length))
+
+    assert pumped_lengths, "Expected at least one pumped-length sample"
+    reference = pumped_lengths[0]
+    for pumped_length in pumped_lengths[1:]:
+        assert math.isclose(pumped_length, reference, rel_tol=1e-9, abs_tol=1e-12)
+
+    expected_first = zero_positions[0] + reference
+    assert math.isclose(zero_positions[1], expected_first, rel_tol=1e-9, abs_tol=1e-9)
+    for previous, current in zip(zero_positions, zero_positions[1:]):
+        assert current + 1e-9 >= previous
+        assert current - previous <= reference + 1e-9

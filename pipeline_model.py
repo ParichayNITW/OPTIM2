@@ -585,22 +585,34 @@ def _update_mainline_dra(
                     combined_ppm = base_sheared + inj_effective
             pumped_slices.append((length, combined_ppm))
 
-    dra_segments: list[tuple[float, int]] = []
+    segment_cover_entries: list[tuple[float, float]] = []
+    downstream_entries: list[tuple[float, float]] = []
     remaining_seg = segment_length
     for length, ppm_val in pumped_slices:
-        if remaining_seg <= 0:
-            break
+        length = float(length)
         if length <= 0:
             continue
-        take = min(length, remaining_seg)
+        take = 0.0
+        if remaining_seg > 0:
+            take = min(length, remaining_seg)
+            if take > 0:
+                segment_cover_entries.append((take, ppm_val))
+                remaining_seg -= take
+        leftover = length - take
+        if leftover > 0:
+            downstream_entries.append((leftover, ppm_val))
+
+    dra_segments: list[tuple[float, int]] = []
+    for length, ppm_val in segment_cover_entries:
+        if length <= 0:
+            continue
         ppm_int = int(round(ppm_val)) if ppm_val > 0 else 0
         if ppm_int > 0:
             if dra_segments and abs(dra_segments[-1][1] - ppm_int) <= 0:
                 prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + take, ppm_int)
+                dra_segments[-1] = (prev_len + length, ppm_int)
             else:
-                dra_segments.append((take, ppm_int))
-        remaining_seg -= take
+                dra_segments.append((length, ppm_int))
 
     def _merge_queue(entries: list[tuple[float, float]]) -> list[tuple[float, int]]:
         merged: list[tuple[float, int]] = []
@@ -616,20 +628,7 @@ def _update_mainline_dra(
                 merged.append((length, ppm_val))
         return merged
 
-    future_entries: list[tuple[float, float]] = []
-    remaining_seg = segment_length
-    for length, ppm_val in pumped_slices:
-        if length <= 0:
-            continue
-        leftover = length
-        if remaining_seg > 0:
-            consume = min(length, remaining_seg)
-            leftover -= consume
-            remaining_seg -= consume
-        if leftover > 0:
-            future_entries.append((leftover, ppm_val))
-
-    merged_queue = _merge_queue(future_entries + list(queue_remainder))
+    merged_queue = _merge_queue(segment_cover_entries + downstream_entries + list(queue_remainder))
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
