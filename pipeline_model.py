@@ -359,64 +359,272 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return vals
+_QUEUE_CONSUMPTION_CACHE: dict[
+    tuple,
+    tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
+] = {}
+
+
+def _prepare_dra_queue_consumption(
+    queue: list[dict] | list[tuple] | tuple | None,
+    segment_length: float,
+    flow_m3h: float,
+    hours: float,
+    d_inner: float,
+) -> tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
+    """Return pumped length along with consumed slices and downstream remainder."""
+
+    pumped_length_calc = _km_from_volume(flow_m3h * hours, d_inner) if d_inner > 0 else 0.0
+    pumped_length = pumped_length_calc if pumped_length_calc > 0 else segment_length
+
+    current_queue: list[tuple[float, float]] = []
+    key_entries: list[tuple[float, float]] = []
+    if queue:
+        for raw in queue:
+            if isinstance(raw, Mapping):
+                length = float(raw.get("length_km", 0.0) or 0.0)
+                ppm_val = float(raw.get("dra_ppm", 0.0) or 0.0)
+            elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                length = float(raw[0] or 0.0)
+                ppm_val = float(raw[1] or 0.0)
+            else:
+                continue
+            if length <= 0:
+                continue
+            current_queue.append((length, ppm_val))
+            key_entries.append((round(length, 6), round(ppm_val, 6)))
+
+    cache_key = (
+        tuple(key_entries),
+        round(segment_length, 6),
+        round(flow_m3h, 4),
+        round(hours, 4),
+        round(d_inner, 6),
+    )
+    cached = _QUEUE_CONSUMPTION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    remaining = pumped_length
+    incoming_slices: list[tuple[float, float]] = []
+    queue_remainder: list[tuple[float, float]] = []
+    for length, ppm_val in current_queue:
+        length = float(length)
+        ppm_val = float(ppm_val)
+        if remaining > 0 and length > 0:
+            take = min(length, remaining)
+            if take > 0:
+                incoming_slices.append((take, ppm_val))
+                length -= take
+                remaining -= take
+        if length > 0:
+            queue_remainder.append((length, ppm_val))
+
+    if remaining > 0:
+        incoming_slices.append((remaining, 0.0))
+
+    result = (pumped_length, tuple(incoming_slices), tuple(queue_remainder))
+    if len(_QUEUE_CONSUMPTION_CACHE) > 4096:
+        _QUEUE_CONSUMPTION_CACHE.clear()
+    _QUEUE_CONSUMPTION_CACHE[cache_key] = result
+    return result
 
 
 def _update_mainline_dra(
-    prev_ppm: int,
-    reach_prev: float,
+    queue: list[dict] | list[tuple] | tuple | None,
     stn_data: dict,
     opt: dict,
-) -> tuple[int, float, float, int]:
-    """Return updated drag‑reduction state for the mainline.
+    segment_length: float,
+    flow_m3h: float,
+    hours: float,
+    *,
+    pump_running: bool = False,
+    dra_shear_factor: float = 0.0,
+    shear_injection: bool = False,
+    is_origin: bool = False,
+    precomputed: tuple[
+        float,
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+    ] | None = None,
+) -> tuple[list[tuple[float, int]], tuple[tuple[float, int], ...], int]:
+    """Advance the mainline DRA queue for ``segment_length`` kilometres.
 
     Parameters
     ----------
-    prev_ppm:
-        Upstream DRA concentration in ppm carried from the previous station.
-    reach_prev:
-        Remaining downstream reach (km) for which the previous injection is
-        effective.
+    queue:
+        Ordered list describing the downstream DRA distribution.  Each element
+        should provide ``length_km`` and ``dra_ppm`` keys (either as a mapping
+        or two-item iterable) with the head of the queue at index ``0``.
     stn_data:
-        Dictionary describing the current station with keys ``L`` for the
-        segment length and ``is_pump`` for pump stations.
+        Station metadata containing at least ``d_inner`` for pumped-volume
+        calculations.  Optional keys such as ``kv`` and
+        ``dra_injector_position`` refine the DRA mixing behaviour.
     opt:
-        Chosen operating option containing ``dra_ppm_main`` and ``nop``.
+        Chosen operating option which must include ``dra_ppm_main`` and the
+        number of operating pumps ``nop``.
+    segment_length:
+        Length (km) of the current segment requiring hydraulic evaluation.
+    flow_m3h / hours:
+        Throughput and timestep used to determine the pumped distance.
+    pump_running:
+        ``True`` when the station's pumps are active for this option.
+    dra_shear_factor:
+        Fractional reduction applied to upstream drag reduction when pumps are
+        running.  Values are clamped to ``[0, 1]``.
+    shear_injection:
+        When ``True`` the injected slug experiences the same shear as the
+        upstream fluid regardless of injector position.
+    is_origin:
+        ``True`` when handling the origin station.  A running origin pump with
+        no injection outputs untreated fluid.
 
     Returns
     -------
     tuple
-        ``(ppm_main, dra_len_main, reach_after, inj_ppm_main)`` where
-        ``ppm_main`` is the effective concentration after any injection,
-        ``dra_len_main`` is the length on this segment receiving drag
-        reduction, ``reach_after`` is the remaining downstream reach of that
-        injection, and ``inj_ppm_main`` is the concentration injected at this
-        station.
+        ``(dra_segments, queue_after, inj_ppm_main)`` where ``dra_segments``
+        is an ordered list of ``(length_km, ppm)`` describing the portion of
+        the queue covering ``segment_length``.  ``queue_after`` provides the
+        updated downstream queue after pumping ``flow_m3h * hours`` and
+        ``inj_ppm_main`` echoes the injected concentration for reporting.
     """
 
     inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
+    if not is_origin:
+        idx_val = stn_data.get('idx')
+        if isinstance(idx_val, (int, float)):
+            is_origin = int(idx_val) == 0
+    segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
+    flow_m3h = float(flow_m3h or 0.0)
+    hours = max(float(hours or 0.0), 0.0)
 
-    # A pump station resets the DRA concentration to the injected value.  If
-    # the pump runs without injection the downstream concentration drops to
-    # zero.  Non‑pump segments simply carry the upstream concentration forward
-    # until the maximum reach is exhausted.
-    if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
-        ppm_main = inj_ppm_main
-        if ppm_main > 0:
-            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
-            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
-        else:
-            dra_len_main = 0.0
-            reach_after = 0.0
+    d_inner = float(stn_data.get("d_inner") or stn_data.get("d") or 0.0)
+
+    if precomputed is None:
+        pumped_length, incoming_slices, queue_remainder = _prepare_dra_queue_consumption(
+            queue,
+            segment_length,
+            flow_m3h,
+            hours,
+            d_inner,
+        )
     else:
-        ppm_main = prev_ppm
-        if reach_prev > 0 and ppm_main > 0:
-            dra_len_main = min(stn_data["L"], reach_prev)
-            reach_after = max(0.0, reach_prev - stn_data["L"])
-        else:
-            dra_len_main = 0.0
-            reach_after = 0.0
+        pumped_length, incoming_slices, queue_remainder = precomputed
 
-    return int(ppm_main), dra_len_main, reach_after, inj_ppm_main
+    shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
+    kv = float(stn_data.get("kv", 3.0) or 3.0)
+    injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
+    apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
+
+    pumped_slices: list[tuple[float, float]] = []
+
+    if not pump_running:
+        if inj_ppm_main > 0 and pumped_length > 0:
+            pumped_slices.append((pumped_length, float(inj_ppm_main)))
+        else:
+            pumped_slices.extend(incoming_slices)
+    else:
+        inj_effective = float(inj_ppm_main)
+        if inj_effective > 0 and apply_injection_shear:
+            inj_effective *= 1.0 - shear
+        inj_dr = 0.0
+        inj_curve_ok = False
+        if inj_effective > 0:
+            try:
+                inj_dr = float(get_dr_for_ppm(kv, inj_effective))
+                inj_curve_ok = inj_dr > 0
+            except Exception:
+                inj_curve_ok = False
+                inj_dr = 0.0
+        base_curve_cache: dict[float, tuple[bool, float]] = {}
+        for length, base_ppm in incoming_slices:
+            if length <= 0:
+                continue
+            if is_origin and inj_ppm_main <= 0:
+                base_sheared = 0.0
+            else:
+                base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+            if inj_ppm_main <= 0:
+                combined_ppm = base_sheared
+            else:
+                if base_sheared > 0:
+                    key = round(base_sheared, 6)
+                    cached = base_curve_cache.get(key)
+                    if cached is None:
+                        try:
+                            base_dr_val = float(get_dr_for_ppm(kv, base_sheared))
+                            cached = (base_dr_val > 0, base_dr_val if base_dr_val > 0 else 0.0)
+                        except Exception:
+                            cached = (False, 0.0)
+                        base_curve_cache[key] = cached
+                    base_curve_ok, base_dr = cached
+                else:
+                    base_curve_ok, base_dr = True, 0.0
+                if base_sheared <= 1e-9:
+                    combined_ppm = base_sheared + inj_effective
+                elif base_curve_ok and inj_curve_ok:
+                    combined_dr = base_dr + inj_dr
+                    if combined_dr > 0:
+                        try:
+                            combined_ppm = float(get_ppm_for_dr(kv, combined_dr))
+                        except Exception:
+                            combined_ppm = base_sheared + inj_effective
+                    else:
+                        combined_ppm = 0.0
+                else:
+                    combined_ppm = base_sheared + inj_effective
+            pumped_slices.append((length, combined_ppm))
+
+    dra_segments: list[tuple[float, int]] = []
+    remaining_seg = segment_length
+    for length, ppm_val in pumped_slices:
+        if remaining_seg <= 0:
+            break
+        if length <= 0:
+            continue
+        take = min(length, remaining_seg)
+        ppm_int = int(round(ppm_val)) if ppm_val > 0 else 0
+        if ppm_int > 0:
+            if dra_segments and abs(dra_segments[-1][1] - ppm_int) <= 0:
+                prev_len, _ = dra_segments[-1]
+                dra_segments[-1] = (prev_len + take, ppm_int)
+            else:
+                dra_segments.append((take, ppm_int))
+        remaining_seg -= take
+
+    def _merge_queue(entries: list[tuple[float, float]]) -> list[tuple[float, int]]:
+        merged: list[tuple[float, int]] = []
+        for ent in entries:
+            length = float(ent[0])
+            ppm_val = int(round(float(ent[1])))
+            if length <= 0:
+                continue
+            if merged and merged[-1][1] == ppm_val:
+                prev_len, prev_ppm = merged[-1]
+                merged[-1] = (prev_len + length, prev_ppm)
+            else:
+                merged.append((length, ppm_val))
+        return merged
+
+    future_entries: list[tuple[float, float]] = []
+    remaining_seg = segment_length
+    for length, ppm_val in pumped_slices:
+        if length <= 0:
+            continue
+        leftover = length
+        if remaining_seg > 0:
+            consume = min(length, remaining_seg)
+            leftover -= consume
+            remaining_seg -= consume
+        if leftover > 0:
+            future_entries.append((leftover, ppm_val))
+
+    merged_queue = _merge_queue(future_entries + list(queue_remainder))
+    queue_after = [
+        {'length_km': length, 'dra_ppm': ppm}
+        for length, ppm in merged_queue
+    ]
+    return dra_segments, queue_after, inj_ppm_main
 
 
 @njit(cache=True, fastmath=True)
@@ -765,6 +973,186 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
     beta = 1.0 / alpha if alpha > 0 else 1.0
     sfc_site = sfc_tb * beta
     return sfc_site
+
+
+def _build_pump_option_cache(
+    stn_data: Mapping[str, object],
+    opt: Mapping[str, object],
+    *,
+    flow_total: float,
+    hours: float,
+    start_time: str,
+    ambient_temp: float,
+    fuel_density: float,
+    price_hsd: float,
+) -> dict:
+    """Return cached performance data for a pump operating option."""
+
+    nop = int(opt.get('nop', 0) or 0)
+    cache = {
+        'pump_details': [],
+        'tdh': 0.0,
+        'efficiency': 0.0,
+        'pump_bkw': 0.0,
+        'prime_kw': 0.0,
+        'power_cost': 0.0,
+    }
+    if nop <= 0 or flow_total <= 0:
+        return cache
+
+    pump_def = {
+        'A': stn_data.get('coef_A', 0.0),
+        'B': stn_data.get('coef_B', 0.0),
+        'C': stn_data.get('coef_C', 0.0),
+        'P': stn_data.get('coef_P', 0.0),
+        'Q': stn_data.get('coef_Q', 0.0),
+        'R': stn_data.get('coef_R', 0.0),
+        'S': stn_data.get('coef_S', 0.0),
+        'T': stn_data.get('coef_T', 0.0),
+        'DOL': stn_data.get('dol', 0.0),
+        'combo': stn_data.get('pump_combo'),
+        'pump_types': stn_data.get('pump_types'),
+        'active_combo': stn_data.get('active_combo'),
+        'power_type': stn_data.get('power_type'),
+        'sfc_mode': stn_data.get('sfc_mode'),
+        'sfc': stn_data.get('sfc'),
+        'engine_params': stn_data.get('engine_params', {}),
+    }
+    rpm_map_local: dict[str, float | int] = {}
+    for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
+        if isinstance(source, Mapping):
+            for key, value in source.items():
+                if isinstance(value, (int, float)):
+                    rpm_map_local[key] = value
+    fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
+    combo_local = (
+        pump_def.get('active_combo')
+        or pump_def.get('combo')
+        or pump_def.get('pump_combo')
+    )
+    if isinstance(combo_local, dict):
+        for key, value in opt.items():
+            if (
+                isinstance(value, (int, float))
+                and isinstance(key, str)
+                and key.startswith('rpm_')
+            ):
+                ptype = key[4:]
+                if ptype in combo_local:
+                    rpm_map_local[ptype] = value
+        for ptype, count in combo_local.items():
+            if (
+                isinstance(count, (int, float))
+                and count > 0
+                and ptype not in rpm_map_local
+                and isinstance(fallback_rpm, (int, float))
+            ):
+                rpm_map_local[ptype] = fallback_rpm
+    if (
+        not rpm_map_local
+        and isinstance(fallback_rpm, (int, float))
+        and fallback_rpm > 0
+    ):
+        rpm_map_local = {'default': fallback_rpm}
+    has_positive_rpm = any(
+        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
+    )
+    if has_positive_rpm:
+        pump_details = _pump_head(pump_def, flow_total, rpm_map_local, nop)
+    else:
+        pump_details = []
+
+    tdh = sum(p.get('tdh', 0.0) for p in pump_details)
+    efficiency = (
+        sum(p.get('eff', 0.0) * p.get('count', 0.0) for p in pump_details) / nop
+        if pump_details
+        else 0.0
+    )
+
+    pump_bkw_total = 0.0
+    prime_kw_total = 0.0
+    power_cost = 0.0
+    rho_val = float(stn_data.get('rho', 0.0) or 0.0)
+    for pinfo in pump_details:
+        eff_local = max(min(pinfo.get('eff', 0.0), 100.0), 1e-6)
+        tdh_local = max(pinfo.get('tdh', 0.0), 0.0)
+        pump_bkw_i = (rho_val * flow_total * 9.81 * tdh_local) / (
+            3600.0 * 1000.0 * (eff_local / 100.0)
+        )
+        pump_bkw_total += pump_bkw_i
+        pdata = pinfo.get('data', {})
+        rated_rpm = pdata.get('DOL', stn_data.get('dol', 0.0))
+        rpm_operating = pinfo.get('rpm', opt.get('rpm', 0))
+        if pinfo.get('power_type') == 'Diesel':
+            mech_eff = 0.98
+        else:
+            mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
+        prime_kw_i = pump_bkw_i / mech_eff if mech_eff else 0.0
+        prime_kw_total += prime_kw_i
+        if pinfo.get('power_type') == 'Diesel':
+            mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
+            if mode == 'manual':
+                sfc_val = pdata.get('sfc', stn_data.get('sfc', 0.0))
+            elif mode == 'iso':
+                sfc_val = _compute_iso_sfc(
+                    pdata,
+                    rpm_operating,
+                    pump_bkw_i,
+                    pdata.get('DOL', stn_data.get('dol', 0.0)),
+                    stn_data.get('elev', 0.0),
+                    ambient_temp,
+                )
+            else:
+                sfc_val = 0.0
+            fuel_per_kwh = (sfc_val * 1.34102) / fuel_density if sfc_val else 0.0
+            cost_i = prime_kw_i * hours * fuel_per_kwh * price_hsd
+        else:
+            tariffs = stn_data.get('tariffs') or []
+            rate_default = stn_data.get('rate', 0.0)
+            remaining = hours
+            cost_i = 0.0
+            try:
+                current = dt.datetime.strptime(start_time, "%H:%M")
+            except Exception:
+                current = dt.datetime(1900, 1, 1, 0, 0)
+            while remaining > 0:
+                applied = False
+                for tr in tariffs:
+                    try:
+                        s = dt.datetime.strptime(tr.get('start'), "%H:%M")
+                        e = dt.datetime.strptime(tr.get('end'), "%H:%M")
+                    except Exception:
+                        continue
+                    if s <= current < e:
+                        span = min((e - current).total_seconds() / 3600.0, remaining)
+                        rate = float(tr.get('rate', rate_default))
+                        cost_i += prime_kw_i * span * rate
+                        current += dt.timedelta(hours=span)
+                        remaining -= span
+                        applied = True
+                        break
+                if not applied:
+                    span = min(1.0, remaining)
+                    cost_i += prime_kw_i * span * rate_default
+                    current += dt.timedelta(hours=span)
+                    remaining -= span
+        cost_i = max(cost_i, 0.0)
+        pinfo['pump_bkw'] = pump_bkw_i
+        pinfo['prime_kw'] = prime_kw_i
+        pinfo['power_cost'] = cost_i
+        power_cost += cost_i
+
+    cache.update(
+        {
+            'pump_details': pump_details,
+            'tdh': tdh,
+            'efficiency': efficiency,
+            'pump_bkw': pump_bkw_total,
+            'prime_kw': prime_kw_total,
+            'power_cost': power_cost,
+        }
+    )
+    return cache
 
 
 # ---------------------------------------------------------------------------
@@ -1182,8 +1570,12 @@ def solve_pipeline(
                     rmin = max(st_rpm_min, coarse_rpm - window)
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
                     rmax = min(upper_bound, coarse_rpm + window)
-                dmin = max(0, coarse_dr_main - dra_step)
-                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
+                max_dr_main = int(stn.get("max_dr", 0))
+                if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
+                    dmin, dmax = 0, max_dr_main
+                else:
+                    dmin = max(0, coarse_dr_main - dra_step)
+                    dmax = min(max_dr_main, coarse_dr_main + dra_step)
                 entry: dict[str, tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
@@ -1558,6 +1950,9 @@ def solve_pipeline(
             'pump_combo': stn.get('pump_combo'),
             'pump_types': stn.get('pump_types'),
             'active_combo': stn.get('active_combo'),
+            'dra_shear_factor': float(stn.get('dra_shear_factor', 0.0) or 0.0),
+            'dra_injector_position': stn.get('dra_injector_position'),
+            'shear_injection': bool(stn.get('shear_injection', False)),
             'coef_A': float(stn.get('A', 0.0)),
             'coef_B': float(stn.get('B', 0.0)),
             'coef_C': float(stn.get('C', 0.0)),
@@ -1604,14 +1999,19 @@ def solve_pipeline(
     # upstream injection when a bypass scenario occurs.  At the origin
     # there is no upstream DRA on the loopline so this value starts at zero.
     #
-    # Note: The earlier implementation tracked the advancement of DRA along the
-    # pipeline via a ``reach`` parameter.  This has been removed because the
-    # entire pipeline is assumed to be treated at the start of the day.  As
-    # such, DRA either applies across an entire segment when injected or is
-    # carried over unchanged on bypassed loops, but it does not advance
-    # progressively.
-    # Track the mainline injection PPM from the previous station so that
-    # downstream segments inherit the same concentration.
+    # Represent the carried mainline DRA as a queue of length/ppm slices so the
+    # slug can be advanced accurately from station to station.
+    initial_queue: list[tuple[float, int]] = []
+    initial_reach = max(float(dra_reach_km), 0.0)
+    if initial_reach > 0:
+        initial_ppm = 0
+        if linefill_state:
+            try:
+                initial_ppm = int(linefill_state[0].get('dra_ppm', 0) or 0)
+            except Exception:
+                initial_ppm = 0
+        initial_queue.append((initial_reach, initial_ppm))
+
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -1621,8 +2021,8 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0,
-            'prev_ppm_main': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
-            'reach': max(float(dra_reach_km), 0.0),
+            'dra_queue': tuple(initial_queue),
+            'reach': sum(length for length, ppm in initial_queue if int(ppm) > 0),
             'inj_ppm_main': 0,
         }
     }
@@ -1632,6 +2032,15 @@ def solve_pipeline(
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
+            dra_queue_prev = state.get('dra_queue', [])
+            d_inner_state = float(stn_data.get('d_inner') or stn_data.get('d') or 0.0)
+            precomputed_queue = _prepare_dra_queue_consumption(
+                dra_queue_prev,
+                stn_data['L'],
+                flow_total,
+                hours,
+                d_inner_state,
+            )
             for opt in stn_data['options']:
                 # -----------------------------------------------------------------
                 # Enforce bypass rules on loopline injection:
@@ -1644,15 +2053,41 @@ def solve_pipeline(
                     usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
-                reach_prev = state.get('reach', 0.0)
-                ppm_prev = int(state.get('prev_ppm_main', 0))
-                # Update the mainline DRA concentration.  Pump stations reset the
-                # concentration to the injected value while unpumped segments carry
-                # the upstream level forward until its reach is exhausted.
-                ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
-                    ppm_prev, reach_prev, stn_data, opt
+                pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
+                dra_segments, queue_after_list, inj_ppm_main = _update_mainline_dra(
+                    dra_queue_prev,
+                    stn_data,
+                    opt,
+                    stn_data['L'],
+                    flow_total,
+                    hours,
+                    pump_running=pump_running,
+                    dra_shear_factor=stn_data.get('dra_shear_factor', 0.0),
+                    shear_injection=bool(stn_data.get('shear_injection', False)),
+                    is_origin=stn_data['idx'] == 0,
+                    precomputed=precomputed_queue,
                 )
-                eff_dra_main = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
+                queue_after = tuple(
+                    (
+                        float(entry.get('length_km', 0.0) or 0.0),
+                        float(entry.get('dra_ppm', 0.0) or 0.0),
+                    )
+                    for entry in queue_after_list
+                    if float(entry.get('length_km', 0.0) or 0.0) > 0
+                )
+                total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
+                if total_positive > 0:
+                    weighted_dr = 0.0
+                    for length, ppm in dra_segments:
+                        if ppm <= 0:
+                            continue
+                        weighted_dr += float(get_dr_for_ppm(stn_data['kv'], ppm)) * length
+                    eff_dra_main = weighted_dr / total_positive
+                    dra_len_main = min(total_positive, stn_data['L'])
+                else:
+                    eff_dra_main = 0.0
+                    dra_len_main = 0.0
+                reach_after = sum(length for length, ppm in queue_after if int(ppm) > 0)
 
                 scenarios = []
                 # Base scenario: flow through mainline only
@@ -1759,149 +2194,37 @@ def solve_pipeline(
                             'bypass_next': False,
                         })
 
-                pump_details: list[dict]
-                tdh: float
-                if opt.get('nop', 0) > 0:
-                    pump_def = {
-                        'A': stn_data['coef_A'],
-                        'B': stn_data['coef_B'],
-                        'C': stn_data['coef_C'],
-                        'P': stn_data['coef_P'],
-                        'Q': stn_data['coef_Q'],
-                        'R': stn_data['coef_R'],
-                        'S': stn_data['coef_S'],
-                        'T': stn_data['coef_T'],
-                        'DOL': stn_data['dol'],
-                        'combo': stn_data.get('pump_combo'),
-                        'pump_types': stn_data.get('pump_types'),
-                        'active_combo': stn_data.get('active_combo'),
-                        'power_type': stn_data.get('power_type'),
-                        'sfc_mode': stn_data.get('sfc_mode'),
-                        'sfc': stn_data.get('sfc'),
-                        'engine_params': stn_data.get('engine_params', {}),
-                    }
-                    combo_local = (
-                        pump_def.get('active_combo')
-                        or pump_def.get('combo')
-                        or pump_def.get('pump_combo')
-                    )
-                    rpm_map_local: dict[str, float | int] = {}
-                    for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
-                        if isinstance(source, Mapping):
-                            for key, value in source.items():
-                                if isinstance(value, (int, float)):
-                                    rpm_map_local[key] = value
-                    fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
-                    if isinstance(combo_local, dict):
-                        for key, value in opt.items():
-                            if (
-                                isinstance(value, (int, float))
-                                and isinstance(key, str)
-                                and key.startswith('rpm_')
-                            ):
-                                ptype = key[4:]
-                                if ptype in combo_local:
-                                    rpm_map_local[ptype] = value
-                        for ptype, count in combo_local.items():
-                            if (
-                                isinstance(count, (int, float))
-                                and count > 0
-                                and ptype not in rpm_map_local
-                                and isinstance(fallback_rpm, (int, float))
-                            ):
-                                rpm_map_local[ptype] = fallback_rpm
-                    if (
-                        not rpm_map_local
-                        and isinstance(fallback_rpm, (int, float))
-                        and fallback_rpm > 0
-                    ):
-                        rpm_map_local = {'default': fallback_rpm}
-                    has_positive_rpm = any(
-                        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
-                    )
-                    if has_positive_rpm:
-                        pump_details = _pump_head(pump_def, flow_total, rpm_map_local, opt['nop'])
-                        tdh = sum(p['tdh'] for p in pump_details)
-                    else:
-                        pump_details = []
-                        tdh = 0.0
-                else:
-                    pump_details = []
-                    tdh = 0.0
-
-                eff = (
-                    sum(p['eff'] * p['count'] for p in pump_details) / opt['nop']
-                    if pump_details and opt['nop'] > 0
-                    else 0.0
+                pump_cache_bucket = opt.setdefault('_pump_cache', {})
+                pump_cache_key = (
+                    round(flow_total, 6),
+                    round(hours, 4),
+                    start_time,
+                    round(Ambient_temp, 2),
+                    round(Fuel_density, 3),
+                    round(Price_HSD, 4),
                 )
+                cache = pump_cache_bucket.get(pump_cache_key)
+                if cache is None:
+                    cache = _build_pump_option_cache(
+                        stn_data,
+                        opt,
+                        flow_total=flow_total,
+                        hours=hours,
+                        start_time=start_time,
+                        ambient_temp=Ambient_temp,
+                        fuel_density=Fuel_density,
+                        price_hsd=Price_HSD,
+                    )
+                    pump_cache_bucket[pump_cache_key] = cache
+                pump_details = cache['pump_details']
+                tdh = cache['tdh']
+                eff = cache['efficiency']
+                pump_bkw_total = cache['pump_bkw']
+                prime_kw_total = cache['prime_kw']
+                power_cost = cache['power_cost']
 
-                pump_bkw_total = 0.0
-                prime_kw_total = 0.0
-                power_cost = 0.0
-                for pinfo in pump_details:
-                    eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
-                    tdh_local = max(pinfo['tdh'], 0.0)
-                    pump_bkw_i = (
-                        stn_data['rho'] * flow_total * 9.81 * tdh_local
-                    ) / (3600.0 * 1000.0 * (eff_local / 100.0))
-                    pump_bkw_total += pump_bkw_i
-                    pdata = pinfo.get('data', {})
-                    rated_rpm = pdata.get('DOL', stn_data['dol'])
-                    rpm_operating = pinfo.get('rpm', opt.get('rpm', 0))
-                    if pinfo.get('power_type') == 'Diesel':
-                        mech_eff = 0.98
-                    else:
-                        mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
-                    prime_kw_i = pump_bkw_i / mech_eff
-                    prime_kw_total += prime_kw_i
-                    if pinfo.get('power_type') == 'Diesel':
-                        mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
-                        if mode == 'manual':
-                            sfc_val = pdata.get('sfc', stn_data.get('sfc', 0.0))
-                        elif mode == 'iso':
-                            sfc_val = _compute_iso_sfc(
-                                pdata,
-                                rpm_operating,
-                                pump_bkw_i,
-                                pdata.get('DOL', stn_data['dol']),
-                                stn_data.get('elev', 0.0),
-                                Ambient_temp,
-                            )
-                        else:
-                            sfc_val = 0.0
-                        fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
-                        cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
-                    else:
-                        tariffs = stn_data.get('tariffs') or []
-                        rate_default = stn_data.get('rate', 0.0)
-                        remaining = hours
-                        cost_i = 0.0
-                        current = dt.datetime.strptime(start_time, "%H:%M")
-                        while remaining > 0:
-                            applied = False
-                            for tr in tariffs:
-                                s = dt.datetime.strptime(tr.get('start'), "%H:%M")
-                                e = dt.datetime.strptime(tr.get('end'), "%H:%M")
-                                if e <= s:
-                                    e += dt.timedelta(days=1)
-                                if s <= current < e:
-                                    overlap = min(remaining, (e - current).total_seconds() / 3600.0)
-                                    cost_i += prime_kw_i * overlap * float(tr.get('rate', rate_default))
-                                    remaining -= overlap
-                                    current += dt.timedelta(hours=overlap)
-                                    applied = True
-                                    break
-                            if not applied:
-                                cost_i += prime_kw_i * remaining * rate_default
-                                break
-                    cost_i = max(cost_i, 0.0)
-                    pinfo['pump_bkw'] = pump_bkw_i
-                    pinfo['prime_kw'] = prime_kw_i
-                    pinfo['power_cost'] = cost_i
-                    power_cost += cost_i
-
-                pump_bkw = pump_bkw_total / opt['nop'] if opt['nop'] > 0 else 0.0
-                motor_kw = prime_kw_total / opt['nop'] if opt['nop'] > 0 else 0.0
+                pump_bkw = pump_bkw_total / opt['nop'] if opt.get('nop', 0) > 0 else 0.0
+                motor_kw = prime_kw_total / opt['nop'] if opt.get('nop', 0) > 0 else 0.0
 
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
@@ -1986,8 +2309,8 @@ def solve_pipeline(
                         if length_loop_total <= 0.0:
                             length_loop_total = stn_data['loopline']['L']
                         # Effective drag reduction for the entire path based on the
-                        # inherited mainline PPM
-                        eff_dra_main_tot = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
+                        # segment-weighted mainline drag reduction
+                        eff_dra_main_tot = eff_dra_main
                         # Carry-over drag reduction on the loop from the previous state
                         carry_prev = int(state.get('carry_loop_dra', 0))
                         # In bypass mode the loopline may still inject additional DRA.
@@ -2275,7 +2598,7 @@ def solve_pipeline(
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            'prev_ppm_main': ppm_main,
+                            'dra_queue': queue_after,
                             'reach': reach_after,
                             'inj_ppm_main': inj_ppm_main,
                         }
@@ -2469,15 +2792,29 @@ def solve_pipeline_with_types(
             availB = stn['pump_types'].get('B', {}).get('available', 0)
             combos = generate_type_combinations(availA, availB)
             seen_active: set[tuple[int, int]] = set()
+            max_station_limit: int | None
+            raw_max = stn.get('max_pumps')
+            if isinstance(raw_max, (int, float)) and raw_max > 0:
+                max_station_limit = int(raw_max)
+            else:
+                max_station_limit = None
+            raw_min = stn.get('min_pumps')
+            min_station_required = int(raw_min) if isinstance(raw_min, (int, float)) and raw_min > 0 else 0
             for numA, numB in combos:
                 total_units = numA + numB
                 if total_units <= 0:
+                    continue
+                if max_station_limit is not None and total_units > max_station_limit:
                     continue
                 pdataA = stn['pump_types'].get('A', {})
                 pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
                         if actA + actB <= 0:
+                            continue
+                        if max_station_limit is not None and (actA + actB) > max_station_limit:
+                            continue
+                        if (actA + actB) < min_station_required:
                             continue
                         active_key = (actA, actB)
                         if active_key in seen_active:
