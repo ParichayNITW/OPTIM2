@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import sys
 from pathlib import Path
 
@@ -253,6 +254,67 @@ def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
         initial_queue[1]["length_km"] - consumed_second,
         rel=1e-6,
     )
+
+
+def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
+    """Cases 1 & 3: downstream coverage persists when the segment extends further."""
+
+    initial_queue = [{"length_km": 10.0, "dra_ppm": 10}]
+    stn_base = {"is_pump": True, "d_inner": 0.7}
+    initial_total_length = sum(float(entry["length_km"]) for entry in initial_queue)
+
+    flow_m3h = 3600.0
+    target_pumped_length = 2.0
+    area = math.pi * (stn_base["d_inner"] ** 2) / 4.0
+    hours = target_pumped_length * area * 1000.0 / flow_m3h
+    segment_length = 5.0
+
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_base["d_inner"])
+    assert pumped_length < segment_length
+
+    cases = [
+        {
+            "label": "case1_idle",
+            "pump_running": False,
+            "dra_shear_factor": 0.0,
+            "opt": {"nop": 0, "dra_ppm_main": 0},
+            "expected_ten_length": segment_length,
+        },
+        {
+            "label": "case3_running",
+            "pump_running": True,
+            "dra_shear_factor": 0.3,
+            "opt": {"nop": 1, "dra_ppm_main": 0},
+            "expected_ten_length": segment_length - pumped_length,
+        },
+    ]
+
+    for case in cases:
+        dra_segments, queue_after, _ = _update_mainline_dra(
+            copy.deepcopy(initial_queue),
+            dict(stn_base),
+            case["opt"],
+            segment_length,
+            flow_m3h,
+            hours,
+            pump_running=case["pump_running"],
+            dra_shear_factor=case["dra_shear_factor"],
+        )
+
+        assert dra_segments, case["label"]
+        total_length = sum(length for length, _ppm in dra_segments)
+        assert total_length == pytest.approx(segment_length, rel=1e-6), case["label"]
+
+        ten_length = sum(length for length, ppm in dra_segments if ppm == 10)
+        assert ten_length == pytest.approx(case["expected_ten_length"], rel=1e-6), case["label"]
+
+        assert queue_after, case["label"]
+        queue_total = sum(
+            float(entry.get("length_km", 0.0) or 0.0)
+            for entry in queue_after
+            if float(entry.get("length_km", 0.0) or 0.0) > 0
+        )
+        assert queue_total == pytest.approx(initial_total_length, rel=1e-6), case["label"]
 
 
 def test_running_pump_shears_trimmed_slug() -> None:
