@@ -2702,13 +2702,13 @@ def solve_pipeline(
 
     init_residual = int(stations[0].get('min_residual', 50))
     # Initial dynamic‑programming state.  Each state carries the cumulative
-    # operating cost, the residual head after the current station, the full
-    # sequence of record dictionaries (one per station), the last MAOP
-    # limits, the current flow into the next segment and, importantly, a
-    # ``carry_loop_dra`` field.  ``carry_loop_dra`` represents the drag
-    # reduction percentage that remains effective on the loopline due to
-    # upstream injection when a bypass scenario occurs.  At the origin
-    # there is no upstream DRA on the loopline so this value starts at zero.
+    # operating cost, the residual head after the current station, a pointer
+    # to the most recent record node, the last MAOP limits, the current flow
+    # into the next segment and, importantly, a ``carry_loop_dra`` field.
+    # ``carry_loop_dra`` represents the drag reduction percentage that
+    # remains effective on the loopline due to upstream injection when a
+    # bypass scenario occurs.  At the origin there is no upstream DRA on the
+    # loopline so this value starts at zero.
     #
     # Represent the carried mainline DRA as a queue of length/ppm slices so the
     # slug can be advanced accurately from station to station.
@@ -2771,11 +2771,13 @@ def solve_pipeline(
         if float(length) > 0
     )
 
+    record_nodes: list[tuple[dict, int | None]] = []
+
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
             'residual': init_residual,
-            'records': [],
+            'node': None,
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
@@ -3363,7 +3365,6 @@ def solve_pipeline(
                         best_cost_station = new_cost
                     bucket = residual_next
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
-                    new_record_list = state['records'] + [record]
                     existing = new_states.get(bucket)
                     flow_next = flow_total
                     if (
@@ -3374,10 +3375,13 @@ def solve_pipeline(
                             and residual_next > existing['residual']
                         )
                     ):
+                        parent = state.get('node')
+                        record_nodes.append((record, parent))
+                        node_idx = len(record_nodes) - 1
                         new_states[bucket] = {
                             'cost': new_cost,
                             'residual': residual_next,
-                            'records': new_record_list,
+                            'node': node_idx,
                             'last_maop': stn_data['maop_head'],
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'flow': flow_next,
@@ -3426,7 +3430,13 @@ def solve_pipeline(
         key=lambda x: (x['cost'], x['residual'] - term_req),
     )
     result: dict = {}
-    for rec in best_state['records']:
+    chain: list[dict] = []
+    node_idx = best_state.get('node')
+    while node_idx is not None and 0 <= node_idx < len(record_nodes):
+        record, parent = record_nodes[node_idx]
+        chain.append(record)
+        node_idx = parent
+    for rec in reversed(chain):
         result.update(rec)
 
     residual = int(best_state['residual'])
