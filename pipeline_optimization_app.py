@@ -33,7 +33,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from math import pi
+from math import pi, sqrt
 import hashlib
 import uuid
 import json
@@ -1035,6 +1035,8 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
     A = pipe_cross_section_area_m2(stations)
     if A <= 0:
         raise ValueError("Invalid pipe area (check D and t).")
+    d_inner = sqrt((4.0 * A) / pi)
+    km_from_volume = pipeline_model._km_from_volume
 
     # Compute lengths occupied by each batch
     # Expected columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³)
@@ -1043,7 +1045,7 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
         vol = float(r.get("Volume (m³)", 0.0) or r.get("Volume", 0.0) or 0.0)
         if vol <= 0:
             continue
-        length_km = (vol / A) / 1000.0  # m / 1000 => km
+        length_km = km_from_volume(vol, d_inner)
         visc = float(r.get("Viscosity (cSt)", 0.0))
         dens = float(r.get("Density (kg/m³)", 0.0))
         batches.append({"len_km": length_km, "kv": visc, "rho": dens})
@@ -2115,14 +2117,9 @@ if not auto_batch:
         def kv_rho_from_vol(vol_df_now):
             return map_vol_linefill_to_segments(vol_df_now, stations_base)
 
-        hours = [7] if is_hourly else list(range(24))
-        sub_steps = 1
-        if is_hourly:
-            spinner_msg = "Running 1 optimization (1h)..."
-        else:
-            spinner_msg = (
-                f"Running {len(hours)} optimizations ({hours[0]:02d}:00 to {hours[-1]:02d}:00)..."
-            )
+        hours = [7] if is_hourly else [7, 11, 15, 19, 23, 27]
+        sub_steps = 1 if is_hourly else 4
+        spinner_msg = "Running 1 optimization (1h)..." if is_hourly else "Running 6 optimizations (07:00 to 03:00)..."
         reports = []
         linefill_snaps = []
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
