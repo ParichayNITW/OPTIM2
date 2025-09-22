@@ -15,6 +15,7 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
+    _take_queue_front,
     _trim_queue_front,
     _update_mainline_dra,
     _volume_from_km,
@@ -355,14 +356,20 @@ def test_downstream_station_waits_for_advancing_front() -> None:
     assert queue_after_a
     assert queue_after_a[0]["dra_ppm"] == opt_idle["dra_ppm_main"] + initial_queue[0]["dra_ppm"]
     assert queue_after_a[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    total_after_a = sum(
+        float(entry.get("length_km", 0.0) or 0.0)
+        for entry in queue_after_a
+        if float(entry.get("length_km", 0.0) or 0.0) > 0
+    )
+    assert total_after_a == pytest.approx(segment_a + segment_b, rel=1e-6)
     queue_full_a = tuple(
         (float(entry["length_km"]), float(entry["dra_ppm"]))
         for entry in queue_after_a
     )
-    queue_for_b = _trim_queue_front(queue_full_a, segment_a - pumped_length)
+    queue_for_b = _trim_queue_front(queue_full_a, segment_a)
     assert queue_for_b
-    assert queue_for_b[0][0] == pytest.approx(pumped_length, rel=1e-6)
-    assert queue_for_b[0][1] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-6)
+    assert queue_for_b[0][0] == pytest.approx(segment_b, rel=1e-6)
+    assert queue_for_b[0][1] == pytest.approx(initial_queue[1]["dra_ppm"], rel=1e-6)
 
     queue_for_b_dicts = [
         {"length_km": length, "dra_ppm": ppm}
@@ -381,15 +388,29 @@ def test_downstream_station_waits_for_advancing_front() -> None:
     assert inj_ppm_b == opt_idle["dra_ppm_main"]
     assert dra_segments_b
     assert dra_segments_b[0][0] == pytest.approx(pumped_length, rel=1e-6)
-    assert dra_segments_b[0][1] == 22
+    assert dra_segments_b[0][1] == opt_idle["dra_ppm_main"]
     assert queue_after_b
     first_treated = next(
         (batch for batch in queue_after_b if int(batch.get("dra_ppm", 0) or 0) > 0),
         None,
     )
     assert first_treated is not None
-    assert first_treated["dra_ppm"] == 22
+    assert first_treated["dra_ppm"] == opt_idle["dra_ppm_main"]
     assert first_treated["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    queue_after_b_inlet = tuple(
+        (
+            float(entry.get("length_km", 0.0) or 0.0),
+            float(entry.get("dra_ppm", 0.0) or 0.0),
+        )
+        for entry in queue_after_b
+        if float(entry.get("length_km", 0.0) or 0.0) > 0
+    )
+    total_after_b_inlet = sum(length for length, _ppm in queue_after_b_inlet)
+    assert total_after_b_inlet == pytest.approx(segment_b, rel=1e-6)
+    prefix_for_b = _take_queue_front(queue_full_a, segment_a)
+    combined_after_b = prefix_for_b + queue_after_b_inlet
+    total_after_b_full = sum(length for length, _ppm in combined_after_b)
+    assert total_after_b_full == pytest.approx(segment_a + segment_b, rel=1e-6)
 
 
 def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
@@ -438,6 +459,67 @@ def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
     assert first_treated is not None
     assert first_treated["dra_ppm"] == 10
     assert first_treated["length_km"] == pytest.approx(segment_a, rel=1e-6)
+
+
+def test_idle_downstream_pump_preserves_upstream_slug() -> None:
+    """End-state linefill should retain the carried 10 ppm slug when pump B is idle."""
+
+    diameter = 0.5
+    flow_m3h = _volume_from_km(2.0, diameter)
+    hours = 1.0
+    stations = [_make_pump_station("Station A"), _make_pump_station("Station B")]
+    stations[0]["d"] = stations[0]["d_inner"] = diameter
+    stations[0]["L"] = 5.0
+    stations[1]["d"] = stations[1]["d_inner"] = diameter
+    stations[1]["L"] = 20.0
+    stations[1]["min_pumps"] = 0
+    stations[1]["max_pumps"] = 0
+    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
+    linefill = [
+        {"volume": _volume_from_km(5.0, diameter), "dra_ppm": 10},
+        {"volume": _volume_from_km(20.0, diameter), "dra_ppm": 0},
+    ]
+    common_kwargs = dict(
+        FLOW=flow_m3h,
+        KV_list=[3.0, 3.0, 3.0],
+        rho_list=[850.0, 850.0, 850.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=hours,
+        start_time="00:00",
+        enumerate_loops=False,
+    )
+
+    result = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=copy.deepcopy(linefill),
+        dra_reach_km=0.0,
+        **common_kwargs,
+    )
+
+    assert not result.get("error"), result.get("message")
+
+    final_linefill = result["linefill"]
+    total_length = sum(
+        _km_from_volume(float(batch.get("volume", 0.0) or 0.0), diameter)
+        for batch in final_linefill
+        if float(batch.get("volume", 0.0) or 0.0) > 0
+    )
+    assert total_length == pytest.approx(25.0, rel=1e-6)
+
+    treated_batches = [
+        batch for batch in final_linefill if int(batch.get("dra_ppm", 0) or 0) > 0
+    ]
+    assert treated_batches, "Expected the upstream slug to persist"
+    treated_length = sum(
+        _km_from_volume(float(batch.get("volume", 0.0) or 0.0), diameter)
+        for batch in treated_batches
+    )
+    assert treated_length == pytest.approx(5.0, rel=1e-6)
+    assert all(int(batch.get("dra_ppm", 0) or 0) == 10 for batch in treated_batches)
 
 
 def test_running_pump_shears_trimmed_slug() -> None:
