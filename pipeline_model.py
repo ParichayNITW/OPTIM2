@@ -1673,7 +1673,6 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
-    brute_force: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1791,7 +1790,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                brute_force=brute_force,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -1852,7 +1850,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                brute_force=brute_force,
             )
             if res.get('error'):
                 continue
@@ -1919,7 +1916,7 @@ def solve_pipeline(
     # solution using the user-provided steps.  The recursion is controlled
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
-    if not _internal_pass and not brute_force:
+    if not _internal_pass:
         coarse_scale = coarse_multiplier
         coarse_rpm_step = int(round(rpm_step * coarse_scale)) if rpm_step > 0 else int(round(coarse_scale))
         if coarse_rpm_step <= 0:
@@ -1956,7 +1953,6 @@ def solve_pipeline(
             coarse_multiplier=coarse_multiplier,
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
-            brute_force=brute_force,
         )
         if coarse_res.get("error"):
             return coarse_res
@@ -2077,7 +2073,6 @@ def solve_pipeline(
             coarse_multiplier=coarse_multiplier,
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
-            brute_force=brute_force,
         )
 
         candidates: list[dict] = []
@@ -2111,7 +2106,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                brute_force=brute_force,
             )
             if not baseline_result.get('error'):
                 candidates.append(baseline_result)
@@ -2530,9 +2524,6 @@ def solve_pipeline(
         if float(length) > 0
     )
 
-    explored_state_counts: list[int] = []
-    explored_states_total = 0
-
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -2549,7 +2540,7 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
-        new_states: dict[int, dict | list[dict]] = {}
+        new_states: dict[int, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -3124,70 +3115,43 @@ def solve_pipeline(
                     bucket = residual_next
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
+                    existing = new_states.get(bucket)
                     flow_next = flow_total
-                    state_entry = {
-                        'cost': new_cost,
-                        'residual': residual_next,
-                        'records': new_record_list,
-                        'last_maop': stn_data['maop_head'],
-                        'last_maop_kg': stn_data['maop_kgcm2'],
-                        'flow': flow_next,
-                        'carry_loop_dra': new_carry,
-                        'dra_queue_full': queue_after_full,
-                        'dra_queue_at_inlet': queue_after_inlet,
-                        'inj_ppm_main': inj_ppm_main,
-                    }
-                    if brute_force:
-                        bucket_entries = new_states.get(bucket)
-                        if isinstance(bucket_entries, list):
-                            bucket_entries.append(state_entry)
-                        else:
-                            new_states[bucket] = [state_entry]
-                    else:
-                        existing = new_states.get(bucket)
-                        if isinstance(existing, dict):
-                            replace = (
-                                new_cost < existing['cost']
-                                or (
-                                    abs(new_cost - existing['cost']) < 1e-9
-                                    and residual_next > existing['residual']
-                                )
-                            )
-                        else:
-                            replace = True
-                        if replace:
-                            new_states[bucket] = state_entry
+                    if (
+                        existing is None
+                        or new_cost < existing['cost']
+                        or (
+                            abs(new_cost - existing['cost']) < 1e-9
+                            and residual_next > existing['residual']
+                        )
+                    ):
+                        new_states[bucket] = {
+                            'cost': new_cost,
+                            'residual': residual_next,
+                            'records': new_record_list,
+                            'last_maop': stn_data['maop_head'],
+                            'last_maop_kg': stn_data['maop_kgcm2'],
+                            'flow': flow_next,
+                            'carry_loop_dra': new_carry,
+                            'dra_queue_full': queue_after_full,
+                            'dra_queue_at_inlet': queue_after_inlet,
+                            'inj_ppm_main': inj_ppm_main,
+                        }
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-        if brute_force:
-            flattened: list[dict] = []
-            for bucket_entries in new_states.values():
-                if isinstance(bucket_entries, list):
-                    flattened.extend(bucket_entries)
-                elif isinstance(bucket_entries, dict):
-                    flattened.append(bucket_entries)
-            if not flattened:
-                return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
-            station_count = len(flattened)
-            states = {idx: entry for idx, entry in enumerate(flattened)}
-        else:
-            # After evaluating all options for this station retain only the
-            # lowest-cost state for each residual (already enforced by ``bucket``)
-            # and globally prune to the top ``STATE_TOP_K`` states or those within
-            # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
-            # manageable while preserving near-optimal candidates.
-            items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-            threshold = best_cost_station + state_cost_margin
-            pruned: dict[int, dict] = {}
-            for idx, (residual_key, data) in enumerate(items):
-                if idx < state_top_k or data['cost'] <= threshold:
-                    pruned[residual_key] = data  # type: ignore[assignment]
-            station_count = len(pruned)
-            states = pruned
-
-        explored_state_counts.append(station_count)
-        explored_states_total += station_count
+        # After evaluating all options for this station retain only the
+        # lowest-cost state for each residual (already enforced by ``bucket``)
+        # and globally prune to the top ``STATE_TOP_K`` states or those within
+        # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
+        # manageable while preserving near-optimal candidates.
+        items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
+        threshold = best_cost_station + state_cost_margin
+        pruned: dict[int, dict] = {}
+        for idx, (residual_key, data) in enumerate(items):
+            if idx < state_top_k or data['cost'] <= threshold:
+                pruned[residual_key] = data
+        states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -3281,9 +3245,6 @@ def solve_pipeline(
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
     result['dra_front_km'] = sum(length for length, ppm in queue_final if ppm > 0)
-    result['explored_states_by_station'] = explored_state_counts
-    result['explored_states_total'] = explored_states_total
-    result['explored_states_final'] = explored_state_counts[-1] if explored_state_counts else 0
     result['error'] = False
     return result
 
@@ -3309,7 +3270,6 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
-    brute_force: bool = False,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -3394,7 +3354,6 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
-                    brute_force=brute_force,
                 )
                 if result.get("error"):
                     continue
