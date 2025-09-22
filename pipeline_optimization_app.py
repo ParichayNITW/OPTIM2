@@ -1630,12 +1630,6 @@ def solve_pipeline(
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
-    import pipeline_model
-    import importlib
-    import copy
-
-    importlib.reload(pipeline_model)
-
     stations = copy.deepcopy(stations)
     first_pump = next((s for s in stations if s.get('is_pump')), None)
     if first_pump and first_pump.get('min_pumps', 0) < 1:
