@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping
-from itertools import product
+from itertools import product, combinations
 import math
 
 import numpy as np
@@ -131,6 +131,28 @@ def _extract_rpm(
     return _coerce_float(value, default)
 
 
+def _normalise_subset_limit(limit: int | None, total: int) -> int:
+    """Return a sane subset size limit bounded by ``total``.
+
+    ``limit`` may be ``None`` (interpreted as ``total``), non-integral or
+    non-positive.  The helper coerces it to an integer in the interval
+    ``[1, total]`` while treating ``None`` as ``total`` and falling back to
+    ``total`` for invalid values.
+    """
+
+    if total <= 0:
+        return 0
+    if limit is None:
+        return total
+    try:
+        limit_int = int(limit)
+    except (TypeError, ValueError):
+        return total
+    if limit_int <= 0:
+        return 1
+    return min(limit_int, total)
+
+
 def _station_min_rpm(
     stn: Mapping[str, object],
     ptype: str | None = None,
@@ -212,122 +234,185 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
 # Custom loop-case enumeration respecting pipe diameters
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> list[list[int]]:
+def _generate_loop_cases_by_diameter(
+    num_loops: int,
+    equal_diameter: bool,
+    *,
+    max_subset_size: int | None = 2,
+) -> list[list[int]]:
     """Generate loop usage patterns tailored to pipe diameter equality.
 
     When ``equal_diameter`` is ``True`` the returned cases correspond to
-    combinations required by Case‑1 in the problem description: no loops,
-    parallel loops on all segments and each individual loop in parallel.  For
-    instance, with two loops this yields four cases: `[0, 0]`, `[1, 1]`,
-    `[0, 1]` and `[1, 0]`.  Bypass and loop‑only modes are not returned
-    because they are irrelevant when the loop and mainline diameters are
-    identical.
+    combinations required by Case‑1 in the problem description augmented with
+    additional multi-loop patterns.  Besides the "all off" and "all parallel"
+    scenarios the helper now returns subsets of loops operating in parallel up
+    to ``max_subset_size`` (default 2) so that pairwise interactions are
+    explored when more than two loops exist.  Bypass and loop‑only modes are
+    still omitted because they are irrelevant when the loop and mainline
+    diameters are identical.
 
-    When ``equal_diameter`` is ``False`` the returned cases reflect Case‑2:
-    no loops, loop‑only across the entire pipeline and a bypass case.  With
-    multiple loops the bypass directive applies only to the first looped
-    segment because the specification assumes that the loop bypasses the
-    next pump and rejoins the mainline downstream of that station.  Additional
-    loops are disabled in this case.  For a single loop this yields three
-    cases: `[0]`, `[3]` and `[2]`; for two loops: `[0, 0]`, `[3, 3]` and
-    `[2, 0]`.  When more than two loops exist the patterns generalise to
-    `[0, 0, ...]`, `[3, 3, ...]` and `[2, 0, 0, ...]`.
+    When ``equal_diameter`` is ``False`` the returned cases reflect Case‑2 with
+    extra staggered bypass and loop-only combinations.  All loops off and all
+    loops running in loop-only mode remain, but the helper additionally emits
+    subsets of loops in loop-only mode (bounded by ``max_subset_size``) and
+    bypass directives for each loop.  When bypassing one loop the remaining
+    differing loops may also be placed into loop-only mode subject to the
+    subset limit.  This provides representative multi-loop behaviour without
+    exploding the state space.
     """
     if num_loops <= 0:
         return [[]]
+    limit = _normalise_subset_limit(max_subset_size, num_loops)
+    cases: list[list[int]] = []
+    # All loops disabled (mainline only)
+    cases.append([0] * num_loops)
+
     if equal_diameter:
-        # Case‑1: only consider off/on combinations without bypass or loop-only.
-        cases: list[list[int]] = []
-        # All loops off
-        cases.append([0] * num_loops)
-        # All loops on (parallel)
+        # Case‑1: parallel-only interactions capped by subset size.
         cases.append([1] * num_loops)
-        # Each loop individually on
-        for i in range(num_loops):
-            c = [0] * num_loops
-            c[i] = 1
-            if c not in cases:
-                cases.append(c)
-        return cases
-    else:
-        # Case‑2: consider mainline‑only, loop‑only and bypass for first loop.
-        cases: list[list[int]] = []
-        # All loops off (mainline only)
-        cases.append([0] * num_loops)
-        # All loops loop‑only
-        cases.append([3] * num_loops)
-        # Bypass on first loop and others off
-        c = [0] * num_loops
-        c[0] = 2
-        cases.append(c)
-        return cases
+        for size in range(1, limit + 1):
+            for subset in combinations(range(num_loops), size):
+                cfg = [0] * num_loops
+                for idx in subset:
+                    cfg[idx] = 1
+                cases.append(cfg)
+        # Remove duplicates while preserving order
+        unique: list[list[int]] = []
+        for cfg in cases:
+            if cfg not in unique:
+                unique.append(cfg)
+        return unique
+
+    # Case‑2: differing diameters – include loop-only and bypass mixes.
+    cases.append([3] * num_loops)
+    # Loop-only subsets (beyond the all-loop-only case) within the limit
+    for size in range(1, limit + 1):
+        for subset in combinations(range(num_loops), size):
+            cfg = [0] * num_loops
+            for idx in subset:
+                cfg[idx] = 3
+            cases.append(cfg)
+
+    # Bypass each loop individually and optionally pair with loop-only subsets
+    max_loop_only_with_bypass = max(0, limit - 1)
+    for idx in range(num_loops):
+        base = [0] * num_loops
+        base[idx] = 2
+        cases.append(base)
+        if max_loop_only_with_bypass <= 0:
+            continue
+        others = [j for j in range(num_loops) if j != idx]
+        max_subset = min(max_loop_only_with_bypass, len(others))
+        for size in range(1, max_subset + 1):
+            for subset in combinations(others, size):
+                cfg = [0] * num_loops
+                cfg[idx] = 2
+                for j in subset:
+                    cfg[j] = 3
+                cases.append(cfg)
+
+    unique: list[list[int]] = []
+    for cfg in cases:
+        if cfg not in unique:
+            unique.append(cfg)
+    return unique
 
 # ---------------------------------------------------------------------------
 # Fine-grained loop-case enumeration based on per-loop diameter equality
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
+def _generate_loop_cases_by_flags(
+    flags: list[bool],
+    *,
+    max_subset_size: int | None = 2,
+) -> list[list[int]]:
     """Return loop usage cases for pipelines with mixed diameter equality.
 
     ``flags`` contains one boolean per looped segment indicating whether the
     loopline diameter matches the mainline (``True``) or differs (``False``).
 
-    Behaviour follows the two cases described in the problem statement:
+    Behaviour follows the two cases described in the problem statement while
+    also including representative multi-loop patterns:
 
-    * **Case‑1** – When all flags are ``True`` the returned patterns are the
-      same as :func:`_generate_loop_cases_by_diameter` with
-      ``equal_diameter=True``: all loops off, all parallel and each loop
-      individually in parallel.
-    * **Case‑2** – When at least one flag is ``False`` the solver considers
-      only three global scenarios for the differing loops: all loops off
-      (mainline only), all differing loops in loop-only mode with equal-diameter
-      loops disabled, and a bypass on the first differing loop with all other
-      loops disabled.  Equal-diameter loops may additionally operate in
-      parallel while all differing loops remain off.
+    * **Case‑1** – When all flags are ``True`` the returned patterns mirror
+      :func:`_generate_loop_cases_by_diameter` with ``equal_diameter=True`` and
+      include subset activations up to ``max_subset_size`` in addition to the
+      "all off" and "all parallel" scenarios.
+    * **Case‑2** – When at least one flag is ``False`` the solver now considers
+      a richer set of combinations: all loops off, all differing loops in
+      loop-only mode, subsets of differing loops in loop-only mode (bounded by
+      ``max_subset_size``) and bypass directives for each differing loop with
+      optional loop-only companions while equal-diameter loops may still run in
+      parallel subsets when the differing loops remain idle.
 
     This tailored enumeration avoids invalid combinations such as bypassing
-    multiple loops simultaneously or running unequal pipes in parallel.
-    When ``flags`` is empty an empty pattern is returned.
+    multiple loops simultaneously while still exploring pairwise and staggered
+    interactions.  When ``flags`` is empty an empty pattern is returned.
     """
     if not flags:
         return [[]]
+    limit_total = _normalise_subset_limit(max_subset_size, len(flags))
     if all(flags):
-        # All loops have equal diameter → reuse simpler helper
-        return _generate_loop_cases_by_diameter(len(flags), True)
+        # All loops have equal diameter → reuse simpler helper with limit
+        return _generate_loop_cases_by_diameter(
+            len(flags),
+            True,
+            max_subset_size=limit_total,
+        )
 
     combos: list[list[int]] = []
     n = len(flags)
     # Base case: all loops off
     combos.append([0] * n)
 
-    # Equal-diameter loops may run in parallel when differing loops are off
     eq_positions = [i for i, eq in enumerate(flags) if eq]
-    if eq_positions:
-        # All equal loops on in parallel
-        all_eq_parallel = [1 if eq else 0 for eq in flags]
-        combos.append(all_eq_parallel)
-        # Each equal loop individually on
-        for i in eq_positions:
-            c = [0] * n
-            c[i] = 1
-            combos.append(c)
-
-    # Case-2 scenarios for differing loops
     diff_positions = [i for i, eq in enumerate(flags) if not eq]
+
+    if eq_positions:
+        # All equal-diameter loops in parallel while others remain off
+        combos.append([1 if eq else 0 for eq in flags])
+        max_eq = _normalise_subset_limit(limit_total, len(eq_positions))
+        for size in range(1, max_eq + 1):
+            for subset in combinations(eq_positions, size):
+                cfg = [0] * n
+                for idx in subset:
+                    cfg[idx] = 1
+                combos.append(cfg)
+
     if diff_positions:
-        # All differing loops in loop-only mode (others off)
-        loop_only = [3 if not eq else 0 for eq in flags]
-        combos.append(loop_only)
-        # Bypass only the first differing loop
-        bypass_first = [0] * n
-        bypass_first[diff_positions[0]] = 2
-        combos.append(bypass_first)
+        # All differing loops loop-only (others off)
+        combos.append([3 if not eq else 0 for eq in flags])
+        max_diff = _normalise_subset_limit(limit_total, len(diff_positions))
+        for size in range(1, max_diff + 1):
+            for subset in combinations(diff_positions, size):
+                cfg = [0] * n
+                for idx in subset:
+                    cfg[idx] = 3
+                combos.append(cfg)
+
+        # Bypass possibilities for differing loops with optional loop-only peers
+        attach_limit = max(0, limit_total - 1)
+        for idx in diff_positions:
+            base = [0] * n
+            base[idx] = 2
+            combos.append(base)
+            if attach_limit <= 0:
+                continue
+            others = [j for j in diff_positions if j != idx]
+            max_subset = min(attach_limit, len(others))
+            for size in range(1, max_subset + 1):
+                for subset in combinations(others, size):
+                    cfg = [0] * n
+                    cfg[idx] = 2
+                    for j in subset:
+                        cfg[j] = 3
+                    combos.append(cfg)
 
     # Remove duplicates while preserving order
     unique: list[list[int]] = []
-    for c in combos:
-        if c not in unique:
-            unique.append(c)
+    for cfg in combos:
+        if cfg not in unique:
+            unique.append(cfg)
     return unique
 
 # ---------------------------------------------------------------------------
@@ -337,6 +422,9 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 RPM_STEP = 25
 DRA_STEP = 2
 MAX_DRA_KM = 250.0
+# Maximum number of loops simultaneously activated when enumerating loop
+# patterns.  Setting ``None`` disables the cap.
+LOOP_PATTERN_MAX_SUBSET = 2
 # Default scaling applied to the coarse search step sizes.  This multiplier
 # mirrors the legacy behaviour where the coarse pass used five times the
 # refinement step.
@@ -1673,6 +1761,7 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    loop_subset_limit: int | None = LOOP_PATTERN_MAX_SUBSET,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1700,7 +1789,10 @@ def solve_pipeline(
     ``enumerate_loops`` is ``True`` and no explicit
     ``loop_usage_by_station`` is provided the solver will automatically
     build a small set of loop-use patterns (e.g. Cases A–E) and run the
-    optimisation for each.  The best result is returned.  When
+    optimisation for each.  The breadth of these patterns is governed by
+    ``loop_subset_limit`` which bounds how many loops may be active in any
+    generated combination (``None`` disables the cap).  The best result is
+    returned.  When
     ``loop_usage_by_station`` is supplied the solver restricts which
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
     2=bypass.  By default the function behaves like the original
@@ -1755,6 +1847,23 @@ def solve_pipeline(
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
+    default_loop_limit = LOOP_PATTERN_MAX_SUBSET
+    raw_loop_limit = loop_subset_limit
+    if raw_loop_limit is None:
+        loop_subset_limit = None
+    else:
+        try:
+            loop_subset_limit = int(raw_loop_limit)
+        except (TypeError, ValueError):
+            loop_subset_limit = default_loop_limit
+        if loop_subset_limit is not None:
+            try:
+                loop_subset_limit = int(loop_subset_limit)
+            except (TypeError, ValueError):
+                loop_subset_limit = None
+        if loop_subset_limit is not None and loop_subset_limit <= 0:
+            loop_subset_limit = 1
+
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
     # specified.  Each candidate pattern is mapped onto the stations with
@@ -1790,6 +1899,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                loop_subset_limit=loop_subset_limit,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -1821,7 +1931,10 @@ def solve_pipeline(
                 d_inner_loop = d_inner_main
             flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
         # Generate loop-usage patterns based on per-loop diameter equality
-        cases = _generate_loop_cases_by_flags(flags)
+        cases = _generate_loop_cases_by_flags(
+            flags,
+            max_subset_size=loop_subset_limit,
+        )
         best_res: dict | None = None
         for case in cases:
             usage = [0] * len(stations)
@@ -1850,6 +1963,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                loop_subset_limit=loop_subset_limit,
             )
             if res.get('error'):
                 continue
@@ -1953,6 +2067,7 @@ def solve_pipeline(
             coarse_multiplier=coarse_multiplier,
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
+            loop_subset_limit=loop_subset_limit,
         )
         if coarse_res.get("error"):
             return coarse_res
@@ -2073,6 +2188,7 @@ def solve_pipeline(
             coarse_multiplier=coarse_multiplier,
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
+            loop_subset_limit=loop_subset_limit,
         )
 
         candidates: list[dict] = []
@@ -2106,6 +2222,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                loop_subset_limit=loop_subset_limit,
             )
             if not baseline_result.get('error'):
                 candidates.append(baseline_result)
@@ -3270,6 +3387,7 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    loop_subset_limit: int | None = LOOP_PATTERN_MAX_SUBSET,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -3323,7 +3441,10 @@ def solve_pipeline_with_types(
                         d_inner_loop = d_inner_main
                     flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
                 # Generate loop-case combinations based on flags
-                cases = _generate_loop_cases_by_flags(flags_expanded)
+                cases = _generate_loop_cases_by_flags(
+                    flags_expanded,
+                    max_subset_size=loop_subset_limit,
+                )
             for case in cases:
                 usage = [0] * len(stn_acc)
                 for pidx, val in zip(loop_positions, case):
@@ -3354,6 +3475,7 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
+                    loop_subset_limit=loop_subset_limit,
                 )
                 if result.get("error"):
                     continue
