@@ -373,8 +373,29 @@ def _prepare_dra_queue_consumption(
 ) -> tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
     """Return pumped length along with consumed slices and downstream remainder."""
 
+    try:
+        segment_length = float(segment_length)
+    except (TypeError, ValueError):
+        segment_length = 0.0
+    if segment_length < 0:
+        segment_length = 0.0
+    try:
+        flow_m3h = float(flow_m3h)
+    except (TypeError, ValueError):
+        flow_m3h = 0.0
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        hours = 0.0
+    if hours < 0:
+        hours = 0.0
+    try:
+        d_inner = float(d_inner)
+    except (TypeError, ValueError):
+        d_inner = 0.0
+
     pumped_length_calc = _km_from_volume(flow_m3h * hours, d_inner) if d_inner > 0 else 0.0
-    pumped_length = pumped_length_calc if pumped_length_calc > 0 else segment_length
+    pumped_length = max(0.0, pumped_length_calc)
 
     current_queue: list[tuple[float, float]] = []
     key_entries: list[tuple[float, float]] = []
