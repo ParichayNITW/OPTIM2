@@ -701,3 +701,123 @@ def test_search_depth_controls_expand_combinatorial_search() -> None:
     assert expanded_coarse, "Expanded search did not record any coarse steps"
     assert expanded_coarse[0] < default_coarse[0]
     assert expanded_calls > default_calls
+
+
+def test_brute_force_enumerates_all_state_combinations(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Alpha Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 1050,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 150.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 80.0,
+            "L": 10.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 40,
+            "max_dr": 0,
+            "power_type": "Grid",
+            "rate": 0.0,
+        },
+        {
+            "name": "Beta Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 1050,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 150.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 80.0,
+            "L": 10.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 30,
+            "max_dr": 0,
+            "power_type": "Grid",
+            "rate": 0.0,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 25}
+
+    kwargs = dict(
+        FLOW=800.0,
+        KV_list=[1.0, 1.0],
+        rho_list=[850.0, 850.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=8.0,
+        start_time="00:00",
+        rpm_step=50,
+        dra_step=5,
+        enumerate_loops=False,
+    )
+
+    def fake_segment(*_args, **_kwargs):
+        return (20.0, 1.0, 100000.0, 0.01)
+
+    def fake_cache(station, opt, **_kwargs):
+        rpm = int(opt.get("rpm", 0) or 0)
+        nop = int(opt.get("nop", 0) or 0)
+        if nop <= 0:
+            return {
+                "pump_details": [],
+                "tdh": 0.0,
+                "efficiency": 0.0,
+                "pump_bkw": 0.0,
+                "prime_kw": 0.0,
+                "power_cost": 0.0,
+            }
+        cost = float(rpm) * 0.1
+        detail = {
+            "tdh": 120.0,
+            "eff": 80.0,
+            "count": float(nop),
+            "rpm": rpm,
+            "power_cost": cost,
+            "power_type": "Grid",
+            "data": {},
+        }
+        return {
+            "pump_details": [detail],
+            "tdh": 120.0,
+            "efficiency": 80.0,
+            "pump_bkw": 0.0,
+            "prime_kw": cost,
+            "power_cost": cost,
+        }
+
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+    monkeypatch.setattr(pm, "_build_pump_option_cache", fake_cache)
+
+    pruned = pm.solve_pipeline(stations, terminal, **kwargs)
+    brute = pm.solve_pipeline(stations, terminal, brute_force=True, **kwargs)
+
+    assert pruned["explored_states_by_station"] == [1, 2]
+    assert pruned["explored_states_final"] == 2
+    assert brute["explored_states_by_station"] == [2, 6]
+    assert brute["explored_states_total"] == 8
+    assert brute["explored_states_final"] == 6
+    assert brute["total_cost"] <= pruned["total_cost"]
