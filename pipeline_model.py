@@ -657,7 +657,46 @@ def _update_mainline_dra(
                 merged.append((length, ppm_val))
         return merged
 
-    merged_queue = _merge_queue(segment_cover_entries + downstream_entries + trimmed_remainder)
+    combined_entries: list[tuple[float, float]] = [
+        (float(length), float(ppm_val))
+        for length, ppm_val in (
+            segment_cover_entries + downstream_entries + trimmed_remainder
+        )
+        if float(length) > 0
+    ]
+
+    trim_front = max(0.0, float(segment_length) - float(pumped_length))
+    if combined_entries and trim_front > 0.0:
+        total_length = sum(length for length, _ in combined_entries if length > 0)
+        if total_length > 0:
+            trim = math.fmod(trim_front, total_length)
+            if trim < 0:
+                trim += total_length
+            if trim <= 1e-9:
+                trim = 0.0
+            if trim > 0.0:
+                head_entries: list[tuple[float, float]] = []
+                tail_entries: list[tuple[float, float]] = []
+                remaining_trim = trim
+                for length, ppm_val in combined_entries:
+                    length = float(length)
+                    if length <= 1e-12:
+                        continue
+                    if remaining_trim > 1e-9:
+                        if remaining_trim < length - 1e-9:
+                            tail_entries.append((remaining_trim, ppm_val))
+                            leftover = length - remaining_trim
+                            if leftover > 1e-9:
+                                head_entries.append((leftover, ppm_val))
+                            remaining_trim = 0.0
+                        else:
+                            tail_entries.append((length, ppm_val))
+                            remaining_trim -= length
+                    else:
+                        head_entries.append((length, ppm_val))
+                combined_entries = head_entries + tail_entries
+
+    merged_queue = _merge_queue(combined_entries)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue

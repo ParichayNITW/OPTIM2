@@ -12,7 +12,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
-from pipeline_model import _km_from_volume, _update_mainline_dra, solve_pipeline
+from pipeline_model import (
+    _km_from_volume,
+    _update_mainline_dra,
+    _volume_from_km,
+    solve_pipeline,
+)
 
 
 def _make_pump_station(name: str, *, max_dr: int = 0) -> dict:
@@ -315,6 +320,62 @@ def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
             if float(entry.get("length_km", 0.0) or 0.0) > 0
         )
         assert queue_total == pytest.approx(initial_total_length, rel=1e-6), case["label"]
+
+
+def test_downstream_station_waits_for_advancing_front() -> None:
+    """Station B should not see the upstream slug until it reaches the inlet."""
+
+    diameter = 0.5
+    pumped_speed_kmh = 2.0
+    hours = 1.0
+    flow_m3h = _volume_from_km(pumped_speed_kmh, diameter)
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+    assert pumped_length == pytest.approx(pumped_speed_kmh, rel=1e-6)
+
+    segment_a = 5.0
+    segment_b = 20.0
+    initial_queue = [
+        {"length_km": segment_a, "dra_ppm": 10},
+        {"length_km": segment_b, "dra_ppm": 0},
+    ]
+
+    opt_idle = {"nop": 0, "dra_ppm_main": 12}
+
+    _, queue_after_a, _ = _update_mainline_dra(
+        initial_queue,
+        {"idx": 0, "is_pump": True, "d_inner": diameter},
+        opt_idle,
+        segment_a,
+        flow_m3h,
+        hours,
+    )
+
+    assert queue_after_a
+    assert queue_after_a[0]["dra_ppm"] == 10
+    assert queue_after_a[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert any(int(batch.get("dra_ppm", 0) or 0) == 22 for batch in queue_after_a)
+
+    dra_segments_b, queue_after_b, inj_ppm_b = _update_mainline_dra(
+        queue_after_a,
+        {"idx": 1, "is_pump": True, "d_inner": diameter},
+        opt_idle,
+        segment_b,
+        flow_m3h,
+        hours,
+    )
+
+    assert inj_ppm_b == opt_idle["dra_ppm_main"]
+    assert dra_segments_b
+    assert dra_segments_b[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_b[0][1] == 22
+    assert queue_after_b
+    first_treated = next(
+        (batch for batch in queue_after_b if int(batch.get("dra_ppm", 0) or 0) > 0),
+        None,
+    )
+    assert first_treated is not None
+    assert first_treated["dra_ppm"] == 22
+    assert first_treated["length_km"] == pytest.approx(pumped_length, rel=1e-6)
 
 
 def test_running_pump_shears_trimmed_slug() -> None:
