@@ -14,6 +14,8 @@ if str(ROOT) not in sys.path:
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from pipeline_model import (
     _km_from_volume,
+    _prepare_dra_queue_consumption,
+    _trim_queue_front,
     _update_mainline_dra,
     _volume_from_km,
     solve_pipeline,
@@ -351,12 +353,24 @@ def test_downstream_station_waits_for_advancing_front() -> None:
     )
 
     assert queue_after_a
-    assert queue_after_a[0]["dra_ppm"] == 10
+    assert queue_after_a[0]["dra_ppm"] == opt_idle["dra_ppm_main"] + initial_queue[0]["dra_ppm"]
     assert queue_after_a[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
-    assert any(int(batch.get("dra_ppm", 0) or 0) == 22 for batch in queue_after_a)
+    queue_full_a = tuple(
+        (float(entry["length_km"]), float(entry["dra_ppm"]))
+        for entry in queue_after_a
+    )
+    queue_for_b = _trim_queue_front(queue_full_a, segment_a - pumped_length)
+    assert queue_for_b
+    assert queue_for_b[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_for_b[0][1] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-6)
+
+    queue_for_b_dicts = [
+        {"length_km": length, "dra_ppm": ppm}
+        for length, ppm in queue_for_b
+    ]
 
     dra_segments_b, queue_after_b, inj_ppm_b = _update_mainline_dra(
-        queue_after_a,
+        queue_for_b_dicts,
         {"idx": 1, "is_pump": True, "d_inner": diameter},
         opt_idle,
         segment_b,
@@ -410,6 +424,122 @@ def test_running_pump_shears_trimmed_slug() -> None:
         rel=1e-6,
     )
 
+
+@pytest.mark.parametrize(
+    "label,opt,pump_running,shear,expected_segments,expected_queue,expected_trimmed",
+    [
+        (
+            "case1_idle",
+            {"nop": 0, "dra_ppm_main": 0},
+            False,
+            0.0,
+            [(5.0, 10)],
+            [(5.0, 10), (20.0, 0)],
+            [(2.0, 10.0), (20.0, 0.0)],
+        ),
+        (
+            "case2_idle_injection",
+            {"nop": 0, "dra_ppm_main": 12},
+            False,
+            0.0,
+            [(2.0, 22), (3.0, 10)],
+            [(2.0, 22), (3.0, 10), (20.0, 0)],
+            [(2.0, 10.0), (20.0, 0.0)],
+        ),
+        (
+            "case3_running_no_injection",
+            {"nop": 1, "dra_ppm_main": 0},
+            True,
+            0.3,
+            [(3.0, 10)],
+            [(2.0, 0), (3.0, 10), (20.0, 0)],
+            [(2.0, 10.0), (20.0, 0.0)],
+        ),
+        (
+            "case4_running_injection",
+            {"nop": 1, "dra_ppm_main": 12},
+            True,
+            0.3,
+            [(2.0, 9), (3.0, 10)],
+            [(2.0, 9), (3.0, 10), (20.0, 0)],
+            [(2.0, 10.0), (20.0, 0.0)],
+        ),
+    ],
+)
+def test_two_station_case_profiles(
+    label: str,
+    opt: dict,
+    pump_running: bool,
+    shear: float,
+    expected_segments: list[tuple[float, int]],
+    expected_queue: list[tuple[float, int]],
+    expected_trimmed: list[tuple[float, float]],
+) -> None:
+    """Validate Case 1–4 queue evolution for the 5 km + 20 km scenario."""
+
+    diameter = 0.5
+    flow_m3h = _volume_from_km(2.0, diameter)
+    hours = 1.0
+    segment_a = 5.0
+    segment_b = 20.0
+    initial_queue = [
+        {"length_km": segment_a, "dra_ppm": 10},
+        {"length_km": segment_b, "dra_ppm": 0},
+    ]
+
+    precomputed = _prepare_dra_queue_consumption(
+        initial_queue,
+        segment_a,
+        flow_m3h,
+        hours,
+        diameter,
+    )
+    pumped_length = float(precomputed[0])
+
+    dra_segments, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        {
+            "idx": 0,
+            "is_pump": True,
+            "d_inner": diameter,
+            "dra_shear_factor": shear,
+        },
+        opt,
+        segment_a,
+        flow_m3h,
+        hours,
+        pump_running=pump_running,
+        dra_shear_factor=shear,
+        precomputed=precomputed,
+    )
+
+    assert len(dra_segments) == len(expected_segments), label
+    for (length_actual, ppm_actual), (length_expected, ppm_expected) in zip(dra_segments, expected_segments):
+        assert ppm_actual == ppm_expected, label
+        assert length_actual == pytest.approx(length_expected, rel=1e-6), label
+
+    queue_full = [
+        (float(entry.get("length_km", 0.0) or 0.0), int(entry.get("dra_ppm", 0) or 0))
+        for entry in queue_after
+        if float(entry.get("length_km", 0.0) or 0.0) > 0
+    ]
+    assert len(queue_full) == len(expected_queue), label
+    for (length_actual, ppm_actual), (length_expected, ppm_expected) in zip(queue_full, expected_queue):
+        assert ppm_actual == ppm_expected, label
+        assert length_actual == pytest.approx(length_expected, rel=1e-6), label
+
+    queue_full_floats = tuple((length, float(ppm)) for length, ppm in queue_full)
+    trim_offset = segment_a - pumped_length
+    queue_trimmed = _trim_queue_front(queue_full_floats, trim_offset)
+    trimmed_list = [
+        (float(length), float(ppm))
+        for length, ppm in queue_trimmed
+        if float(length) > 0
+    ]
+    assert len(trimmed_list) == len(expected_trimmed), label
+    for (length_actual, ppm_actual), (length_expected, ppm_expected) in zip(trimmed_list, expected_trimmed):
+        assert length_actual == pytest.approx(length_expected, rel=1e-6), label
+        assert ppm_actual == pytest.approx(ppm_expected, rel=1e-6), label
 
 def test_injected_slug_respects_shear_when_upstream() -> None:
     """Injection upstream of pumps should emerge at reduced ppm."""
