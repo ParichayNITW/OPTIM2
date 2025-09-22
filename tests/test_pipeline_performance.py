@@ -73,7 +73,7 @@ def test_daily_scheduler_path_completes_promptly() -> None:
             "d": 0.68,
             "rough": 0.00004,
             "elev": 5.0,
-            "min_residual": 30,
+            "min_residual": 20,
             "max_dr": 30,
             "power_type": "Grid",
             "rate": 0.0,
@@ -314,6 +314,231 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert final_result.get("drag_reduction_origin_pump") > coarse_result.get("drag_reduction_origin_pump")
     assert final_result.get("total_cost") == pytest.approx(stage_costs["refine"][10])
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
+
+
+def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
+    """Baseline feasibility checks should run alongside the refined search."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 200.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 40.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 30,
+            "max_dr": 6,
+            "power_type": "Grid",
+            "rate": 5.0,
+        },
+        {
+            "name": "Mid Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 2800,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 180.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 82.0,
+            "L": 35.0,
+            "d": 0.68,
+            "rough": 4.0e-05,
+            "elev": 1.5,
+            "min_residual": 18,
+            "max_dr": 6,
+            "power_type": "Grid",
+            "rate": 5.0,
+        },
+    ]
+    terminal = {"name": "Terminal", "min_residual": 18, "elev": 5.0}
+
+    kwargs = dict(
+        FLOW=900.0,
+        KV_list=[3.0, 2.8],
+        rho_list=[850.0, 848.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        dra_step=2,
+        rpm_step=50,
+        state_top_k=1,
+        state_cost_margin=0.0,
+        enumerate_loops=False,
+    )
+
+    captured_ranges: list[dict[int, dict[str, tuple[int, int]]]] = []
+
+    original_solve = pm.solve_pipeline
+
+    def tracking_solve(*args, **kwargs):  # type: ignore[override]
+        snapshot = None
+        if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is not None:
+            snapshot = copy.deepcopy(kwargs["narrow_ranges"])
+        result = original_solve(*args, **kwargs)
+        if snapshot is not None:
+            captured_ranges.append(snapshot)
+        return result
+
+    with patch.object(pm, "solve_pipeline", new=tracking_solve):
+        result = pm.solve_pipeline(stations, terminal, **kwargs)
+
+    assert not result.get("error"), result.get("message")
+    assert captured_ranges, "No internal optimisation passes were recorded"
+    assert len(captured_ranges) > 1, "Baseline feasibility runs were not executed"
+
+    baseline_ranges = captured_ranges[1:]
+    min_positive = max(1, kwargs["dra_step"])
+    zero_case = None
+    positive_found = False
+
+    for case in baseline_ranges:
+        dra_bounds = [entry.get("dra_main") for entry in case.values() if entry.get("dra_main")]
+        positives = [bounds[0] for bounds in dra_bounds if bounds[0] > 0]
+        if not positives and all(bounds == (0, 0) for bounds in dra_bounds):
+            zero_case = case
+        if positives:
+            assert all(val == min_positive for val in positives)
+            assert len(positives) == 1
+            positive_found = True
+        for entry in case.values():
+            if "dra_loop" in entry:
+                assert entry["dra_loop"] == (0, 0)
+
+    assert zero_case is not None, "All-station zero-DRA baseline was not scheduled"
+    assert positive_found, "Per-station positive baseline cases were missing"
+
+
+def test_baseline_result_can_outperform_refine_when_cheaper() -> None:
+    """Baseline runs should be able to win when they deliver a lower cost."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 200.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 40.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 20,
+            "max_dr": 6,
+            "power_type": "Grid",
+            "rate": 5.0,
+        },
+        {
+            "name": "Mid Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 2800,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 180.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 82.0,
+            "L": 35.0,
+            "d": 0.68,
+            "rough": 4.0e-05,
+            "elev": 1.5,
+            "min_residual": 18,
+            "max_dr": 6,
+            "power_type": "Grid",
+            "rate": 5.0,
+        },
+    ]
+    terminal = {"name": "Terminal", "min_residual": 18, "elev": 5.0}
+
+    kwargs = dict(
+        FLOW=900.0,
+        KV_list=[3.0, 2.8],
+        rho_list=[850.0, 848.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        dra_step=2,
+        rpm_step=50,
+        state_top_k=1,
+        state_cost_margin=0.0,
+        enumerate_loops=False,
+    )
+
+    original_solve = pm.solve_pipeline
+    refine_totals: list[float] = []
+    baseline_totals: list[float] = []
+    seen_refine = {"done": False}
+
+    def favour_baseline(*args, **kwargs):  # type: ignore[override]
+        result = original_solve(*args, **kwargs)
+        if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is not None:
+            if not seen_refine["done"]:
+                seen_refine["done"] = True
+                refine_totals.append(float(result.get("total_cost", 0.0)))
+                return result
+            if not baseline_totals:
+                adjusted_total = max(0.0, float(result.get("total_cost", 0.0)) - 5000.0)
+                adjusted = copy.deepcopy(result)
+                adjusted["total_cost"] = adjusted_total
+                baseline_totals.append(adjusted_total)
+                return adjusted
+            baseline_totals.append(float(result.get("total_cost", 0.0)))
+        return result
+
+    with patch.object(pm, "solve_pipeline", new=favour_baseline):
+        final_result = pm.solve_pipeline(stations, terminal, **kwargs)
+
+    assert not final_result.get("error"), final_result.get("message")
+    assert refine_totals, "Refined search result was not captured"
+    assert baseline_totals, "Baseline runs did not execute"
+    assert final_result.get("total_cost") == pytest.approx(baseline_totals[0])
+    assert final_result.get("total_cost") < refine_totals[0]
 
 
 def test_type_expansion_respects_station_maximum() -> None:
