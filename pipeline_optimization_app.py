@@ -5,6 +5,7 @@ import streamlit as st
 import altair as alt
 import pipeline_model
 import datetime as dt
+from io import BytesIO
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -39,6 +40,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
+from collections.abc import Mapping
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -1294,6 +1296,258 @@ def get_speed_display_map(
     return speed_map
 
 
+PUMP_SUMMARY_HEADER = "Pump Name/No. of Pumps/Pump Speed \u2018Mention respective type name\u2019"
+
+EXCEL_COLUMN_RENAMES = {
+    "Pump Name": PUMP_SUMMARY_HEADER,
+    "DRA PPM": "DRA Pipeline (PPM)",
+    "Loop DRA PPM": "DRA Loop (PPM)",
+    "Vel (m/s)": "Velocity (m/s)",
+    "Residual Head (m)": "Discharge Head (m)",
+    "Residual Head (kg/cm²)": "Discharge Pressure (kg/cm²)",
+    "SDH (m)": "Suction Head (m)",
+    "SDH (kg/cm²)": "Suction Pressure (kg/cm²)",
+}
+
+EXCEL_COLUMN_ORDER = [
+    "Time",
+    "Pattern",
+    "Station",
+    PUMP_SUMMARY_HEADER,
+    "No. of Pumps",
+    "Pipeline Flow (m³/hr)",
+    "Loopline Flow (m³/hr)",
+    "Pump Flow (m³/hr)",
+    "Power & Fuel Cost (INR)",
+    "DRA Pipeline (PPM)",
+    "DRA Loop (PPM)",
+    "DRA Cost (INR)",
+    "Total Cost (INR)",
+    "Pump Eff (%)",
+    "Pump BKW (kW)",
+    "Motor Input (kW)",
+    "Reynolds No.",
+    "Head Loss (m)",
+    "Head Loss (kg/cm²)",
+    "Velocity (m/s)",
+    "Suction Head (m)",
+    "Suction Pressure (kg/cm²)",
+    "Discharge Head (m)",
+    "Discharge Pressure (kg/cm²)",
+    "MAOP (m)",
+    "MAOP (kg/cm²)",
+    "Available Suction Head (m)",
+    "Available Suction Head (kg/cm²)",
+    "Drag Reduction (%)",
+    "Loop Drag Reduction (%)",
+]
+
+
+def _resolve_pump_type_label(ptype: str, station_info: Mapping | None) -> str:
+    if not isinstance(ptype, str):
+        ptype = str(ptype or "")
+    ptype = ptype.strip()
+    pump_types = None
+    if isinstance(station_info, Mapping):
+        pump_types = station_info.get("pump_types")
+    if isinstance(pump_types, Mapping):
+        meta = (
+            pump_types.get(ptype)
+            or pump_types.get(ptype.upper())
+            or pump_types.get(ptype.lower())
+        )
+        if isinstance(meta, Mapping):
+            for key in ("label", "name", "display_name"):
+                val = meta.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    if ptype:
+        return f"Type {ptype}"
+    return "Type"
+
+
+def _format_pump_summary_fallback(
+    pump_name: str | None,
+    total_pumps: int | float | None,
+    speed_map: Mapping[str, float] | None,
+) -> str:
+    base = (pump_name or "").strip()
+    if not base and total_pumps not in (None, ""):
+        try:
+            total_val = int(round(float(total_pumps)))
+        except (TypeError, ValueError):
+            total_val = None
+        if total_val and total_val > 0:
+            base = f"{total_val} pump(s)"
+    speeds: list[str] = []
+    if isinstance(speed_map, Mapping):
+        for val in speed_map.values():
+            if isinstance(val, (int, float)):
+                try:
+                    val_float = float(val)
+                except (TypeError, ValueError):
+                    continue
+                if np.isnan(val_float):
+                    continue
+                if float(val_float).is_integer():
+                    speeds.append(str(int(val_float)))
+                else:
+                    speeds.append(f"{val_float:.1f}".rstrip("0").rstrip("."))
+    if base and speeds:
+        return f"{base} @ {'/'.join(speeds)} rpm"
+    if speeds and not base:
+        return f"Speeds: {'/'.join(speeds)} rpm"
+    return base
+
+
+def _format_pump_summary(
+    pump_details: list[dict],
+    station_info: Mapping | None,
+    pump_name: str | None,
+    total_pumps: int | float | None,
+    speed_map: Mapping[str, float] | None,
+) -> str:
+    if not isinstance(pump_details, list) or not pump_details:
+        return _format_pump_summary_fallback(pump_name, total_pumps, speed_map)
+    parts: list[str] = []
+    for detail in pump_details:
+        ptype = detail.get("ptype")
+        if not ptype:
+            continue
+        count_raw = detail.get("count", 0)
+        try:
+            count_val = int(round(float(count_raw)))
+        except (TypeError, ValueError):
+            count_val = 0
+        if count_val <= 0:
+            continue
+        label = _resolve_pump_type_label(ptype, station_info)
+        suffix = normalize_speed_suffix(ptype)
+        speed_val = None
+        if isinstance(speed_map, Mapping):
+            speed_val = speed_map.get(suffix)
+        speed_note = ""
+        if isinstance(speed_val, (int, float)):
+            try:
+                speed_float = float(speed_val)
+            except (TypeError, ValueError):
+                speed_float = None
+            if speed_float is not None and not np.isnan(speed_float):
+                if float(speed_float).is_integer():
+                    speed_repr = str(int(speed_float))
+                else:
+                    speed_repr = f"{speed_float:.1f}".rstrip("0").rstrip(".")
+                speed_note = f" @ {speed_repr} rpm"
+        parts.append(f"{label}: {count_val}{speed_note}")
+    if parts:
+        return "; ".join(parts)
+    return _format_pump_summary_fallback(pump_name, total_pumps, speed_map)
+
+
+def build_pump_summary_strings(
+    res: dict,
+    stations_base: list[dict],
+    df_table: pd.DataFrame,
+) -> list[str]:
+    if df_table is None or df_table.empty:
+        return []
+    base_map: dict[str, dict] = {}
+    for stn in stations_base:
+        if not isinstance(stn, dict):
+            continue
+        name = stn.get("name")
+        if isinstance(name, str):
+            base_map[name] = stn
+        orig = stn.get("orig_name")
+        if isinstance(orig, str) and orig not in base_map:
+            base_map[orig] = stn
+    stations_seq = res.get("stations_used") or stations_base
+    summaries: list[str] = []
+    row_idx = 0
+    for stn in stations_seq:
+        name = stn.get("name", "") if isinstance(stn, dict) else str(stn)
+        key = name.lower().replace(" ", "_")
+        if f"pipeline_flow_{key}" not in res:
+            continue
+        display_name = (
+            stn.get("orig_name", stn.get("name", name))
+            if isinstance(stn, dict)
+            else name
+        )
+        base_ref = base_map.get(display_name) or base_map.get(name)
+        if base_ref is None and isinstance(stn, dict):
+            base_ref = stn
+        pump_details = res.get(f"pump_details_{key}")
+        if pump_details is None:
+            pump_details = res.get(f"pump_details_{name}", [])
+        if not isinstance(pump_details, list):
+            pump_details = []
+        station_info = base_ref if isinstance(base_ref, Mapping) else {}
+        speed_map = get_speed_display_map(res, key, station_info)
+        pump_name = None
+        total_pumps = None
+        if 0 <= row_idx < len(df_table.index):
+            row = df_table.iloc[row_idx]
+            if isinstance(row, pd.Series):
+                pump_name = row.get("Pump Name")
+                total_pumps = row.get("No. of Pumps")
+        summary = _format_pump_summary(
+            pump_details,
+            station_info,
+            pump_name,
+            total_pumps,
+            speed_map,
+        )
+        summaries.append(summary)
+        row_idx += 1
+    return summaries
+
+
+def prepare_schedule_export_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
+    if df_raw is None or len(df_raw) == 0:
+        return pd.DataFrame(columns=EXCEL_COLUMN_ORDER)
+    df_excel = df_raw.copy()
+    df_excel = df_excel.rename(columns=EXCEL_COLUMN_RENAMES)
+    for col in EXCEL_COLUMN_ORDER:
+        if col not in df_excel.columns:
+            df_excel[col] = np.nan
+    ordered_cols = [col for col in EXCEL_COLUMN_ORDER if col in df_excel.columns]
+    extra_cols = [col for col in df_excel.columns if col not in ordered_cols]
+    return df_excel[ordered_cols + extra_cols]
+
+
+def build_schedule_export_dataframe_from_reports(
+    reports: list[dict],
+    stations_base: list[dict],
+) -> pd.DataFrame:
+    export_tables: list[pd.DataFrame] = []
+    for rec in reports or []:
+        res = rec.get("result") if isinstance(rec, Mapping) else None
+        if not isinstance(res, dict):
+            continue
+        time_val = rec.get("time", 0) if isinstance(rec, Mapping) else 0
+        try:
+            time_int = int(time_val)
+        except (TypeError, ValueError):
+            time_int = 0
+        time_label = f"{time_int % 24:02d}:00"
+        pattern = res.get("flow_pattern_name", "")
+        df_base = build_station_table(res, stations_base)
+        if df_base is None or df_base.empty:
+            continue
+        summary_values = build_pump_summary_strings(res, stations_base, df_base)
+        df_export = df_base.copy()
+        if summary_values:
+            df_export["Pump Name"] = summary_values
+        df_export.insert(0, "Pattern", pattern)
+        df_export.insert(0, "Time", time_label)
+        export_tables.append(df_export)
+    if not export_tables:
+        return pd.DataFrame(columns=EXCEL_COLUMN_ORDER)
+    raw_export = pd.concat(export_tables, ignore_index=True)
+    return prepare_schedule_export_dataframe(raw_export)
+
+
 def add_speed_columns(row: dict, res: dict, station: dict | None, prefix: str = "Speed") -> None:
     """Populate ``row`` with per-type speed columns for ``station``."""
 
@@ -2215,17 +2469,32 @@ if not auto_batch:
             st.stop()
 
         # Build a consolidated station-wise table with flow pattern names
-        station_tables = []
+        station_tables: list[pd.DataFrame] = []
+        export_tables: list[pd.DataFrame] = []
         for rec in reports:
             res = rec["result"]
             hr = rec["time"]
-            df_int = build_station_table(res, stations_base)
-            # Insert human-readable pattern and time columns
+            df_base = build_station_table(res, stations_base)
             pattern = res.get('flow_pattern_name', '')
-            df_int.insert(0, "Pattern", pattern)
-            df_int.insert(0, "Time", f"{hr:02d}:00")
-            station_tables.append(df_int)
-        df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+            time_label = f"{hr:02d}:00"
+            df_display = df_base.copy()
+            df_display.insert(0, "Pattern", pattern)
+            df_display.insert(0, "Time", time_label)
+            station_tables.append(df_display)
+
+            summary_values = build_pump_summary_strings(res, stations_base, df_base)
+            df_export = df_base.copy()
+            if summary_values:
+                df_export["Pump Name"] = summary_values
+            df_export.insert(0, "Pattern", pattern)
+            df_export.insert(0, "Time", time_label)
+            export_tables.append(df_export)
+
+        df_day_combined = pd.concat(station_tables, ignore_index=True) if station_tables else pd.DataFrame()
+        df_day = df_day_combined.fillna(0.0).round(2) if not df_day_combined.empty else df_day_combined
+
+        df_day_export_raw = pd.concat(export_tables, ignore_index=True) if export_tables else pd.DataFrame()
+        df_day_export = prepare_schedule_export_dataframe(df_day_export_raw)
 
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
         # Pandas may treat some columns as object if they contain NaN or are newly inserted.
@@ -2238,6 +2507,8 @@ if not auto_batch:
         # Persist results for reuse across Streamlit reruns
         st.session_state["day_df"] = df_day_numeric
         st.session_state["day_df_raw"] = df_day
+        st.session_state["day_df_export_raw"] = df_day_export_raw
+        st.session_state["day_df_export"] = df_day_export
         st.session_state["day_reports"] = reports
         st.session_state["day_linefill_snaps"] = linefill_snaps
         st.session_state["day_hours"] = hours
@@ -2250,6 +2521,14 @@ if not auto_batch:
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
+        df_day_export = st.session_state.get("day_df_export")
+        if df_day_export is None or len(df_day_export) == 0:
+            export_raw = st.session_state.get("day_df_export_raw")
+            if isinstance(export_raw, pd.DataFrame) and len(export_raw):
+                df_day_export = prepare_schedule_export_dataframe(export_raw)
+            else:
+                df_day_export = build_schedule_export_dataframe_from_reports(reports, stations_base)
+            st.session_state["day_df_export"] = df_day_export
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
         df_display = df_day_numeric.T if transpose_view else df_day_numeric
         if transpose_view:
@@ -2283,6 +2562,21 @@ if not auto_batch:
             f"Download {label_prefix} Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
             file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
+        )
+
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
+            (df_day_export if df_day_export is not None else pd.DataFrame()).to_excel(
+                writer,
+                index=False,
+                sheet_name="Schedule",
+            )
+        excel_buffer.seek(0)
+        st.download_button(
+            f"Download {label_prefix} Optimizer Output (Excel)",
+            excel_buffer.getvalue(),
+            file_name="hourly_schedule_results.xlsx" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
         # Display total cost per time slice and global sum
