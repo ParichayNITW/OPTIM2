@@ -602,6 +602,35 @@ def _update_mainline_dra(
         if leftover > 0:
             downstream_entries.append((leftover, ppm_val))
 
+    queue_remainder_list: list[list[float]] = [
+        [float(length or 0.0), float(ppm_val or 0.0)]
+        for length, ppm_val in queue_remainder
+        if float(length or 0.0) > 0
+    ]
+
+    if remaining_seg > 0 and queue_remainder_list:
+        idx = 0
+        while remaining_seg > 0 and idx < len(queue_remainder_list):
+            length, ppm_val = queue_remainder_list[idx]
+            take = min(length, remaining_seg)
+            if take > 0:
+                segment_cover_entries.append((take, ppm_val))
+                queue_remainder_list[idx][0] = length - take
+                remaining_seg -= take
+            if queue_remainder_list[idx][0] <= 0:
+                queue_remainder_list[idx][0] = 0.0
+                idx += 1
+            elif remaining_seg <= 0:
+                break
+            else:
+                idx += 1
+
+    trimmed_remainder: list[tuple[float, float]] = [
+        (length, ppm_val)
+        for length, ppm_val in queue_remainder_list
+        if length > 0
+    ]
+
     dra_segments: list[tuple[float, int]] = []
     for length, ppm_val in segment_cover_entries:
         if length <= 0:
@@ -628,7 +657,7 @@ def _update_mainline_dra(
                 merged.append((length, ppm_val))
         return merged
 
-    merged_queue = _merge_queue(segment_cover_entries + downstream_entries + list(queue_remainder))
+    merged_queue = _merge_queue(segment_cover_entries + downstream_entries + trimmed_remainder)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
