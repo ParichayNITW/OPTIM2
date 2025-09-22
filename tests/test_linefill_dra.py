@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
+import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
@@ -1019,3 +1020,153 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
         rel=1e-6,
     )
     assert queue_final[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+
+
+def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """States with identical residuals but distinct DRA queues must persist."""
+
+    def fake_segment(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv: float,
+        dra: float,
+        dra_len: float,
+    ) -> tuple[float, float, float, float]:
+        base = 80.0 if float(length) < 6.0 else 60.0
+        reduction = 0.0
+        if float(length) < 6.0 and dra > 0:
+            reduction = 0.2
+        elif float(length) >= 6.0 and dra > 0:
+            reduction = 30.0
+        head_loss = base - reduction
+        return head_loss, 1.0, 1.0, 0.01
+
+    def fake_pump_head(stn: dict, flow_m3h: float, rpm_map, nop: int) -> list[dict]:
+        if nop <= 0:
+            return []
+        return [
+            {
+                "tdh": 100.0 * nop,
+                "eff": 80.0,
+                "count": nop,
+                "power_type": stn.get("power_type", "Grid"),
+                "ptype": "mock",
+                "rpm": 1000,
+                "data": {
+                    "sfc_mode": stn.get("sfc_mode", "manual"),
+                    "sfc": stn.get("sfc", 0.0),
+                    "DOL": stn.get("DOL", 1000),
+                    "power_type": stn.get("power_type", "Grid"),
+                },
+            }
+        ]
+
+    def fake_update(
+        queue,
+        stn_data: dict,
+        opt: dict,
+        segment_length: float,
+        flow_m3h: float,
+        hours: float,
+        *,
+        pump_running: bool = False,
+        pump_shear_rate: float = 0.0,
+        dra_shear_factor: float = 0.0,
+        shear_injection: bool = False,
+        is_origin: bool = False,
+        precomputed=None,
+    ) -> tuple[list[tuple[float, int]], list[dict], int]:
+        seg_len = float(segment_length or 0.0)
+        ppm = int(opt.get("dra_ppm_main", 0) or 0)
+        queue_entries: list[tuple[float, float]] = []
+        if queue:
+            for raw in queue:
+                if isinstance(raw, dict):
+                    queue_entries.append(
+                        (
+                            float(raw.get("length_km", 0.0) or 0.0),
+                            float(raw.get("dra_ppm", 0.0) or 0.0),
+                        )
+                    )
+                elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                    queue_entries.append((float(raw[0] or 0.0), float(raw[1] or 0.0)))
+        if ppm > 0:
+            dra_segments = [(seg_len, ppm)]
+            queue_after = [{"length_km": 100.0, "dra_ppm": ppm}]
+        elif queue_entries:
+            head_ppm = queue_entries[0][1]
+            dra_segments = [(seg_len, head_ppm)]
+            queue_after = [
+                {"length_km": max(queue_entries[0][0], 100.0), "dra_ppm": head_ppm}
+            ]
+        else:
+            dra_segments = [(seg_len, 0.0)]
+            queue_after = []
+        return dra_segments, queue_after, ppm
+
+    def fake_get_ppm(kv: float, dr: float) -> float:
+        return float(dr) * 10.0
+
+    def fake_get_dr(kv: float, ppm: float) -> float:
+        return float(ppm) / 10.0
+
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+    monkeypatch.setattr(pm, "_pump_head", fake_pump_head)
+    monkeypatch.setattr(pm, "_update_mainline_dra", fake_update)
+    monkeypatch.setattr(pm, "get_ppm_for_dr", fake_get_ppm)
+    monkeypatch.setattr(pm, "get_dr_for_ppm", fake_get_dr)
+
+    stations = [
+        _make_pump_station("Station A", max_dr=10),
+        _make_pump_station("Station B", max_dr=0),
+    ]
+    stations[0]["rate"] = 1.0
+    stations[1]["rate"] = 1.0
+    stations[1]["min_pumps"] = 0
+    stations[1]["max_pumps"] = 1
+    stations[0]["L"] = 5.0
+    stations[1]["L"] = 7.0
+
+    terminal = {"name": "Terminal", "min_residual": 30, "elev": 0.0}
+    common_kwargs = dict(
+        FLOW=3000.0,
+        KV_list=[3.0, 3.0, 3.0],
+        rho_list=[850.0, 850.0, 850.0],
+        RateDRA=0.5,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=24.0,
+        start_time="00:00",
+        enumerate_loops=False,
+        _internal_pass=True,
+        state_top_k=1,
+        state_cost_margin=0.0,
+    )
+
+    optimal = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        **common_kwargs,
+    )
+
+    assert optimal["dra_ppm_station_a"] > 0
+    assert optimal["num_pumps_station_b"] == 0
+
+    forced_zero = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        narrow_ranges={0: {"dra_main": (0, 0)}},
+        **common_kwargs,
+    )
+
+    assert forced_zero["dra_ppm_station_a"] == 0
+    assert forced_zero["num_pumps_station_b"] == 1
+    assert forced_zero["total_cost"] > optimal["total_cost"]
+    assert forced_zero["residual_head_station_a"] == optimal["residual_head_station_a"]

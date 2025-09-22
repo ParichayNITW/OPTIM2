@@ -2771,10 +2771,84 @@ def solve_pipeline(
         if float(length) > 0
     )
 
+    def _quantise(value: float, scale: int) -> int:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = 0.0
+        return int(round(numeric * scale))
+
+    def _queue_signature(
+        queue: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
+        *,
+        max_entries: int = 6,
+        length_scale: int = 1000,
+        ppm_scale: int = 10,
+    ) -> tuple[tuple[int, int], ...]:
+        if not queue:
+            return ()
+        entries: list[tuple[int, int]] = []
+        remainder_len = 0.0
+        remainder_ppm = 0.0
+        for raw in queue:
+            if not raw:
+                continue
+            try:
+                length_val = max(float(raw[0]), 0.0)
+            except (TypeError, ValueError, IndexError):
+                length_val = 0.0
+            try:
+                ppm_val = float(raw[1])
+            except (TypeError, ValueError, IndexError):
+                ppm_val = 0.0
+            if length_val <= 0:
+                continue
+            if len(entries) < max_entries:
+                entries.append((_quantise(length_val, length_scale), _quantise(ppm_val, ppm_scale)))
+            else:
+                remainder_len += length_val
+                remainder_ppm += length_val * ppm_val
+        if remainder_len > 0:
+            avg_ppm = remainder_ppm / remainder_len if remainder_len > 0 else 0.0
+            entries.append((-_quantise(remainder_len, length_scale), _quantise(avg_ppm, ppm_scale)))
+        return tuple(entries)
+
+    def _state_signature(
+        residual: float,
+        carry_loop_dra: float,
+        queue_full: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
+        queue_inlet: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
+        loop_mode: str,
+        flow_main: float,
+        flow_loop: float,
+    ) -> tuple:
+        flow_scale = 100
+        return (
+            int(round(float(residual) if residual is not None else 0.0)),
+            int(round(float(carry_loop_dra) if carry_loop_dra is not None else 0.0)),
+            str(loop_mode or 'off'),
+            _queue_signature(queue_full),
+            _queue_signature(queue_inlet),
+            (
+                _quantise(flow_main, flow_scale),
+                _quantise(flow_loop, flow_scale),
+            ),
+        )
+
     record_nodes: list[tuple[dict, int | None]] = []
 
-    states: dict[int, dict] = {
-        init_residual: {
+    initial_signature = _state_signature(
+        init_residual,
+        0,
+        initial_queue,
+        initial_queue,
+        'off',
+        segment_flows[0],
+        0.0,
+    )
+
+    states: dict[tuple, dict] = {
+        initial_signature: {
             'cost': 0.0,
             'residual': init_residual,
             'node': None,
@@ -2785,11 +2859,12 @@ def solve_pipeline(
             'dra_queue_full': initial_queue,
             'dra_queue_at_inlet': initial_queue,
             'inj_ppm_main': 0,
+            'signature': initial_signature,
         }
     }
 
     for stn_data in station_opts:
-        new_states: dict[int, dict] = {}
+        new_states: dict[tuple, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -3257,6 +3332,7 @@ def solve_pipeline(
                     total_cost = power_cost + dra_cost
 
                     config_key = _scenario_config_key(stn_data, opt, sc)
+                    loop_mode = config_key[-1] if config_key else 'off'
 
                     # Build the record for this station.  Update loop velocity and MAOP
                     # information based on the scenario.  Use the effective drag
@@ -3356,68 +3432,71 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
-                    # Accumulate cost and update dynamic state.  When comparing states
-                    # with the same residual bucket, prefer the one with lower cost
-                    # or, when costs tie, the one with higher residual.  Carry
-                    # forward the loop DRA carry value and the updated downstream queue.
+                    # Accumulate cost and update dynamic state using the composite
+                    # signature so states that only differ in downstream queues or
+                    # flow splits are tracked independently.
                     new_cost = state['cost'] + total_cost
+                    record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
+                    signature = _state_signature(
+                        residual_next,
+                        new_carry,
+                        queue_after_full,
+                        queue_after_inlet,
+                        loop_mode,
+                        sc.get('flow_main', flow_total),
+                        sc.get('flow_loop', 0.0),
+                    )
+                    existing_state = new_states.get(signature)
+                    if existing_state is not None and new_cost >= existing_state['cost']:
+                        continue
+                    parent = state.get('node')
+                    record_nodes.append((record, parent))
+                    node_idx = len(record_nodes) - 1
+                    flow_next = flow_total
+                    candidate_state = {
+                        'cost': new_cost,
+                        'residual': residual_next,
+                        'node': node_idx,
+                        'last_maop': stn_data['maop_head'],
+                        'last_maop_kg': stn_data['maop_kgcm2'],
+                        'flow': flow_next,
+                        'carry_loop_dra': new_carry,
+                        'dra_queue_full': queue_after_full,
+                        'dra_queue_at_inlet': queue_after_inlet,
+                        'inj_ppm_main': inj_ppm_main,
+                        'config_key': config_key,
+                        'signature': signature,
+                    }
+                    new_states[signature] = candidate_state
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
-                    bucket = residual_next
-                    record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
-                    existing = new_states.get(bucket)
-                    flow_next = flow_total
-                    if (
-                        existing is None
-                        or new_cost < existing['cost']
-                        or (
-                            abs(new_cost - existing['cost']) < 1e-9
-                            and residual_next > existing['residual']
-                        )
-                    ):
-                        parent = state.get('node')
-                        record_nodes.append((record, parent))
-                        node_idx = len(record_nodes) - 1
-                        new_states[bucket] = {
-                            'cost': new_cost,
-                            'residual': residual_next,
-                            'node': node_idx,
-                            'last_maop': stn_data['maop_head'],
-                            'last_maop_kg': stn_data['maop_kgcm2'],
-                            'flow': flow_next,
-                            'carry_loop_dra': new_carry,
-                            'dra_queue_full': queue_after_full,
-                            'dra_queue_at_inlet': queue_after_inlet,
-                            'inj_ppm_main': inj_ppm_main,
-                            'config_key': config_key,
-                        }
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         # After evaluating all options for this station retain only the
-        # lowest-cost state for each residual (already enforced by ``bucket``)
-        # and globally prune to the top ``STATE_TOP_K`` states or those within
+        # lowest-cost state for each signature and globally prune to the top
+        # ``STATE_TOP_K`` states or those within
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
         # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
         threshold = best_cost_station + state_cost_margin
         best_by_config: dict[tuple, tuple[int, dict]] = {}
-        for residual_key, data in items:
+        for signature, data in items:
             cfg_key = data.get('config_key')
             if cfg_key is None:
                 continue
             existing = best_by_config.get(cfg_key)
             if existing is None or data['cost'] < existing[1]['cost']:
-                best_by_config[cfg_key] = (residual_key, data)
+                best_by_config[cfg_key] = (signature, data)
         effective_top_k = max(state_top_k, len(best_by_config))
-        pruned: dict[int, dict] = {
-            residual: data for residual, data in best_by_config.values()
+        pruned: dict[tuple, dict] = {
+            signature: data for signature, data in best_by_config.values()
         }
-        for residual_key, data in items:
-            if residual_key in pruned:
+        for signature, data in items:
+            if signature in pruned:
                 continue
             if len(pruned) < effective_top_k or data['cost'] <= threshold:
-                pruned[residual_key] = data
+                pruned[signature] = data
         states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
