@@ -174,7 +174,7 @@ def test_zero_injection_benefits_from_inherited_slug() -> None:
 
 
 def test_update_mainline_dra_injects_when_pump_idle() -> None:
-    """Pump idle + injection should prepend a slug at the traversed length."""
+    """Idle pump injections should add to the traversed slug rather than replace it."""
 
     initial_queue = [{"length_km": 12.0, "dra_ppm": 40}]
     stn_data = {"is_pump": True, "d_inner": 0.7}
@@ -194,17 +194,62 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
     )
 
     assert inj_ppm == opt["dra_ppm_main"]
+    expected_ppm = initial_queue[0]["dra_ppm"] + inj_ppm
     assert dra_segments
-    assert dra_segments[0][1] == inj_ppm
+    assert dra_segments[0][1] == expected_ppm
     assert dra_segments[0][0] == pytest.approx(segment_length, rel=1e-6)
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == inj_ppm
+    assert queue_after[0]["dra_ppm"] == expected_ppm
     assert queue_after[0]["length_km"] == pytest.approx(
         pumped_length - segment_length, rel=1e-6
     )
     assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
     assert queue_after[1]["length_km"] == pytest.approx(
         initial_queue[0]["length_km"] - pumped_length,
+        rel=1e-6,
+    )
+
+
+def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
+    """Case 2: idle pump injections add to each incoming slice."""
+
+    initial_queue = [
+        {"length_km": 4.0, "dra_ppm": 20},
+        {"length_km": 3.0, "dra_ppm": 5},
+    ]
+    stn_data = {"is_pump": True, "d_inner": 0.7}
+    opt = {"nop": 0, "dra_ppm_main": 15}
+    flow_m3h = 3600.0
+    hours = 0.5
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+
+    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        0.0,
+        flow_m3h,
+        hours,
+    )
+
+    assert not dra_segments
+    assert queue_after and len(queue_after) >= 3
+    expected_front_ppm = initial_queue[0]["dra_ppm"] + inj_ppm
+    assert queue_after[0]["dra_ppm"] == expected_front_ppm
+    assert queue_after[0]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"],
+        rel=1e-6,
+    )
+
+    consumed_second = pumped_length - initial_queue[0]["length_km"]
+    assert consumed_second > 0
+    expected_second_ppm = initial_queue[1]["dra_ppm"] + inj_ppm
+    assert queue_after[1]["dra_ppm"] == expected_second_ppm
+    assert queue_after[1]["length_km"] == pytest.approx(consumed_second, rel=1e-6)
+
+    assert queue_after[2]["dra_ppm"] == initial_queue[1]["dra_ppm"]
+    assert queue_after[2]["length_km"] == pytest.approx(
+        initial_queue[1]["length_km"] - consumed_second,
         rel=1e-6,
     )
 
