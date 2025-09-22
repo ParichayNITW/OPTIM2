@@ -429,6 +429,81 @@ def _prepare_dra_queue_consumption(
     return result
 
 
+def _merge_queue(
+    entries: list[tuple[float, float]] | tuple[tuple[float, float], ...]
+) -> list[tuple[float, int]]:
+    """Return ``entries`` with adjacent slices of equal concentration merged."""
+
+    merged: list[tuple[float, int]] = []
+    for ent in entries:
+        if not ent:
+            continue
+        if isinstance(ent, (list, tuple)):
+            length = float(ent[0] if len(ent) > 0 else 0.0)
+            ppm_float = float(ent[1] if len(ent) > 1 else 0.0)
+        else:
+            length = float(ent)
+            ppm_float = 0.0
+        if length <= 0:
+            continue
+        ppm_val = int(round(ppm_float)) if ppm_float > 0 else 0
+        if merged and merged[-1][1] == ppm_val:
+            prev_len, prev_ppm = merged[-1]
+            merged[-1] = (prev_len + length, prev_ppm)
+        else:
+            merged.append((length, ppm_val))
+    return merged
+
+
+def _trim_queue_front(
+    queue_entries: list[tuple[float, float]]
+    | tuple[tuple[float, float], ...],
+    trim_length: float,
+) -> tuple[tuple[float, float], ...]:
+    """Return ``queue_entries`` shortened by ``trim_length`` from the head."""
+
+    remaining = max(float(trim_length or 0.0), 0.0)
+    if remaining <= 0:
+        return tuple(
+            (
+                float(length),
+                float(ppm),
+            )
+            for length, ppm in queue_entries
+            if float(length or 0.0) > 0
+        )
+
+    trimmed: list[tuple[float, float]] = []
+    for length, ppm in queue_entries:
+        length_val = float(length or 0.0)
+        if length_val <= 0:
+            continue
+        ppm_val = float(ppm or 0.0)
+        if remaining > 0:
+            if remaining >= length_val - 1e-9:
+                remaining -= length_val
+                continue
+            leftover = length_val - remaining
+            if leftover > 1e-9:
+                trimmed.append((leftover, ppm_val))
+            remaining = 0.0
+        else:
+            trimmed.append((length_val, ppm_val))
+
+    if not trimmed:
+        return ()
+
+    merged_trimmed = _merge_queue(trimmed)
+    return tuple(
+        (
+            float(length),
+            float(ppm),
+        )
+        for length, ppm in merged_trimmed
+        if float(length or 0.0) > 0
+    )
+
+
 def _update_mainline_dra(
     queue: list[dict] | list[tuple] | tuple | None,
     stn_data: dict,
@@ -643,20 +718,6 @@ def _update_mainline_dra(
             else:
                 dra_segments.append((length, ppm_int))
 
-    def _merge_queue(entries: list[tuple[float, float]]) -> list[tuple[float, int]]:
-        merged: list[tuple[float, int]] = []
-        for ent in entries:
-            length = float(ent[0])
-            ppm_val = int(round(float(ent[1])))
-            if length <= 0:
-                continue
-            if merged and merged[-1][1] == ppm_val:
-                prev_len, prev_ppm = merged[-1]
-                merged[-1] = (prev_len + length, prev_ppm)
-            else:
-                merged.append((length, ppm_val))
-        return merged
-
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
         for length, ppm_val in (
@@ -664,37 +725,6 @@ def _update_mainline_dra(
         )
         if float(length) > 0
     ]
-
-    trim_front = max(0.0, float(segment_length) - float(pumped_length))
-    if combined_entries and trim_front > 0.0:
-        total_length = sum(length for length, _ in combined_entries if length > 0)
-        if total_length > 0:
-            trim = math.fmod(trim_front, total_length)
-            if trim < 0:
-                trim += total_length
-            if trim <= 1e-9:
-                trim = 0.0
-            if trim > 0.0:
-                head_entries: list[tuple[float, float]] = []
-                tail_entries: list[tuple[float, float]] = []
-                remaining_trim = trim
-                for length, ppm_val in combined_entries:
-                    length = float(length)
-                    if length <= 1e-12:
-                        continue
-                    if remaining_trim > 1e-9:
-                        if remaining_trim < length - 1e-9:
-                            tail_entries.append((remaining_trim, ppm_val))
-                            leftover = length - remaining_trim
-                            if leftover > 1e-9:
-                                head_entries.append((leftover, ppm_val))
-                            remaining_trim = 0.0
-                        else:
-                            tail_entries.append((length, ppm_val))
-                            remaining_trim -= length
-                    else:
-                        head_entries.append((length, ppm_val))
-                combined_entries = head_entries + tail_entries
 
     merged_queue = _merge_queue(combined_entries)
     queue_after = [
@@ -2170,7 +2200,8 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0,
-            'dra_queue': initial_queue,
+            'dra_queue_full': initial_queue,
+            'dra_queue_at_inlet': initial_queue,
             'inj_ppm_main': 0,
         }
     }
@@ -2180,10 +2211,16 @@ def solve_pipeline(
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
-            dra_queue_prev = state.get('dra_queue', [])
+            dra_queue_prev_full = state.get('dra_queue_full')
+            if dra_queue_prev_full is None:
+                legacy_queue = state.get('dra_queue', ())
+                dra_queue_prev_full = tuple(legacy_queue) if legacy_queue else ()
+            dra_queue_prev_inlet = state.get('dra_queue_at_inlet')
+            if dra_queue_prev_inlet is None:
+                dra_queue_prev_inlet = dra_queue_prev_full
             d_inner_state = float(stn_data.get('d_inner') or stn_data.get('d') or 0.0)
             precomputed_queue = _prepare_dra_queue_consumption(
-                dra_queue_prev,
+                dra_queue_prev_inlet,
                 stn_data['L'],
                 flow_total,
                 hours,
@@ -2203,7 +2240,7 @@ def solve_pipeline(
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
                 dra_segments, queue_after_list, inj_ppm_main = _update_mainline_dra(
-                    dra_queue_prev,
+                    dra_queue_prev_inlet,
                     stn_data,
                     opt,
                     stn_data['L'],
@@ -2216,7 +2253,7 @@ def solve_pipeline(
                     is_origin=stn_data['idx'] == 0,
                     precomputed=precomputed_queue,
                 )
-                queue_after = tuple(
+                queue_after_full = tuple(
                     (
                         float(entry.get('length_km', 0.0) or 0.0),
                         float(entry.get('dra_ppm', 0.0) or 0.0),
@@ -2224,6 +2261,14 @@ def solve_pipeline(
                     for entry in queue_after_list
                     if float(entry.get('length_km', 0.0) or 0.0) > 0
                 )
+                pumped_length_local = 0.0
+                if precomputed_queue:
+                    try:
+                        pumped_length_local = float(precomputed_queue[0])
+                    except Exception:
+                        pumped_length_local = 0.0
+                trim_offset = max(float(stn_data['L']) - pumped_length_local, 0.0)
+                queue_after_inlet = _trim_queue_front(queue_after_full, trim_offset)
                 total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
                 if total_positive > 0:
                     weighted_dr = 0.0
@@ -2745,7 +2790,8 @@ def solve_pipeline(
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            'dra_queue': queue_after,
+                            'dra_queue_full': queue_after_full,
+                            'dra_queue_at_inlet': queue_after_inlet,
                             'inj_ppm_main': inj_ppm_main,
                         }
 
@@ -2782,12 +2828,15 @@ def solve_pipeline(
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
 
+    queue_source = best_state.get('dra_queue_full')
+    if queue_source is None:
+        queue_source = best_state.get('dra_queue', ())
     queue_final = [
         (
             float(length),
             float(ppm),
         )
-        for length, ppm in best_state.get('dra_queue', ())
+        for length, ppm in queue_source
         if float(length) > 0
     ]
 
