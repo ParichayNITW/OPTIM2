@@ -524,8 +524,13 @@ def _update_mainline_dra(
     pumped_slices: list[tuple[float, float]] = []
 
     if not pump_running:
-        if inj_ppm_main > 0 and pumped_length > 0:
-            pumped_slices.append((pumped_length, float(inj_ppm_main)))
+        inj_effective = float(inj_ppm_main)
+        if inj_effective > 0:
+            for length, base_ppm in incoming_slices:
+                length = float(length)
+                if length <= 0:
+                    continue
+                pumped_slices.append((length, float(base_ppm) + inj_effective))
         else:
             pumped_slices.extend(incoming_slices)
     else:
