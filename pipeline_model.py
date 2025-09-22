@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - numba may be unavailable
         return decorator
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
+from linefill_utils import advance_linefill
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -58,6 +59,22 @@ def _coerce_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
+    """Return the pipeline length in kilometres for ``volume_m3`` at ``diameter_m``."""
+
+    try:
+        volume = float(volume_m3)
+        diameter = float(diameter_m)
+    except (TypeError, ValueError):
+        return 0.0
+    if diameter <= 0:
+        return 0.0
+    area = np.pi * (diameter ** 2) / 4.0
+    if area <= 0:
+        return 0.0
+    return volume / area / 1000.0
 
 
 def _extract_rpm(
@@ -312,362 +329,6 @@ V_MAX = 2.5
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
 
-
-def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
-    """Return the pipeline length in kilometres represented by ``volume_m3``."""
-
-    try:
-        volume = float(volume_m3)
-    except Exception:  # pragma: no cover - defensive programming
-        volume = 0.0
-    try:
-        diameter = float(diameter_m)
-    except Exception:  # pragma: no cover - defensive programming
-        diameter = 0.0
-    if volume <= 0.0 or diameter <= 0.0:
-        return 0.0
-    area = np.pi * (diameter ** 2) / 4.0
-    if area <= 0.0:
-        return 0.0
-    return volume / area / 1000.0
-
-
-def _volume_from_km(length_km: float, diameter_m: float) -> float:
-    """Return the volume in m³ represented by ``length_km`` of pipe."""
-
-    try:
-        length = float(length_km)
-    except Exception:  # pragma: no cover - defensive programming
-        length = 0.0
-    try:
-        diameter = float(diameter_m)
-    except Exception:  # pragma: no cover - defensive programming
-        diameter = 0.0
-    if length <= 0.0 or diameter <= 0.0:
-        return 0.0
-    area = np.pi * (diameter ** 2) / 4.0
-    if area <= 0.0:
-        return 0.0
-    return length * area * 1000.0
-
-
-def _merge_queue_entries(entries: list[dict]) -> list[dict]:
-    """Return ``entries`` with adjacent items of equal ppm merged."""
-
-    merged: list[dict] = []
-    for ent in entries:
-        length = float(ent.get("length_km", 0.0) or 0.0)
-        ppm = int(float(ent.get("dra_ppm", 0) or 0))
-        if length <= 0:
-            continue
-        if merged and int(merged[-1]["dra_ppm"]) == ppm:
-            merged[-1]["length_km"] += length
-        else:
-            merged.append({"length_km": length, "dra_ppm": ppm})
-    return merged
-
-
-def _clean_dra_queue(queue: list[dict] | None) -> list[dict]:
-    """Return a normalised copy of ``queue`` with merged, positive lengths."""
-
-    if not queue:
-        return []
-    cleaned: list[dict] = []
-    for entry in queue:
-        if not isinstance(entry, Mapping):
-            continue
-        length = float(entry.get("length_km", 0.0) or 0.0)
-        if length <= 0:
-            continue
-        ppm = entry.get("dra_ppm", 0)
-        try:
-            ppm_int = int(float(ppm or 0))
-        except Exception:  # pragma: no cover - defensive programming
-            ppm_int = 0
-        cleaned.append({"length_km": length, "dra_ppm": ppm_int})
-    return _merge_queue_entries(cleaned)
-
-
-def _split_queue_prefix(
-    queue: list[dict], length_km: float
-) -> tuple[list[tuple[float, int]], list[dict]]:
-    """Remove and return the leading ``length_km`` from ``queue``."""
-
-    remaining = max(float(length_km), 0.0)
-    taken: list[tuple[float, int]] = []
-    remainder: list[dict] = []
-    for entry in queue:
-        seg_len = float(entry.get("length_km", 0.0) or 0.0)
-        ppm = int(entry.get("dra_ppm", 0) or 0)
-        if seg_len <= 0:
-            continue
-        if remaining <= 1e-9:
-            remainder.append({"length_km": seg_len, "dra_ppm": ppm})
-            continue
-        if seg_len <= remaining + 1e-9:
-            taken.append((seg_len, ppm))
-            remaining -= seg_len
-        else:
-            taken.append((remaining, ppm))
-            remainder.append({"length_km": seg_len - remaining, "dra_ppm": ppm})
-            remaining = 0.0
-    return taken, _merge_queue_entries(remainder)
-
-
-def _queue_from_linefill(
-    linefill_state: list[dict],
-    diameter_m: float,
-    dra_reach_km: float = 0.0,
-) -> list[dict]:
-    """Translate a linefill table into a DRA queue."""
-
-    queue: list[dict] = []
-    for entry in linefill_state:
-        length = float(entry.get("length_km", 0.0) or 0.0)
-        if length <= 0.0:
-            volume = entry.get("volume") or entry.get("Volume") or entry.get("Volume (m³)")
-            length = _km_from_volume(volume or 0.0, diameter_m)
-        if length <= 0.0:
-            continue
-        ppm = entry.get("dra_ppm", 0)
-        try:
-            ppm_val = int(float(ppm or 0))
-        except Exception:  # pragma: no cover - defensive programming
-            ppm_val = 0
-        queue.append({"length_km": length, "dra_ppm": ppm_val})
-    queue = _merge_queue_entries(queue)
-    if not queue and dra_reach_km > 0.0:
-        ppm_guess = 0
-        if linefill_state:
-            try:
-                ppm_guess = int(float(linefill_state[0].get("dra_ppm", 0) or 0))
-            except Exception:  # pragma: no cover - defensive programming
-                ppm_guess = 0
-        queue = [{"length_km": float(dra_reach_km), "dra_ppm": ppm_guess}]
-    return queue
-
-
-def _queue_to_linefill(queue: list[dict], diameter_m: float) -> list[dict]:
-    """Convert ``queue`` back into a linefill-style list of batches."""
-
-    linefill: list[dict] = []
-    for entry in _clean_dra_queue(queue):
-        length = entry["length_km"]
-        ppm = int(entry.get("dra_ppm", 0) or 0)
-        volume = _volume_from_km(length, diameter_m)
-        linefill.append({"volume": volume, "dra_ppm": ppm, "length_km": length})
-    return linefill
-
-
-def _sum_positive_lengths(dra_segments: list[tuple[float, int]]) -> float:
-    """Return the total treated length across ``dra_segments``."""
-
-    total = 0.0
-    for length, ppm in dra_segments:
-        if length > 0 and ppm > 0:
-            total += length
-    return total
-
-
-def _weighted_drag_reduction(kv: float, dra_segments: list[tuple[float, int]]) -> float:
-    """Return length-weighted drag reduction for ``dra_segments``."""
-
-    treated = _sum_positive_lengths(dra_segments)
-    if treated <= 0:
-        return 0.0
-    weighted = 0.0
-    for length, ppm in dra_segments:
-        if length <= 0 or ppm <= 0:
-            continue
-        weighted += float(get_dr_for_ppm(kv, ppm)) * length
-    return weighted / treated if treated > 0 else 0.0
-
-
-def _build_pump_option_cache(
-    stn_data: dict,
-    opt: dict,
-    *,
-    flow_m3h: float,
-    hours: float,
-    start_time: str,
-    price_hsd: float,
-    fuel_density: float,
-    ambient_temp: float,
-    **_,
-) -> dict:
-    nop = int(opt.get("nop", 0) or 0)
-    if nop <= 0:
-        return {
-            "pump_details": [],
-            "tdh": 0.0,
-            "efficiency": 0.0,
-            "pump_bkw": 0.0,
-            "motor_kw": 0.0,
-            "power_cost": 0.0,
-        }
-
-    pump_def = {
-        "A": stn_data.get("coef_A", 0.0),
-        "B": stn_data.get("coef_B", 0.0),
-        "C": stn_data.get("coef_C", 0.0),
-        "P": stn_data.get("coef_P", 0.0),
-        "Q": stn_data.get("coef_Q", 0.0),
-        "R": stn_data.get("coef_R", 0.0),
-        "S": stn_data.get("coef_S", 0.0),
-        "T": stn_data.get("coef_T", 0.0),
-        "DOL": stn_data.get("dol", 0.0),
-        "combo": stn_data.get("pump_combo"),
-        "pump_types": stn_data.get("pump_types"),
-        "active_combo": stn_data.get("active_combo"),
-        "power_type": stn_data.get("power_type"),
-        "sfc_mode": stn_data.get("sfc_mode"),
-        "sfc": stn_data.get("sfc"),
-        "engine_params": stn_data.get("engine_params", {}),
-        "rpm_map": stn_data.get("rpm_map"),
-    }
-    combo_local = (
-        pump_def.get("active_combo")
-        or pump_def.get("combo")
-        or pump_def.get("pump_combo")
-    )
-    rpm_map_local: dict[str, float | int] = {}
-    for source in (pump_def.get("rpm_map"), opt.get("rpm_map")):
-        if isinstance(source, Mapping):
-            for key, value in source.items():
-                if isinstance(value, (int, float)):
-                    rpm_map_local[key] = value
-    fallback_rpm = opt.get("rpm") if isinstance(opt.get("rpm"), (int, float)) else 0
-    if isinstance(combo_local, Mapping):
-        for key, value in opt.items():
-            if (
-                isinstance(value, (int, float))
-                and isinstance(key, str)
-                and key.startswith("rpm_")
-            ):
-                ptype = key[4:]
-                if ptype in combo_local:
-                    rpm_map_local[ptype] = value
-        for ptype, count in combo_local.items():
-            if (
-                isinstance(count, (int, float))
-                and count > 0
-                and ptype not in rpm_map_local
-                and isinstance(fallback_rpm, (int, float))
-            ):
-                rpm_map_local[ptype] = fallback_rpm
-    if (
-        not rpm_map_local
-        and isinstance(fallback_rpm, (int, float))
-        and fallback_rpm > 0
-    ):
-        rpm_map_local = {"default": fallback_rpm}
-
-    has_positive_rpm = any(
-        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
-    )
-    if not has_positive_rpm:
-        return {
-            "pump_details": [],
-            "tdh": 0.0,
-            "efficiency": 0.0,
-            "pump_bkw": 0.0,
-            "motor_kw": 0.0,
-            "power_cost": 0.0,
-        }
-
-    pump_details = _pump_head(pump_def, flow_m3h, rpm_map_local, nop)
-    tdh = sum(p.get("tdh", 0.0) for p in pump_details)
-    efficiency = (
-        sum(p.get("eff", 0.0) * p.get("count", 0) for p in pump_details) / nop
-        if pump_details and nop > 0
-        else 0.0
-    )
-
-    pump_bkw_total = 0.0
-    prime_kw_total = 0.0
-    power_cost = 0.0
-    rho = float(stn_data.get("rho", 0.0))
-    for pinfo in pump_details:
-        eff_local = max(min(pinfo.get("eff", 0.0), 100.0), 1e-6)
-        tdh_local = max(pinfo.get("tdh", 0.0), 0.0)
-        pump_bkw_i = 0.0
-        if eff_local > 0 and rho > 0 and flow_m3h > 0:
-            pump_bkw_i = (rho * flow_m3h * 9.81 * tdh_local) / (3600.0 * 1000.0 * (eff_local / 100.0))
-        pump_bkw_total += pump_bkw_i
-        pdata = pinfo.get("data", {})
-        rated_rpm = pdata.get("DOL", stn_data.get("dol", 0.0))
-        rpm_operating = pinfo.get("rpm", opt.get("rpm", 0))
-        if pinfo.get("power_type") == "Diesel":
-            mech_eff = 0.98
-        else:
-            mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
-        prime_kw_i = pump_bkw_i / mech_eff if mech_eff else 0.0
-        prime_kw_total += prime_kw_i
-        if pinfo.get("power_type") == "Diesel":
-            mode = pdata.get("sfc_mode", stn_data.get("sfc_mode", "manual"))
-            if mode == "manual":
-                sfc_val = pdata.get("sfc", stn_data.get("sfc", 0.0))
-            elif mode == "iso":
-                sfc_val = _compute_iso_sfc(
-                    pdata,
-                    rpm_operating,
-                    pump_bkw_i,
-                    pdata.get("DOL", stn_data.get("dol", 0.0)),
-                    stn_data.get("elev", 0.0),
-                    ambient_temp,
-                )
-            else:
-                sfc_val = 0.0
-            fuel_per_kwh = (sfc_val * 1.34102) / fuel_density if sfc_val else 0.0
-            cost_i = prime_kw_i * hours * fuel_per_kwh * price_hsd
-        else:
-            tariffs = stn_data.get("tariffs") or []
-            rate_default = stn_data.get("rate", 0.0)
-            remaining = hours
-            cost_i = 0.0
-            try:
-                current = dt.datetime.strptime(start_time, "%H:%M")
-            except Exception:
-                current = dt.datetime.strptime("00:00", "%H:%M")
-            while remaining > 1e-9:
-                applied = False
-                for tr in tariffs:
-                    try:
-                        s = dt.datetime.strptime(tr.get("start"), "%H:%M")
-                        e = dt.datetime.strptime(tr.get("end"), "%H:%M")
-                    except Exception:
-                        continue
-                    if e <= s:
-                        e += dt.timedelta(days=1)
-                    if s <= current < e:
-                        overlap = min(remaining, (e - current).total_seconds() / 3600.0)
-                        cost_i += prime_kw_i * overlap * float(tr.get("rate", rate_default))
-                        remaining -= overlap
-                        current += dt.timedelta(hours=overlap)
-                        applied = True
-                        break
-                if not applied:
-                    cost_i += prime_kw_i * remaining * rate_default
-                    break
-        cost_i = max(cost_i, 0.0)
-        pinfo["pump_bkw"] = pump_bkw_i
-        pinfo["prime_kw"] = prime_kw_i
-        pinfo["power_cost"] = cost_i
-        power_cost += cost_i
-
-    pump_bkw = pump_bkw_total / nop if nop > 0 else 0.0
-    motor_kw = prime_kw_total / nop if nop > 0 else 0.0
-
-    return {
-        "pump_details": pump_details,
-        "tdh": tdh,
-        "efficiency": efficiency,
-        "pump_bkw": pump_bkw,
-        "motor_kw": motor_kw,
-        "power_cost": power_cost,
-    }
-
-
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
         return [min_val]
@@ -678,82 +339,64 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
 
 
 def _update_mainline_dra(
-    queue: list[dict] | None,
+    prev_ppm: int,
+    reach_prev: float,
     stn_data: dict,
     opt: dict,
-    segment_length: float,
-    flow_m3h: float,
-    hours: float,
-    *,
-    pump_running: bool | None = None,
-    dra_shear_factor: float = 0.0,
-    shear_injection: bool = False,
-    include_profile: bool = False,
-) -> tuple[list[tuple[float, int]], list[dict], int]:
-    """Advance the DRA queue across the mainline segment.
+    pump_shear_rate: float,
+) -> tuple[int, float, float, int]:
+    """Return updated drag‑reduction state for the mainline.
 
-    The function consumes ``queue``—a list of dictionaries each describing a
-    slug with keys ``length_km`` and ``dra_ppm``—according to the volume pumped
-    through the segment.  Any new injection is prepended to the queue while the
-    traversed portion is returned under ``dra_segments`` for hydraulic
-    calculations.
+    Parameters
+    ----------
+    prev_ppm:
+        Upstream DRA concentration in ppm carried from the previous station.
+    reach_prev:
+        Remaining downstream reach (km) for which the previous injection is
+        effective.
+    stn_data:
+        Dictionary describing the current station with keys ``L`` for the
+        segment length and ``is_pump`` for pump stations.
+    opt:
+        Chosen operating option containing ``dra_ppm_main`` and ``nop``.
+    pump_shear_rate:
+        Fraction of injected DRA that survives pump shear (0.0 – 1.0).
+
+    Returns
+    -------
+    tuple
+        ``(ppm_main, dra_len_main, reach_after, inj_ppm_main)`` where
+        ``ppm_main`` is the effective concentration after any injection,
+        ``dra_len_main`` is the length on this segment receiving drag
+        reduction, ``reach_after`` is the remaining downstream reach of that
+        injection, and ``inj_ppm_main`` is the concentration injected at this
+        station.
     """
 
-    queue_clean = _clean_dra_queue(queue)
     inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
-    pump_active = bool(pump_running if pump_running is not None else opt.get("nop", 0) > 0)
-    shear_factor = float(dra_shear_factor or 0.0)
-    if shear_factor < 0.0:
-        shear_factor = 0.0
-    if shear_factor > 1.0:
-        shear_factor = 1.0
 
-    diameter = float(stn_data.get("d_inner") or stn_data.get("d") or 0.0)
-    pumped_volume = max(float(flow_m3h or 0.0), 0.0) * max(float(hours or 0.0), 0.0)
-    pumped_length = _km_from_volume(pumped_volume, diameter) if pumped_volume > 0 else 0.0
-
-    pumped_portion, downstream_queue = _split_queue_prefix(queue_clean, pumped_length)
-    pumped_total = sum(length for length, _ in pumped_portion)
-
-    pumped_out: list[tuple[float, int]] = []
-    if pumped_length > 0:
-        if inj_ppm_main > 0:
-            ppm_out = inj_ppm_main
-            if pump_active and shear_injection and shear_factor > 0.0:
-                ppm_out = int(round(ppm_out * (1.0 - shear_factor)))
-            ppm_out = max(ppm_out, 0)
-            pumped_out.append((pumped_length, ppm_out))
+    # A pump station resets the DRA concentration to the injected value.  If
+    # the pump runs without injection the downstream concentration drops to
+    # zero.  Non‑pump segments simply carry the upstream concentration forward
+    # until the maximum reach is exhausted.
+    if stn_data.get("is_pump") and opt.get("nop", 0) > 0:
+        ppm_main = int(round(inj_ppm_main * pump_shear_rate))
+        if ppm_main > 0:
+            dra_len_main = min(stn_data["L"], MAX_DRA_KM)
+            reach_after = max(0.0, MAX_DRA_KM - stn_data["L"])
         else:
-            for length, ppm in pumped_portion:
-                ppm_out = int(ppm) if ppm else 0
-                if pump_active:
-                    if int(stn_data.get("idx", -1) or 0) == 0 and inj_ppm_main <= 0:
-                        ppm_out = 0
-                    elif shear_factor >= 1.0:
-                        ppm_out = 0
-                    elif shear_factor > 0.0:
-                        ppm_out = int(round(ppm_out * (1.0 - shear_factor)))
-                pumped_out.append((length, max(ppm_out, 0)))
-            leftover = pumped_length - pumped_total
-            if leftover > 1e-9:
-                pumped_out.append((leftover, 0))
+            dra_len_main = 0.0
+            reach_after = 0.0
+    else:
+        ppm_main = prev_ppm
+        if reach_prev > 0 and ppm_main > 0:
+            dra_len_main = min(stn_data["L"], reach_prev)
+            reach_after = max(0.0, reach_prev - stn_data["L"])
+        else:
+            dra_len_main = 0.0
+            reach_after = 0.0
 
-    combined: list[dict] = []
-    for length, ppm in pumped_out:
-        if length <= 0:
-            continue
-        combined.append({"length_km": float(length), "dra_ppm": int(ppm)})
-    combined.extend(downstream_queue)
-    combined_queue = _merge_queue_entries(combined)
-
-    segment_length = max(float(segment_length or 0.0), 0.0)
-    traversed, queue_after = _split_queue_prefix(combined_queue, segment_length)
-    profile = [(float(length), int(ppm)) for length, ppm in traversed if length > 0]
-    dra_segments = [(float(length), int(ppm)) for length, ppm in traversed if length > 0 and int(ppm) > 0]
-
-    if include_profile:
-        return dra_segments, queue_after, inj_ppm_main, profile
-    return dra_segments, queue_after, inj_ppm_main
+    return int(ppm_main), dra_len_main, reach_after, inj_ppm_main
 
 
 @njit(cache=True, fastmath=True)
@@ -1287,6 +930,7 @@ def solve_pipeline(
     hours: float = 24.0,
     start_time: str = "00:00",
     *,
+    pump_shear_rate: float = 1.0,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
@@ -1309,7 +953,9 @@ def solve_pipeline(
     pass then narrows the RPM and DRA ranges around that coarse solution
     and re-solves using the user-provided ``rpm_step`` and ``dra_step``.
     ``narrow_ranges`` is an internal helper used to restrict the values
-    considered during the refinement stage.
+    considered during the refinement stage.  ``pump_shear_rate`` expresses
+    the fraction of injected DRA that survives pump shear at pump stations
+    and is clamped to the range [0, 1].
 
     This function supports optional loop-use directives.  When
     ``enumerate_loops`` is ``True`` and no explicit
@@ -1321,6 +967,11 @@ def solve_pipeline(
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
     """
+
+    pump_shear_rate = _coerce_float(pump_shear_rate, 1.0)
+    if not np.isfinite(pump_shear_rate):
+        pump_shear_rate = 1.0
+    pump_shear_rate = min(1.0, max(0.0, pump_shear_rate))
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -1349,6 +1000,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                pump_shear_rate=pump_shear_rate,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1405,6 +1057,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                pump_shear_rate=pump_shear_rate,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1493,6 +1146,7 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
             start_time,
+            pump_shear_rate=pump_shear_rate,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -1519,16 +1173,8 @@ def solve_pipeline(
                     rmin = max(st_rpm_min, coarse_rpm - window)
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
                     rmax = min(upper_bound, coarse_rpm + window)
-                max_dr_main = int(stn.get("max_dr", 0))
-                if coarse_dr_main <= 0:
-                    dmin = 0
-                    dmax = max_dr_main
-                elif coarse_dr_main >= max_dr_main:
-                    dmin = max(0, max_dr_main - dra_step)
-                    dmax = max_dr_main
-                else:
-                    dmin = max(0, coarse_dr_main - dra_step)
-                    dmax = min(max_dr_main, coarse_dr_main + dra_step)
+                dmin = max(0, coarse_dr_main - dra_step)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 entry: dict[str, tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
@@ -1594,16 +1240,8 @@ def solve_pipeline(
                 ranges[idx] = entry
             else:
                 coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                max_dr_main = int(stn.get("max_dr", 0))
-                if coarse_dr_main <= 0:
-                    dmin = 0
-                    dmax = max_dr_main
-                elif coarse_dr_main >= max_dr_main:
-                    dmin = max(0, max_dr_main - dra_step)
-                    dmax = max_dr_main
-                else:
-                    dmin = max(0, coarse_dr_main - dra_step)
-                    dmax = min(max_dr_main, coarse_dr_main + dra_step)
+                dmin = max(0, coarse_dr_main - dra_step)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 ranges[idx] = {"dra_main": (dmin, dmax)}
         return solve_pipeline(
             stations,
@@ -1620,6 +1258,7 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
             start_time,
+            pump_shear_rate=pump_shear_rate,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -1930,8 +1569,6 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
-    line_diameter = float(station_opts[0]['d_inner']) if station_opts else float(stations[0].get('d', 0.0) if stations else 0.0)
-    dra_queue_initial = _queue_from_linefill(linefill_state, line_diameter, dra_reach_km)
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
     # bypass cases require recomputing the downstream flow profile.
@@ -1976,7 +1613,8 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0,
-            'queue': copy.deepcopy(dra_queue_initial),
+            'prev_ppm_main': int(linefill_state[0]['dra_ppm']) if linefill_state else 0,
+            'reach': max(float(dra_reach_km), 0.0),
             'inj_ppm_main': 0,
         }
     }
@@ -1998,23 +1636,19 @@ def solve_pipeline(
                     usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
-                queue_prev = state.get('queue') or []
-                pump_running = opt.get('nop', 0) > 0
-                shear_injection = str(stn_data.get('dra_injector_position', '')).lower() == 'upstream'
-                dra_segments, queue_after_main, inj_ppm_main, segment_profile = _update_mainline_dra(
-                    queue_prev,
+                reach_prev = state.get('reach', 0.0)
+                ppm_prev = int(state.get('prev_ppm_main', 0))
+                # Update the mainline DRA concentration.  Pump stations reset the
+                # concentration to the injected value while unpumped segments carry
+                # the upstream level forward until its reach is exhausted.
+                ppm_main, dra_len_main, reach_after, inj_ppm_main = _update_mainline_dra(
+                    ppm_prev,
+                    reach_prev,
                     stn_data,
                     opt,
-                    stn_data['L'],
-                    flow_total,
-                    hours,
-                    pump_running=pump_running,
-                    dra_shear_factor=stn_data.get('dra_shear_factor', 0.0),
-                    shear_injection=shear_injection,
-                    include_profile=True,
+                    pump_shear_rate,
                 )
-                dra_len_main = min(_sum_positive_lengths(dra_segments), stn_data['L'])
-                eff_dra_main = _weighted_drag_reduction(stn_data['kv'], dra_segments)
+                eff_dra_main = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
 
                 scenarios = []
                 # Base scenario: flow through mainline only
@@ -2121,22 +1755,149 @@ def solve_pipeline(
                             'bypass_next': False,
                         })
 
-                pump_cache = _build_pump_option_cache(
-                    stn_data,
-                    opt,
-                    flow_m3h=flow_total,
-                    hours=hours,
-                    start_time=start_time,
-                    price_hsd=Price_HSD,
-                    fuel_density=Fuel_density,
-                    ambient_temp=Ambient_temp,
+                pump_details: list[dict]
+                tdh: float
+                if opt.get('nop', 0) > 0:
+                    pump_def = {
+                        'A': stn_data['coef_A'],
+                        'B': stn_data['coef_B'],
+                        'C': stn_data['coef_C'],
+                        'P': stn_data['coef_P'],
+                        'Q': stn_data['coef_Q'],
+                        'R': stn_data['coef_R'],
+                        'S': stn_data['coef_S'],
+                        'T': stn_data['coef_T'],
+                        'DOL': stn_data['dol'],
+                        'combo': stn_data.get('pump_combo'),
+                        'pump_types': stn_data.get('pump_types'),
+                        'active_combo': stn_data.get('active_combo'),
+                        'power_type': stn_data.get('power_type'),
+                        'sfc_mode': stn_data.get('sfc_mode'),
+                        'sfc': stn_data.get('sfc'),
+                        'engine_params': stn_data.get('engine_params', {}),
+                    }
+                    combo_local = (
+                        pump_def.get('active_combo')
+                        or pump_def.get('combo')
+                        or pump_def.get('pump_combo')
+                    )
+                    rpm_map_local: dict[str, float | int] = {}
+                    for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
+                        if isinstance(source, Mapping):
+                            for key, value in source.items():
+                                if isinstance(value, (int, float)):
+                                    rpm_map_local[key] = value
+                    fallback_rpm = opt.get('rpm') if isinstance(opt.get('rpm'), (int, float)) else 0
+                    if isinstance(combo_local, dict):
+                        for key, value in opt.items():
+                            if (
+                                isinstance(value, (int, float))
+                                and isinstance(key, str)
+                                and key.startswith('rpm_')
+                            ):
+                                ptype = key[4:]
+                                if ptype in combo_local:
+                                    rpm_map_local[ptype] = value
+                        for ptype, count in combo_local.items():
+                            if (
+                                isinstance(count, (int, float))
+                                and count > 0
+                                and ptype not in rpm_map_local
+                                and isinstance(fallback_rpm, (int, float))
+                            ):
+                                rpm_map_local[ptype] = fallback_rpm
+                    if (
+                        not rpm_map_local
+                        and isinstance(fallback_rpm, (int, float))
+                        and fallback_rpm > 0
+                    ):
+                        rpm_map_local = {'default': fallback_rpm}
+                    has_positive_rpm = any(
+                        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
+                    )
+                    if has_positive_rpm:
+                        pump_details = _pump_head(pump_def, flow_total, rpm_map_local, opt['nop'])
+                        tdh = sum(p['tdh'] for p in pump_details)
+                    else:
+                        pump_details = []
+                        tdh = 0.0
+                else:
+                    pump_details = []
+                    tdh = 0.0
+
+                eff = (
+                    sum(p['eff'] * p['count'] for p in pump_details) / opt['nop']
+                    if pump_details and opt['nop'] > 0
+                    else 0.0
                 )
-                pump_details = pump_cache['pump_details']
-                tdh = pump_cache['tdh']
-                eff = pump_cache['efficiency']
-                pump_bkw = pump_cache['pump_bkw']
-                motor_kw = pump_cache['motor_kw']
-                power_cost = pump_cache['power_cost']
+
+                pump_bkw_total = 0.0
+                prime_kw_total = 0.0
+                power_cost = 0.0
+                for pinfo in pump_details:
+                    eff_local = max(min(pinfo['eff'], 100.0), 1e-6)
+                    tdh_local = max(pinfo['tdh'], 0.0)
+                    pump_bkw_i = (
+                        stn_data['rho'] * flow_total * 9.81 * tdh_local
+                    ) / (3600.0 * 1000.0 * (eff_local / 100.0))
+                    pump_bkw_total += pump_bkw_i
+                    pdata = pinfo.get('data', {})
+                    rated_rpm = pdata.get('DOL', stn_data['dol'])
+                    rpm_operating = pinfo.get('rpm', opt.get('rpm', 0))
+                    if pinfo.get('power_type') == 'Diesel':
+                        mech_eff = 0.98
+                    else:
+                        mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
+                    prime_kw_i = pump_bkw_i / mech_eff
+                    prime_kw_total += prime_kw_i
+                    if pinfo.get('power_type') == 'Diesel':
+                        mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
+                        if mode == 'manual':
+                            sfc_val = pdata.get('sfc', stn_data.get('sfc', 0.0))
+                        elif mode == 'iso':
+                            sfc_val = _compute_iso_sfc(
+                                pdata,
+                                rpm_operating,
+                                pump_bkw_i,
+                                pdata.get('DOL', stn_data['dol']),
+                                stn_data.get('elev', 0.0),
+                                Ambient_temp,
+                            )
+                        else:
+                            sfc_val = 0.0
+                        fuel_per_kWh = (sfc_val * 1.34102) / Fuel_density if sfc_val else 0.0
+                        cost_i = prime_kw_i * hours * fuel_per_kWh * Price_HSD
+                    else:
+                        tariffs = stn_data.get('tariffs') or []
+                        rate_default = stn_data.get('rate', 0.0)
+                        remaining = hours
+                        cost_i = 0.0
+                        current = dt.datetime.strptime(start_time, "%H:%M")
+                        while remaining > 0:
+                            applied = False
+                            for tr in tariffs:
+                                s = dt.datetime.strptime(tr.get('start'), "%H:%M")
+                                e = dt.datetime.strptime(tr.get('end'), "%H:%M")
+                                if e <= s:
+                                    e += dt.timedelta(days=1)
+                                if s <= current < e:
+                                    overlap = min(remaining, (e - current).total_seconds() / 3600.0)
+                                    cost_i += prime_kw_i * overlap * float(tr.get('rate', rate_default))
+                                    remaining -= overlap
+                                    current += dt.timedelta(hours=overlap)
+                                    applied = True
+                                    break
+                            if not applied:
+                                cost_i += prime_kw_i * remaining * rate_default
+                                break
+                    cost_i = max(cost_i, 0.0)
+                    pinfo['pump_bkw'] = pump_bkw_i
+                    pinfo['prime_kw'] = prime_kw_i
+                    pinfo['power_cost'] = cost_i
+                    power_cost += cost_i
+
+                pump_bkw = pump_bkw_total / opt['nop'] if opt['nop'] > 0 else 0.0
+                motor_kw = prime_kw_total / opt['nop'] if opt['nop'] > 0 else 0.0
 
                 # Filter candidate scenarios based on explicit loop-usage directives.
                 filtered_scenarios = []
@@ -2222,7 +1983,7 @@ def solve_pipeline(
                             length_loop_total = stn_data['loopline']['L']
                         # Effective drag reduction for the entire path based on the
                         # inherited mainline PPM
-                        eff_dra_main_tot = eff_dra_main
+                        eff_dra_main_tot = int(get_dr_for_ppm(stn_data['kv'], ppm_main)) if ppm_main > 0 else 0
                         # Carry-over drag reduction on the loop from the previous state
                         carry_prev = int(state.get('carry_loop_dra', 0))
                         # In bypass mode the loopline may still inject additional DRA.
@@ -2417,7 +2178,6 @@ def solve_pipeline(
                         f"min_rpm_{stn_data['name']}": stn_data['min_rpm'],
                         f"dol_{stn_data['name']}": stn_data['dol'],
                     }
-                    record[f"dra_profile_{stn_data['name']}"] = [tuple(seg) for seg in segment_profile]
                     if sc['flow_loop'] > 0:
                         record.update({
                             f"velocity_loop_{stn_data['name']}": sc['v_loop'],
@@ -2511,7 +2271,8 @@ def solve_pipeline(
                             'last_maop_kg': stn_data['maop_kgcm2'],
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
-                            'queue': copy.deepcopy(queue_after_main),
+                            'prev_ppm_main': ppm_main,
+                            'reach': reach_after,
                             'inj_ppm_main': inj_ppm_main,
                         }
 
@@ -2548,20 +2309,16 @@ def solve_pipeline(
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
 
-    final_queue = _clean_dra_queue(best_state.get('queue'))
-    pipeline_entries: list[dict] = []
-    for rec, stn in zip(best_state['records'], station_opts):
-        profile_key = f"dra_profile_{stn['name']}"
-        profile = rec.get(profile_key)
-        if isinstance(profile, list):
-            for length, ppm in profile:
-                pipeline_entries.append({
-                    'length_km': float(length),
-                    'dra_ppm': int(ppm),
-                })
-    pipeline_entries.extend(final_queue)
-    pipeline_queue = _merge_queue_entries(pipeline_entries)
-    result['linefill'] = _queue_to_linefill(pipeline_queue, line_diameter)
+    # Advance the linefill based on the selected origin injection.  The pumped
+    # volume is the flow entering the first segment multiplied by the run
+    # duration.  A single batch carrying the chosen ``dra_ppm`` is injected at
+    # the origin.
+    pumped_volume = segment_flows[0] * hours
+    origin_name = stations[0]['name'].strip().lower().replace(' ', '_') if stations else ''
+    inj_ppm = int(result.get(f"dra_ppm_{origin_name}", 0)) if origin_name else 0
+    schedule = [{'volume': pumped_volume, 'dra_ppm': inj_ppm}]
+    advance_linefill(linefill_state, schedule, pumped_volume)
+    result['linefill'] = linefill_state
 
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
     result.update({
@@ -2593,10 +2350,7 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
-    dra_front = _sum_positive_lengths(
-        [(entry['length_km'], entry.get('dra_ppm', 0)) for entry in pipeline_queue]
-    )
-    result['dra_front_km'] = dra_front
+    result['dra_front_km'] = best_state.get('reach', 0.0)
     result['error'] = False
     return result
 
@@ -2616,8 +2370,19 @@ def solve_pipeline_with_types(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     start_time: str = "00:00",
+    *,
+    pump_shear_rate: float = 1.0,
 ) -> dict:
-    """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+    """Enumerate pump type combinations at all stations and call ``solve_pipeline``.
+
+    ``pump_shear_rate`` is forwarded to :func:`solve_pipeline` and clamps to
+    the [0, 1] interval.
+    """
+
+    pump_shear_rate = _coerce_float(pump_shear_rate, 1.0)
+    if not np.isfinite(pump_shear_rate):
+        pump_shear_rate = 1.0
+    pump_shear_rate = min(1.0, max(0.0, pump_shear_rate))
 
     best_result = None
     best_cost = float('inf')
@@ -2686,6 +2451,7 @@ def solve_pipeline_with_types(
                     mop_kgcm2,
                     hours,
                     start_time,
+                    pump_shear_rate=pump_shear_rate,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                 )
@@ -2709,8 +2475,6 @@ def solve_pipeline_with_types(
             # Determine available counts for each type
             availA = stn['pump_types'].get('A', {}).get('available', 0)
             availB = stn['pump_types'].get('B', {}).get('available', 0)
-            station_min = int(stn.get('min_pumps', 0) or 0)
-            station_max = int(stn.get('max_pumps', 0) or (availA + availB))
             combos = generate_type_combinations(availA, availB)
             seen_active: set[tuple[int, int]] = set()
             for numA, numB in combos:
@@ -2721,12 +2485,7 @@ def solve_pipeline_with_types(
                 pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
-                        total_active = actA + actB
-                        if total_active <= 0:
-                            continue
-                        if total_active > station_max:
-                            continue
-                        if station_min and total_active < station_min:
+                        if actA + actB <= 0:
                             continue
                         active_key = (actA, actB)
                         if active_key in seen_active:
@@ -2785,8 +2544,8 @@ def solve_pipeline_with_types(
                             unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
-                        unit['max_pumps'] = total_active
-                        unit['min_pumps'] = total_active
+                        unit['max_pumps'] = actA + actB
+                        unit['min_pumps'] = actA + actB
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
         else:
             expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
