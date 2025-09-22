@@ -693,6 +693,139 @@ def _segment_hydraulics(
     return head_loss, v, Re, f
 
 
+def _segment_profile_hydraulics(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv_default: float,
+    dra_perc: float,
+    dra_length: float | None,
+    profile: list[dict[str, float]] | None,
+) -> tuple[float, float, float, float]:
+    """Evaluate segment hydraulics across ``profile`` slices when provided."""
+
+    if not profile:
+        return _segment_hydraulics(flow_m3h, L, d_inner, rough, kv_default, dra_perc, dra_length)
+
+    head_loss_total = 0.0
+    v_last = 0.0
+    Re_min = float("inf")
+    f_worst = 0.0
+
+    dra_remaining = None if dra_length is None else max(float(dra_length), 0.0)
+
+    for slice_data in profile:
+        length = float(slice_data.get("length_km", 0.0))
+        if length <= 1e-9:
+            continue
+        kv_local = float(slice_data.get("kv", kv_default)) if slice_data.get("kv") is not None else float(kv_default)
+        dra_len_local: float | None
+        if dra_remaining is None:
+            dra_len_local = dra_length
+        else:
+            dra_len_local = min(dra_remaining, length)
+        hl, v, Re, f = _segment_hydraulics(
+            flow_m3h,
+            length,
+            d_inner,
+            rough,
+            kv_local,
+            dra_perc,
+            dra_len_local,
+        )
+        head_loss_total += float(hl)
+        v_last = float(v)
+        Re_min = min(Re_min, float(Re))
+        f_worst = max(f_worst, float(f))
+        if dra_remaining is not None:
+            dra_remaining = max(dra_remaining - length, 0.0)
+
+    if Re_min == float("inf"):
+        Re_min = 0.0
+
+    return head_loss_total, v_last, Re_min, f_worst
+
+
+def _scale_profile(profile: list[dict[str, float]] | None, scale: float) -> list[dict[str, float]]:
+    """Return ``profile`` with lengths multiplied by ``scale`` (non-negative)."""
+
+    if not profile or scale <= 0:
+        return []
+    return [
+        {
+            "length_km": float(slice_data.get("length_km", 0.0)) * scale,
+            "kv": float(slice_data.get("kv", 0.0)),
+            "rho": float(slice_data.get("rho", 0.0)),
+        }
+        for slice_data in profile
+        if float(slice_data.get("length_km", 0.0)) > 1e-9
+    ]
+
+
+def _parallel_segment_hydraulics_profile(
+    flow_m3h: float,
+    main_props: tuple[float, float, float, float, float],
+    loop_props: tuple[float, float, float, float, float],
+    kv_default: float,
+    profile: list[dict[str, float]] | None,
+) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Parallel hydraulics solver aware of viscosity profiles."""
+
+    main_L, main_d_inner, main_rough, main_dra, main_dra_len = main_props
+    loop_L, loop_d_inner, loop_rough, loop_dra, loop_dra_len = loop_props
+
+    scale = loop_L / main_L if main_L > 0 else 0.0
+    loop_profile = _scale_profile(profile, scale) if profile else None
+
+    lo = 0.0
+    hi = float(max(flow_m3h, 0.0))
+    best = (
+        0.0,
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    )
+
+    for _ in range(25):
+        mid = (lo + hi) / 2.0
+        q_loop = mid
+        q_main = flow_m3h - q_loop
+        hl_main, v_main, Re_main, f_main = _segment_profile_hydraulics(
+            q_main,
+            main_L,
+            main_d_inner,
+            main_rough,
+            kv_default,
+            main_dra,
+            main_dra_len,
+            profile,
+        )
+        hl_loop, v_loop, Re_loop, f_loop = _segment_profile_hydraulics(
+            q_loop,
+            loop_L,
+            loop_d_inner,
+            loop_rough,
+            kv_default,
+            loop_dra,
+            loop_dra_len,
+            loop_profile,
+        )
+        diff = hl_main - hl_loop
+        best = (
+            hl_main,
+            (v_main, Re_main, f_main, q_main),
+            (v_loop, Re_loop, f_loop, q_loop),
+        )
+        if abs(diff) < 1e-6:
+            break
+        if diff > 0:
+            lo = mid
+        else:
+            hi = mid
+
+    return best
+
+
 @njit(cache=True, fastmath=True)
 def _parallel_segment_hydraulics(
     flow_m3h: float,
@@ -1338,6 +1471,7 @@ def solve_pipeline(
     hours: float = 24.0,
     start_time: str = "00:00",
     *,
+    segment_profiles: list[list[dict[str, float]]] | None = None,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
@@ -1400,6 +1534,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                segment_profiles=segment_profiles,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1456,6 +1591,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                segment_profiles=segment_profiles,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1665,6 +1801,7 @@ def solve_pipeline(
             rpm_step=rpm_step,
             dra_step=dra_step,
             narrow_ranges=ranges,
+            segment_profiles=segment_profiles,
         )
 
     # -----------------------------------------------------------------------
@@ -1931,12 +2068,43 @@ def solve_pipeline(
                 })
             opts.extend(non_pump_opts)
 
+        profile_data: list[dict[str, float]] | None = None
+        if segment_profiles and i - 1 < len(segment_profiles):
+            raw_profile = segment_profiles[i - 1] or []
+            cleaned: list[dict[str, float]] = []
+            for slice_data in raw_profile:
+                try:
+                    length_val = float(slice_data.get('length_km', 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if length_val <= 1e-9:
+                    continue
+                kv_val = float(slice_data.get('kv', kv)) if slice_data.get('kv') is not None else float(kv)
+                rho_val = float(slice_data.get('rho', rho)) if slice_data.get('rho') is not None else float(rho)
+                cleaned.append({'length_km': length_val, 'kv': kv_val, 'rho': rho_val})
+            if cleaned:
+                profile_data = cleaned
+
+        if profile_data:
+            total_len = sum(item['length_km'] for item in profile_data)
+            if total_len > 0:
+                kv_display = sum(item['kv'] * item['length_km'] for item in profile_data) / total_len
+                rho_display = sum(item['rho'] * item['length_km'] for item in profile_data) / total_len
+            else:
+                kv_display = float(kv)
+                rho_display = float(rho)
+        else:
+            kv_display = float(kv)
+            rho_display = float(rho)
+
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
             'idx': i - 1,
             'kv': kv,
+            'kv_display': kv_display,
             'rho': rho,
+            'rho_display': rho_display,
             'L': L,
             'd_inner': d_inner,
             'rough': rough,
@@ -1970,6 +2138,7 @@ def solve_pipeline(
             'sfc_mode': stn.get('sfc_mode', 'manual'),
             'engine_params': stn.get('engine_params', {}),
             'elev': float(stn.get('elev', 0.0)),
+            'profile': profile_data,
         })
         cum_dist += L
     # Cache the baseline downstream head requirement for each station using the
@@ -2091,7 +2260,7 @@ def solve_pipeline(
 
                 scenarios = []
                 # Base scenario: flow through mainline only
-                hl_single, v_single, Re_single, f_single = _segment_hydraulics(
+                hl_single, v_single, Re_single, f_single = _segment_profile_hydraulics(
                     flow_total,
                     stn_data['L'],
                     stn_data['d_inner'],
@@ -2099,6 +2268,7 @@ def solve_pipeline(
                     stn_data['kv'],
                     eff_dra_main,
                     dra_len_main,
+                    stn_data.get('profile'),
                 )
                 scenarios.append({
                     'head_loss': hl_single,
@@ -2120,20 +2290,41 @@ def solve_pipeline(
                     eff_dra_loop = opt['dra_loop']
                     dra_len_loop = loop['L'] if eff_dra_loop > 0 else 0.0
                     # Parallel scenario (main + loop split by equal head)
-                    hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
-                        flow_total,
-                        stn_data['L'],
-                        stn_data['d_inner'],
-                        stn_data['rough'],
-                        eff_dra_main,
-                        dra_len_main,
-                        loop['L'],
-                        loop['d_inner'],
-                        loop['rough'],
-                        eff_dra_loop,
-                        dra_len_loop,
-                        stn_data['kv'],
-                    )
+                    if stn_data.get('profile'):
+                        hl_par, main_stats, loop_stats = _parallel_segment_hydraulics_profile(
+                            flow_total,
+                            (
+                                stn_data['L'],
+                                stn_data['d_inner'],
+                                stn_data['rough'],
+                                eff_dra_main,
+                                dra_len_main,
+                            ),
+                            (
+                                loop['L'],
+                                loop['d_inner'],
+                                loop['rough'],
+                                eff_dra_loop,
+                                dra_len_loop,
+                            ),
+                            stn_data['kv'],
+                            stn_data.get('profile'),
+                        )
+                    else:
+                        hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
+                            flow_total,
+                            stn_data['L'],
+                            stn_data['d_inner'],
+                            stn_data['rough'],
+                            eff_dra_main,
+                            dra_len_main,
+                            loop['L'],
+                            loop['d_inner'],
+                            loop['rough'],
+                            eff_dra_loop,
+                            dra_len_loop,
+                            stn_data['kv'],
+                        )
                     v_m, Re_m, f_m, q_main = main_stats
                     v_l, Re_l, f_l, q_loop = loop_stats
                     # Parallel scenario without bypass
@@ -2170,7 +2361,8 @@ def solve_pipeline(
                     # Only include when diameters differ; otherwise the parallel
                     # scenario already captures equal pipes.
                     if abs(stn_data['d_inner'] - loop['d_inner']) > 1e-6:
-                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = _segment_hydraulics(
+                        loop_profile = _scale_profile(stn_data.get('profile'), loop['L'] / stn_data['L'] if stn_data['L'] > 0 else 0.0)
+                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = _segment_profile_hydraulics(
                             flow_total,
                             loop['L'],
                             loop['d_inner'],
@@ -2178,6 +2370,7 @@ def solve_pipeline(
                             stn_data['kv'],
                             eff_dra_loop,
                             dra_len_loop,
+                            loop_profile,
                         )
                         scenarios.append({
                             'head_loss': hl_loop,
@@ -2489,6 +2682,8 @@ def solve_pipeline(
                             sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']
                         ),
                         f"rho_{stn_data['name']}": stn_data['rho'],
+                        f"density_display_{stn_data['name']}": stn_data.get('rho_display', stn_data['rho']),
+                        f"viscosity_{stn_data['name']}": stn_data.get('kv_display', stn_data['kv']),
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
                         f"velocity_{stn_data['name']}": sc['v'],
@@ -2674,6 +2869,8 @@ def solve_pipeline(
     result[f"rh_kgcm2_{term_name}"] = head_to_kgcm2(residual, rho_term)
     result[f"sdh_kgcm2_{term_name}"] = 0.0
     result[f"rho_{term_name}"] = rho_term
+    result[f"density_display_{term_name}"] = rho_term
+    result[f"viscosity_{term_name}"] = KV_list[-1] if KV_list else 0.0
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
@@ -2697,6 +2894,8 @@ def solve_pipeline_with_types(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     start_time: str = "00:00",
+    *,
+    segment_profiles: list[list[dict[str, float]]] | None = None,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -2705,7 +2904,13 @@ def solve_pipeline_with_types(
     best_stations = None
     N = len(stations)
 
-    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
+    def expand_all(
+        pos: int,
+        stn_acc: list[dict],
+        kv_acc: list[float],
+        rho_acc: list[float],
+        profile_acc: list[list[dict[str, float]] | None],
+    ):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
             # When all stations have been expanded into individual pump units,
@@ -2767,6 +2972,7 @@ def solve_pipeline_with_types(
                     mop_kgcm2,
                     hours,
                     start_time,
+                    segment_profiles=[p or [] for p in profile_acc],
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                 )
@@ -2785,6 +2991,7 @@ def solve_pipeline_with_types(
         stn = stations[pos]
         kv = KV_list[pos]
         rho = rho_list[pos]
+        profile = segment_profiles[pos] if segment_profiles and pos < len(segment_profiles) else []
 
         if stn.get('pump_types'):
             # Determine available counts for each type
@@ -2875,11 +3082,11 @@ def solve_pipeline_with_types(
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                         unit['max_pumps'] = actA + actB
                         unit['min_pumps'] = actA + actB
-                        expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
+                expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
         else:
-            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
+            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho], profile_acc + [profile])
 
-    expand_all(0, [], [], [])
+    expand_all(0, [], [], [], [])
 
     if best_result is None:
         return {
