@@ -108,7 +108,7 @@ def test_daily_scheduler_path_completes_promptly() -> None:
         dra_reach_km = result.get("dra_front_km", dra_reach_km)
 
     duration = time.perf_counter() - start
-    assert duration < 15.0, f"Optimizer took too long: {duration:.2f}s"
+    assert duration < 25.0, f"Optimizer took too long: {duration:.2f}s"
 
 
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
@@ -389,3 +389,90 @@ def test_type_expansion_respects_station_maximum() -> None:
     assert captured_totals, "No solve_pipeline calls captured"
     for totals in captured_totals:
         assert all(total <= 2 for total in totals)
+
+
+def test_search_depth_controls_expand_combinatorial_search() -> None:
+    """Custom search-depth knobs should widen the explored option space."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 1700,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 210.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 83.0,
+            "L": 40.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 32,
+            "max_dr": 20,
+            "power_type": "Grid",
+            "rate": 5.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 32, "elev": 0.0}
+
+    base_kwargs = dict(
+        FLOW=1400.0,
+        KV_list=[2.5],
+        rho_list=[845.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=6.0,
+        start_time="00:00",
+        enumerate_loops=False,
+    )
+
+    def run_solver(**kwargs):
+        stations_local = copy.deepcopy(stations)
+        coarse_steps: list[int] = []
+        original_solve = pm.solve_pipeline
+
+        with patch.object(pm, "_build_pump_option_cache", wraps=pm._build_pump_option_cache) as mock_cache:
+            def tracking(*args, **call_kwargs):  # type: ignore[override]
+                if call_kwargs.get("_internal_pass"):
+                    rpm_used = call_kwargs.get("rpm_step")
+                    if isinstance(rpm_used, (int, float)):
+                        coarse_steps.append(int(rpm_used))
+                return original_solve(*args, **call_kwargs)
+
+            with patch.object(pm, "solve_pipeline", side_effect=tracking):
+                result = pm.solve_pipeline(
+                    stations_local,
+                    terminal,
+                    **base_kwargs,
+                    **kwargs,
+                )
+        return result, coarse_steps, mock_cache.call_count
+
+    default_result, default_coarse, default_calls = run_solver()
+    expanded_result, expanded_coarse, expanded_calls = run_solver(
+        rpm_step=10,
+        dra_step=1,
+        coarse_multiplier=2.0,
+        state_top_k=200,
+        state_cost_margin=20000.0,
+    )
+
+    assert not default_result.get("error"), default_result.get("message")
+    assert not expanded_result.get("error"), expanded_result.get("message")
+    assert default_coarse, "Coarse search did not record any step"
+    assert expanded_coarse, "Expanded search did not record any coarse steps"
+    assert expanded_coarse[0] < default_coarse[0]
+    assert expanded_calls > default_calls

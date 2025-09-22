@@ -337,6 +337,10 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 RPM_STEP = 25
 DRA_STEP = 2
 MAX_DRA_KM = 250.0
+# Default scaling applied to the coarse search step sizes.  This multiplier
+# mirrors the legacy behaviour where the coarse pass used five times the
+# refinement step.
+COARSE_MULTIPLIER = 5.0
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -1563,6 +1567,9 @@ def solve_pipeline(
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
+    coarse_multiplier: float = COARSE_MULTIPLIER,
+    state_top_k: int = STATE_TOP_K,
+    state_cost_margin: float = STATE_COST_MARGIN,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1595,6 +1602,13 @@ def solve_pipeline(
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
+
+    Advanced callers can tune the search breadth using ``rpm_step`` and
+    ``dra_step`` for the refinement pass and ``coarse_multiplier`` to scale
+    the coarse pass step sizes.  Increasing ``state_top_k`` or
+    ``state_cost_margin`` relaxes dynamic-programming pruning so more near-
+    optimal states are retained for subsequent stations.  When these
+    parameters are omitted the legacy defaults are used.
     """
 
     try:
@@ -1602,6 +1616,41 @@ def solve_pipeline(
     except (TypeError, ValueError):
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
+
+    try:
+        rpm_step = int(rpm_step)
+    except (TypeError, ValueError):
+        rpm_step = RPM_STEP
+    if rpm_step <= 0:
+        rpm_step = RPM_STEP
+
+    try:
+        dra_step = int(dra_step)
+    except (TypeError, ValueError):
+        dra_step = DRA_STEP
+    if dra_step <= 0:
+        dra_step = DRA_STEP
+
+    try:
+        coarse_multiplier = float(coarse_multiplier)
+    except (TypeError, ValueError):
+        coarse_multiplier = COARSE_MULTIPLIER
+    if coarse_multiplier <= 0:
+        coarse_multiplier = COARSE_MULTIPLIER
+
+    try:
+        state_top_k = int(state_top_k)
+    except (TypeError, ValueError):
+        state_top_k = STATE_TOP_K
+    if state_top_k <= 0:
+        state_top_k = STATE_TOP_K
+
+    try:
+        state_cost_margin = float(state_cost_margin)
+    except (TypeError, ValueError):
+        state_cost_margin = STATE_COST_MARGIN
+    if state_cost_margin < 0:
+        state_cost_margin = 0.0
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -1635,6 +1684,9 @@ def solve_pipeline(
                 enumerate_loops=False,
                 rpm_step=rpm_step,
                 dra_step=dra_step,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=state_top_k,
+                state_cost_margin=state_cost_margin,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -1692,6 +1744,9 @@ def solve_pipeline(
                 enumerate_loops=False,
                 rpm_step=rpm_step,
                 dra_step=dra_step,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=state_top_k,
+                state_cost_margin=state_cost_margin,
             )
             if res.get('error'):
                 continue
@@ -1759,8 +1814,18 @@ def solve_pipeline(
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
     if not _internal_pass:
-        coarse_rpm_step = max(rpm_step * 5, rpm_step)
-        coarse_dra_step = max(dra_step * 5, dra_step)
+        coarse_scale = coarse_multiplier
+        coarse_rpm_step = int(round(rpm_step * coarse_scale)) if rpm_step > 0 else int(round(coarse_scale))
+        if coarse_rpm_step <= 0:
+            coarse_rpm_step = rpm_step if rpm_step > 0 else 1
+        if coarse_scale >= 1.0 and rpm_step > 0:
+            coarse_rpm_step = max(coarse_rpm_step, rpm_step)
+
+        coarse_dra_step = int(round(dra_step * coarse_scale)) if dra_step > 0 else int(round(coarse_scale))
+        if coarse_dra_step <= 0:
+            coarse_dra_step = dra_step if dra_step > 0 else 1
+        if coarse_scale >= 1.0 and dra_step > 0:
+            coarse_dra_step = max(coarse_dra_step, dra_step)
         coarse_res = solve_pipeline(
             stations,
             terminal,
@@ -1782,6 +1847,9 @@ def solve_pipeline(
             _internal_pass=True,
             rpm_step=coarse_rpm_step,
             dra_step=coarse_dra_step,
+            coarse_multiplier=coarse_multiplier,
+            state_top_k=state_top_k,
+            state_cost_margin=state_cost_margin,
         )
         if coarse_res.get("error"):
             return coarse_res
@@ -1899,6 +1967,9 @@ def solve_pipeline(
             rpm_step=rpm_step,
             dra_step=dra_step,
             narrow_ranges=ranges,
+            coarse_multiplier=coarse_multiplier,
+            state_top_k=state_top_k,
+            state_cost_margin=state_cost_margin,
         )
 
     # -----------------------------------------------------------------------
@@ -2924,10 +2995,10 @@ def solve_pipeline(
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
         # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-        threshold = best_cost_station + STATE_COST_MARGIN
+        threshold = best_cost_station + state_cost_margin
         pruned: dict[int, dict] = {}
         for idx, (residual_key, data) in enumerate(items):
-            if idx < STATE_TOP_K or data['cost'] <= threshold:
+            if idx < state_top_k or data['cost'] <= threshold:
                 pruned[residual_key] = data
         states = pruned
 
@@ -3043,6 +3114,11 @@ def solve_pipeline_with_types(
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
+    rpm_step: int = RPM_STEP,
+    dra_step: int = DRA_STEP,
+    coarse_multiplier: float = COARSE_MULTIPLIER,
+    state_top_k: int = STATE_TOP_K,
+    state_cost_margin: float = STATE_COST_MARGIN,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -3122,6 +3198,11 @@ def solve_pipeline_with_types(
                     pump_shear_rate=pump_shear_rate,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
+                    rpm_step=rpm_step,
+                    dra_step=dra_step,
+                    coarse_multiplier=coarse_multiplier,
+                    state_top_k=state_top_k,
+                    state_cost_margin=state_cost_margin,
                 )
                 if result.get("error"):
                     continue
