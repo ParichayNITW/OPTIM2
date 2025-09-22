@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import math
 from collections.abc import Mapping
 from itertools import product
 
@@ -59,6 +60,57 @@ def _coerce_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _km_from_volume(volume_m3: float, diameter_m: float) -> float:
+    """Return the pipeline length in kilometres displaced by ``volume_m3``.
+
+    The conversion assumes a circular pipe with inner diameter ``diameter_m``.
+    Any non-finite inputs result in a zero-length response.  Negative volumes
+    are permitted and propagate through the calculation, allowing callers to
+    represent reverse flow using a negative length.
+    """
+
+    try:
+        volume = float(volume_m3)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(volume) or math.isinf(volume):
+        return 0.0
+    try:
+        diameter = float(diameter_m)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(diameter) or diameter <= 0.0:
+        return 0.0
+    area = math.pi * (diameter ** 2) / 4.0
+    if area <= 0.0:
+        return 0.0
+    return volume / area / 1000.0
+
+
+def _volume_from_km(length_km: float, diameter_m: float) -> float:
+    """Return the pipeline volume in m³ represented by ``length_km``.
+
+    The relationship is the inverse of :func:`_km_from_volume`.
+    """
+
+    try:
+        length = float(length_km)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(length) or math.isinf(length):
+        return 0.0
+    try:
+        diameter = float(diameter_m)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(diameter) or diameter <= 0.0:
+        return 0.0
+    area = math.pi * (diameter ** 2) / 4.0
+    if area <= 0.0:
+        return 0.0
+    return length * area * 1000.0
 
 
 def _extract_rpm(
