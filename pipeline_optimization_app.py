@@ -2115,9 +2115,14 @@ if not auto_batch:
         def kv_rho_from_vol(vol_df_now):
             return map_vol_linefill_to_segments(vol_df_now, stations_base)
 
-        hours = [7] if is_hourly else [7, 11, 15, 19, 23, 27]
-        sub_steps = 1 if is_hourly else 4
-        spinner_msg = "Running 1 optimization (1h)..." if is_hourly else "Running 6 optimizations (07:00 to 03:00)..."
+        hours = [7] if is_hourly else list(range(24))
+        sub_steps = 1
+        if is_hourly:
+            spinner_msg = "Running 1 optimization (1h)..."
+        else:
+            spinner_msg = (
+                f"Running {len(hours)} optimizations ({hours[0]:02d}:00 to {hours[-1]:02d}:00)..."
+            )
         reports = []
         linefill_snaps = []
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
