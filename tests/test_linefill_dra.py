@@ -201,7 +201,8 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
     assert queue_after
     assert queue_after[0]["dra_ppm"] == expected_ppm
     assert queue_after[0]["length_km"] == pytest.approx(
-        pumped_length - segment_length, rel=1e-6
+        pumped_length,
+        rel=1e-6,
     )
     assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
     assert queue_after[1]["length_km"] == pytest.approx(
@@ -280,9 +281,9 @@ def test_running_pump_shears_trimmed_slug() -> None:
     assert dra_segments[0][1] == expected_ppm
     assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[0]["dra_ppm"] == expected_ppm
     assert queue_after[0]["length_km"] == pytest.approx(
-        max(initial_queue[0]["length_km"] - pumped_length, 0.0),
+        pumped_length,
         rel=1e-6,
     )
 
@@ -443,8 +444,13 @@ def test_full_shear_zeroes_trimmed_slug() -> None:
 
     assert not dra_segments
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[0]["dra_ppm"] == 0
     assert queue_after[0]["length_km"] == pytest.approx(
+        pumped_length,
+        rel=1e-6,
+    )
+    assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_after[1]["length_km"] == pytest.approx(
         initial_queue[0]["length_km"] - pumped_length,
         rel=1e-6,
     )
@@ -476,7 +482,7 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     assert queue_after
     assert queue_after[0]["dra_ppm"] == 0
     assert queue_after[0]["length_km"] == pytest.approx(
-        pumped_length - segment_length,
+        pumped_length,
         rel=1e-6,
     )
     assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
@@ -513,7 +519,7 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
         assert queue_after
         assert queue_after[0]["dra_ppm"] == 0
         assert queue_after[0]["length_km"] == pytest.approx(
-            pumped_length - segment_length,
+            pumped_length,
             rel=1e-6,
         )
 
@@ -561,8 +567,9 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
     assert dra_segments[0][0] == pytest.approx(1.0, rel=1e-6)
     assert dra_segments[0][1] == initial_queue[0]["dra_ppm"]
     assert queue_final
-    assert queue_final[0]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+    assert queue_final[0]["dra_ppm"] == 0
     assert queue_final[0]["length_km"] == pytest.approx(
-        initial_queue[0]["length_km"] - pumped_length - 1.0,
+        zero_length,
         rel=1e-6,
     )
+    assert queue_final[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
