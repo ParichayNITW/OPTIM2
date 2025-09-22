@@ -19,7 +19,6 @@ except Exception:  # pragma: no cover - numba may be unavailable
         return decorator
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
-from linefill_utils import advance_linefill
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -439,6 +438,7 @@ def _update_mainline_dra(
     hours: float,
     *,
     pump_running: bool = False,
+    pump_shear_rate: float = 0.0,
     dra_shear_factor: float = 0.0,
     shear_injection: bool = False,
     is_origin: bool = False,
@@ -511,7 +511,12 @@ def _update_mainline_dra(
     else:
         pumped_length, incoming_slices, queue_remainder = precomputed
 
-    shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
+    local_shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
+    global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0))
+    if pump_running:
+        shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
+    else:
+        shear = local_shear
     kv = float(stn_data.get("kv", 3.0) or 3.0)
     injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
     apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
@@ -1337,6 +1342,7 @@ def solve_pipeline(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     start_time: str = "00:00",
+    pump_shear_rate: float = 0.0,
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
@@ -1353,6 +1359,11 @@ def solve_pipeline(
     leading batch's concentration is used as the upstream DRA level for the
     first station.  The function returns the updated linefill after pumping
     under the key ``"linefill"``.
+
+    ``pump_shear_rate`` applies a uniform fractional attenuation to any DRA
+    slug passing through an active pump.  The value is clamped to the
+    interval ``[0, 1]`` and combines with per-station shear factors when
+    present.
 
     The solver operates in two passes.  A coarse search first evaluates
     the pipeline using large step sizes for pump speed and drag-reduction
@@ -1372,6 +1383,12 @@ def solve_pipeline(
     2=bypass.  By default the function behaves like the original
     implementation with internal loop enumeration.
     """
+
+    try:
+        pump_shear_rate = float(pump_shear_rate)
+    except (TypeError, ValueError):
+        pump_shear_rate = 0.0
+    pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -1400,6 +1417,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                pump_shear_rate=pump_shear_rate,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1456,6 +1474,7 @@ def solve_pipeline(
                 mop_kgcm2,
                 hours,
                 start_time,
+                pump_shear_rate=pump_shear_rate,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -1544,6 +1563,7 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
             start_time,
+            pump_shear_rate=pump_shear_rate,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -1659,6 +1679,7 @@ def solve_pipeline(
             mop_kgcm2,
             hours,
             start_time,
+            pump_shear_rate=pump_shear_rate,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -1697,6 +1718,7 @@ def solve_pipeline(
     station_opts = []
     origin_enforced = False
     cum_dist = 0.0
+    origin_diameter = 0.0
     for i, stn in enumerate(stations, start=1):
         name = stn['name'].strip().lower().replace(' ', '_')
         flow = segment_flows[i]
@@ -1721,6 +1743,13 @@ def solve_pipeline(
             d_inner = stn.get('d', 0.7)
             outer_d = d_inner
             thickness = stn.get('t', default_t)
+        if i == 1:
+            try:
+                origin_diameter = float(d_inner)
+            except (TypeError, ValueError):
+                origin_diameter = 0.0
+            if origin_diameter < 0:
+                origin_diameter = 0.0
         rough = stn.get('rough', default_e)
 
         # Use a default SMYS when the station provides ``None`` or omits the
@@ -2001,16 +2030,64 @@ def solve_pipeline(
     #
     # Represent the carried mainline DRA as a queue of length/ppm slices so the
     # slug can be advanced accurately from station to station.
-    initial_queue: list[tuple[float, int]] = []
-    initial_reach = max(float(dra_reach_km), 0.0)
-    if initial_reach > 0:
-        initial_ppm = 0
-        if linefill_state:
+
+    def _linefill_to_queue(entries: list[dict], diameter: float) -> list[tuple[float, float]]:
+        queue_entries: list[tuple[float, float]] = []
+        if not entries:
+            return queue_entries
+        for batch in entries:
             try:
-                initial_ppm = int(linefill_state[0].get('dra_ppm', 0) or 0)
+                length_val = float(batch.get('length_km', 0.0) or 0.0)
             except Exception:
-                initial_ppm = 0
-        initial_queue.append((initial_reach, initial_ppm))
+                length_val = 0.0
+            if length_val <= 0:
+                try:
+                    vol_val = float(batch.get('volume', 0.0) or 0.0)
+                except Exception:
+                    vol_val = 0.0
+                if vol_val > 0 and diameter > 0:
+                    length_val = _km_from_volume(vol_val, diameter)
+            if length_val <= 0:
+                continue
+            try:
+                ppm_val = float(batch.get('dra_ppm', 0.0) or 0.0)
+            except Exception:
+                ppm_val = 0.0
+            if queue_entries and abs(queue_entries[-1][1] - ppm_val) <= 1e-9:
+                prev_len, prev_ppm = queue_entries[-1]
+                queue_entries[-1] = (prev_len + length_val, prev_ppm)
+            else:
+                queue_entries.append((length_val, ppm_val))
+        return queue_entries
+
+    initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
+    initial_reach = max(float(dra_reach_km), 0.0)
+    if not initial_queue_entries and initial_reach > 0:
+        initial_ppm = 0.0
+        if linefill_state:
+            for batch in linefill_state:
+                try:
+                    ppm_candidate = float(batch.get('dra_ppm', 0.0) or 0.0)
+                except Exception:
+                    ppm_candidate = 0.0
+                if ppm_candidate > 0:
+                    initial_ppm = ppm_candidate
+                    break
+            else:
+                try:
+                    initial_ppm = float(linefill_state[0].get('dra_ppm', 0.0) or 0.0)
+                except Exception:
+                    initial_ppm = 0.0
+        initial_queue_entries.append((initial_reach, initial_ppm))
+
+    initial_queue = tuple(
+        (
+            float(length),
+            float(ppm_val),
+        )
+        for length, ppm_val in initial_queue_entries
+        if float(length) > 0
+    )
 
     states: dict[int, dict] = {
         init_residual: {
@@ -2021,8 +2098,7 @@ def solve_pipeline(
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
             'carry_loop_dra': 0,
-            'dra_queue': tuple(initial_queue),
-            'reach': sum(length for length, ppm in initial_queue if int(ppm) > 0),
+            'dra_queue': initial_queue,
             'inj_ppm_main': 0,
         }
     }
@@ -2062,6 +2138,7 @@ def solve_pipeline(
                     flow_total,
                     hours,
                     pump_running=pump_running,
+                    pump_shear_rate=pump_shear_rate,
                     dra_shear_factor=stn_data.get('dra_shear_factor', 0.0),
                     shear_injection=bool(stn_data.get('shear_injection', False)),
                     is_origin=stn_data['idx'] == 0,
@@ -2087,8 +2164,6 @@ def solve_pipeline(
                 else:
                     eff_dra_main = 0.0
                     dra_len_main = 0.0
-                reach_after = sum(length for length, ppm in queue_after if int(ppm) > 0)
-
                 scenarios = []
                 # Base scenario: flow through mainline only
                 hl_single, v_single, Re_single, f_single = _segment_hydraulics(
@@ -2573,7 +2648,7 @@ def solve_pipeline(
                     # Accumulate cost and update dynamic state.  When comparing states
                     # with the same residual bucket, prefer the one with lower cost
                     # or, when costs tie, the one with higher residual.  Carry
-                    # forward the loop DRA carry value and the updated reach.
+                    # forward the loop DRA carry value and the updated downstream queue.
                     new_cost = state['cost'] + total_cost
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
@@ -2599,7 +2674,6 @@ def solve_pipeline(
                             'flow': flow_next,
                             'carry_loop_dra': new_carry,
                             'dra_queue': queue_after,
-                            'reach': reach_after,
                             'inj_ppm_main': inj_ppm_main,
                         }
 
@@ -2636,16 +2710,45 @@ def solve_pipeline(
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
 
-    # Advance the linefill based on the selected origin injection.  The pumped
-    # volume is the flow entering the first segment multiplied by the run
-    # duration.  A single batch carrying the chosen ``dra_ppm`` is injected at
-    # the origin.
-    pumped_volume = segment_flows[0] * hours
-    origin_name = stations[0]['name'].strip().lower().replace(' ', '_') if stations else ''
-    inj_ppm = int(result.get(f"dra_ppm_{origin_name}", 0)) if origin_name else 0
-    schedule = [{'volume': pumped_volume, 'dra_ppm': inj_ppm}]
-    advance_linefill(linefill_state, schedule, pumped_volume)
-    result['linefill'] = linefill_state
+    queue_final = [
+        (
+            float(length),
+            float(ppm),
+        )
+        for length, ppm in best_state.get('dra_queue', ())
+        if float(length) > 0
+    ]
+
+    def _queue_to_linefill_entries(
+        queue_entries: list[tuple[float, float]],
+        diameter: float,
+    ) -> list[dict]:
+        converted: list[dict] = []
+        for length_val, ppm_val in queue_entries:
+            length_km = float(length_val)
+            if length_km <= 0:
+                continue
+            ppm_float = float(ppm_val)
+            ppm_int = int(round(ppm_float)) if ppm_float > 0 else 0
+            entry = {
+                'length_km': length_km,
+                'dra_ppm': ppm_int,
+            }
+            if diameter > 0:
+                entry['volume'] = _volume_from_km(length_km, diameter)
+            else:
+                entry['volume'] = 0.0
+            converted.append(entry)
+        return converted
+
+    dra_segments_result = [
+        {'length_km': length, 'dra_ppm': int(round(ppm)) if ppm > 0 else 0}
+        for length, ppm in queue_final
+    ]
+    result['dra_segments'] = dra_segments_result
+
+    linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
+    result['linefill'] = linefill_from_queue
 
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
     result.update({
@@ -2677,7 +2780,7 @@ def solve_pipeline(
     result[f"maop_{term_name}"] = last_maop_head
     result[f"maop_kgcm2_{term_name}"] = last_maop_kg
     result['total_cost'] = total_cost
-    result['dra_front_km'] = best_state.get('reach', 0.0)
+    result['dra_front_km'] = sum(length for length, ppm in queue_final if ppm > 0)
     result['error'] = False
     return result
 
@@ -2697,8 +2800,15 @@ def solve_pipeline_with_types(
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     start_time: str = "00:00",
+    pump_shear_rate: float = 0.0,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
+
+    try:
+        pump_shear_rate = float(pump_shear_rate)
+    except (TypeError, ValueError):
+        pump_shear_rate = 0.0
+    pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     best_result = None
     best_cost = float('inf')
@@ -2767,6 +2877,7 @@ def solve_pipeline_with_types(
                     mop_kgcm2,
                     hours,
                     start_time,
+                    pump_shear_rate=pump_shear_rate,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                 )
