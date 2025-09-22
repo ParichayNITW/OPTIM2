@@ -362,6 +362,109 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return vals
+
+
+def _build_baseline_narrow_ranges(
+    stations: list[Mapping[str, object]],
+    dra_step: int,
+) -> list[dict[int, dict[str, tuple[int, int]]]]:
+    """Return ``narrow_ranges`` enforcing baseline operating scenarios.
+
+    The helper constructs an all-stations baseline where every pump runs at its
+    minimum permissible RPM with zero drag reduction, along with per-station
+    variants where exactly one station injects the smallest positive DRA while
+    all others remain at zero.  The returned ranges clamp DRA on the loopline to
+    zero so that the scenarios mirror the hydraulic feasibility checks performed
+    by legacy tools.
+    """
+
+    try:
+        dra_step_int = int(dra_step)
+    except (TypeError, ValueError):
+        dra_step_int = DRA_STEP
+    if dra_step_int <= 0:
+        dra_step_int = DRA_STEP
+    min_positive_dra = max(1, dra_step_int)
+
+    def _entry_for_station(
+        stn: Mapping[str, object],
+        target_dra: int,
+    ) -> dict[str, tuple[int, int]] | None:
+        entry: dict[str, tuple[int, int]] = {}
+        is_pump = bool(stn.get('is_pump', False))
+        rpm_target = 0
+        if is_pump:
+            st_rpm_min = int(_station_min_rpm(stn))
+            st_rpm_max = int(_station_max_rpm(stn))
+            if st_rpm_max <= 0 and st_rpm_min > 0:
+                st_rpm_max = st_rpm_min
+            if st_rpm_min <= 0 < st_rpm_max:
+                st_rpm_min = st_rpm_max
+            rpm_target = st_rpm_min if st_rpm_min != 0 else st_rpm_max
+            entry['rpm'] = (rpm_target, rpm_target)
+
+            pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
+            combo_source: Mapping[str, float] | None = None
+            if isinstance(stn.get('active_combo'), Mapping):
+                combo_source = stn['active_combo']  # type: ignore[index]
+            elif isinstance(stn.get('pump_combo'), Mapping):
+                combo_source = stn['pump_combo']  # type: ignore[index]
+            elif isinstance(stn.get('combo'), Mapping):
+                combo_source = stn['combo']  # type: ignore[index]
+            if pump_types_data and combo_source:
+                for ptype, count in combo_source.items():
+                    if not isinstance(count, (int, float)) or count <= 0:
+                        continue
+                    pdata = pump_types_data.get(ptype, {})
+                    p_default = _station_min_rpm(stn, ptype=ptype, default=rpm_target)
+                    p_rpm_min = int(
+                        _extract_rpm(
+                            pdata.get('MinRPM'),
+                            default=p_default,
+                            prefer='min',
+                        )
+                    )
+                    entry[f'rpm_{ptype}'] = (p_rpm_min, p_rpm_min)
+
+        max_dr_main = int(stn.get('max_dr', 0))
+        clamped_target = max(0, int(target_dra))
+        clamped_target = min(max_dr_main, clamped_target)
+        if target_dra > 0 and clamped_target <= 0:
+            return None
+        entry['dra_main'] = (clamped_target, clamped_target)
+
+        loop = stn.get('loopline') or {}
+        if loop:
+            entry['dra_loop'] = (0, 0)
+        return entry
+
+    baseline_cases: list[dict[int, dict[str, tuple[int, int]]]] = []
+
+    zero_case: dict[int, dict[str, tuple[int, int]]] = {}
+    for idx, stn in enumerate(stations):
+        entry = _entry_for_station(stn, 0)
+        if entry is not None and entry:
+            zero_case[idx] = entry
+    if zero_case:
+        baseline_cases.append(zero_case)
+
+    for idx, stn in enumerate(stations):
+        positive_case: dict[int, dict[str, tuple[int, int]]] = {}
+        has_positive = False
+        for jdx, other in enumerate(stations):
+            target = min_positive_dra if jdx == idx else 0
+            entry = _entry_for_station(other, target)
+            if entry is None:
+                continue
+            positive_case[jdx] = entry
+            if jdx == idx:
+                dra_bounds = entry.get('dra_main')
+                if dra_bounds and dra_bounds[0] > 0:
+                    has_positive = True
+        if positive_case and has_positive:
+            baseline_cases.append(positive_case)
+
+    return baseline_cases
 _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
@@ -1945,7 +2048,7 @@ def solve_pipeline(
                 dmin = max(0, coarse_dr_main - dra_step)
                 dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 ranges[idx] = {"dra_main": (dmin, dmax)}
-        return solve_pipeline(
+        refine_result = solve_pipeline(
             stations,
             terminal,
             FLOW,
@@ -1971,6 +2074,54 @@ def solve_pipeline(
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
         )
+
+        candidates: list[dict] = []
+        if not refine_result.get('error'):
+            candidates.append(refine_result)
+
+        baseline_ranges = _build_baseline_narrow_ranges(stations, dra_step)
+        for base_range in baseline_ranges:
+            baseline_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=True,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=base_range,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=state_top_k,
+                state_cost_margin=state_cost_margin,
+            )
+            if not baseline_result.get('error'):
+                candidates.append(baseline_result)
+
+        if candidates:
+            term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
+            term_req = float(terminal.get('min_residual', 0) or 0.0)
+
+            def _result_key(res: Mapping[str, object]) -> tuple[float, float]:
+                total_cost = float(res.get('total_cost', math.inf))
+                residual_val = float(res.get(f'residual_head_{term_name}', res.get('residual', term_req)))
+                return (total_cost, residual_val - term_req)
+
+            return min(candidates, key=_result_key)
+
+        return refine_result
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
