@@ -1584,9 +1584,9 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
         st.dataframe(df_pump.style.format(fmt), width='stretch', hide_index=True)
     return True
 
-# Persisted DRA lock from 07:00 run
+# Persisted DRA lock from the reference hourly run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
-    """Freeze per-station DRA (as %DR) based on ppm chosen at 07:00 for each station.
+    """Freeze per-station DRA (as %DR) based on ppm chosen at the reference hour for each station.
 
     Uses inverse interpolation to compute %DR that corresponds to the chosen PPM at the station's viscosity.
     """
@@ -2117,9 +2117,18 @@ if not auto_batch:
         def kv_rho_from_vol(vol_df_now):
             return map_vol_linefill_to_segments(vol_df_now, stations_base)
 
-        hours = [7] if is_hourly else [7, 11, 15, 19, 23, 27]
-        sub_steps = 1 if is_hourly else 4
-        spinner_msg = "Running 1 optimization (1h)..." if is_hourly else "Running 6 optimizations (07:00 to 03:00)..."
+        if is_hourly:
+            hours = [7]
+        else:
+            hours = list(range(24))
+        sub_steps = 1
+        total_runs = len(hours) * sub_steps if hours else 0
+        if is_hourly:
+            spinner_msg = "Running 1 optimization (1h)..."
+        else:
+            first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+            last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
+            spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         reports = []
         linefill_snaps = []
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
