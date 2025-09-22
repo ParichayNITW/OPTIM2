@@ -436,12 +436,149 @@ RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
 
-# Limit the number of dynamic-programming states carried forward after
-# each station.  ``STATE_TOP_K`` bounds the total states retained while
-# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
-# this many currency units of the best state for the current station.
+# Baseline heuristics for bounding the dynamic-programming state space.  The
+# solver derives adaptive limits from these constants by scaling them with the
+# number of pump stations and loop-enabled segments.  Callers can still supply
+# explicit limits; ``None`` enables the adaptive defaults.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
+STATE_TOP_K_PER_PUMP = 8
+STATE_TOP_K_PER_LOOP = 4
+STATE_COST_MARGIN_PER_PUMP = 2000.0
+STATE_COST_MARGIN_PER_LOOP = 2500.0
+
+
+def _station_combo_signature(stn: Mapping[str, object]) -> tuple[tuple[str, int], ...]:
+    """Return a stable representation of the station's pump-type mix."""
+
+    combo_source = (
+        stn.get('active_combo')
+        or stn.get('combo')
+        or stn.get('pump_combo')
+    )
+    signature: list[tuple[str, int]] = []
+    if isinstance(combo_source, Mapping):
+        for ptype, count in combo_source.items():
+            try:
+                count_int = int(round(float(count)))
+            except (TypeError, ValueError):
+                continue
+            if count_int <= 0:
+                continue
+            signature.append((str(ptype), count_int))
+    return tuple(sorted(signature))
+
+
+def _estimate_station_configurations(stn: Mapping[str, object]) -> int:
+    """Estimate how many unique pump/loop configurations a station offers."""
+
+    loop_modes = 1 + (3 if stn.get('loopline') else 0)
+    if not stn.get('is_pump', False):
+        return loop_modes
+    try:
+        min_p = int(stn.get('min_pumps', 0))
+    except (TypeError, ValueError):
+        min_p = 0
+    try:
+        max_p = int(stn.get('max_pumps', min_p))
+    except (TypeError, ValueError):
+        max_p = min_p
+    if max_p < min_p:
+        min_p, max_p = max_p, min_p
+    pump_choices = max(1, max_p - min_p + 1)
+    return max(1, pump_choices * loop_modes)
+
+
+def _resolve_state_limits(
+    stations: list[Mapping[str, object]],
+    *,
+    requested_top_k: int | None,
+    requested_margin: float | None,
+) -> tuple[int, float]:
+    """Return adaptive pruning thresholds for the dynamic-programming search."""
+
+    pump_count = 0
+    loop_count = 0
+    config_estimate = 0
+    for stn in stations:
+        if stn.get('loopline'):
+            loop_count += 1
+        if stn.get('is_pump', False):
+            pump_count += 1
+            config_estimate += _estimate_station_configurations(stn)
+    if config_estimate <= 0:
+        config_estimate = 1
+
+    base_top_k = STATE_TOP_K
+    if pump_count > 0:
+        base_top_k += STATE_TOP_K_PER_PUMP * max(0, pump_count - 1)
+    if loop_count > 0:
+        base_top_k += STATE_TOP_K_PER_LOOP * loop_count
+    base_top_k = max(base_top_k, config_estimate)
+
+    if requested_top_k is None:
+        top_k_val = base_top_k
+    else:
+        try:
+            top_k_val = int(requested_top_k)
+        except (TypeError, ValueError):
+            top_k_val = base_top_k
+        if top_k_val <= 0:
+            top_k_val = base_top_k
+    top_k_val = max(int(round(top_k_val)), config_estimate)
+
+    base_margin = STATE_COST_MARGIN
+    if pump_count > 0:
+        base_margin += STATE_COST_MARGIN_PER_PUMP * max(0, pump_count - 1)
+    if loop_count > 0:
+        base_margin += STATE_COST_MARGIN_PER_LOOP * loop_count
+    if requested_margin is None:
+        margin_val = base_margin
+    else:
+        try:
+            margin_val = float(requested_margin)
+        except (TypeError, ValueError):
+            margin_val = base_margin
+        if margin_val < 0:
+            margin_val = 0.0
+    margin_val = max(margin_val, 0.0)
+
+    return top_k_val, margin_val
+
+
+def _scenario_config_key(
+    stn: Mapping[str, object],
+    opt: Mapping[str, object],
+    scenario: Mapping[str, object],
+) -> tuple[int, tuple[tuple[str, int], ...], int, str]:
+    """Return a hashable identifier for the pump/loop configuration used."""
+
+    try:
+        station_idx = int(stn.get('idx', 0))
+    except (TypeError, ValueError):
+        station_idx = 0
+    combo_sig = _station_combo_signature(stn)
+    try:
+        pump_count = int(round(float(opt.get('nop', 0) or 0)))
+    except (TypeError, ValueError):
+        pump_count = 0
+    try:
+        flow_loop = float(scenario.get('flow_loop', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        flow_loop = 0.0
+    try:
+        flow_main = float(scenario.get('flow_main', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        flow_main = 0.0
+    if flow_loop <= 0.0:
+        loop_mode = 'off'
+    elif flow_main <= 0.0:
+        loop_mode = 'loop_only'
+    elif scenario.get('bypass_next'):
+        loop_mode = 'bypass'
+    else:
+        loop_mode = 'parallel'
+    return (station_idx, combo_sig, pump_count, loop_mode)
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -1759,8 +1896,8 @@ def solve_pipeline(
     dra_step: int = DRA_STEP,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
     coarse_multiplier: float = COARSE_MULTIPLIER,
-    state_top_k: int = STATE_TOP_K,
-    state_cost_margin: float = STATE_COST_MARGIN,
+    state_top_k: int | None = None,
+    state_cost_margin: float | None = None,
     loop_subset_limit: int | None = LOOP_PATTERN_MAX_SUBSET,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
@@ -1803,7 +1940,8 @@ def solve_pipeline(
     the coarse pass step sizes.  Increasing ``state_top_k`` or
     ``state_cost_margin`` relaxes dynamic-programming pruning so more near-
     optimal states are retained for subsequent stations.  When these
-    parameters are omitted the legacy defaults are used.
+    parameters are ``None`` the solver derives adaptive thresholds from the
+    number of pump stations and loop-enabled segments.
     """
 
     try:
@@ -1833,19 +1971,11 @@ def solve_pipeline(
     if coarse_multiplier <= 0:
         coarse_multiplier = COARSE_MULTIPLIER
 
-    try:
-        state_top_k = int(state_top_k)
-    except (TypeError, ValueError):
-        state_top_k = STATE_TOP_K
-    if state_top_k <= 0:
-        state_top_k = STATE_TOP_K
-
-    try:
-        state_cost_margin = float(state_cost_margin)
-    except (TypeError, ValueError):
-        state_cost_margin = STATE_COST_MARGIN
-    if state_cost_margin < 0:
-        state_cost_margin = 0.0
+    state_top_k, state_cost_margin = _resolve_state_limits(
+        stations,
+        requested_top_k=state_top_k,
+        requested_margin=state_cost_margin,
+    )
 
     default_loop_limit = LOOP_PATTERN_MAX_SUBSET
     raw_loop_limit = loop_subset_limit
@@ -3124,6 +3254,8 @@ def solve_pipeline(
 
                     total_cost = power_cost + dra_cost
 
+                    config_key = _scenario_config_key(stn_data, opt, sc)
+
                     # Build the record for this station.  Update loop velocity and MAOP
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
@@ -3253,6 +3385,7 @@ def solve_pipeline(
                             'dra_queue_full': queue_after_full,
                             'dra_queue_at_inlet': queue_after_inlet,
                             'inj_ppm_main': inj_ppm_main,
+                            'config_key': config_key,
                         }
 
         if not new_states:
@@ -3264,9 +3397,22 @@ def solve_pipeline(
         # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
         threshold = best_cost_station + state_cost_margin
-        pruned: dict[int, dict] = {}
-        for idx, (residual_key, data) in enumerate(items):
-            if idx < state_top_k or data['cost'] <= threshold:
+        best_by_config: dict[tuple, tuple[int, dict]] = {}
+        for residual_key, data in items:
+            cfg_key = data.get('config_key')
+            if cfg_key is None:
+                continue
+            existing = best_by_config.get(cfg_key)
+            if existing is None or data['cost'] < existing[1]['cost']:
+                best_by_config[cfg_key] = (residual_key, data)
+        effective_top_k = max(state_top_k, len(best_by_config))
+        pruned: dict[int, dict] = {
+            residual: data for residual, data in best_by_config.values()
+        }
+        for residual_key, data in items:
+            if residual_key in pruned:
+                continue
+            if len(pruned) < effective_top_k or data['cost'] <= threshold:
                 pruned[residual_key] = data
         states = pruned
 
@@ -3385,8 +3531,8 @@ def solve_pipeline_with_types(
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     coarse_multiplier: float = COARSE_MULTIPLIER,
-    state_top_k: int = STATE_TOP_K,
-    state_cost_margin: float = STATE_COST_MARGIN,
+    state_top_k: int | None = None,
+    state_cost_margin: float | None = None,
     loop_subset_limit: int | None = LOOP_PATTERN_MAX_SUBSET,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
