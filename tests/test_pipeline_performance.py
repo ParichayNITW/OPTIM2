@@ -316,6 +316,102 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
 
 
+def test_broader_pruning_preserves_original_optimum() -> None:
+    """Adaptive pruning should retain prior optima when limits are relaxed."""
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 2,
+            "MinRPM": 1200,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 190.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 60.0,
+            "d": 0.7,
+            "rough": 0.00004,
+            "elev": 0.0,
+            "min_residual": 35,
+            "max_dr": 20,
+            "power_type": "Grid",
+            "rate": 5.0,
+            "loopline": {
+                "L": 50.0,
+                "d": 0.68,
+                "rough": 0.00004,
+                "max_dr": 15,
+            },
+        },
+        {
+            "name": "Mid Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 2800,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 175.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 83.0,
+            "L": 50.0,
+            "d": 0.68,
+            "rough": 0.00004,
+            "elev": 5.0,
+            "min_residual": 20,
+            "max_dr": 10,
+            "power_type": "Grid",
+            "rate": 5.0,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 10.0, "min_residual": 30}
+
+    kwargs = dict(
+        FLOW=1500.0,
+        KV_list=[1.3, 1.2],
+        rho_list=[845.0, 842.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=820.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=6.0,
+        start_time="00:00",
+        enumerate_loops=True,
+    )
+
+    baseline = solve_pipeline(copy.deepcopy(stations), terminal, **kwargs)
+    assert not baseline.get("error"), baseline.get("message")
+
+    expanded = solve_pipeline(
+        copy.deepcopy(stations),
+        terminal,
+        state_top_k=200,
+        state_cost_margin=200000.0,
+        **kwargs,
+    )
+    assert not expanded.get("error"), expanded.get("message")
+
+    assert expanded.get("total_cost") == pytest.approx(baseline.get("total_cost"))
+    assert expanded.get("loop_usage") == baseline.get("loop_usage")
+
+    for suffix in ("origin_pump", "mid_pump"):
+        field = f"num_pumps_{suffix}"
+        assert expanded.get(field) == baseline.get(field)
+
+
 def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
     """Baseline feasibility checks should run alongside the refined search."""
 
