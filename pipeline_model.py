@@ -476,6 +476,24 @@ def _merge_queue(
     return merged
 
 
+def _queue_total_length(
+    queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
+) -> float:
+    """Return the cumulative treated length represented by ``queue_entries``."""
+
+    if not queue_entries:
+        return 0.0
+    total = 0.0
+    for length, _ppm in queue_entries:
+        try:
+            length_val = float(length or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val > 0:
+            total += length_val
+    return total
+
+
 def _trim_queue_front(
     queue_entries: list[tuple[float, float]]
     | tuple[tuple[float, float], ...],
@@ -521,6 +539,43 @@ def _trim_queue_front(
             float(ppm),
         )
         for length, ppm in merged_trimmed
+        if float(length or 0.0) > 0
+    )
+
+
+def _take_queue_front(
+    queue_entries: list[tuple[float, float]]
+    | tuple[tuple[float, float], ...],
+    take_length: float,
+) -> tuple[tuple[float, float], ...]:
+    """Return the leading ``take_length`` kilometres from ``queue_entries``."""
+
+    remaining = max(float(take_length or 0.0), 0.0)
+    if remaining <= 0:
+        return ()
+
+    taken: list[tuple[float, float]] = []
+    for length, ppm in queue_entries:
+        length_val = float(length or 0.0)
+        if length_val <= 0:
+            continue
+        ppm_val = float(ppm or 0.0)
+        portion = min(length_val, remaining)
+        if portion > 0:
+            taken.append((portion, ppm_val))
+            remaining -= portion
+        if remaining <= 1e-9:
+            break
+
+    if not taken:
+        return ()
+
+    return tuple(
+        (
+            float(length),
+            float(ppm),
+        )
+        for length, ppm in taken
         if float(length or 0.0) > 0
     )
 
@@ -2274,6 +2329,12 @@ def solve_pipeline(
             dra_queue_prev_inlet = state.get('dra_queue_at_inlet')
             if dra_queue_prev_inlet is None:
                 dra_queue_prev_inlet = dra_queue_prev_full
+            prefix_entries: tuple[tuple[float, float], ...] = ()
+            total_prev_full = _queue_total_length(dra_queue_prev_full)
+            total_prev_inlet = _queue_total_length(dra_queue_prev_inlet)
+            upstream_length = max(total_prev_full - total_prev_inlet, 0.0)
+            if upstream_length > 1e-9:
+                prefix_entries = _take_queue_front(dra_queue_prev_full, upstream_length)
             d_inner_state = float(stn_data.get('d_inner') or stn_data.get('d') or 0.0)
             precomputed_queue = _prepare_dra_queue_consumption(
                 dra_queue_prev_inlet,
@@ -2309,7 +2370,7 @@ def solve_pipeline(
                     is_origin=stn_data['idx'] == 0,
                     precomputed=precomputed_queue,
                 )
-                queue_after_full = tuple(
+                queue_after_body = tuple(
                     (
                         float(entry.get('length_km', 0.0) or 0.0),
                         float(entry.get('dra_ppm', 0.0) or 0.0),
@@ -2317,14 +2378,18 @@ def solve_pipeline(
                     for entry in queue_after_list
                     if float(entry.get('length_km', 0.0) or 0.0) > 0
                 )
-                pumped_length_local = 0.0
-                if precomputed_queue:
-                    try:
-                        pumped_length_local = float(precomputed_queue[0])
-                    except Exception:
-                        pumped_length_local = 0.0
-                trim_offset = max(float(stn_data['L']) - pumped_length_local, 0.0)
-                queue_after_inlet = _trim_queue_front(queue_after_full, trim_offset)
+                combined_full_entries = tuple(prefix_entries) + tuple(queue_after_body)
+                merged_after_full = _merge_queue(combined_full_entries)
+                queue_after_full = tuple(
+                    (
+                        float(length),
+                        float(ppm),
+                    )
+                    for length, ppm in merged_after_full
+                    if float(length or 0.0) > 0
+                )
+                seg_length_total = float(stn_data.get('L', 0.0) or 0.0)
+                queue_after_inlet = _trim_queue_front(queue_after_full, seg_length_total)
                 total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
                 if total_positive > 0:
                     weighted_dr = 0.0
