@@ -1742,6 +1742,7 @@ def solve_pipeline(
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float | None = None,
+    brute_force: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -1782,6 +1783,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                brute_force=brute_force,
                 **search_kwargs,
             )
         else:
@@ -1801,6 +1803,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                brute_force=brute_force,
                 **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
