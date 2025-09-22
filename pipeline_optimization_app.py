@@ -332,6 +332,48 @@ with st.sidebar:
             key="MOP_kgcm2",
         )
 
+    with st.expander("Advanced search depth", expanded=False):
+        st.caption(
+            "Adjust solver discretisation and dynamic-programming limits when you "
+            "need a broader search of pump and DRA combinations."
+        )
+        st.number_input(
+            "Refinement RPM step (rpm)",
+            min_value=1,
+            value=int(st.session_state.get("search_rpm_step", pipeline_model.RPM_STEP)),
+            step=1,
+            key="search_rpm_step",
+        )
+        st.number_input(
+            "Refinement DRA step (%DR)",
+            min_value=1,
+            value=int(st.session_state.get("search_dra_step", pipeline_model.DRA_STEP)),
+            step=1,
+            key="search_dra_step",
+        )
+        st.number_input(
+            "Coarse step multiplier",
+            min_value=0.1,
+            value=float(st.session_state.get("search_coarse_multiplier", pipeline_model.COARSE_MULTIPLIER)),
+            step=0.1,
+            format="%.1f",
+            key="search_coarse_multiplier",
+        )
+        st.number_input(
+            "Max DP states retained",
+            min_value=1,
+            value=int(st.session_state.get("search_state_top_k", pipeline_model.STATE_TOP_K)),
+            step=1,
+            key="search_state_top_k",
+        )
+        st.number_input(
+            "DP cost margin (currency)",
+            min_value=0.0,
+            value=float(st.session_state.get("search_state_cost_margin", pipeline_model.STATE_COST_MARGIN)),
+            step=100.0,
+            key="search_state_cost_margin",
+        )
+
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
         st.session_state["linefill_df"] = pd.DataFrame({
@@ -1632,6 +1674,46 @@ def fmt_pressure(res, key_m, key_kg):
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
+def _collect_search_depth_kwargs() -> dict[str, float | int]:
+    """Return validated search-depth parameters for backend solvers."""
+
+    rpm_step = int(st.session_state.get("search_rpm_step", pipeline_model.RPM_STEP) or pipeline_model.RPM_STEP)
+    if rpm_step <= 0:
+        rpm_step = pipeline_model.RPM_STEP
+
+    dra_step = int(st.session_state.get("search_dra_step", pipeline_model.DRA_STEP) or pipeline_model.DRA_STEP)
+    if dra_step <= 0:
+        dra_step = pipeline_model.DRA_STEP
+
+    coarse_multiplier = float(
+        st.session_state.get("search_coarse_multiplier", pipeline_model.COARSE_MULTIPLIER)
+        or pipeline_model.COARSE_MULTIPLIER
+    )
+    if coarse_multiplier <= 0:
+        coarse_multiplier = pipeline_model.COARSE_MULTIPLIER
+
+    state_top_k = int(
+        st.session_state.get("search_state_top_k", pipeline_model.STATE_TOP_K)
+        or pipeline_model.STATE_TOP_K
+    )
+    if state_top_k <= 0:
+        state_top_k = pipeline_model.STATE_TOP_K
+
+    state_cost_margin = float(
+        st.session_state.get("search_state_cost_margin", pipeline_model.STATE_COST_MARGIN)
+        or pipeline_model.STATE_COST_MARGIN
+    )
+    if state_cost_margin < 0:
+        state_cost_margin = 0.0
+
+    return {
+        "rpm_step": rpm_step,
+        "dra_step": dra_step,
+        "coarse_multiplier": coarse_multiplier,
+        "state_top_k": state_top_k,
+        "state_cost_margin": state_cost_margin,
+    }
+
 def solve_pipeline(
     stations,
     terminal,
@@ -1670,6 +1752,7 @@ def solve_pipeline(
 
     try:
         # Delegate to the backend optimiser
+        search_kwargs = _collect_search_depth_kwargs()
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
@@ -1687,6 +1770,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                **search_kwargs,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -1705,6 +1789,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -2117,6 +2202,7 @@ def run_all_updates():
                     coeff_e = np.polyfit(Qe, Ee, 4)
                     stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
 
+    search_kwargs = _collect_search_depth_kwargs()
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
@@ -2133,6 +2219,7 @@ def run_all_updates():
             st.session_state.get("MOP_kgcm2"),
             24.0,
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+            **search_kwargs,
         )
     if not res or res.get("error"):
         msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
