@@ -332,6 +332,12 @@ with st.sidebar:
             key="MOP_kgcm2",
         )
 
+        rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
+        dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
+        coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
+        state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
+        state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
             "Adjust solver discretisation and dynamic-programming limits when you "
@@ -340,21 +346,21 @@ with st.sidebar:
         st.number_input(
             "Refinement RPM step (rpm)",
             min_value=1,
-            value=int(st.session_state.get("search_rpm_step", pipeline_model.RPM_STEP)),
+            value=int(st.session_state.get("search_rpm_step", rpm_step_default)),
             step=1,
             key="search_rpm_step",
         )
         st.number_input(
             "Refinement DRA step (%DR)",
             min_value=1,
-            value=int(st.session_state.get("search_dra_step", pipeline_model.DRA_STEP)),
+            value=int(st.session_state.get("search_dra_step", dra_step_default)),
             step=1,
             key="search_dra_step",
         )
         st.number_input(
             "Coarse step multiplier",
             min_value=0.1,
-            value=float(st.session_state.get("search_coarse_multiplier", pipeline_model.COARSE_MULTIPLIER)),
+            value=float(st.session_state.get("search_coarse_multiplier", coarse_multiplier_default)),
             step=0.1,
             format="%.1f",
             key="search_coarse_multiplier",
@@ -362,14 +368,14 @@ with st.sidebar:
         st.number_input(
             "Max DP states retained",
             min_value=1,
-            value=int(st.session_state.get("search_state_top_k", pipeline_model.STATE_TOP_K)),
+            value=int(st.session_state.get("search_state_top_k", state_top_k_default)),
             step=1,
             key="search_state_top_k",
         )
         st.number_input(
             "DP cost margin (currency)",
             min_value=0.0,
-            value=float(st.session_state.get("search_state_cost_margin", pipeline_model.STATE_COST_MARGIN)),
+            value=float(st.session_state.get("search_state_cost_margin", state_cost_margin_default)),
             step=100.0,
             key="search_state_cost_margin",
         )
@@ -1677,31 +1683,37 @@ def fmt_pressure(res, key_m, key_kg):
 def _collect_search_depth_kwargs() -> dict[str, float | int]:
     """Return validated search-depth parameters for backend solvers."""
 
-    rpm_step = int(st.session_state.get("search_rpm_step", pipeline_model.RPM_STEP) or pipeline_model.RPM_STEP)
-    if rpm_step <= 0:
-        rpm_step = pipeline_model.RPM_STEP
+    rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
+    dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
+    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
+    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
+    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
 
-    dra_step = int(st.session_state.get("search_dra_step", pipeline_model.DRA_STEP) or pipeline_model.DRA_STEP)
+    rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
+    if rpm_step <= 0:
+        rpm_step = rpm_step_default
+
+    dra_step = int(st.session_state.get("search_dra_step", dra_step_default) or dra_step_default)
     if dra_step <= 0:
-        dra_step = pipeline_model.DRA_STEP
+        dra_step = dra_step_default
 
     coarse_multiplier = float(
-        st.session_state.get("search_coarse_multiplier", pipeline_model.COARSE_MULTIPLIER)
-        or pipeline_model.COARSE_MULTIPLIER
+        st.session_state.get("search_coarse_multiplier", coarse_multiplier_default)
+        or coarse_multiplier_default
     )
     if coarse_multiplier <= 0:
-        coarse_multiplier = pipeline_model.COARSE_MULTIPLIER
+        coarse_multiplier = coarse_multiplier_default
 
     state_top_k = int(
-        st.session_state.get("search_state_top_k", pipeline_model.STATE_TOP_K)
-        or pipeline_model.STATE_TOP_K
+        st.session_state.get("search_state_top_k", state_top_k_default)
+        or state_top_k_default
     )
     if state_top_k <= 0:
-        state_top_k = pipeline_model.STATE_TOP_K
+        state_top_k = state_top_k_default
 
     state_cost_margin = float(
-        st.session_state.get("search_state_cost_margin", pipeline_model.STATE_COST_MARGIN)
-        or pipeline_model.STATE_COST_MARGIN
+        st.session_state.get("search_state_cost_margin", state_cost_margin_default)
+        or state_cost_margin_default
     )
     if state_cost_margin < 0:
         state_cost_margin = 0.0
