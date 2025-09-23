@@ -9,7 +9,52 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from pipeline_model import solve_pipeline, solve_pipeline_with_types
+from pipeline_model import (
+    solve_pipeline as _solve_pipeline,
+    solve_pipeline_with_types as _solve_pipeline_with_types,
+)
+
+
+def _ensure_segment_slices(args, kwargs) -> None:
+    if "segment_slices" in kwargs:
+        return
+    if len(args) >= 6:
+        return
+    if "stations" in kwargs:
+        stations = kwargs["stations"]
+    elif args:
+        stations = args[0]
+    else:
+        return
+    kwargs["segment_slices"] = [[] for _ in stations]
+
+
+def solve_pipeline(*args, segment_slices=None, **kwargs):
+    if "stations" in kwargs:
+        stations = kwargs["stations"]
+    elif args:
+        stations = args[0]
+    else:
+        raise TypeError("stations must be provided")
+    if segment_slices is None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = [[] for _ in stations]
+    elif segment_slices is not None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = segment_slices
+    return _solve_pipeline(*args, **kwargs)
+
+
+def solve_pipeline_with_types(*args, segment_slices=None, **kwargs):
+    if "stations" in kwargs:
+        stations = kwargs["stations"]
+    elif args:
+        stations = args[0]
+    else:
+        raise TypeError("stations must be provided")
+    if segment_slices is None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = [[] for _ in stations]
+    elif segment_slices is not None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = segment_slices
+    return _solve_pipeline_with_types(*args, **kwargs)
 
 
 def _load_linefill() -> list[dict]:
@@ -150,6 +195,7 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
         FLOW=1500.0,
         KV_list=[3.0],
         rho_list=[850.0],
+        segment_slices=[[] for _ in stations],
         RateDRA=0.0,
         Price_HSD=0.0,
         Fuel_density=0.85,
@@ -184,6 +230,7 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
     captured_ranges: list[dict[int, dict[str, tuple[int, int]]]] = []
 
     def wrapped_solve(*args, **kwargs):  # type: ignore[override]
+        _ensure_segment_slices(args, kwargs)
         result = original_solve(*args, **kwargs)
         if kwargs.get("_internal_pass"):
             narrow = kwargs.get("narrow_ranges")
@@ -247,6 +294,7 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
         FLOW=1500.0,
         KV_list=[3.0],
         rho_list=[850.0],
+        segment_slices=[[] for _ in stations],
         RateDRA=0.0,
         Price_HSD=0.0,
         Fuel_density=0.85,
@@ -294,6 +342,7 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
         else:
             stage_state["value"] = "outer"
         try:
+            _ensure_segment_slices(args, kwargs)
             result = original_solve(*args, **kwargs)
         finally:
             stage_state["value"] = prev_stage
@@ -400,6 +449,7 @@ def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
         snapshot = None
         if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is not None:
             snapshot = copy.deepcopy(kwargs["narrow_ranges"])
+        _ensure_segment_slices(args, kwargs)
         result = original_solve(*args, **kwargs)
         if snapshot is not None:
             captured_ranges.append(snapshot)
@@ -516,6 +566,7 @@ def test_baseline_result_can_outperform_refine_when_cheaper() -> None:
     seen_refine = {"done": False}
 
     def favour_baseline(*args, **kwargs):  # type: ignore[override]
+        _ensure_segment_slices(args, kwargs)
         result = original_solve(*args, **kwargs)
         if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is not None:
             if not seen_refine["done"]:
@@ -653,6 +704,7 @@ def test_search_depth_controls_expand_combinatorial_search() -> None:
         FLOW=1400.0,
         KV_list=[2.5],
         rho_list=[845.0],
+        segment_slices=[[] for _ in stations],
         RateDRA=5.0,
         Price_HSD=0.0,
         Fuel_density=0.85,
@@ -675,6 +727,7 @@ def test_search_depth_controls_expand_combinatorial_search() -> None:
                     rpm_used = call_kwargs.get("rpm_step")
                     if isinstance(rpm_used, (int, float)):
                         coarse_steps.append(int(rpm_used))
+                _ensure_segment_slices(args, call_kwargs)
                 return original_solve(*args, **call_kwargs)
 
             with patch.object(pm, "solve_pipeline", side_effect=tracking):
