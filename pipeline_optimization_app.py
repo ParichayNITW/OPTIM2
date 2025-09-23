@@ -57,6 +57,44 @@ from dra_utils import (
     DRA_CURVE_DATA,
 )
 
+
+INIT_DRA_COL = "Initial DRA (ppm)"
+
+
+def ensure_initial_dra_column(
+    df: pd.DataFrame | None,
+    *,
+    default: float | None = None,
+    fill_blanks: bool = False,
+) -> pd.DataFrame | None:
+    """Ensure ``df`` exposes the user-editable DRA ppm column.
+
+    ``fill_blanks`` only repopulates entries that are truly blank (``NaN`` or
+    empty strings) so users can intentionally clear a cell to request
+    ``0 ppm``.
+    """
+
+    if not isinstance(df, pd.DataFrame):
+        return df
+
+    if default is None:
+        default = float(st.session_state.get("InitDRAppm", 4.0))
+
+    if INIT_DRA_COL not in df.columns:
+        df[INIT_DRA_COL] = default
+        return df
+
+    if not fill_blanks:
+        return df
+
+    col = df[INIT_DRA_COL]
+    blank_mask = col.isna()
+    if col.dtype == object:
+        blank_mask |= col.astype(str).str.strip() == ""
+    if blank_mask.any():
+        df.loc[blank_mask, INIT_DRA_COL] = default
+    return df
+
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
 #Custom Styles
@@ -183,6 +221,7 @@ def restore_case_dict(loaded_data):
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
+        ensure_initial_dra_column(st.session_state["linefill_vol_df"])
         # Keep a unified linefill table so subsequent logic and case saving
         # operate on the user-edited volumetric data instead of a stale
         # distance-based default.
@@ -205,6 +244,7 @@ def restore_case_dict(loaded_data):
         st.session_state["planner_days"] = loaded_data["planner_days"]
     if "linefill" in loaded_data and loaded_data["linefill"]:
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
+        ensure_initial_dra_column(st.session_state["linefill_df"])
     for i, stn in enumerate(st.session_state['stations'], start=1):
         head_data = loaded_data.get(f"head_data_{i}", None)
         eff_data  = loaded_data.get(f"eff_data_{i}", None)
@@ -386,7 +426,8 @@ with st.sidebar:
             "Start (km)": [0.0],
             "End (km)": [100.0],
             "Viscosity (cSt)": [10.0],
-            "Density (kg/m³)": [850.0]
+            "Density (kg/m³)": [850.0],
+            INIT_DRA_COL: [st.session_state.get("InitDRAppm", 4.0)],
         })
     input_modes = ["Flow rate", "Daily Pumping Schedule", "Pumping planner"]
     if st.session_state.get("op_mode") not in input_modes:
@@ -407,12 +448,16 @@ with st.sidebar:
                 "Volume (m³)": [50000.0],
                 "Viscosity (cSt)": [5.0],
                 "Density (kg/m³)": [810.0],
+                INIT_DRA_COL: [st.session_state.get("InitDRAppm", 4.0)],
             })
+        else:
+            ensure_initial_dra_column(st.session_state["linefill_vol_df"])
         lf_df = st.data_editor(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
         )
+        lf_df = ensure_initial_dra_column(lf_df)
         st.session_state["linefill_vol_df"] = lf_df
         # Ensure the generic linefill reference uses the volumetric table so
         # runs and saved cases reflect current edits.
@@ -425,12 +470,16 @@ with st.sidebar:
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
                 "Density (kg/m³)": [810.0, 825.0, 865.0],
+                INIT_DRA_COL: [st.session_state.get("InitDRAppm", 4.0)] * 3,
             })
+        else:
+            ensure_initial_dra_column(st.session_state["linefill_vol_df"])
         lf_df = st.data_editor(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
         )
+        lf_df = ensure_initial_dra_column(lf_df)
         st.session_state["linefill_vol_df"] = lf_df
         st.session_state["linefill_df"] = lf_df
         st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
@@ -461,12 +510,16 @@ with st.sidebar:
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
                 "Density (kg/m³)": [810.0, 825.0, 865.0],
+                INIT_DRA_COL: [st.session_state.get("InitDRAppm", 4.0)] * 3,
             })
+        else:
+            ensure_initial_dra_column(st.session_state["linefill_vol_df"])
         lf_df = st.data_editor(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
         )
+        lf_df = ensure_initial_dra_column(lf_df)
         st.session_state["linefill_vol_df"] = lf_df
         st.session_state["linefill_df"] = lf_df
         st.session_state["planner_days"] = st.number_input(
@@ -1435,7 +1488,7 @@ def shift_vol_linefill(
     """
 
     # Remove delivered volume from downstream end
-    vol_table = vol_table.copy()
+    vol_table = ensure_initial_dra_column(vol_table.copy())
     vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
     remaining = pumped_m3
     idx = len(vol_table) - 1
@@ -1451,7 +1504,7 @@ def shift_vol_linefill(
 
     # Inject new product at upstream end according to day plan
     if day_plan is not None:
-        day_plan = day_plan.copy()
+        day_plan = ensure_initial_dra_column(day_plan.copy(), fill_blanks=True)
         day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
         added = pumped_m3
         j = 0
@@ -1464,6 +1517,7 @@ def shift_vol_linefill(
                 "Viscosity (cSt)": day_plan.at[j, "Viscosity (cSt)"],
                 "Density (kg/m³)": day_plan.at[j, "Density (kg/m³)"],
             }
+            batch[INIT_DRA_COL] = day_plan.at[j, INIT_DRA_COL] if INIT_DRA_COL in day_plan.columns else st.session_state.get("InitDRAppm", 4.0)
             vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
             day_plan.at[j, "Volume (m³)"] = v - take
             added -= take
@@ -1479,14 +1533,36 @@ def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
     if df is None or len(df) == 0:
         return []
     col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
-    col_ppm = "DRA ppm" if "DRA ppm" in df.columns else "dra_ppm"
+    col_ppm = None
+    for candidate in (INIT_DRA_COL, "DRA ppm", "dra_ppm"):
+        if candidate in df.columns:
+            col_ppm = candidate
+            break
     batches: list[dict] = []
     default_ppm = st.session_state.get("InitDRAppm", 4.0)
     for _, r in df.iterrows():
         vol = float(r.get(col_vol, 0.0) or 0.0)
         if vol <= 0:
             continue
-        ppm = float(r.get(col_ppm, default_ppm) or default_ppm)
+        raw_ppm = r.get(col_ppm, default_ppm) if col_ppm else default_ppm
+        ppm: float
+        if raw_ppm is None:
+            ppm = 0.0
+        elif isinstance(raw_ppm, str):
+            if raw_ppm.strip() == "":
+                ppm = 0.0
+            else:
+                try:
+                    ppm = float(raw_ppm)
+                except Exception:
+                    ppm = float(default_ppm)
+        else:
+            try:
+                ppm = float(raw_ppm)
+                if pd.isna(ppm):
+                    ppm = 0.0
+            except Exception:
+                ppm = float(default_ppm)
         batches.append({"volume": vol, "dra_ppm": ppm})
     return batches
 
@@ -1495,7 +1571,7 @@ def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
     """Assign ``dra_ppm`` values from ``dra_batches`` onto ``df`` by volume."""
     if df is None:
         return df
-    df = df.copy()
+    df = ensure_initial_dra_column(df.copy())
     col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
     ppm_vals: list[float] = []
     idx = 0
@@ -1511,6 +1587,7 @@ def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
         remaining -= vol
         ppm_vals.append(ppm_cur)
     df["DRA ppm"] = ppm_vals
+    df[INIT_DRA_COL] = ppm_vals
     return df
 
 
@@ -2461,9 +2538,12 @@ def run_all_updates():
     linefill_df = st.session_state.get("linefill_df")
     if not isinstance(linefill_df, pd.DataFrame):
         linefill_df = pd.DataFrame()
+    else:
+        linefill_df = ensure_initial_dra_column(linefill_df)
 
     vol_linefill = st.session_state.get("linefill_vol_df")
     if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
+        vol_linefill = ensure_initial_dra_column(vol_linefill)
         kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(
             vol_linefill, stations_data
         )
@@ -2577,6 +2657,8 @@ if not auto_batch:
 
         # Prepare initial volumetric linefill
         vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
+        if isinstance(vol_df, pd.DataFrame):
+            vol_df = ensure_initial_dra_column(vol_df)
         if vol_df is None or len(vol_df) == 0:
             st.error("Please enter linefill (volumetric) data.")
             st.stop()
@@ -2606,9 +2688,16 @@ if not auto_batch:
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         dra_reach_km = 200.0
 
-        current_vol = vol_df.copy()
+        current_vol = ensure_initial_dra_column(vol_df.copy())
         if "DRA ppm" not in current_vol.columns:
-            current_vol["DRA ppm"] = 0.0
+            current_vol["DRA ppm"] = current_vol[INIT_DRA_COL]
+        else:
+            ppm_col = current_vol["DRA ppm"]
+            ppm_blank = ppm_col.isna()
+            if ppm_col.dtype == object:
+                ppm_blank |= ppm_col.astype(str).str.strip() == ""
+            if ppm_blank.any():
+                current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
         error_msg = None
@@ -2859,9 +2948,18 @@ if not auto_batch:
             flow_df["End"] = pd.to_datetime(flow_df["End"])
             flow_df = flow_df.sort_values("Start").reset_index(drop=True)
 
-            current_vol = vol_df.copy()
+            if isinstance(vol_df, pd.DataFrame):
+                vol_df = ensure_initial_dra_column(vol_df)
+            current_vol = ensure_initial_dra_column(vol_df.copy())
             if "DRA ppm" not in current_vol.columns:
-                current_vol["DRA ppm"] = 0.0
+                current_vol["DRA ppm"] = current_vol[INIT_DRA_COL]
+            else:
+                ppm_col = current_vol["DRA ppm"]
+                ppm_blank = ppm_col.isna()
+                if ppm_col.dtype == object:
+                    ppm_blank |= ppm_col.astype(str).str.strip() == ""
+                if ppm_blank.any():
+                    current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
             dra_linefill = df_to_dra_linefill(current_vol)
             current_vol = apply_dra_ppm(current_vol, dra_linefill)
             reports = []
