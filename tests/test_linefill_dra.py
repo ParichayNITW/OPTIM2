@@ -25,7 +25,11 @@ from pipeline_model import (
     solve_pipeline as _solve_pipeline,
 )
 
-from pipeline_optimization_app import map_vol_linefill_to_segments
+from pipeline_optimization_app import (
+    combine_volumetric_profiles,
+    map_linefill_to_segments,
+    map_vol_linefill_to_segments,
+)
 
 
 def solve_pipeline(*args, segment_slices=None, **kwargs):
@@ -41,6 +45,97 @@ def solve_pipeline(*args, segment_slices=None, **kwargs):
     elif segment_slices is not None and "segment_slices" not in kwargs:
         kwargs["segment_slices"] = segment_slices
     return _solve_pipeline(*args, **kwargs)
+
+
+def test_map_linefill_to_segments_returns_segment_slices() -> None:
+    stations = [
+        {"name": "Station A", "L": 5.0, "D": 0.7, "t": 0.007},
+        {"name": "Station B", "L": 3.0, "D": 0.7, "t": 0.007},
+    ]
+    linefill = pd.DataFrame(
+        [
+            {
+                "Start (km)": 0.0,
+                "End (km)": 5.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 820.0,
+            },
+            {
+                "Start (km)": 5.0,
+                "End (km)": 8.0,
+                "Viscosity (cSt)": 3.5,
+                "Density (kg/m³)": 835.0,
+            },
+        ]
+    )
+
+    kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill, stations)
+
+    assert kv_list == [2.0, 3.5]
+    assert rho_list == [820.0, 835.0]
+    assert len(segment_slices) == len(stations)
+    for idx, slices in enumerate(segment_slices):
+        assert slices, f"Segment {idx} should include at least one slice"
+        total_length = sum(entry["length_km"] for entry in slices)
+        assert math.isclose(total_length, stations[idx]["L"], rel_tol=0.0, abs_tol=1e-9)
+        for entry in slices:
+            assert {"length_km", "kv", "rho"} <= set(entry.keys())
+
+
+def test_combine_volumetric_profiles_merges_future_batches() -> None:
+    station = {"name": "Only Station", "L": 10.0, "D": 0.7, "t": 0.007}
+    d_inner = station["D"] - 2.0 * station["t"]
+
+    current = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": _volume_from_km(4.0, d_inner),
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 820.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": _volume_from_km(6.0, d_inner),
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 830.0,
+            },
+        ]
+    )
+    future = pd.DataFrame(
+        [
+            {
+                "Product": "New Batch",
+                "Volume (m³)": _volume_from_km(2.0, d_inner),
+                "Viscosity (cSt)": 5.0,
+                "Density (kg/m³)": 840.0,
+            },
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": _volume_from_km(2.0, d_inner),
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 820.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": _volume_from_km(6.0, d_inner),
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 830.0,
+            },
+        ]
+    )
+
+    kv_list, rho_list, segment_slices = combine_volumetric_profiles([station], current, future)
+
+    assert kv_list == [5.0]
+    assert rho_list[0] >= 830.0
+    assert len(segment_slices) == 1
+    slices = segment_slices[0]
+    assert len(slices) >= 2
+    assert math.isclose(sum(entry["length_km"] for entry in slices), station["L"], abs_tol=1e-6)
+    assert slices[0]["kv"] == pytest.approx(5.0)
+    assert slices[0]["rho"] == pytest.approx(840.0)
+    assert slices[-1]["rho"] == pytest.approx(830.0)
 
 
 def test_segment_head_loss_respects_multi_batch_profiles() -> None:
