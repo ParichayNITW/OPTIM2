@@ -35,7 +35,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from math import pi, sqrt
+from math import isclose, pi, sqrt
 import hashlib
 import uuid
 import json
@@ -1072,26 +1072,15 @@ def _default_segment_slices(
 def derive_segment_profiles(
     linefill_df: pd.DataFrame | None, stations: list[dict]
 ) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Return per-segment viscosity/density lists and batch slices.
+    """Return per-segment viscosity/density lists and batch slices."""
 
-    ``linefill_df`` may represent either distance-based or volumetric data.  In
-    the volumetric case the detailed slices are taken from
-    :func:`map_vol_linefill_to_segments`.  Otherwise each segment receives a
-    single slice mirroring the historical distance-table behaviour so the
-    optimiser continues to receive structured input.
-    """
-
-    if linefill_df is not None and len(linefill_df) > 0:
-        cols = set(linefill_df.columns)
-        if "Volume (m³)" in cols or "Volume" in cols:
-            return map_vol_linefill_to_segments(linefill_df, stations)
-
-    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations)
-    segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+    kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill_df, stations)
     return kv_list, rho_list, segment_slices
 
 
-def map_linefill_to_segments(linefill_df, stations):
+def map_linefill_to_segments(
+    linefill_df, stations
+) -> tuple[list[float], list[float], list[list[dict]]]:
     """Map linefill properties onto each pipeline segment.
 
     Accepts either a tabular linefill with "Start/End (km)" columns or a
@@ -1105,7 +1094,10 @@ def map_linefill_to_segments(linefill_df, stations):
         # non-physical conditions that cause the optimiser to reject all
         # scenarios.  Here we assume a light refined product of 1.0 cSt and
         # density 850 kg/m³ across all segments.
-        return [1.0] * len(stations), [850.0] * len(stations)
+        kv_list = [1.0] * len(stations)
+        rho_list = [850.0] * len(stations)
+        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+        return kv_list, rho_list, segment_slices
 
     cols = set(linefill_df.columns)
 
@@ -1113,12 +1105,14 @@ def map_linefill_to_segments(linefill_df, stations):
     # delegate to volumetric mapper and return directly.
     if "Start (km)" not in cols or "End (km)" not in cols:
         if "Volume (m³)" in cols or "Volume" in cols:
-            kv, rho, _ = map_vol_linefill_to_segments(linefill_df, stations)
-            return kv, rho
+            return map_vol_linefill_to_segments(linefill_df, stations)
         # Fallback: assume uniform properties from the last row
         kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
         rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
-        return [kv] * len(stations), [rho] * len(stations)
+        kv_list = [kv] * len(stations)
+        rho_list = [rho] * len(stations)
+        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+        return kv_list, rho_list, segment_slices
 
     cumlen = [0]
     for stn in stations:
@@ -1138,7 +1132,8 @@ def map_linefill_to_segments(linefill_df, stations):
         if not found:
             viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
             dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
-    return viscs, dens
+    segment_slices = _default_segment_slices(stations, viscs, dens)
+    return viscs, dens, segment_slices
 
 # ==== NEW: Volumetric linefill helpers ====
 def pipe_cross_section_area_m2(stations: list[dict]) -> float:
@@ -1257,6 +1252,174 @@ def map_vol_linefill_to_segments(
         seg_rho.append(avg_rho)
 
     return seg_kv, seg_rho, seg_slices
+
+
+def _normalise_segment_entries(
+    entries: list[dict] | None,
+    seg_length: float,
+    kv_fill: float,
+    rho_fill: float,
+) -> list[dict]:
+    """Return cleaned slice entries that exactly span ``seg_length``."""
+
+    tol = 1e-9
+    if seg_length <= tol:
+        return []
+
+    cleaned: list[dict] = []
+    total = 0.0
+    for entry in entries or []:
+        try:
+            length = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            length = 0.0
+        if length <= tol:
+            continue
+        remaining = seg_length - total
+        if remaining <= tol:
+            break
+        take = min(length, remaining)
+        try:
+            kv_val = float(entry.get("kv", kv_fill))
+        except (TypeError, ValueError):
+            kv_val = kv_fill
+        try:
+            rho_val = float(entry.get("rho", rho_fill))
+        except (TypeError, ValueError):
+            rho_val = rho_fill
+        cleaned.append({"length_km": take, "kv": kv_val, "rho": rho_val})
+        total += take
+        if total >= seg_length - tol:
+            break
+
+    remaining = seg_length - total
+    if remaining > tol:
+        cleaned.append({"length_km": remaining, "kv": kv_fill, "rho": rho_fill})
+
+    return cleaned
+
+
+def _compress_slice_entries(entries: list[dict], tol: float = 1e-9) -> list[dict]:
+    """Merge adjacent slices with identical fluid properties."""
+
+    if not entries:
+        return []
+
+    compressed: list[dict] = [dict(entries[0])]
+    for entry in entries[1:]:
+        if (
+            isclose(entry.get("kv", 0.0), compressed[-1].get("kv", 0.0), rel_tol=0.0, abs_tol=1e-9)
+            and isclose(entry.get("rho", 0.0), compressed[-1].get("rho", 0.0), rel_tol=0.0, abs_tol=1e-9)
+        ):
+            compressed[-1]["length_km"] += entry.get("length_km", 0.0)
+        else:
+            compressed.append(dict(entry))
+
+    return [entry for entry in compressed if entry.get("length_km", 0.0) > tol]
+
+
+def _merge_segment_profiles(
+    current_entries: list[dict] | None,
+    future_entries: list[dict] | None,
+    kv_max: float,
+    rho_max: float,
+    seg_length: float,
+) -> list[dict]:
+    """Combine two slice sequences into a worst-case profile for a segment."""
+
+    tol = 1e-9
+    if seg_length <= tol:
+        return []
+
+    normalised_now = _normalise_segment_entries(current_entries, seg_length, kv_max, rho_max)
+    normalised_next = _normalise_segment_entries(future_entries, seg_length, kv_max, rho_max)
+    if not normalised_now and not normalised_next:
+        return [{"length_km": seg_length, "kv": kv_max, "rho": rho_max}]
+
+    idx_now = 0
+    idx_next = 0
+    rem_now = normalised_now[0]["length_km"] if normalised_now else seg_length
+    kv_now = normalised_now[0]["kv"] if normalised_now else kv_max
+    rho_now = normalised_now[0]["rho"] if normalised_now else rho_max
+    rem_next = normalised_next[0]["length_km"] if normalised_next else seg_length
+    kv_next = normalised_next[0]["kv"] if normalised_next else kv_max
+    rho_next = normalised_next[0]["rho"] if normalised_next else rho_max
+    total = 0.0
+    merged: list[dict] = []
+
+    while total < seg_length - tol:
+        if rem_now <= tol:
+            idx_now += 1
+            if idx_now < len(normalised_now):
+                current = normalised_now[idx_now]
+                rem_now = current["length_km"]
+                kv_now = current["kv"]
+                rho_now = current["rho"]
+            else:
+                rem_now = seg_length - total
+                kv_now = kv_max
+                rho_now = rho_max
+        if rem_next <= tol:
+            idx_next += 1
+            if idx_next < len(normalised_next):
+                current = normalised_next[idx_next]
+                rem_next = current["length_km"]
+                kv_next = current["kv"]
+                rho_next = current["rho"]
+            else:
+                rem_next = seg_length - total
+                kv_next = kv_max
+                rho_next = rho_max
+
+        step = min(rem_now, rem_next, seg_length - total)
+        if step <= tol:
+            break
+
+        kv_entry = max(kv_now, kv_next, kv_max)
+        rho_entry = max(rho_now, rho_next, rho_max)
+        merged.append({"length_km": step, "kv": kv_entry, "rho": rho_entry})
+        rem_now -= step
+        rem_next -= step
+        total += step
+
+    remaining = seg_length - total
+    if remaining > tol:
+        merged.append({"length_km": remaining, "kv": kv_max, "rho": rho_max})
+
+    return _compress_slice_entries(merged)
+
+
+def combine_volumetric_profiles(
+    stations: list[dict],
+    current_vol: pd.DataFrame,
+    future_vol: pd.DataFrame,
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return worst-case viscosity/density lists and slices for scheduling."""
+
+    kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations)
+    kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations)
+
+    kv_list: list[float] = []
+    rho_list: list[float] = []
+    segment_slices: list[list[dict]] = []
+    num_segments = len(stations)
+
+    for idx in range(num_segments):
+        kv_cur = kv_now[idx] if idx < len(kv_now) else (kv_now[-1] if kv_now else 1.0)
+        kv_future = kv_next[idx] if idx < len(kv_next) else (kv_next[-1] if kv_next else kv_cur)
+        rho_cur = rho_now[idx] if idx < len(rho_now) else (rho_now[-1] if rho_now else 850.0)
+        rho_future = rho_next[idx] if idx < len(rho_next) else (rho_next[-1] if rho_next else rho_cur)
+        kv_max = max(kv_cur, kv_future)
+        rho_max = max(rho_cur, rho_future)
+        seg_length = float(stations[idx].get("L", 0.0) or 0.0)
+        entries_now = slices_now[idx] if idx < len(slices_now) else []
+        entries_next = slices_next[idx] if idx < len(slices_next) else []
+        merged = _merge_segment_profiles(entries_now, entries_next, kv_max, rho_max, seg_length)
+        segment_slices.append(merged)
+        kv_list.append(kv_max)
+        rho_list.append(rho_max)
+
+    return kv_list, rho_list, segment_slices
 
 
 def shift_vol_linefill(
@@ -1493,7 +1656,7 @@ def build_summary_dataframe(
 
     if linefill_df is not None and len(linefill_df):
         if "Start (km)" in linefill_df.columns:
-            kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+            kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
         else:
             kv_list, _, _ = map_vol_linefill_to_segments(linefill_df, stations_data)
     else:
@@ -2414,11 +2577,6 @@ if not auto_batch:
             daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
             FLOW_sched = daily_m3 / 24.0
 
-        # Helper to compute segment kv/rho from volumetric table
-        def kv_rho_from_vol(vol_df_now):
-            kv, rho, _ = map_vol_linefill_to_segments(vol_df_now, stations_base)
-            return kv, rho
-
         if is_hourly:
             hours = [7]
         else:
@@ -2457,10 +2615,9 @@ if not auto_batch:
                         current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
                     )
                     # Determine worst-case fluid properties over this 1h window
-                    kv_now, rho_now = kv_rho_from_vol(current_vol)
-                    kv_next, rho_next = kv_rho_from_vol(future_vol)
-                    kv_list = [max(a, b) for a, b in zip(kv_now, kv_next)]
-                    rho_list = [max(a, b) for a, b in zip(rho_now, rho_next)]
+                    kv_list, rho_list, segment_slices = combine_volumetric_profiles(
+                        stations_base, current_vol, future_vol
+                    )
 
                     stns_run = copy.deepcopy(stations_base)
 
@@ -2471,7 +2628,7 @@ if not auto_batch:
                         FLOW_sched,
                         kv_list,
                         rho_list,
-                        None,
+                        segment_slices,
                         RateDRA,
                         Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -3507,7 +3664,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 L_seg = stn['L']
                 elev_i = stn['elev']
                 max_dr = int(stn.get('max_dr', 40))
-                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[i-1]
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
                 v_vals = flows/3600.0 / (pi*(d_inner_i**2)/4)
@@ -3617,7 +3774,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 d_inner = stn['D'] - 2*stn['t']
                 rough = stn['rough']
                 linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-                kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[stn_idx]
     
                 # --------- Begin Figure ---------
@@ -3752,7 +3909,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         res = st.session_state["last_res"]
         stations_data = st.session_state["last_stations_data"]
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+        kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
         st.markdown("<div class='section-title'>DRA Curve (PPM vs %Drag Reduction) for Each Station</div>", unsafe_allow_html=True)
         for idx, stn in enumerate(stations_data, start=1):
             key = stn['name'].lower().replace(' ', '_')
@@ -3896,7 +4053,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         S = stn.get('S', 0); T = stn.get('T', 0)
         DOL = float(pipeline_model._station_max_rpm(stn, default=N_max) or N_max)
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-        kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+        kv_list, rho_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         rho = rho_list[pump_idx]
         rate = stn.get('rate', 9.0)
         tariffs = stn.get('tariffs') or []
@@ -4263,7 +4420,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 for i, val in enumerate(pvals):
                     stations_data = [dict(s) for s in st.session_state['stations']]
                     term_data = dict(st.session_state["last_term_data"])
-                    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
                     this_FLOW = FLOW
                     this_RateDRA = RateDRA
                     this_Price_HSD = Price_HSD
@@ -4272,7 +4428,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         this_FLOW = val
                     elif param == "Viscosity (cSt)":
                         this_linefill_df["Viscosity (cSt)"] = val
-                        kv_list, rho_list = map_linefill_to_segments(this_linefill_df, stations_data)
                     elif param == "Drag Reduction (%)":
                         for stn in stations_data:
                             if stn.get('is_pump', False):
@@ -4282,13 +4437,14 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         this_Price_HSD = val
                     elif param == "DRA Cost (INR/L)":
                         this_RateDRA = val
+                    kv_list, rho_list, segment_slices = derive_segment_profiles(this_linefill_df, stations_data)
                     resi = solve_pipeline(
                         stations_data,
                         term_data,
                         this_FLOW,
                         kv_list,
                         rho_list,
-                        None,
+                        segment_slices,
                         this_RateDRA,
                         this_Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -4368,7 +4524,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 FLOW = st.session_state.get("FLOW", 1000.0)
                 RateDRA = st.session_state.get("RateDRA", 500.0)
                 linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-                kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, rho_list, _ = map_linefill_to_segments(linefill_df, stations_data)
                 for idx, stn in enumerate(stations_data):
                     key = stn['name'].lower().replace(' ', '_')
                     dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
@@ -4421,7 +4577,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         pass  # placeholder for efficiency adjustment
                 new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
                 new_FLOW = FLOW * (1 + flow_change / 100)
-                kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, rho_list, _ = map_linefill_to_segments(linefill_df, stations_data)
                 res2 = solve_pipeline(
                     stations_data,
                     term_data,
