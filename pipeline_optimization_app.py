@@ -2680,14 +2680,14 @@ if not auto_batch:
         if is_hourly:
             hours = [7]
         else:
-            hours = list(range(24))
+            hours = [(7 + h) % 24 for h in range(24)]
         sub_steps = 1
         total_runs = len(hours) * sub_steps if hours else 0
+        first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+        last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
         if is_hourly:
-            spinner_msg = "Running 1 optimization (1h)..."
+            spinner_msg = f"Running 1 optimization ({first_label})..."
         else:
-            first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
-            last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
             spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         reports = []
         linefill_snaps = []
@@ -2859,6 +2859,8 @@ if not auto_batch:
             hide_index=not transpose_view,
         )
         label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
+        first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+        last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
         st.download_button(
             f"Download {label_prefix} Optimizer Output data",
             df_day.to_csv(index=False, float_format="%.2f"),
@@ -2881,7 +2883,10 @@ if not auto_batch:
         df_cost = df_cost.round(2)
         df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
         st.dataframe(df_cost_style, width='stretch', hide_index=True)
-        total_label = "1h" if st.session_state.get("run_mode") == "hourly" else "24h"
+        if st.session_state.get("run_mode") == "hourly":
+            total_label = f"1h ({first_label})" if hours else "1h"
+        else:
+            total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
         total_cost_value = df_cost["Total Cost (INR)"].sum()
         st.markdown(
             f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
