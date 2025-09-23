@@ -4536,7 +4536,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 FLOW = st.session_state.get("FLOW", 1000.0)
                 RateDRA = st.session_state.get("RateDRA", 500.0)
                 linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
-                kv_list, rho_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill_df, stations_data)
                 for idx, stn in enumerate(stations_data):
                     key = stn['name'].lower().replace(' ', '_')
                     dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
@@ -4589,14 +4589,16 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         pass  # placeholder for efficiency adjustment
                 new_RateDRA = RateDRA * (1 - dra_cost_impr / 100)
                 new_FLOW = FLOW * (1 + flow_change / 100)
-                kv_list, rho_list, _ = map_linefill_to_segments(linefill_df, stations_data)
+                kv_list, rho_list, segment_slices = map_linefill_to_segments(
+                    linefill_df, stations_data
+                )
                 res2 = solve_pipeline(
                     stations_data,
                     term_data,
                     new_FLOW,
                     kv_list,
                     rho_list,
-                    None,
+                    segment_slices,
                     new_RateDRA,
                     Price_HSD,
                     st.session_state.get("Fuel_density", 820.0),
