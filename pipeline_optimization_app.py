@@ -1375,8 +1375,8 @@ def _merge_segment_profiles(
         if step <= tol:
             break
 
-        kv_entry = max(kv_now, kv_next, kv_max)
-        rho_entry = max(rho_now, rho_next, rho_max)
+        kv_entry = max(kv_now, kv_next)
+        rho_entry = max(rho_now, rho_next)
         merged.append({"length_km": step, "kv": kv_entry, "rho": rho_entry})
         rem_now -= step
         rem_next -= step

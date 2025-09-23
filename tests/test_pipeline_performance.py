@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
+    _volume_from_km,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -353,6 +354,68 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
         assert slices
         for entry in slices:
             assert {"length_km", "kv", "rho"} <= set(entry.keys())
+
+
+def test_merge_segment_profiles_preserves_heterogeneity():
+    import pipeline_optimization_app as app
+
+    stations = [
+        {
+            "name": "Station A",
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+        }
+    ]
+
+    d_inner = stations[0]["D"] - 2.0 * stations[0]["t"]
+
+    def make_vol_df(batches: list[tuple[float, float, float]], prefix: str) -> pd.DataFrame:
+        rows = []
+        for idx, (length_km, kv, rho) in enumerate(batches, start=1):
+            volume_m3 = _volume_from_km(length_km, d_inner)
+            rows.append(
+                {
+                    "Product": f"{prefix} Batch {idx}",
+                    "Volume (m³)": volume_m3,
+                    "Viscosity (cSt)": kv,
+                    "Density (kg/m³)": rho,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    current_df = make_vol_df(
+        [(4.0, 2.0, 820.0), (6.0, 3.0, 830.0)],
+        prefix="Current",
+    )
+    future_df = make_vol_df(
+        [(5.0, 4.5, 845.0), (5.0, 2.5, 810.0)],
+        prefix="Future",
+    )
+
+    kv_list, rho_list, segment_slices = app.combine_volumetric_profiles(
+        stations, current_df, future_df
+    )
+
+    assert kv_list == pytest.approx([4.5])
+    assert rho_list == pytest.approx([827.5])
+    assert len(segment_slices) == 1
+
+    slices = segment_slices[0]
+    assert len(slices) == 2
+
+    total_length = sum(entry["length_km"] for entry in slices)
+    assert total_length == pytest.approx(stations[0]["L"], rel=0.0, abs=1e-6)
+
+    assert slices[0]["length_km"] == pytest.approx(5.0, rel=0.0, abs=1e-6)
+    assert slices[0]["kv"] == pytest.approx(4.5)
+    assert slices[0]["rho"] == pytest.approx(845.0)
+
+    assert slices[1]["length_km"] == pytest.approx(5.0, rel=0.0, abs=1e-6)
+    assert slices[1]["kv"] == pytest.approx(3.0)
+    assert slices[1]["rho"] == pytest.approx(830.0)
+
+    assert any(entry["kv"] < kv_list[0] for entry in slices)
 
 
 def _load_linefill() -> list[dict]:
