@@ -1,9 +1,11 @@
+import contextlib
 import copy
 import json
 import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
 import pytest
 import sys
 
@@ -13,6 +15,10 @@ from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
 )
+
+
+def _null_spinner(_msg):
+    return contextlib.nullcontext()
 
 
 def _ensure_segment_slices(args, kwargs) -> None:
@@ -55,6 +61,117 @@ def solve_pipeline_with_types(*args, segment_slices=None, **kwargs):
     elif segment_slices is not None and "segment_slices" not in kwargs:
         kwargs["segment_slices"] = segment_slices
     return _solve_pipeline_with_types(*args, **kwargs)
+
+
+def test_run_all_updates_passes_segment_slices(monkeypatch):
+    import pipeline_optimization_app as app
+
+    session = app.st.session_state
+    tracked_keys = [
+        "stations",
+        "terminal_name",
+        "terminal_elev",
+        "terminal_head",
+        "FLOW",
+        "RateDRA",
+        "Price_HSD",
+        "Fuel_density",
+        "Ambient_temp",
+        "MOP_kgcm2",
+        "pump_shear_rate",
+        "InitDRAppm",
+        "linefill_df",
+    ]
+    sentinel = object()
+    previous_values = {key: session.get(key, sentinel) for key in tracked_keys}
+
+    session["stations"] = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": 8.0,
+            "D": 0.7,
+            "t": 0.007,
+        },
+    ]
+    session["terminal_name"] = "Terminal"
+    session["terminal_elev"] = 5.0
+    session["terminal_head"] = 15.0
+    session["FLOW"] = 1500.0
+    session["RateDRA"] = 10.0
+    session["Price_HSD"] = 0.0
+    session["Fuel_density"] = 820.0
+    session["Ambient_temp"] = 25.0
+    session["MOP_kgcm2"] = 100.0
+    session["pump_shear_rate"] = 0.0
+    session["InitDRAppm"] = 4.0
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 10000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": 15000.0,
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 830.0,
+            },
+        ]
+    )
+    session["linefill_df"] = vol_df
+
+    captured: dict[str, list] = {}
+
+    def fake_solver(
+        stations,
+        terminal,
+        flow,
+        kv_list,
+        rho_list,
+        segment_slices,
+        *args,
+        **kwargs,
+    ):
+        captured["segment_slices"] = segment_slices
+        result = {"stations_used": stations}
+        for stn in stations:
+            key = stn["name"].lower().replace(" ", "_")
+            result[f"pipeline_flow_{key}"] = 0.0
+        return result
+
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline_with_types", fake_solver)
+    monkeypatch.setattr(app, "build_station_table", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(app.st, "spinner", _null_spinner)
+    monkeypatch.setattr(app.st, "rerun", lambda: None)
+    monkeypatch.setattr(app.st, "error", lambda msg: (_ for _ in ()).throw(AssertionError(msg)))
+
+    try:
+        app.run_all_updates()
+
+        assert "segment_slices" in captured
+        segment_slices = captured["segment_slices"]
+        assert isinstance(segment_slices, list)
+        assert len(segment_slices) == len(session["stations"])
+        assert all(isinstance(entry, list) for entry in segment_slices)
+        assert all(entry for entry in segment_slices)
+    finally:
+        app.invalidate_results()
+        for key, value in previous_values.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
 
 
 def _load_linefill() -> list[dict]:
