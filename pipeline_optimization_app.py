@@ -1059,7 +1059,8 @@ def map_linefill_to_segments(linefill_df, stations):
     # delegate to volumetric mapper and return directly.
     if "Start (km)" not in cols or "End (km)" not in cols:
         if "Volume (m³)" in cols or "Volume" in cols:
-            return map_vol_linefill_to_segments(linefill_df, stations)
+            kv, rho, _ = map_vol_linefill_to_segments(linefill_df, stations)
+            return kv, rho
         # Fallback: assume uniform properties from the last row
         kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
         rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
@@ -1095,10 +1096,32 @@ def pipe_cross_section_area_m2(stations: list[dict]) -> float:
     d_inner = max(D - 2.0*t, 0.0)
     return float((pi * d_inner**2) / 4.0)
 
-def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) -> tuple[list[float], list[float]]:
-    """Convert a volumetric linefill table [Volume (m3), Visc, Density] to segment KV/rho.
+def map_vol_linefill_to_segments(
+    vol_table: pd.DataFrame, stations: list[dict]
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Convert a volumetric linefill table to per-segment fluid properties.
 
-    Assumes uniform diameter along the pipeline (uses first station D & t).
+    The returned tuple contains three parallel sequences with one entry per
+    segment (station):
+
+    ``kv_list``
+        The viscosity of the upstream-most batch touching the segment.  This
+        preserves the historical behaviour used by DRA lookups and other UI
+        features that expect a single representative viscosity per segment.
+
+    ``rho_list``
+        A length-weighted average density across the batches occupying the
+        segment.  This is used when converting heads to pressures.
+
+    ``segment_slices``
+        A list of ``{"length_km", "kv", "rho"}`` dictionaries describing the
+        sequence of batches that span the segment.  These slices are later fed
+        into the hydraulic solver so Darcy–Weisbach losses can be accumulated
+        over the heterogeneous fluid profile instead of assuming a single
+        viscosity.
+
+    Assumes uniform diameter along the pipeline (uses first station ``D``/``t``)
+    to convert volumes to kilometres.
     """
     A = pipe_cross_section_area_m2(stations)
     if A <= 0:
@@ -1119,38 +1142,67 @@ def map_vol_linefill_to_segments(vol_table: pd.DataFrame, stations: list[dict]) 
         batches.append({"len_km": length_km, "kv": visc, "rho": dens})
 
     # Map to segments (each station defines a segment length L)
-    seg_kv, seg_rho = [], []
+    seg_kv: list[float] = []
+    seg_rho: list[float] = []
+    seg_slices: list[list[dict]] = []
     seg_lengths = [s.get("L", 0.0) for s in stations]
     i_batch = 0
     remaining = batches[0]["len_km"] if batches else 0.0
-    kv_cur = batches[0]["kv"] if batches else 0.0
-    rho_cur = batches[0]["rho"] if batches else 0.0
+    kv_cur = batches[0]["kv"] if batches else 1.0
+    rho_cur = batches[0]["rho"] if batches else 850.0
 
     for L in seg_lengths:
         need = L
+        if L <= 0:
+            seg_kv.append(kv_cur)
+            seg_rho.append(rho_cur)
+            seg_slices.append([])
+            continue
+        segment_entries: list[dict] = []
         # Consume from batches until we cover this segment upstream-to-downstream
         while need > 1e-9:
             if remaining <= 1e-9:
                 i_batch += 1
                 if i_batch >= len(batches):
                     # If we ran out, extend with last known properties
-                    remaining = need
-                    # kv_cur, rho_cur unchanged
+                    segment_entries.append({
+                        "length_km": need,
+                        "kv": kv_cur,
+                        "rho": rho_cur,
+                    })
+                    need = 0.0
+                    break
                 else:
                     remaining = batches[i_batch]["len_km"]
                     kv_cur = batches[i_batch]["kv"]
                     rho_cur = batches[i_batch]["rho"]
+                    if remaining <= 1e-9:
+                        continue
             take = min(need, remaining)
-            # For per-segment properties, use the property of the upstream-most fluid in the segment.
-            # (Piecewise mixing could be done, but you asked to keep other logic unchanged.)
-            # So we only need the first batch's kv/rho per segment.
-            if need == L:
-                seg_kv.append(kv_cur)
-                seg_rho.append(rho_cur)
+            if take <= 0:
+                break
+            segment_entries.append({
+                "length_km": take,
+                "kv": kv_cur,
+                "rho": rho_cur,
+            })
             need -= take
             remaining -= take
+        if not segment_entries:
+            segment_entries.append({
+                "length_km": L,
+                "kv": kv_cur,
+                "rho": rho_cur,
+            })
+        seg_slices.append(segment_entries)
+        seg_kv.append(segment_entries[0]["kv"])
+        if L > 0:
+            avg_rho = sum(entry["length_km"] * entry["rho"] for entry in segment_entries) / L
+        else:
+            avg_rho = segment_entries[0]["rho"]
+        seg_rho.append(avg_rho)
 
-    return seg_kv, seg_rho
+    return seg_kv, seg_rho, seg_slices
 
 
 def shift_vol_linefill(
@@ -1389,7 +1441,7 @@ def build_summary_dataframe(
         if "Start (km)" in linefill_df.columns:
             kv_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         else:
-            kv_list, _ = map_vol_linefill_to_segments(linefill_df, stations_data)
+            kv_list, _, _ = map_vol_linefill_to_segments(linefill_df, stations_data)
     else:
         kv_list = [0.0] * len(stations_data)
 
@@ -1732,6 +1784,7 @@ def solve_pipeline(
     FLOW,
     KV_list,
     rho_list,
+    segment_slices,
     RateDRA,
     Price_HSD,
     Fuel_density,
@@ -1772,6 +1825,7 @@ def solve_pipeline(
                 FLOW,
                 KV_list,
                 rho_list,
+                segment_slices,
                 RateDRA,
                 Price_HSD,
                 Fuel_density,
@@ -1791,6 +1845,7 @@ def solve_pipeline(
                 FLOW,
                 KV_list,
                 rho_list,
+                segment_slices,
                 RateDRA,
                 Price_HSD,
                 Fuel_density,
@@ -1934,6 +1989,7 @@ if auto_batch:
                         FLOW,
                         kv_list,
                         rho_list,
+                        None,
                         RateDRA,
                         Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -1967,6 +2023,7 @@ if auto_batch:
                         FLOW,
                         kv_list,
                         rho_list,
+                        None,
                         RateDRA,
                         Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -2011,6 +2068,7 @@ if auto_batch:
                             FLOW,
                             kv_list,
                             rho_list,
+                            None,
                             RateDRA,
                             Price_HSD,
                             st.session_state.get("Fuel_density", 820.0),
@@ -2049,6 +2107,7 @@ if auto_batch:
                             FLOW,
                             kv_list,
                             rho_list,
+                            None,
                             RateDRA,
                             Price_HSD,
                             st.session_state.get("Fuel_density", 820.0),
@@ -2094,31 +2153,32 @@ if auto_batch:
                             row = {
                                 "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
                             }
-                            res = solve_pipeline(
-                                stations_data,
-                                term_data,
-                                FLOW,
-                                kv_list,
-                                rho_list,
-                                RateDRA,
-                                Price_HSD,
-                                st.session_state.get("Fuel_density", 820.0),
-                                st.session_state.get("Ambient_temp", 25.0),
-                                {},
-                                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                            )
-                            for idx, stn in enumerate(stations_data, start=1):
-                                key = stn['name'].lower().replace(' ', '_')
-                                row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
-                                add_speed_columns(row, res, stn)
-                                row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                                row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
-                                _ppm = res.get(f"dra_ppm_{key}", 0.0)
-                                row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
-                                row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
-                                row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
-                            row["Total Cost"] = res.get("total_cost", "")
-                            result_rows.append(row)
+                        res = solve_pipeline(
+                            stations_data,
+                            term_data,
+                            FLOW,
+                            kv_list,
+                            rho_list,
+                            None,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
+                            {},
+                            pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        )
+                        for idx, stn in enumerate(stations_data, start=1):
+                            key = stn['name'].lower().replace(' ', '_')
+                            row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
+                            add_speed_columns(row, res, stn)
+                            row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            _ppm = res.get(f"dra_ppm_{key}", 0.0)
+                            row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
+                            row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
+                            row[f"Drag Reduction {stn['name']}"] = res.get(f"drag_reduction_{key}", "")
+                        row["Total Cost"] = res.get("total_cost", "")
+                        result_rows.append(row)
                 df_batch = pd.DataFrame(result_rows)
                 st.session_state['batch_df'] = df_batch
             except Exception as e:
@@ -2301,7 +2361,8 @@ if not auto_batch:
 
         # Helper to compute segment kv/rho from volumetric table
         def kv_rho_from_vol(vol_df_now):
-            return map_vol_linefill_to_segments(vol_df_now, stations_base)
+            kv, rho, _ = map_vol_linefill_to_segments(vol_df_now, stations_base)
+            return kv, rho
 
         if is_hourly:
             hours = [7]
@@ -2355,6 +2416,7 @@ if not auto_batch:
                         FLOW_sched,
                         kv_list,
                         rho_list,
+                        None,
                         RateDRA,
                         Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -2595,9 +2657,9 @@ if not auto_batch:
                     pumped_m3 = flow * duration_hr
 
                     try:
-                        kv_now, rho_now = map_vol_linefill_to_segments(current_vol, stations_base)
+                        kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations_base)
                         future_vol, current_plan = shift_vol_linefill(current_vol.copy(), pumped_m3, current_plan)
-                        kv_next, rho_next = map_vol_linefill_to_segments(future_vol, stations_base)
+                        kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations_base)
                     except ValueError as e:
                         st.error(str(e))
                         st.stop()
@@ -2612,6 +2674,7 @@ if not auto_batch:
                         flow,
                         kv_run,
                         rho_run,
+                        slices_now,
                         RateDRA,
                         Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -4170,6 +4233,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         this_FLOW,
                         kv_list,
                         rho_list,
+                        None,
                         this_RateDRA,
                         this_Price_HSD,
                         st.session_state.get("Fuel_density", 820.0),
@@ -4309,6 +4373,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     new_FLOW,
                     kv_list,
                     rho_list,
+                    None,
                     new_RateDRA,
                     Price_HSD,
                     st.session_state.get("Fuel_density", 820.0),
