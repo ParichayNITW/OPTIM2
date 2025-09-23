@@ -15,6 +15,7 @@ from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
 )
+from schedule_utils import kv_rho_from_vol
 
 
 def _null_spinner(_msg):
@@ -177,6 +178,181 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session.pop(key, None)
             else:
                 session[key] = value
+
+
+def test_kv_rho_from_vol_returns_segment_slices() -> None:
+    stations = [
+        {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
+        {"name": "Station B", "L": 4.0, "D": 0.7, "t": 0.007},
+    ]
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 8000.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 820.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": 9000.0,
+                "Viscosity (cSt)": 3.5,
+                "Density (kg/m³)": 835.0,
+            },
+        ]
+    )
+
+    kv_list, rho_list, segment_slices = kv_rho_from_vol(vol_df, stations)
+
+    assert kv_list and rho_list
+    assert len(kv_list) == len(stations)
+    assert len(rho_list) == len(stations)
+    assert len(segment_slices) == len(stations)
+    for idx, slices in enumerate(segment_slices):
+        assert slices, f"Segment {idx} should have at least one slice"
+        total_length = sum(entry["length_km"] for entry in slices)
+        assert pytest.approx(total_length, rel=0.0, abs=1e-9) == stations[idx]["L"]
+
+
+@pytest.mark.parametrize("mode", ["hourly", "daily"])
+def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
+    import importlib
+    import pipeline_optimization_app as app
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 2800,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 180.0,
+            "L": 6.0,
+            "D": 0.7,
+            "t": 0.007,
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": 4.0,
+            "D": 0.7,
+            "t": 0.007,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 25.0}
+    current_vol = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 9000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 822.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": 7000.0,
+                "Viscosity (cSt)": 3.2,
+                "Density (kg/m³)": 830.0,
+            },
+        ]
+    )
+    future_vol = pd.DataFrame(
+        [
+            {
+                "Product": "New Batch",
+                "Volume (m³)": 5000.0,
+                "Viscosity (cSt)": 4.0,
+                "Density (kg/m³)": 840.0,
+            },
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 6000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 822.0,
+            },
+        ]
+    )
+
+    kv_list, rho_list, segment_slices = app.combine_volumetric_profiles(
+        stations, current_vol, future_vol
+    )
+
+    captured: dict[str, list[list[dict]]] = {}
+
+    def fake_solver(
+        stations_arg,
+        terminal_arg,
+        flow_arg,
+        kv_arg,
+        rho_arg,
+        segment_slices_arg,
+        *args,
+        **kwargs,
+    ):  # type: ignore[override]
+        captured["segment_slices"] = copy.deepcopy(segment_slices_arg)
+        return {"error": False, "loop_usage": [], "linefill": []}
+
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+
+    session = app.st.session_state
+    tracked = [
+        "MOP_kgcm2",
+        "pump_shear_rate",
+        "search_rpm_step",
+        "search_dra_step",
+        "search_coarse_multiplier",
+        "search_state_top_k",
+        "search_state_cost_margin",
+    ]
+    sentinel = object()
+    previous = {key: session.get(key, sentinel) for key in tracked}
+
+    try:
+        session.setdefault("search_rpm_step", 25)
+        session.setdefault("search_dra_step", 2)
+        session.setdefault("search_coarse_multiplier", 5.0)
+        session.setdefault("search_state_top_k", 50)
+        session.setdefault("search_state_cost_margin", 5000.0)
+        session.setdefault("MOP_kgcm2", 90.0)
+        session.setdefault("pump_shear_rate", 0.0)
+
+        flow = 1400.0 if mode == "daily" else 1200.0
+        hours = 24.0 if mode == "daily" else 1.0
+        app.solve_pipeline(
+            stations=copy.deepcopy(stations),
+            terminal=terminal,
+            FLOW=flow,
+            KV_list=kv_list,
+            rho_list=rho_list,
+            segment_slices=segment_slices,
+            RateDRA=5.0,
+            Price_HSD=0.0,
+            Fuel_density=820.0,
+            Ambient_temp=25.0,
+            linefill_dict=[],
+            hours=hours,
+            start_time="00:00",
+        )
+    finally:
+        for key, value in previous.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+    assert "segment_slices" in captured
+    segment_slices = captured["segment_slices"]
+    assert isinstance(segment_slices, list)
+    assert segment_slices
+    assert len(segment_slices) == len(stations)
+    for slices in segment_slices:
+        assert slices
+        for entry in slices:
+            assert {"length_km", "kv", "rho"} <= set(entry.keys())
 
 
 def _load_linefill() -> list[dict]:
