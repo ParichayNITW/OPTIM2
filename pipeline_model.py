@@ -2121,6 +2121,73 @@ def solve_pipeline(
         if coarse_res.get("error"):
             return coarse_res
         window = max(rpm_step, coarse_rpm_step)
+
+        zero_dra_ranges: dict[int, dict[str, tuple[int, int]]] = {}
+        for idx, stn in enumerate(stations):
+            zero_entry: dict[str, tuple[int, int]] = {
+                "dra_main": (0, 0),
+            }
+            loop_cfg = stn.get("loopline") or {}
+            if loop_cfg:
+                zero_entry["dra_loop"] = (0, 0)
+            if stn.get("is_pump", False):
+                st_rpm_min = int(_station_min_rpm(stn))
+                st_rpm_max = int(_station_max_rpm(stn))
+                if st_rpm_max <= 0 and st_rpm_min > 0:
+                    st_rpm_max = st_rpm_min
+                if st_rpm_min > st_rpm_max:
+                    st_rpm_min, st_rpm_max = st_rpm_max, st_rpm_min
+                zero_entry["rpm"] = (st_rpm_min, st_rpm_max)
+
+                pump_types_data = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
+                combo_source: Mapping[str, float] | None = None
+                if isinstance(stn.get("active_combo"), Mapping):
+                    combo_source = stn["active_combo"]  # type: ignore[index]
+                elif isinstance(stn.get("pump_combo"), Mapping):
+                    combo_source = stn["pump_combo"]  # type: ignore[index]
+                elif isinstance(stn.get("combo"), Mapping):
+                    combo_source = stn["combo"]  # type: ignore[index]
+                if pump_types_data and combo_source:
+                    for ptype, count in combo_source.items():
+                        if not isinstance(count, (int, float)) or count <= 0:
+                            continue
+                        pdata = pump_types_data.get(ptype, {})
+                        pmin_default = int(
+                            _station_min_rpm(
+                                stn,
+                                ptype=ptype,
+                                default=st_rpm_min,
+                            )
+                        )
+                        pmax_default = int(
+                            _station_max_rpm(
+                                stn,
+                                ptype=ptype,
+                                default=st_rpm_max if st_rpm_max > 0 else st_rpm_min,
+                            )
+                        )
+                        p_rmin = int(
+                            _extract_rpm(
+                                pdata.get("MinRPM"),
+                                default=pmin_default,
+                                prefer="min",
+                            )
+                        )
+                        p_rmax = int(
+                            _extract_rpm(
+                                pdata.get("DOL"),
+                                default=pmax_default,
+                                prefer="max",
+                            )
+                        )
+                        if p_rmax <= 0 and pmax_default > 0:
+                            p_rmax = pmax_default
+                        if p_rmin > p_rmax:
+                            p_rmin, p_rmax = p_rmax, p_rmin
+                        zero_entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
+
+            zero_dra_ranges[idx] = zero_entry
+
         ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
@@ -2240,7 +2307,37 @@ def solve_pipeline(
             state_cost_margin=state_cost_margin,
         )
 
+        zero_dra_result = solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            start_time,
+            pump_shear_rate=pump_shear_rate,
+            loop_usage_by_station=loop_usage_by_station,
+            enumerate_loops=False,
+            _internal_pass=True,
+            rpm_step=coarse_rpm_step,
+            dra_step=coarse_dra_step,
+            narrow_ranges=zero_dra_ranges,
+            coarse_multiplier=coarse_multiplier,
+            state_top_k=state_top_k,
+            state_cost_margin=state_cost_margin,
+        )
+
         candidates: list[dict] = []
+        if not zero_dra_result.get('error'):
+            candidates.append(zero_dra_result)
         if not refine_result.get('error'):
             candidates.append(refine_result)
 
