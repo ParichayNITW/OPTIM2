@@ -2458,8 +2458,20 @@ def run_all_updates():
         "elev": st.session_state.get("terminal_elev", 0.0),
         "min_residual": st.session_state.get("terminal_head", 10.0),
     }
-    linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-    kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
+    linefill_df = st.session_state.get("linefill_df")
+    if not isinstance(linefill_df, pd.DataFrame):
+        linefill_df = pd.DataFrame()
+
+    vol_linefill = st.session_state.get("linefill_vol_df")
+    if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
+        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(
+            vol_linefill, stations_data
+        )
+        linefill_df = vol_linefill
+    else:
+        kv_list, rho_list, segment_slices = derive_segment_profiles(
+            linefill_df, stations_data
+        )
 
     for idx, stn in enumerate(stations_data, start=1):
         if stn.get("is_pump", False):
