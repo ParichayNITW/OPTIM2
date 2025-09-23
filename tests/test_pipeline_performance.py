@@ -81,7 +81,6 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
         "Ambient_temp",
         "MOP_kgcm2",
         "pump_shear_rate",
-        "InitDRAppm",
         "linefill_df",
     ]
     sentinel = object()
@@ -113,8 +112,6 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
     session["Ambient_temp"] = 25.0
     session["MOP_kgcm2"] = 100.0
     session["pump_shear_rate"] = 0.0
-    session["InitDRAppm"] = 4.0
-
     vol_df = pd.DataFrame(
         [
             {
@@ -122,12 +119,14 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 "Volume (m³)": 10000.0,
                 "Viscosity (cSt)": 2.5,
                 "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 2",
                 "Volume (m³)": 15000.0,
                 "Viscosity (cSt)": 3.0,
                 "Density (kg/m³)": 830.0,
+                app.INIT_DRA_COL: 0.0,
             },
         ]
     )
