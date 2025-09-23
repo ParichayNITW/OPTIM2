@@ -2822,12 +2822,20 @@ if not auto_batch:
             df_disp_style = df_display.style.format(
                 "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
             )
+            if num_rows_disp:
+                df_disp_style = df_disp_style.background_gradient(
+                    cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
+                )
         else:
             num_cols_disp = [
                 c for c in df_display.columns if c not in ["Time", "Pattern", "Station", "Pump Name"]
             ]
             fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
             df_disp_style = df_display.style.format(fmt_disp)
+            if num_cols_disp:
+                df_disp_style = df_disp_style.background_gradient(
+                    cmap="Blues", subset=num_cols_disp
+                )
         st.dataframe(
             df_disp_style,
             width='stretch',
@@ -3146,10 +3154,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             df_sum.replace("NIL", np.nan, inplace=True)
             fmt_cols = {col: "{:.2f}" for col in df_sum.columns if col != "Parameters"}
             numeric_cols = df_sum.select_dtypes(include=[np.number]).columns
-            df_display = (
-                df_sum.style.format(fmt_cols, na_rep="NIL")
-                .background_gradient(cmap="Blues", subset=numeric_cols)
-            )
+            df_display = df_sum.style.format(fmt_cols, na_rep="NIL")
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
