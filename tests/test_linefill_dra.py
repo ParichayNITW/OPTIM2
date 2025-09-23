@@ -753,6 +753,51 @@ def test_running_pump_shears_trimmed_slug() -> None:
     )
 
 
+def test_origin_pump_preserves_initial_slug() -> None:
+    """Paradip origin should carry the inherited 4 ppm slug downstream intact."""
+
+    initial_ppm = 4
+    initial_queue = [{"length_km": 12.0, "dra_ppm": initial_ppm}]
+    stn_data = {"idx": 0, "is_pump": True, "d_inner": 0.7, "kv": 3.0}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 0.5
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+
+    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        pumped_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=0.0,
+        is_origin=True,
+    )
+
+    assert inj_ppm == 0
+    assert dra_segments
+    treated_length = sum(length for length, ppm in dra_segments if ppm == initial_ppm)
+    assert treated_length == pytest.approx(pumped_length, rel=1e-6)
+
+    queue_full = tuple(
+        (float(entry.get("length_km", 0.0) or 0.0), float(entry.get("dra_ppm", 0.0) or 0.0))
+        for entry in queue_after
+        if float(entry.get("length_km", 0.0) or 0.0) > 0
+    )
+    assert queue_full
+    pumped_slice = _take_queue_front(queue_full, pumped_length)
+    assert pumped_slice
+    assert pumped_slice[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert pumped_slice[0][1] == pytest.approx(initial_ppm, rel=1e-6)
+
+    remainder = _trim_queue_front(queue_full, pumped_length)
+    assert remainder
+    assert remainder[0][0] == pytest.approx(initial_queue[0]["length_km"] - pumped_length, rel=1e-6)
+    assert remainder[0][1] == pytest.approx(initial_ppm, rel=1e-6)
+
+
 def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
     """Global pump shear should attenuate drag reduction in the %DR domain."""
 
@@ -823,8 +868,8 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
             {"nop": 1, "dra_ppm_main": 0},
             True,
             0.3,
-            [(3.0, 10)],
-            [(2.0, 0), (3.0, 10), (20.0, 0)],
+            [(2.0, 4), (3.0, 10)],
+            [(2.0, 4), (3.0, 10), (20.0, 0)],
             [(2.0, 10.0), (20.0, 0.0)],
         ),
         (
@@ -1131,8 +1176,8 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     )
 
 
-def test_origin_station_without_injection_zeroes_slug() -> None:
-    """Origin pumps should drop inherited slugs to 0 ppm when not injecting."""
+def test_origin_station_without_injection_shears_slug() -> None:
+    """Origin pumps shear inherited slugs according to the local factor."""
 
     initial_queue = [{"length_km": 5.0, "dra_ppm": 30}]
     stn_data = {"is_pump": True, "d_inner": 0.7, "idx": 0}
@@ -1142,7 +1187,12 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
     segment_length = pumped_length / 2.0
 
-    for shear_factor in (1.0, 0.25):
+    cases = (
+        (1.0, 0),
+        (0.25, 4),
+    )
+
+    for shear_factor, expected_front in cases:
         dra_segments, queue_after, _ = _update_mainline_dra(
             initial_queue,
             stn_data,
@@ -1154,11 +1204,20 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
             dra_shear_factor=shear_factor,
         )
 
-        assert not dra_segments
+        if expected_front == 0:
+            assert not dra_segments
+        else:
+            assert dra_segments
+            assert dra_segments[0][1] == expected_front
         assert queue_after
-        assert queue_after[0]["dra_ppm"] == 0
+        assert queue_after[0]["dra_ppm"] == expected_front
         assert queue_after[0]["length_km"] == pytest.approx(
             pumped_length,
+            rel=1e-6,
+        )
+        assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
+        assert queue_after[1]["length_km"] == pytest.approx(
+            initial_queue[0]["length_km"] - pumped_length,
             rel=1e-6,
         )
 
