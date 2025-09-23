@@ -117,6 +117,19 @@ st.markdown("""
         background: #b71c1c;
         color: #fff;
     }
+    .stDownloadButton button {
+        background: linear-gradient(90deg, #d32f2f 30%, #c62828 100%);
+        color: #fff !important;
+        font-weight: 600;
+        border: none;
+        border-radius: 12px;
+        box-shadow: 0 3px 18px #d32f2f44;
+        transition: background 0.19s;
+    }
+    .stDownloadButton button:hover {
+        background: #b71c1c;
+        color: #fff !important;
+    }
     .action-btn-row {
         display: flex;
         justify-content: flex-end;
