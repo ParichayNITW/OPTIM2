@@ -6,10 +6,24 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from pipeline_model import (
-    solve_pipeline,
+    solve_pipeline as _solve_pipeline,
     _prepare_dra_queue_consumption,
     _update_mainline_dra,
 )
+
+
+def solve_pipeline(*args, segment_slices=None, **kwargs):
+    if "stations" in kwargs:
+        stations = kwargs["stations"]
+    elif args:
+        stations = args[0]
+    else:
+        raise TypeError("stations must be provided")
+    if segment_slices is None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = [[] for _ in stations]
+    elif segment_slices is not None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = segment_slices
+    return _solve_pipeline(*args, **kwargs)
 
 
 def _dra_length_km(linefill: list[dict], diameter: float) -> float:

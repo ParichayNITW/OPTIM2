@@ -5,6 +5,7 @@ import math
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +21,104 @@ from pipeline_model import (
     _trim_queue_front,
     _update_mainline_dra,
     _volume_from_km,
-    solve_pipeline,
+    _segment_hydraulics,
+    solve_pipeline as _solve_pipeline,
 )
+
+from pipeline_optimization_app import map_vol_linefill_to_segments
+
+
+def solve_pipeline(*args, segment_slices=None, **kwargs):
+    if "stations" in kwargs:
+        stations = kwargs["stations"]
+    elif args:
+        stations = args[0]
+    else:
+        raise TypeError("stations must be provided")
+    if segment_slices is None and "segment_slices" not in kwargs:
+        segment_slices = [[] for _ in stations]
+        kwargs["segment_slices"] = segment_slices
+    elif segment_slices is not None and "segment_slices" not in kwargs:
+        kwargs["segment_slices"] = segment_slices
+    return _solve_pipeline(*args, **kwargs)
+
+
+def test_segment_head_loss_respects_multi_batch_profiles() -> None:
+    """Head loss should equal the sum over per-batch slices."""
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 1000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 190.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 10.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 20,
+            "max_dr": 0,
+            "power_type": "Grid",
+            "rate": 0.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 5, "elev": 0.0}
+
+    d_inner = stations[0]["d"]
+    vol_df = pd.DataFrame(
+        [
+            {"Product": "Batch 1", "Volume (m³)": _volume_from_km(4.0, d_inner), "Viscosity (cSt)": 2.0, "Density (kg/m³)": 820.0},
+            {"Product": "Batch 2", "Volume (m³)": _volume_from_km(6.0, d_inner), "Viscosity (cSt)": 4.0, "Density (kg/m³)": 870.0},
+        ]
+    )
+    kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(vol_df, stations)
+
+    flow_rate = 1200.0
+    result = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        FLOW=flow_rate,
+        KV_list=kv_list,
+        rho_list=rho_list,
+        segment_slices=segment_slices,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        enumerate_loops=False,
+    )
+
+    assert not result.get("error"), result.get("message")
+    head_loss_solver = result["head_loss_station_a"]
+
+    manual_loss = 0.0
+    for slice_entry in segment_slices[0]:
+        hl, *_ = _segment_hydraulics(
+            flow_rate,
+            slice_entry["length_km"],
+            d_inner,
+            stations[0]["rough"],
+            slice_entry["kv"],
+            0.0,
+            None,
+        )
+        manual_loss += hl
+
+    assert head_loss_solver == pytest.approx(manual_loss, rel=1e-5)
 
 
 def _make_pump_station(name: str, *, max_dr: int = 0) -> dict:
@@ -1036,10 +1133,8 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     ) -> tuple[float, float, float, float]:
         base = 80.0 if float(length) < 6.0 else 60.0
         reduction = 0.0
-        if float(length) < 6.0 and dra > 0:
-            reduction = 0.2
-        elif float(length) >= 6.0 and dra > 0:
-            reduction = 30.0
+        if dra > 0:
+            reduction = 40.0 if float(length) < 6.0 else 60.0
         head_loss = base - reduction
         return head_loss, 1.0, 1.0, 0.01
 
@@ -1080,6 +1175,8 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     ) -> tuple[list[tuple[float, int]], list[dict], int]:
         seg_len = float(segment_length or 0.0)
         ppm = int(opt.get("dra_ppm_main", 0) or 0)
+        if ppm <= 0 and float(opt.get("dra_main", 0) or 0) > 0:
+            ppm = 5
         queue_entries: list[tuple[float, float]] = []
         if queue:
             for raw in queue:
@@ -1112,7 +1209,51 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     def fake_get_dr(kv: float, ppm: float) -> float:
         return float(ppm) / 10.0
 
+    def fake_composite(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv_default: float,
+        dra_perc: float,
+        dra_length: float | None = None,
+        slices=None,
+        limit: float | None = None,
+    ) -> tuple[float, float, float, float]:
+        target_length = length if limit is None else min(float(limit), float(length))
+        total_head = 0.0
+        stats: tuple[float, float, float] | None = None
+        remaining = target_length
+        remaining_dra = dra_length
+        if slices:
+            for entry in slices:
+                seg_len = min(float(entry.get("length_km", 0.0) or 0.0), remaining)
+                if seg_len <= 0:
+                    continue
+                use_kv = float(entry.get("kv", kv_default) or kv_default)
+                dra_seg = 0.0
+                if remaining_dra is not None:
+                    dra_seg = float(min(remaining_dra, seg_len))
+                    remaining_dra -= dra_seg
+                head, v, Re, f = fake_segment(flow, seg_len, d_inner, rough, use_kv, dra_perc, dra_seg)
+                total_head += head
+                if stats is None:
+                    stats = (v, Re, f)
+                remaining -= seg_len
+                if remaining <= 0:
+                    break
+        if remaining > 1e-9:
+            extra_dra = float(remaining_dra) if remaining_dra is not None else 0.0
+            head, v, Re, f = fake_segment(flow, remaining, d_inner, rough, kv_default, dra_perc, extra_dra)
+            total_head += head
+            if stats is None:
+                stats = (v, Re, f)
+        if stats is None:
+            stats = (1.0, 1.0, 0.01)
+        return total_head, stats[0], stats[1], stats[2]
+
     monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+    monkeypatch.setattr(pm, "_segment_hydraulics_composite", fake_composite)
     monkeypatch.setattr(pm, "_pump_head", fake_pump_head)
     monkeypatch.setattr(pm, "_update_mainline_dra", fake_update)
     monkeypatch.setattr(pm, "get_ppm_for_dr", fake_get_ppm)
@@ -1134,7 +1275,11 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
         FLOW=3000.0,
         KV_list=[3.0, 3.0, 3.0],
         rho_list=[850.0, 850.0, 850.0],
-        RateDRA=0.5,
+        segment_slices=[
+            [{"length_km": stations[0]["L"], "kv": 3.0, "rho": 850.0}],
+            [{"length_km": stations[1]["L"], "kv": 3.0, "rho": 850.0}],
+        ],
+        RateDRA=0.0,
         Price_HSD=0.0,
         Fuel_density=0.85,
         Ambient_temp=25.0,
