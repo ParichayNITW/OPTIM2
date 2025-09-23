@@ -130,6 +130,7 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
         ]
     )
     session["linefill_df"] = vol_df
+    session["linefill_vol_df"] = vol_df
 
     captured: dict[str, list] = {}
 
@@ -161,6 +162,7 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
 
         assert "segment_slices" in captured
         segment_slices = captured["segment_slices"]
+        assert segment_slices is not None
         assert isinstance(segment_slices, list)
         assert len(segment_slices) == len(session["stations"])
         assert all(isinstance(entry, list) for entry in segment_slices)
