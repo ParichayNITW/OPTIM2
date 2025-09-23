@@ -1018,7 +1018,124 @@ def _segment_hydraulics(
     return head_loss, v, Re, f
 
 
-@njit(cache=True, fastmath=True)
+def _segment_hydraulics_composite(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv_default: float,
+    dra_perc: float,
+    dra_length: float | None = None,
+    slices: list[dict] | tuple[dict, ...] | None = None,
+    limit: float | None = None,
+) -> tuple[float, float, float, float]:
+    """Accumulate hydraulic losses across heterogeneous linefill slices.
+
+    ``slices`` is a sequence of dictionaries each containing ``length_km``,
+    ``kv`` and ``rho`` entries describing the batches occupying the segment in
+    upstream-to-downstream order.  ``limit`` may truncate the calculation to
+    the first ``limit`` kilometres of the segment (useful for intermediate
+    peaks).  When no slices are provided the function falls back to treating
+    the segment as uniform with ``kv_default``.
+    """
+
+    try:
+        total_length = float(L)
+    except (TypeError, ValueError):
+        total_length = 0.0
+    if limit is not None:
+        try:
+            total_length = min(total_length, max(0.0, float(limit)))
+        except (TypeError, ValueError):
+            total_length = max(0.0, total_length)
+    if total_length <= 0.0:
+        dra_lim = None if dra_length is None else 0.0
+        return _segment_hydraulics(flow_m3h, 0.0, d_inner, rough, kv_default, dra_perc, dra_lim)
+
+    # Normalise slice data
+    slice_seq: list[dict] = []
+    if slices:
+        for entry in slices:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                seg_len = float(entry.get('length_km', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_len = 0.0
+            if seg_len <= 0.0:
+                continue
+            try:
+                seg_kv = float(entry.get('kv', kv_default) or kv_default)
+            except (TypeError, ValueError):
+                seg_kv = kv_default
+            try:
+                seg_rho = float(entry.get('rho', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_rho = 0.0
+            slice_seq.append({'length_km': seg_len, 'kv': seg_kv, 'rho': seg_rho})
+
+    dra_available = None
+    if dra_length is not None:
+        try:
+            dra_available = min(total_length, max(0.0, float(dra_length)))
+        except (TypeError, ValueError):
+            dra_available = max(0.0, total_length)
+
+    if not slice_seq:
+        return _segment_hydraulics(
+            flow_m3h,
+            total_length,
+            d_inner,
+            rough,
+            kv_default,
+            dra_perc,
+            dra_available,
+        )
+
+    remaining = total_length
+    remaining_dra = dra_available
+    total_hl = 0.0
+    first_stats: tuple[float, float, float] | None = None
+    last_kv = kv_default if kv_default > 0 else 1.0
+
+    for entry in slice_seq:
+        if remaining <= 1e-9:
+            break
+        seg_len = entry['length_km']
+        take = min(seg_len, remaining)
+        if take <= 0.0:
+            continue
+        seg_kv = entry['kv'] if entry['kv'] > 0 else last_kv
+        last_kv = seg_kv
+        if remaining_dra is None:
+            dra_seg = None
+        else:
+            dra_seg = min(remaining_dra, take)
+            remaining_dra -= dra_seg
+        hl, v, Re, f = _segment_hydraulics(flow_m3h, take, d_inner, rough, seg_kv, dra_perc, dra_seg)
+        total_hl += float(hl)
+        if first_stats is None:
+            first_stats = (float(v), float(Re), float(f))
+        remaining -= take
+
+    if remaining > 1e-9:
+        if remaining_dra is None:
+            dra_seg = None
+        else:
+            dra_seg = min(remaining_dra, remaining)
+            remaining_dra -= dra_seg
+        hl, v, Re, f = _segment_hydraulics(flow_m3h, remaining, d_inner, rough, last_kv, dra_perc, dra_seg)
+        total_hl += float(hl)
+        if first_stats is None:
+            first_stats = (float(v), float(Re), float(f))
+
+    if first_stats is None:
+        _, v, Re, f = _segment_hydraulics(flow_m3h, total_length, d_inner, rough, kv_default, dra_perc, dra_available)
+        first_stats = (float(v), float(Re), float(f))
+
+    return total_hl, first_stats[0], first_stats[1], first_stats[2]
+
+
 def _parallel_segment_hydraulics(
     flow_m3h: float,
     main_L: float,
@@ -1032,42 +1149,48 @@ def _parallel_segment_hydraulics(
     loop_dra: float,
     loop_dra_len: float,
     kv: float,
+    main_slices: list[dict] | tuple[dict, ...] | None = None,
 ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
     """Split ``flow_m3h`` between mainline and loopline so both see equal head loss."""
 
-    flow_m3h = np.float64(flow_m3h)
-    main_L = np.float64(main_L)
-    main_d_inner = np.float64(main_d_inner)
-    main_rough = np.float64(main_rough)
-    main_dra = np.float64(main_dra)
-    main_dra_len = np.float64(main_dra_len)
-    loop_L = np.float64(loop_L)
-    loop_d_inner = np.float64(loop_d_inner)
-    loop_rough = np.float64(loop_rough)
-    loop_dra = np.float64(loop_dra)
-    loop_dra_len = np.float64(loop_dra_len)
-    kv = np.float64(kv)
-
-    def calc(line_flow: float, L: float, d_inner: float, rough: float, dra: float, dra_len: float) -> tuple[float, float, float, float]:
-        return _segment_hydraulics(line_flow, L, d_inner, rough, kv, dra, dra_len)
-
-    lo = np.float64(0.0)
+    flow_m3h = float(flow_m3h)
+    lo = 0.0
     hi = flow_m3h
-    best = (np.float64(0.0), (np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0)),
-            (np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0)))
+    best = (
+        0.0,
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    )
     for _ in range(20):
-        mid = (lo + hi) / np.float64(2.0)
+        mid = (lo + hi) / 2.0
         q_loop = mid
         q_main = flow_m3h - q_loop
-        hl_main, v_main, Re_main, f_main = calc(q_main, main_L, main_d_inner, main_rough, main_dra, main_dra_len)
-        hl_loop, v_loop, Re_loop, f_loop = calc(q_loop, loop_L, loop_d_inner, loop_rough, loop_dra, loop_dra_len)
+        hl_main, v_main, Re_main, f_main = _segment_hydraulics_composite(
+            q_main,
+            main_L,
+            main_d_inner,
+            main_rough,
+            kv,
+            main_dra,
+            main_dra_len,
+            slices=main_slices,
+        )
+        hl_loop, v_loop, Re_loop, f_loop = _segment_hydraulics(
+            q_loop,
+            loop_L,
+            loop_d_inner,
+            loop_rough,
+            kv,
+            loop_dra,
+            loop_dra_len,
+        )
         diff = hl_main - hl_loop
         best = (
             hl_main,
             (v_main, Re_main, f_main, q_main),
             (v_loop, Re_loop, f_loop, q_loop),
         )
-        if abs(diff) < np.float64(1e-6):
+        if abs(diff) < 1e-6:
             break
         if diff > 0:
             lo = mid
@@ -1490,6 +1613,7 @@ def _downstream_requirement(
     terminal: dict,
     segment_flows: list[float] | None,
     KV_list: list[float],
+    segment_slices: list[list[dict]] | None = None,
     flow_override: float | list[float] | None = None,
     loop_usage_by_station: list[int] | None = None,
     pump_flow_overrides: dict[int, float] | None = None,
@@ -1534,6 +1658,7 @@ def _downstream_requirement(
             return int(terminal.get('min_residual', 0))
         stn = stations[i]
         kv = KV_list[i]
+        slices = segment_slices[i] if segment_slices and i < len(segment_slices) else []
         # ``flows`` holds the flow rate *after* each station; use the downstream
         # value so losses reflect the correct segment flow between station ``i``
         # and ``i+1``.
@@ -1550,7 +1675,15 @@ def _downstream_requirement(
         rough = stn.get('rough', 0.00004)
         dra_down = stn.get('max_dr', 0)
 
-        head_loss, *_ = _segment_hydraulics(flow, L, d_inner, rough, kv, dra_down, None)
+        head_loss, *_ = _segment_hydraulics_composite(
+            flow,
+            L,
+            d_inner,
+            rough,
+            kv,
+            dra_down,
+            slices=slices,
+        )
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N - 1 else stations[i + 1].get('elev', 0.0)
         downstream = req_entry(i + 1)
@@ -1562,7 +1695,7 @@ def _downstream_requirement(
         # highest pressure.
         # Helper to compute the residual head requirement at intermediate peaks.
         # ``flow_rate`` is the volumetric flow rate (m³/h) used to compute friction to the peak.
-        def peak_requirement(flow_rate: float, peaks, d_pipe: float, rough_pipe: float, dra_perc: float) -> float:
+        def peak_requirement(flow_rate: float, peaks, d_pipe: float, rough_pipe: float, dra_perc: float, slices_local) -> float:
             req_local = 0.0
             for peak in peaks or []:
                 # Peak location can be stored under various keys
@@ -1570,14 +1703,23 @@ def _downstream_requirement(
                 elev_peak = peak.get('elev') or peak.get('Elevation (m)') or peak.get('Elevation')
                 if dist is None or elev_peak is None:
                     continue
-                head_peak, *_ = _segment_hydraulics(flow_rate, float(dist), d_pipe, rough_pipe, kv, dra_perc)
+                head_peak, *_ = _segment_hydraulics_composite(
+                    flow_rate,
+                    L,
+                    d_pipe,
+                    rough_pipe,
+                    kv,
+                    dra_perc,
+                    slices=slices_local,
+                    limit=float(dist),
+                )
                 req_p = head_peak + (float(elev_peak) - elev_i) + 25.0
                 if req_p > req_local:
                     req_local = req_p
             return req_local
 
         # Compute peak requirement on the mainline using downstream flow ``flow``.
-        peak_req_main = peak_requirement(flow, stn.get('peaks'), d_inner, rough, dra_down)
+        peak_req_main = peak_requirement(flow, stn.get('peaks'), d_inner, rough, dra_down, slices)
         peak_req = peak_req_main
         # Compute peak requirement on the loopline.  When the loop carries flow beyond this station
         # (e.g. under bypass), we conservatively use the upstream flow ``flows[i]`` to estimate
@@ -1594,7 +1736,7 @@ def _downstream_requirement(
             rough_loop = loop.get('rough', rough)
             dra_loop = loop.get('max_dr', 0.0)
             # Use the upstream flow ``flows[i]`` for loop peaks to account for bypassed flow.
-            peak_req_loop = peak_requirement(loop_flow, loop.get('peaks'), d_inner_loop, rough_loop, dra_loop)
+            peak_req_loop = peak_requirement(loop_flow, loop.get('peaks'), d_inner_loop, rough_loop, dra_loop, None)
             peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
@@ -1653,6 +1795,7 @@ def solve_pipeline(
     FLOW: float,
     KV_list: list[float],
     rho_list: list[float],
+    segment_slices: list[list[dict]] | None,
     RateDRA: float,
     Price_HSD: float,
     Fuel_density: float,
@@ -1676,6 +1819,12 @@ def solve_pipeline(
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
+
+    ``segment_slices`` provides the per-segment breakdown of batches along the
+    mainline.  Each entry is a list of ``{"length_km", "kv", "rho"}``
+    dictionaries representing the order in which product batches occupy the
+    segment.  When ``None`` each segment is treated as uniform with the
+    corresponding ``KV_list`` and ``rho_list`` values.
 
     ``linefill`` describes the current batches in the pipeline as a sequence of
     dictionaries with at least ``volume`` (m³) and ``dra_ppm`` keys.  The
@@ -1755,6 +1904,18 @@ def solve_pipeline(
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
+    if segment_slices is None:
+        segment_slices = [[] for _ in stations]
+    else:
+        cleaned_slices: list[list[dict]] = []
+        for idx in range(len(stations)):
+            if idx < len(segment_slices):
+                seq = segment_slices[idx] or []
+                cleaned_slices.append(list(seq))
+            else:
+                cleaned_slices.append([])
+        segment_slices = cleaned_slices
+
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
     # specified.  Each candidate pattern is mapped onto the stations with
@@ -1773,6 +1934,7 @@ def solve_pipeline(
                 FLOW,
                 KV_list,
                 rho_list,
+                segment_slices,
                 RateDRA,
                 Price_HSD,
                 Fuel_density,
@@ -1833,6 +1995,7 @@ def solve_pipeline(
                 FLOW,
                 KV_list,
                 rho_list,
+                segment_slices,
                 RateDRA,
                 Price_HSD,
                 Fuel_density,
@@ -1935,6 +2098,7 @@ def solve_pipeline(
             FLOW,
             KV_list,
             rho_list,
+            segment_slices,
             RateDRA,
             Price_HSD,
             Fuel_density,
@@ -2054,6 +2218,7 @@ def solve_pipeline(
             FLOW,
             KV_list,
             rho_list,
+            segment_slices,
             RateDRA,
             Price_HSD,
             Fuel_density,
@@ -2087,6 +2252,7 @@ def solve_pipeline(
                 FLOW,
                 KV_list,
                 rho_list,
+                segment_slices,
                 RateDRA,
                 Price_HSD,
                 Fuel_density,
@@ -2401,6 +2567,7 @@ def solve_pipeline(
             'idx': i - 1,
             'kv': kv,
             'rho': rho,
+            'linefill_slices': segment_slices[i - 1] if i - 1 < len(segment_slices) else [],
             'L': L,
             'd_inner': d_inner,
             'rough': rough,
@@ -2446,6 +2613,7 @@ def solve_pipeline(
             terminal,
             segment_flows,
             KV_list,
+            segment_slices,
             loop_usage_by_station=loop_usage_by_station,
         )
         for idx in range(N)
@@ -2626,7 +2794,7 @@ def solve_pipeline(
                     dra_len_main = 0.0
                 scenarios = []
                 # Base scenario: flow through mainline only
-                hl_single, v_single, Re_single, f_single = _segment_hydraulics(
+                hl_single, v_single, Re_single, f_single = _segment_hydraulics_composite(
                     flow_total,
                     stn_data['L'],
                     stn_data['d_inner'],
@@ -2634,6 +2802,7 @@ def solve_pipeline(
                     stn_data['kv'],
                     eff_dra_main,
                     dra_len_main,
+                    slices=stn_data.get('linefill_slices'),
                 )
                 scenarios.append({
                     'head_loss': hl_single,
@@ -2668,6 +2837,7 @@ def solve_pipeline(
                         eff_dra_loop,
                         dra_len_loop,
                         stn_data['kv'],
+                        stn_data.get('linefill_slices'),
                     )
                     v_m, Re_m, f_m, q_main = main_stats
                     v_l, Re_l, f_l, q_loop = loop_stats
@@ -2871,12 +3041,20 @@ def solve_pipeline(
                             eff_dra_loop_tot,
                             length_loop_total if eff_dra_loop_tot > 0 else 0.0,
                             stn_data['kv'],
+                            (
+                                (stn_data.get('linefill_slices') or [])
+                                + (
+                                    station_opts[stn_data['idx'] + 1].get('linefill_slices')
+                                    if stn_data['idx'] + 1 < len(station_opts)
+                                    else []
+                                )
+                            ),
                         )
                         v_main_tot, Re_main_tot, f_main_tot, q_main_tot = main_stats_tot
                         v_loop_tot, Re_loop_tot, f_loop_tot, q_loop_tot = loop_stats_tot
                         # Recompute head loss for the first segment using the split
                         # flow on this segment.  Apply the same drag reduction
-                        hl_main_seg, v_main_seg, Re_main_seg, f_main_seg = _segment_hydraulics(
+                        hl_main_seg, v_main_seg, Re_main_seg, f_main_seg = _segment_hydraulics_composite(
                             q_main_tot,
                             stn_data['L'],
                             stn_data['d_inner'],
@@ -2884,6 +3062,7 @@ def solve_pipeline(
                             stn_data['kv'],
                             eff_dra_main_tot,
                             stn_data['L'] if eff_dra_main_tot > 0 else 0.0,
+                            slices=stn_data.get('linefill_slices'),
                         )
                         # Recompute loopline velocity and friction factor for the
                         # first segment.  The loopline may have different length
@@ -2986,6 +3165,7 @@ def solve_pipeline(
                             terminal,
                             seg_flows_tmp,
                             KV_list,
+                            segment_slices,
                             loop_usage_by_station=loop_usage_by_station,
                             pump_flow_overrides=pump_overrides,
                         )
@@ -3255,6 +3435,7 @@ def solve_pipeline_with_types(
     FLOW: float,
     KV_list: list[float],
     rho_list: list[float],
+    segment_slices: list[list[dict]] | None,
     RateDRA: float,
     Price_HSD: float,
     Fuel_density: float,
@@ -3279,12 +3460,29 @@ def solve_pipeline_with_types(
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
+    if segment_slices is None:
+        segment_slices = [[] for _ in stations]
+    else:
+        cleaned: list[list[dict]] = []
+        for idx in range(len(stations)):
+            if idx < len(segment_slices):
+                cleaned.append(list(segment_slices[idx] or []))
+            else:
+                cleaned.append([])
+        segment_slices = cleaned
+
     best_result = None
     best_cost = float('inf')
     best_stations = None
     N = len(stations)
 
-    def expand_all(pos: int, stn_acc: list[dict], kv_acc: list[float], rho_acc: list[float]):
+    def expand_all(
+        pos: int,
+        stn_acc: list[dict],
+        kv_acc: list[float],
+        rho_acc: list[float],
+        slices_acc: list[list[dict]],
+    ):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
             # When all stations have been expanded into individual pump units,
@@ -3337,6 +3535,7 @@ def solve_pipeline_with_types(
                     FLOW,
                     kv_acc,
                     rho_acc,
+                    slices_acc,
                     RateDRA,
                     Price_HSD,
                     Fuel_density,
@@ -3370,6 +3569,7 @@ def solve_pipeline_with_types(
         stn = stations[pos]
         kv = KV_list[pos]
         rho = rho_list[pos]
+        current_slices = list(segment_slices[pos] if pos < len(segment_slices) else [])
 
         if stn.get('pump_types'):
             # Determine available counts for each type
@@ -3460,11 +3660,17 @@ def solve_pipeline_with_types(
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                         unit['max_pumps'] = actA + actB
                         unit['min_pumps'] = actA + actB
-                        expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho])
+                        expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
         else:
-            expand_all(pos + 1, stn_acc + [copy.deepcopy(stn)], kv_acc + [kv], rho_acc + [rho])
+            expand_all(
+                pos + 1,
+                stn_acc + [copy.deepcopy(stn)],
+                kv_acc + [kv],
+                rho_acc + [rho],
+                slices_acc + [current_slices],
+            )
 
-    expand_all(0, [], [], [])
+    expand_all(0, [], [], [], [])
 
     if best_result is None:
         return {
