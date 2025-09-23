@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping
-from itertools import product, combinations
+from itertools import product
 import math
 
 import numpy as np
@@ -131,28 +131,6 @@ def _extract_rpm(
     return _coerce_float(value, default)
 
 
-def _normalise_subset_limit(limit: int | None, total: int) -> int:
-    """Return a sane subset size limit bounded by ``total``.
-
-    ``limit`` may be ``None`` (interpreted as ``total``), non-integral or
-    non-positive.  The helper coerces it to an integer in the interval
-    ``[1, total]`` while treating ``None`` as ``total`` and falling back to
-    ``total`` for invalid values.
-    """
-
-    if total <= 0:
-        return 0
-    if limit is None:
-        return total
-    try:
-        limit_int = int(limit)
-    except (TypeError, ValueError):
-        return total
-    if limit_int <= 0:
-        return 1
-    return min(limit_int, total)
-
-
 def _station_min_rpm(
     stn: Mapping[str, object],
     ptype: str | None = None,
@@ -234,185 +212,122 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
 # Custom loop-case enumeration respecting pipe diameters
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_diameter(
-    num_loops: int,
-    equal_diameter: bool,
-    *,
-    max_subset_size: int | None = 2,
-) -> list[list[int]]:
+def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> list[list[int]]:
     """Generate loop usage patterns tailored to pipe diameter equality.
 
     When ``equal_diameter`` is ``True`` the returned cases correspond to
-    combinations required by Case‑1 in the problem description augmented with
-    additional multi-loop patterns.  Besides the "all off" and "all parallel"
-    scenarios the helper now returns subsets of loops operating in parallel up
-    to ``max_subset_size`` (default 2) so that pairwise interactions are
-    explored when more than two loops exist.  Bypass and loop‑only modes are
-    still omitted because they are irrelevant when the loop and mainline
-    diameters are identical.
+    combinations required by Case‑1 in the problem description: no loops,
+    parallel loops on all segments and each individual loop in parallel.  For
+    instance, with two loops this yields four cases: `[0, 0]`, `[1, 1]`,
+    `[0, 1]` and `[1, 0]`.  Bypass and loop‑only modes are not returned
+    because they are irrelevant when the loop and mainline diameters are
+    identical.
 
-    When ``equal_diameter`` is ``False`` the returned cases reflect Case‑2 with
-    extra staggered bypass and loop-only combinations.  All loops off and all
-    loops running in loop-only mode remain, but the helper additionally emits
-    subsets of loops in loop-only mode (bounded by ``max_subset_size``) and
-    bypass directives for each loop.  When bypassing one loop the remaining
-    differing loops may also be placed into loop-only mode subject to the
-    subset limit.  This provides representative multi-loop behaviour without
-    exploding the state space.
+    When ``equal_diameter`` is ``False`` the returned cases reflect Case‑2:
+    no loops, loop‑only across the entire pipeline and a bypass case.  With
+    multiple loops the bypass directive applies only to the first looped
+    segment because the specification assumes that the loop bypasses the
+    next pump and rejoins the mainline downstream of that station.  Additional
+    loops are disabled in this case.  For a single loop this yields three
+    cases: `[0]`, `[3]` and `[2]`; for two loops: `[0, 0]`, `[3, 3]` and
+    `[2, 0]`.  When more than two loops exist the patterns generalise to
+    `[0, 0, ...]`, `[3, 3, ...]` and `[2, 0, 0, ...]`.
     """
     if num_loops <= 0:
         return [[]]
-    limit = _normalise_subset_limit(max_subset_size, num_loops)
-    cases: list[list[int]] = []
-    # All loops disabled (mainline only)
-    cases.append([0] * num_loops)
-
     if equal_diameter:
-        # Case‑1: parallel-only interactions capped by subset size.
+        # Case‑1: only consider off/on combinations without bypass or loop-only.
+        cases: list[list[int]] = []
+        # All loops off
+        cases.append([0] * num_loops)
+        # All loops on (parallel)
         cases.append([1] * num_loops)
-        for size in range(1, limit + 1):
-            for subset in combinations(range(num_loops), size):
-                cfg = [0] * num_loops
-                for idx in subset:
-                    cfg[idx] = 1
-                cases.append(cfg)
-        # Remove duplicates while preserving order
-        unique: list[list[int]] = []
-        for cfg in cases:
-            if cfg not in unique:
-                unique.append(cfg)
-        return unique
-
-    # Case‑2: differing diameters – include loop-only and bypass mixes.
-    cases.append([3] * num_loops)
-    # Loop-only subsets (beyond the all-loop-only case) within the limit
-    for size in range(1, limit + 1):
-        for subset in combinations(range(num_loops), size):
-            cfg = [0] * num_loops
-            for idx in subset:
-                cfg[idx] = 3
-            cases.append(cfg)
-
-    # Bypass each loop individually and optionally pair with loop-only subsets
-    max_loop_only_with_bypass = max(0, limit - 1)
-    for idx in range(num_loops):
-        base = [0] * num_loops
-        base[idx] = 2
-        cases.append(base)
-        if max_loop_only_with_bypass <= 0:
-            continue
-        others = [j for j in range(num_loops) if j != idx]
-        max_subset = min(max_loop_only_with_bypass, len(others))
-        for size in range(1, max_subset + 1):
-            for subset in combinations(others, size):
-                cfg = [0] * num_loops
-                cfg[idx] = 2
-                for j in subset:
-                    cfg[j] = 3
-                cases.append(cfg)
-
-    unique: list[list[int]] = []
-    for cfg in cases:
-        if cfg not in unique:
-            unique.append(cfg)
-    return unique
+        # Each loop individually on
+        for i in range(num_loops):
+            c = [0] * num_loops
+            c[i] = 1
+            if c not in cases:
+                cases.append(c)
+        return cases
+    else:
+        # Case‑2: consider mainline‑only, loop‑only and bypass for first loop.
+        cases: list[list[int]] = []
+        # All loops off (mainline only)
+        cases.append([0] * num_loops)
+        # All loops loop‑only
+        cases.append([3] * num_loops)
+        # Bypass on first loop and others off
+        c = [0] * num_loops
+        c[0] = 2
+        cases.append(c)
+        return cases
 
 # ---------------------------------------------------------------------------
 # Fine-grained loop-case enumeration based on per-loop diameter equality
 # ---------------------------------------------------------------------------
 
-def _generate_loop_cases_by_flags(
-    flags: list[bool],
-    *,
-    max_subset_size: int | None = 2,
-) -> list[list[int]]:
+def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
     """Return loop usage cases for pipelines with mixed diameter equality.
 
     ``flags`` contains one boolean per looped segment indicating whether the
     loopline diameter matches the mainline (``True``) or differs (``False``).
 
-    Behaviour follows the two cases described in the problem statement while
-    also including representative multi-loop patterns:
+    Behaviour follows the two cases described in the problem statement:
 
-    * **Case‑1** – When all flags are ``True`` the returned patterns mirror
-      :func:`_generate_loop_cases_by_diameter` with ``equal_diameter=True`` and
-      include subset activations up to ``max_subset_size`` in addition to the
-      "all off" and "all parallel" scenarios.
-    * **Case‑2** – When at least one flag is ``False`` the solver now considers
-      a richer set of combinations: all loops off, all differing loops in
-      loop-only mode, subsets of differing loops in loop-only mode (bounded by
-      ``max_subset_size``) and bypass directives for each differing loop with
-      optional loop-only companions while equal-diameter loops may still run in
-      parallel subsets when the differing loops remain idle.
+    * **Case‑1** – When all flags are ``True`` the returned patterns are the
+      same as :func:`_generate_loop_cases_by_diameter` with
+      ``equal_diameter=True``: all loops off, all parallel and each loop
+      individually in parallel.
+    * **Case‑2** – When at least one flag is ``False`` the solver considers
+      only three global scenarios for the differing loops: all loops off
+      (mainline only), all differing loops in loop-only mode with equal-diameter
+      loops disabled, and a bypass on the first differing loop with all other
+      loops disabled.  Equal-diameter loops may additionally operate in
+      parallel while all differing loops remain off.
 
     This tailored enumeration avoids invalid combinations such as bypassing
-    multiple loops simultaneously while still exploring pairwise and staggered
-    interactions.  When ``flags`` is empty an empty pattern is returned.
+    multiple loops simultaneously or running unequal pipes in parallel.
+    When ``flags`` is empty an empty pattern is returned.
     """
     if not flags:
         return [[]]
-    limit_total = _normalise_subset_limit(max_subset_size, len(flags))
     if all(flags):
-        # All loops have equal diameter → reuse simpler helper with limit
-        return _generate_loop_cases_by_diameter(
-            len(flags),
-            True,
-            max_subset_size=limit_total,
-        )
+        # All loops have equal diameter → reuse simpler helper
+        return _generate_loop_cases_by_diameter(len(flags), True)
 
     combos: list[list[int]] = []
     n = len(flags)
     # Base case: all loops off
     combos.append([0] * n)
 
+    # Equal-diameter loops may run in parallel when differing loops are off
     eq_positions = [i for i, eq in enumerate(flags) if eq]
-    diff_positions = [i for i, eq in enumerate(flags) if not eq]
-
     if eq_positions:
-        # All equal-diameter loops in parallel while others remain off
-        combos.append([1 if eq else 0 for eq in flags])
-        max_eq = _normalise_subset_limit(limit_total, len(eq_positions))
-        for size in range(1, max_eq + 1):
-            for subset in combinations(eq_positions, size):
-                cfg = [0] * n
-                for idx in subset:
-                    cfg[idx] = 1
-                combos.append(cfg)
+        # All equal loops on in parallel
+        all_eq_parallel = [1 if eq else 0 for eq in flags]
+        combos.append(all_eq_parallel)
+        # Each equal loop individually on
+        for i in eq_positions:
+            c = [0] * n
+            c[i] = 1
+            combos.append(c)
 
+    # Case-2 scenarios for differing loops
+    diff_positions = [i for i, eq in enumerate(flags) if not eq]
     if diff_positions:
-        # All differing loops loop-only (others off)
-        combos.append([3 if not eq else 0 for eq in flags])
-        max_diff = _normalise_subset_limit(limit_total, len(diff_positions))
-        for size in range(1, max_diff + 1):
-            for subset in combinations(diff_positions, size):
-                cfg = [0] * n
-                for idx in subset:
-                    cfg[idx] = 3
-                combos.append(cfg)
-
-        # Bypass possibilities for differing loops with optional loop-only peers
-        attach_limit = max(0, limit_total - 1)
-        for idx in diff_positions:
-            base = [0] * n
-            base[idx] = 2
-            combos.append(base)
-            if attach_limit <= 0:
-                continue
-            others = [j for j in diff_positions if j != idx]
-            max_subset = min(attach_limit, len(others))
-            for size in range(1, max_subset + 1):
-                for subset in combinations(others, size):
-                    cfg = [0] * n
-                    cfg[idx] = 2
-                    for j in subset:
-                        cfg[j] = 3
-                    combos.append(cfg)
+        # All differing loops in loop-only mode (others off)
+        loop_only = [3 if not eq else 0 for eq in flags]
+        combos.append(loop_only)
+        # Bypass only the first differing loop
+        bypass_first = [0] * n
+        bypass_first[diff_positions[0]] = 2
+        combos.append(bypass_first)
 
     # Remove duplicates while preserving order
     unique: list[list[int]] = []
-    for cfg in combos:
-        if cfg not in unique:
-            unique.append(cfg)
+    for c in combos:
+        if c not in unique:
+            unique.append(c)
     return unique
 
 # ---------------------------------------------------------------------------
@@ -422,9 +337,6 @@ def _generate_loop_cases_by_flags(
 RPM_STEP = 25
 DRA_STEP = 2
 MAX_DRA_KM = 250.0
-# Maximum number of loops simultaneously activated when enumerating loop
-# patterns.  Setting ``None`` disables the cap.
-LOOP_PATTERN_MAX_SUBSET = 2
 # Default scaling applied to the coarse search step sizes.  This multiplier
 # mirrors the legacy behaviour where the coarse pass used five times the
 # refinement step.
@@ -436,149 +348,12 @@ RESIDUAL_ROUND = 0
 V_MIN = 0.5
 V_MAX = 2.5
 
-# Baseline heuristics for bounding the dynamic-programming state space.  The
-# solver derives adaptive limits from these constants by scaling them with the
-# number of pump stations and loop-enabled segments.  Callers can still supply
-# explicit limits; ``None`` enables the adaptive defaults.
+# Limit the number of dynamic-programming states carried forward after
+# each station.  ``STATE_TOP_K`` bounds the total states retained while
+# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
+# this many currency units of the best state for the current station.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
-STATE_TOP_K_PER_PUMP = 8
-STATE_TOP_K_PER_LOOP = 4
-STATE_COST_MARGIN_PER_PUMP = 2000.0
-STATE_COST_MARGIN_PER_LOOP = 2500.0
-
-
-def _station_combo_signature(stn: Mapping[str, object]) -> tuple[tuple[str, int], ...]:
-    """Return a stable representation of the station's pump-type mix."""
-
-    combo_source = (
-        stn.get('active_combo')
-        or stn.get('combo')
-        or stn.get('pump_combo')
-    )
-    signature: list[tuple[str, int]] = []
-    if isinstance(combo_source, Mapping):
-        for ptype, count in combo_source.items():
-            try:
-                count_int = int(round(float(count)))
-            except (TypeError, ValueError):
-                continue
-            if count_int <= 0:
-                continue
-            signature.append((str(ptype), count_int))
-    return tuple(sorted(signature))
-
-
-def _estimate_station_configurations(stn: Mapping[str, object]) -> int:
-    """Estimate how many unique pump/loop configurations a station offers."""
-
-    loop_modes = 1 + (3 if stn.get('loopline') else 0)
-    if not stn.get('is_pump', False):
-        return loop_modes
-    try:
-        min_p = int(stn.get('min_pumps', 0))
-    except (TypeError, ValueError):
-        min_p = 0
-    try:
-        max_p = int(stn.get('max_pumps', min_p))
-    except (TypeError, ValueError):
-        max_p = min_p
-    if max_p < min_p:
-        min_p, max_p = max_p, min_p
-    pump_choices = max(1, max_p - min_p + 1)
-    return max(1, pump_choices * loop_modes)
-
-
-def _resolve_state_limits(
-    stations: list[Mapping[str, object]],
-    *,
-    requested_top_k: int | None,
-    requested_margin: float | None,
-) -> tuple[int, float]:
-    """Return adaptive pruning thresholds for the dynamic-programming search."""
-
-    pump_count = 0
-    loop_count = 0
-    config_estimate = 0
-    for stn in stations:
-        if stn.get('loopline'):
-            loop_count += 1
-        if stn.get('is_pump', False):
-            pump_count += 1
-            config_estimate += _estimate_station_configurations(stn)
-    if config_estimate <= 0:
-        config_estimate = 1
-
-    base_top_k = STATE_TOP_K
-    if pump_count > 0:
-        base_top_k += STATE_TOP_K_PER_PUMP * max(0, pump_count - 1)
-    if loop_count > 0:
-        base_top_k += STATE_TOP_K_PER_LOOP * loop_count
-    base_top_k = max(base_top_k, config_estimate)
-
-    if requested_top_k is None:
-        top_k_val = base_top_k
-    else:
-        try:
-            top_k_val = int(requested_top_k)
-        except (TypeError, ValueError):
-            top_k_val = base_top_k
-        if top_k_val <= 0:
-            top_k_val = base_top_k
-    top_k_val = max(int(round(top_k_val)), config_estimate)
-
-    base_margin = STATE_COST_MARGIN
-    if pump_count > 0:
-        base_margin += STATE_COST_MARGIN_PER_PUMP * max(0, pump_count - 1)
-    if loop_count > 0:
-        base_margin += STATE_COST_MARGIN_PER_LOOP * loop_count
-    if requested_margin is None:
-        margin_val = base_margin
-    else:
-        try:
-            margin_val = float(requested_margin)
-        except (TypeError, ValueError):
-            margin_val = base_margin
-        if margin_val < 0:
-            margin_val = 0.0
-    margin_val = max(margin_val, 0.0)
-
-    return top_k_val, margin_val
-
-
-def _scenario_config_key(
-    stn: Mapping[str, object],
-    opt: Mapping[str, object],
-    scenario: Mapping[str, object],
-) -> tuple[int, tuple[tuple[str, int], ...], int, str]:
-    """Return a hashable identifier for the pump/loop configuration used."""
-
-    try:
-        station_idx = int(stn.get('idx', 0))
-    except (TypeError, ValueError):
-        station_idx = 0
-    combo_sig = _station_combo_signature(stn)
-    try:
-        pump_count = int(round(float(opt.get('nop', 0) or 0)))
-    except (TypeError, ValueError):
-        pump_count = 0
-    try:
-        flow_loop = float(scenario.get('flow_loop', 0.0) or 0.0)
-    except (TypeError, ValueError):
-        flow_loop = 0.0
-    try:
-        flow_main = float(scenario.get('flow_main', 0.0) or 0.0)
-    except (TypeError, ValueError):
-        flow_main = 0.0
-    if flow_loop <= 0.0:
-        loop_mode = 'off'
-    elif flow_main <= 0.0:
-        loop_mode = 'loop_only'
-    elif scenario.get('bypass_next'):
-        loop_mode = 'bypass'
-    else:
-        loop_mode = 'parallel'
-    return (station_idx, combo_sig, pump_count, loop_mode)
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -1896,9 +1671,8 @@ def solve_pipeline(
     dra_step: int = DRA_STEP,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
     coarse_multiplier: float = COARSE_MULTIPLIER,
-    state_top_k: int | None = None,
-    state_cost_margin: float | None = None,
-    loop_subset_limit: int | None = LOOP_PATTERN_MAX_SUBSET,
+    state_top_k: int = STATE_TOP_K,
+    state_cost_margin: float = STATE_COST_MARGIN,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -1926,10 +1700,7 @@ def solve_pipeline(
     ``enumerate_loops`` is ``True`` and no explicit
     ``loop_usage_by_station`` is provided the solver will automatically
     build a small set of loop-use patterns (e.g. Cases A–E) and run the
-    optimisation for each.  The breadth of these patterns is governed by
-    ``loop_subset_limit`` which bounds how many loops may be active in any
-    generated combination (``None`` disables the cap).  The best result is
-    returned.  When
+    optimisation for each.  The best result is returned.  When
     ``loop_usage_by_station`` is supplied the solver restricts which
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
     2=bypass.  By default the function behaves like the original
@@ -1940,8 +1711,7 @@ def solve_pipeline(
     the coarse pass step sizes.  Increasing ``state_top_k`` or
     ``state_cost_margin`` relaxes dynamic-programming pruning so more near-
     optimal states are retained for subsequent stations.  When these
-    parameters are ``None`` the solver derives adaptive thresholds from the
-    number of pump stations and loop-enabled segments.
+    parameters are omitted the legacy defaults are used.
     """
 
     try:
@@ -1971,28 +1741,19 @@ def solve_pipeline(
     if coarse_multiplier <= 0:
         coarse_multiplier = COARSE_MULTIPLIER
 
-    state_top_k, state_cost_margin = _resolve_state_limits(
-        stations,
-        requested_top_k=state_top_k,
-        requested_margin=state_cost_margin,
-    )
+    try:
+        state_top_k = int(state_top_k)
+    except (TypeError, ValueError):
+        state_top_k = STATE_TOP_K
+    if state_top_k <= 0:
+        state_top_k = STATE_TOP_K
 
-    default_loop_limit = LOOP_PATTERN_MAX_SUBSET
-    raw_loop_limit = loop_subset_limit
-    if raw_loop_limit is None:
-        loop_subset_limit = None
-    else:
-        try:
-            loop_subset_limit = int(raw_loop_limit)
-        except (TypeError, ValueError):
-            loop_subset_limit = default_loop_limit
-        if loop_subset_limit is not None:
-            try:
-                loop_subset_limit = int(loop_subset_limit)
-            except (TypeError, ValueError):
-                loop_subset_limit = None
-        if loop_subset_limit is not None and loop_subset_limit <= 0:
-            loop_subset_limit = 1
+    try:
+        state_cost_margin = float(state_cost_margin)
+    except (TypeError, ValueError):
+        state_cost_margin = STATE_COST_MARGIN
+    if state_cost_margin < 0:
+        state_cost_margin = 0.0
 
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
@@ -2029,7 +1790,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                loop_subset_limit=loop_subset_limit,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -2061,10 +1821,7 @@ def solve_pipeline(
                 d_inner_loop = d_inner_main
             flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
         # Generate loop-usage patterns based on per-loop diameter equality
-        cases = _generate_loop_cases_by_flags(
-            flags,
-            max_subset_size=loop_subset_limit,
-        )
+        cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
         for case in cases:
             usage = [0] * len(stations)
@@ -2093,7 +1850,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                loop_subset_limit=loop_subset_limit,
             )
             if res.get('error'):
                 continue
@@ -2197,7 +1953,6 @@ def solve_pipeline(
             coarse_multiplier=coarse_multiplier,
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
-            loop_subset_limit=loop_subset_limit,
         )
         if coarse_res.get("error"):
             return coarse_res
@@ -2318,7 +2073,6 @@ def solve_pipeline(
             coarse_multiplier=coarse_multiplier,
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
-            loop_subset_limit=loop_subset_limit,
         )
 
         candidates: list[dict] = []
@@ -2352,7 +2106,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                loop_subset_limit=loop_subset_limit,
             )
             if not baseline_result.get('error'):
                 candidates.append(baseline_result)
@@ -2702,13 +2455,13 @@ def solve_pipeline(
 
     init_residual = int(stations[0].get('min_residual', 50))
     # Initial dynamic‑programming state.  Each state carries the cumulative
-    # operating cost, the residual head after the current station, a pointer
-    # to the most recent record node, the last MAOP limits, the current flow
-    # into the next segment and, importantly, a ``carry_loop_dra`` field.
-    # ``carry_loop_dra`` represents the drag reduction percentage that
-    # remains effective on the loopline due to upstream injection when a
-    # bypass scenario occurs.  At the origin there is no upstream DRA on the
-    # loopline so this value starts at zero.
+    # operating cost, the residual head after the current station, the full
+    # sequence of record dictionaries (one per station), the last MAOP
+    # limits, the current flow into the next segment and, importantly, a
+    # ``carry_loop_dra`` field.  ``carry_loop_dra`` represents the drag
+    # reduction percentage that remains effective on the loopline due to
+    # upstream injection when a bypass scenario occurs.  At the origin
+    # there is no upstream DRA on the loopline so this value starts at zero.
     #
     # Represent the carried mainline DRA as a queue of length/ppm slices so the
     # slug can be advanced accurately from station to station.
@@ -2771,87 +2524,11 @@ def solve_pipeline(
         if float(length) > 0
     )
 
-    def _quantise(value: float, scale: int) -> int:
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            numeric = 0.0
-        return int(round(numeric * scale))
-
-    def _queue_signature(
-        queue: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
-        *,
-        max_entries: int = 6,
-        length_scale: int = 1000,
-        ppm_scale: int = 10,
-    ) -> tuple[tuple[int, int], ...]:
-        if not queue:
-            return ()
-        entries: list[tuple[int, int]] = []
-        remainder_len = 0.0
-        remainder_ppm = 0.0
-        for raw in queue:
-            if not raw:
-                continue
-            try:
-                length_val = max(float(raw[0]), 0.0)
-            except (TypeError, ValueError, IndexError):
-                length_val = 0.0
-            try:
-                ppm_val = float(raw[1])
-            except (TypeError, ValueError, IndexError):
-                ppm_val = 0.0
-            if length_val <= 0:
-                continue
-            if len(entries) < max_entries:
-                entries.append((_quantise(length_val, length_scale), _quantise(ppm_val, ppm_scale)))
-            else:
-                remainder_len += length_val
-                remainder_ppm += length_val * ppm_val
-        if remainder_len > 0:
-            avg_ppm = remainder_ppm / remainder_len if remainder_len > 0 else 0.0
-            entries.append((-_quantise(remainder_len, length_scale), _quantise(avg_ppm, ppm_scale)))
-        return tuple(entries)
-
-    def _state_signature(
-        residual: float,
-        carry_loop_dra: float,
-        queue_full: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
-        queue_inlet: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
-        loop_mode: str,
-        flow_main: float,
-        flow_loop: float,
-    ) -> tuple:
-        flow_scale = 100
-        return (
-            int(round(float(residual) if residual is not None else 0.0)),
-            int(round(float(carry_loop_dra) if carry_loop_dra is not None else 0.0)),
-            str(loop_mode or 'off'),
-            _queue_signature(queue_full),
-            _queue_signature(queue_inlet),
-            (
-                _quantise(flow_main, flow_scale),
-                _quantise(flow_loop, flow_scale),
-            ),
-        )
-
-    record_nodes: list[tuple[dict, int | None]] = []
-
-    initial_signature = _state_signature(
-        init_residual,
-        0,
-        initial_queue,
-        initial_queue,
-        'off',
-        segment_flows[0],
-        0.0,
-    )
-
-    states: dict[tuple, dict] = {
-        initial_signature: {
+    states: dict[int, dict] = {
+        init_residual: {
             'cost': 0.0,
             'residual': init_residual,
-            'node': None,
+            'records': [],
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
@@ -2859,12 +2536,11 @@ def solve_pipeline(
             'dra_queue_full': initial_queue,
             'dra_queue_at_inlet': initial_queue,
             'inj_ppm_main': 0,
-            'signature': initial_signature,
         }
     }
 
     for stn_data in station_opts:
-        new_states: dict[tuple, dict] = {}
+        new_states: dict[int, dict] = {}
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -3331,9 +3007,6 @@ def solve_pipeline(
 
                     total_cost = power_cost + dra_cost
 
-                    config_key = _scenario_config_key(stn_data, opt, sc)
-                    loop_mode = config_key[-1] if config_key else 'off'
-
                     # Build the record for this station.  Update loop velocity and MAOP
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
@@ -3432,71 +3105,52 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
-                    # Accumulate cost and update dynamic state using the composite
-                    # signature so states that only differ in downstream queues or
-                    # flow splits are tracked independently.
+                    # Accumulate cost and update dynamic state.  When comparing states
+                    # with the same residual bucket, prefer the one with lower cost
+                    # or, when costs tie, the one with higher residual.  Carry
+                    # forward the loop DRA carry value and the updated downstream queue.
                     new_cost = state['cost'] + total_cost
-                    record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
-                    signature = _state_signature(
-                        residual_next,
-                        new_carry,
-                        queue_after_full,
-                        queue_after_inlet,
-                        loop_mode,
-                        sc.get('flow_main', flow_total),
-                        sc.get('flow_loop', 0.0),
-                    )
-                    existing_state = new_states.get(signature)
-                    if existing_state is not None and new_cost >= existing_state['cost']:
-                        continue
-                    parent = state.get('node')
-                    record_nodes.append((record, parent))
-                    node_idx = len(record_nodes) - 1
-                    flow_next = flow_total
-                    candidate_state = {
-                        'cost': new_cost,
-                        'residual': residual_next,
-                        'node': node_idx,
-                        'last_maop': stn_data['maop_head'],
-                        'last_maop_kg': stn_data['maop_kgcm2'],
-                        'flow': flow_next,
-                        'carry_loop_dra': new_carry,
-                        'dra_queue_full': queue_after_full,
-                        'dra_queue_at_inlet': queue_after_inlet,
-                        'inj_ppm_main': inj_ppm_main,
-                        'config_key': config_key,
-                        'signature': signature,
-                    }
-                    new_states[signature] = candidate_state
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
+                    bucket = residual_next
+                    record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
+                    new_record_list = state['records'] + [record]
+                    existing = new_states.get(bucket)
+                    flow_next = flow_total
+                    if (
+                        existing is None
+                        or new_cost < existing['cost']
+                        or (
+                            abs(new_cost - existing['cost']) < 1e-9
+                            and residual_next > existing['residual']
+                        )
+                    ):
+                        new_states[bucket] = {
+                            'cost': new_cost,
+                            'residual': residual_next,
+                            'records': new_record_list,
+                            'last_maop': stn_data['maop_head'],
+                            'last_maop_kg': stn_data['maop_kgcm2'],
+                            'flow': flow_next,
+                            'carry_loop_dra': new_carry,
+                            'dra_queue_full': queue_after_full,
+                            'dra_queue_at_inlet': queue_after_inlet,
+                            'inj_ppm_main': inj_ppm_main,
+                        }
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         # After evaluating all options for this station retain only the
-        # lowest-cost state for each signature and globally prune to the top
-        # ``STATE_TOP_K`` states or those within
+        # lowest-cost state for each residual (already enforced by ``bucket``)
+        # and globally prune to the top ``STATE_TOP_K`` states or those within
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
         # manageable while preserving near-optimal candidates.
         items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
         threshold = best_cost_station + state_cost_margin
-        best_by_config: dict[tuple, tuple[int, dict]] = {}
-        for signature, data in items:
-            cfg_key = data.get('config_key')
-            if cfg_key is None:
-                continue
-            existing = best_by_config.get(cfg_key)
-            if existing is None or data['cost'] < existing[1]['cost']:
-                best_by_config[cfg_key] = (signature, data)
-        effective_top_k = max(state_top_k, len(best_by_config))
-        pruned: dict[tuple, dict] = {
-            signature: data for signature, data in best_by_config.values()
-        }
-        for signature, data in items:
-            if signature in pruned:
-                continue
-            if len(pruned) < effective_top_k or data['cost'] <= threshold:
-                pruned[signature] = data
+        pruned: dict[int, dict] = {}
+        for idx, (residual_key, data) in enumerate(items):
+            if idx < state_top_k or data['cost'] <= threshold:
+                pruned[residual_key] = data
         states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
@@ -3509,13 +3163,7 @@ def solve_pipeline(
         key=lambda x: (x['cost'], x['residual'] - term_req),
     )
     result: dict = {}
-    chain: list[dict] = []
-    node_idx = best_state.get('node')
-    while node_idx is not None and 0 <= node_idx < len(record_nodes):
-        record, parent = record_nodes[node_idx]
-        chain.append(record)
-        node_idx = parent
-    for rec in reversed(chain):
+    for rec in best_state['records']:
         result.update(rec)
 
     residual = int(best_state['residual'])
@@ -3620,9 +3268,8 @@ def solve_pipeline_with_types(
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     coarse_multiplier: float = COARSE_MULTIPLIER,
-    state_top_k: int | None = None,
-    state_cost_margin: float | None = None,
-    loop_subset_limit: int | None = LOOP_PATTERN_MAX_SUBSET,
+    state_top_k: int = STATE_TOP_K,
+    state_cost_margin: float = STATE_COST_MARGIN,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -3676,10 +3323,7 @@ def solve_pipeline_with_types(
                         d_inner_loop = d_inner_main
                     flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
                 # Generate loop-case combinations based on flags
-                cases = _generate_loop_cases_by_flags(
-                    flags_expanded,
-                    max_subset_size=loop_subset_limit,
-                )
+                cases = _generate_loop_cases_by_flags(flags_expanded)
             for case in cases:
                 usage = [0] * len(stn_acc)
                 for pidx, val in zip(loop_positions, case):
@@ -3710,7 +3354,6 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
-                    loop_subset_limit=loop_subset_limit,
                 )
                 if result.get("error"):
                     continue
