@@ -1037,6 +1037,60 @@ st.sidebar.download_button(
     mime="application/json"
 )
 
+def _default_segment_slices(
+    stations: list[dict], kv_list: list[float], rho_list: list[float]
+) -> list[list[dict]]:
+    """Return single-slice segment profiles for legacy distance tables.
+
+    Each station (segment) receives a single ``{"length_km", "kv", "rho"}``
+    dictionary so downstream consumers such as the hydraulic solver receive a
+    well-formed slice list even when only aggregate properties are available.
+    """
+
+    if not stations:
+        return []
+
+    fallback_kv = kv_list[0] if kv_list else 1.0
+    fallback_rho = rho_list[0] if rho_list else 850.0
+    slices: list[list[dict]] = []
+    for idx, stn in enumerate(stations):
+        length = float(stn.get("L", 0.0) or 0.0)
+        kv = kv_list[idx] if idx < len(kv_list) else fallback_kv
+        rho = rho_list[idx] if idx < len(rho_list) else fallback_rho
+        slices.append(
+            [
+                {
+                    "length_km": length,
+                    "kv": float(kv),
+                    "rho": float(rho),
+                }
+            ]
+        )
+    return slices
+
+
+def derive_segment_profiles(
+    linefill_df: pd.DataFrame | None, stations: list[dict]
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return per-segment viscosity/density lists and batch slices.
+
+    ``linefill_df`` may represent either distance-based or volumetric data.  In
+    the volumetric case the detailed slices are taken from
+    :func:`map_vol_linefill_to_segments`.  Otherwise each segment receives a
+    single slice mirroring the historical distance-table behaviour so the
+    optimiser continues to receive structured input.
+    """
+
+    if linefill_df is not None and len(linefill_df) > 0:
+        cols = set(linefill_df.columns)
+        if "Volume (m³)" in cols or "Volume" in cols:
+            return map_vol_linefill_to_segments(linefill_df, stations)
+
+    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations)
+    segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+    return kv_list, rho_list, segment_slices
+
+
 def map_linefill_to_segments(linefill_df, stations):
     """Map linefill properties onto each pipeline segment.
 
@@ -2242,7 +2296,7 @@ def run_all_updates():
         "min_residual": st.session_state.get("terminal_head", 10.0),
     }
     linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
-    kv_list, rho_list = map_linefill_to_segments(linefill_df, stations_data)
+    kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
 
     for idx, stn in enumerate(stations_data, start=1):
         if stn.get("is_pump", False):
@@ -2282,6 +2336,7 @@ def run_all_updates():
             st.session_state.get("FLOW", 1000.0),
             kv_list,
             rho_list,
+            segment_slices,
             st.session_state.get("RateDRA", 500.0),
             st.session_state.get("Price_HSD", 70.0),
             st.session_state.get("Fuel_density", 820.0),
