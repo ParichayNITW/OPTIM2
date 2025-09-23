@@ -1551,27 +1551,97 @@ def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
 
 
 def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
-    """Assign ``dra_ppm`` values from ``dra_batches`` onto ``df`` by volume."""
+    """Assign ``dra_ppm`` values from ``dra_batches`` onto ``df`` by volume.
+
+    The returned dataframe may include additional rows when a product batch spans
+    multiple queue slices; each split row inherits the source product metadata
+    but carries only the portion of volume covered by the corresponding DRA
+    segment.
+    """
+
     if df is None:
         return df
+
     df = ensure_initial_dra_column(df.copy(), default=0.0, fill_blanks=True)
+    if "DRA ppm" not in df.columns:
+        df["DRA ppm"] = df[INIT_DRA_COL]
+
     col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
-    ppm_vals: list[float] = []
-    idx = 0
-    remaining = dra_batches[0]["volume"] if dra_batches else 0.0
-    ppm_cur = dra_batches[0].get("dra_ppm", 0.0) if dra_batches else 0.0
+
+    queue: list[tuple[float, float]] = []
+    for batch in dra_batches or []:
+        try:
+            vol = float(batch.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            vol = 0.0
+        if vol <= 1e-9:
+            continue
+        try:
+            ppm_val = float(batch.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if pd.isna(ppm_val):
+            ppm_val = 0.0
+        queue.append((vol, ppm_val))
+
+    queue_idx = 0
+    if queue:
+        seg_remaining = queue[0][0]
+        ppm_cur = queue[0][1]
+    else:
+        seg_remaining = float("inf")
+        ppm_cur = 0.0
+
+    def advance_segment() -> None:
+        nonlocal queue_idx, seg_remaining, ppm_cur
+        queue_idx += 1
+        if queue_idx < len(queue):
+            seg_remaining = queue[queue_idx][0]
+            ppm_cur = queue[queue_idx][1]
+        else:
+            seg_remaining = float("inf")
+            ppm_cur = 0.0
+
+    rows_out: list[dict] = []
     for _, row in df.iterrows():
-        vol = float(row.get(col_vol, 0.0))
-        while vol > remaining + 1e-9 and idx < len(dra_batches) - 1:
-            vol -= remaining
-            idx += 1
-            remaining = dra_batches[idx]["volume"]
-            ppm_cur = dra_batches[idx].get("dra_ppm", 0.0)
-        remaining -= vol
-        ppm_vals.append(ppm_cur)
-    df["DRA ppm"] = ppm_vals
-    df[INIT_DRA_COL] = ppm_vals
-    return df
+        row_dict = row.to_dict()
+        try:
+            row_vol = float(row_dict.get(col_vol, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            row_vol = 0.0
+
+        if row_vol <= 1e-9:
+            row_dict["DRA ppm"] = ppm_cur
+            row_dict[INIT_DRA_COL] = ppm_cur
+            rows_out.append(row_dict)
+            continue
+
+        remaining_row = row_vol
+        while remaining_row > 1e-9:
+            while queue_idx < len(queue) and seg_remaining <= 1e-9:
+                advance_segment()
+
+            take = min(remaining_row, seg_remaining)
+            if take <= 1e-9:
+                take = remaining_row
+
+            row_copy = row_dict.copy()
+            row_copy[col_vol] = take
+            row_copy["DRA ppm"] = ppm_cur
+            row_copy[INIT_DRA_COL] = ppm_cur
+            rows_out.append(row_copy)
+
+            remaining_row -= take
+            if queue_idx < len(queue):
+                seg_remaining -= take
+                if seg_remaining <= 1e-9:
+                    advance_segment()
+
+    if not rows_out:
+        return df.iloc[0:0].copy()
+
+    result_df = pd.DataFrame(rows_out, columns=df.columns)
+    return result_df.reset_index(drop=True)
 
 
 # Build a summary dataframe from solver results
