@@ -2840,19 +2840,15 @@ if not auto_batch:
             df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
                 pd.to_numeric, errors="coerce"
             )
-            df_disp_style = (
-                df_display.style
-                .format("{:.2f}", subset=pd.IndexSlice[num_rows_disp, :])
-                .background_gradient(cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :])
+            df_disp_style = df_display.style.format(
+                "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
             )
         else:
             num_cols_disp = [
                 c for c in df_display.columns if c not in ["Time", "Pattern", "Station", "Pump Name"]
             ]
             fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
-            df_disp_style = df_display.style.format(fmt_disp).background_gradient(
-                cmap="Blues", subset=num_cols_disp
-            )
+            df_disp_style = df_display.style.format(fmt_disp)
         st.dataframe(
             df_disp_style,
             width='stretch',
