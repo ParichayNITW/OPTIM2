@@ -41,6 +41,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
+from collections.abc import Sequence
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -94,6 +95,42 @@ def ensure_initial_dra_column(
     if blank_mask.any():
         df.loc[blank_mask, INIT_DRA_COL] = default
     return df
+
+
+def _get_linefill_snapshot_for_hour(
+    linefill_snaps: Sequence[pd.DataFrame] | None,
+    hours: Sequence[int] | None,
+    *,
+    target_hour: int = 6,
+) -> pd.DataFrame:
+    """Return a deep copy of the linefill snapshot for ``target_hour``.
+
+    When the requested hour is unavailable, or the inputs are malformed, an
+    empty :class:`pandas.DataFrame` is returned so downstream widgets can hide
+    or disable download controls gracefully.
+    """
+
+    if not linefill_snaps:
+        return pd.DataFrame()
+
+    snaps = list(linefill_snaps)
+    hours = list(hours or [])
+    matched_len = min(len(snaps), len(hours))
+    if matched_len == 0:
+        return pd.DataFrame()
+
+    target_mod = target_hour % 24
+    normalized_hours = [int(hours[idx]) % 24 for idx in range(matched_len)]
+    try:
+        snap_idx = normalized_hours.index(target_mod)
+    except ValueError:
+        return pd.DataFrame()
+
+    snapshot = snaps[snap_idx]
+    if not isinstance(snapshot, pd.DataFrame):
+        return pd.DataFrame()
+
+    return snapshot.copy(deep=True)
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
@@ -2838,10 +2875,15 @@ if not auto_batch:
                 )
 
         if error_msg:
+            st.session_state["linefill_next_day"] = pd.DataFrame()
             st.error(error_msg)
             st.stop()
 
-        st.session_state["linefill_next_day"] = current_vol.copy(deep=True)
+        st.session_state["linefill_next_day"] = _get_linefill_snapshot_for_hour(
+            linefill_snaps,
+            hours,
+            target_hour=6,
+        )
 
         # Build a consolidated station-wise table with flow pattern names
         station_tables = []
