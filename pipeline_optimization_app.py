@@ -100,58 +100,24 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 #Custom Styles
 st.markdown("""
     <style>
-    .red-btn {
-        background: linear-gradient(90deg, #d32f2f 30%, #c62828 100%);
-        color: white !important;
+    .stButton > button,
+    .stDownloadButton > button {
+        background: var(--primary-color);
+        color: var(--secondary-background-color);
         font-weight: 600;
-        border: none;
-        padding: 1.1em 3.3em;
-        border-radius: 16px;
-        font-size: 1.6em;
-        cursor: pointer;
-        margin: 1.5em 0 2.1em 0;
-        box-shadow: 0 4px 24px #d32f2f55;
-        transition: background 0.19s;
-    }
-    .red-btn:hover {
-        background: #b71c1c;
-        color: #fff;
-    }
-    .stDownloadButton button {
-        background: linear-gradient(90deg, #d32f2f 30%, #c62828 100%);
-        color: #fff !important;
-        font-weight: 600;
-        border: none;
+        border: 1px solid transparent;
         border-radius: 12px;
-        box-shadow: 0 3px 18px #d32f2f44;
-        transition: background 0.19s;
+        box-shadow: 0 3px 18px #00000022;
+        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
     }
-    .stDownloadButton button:hover {
-        background: #b71c1c;
-        color: #fff !important;
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        filter: brightness(0.92);
     }
-    .action-btn-row {
-        display: flex;
-        justify-content: flex-end;
-        margin-bottom: 1.7em;
-        gap: 1.2em;
-    }
-    .action-btn {
-        background: #3949ab;
-        color: white !important;
-        font-weight: 500;
-        border: none;
-        padding: 0.83em 1.8em;
-        border-radius: 10px;
-        font-size: 1.09em;
-        cursor: pointer;
-        box-shadow: 0 2px 12px #9995;
-        transition: background 0.16s;
-        outline: none;
-    }
-    .action-btn:hover {
-        background: #23277a;
-        color: #fff;
+    .stButton > button:active,
+    .stDownloadButton > button:active {
+        filter: brightness(0.85);
+        transform: translateY(1px);
     }
     .section-title {
         font-weight: 700;
