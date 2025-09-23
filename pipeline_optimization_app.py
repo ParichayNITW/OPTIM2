@@ -2685,6 +2685,7 @@ if not auto_batch:
             spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         reports = []
         linefill_snaps = []
+        st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         dra_reach_km = 200.0
 
@@ -2784,6 +2785,8 @@ if not auto_batch:
         if error_msg:
             st.error(error_msg)
             st.stop()
+
+        st.session_state["linefill_next_day"] = current_vol.copy(deep=True)
 
         # Build a consolidated station-wise table with flow pattern names
         station_tables = []
@@ -2896,6 +2899,14 @@ if not auto_batch:
             lf_all.to_csv(index=False, float_format="%.2f"),
             file_name="linefill_snapshots.csv",
         )
+
+        next_day_linefill = st.session_state.get("linefill_next_day")
+        if isinstance(next_day_linefill, pd.DataFrame) and not next_day_linefill.empty:
+            st.download_button(
+                "Download next day's Linefill and DRA state",
+                next_day_linefill.to_csv(index=False, float_format="%.4f"),
+                file_name="next_day_linefill.csv",
+            )
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
