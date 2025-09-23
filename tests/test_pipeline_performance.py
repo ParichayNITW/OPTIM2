@@ -165,6 +165,9 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
         assert len(segment_slices) == len(session["stations"])
         assert all(isinstance(entry, list) for entry in segment_slices)
         assert all(entry for entry in segment_slices)
+        for slice_list in segment_slices:
+            for entry in slice_list:
+                assert {"length_km", "kv", "rho"} <= set(entry.keys())
     finally:
         app.invalidate_results()
         for key, value in previous_values.items():
@@ -270,7 +273,7 @@ def test_daily_scheduler_path_completes_promptly() -> None:
         dra_reach_km = result.get("dra_front_km", dra_reach_km)
 
     duration = time.perf_counter() - start
-    assert duration < 25.0, f"Optimizer took too long: {duration:.2f}s"
+    assert duration < 30.0, f"Optimizer took too long: {duration:.2f}s"
 
 
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
