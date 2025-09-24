@@ -715,6 +715,54 @@ def test_idle_downstream_pump_preserves_upstream_slug() -> None:
     assert all(float(batch.get("dra_ppm", 0) or 0.0) == pytest.approx(10.0) for batch in treated_batches)
 
 
+def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
+    """Station B should retain the inherited slug even when no flow is pumped."""
+
+    diameter = 0.5
+    flow_m3h = 0.0
+    hours = 1.0
+    segment_a = 5.0
+    segment_b = 20.0
+    initial_queue = [
+        {"length_km": segment_a, "dra_ppm": 10},
+        {"length_km": segment_b, "dra_ppm": 0},
+    ]
+    opt_idle = {"nop": 0, "dra_ppm_main": 0}
+
+    precomputed_b = _prepare_dra_queue_consumption(
+        initial_queue,
+        segment_b,
+        flow_m3h,
+        hours,
+        diameter,
+    )
+    pumped_length_b = float(precomputed_b[0])
+    assert pumped_length_b == pytest.approx(0.0, abs=1e-9)
+
+    dra_segments_b, queue_after_b, inj_ppm_b = _update_mainline_dra(
+        initial_queue,
+        {"idx": 1, "is_pump": True, "d_inner": diameter},
+        opt_idle,
+        segment_b,
+        flow_m3h,
+        hours,
+        precomputed=precomputed_b,
+    )
+
+    assert inj_ppm_b == 0
+    assert dra_segments_b
+    assert dra_segments_b[0][1] == 10
+    assert dra_segments_b[0][0] == pytest.approx(segment_a, rel=1e-6)
+
+    first_treated = next(
+        (batch for batch in queue_after_b if int(batch.get("dra_ppm", 0) or 0) > 0),
+        None,
+    )
+    assert first_treated is not None
+    assert first_treated["dra_ppm"] == 10
+    assert first_treated["length_km"] == pytest.approx(segment_a, rel=1e-6)
+
+
 def test_running_pump_shears_trimmed_slug() -> None:
     """Shear factor should attenuate the slug passing through an active pump."""
 
