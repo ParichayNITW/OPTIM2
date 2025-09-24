@@ -37,9 +37,9 @@ def _dra_length_km(linefill: list[dict], diameter: float) -> float:
     total = 0.0
     for batch in linefill:
         try:
-            ppm = int(batch.get("dra_ppm", 0) or 0)
+            ppm = float(batch.get("dra_ppm", 0) or 0.0)
         except Exception:
-            ppm = 0
+            ppm = 0.0
         if ppm <= 0:
             continue
         try:
@@ -83,9 +83,9 @@ def _zero_front_within_segment(queue: list[dict], segment_length: float) -> floa
             continue
         take = length if length <= remaining else remaining
         try:
-            ppm_val = int(entry.get("dra_ppm", 0) or 0)
+            ppm_val = float(entry.get("dra_ppm", 0) or 0.0)
         except Exception:
-            ppm_val = 0
+            ppm_val = 0.0
         if ppm_val == 0:
             return distance
         distance += take
