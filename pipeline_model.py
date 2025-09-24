@@ -352,7 +352,7 @@ V_MAX = 2.5
 # each station.  ``STATE_TOP_K`` bounds the total states retained while
 # ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
 # this many currency units of the best state for the current station.
-STATE_TOP_K = 50
+STATE_TOP_K = 35
 STATE_COST_MARGIN = 5000.0
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
@@ -468,6 +468,10 @@ def _build_baseline_narrow_ranges(
 _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
+] = {}
+_ZERO_EXTENSION_CACHE: dict[
+    tuple,
+    tuple[tuple[float, float], ...],
 ] = {}
 
 
@@ -688,6 +692,48 @@ def _take_queue_front(
         for length, ppm in taken
         if float(length or 0.0) > 0
     )
+
+
+def _extend_zero_front(
+    entries: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    extra_length: float,
+) -> list[tuple[float, float]]:
+    """Return a copy of ``entries`` with additional zero-PPM coverage up front."""
+
+    try:
+        remaining = float(extra_length)
+    except (TypeError, ValueError):
+        remaining = 0.0
+    if remaining <= 1e-9:
+        return [
+            (float(length or 0.0), float(ppm or 0.0))
+            for length, ppm in entries
+            if float(length or 0.0) > 0
+        ]
+
+    adjusted: list[tuple[float, float]] = []
+    idx = 0
+    n = len(entries)
+    while idx < n and remaining > 1e-9:
+        length_val = float(entries[idx][0])
+        ppm_val = float(entries[idx][1])
+        if length_val <= 0:
+            idx += 1
+            continue
+        if ppm_val <= 1e-9:
+            adjusted.append((length_val, 0.0))
+        else:
+            take = min(length_val, remaining)
+            if take > 1e-9:
+                adjusted.append((take, 0.0))
+                length_val -= take
+                remaining -= take
+            if length_val > 1e-9:
+                adjusted.append((length_val, ppm_val))
+        idx += 1
+    if idx < n:
+        adjusted.extend(entries[idx:])
+    return adjusted
 
 
 def _update_mainline_dra(
@@ -927,21 +973,6 @@ def _update_mainline_dra(
         if length > 0
     ]
 
-    dra_segments: list[tuple[float, float]] = []
-    for length, ppm_val in segment_cover_entries:
-        if length <= 0:
-            continue
-        try:
-            ppm_float = float(ppm_val)
-        except (TypeError, ValueError):
-            ppm_float = 0.0
-        if ppm_float > 0:
-            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
-                prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + length, ppm_float)
-            else:
-                dra_segments.append((length, ppm_float))
-
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
         for length, ppm_val in (
@@ -950,11 +981,58 @@ def _update_mainline_dra(
         if float(length) > 0
     ]
 
+    zero_extension_needed = False
+    if pump_running and pumped_length > 1e-9 and pumped_slices:
+        zero_pumped = 0.0
+        for length, ppm_val in pumped_slices:
+            try:
+                length_val = float(length or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            if length_val <= 0:
+                continue
+            try:
+                ppm_float = float(ppm_val or 0.0)
+            except (TypeError, ValueError):
+                ppm_float = 0.0
+            if ppm_float <= 1e-9:
+                zero_pumped += length_val
+        if zero_pumped + 1e-6 >= pumped_length:
+            zero_extension_needed = True
+
+    if zero_extension_needed and is_origin:
+        cache_key = (
+            tuple((round(length, 6), round(ppm, 6)) for length, ppm in combined_entries),
+            round(pumped_length, 6),
+        )
+        cached = _ZERO_EXTENSION_CACHE.get(cache_key)
+        if cached is not None:
+            combined_entries = [(float(length), float(ppm)) for length, ppm in cached]
+        else:
+            combined_entries = _extend_zero_front(combined_entries, pumped_length)
+            if len(_ZERO_EXTENSION_CACHE) > 4096:
+                _ZERO_EXTENSION_CACHE.clear()
+            _ZERO_EXTENSION_CACHE[cache_key] = tuple(combined_entries)
+
     merged_queue = _merge_queue(combined_entries)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
     ]
+    cover_for_segment = _take_queue_front(merged_queue, segment_length)
+    dra_segments: list[tuple[float, float]] = []
+    for length, ppm_val in cover_for_segment:
+        length_val = float(length)
+        if length_val <= 0:
+            continue
+        ppm_float = float(ppm_val)
+        if ppm_float > 0:
+            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
+                prev_len, _ = dra_segments[-1]
+                dra_segments[-1] = (prev_len + length_val, ppm_float)
+            else:
+                dra_segments.append((length_val, ppm_float))
+
     return dra_segments, queue_after, inj_ppm_main
 
 
