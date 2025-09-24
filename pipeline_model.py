@@ -559,23 +559,26 @@ def _prepare_dra_queue_consumption(
 
 def _merge_queue(
     entries: list[tuple[float, float]] | tuple[tuple[float, float], ...]
-) -> list[tuple[float, int]]:
+) -> list[tuple[float, float]]:
     """Return ``entries`` with adjacent slices of equal concentration merged."""
 
-    merged: list[tuple[float, int]] = []
+    merged: list[tuple[float, float]] = []
     for ent in entries:
         if not ent:
             continue
         if isinstance(ent, (list, tuple)):
             length = float(ent[0] if len(ent) > 0 else 0.0)
-            ppm_float = float(ent[1] if len(ent) > 1 else 0.0)
+            ppm_val = float(ent[1] if len(ent) > 1 else 0.0)
         else:
             length = float(ent)
-            ppm_float = 0.0
+            ppm_val = 0.0
         if length <= 0:
             continue
-        ppm_val = int(round(ppm_float)) if ppm_float > 0 else 0
-        if merged and merged[-1][1] == ppm_val:
+        try:
+            ppm_val = float(ppm_val)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if merged and abs(merged[-1][1] - ppm_val) <= 1e-9:
             prev_len, prev_ppm = merged[-1]
             merged[-1] = (prev_len + length, prev_ppm)
         else:
@@ -705,7 +708,7 @@ def _update_mainline_dra(
         tuple[tuple[float, float], ...],
         tuple[tuple[float, float], ...],
     ] | None = None,
-) -> tuple[list[tuple[float, int]], tuple[tuple[float, int], ...], int]:
+) -> tuple[list[tuple[float, float]], tuple[tuple[float, float], ...], float]:
     """Advance the mainline DRA queue for ``segment_length`` kilometres.
 
     Parameters
@@ -747,7 +750,7 @@ def _update_mainline_dra(
         ``inj_ppm_main`` echoes the injected concentration for reporting.
     """
 
-    inj_ppm_main = int(opt.get("dra_ppm_main", 0) or 0)
+    inj_ppm_main = float(opt.get("dra_ppm_main", 0.0) or 0.0)
     if not is_origin:
         idx_val = stn_data.get('idx')
         if isinstance(idx_val, (int, float)):
@@ -924,17 +927,20 @@ def _update_mainline_dra(
         if length > 0
     ]
 
-    dra_segments: list[tuple[float, int]] = []
+    dra_segments: list[tuple[float, float]] = []
     for length, ppm_val in segment_cover_entries:
         if length <= 0:
             continue
-        ppm_int = int(round(ppm_val)) if ppm_val > 0 else 0
-        if ppm_int > 0:
-            if dra_segments and abs(dra_segments[-1][1] - ppm_int) <= 0:
+        try:
+            ppm_float = float(ppm_val)
+        except (TypeError, ValueError):
+            ppm_float = 0.0
+        if ppm_float > 0:
+            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
                 prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + length, ppm_int)
+                dra_segments[-1] = (prev_len + length, ppm_float)
             else:
-                dra_segments.append((length, ppm_int))
+                dra_segments.append((length, ppm_float))
 
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
@@ -1134,6 +1140,96 @@ def _segment_hydraulics_composite(
         first_stats = (float(v), float(Re), float(f))
 
     return total_hl, first_stats[0], first_stats[1], first_stats[2]
+
+
+def _effective_dra_response(
+    dra_segments: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    slices: list[dict] | tuple[dict, ...] | None,
+    default_kv: float,
+) -> tuple[float, float]:
+    """Return the average drag reduction and treated length for ``dra_segments``."""
+
+    if not dra_segments:
+        return 0.0, 0.0
+
+    slice_queue: list[tuple[float, float]] = []
+    if slices:
+        for entry in slices:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                seg_len = float(entry.get('length_km', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_len = 0.0
+            if seg_len <= 0:
+                continue
+            try:
+                seg_kv = float(entry.get('kv', default_kv) or default_kv)
+            except (TypeError, ValueError):
+                seg_kv = default_kv
+            slice_queue.append((seg_len, seg_kv if seg_kv > 0 else default_kv))
+
+    if not slice_queue:
+        slice_queue.append((float('inf'), default_kv if default_kv > 0 else 1.0))
+
+    queue_index = 0
+    queue_remaining = slice_queue[0][0]
+    queue_kv = slice_queue[0][1]
+    weighted_dr = 0.0
+    treated_length = 0.0
+
+    for length, ppm in dra_segments:
+        try:
+            seg_len = float(length or 0.0)
+        except (TypeError, ValueError):
+            seg_len = 0.0
+        if seg_len <= 0:
+            continue
+        try:
+            ppm_val = float(ppm or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val <= 0:
+            remaining = seg_len
+            while remaining > 0 and queue_index < len(slice_queue):
+                take = min(remaining, queue_remaining)
+                remaining -= take
+                queue_remaining -= take
+                if queue_remaining <= 1e-9:
+                    queue_index += 1
+                    if queue_index < len(slice_queue):
+                        queue_remaining = slice_queue[queue_index][0]
+                        queue_kv = slice_queue[queue_index][1]
+            continue
+
+        remaining = seg_len
+        while remaining > 0:
+            if queue_index >= len(slice_queue):
+                queue_remaining = float('inf')
+                queue_kv = default_kv if default_kv > 0 else 1.0
+                slice_queue.append((queue_remaining, queue_kv))
+            take = min(remaining, queue_remaining)
+            kv_use = queue_kv if queue_kv > 0 else (default_kv if default_kv > 0 else 1.0)
+            try:
+                dr_val = float(get_dr_for_ppm(kv_use, ppm_val))
+            except Exception:
+                dr_val = 0.0
+            if dr_val < 0:
+                dr_val = 0.0
+            if take > 0:
+                weighted_dr += dr_val * take
+                treated_length += take
+            remaining -= take
+            queue_remaining -= take
+            if queue_remaining <= 1e-9:
+                queue_index += 1
+                if queue_index < len(slice_queue):
+                    queue_remaining = slice_queue[queue_index][0]
+                    queue_kv = slice_queue[queue_index][1]
+
+    if treated_length <= 0:
+        return 0.0, 0.0
+    return weighted_dr / treated_length, treated_length
 
 
 def _parallel_segment_hydraulics(
@@ -2052,9 +2148,9 @@ def solve_pipeline(
                     else:
                         ppm_val = 0.0
                     try:
-                        ppm = int(float(ppm_val))
+                        ppm = float(ppm_val)
                     except Exception:
-                        ppm = 0
+                        ppm = 0.0
                     linefill_state.append({'volume': vol, 'dra_ppm': ppm})
         elif isinstance(linefill, list):
             for ent in linefill:
@@ -2065,9 +2161,9 @@ def solve_pipeline(
                 if vol <= 0:
                     continue
                 try:
-                    ppm = int(float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0))
+                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
                 except Exception:
-                    ppm = 0
+                    ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
@@ -2600,8 +2696,8 @@ def solve_pipeline(
                         rpm_map_choice = {}
                     for dra_main in dra_main_vals:
                         for dra_loop in dra_loop_vals:
-                            ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
-                            ppm_loop = int(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0
+                            ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                            ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
                             opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
@@ -2638,7 +2734,7 @@ def solve_pipeline(
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 for dra_main in dra_vals:
-                    ppm_main = int(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0
+                    ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
@@ -2879,13 +2975,12 @@ def solve_pipeline(
                 queue_after_inlet = _trim_queue_front(queue_after_full, seg_length_total)
                 total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
                 if total_positive > 0:
-                    weighted_dr = 0.0
-                    for length, ppm in dra_segments:
-                        if ppm <= 0:
-                            continue
-                        weighted_dr += float(get_dr_for_ppm(stn_data['kv'], ppm)) * length
-                    eff_dra_main = weighted_dr / total_positive
-                    dra_len_main = min(total_positive, stn_data['L'])
+                    eff_dra_main, treated_length = _effective_dra_response(
+                        dra_segments,
+                        stn_data.get('linefill_slices'),
+                        stn_data['kv'],
+                    )
+                    dra_len_main = min(treated_length, stn_data['L'])
                 else:
                     eff_dra_main = 0.0
                     dra_len_main = 0.0
@@ -3470,10 +3565,9 @@ def solve_pipeline(
             if length_km <= 0:
                 continue
             ppm_float = float(ppm_val)
-            ppm_int = int(round(ppm_float)) if ppm_float > 0 else 0
             entry = {
                 'length_km': length_km,
-                'dra_ppm': ppm_int,
+                'dra_ppm': ppm_float if ppm_float > 0 else 0.0,
             }
             if diameter > 0:
                 entry['volume'] = _volume_from_km(length_km, diameter)
@@ -3483,7 +3577,7 @@ def solve_pipeline(
         return converted
 
     dra_segments_result = [
-        {'length_km': length, 'dra_ppm': int(round(ppm)) if ppm > 0 else 0}
+        {'length_km': length, 'dra_ppm': ppm if ppm > 0 else 0.0}
         for length, ppm in queue_final
     ]
     result['dra_segments'] = dra_segments_result
