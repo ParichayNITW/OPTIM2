@@ -352,56 +352,22 @@ V_MAX = 2.5
 # each station.  ``STATE_TOP_K`` bounds the total states retained while
 # ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
 # this many currency units of the best state for the current station.
-STATE_TOP_K = 35
+STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
 
-def _allowed_values(min_val, max_val, step) -> list[float] | list[int]:
-    """Return values from ``min_val`` to ``max_val`` spaced by ``step``.
-
-    The helper accepts integer or floating inputs without silently truncating
-    fractional step sizes.  When all generated values are effectively
-    integers, the list is returned as ``int`` instances so existing callers
-    that rely on integer RPM grids continue to behave identically.  When the
-    step introduces fractional values (for example a 0.5 % drag-reduction
-    increment) the function preserves the floating point values so the
-    optimiser can explore those intermediate set-points.
-    """
-
-    try:
-        min_f = float(min_val)
-        max_f = float(max_val)
-        step_f = float(step)
-    except (TypeError, ValueError):
+def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+    if min_val > max_val:
         return [min_val]
-
-    if step_f <= 0:
-        step_f = 1.0
-
-    if min_f > max_f + 1e-9:
-        return [min_f]
-
-    values: list[float] = []
-    current = min_f
-    tol = max(step_f / 1e6, 1e-12)
-    # Include values up to ``max_f`` accounting for floating-point drift.
-    while current <= max_f + tol:
-        values.append(current)
-        current += step_f
-
-    if values and values[-1] < max_f - tol:
-        values.append(max_f)
-    elif not values:
-        values.append(min_f)
-
-    if all(abs(round(v) - v) <= 1e-9 for v in values):
-        return [int(round(v)) for v in values]
-    return values
+    vals = list(range(min_val, max_val + 1, step))
+    if vals[-1] != max_val:
+        vals.append(max_val)
+    return vals
 
 
 def _build_baseline_narrow_ranges(
     stations: list[Mapping[str, object]],
-    dra_step: float,
-) -> list[dict[int, dict[str, tuple[float, float]]]]:
+    dra_step: int,
+) -> list[dict[int, dict[str, tuple[int, int]]]]:
     """Return ``narrow_ranges`` enforcing baseline operating scenarios.
 
     The helper constructs an all-stations baseline where every pump runs at its
@@ -413,18 +379,18 @@ def _build_baseline_narrow_ranges(
     """
 
     try:
-        dra_step_val = float(dra_step)
+        dra_step_int = int(dra_step)
     except (TypeError, ValueError):
-        dra_step_val = float(DRA_STEP)
-    if dra_step_val <= 0:
-        dra_step_val = float(DRA_STEP)
-    min_positive_dra = dra_step_val
+        dra_step_int = DRA_STEP
+    if dra_step_int <= 0:
+        dra_step_int = DRA_STEP
+    min_positive_dra = max(1, dra_step_int)
 
     def _entry_for_station(
         stn: Mapping[str, object],
-        target_dra: float,
-    ) -> dict[str, tuple[float, float]] | None:
-        entry: dict[str, tuple[float, float]] = {}
+        target_dra: int,
+    ) -> dict[str, tuple[int, int]] | None:
+        entry: dict[str, tuple[int, int]] = {}
         is_pump = bool(stn.get('is_pump', False))
         rpm_target = 0
         if is_pump:
@@ -460,8 +426,8 @@ def _build_baseline_narrow_ranges(
                     )
                     entry[f'rpm_{ptype}'] = (p_rpm_min, p_rpm_min)
 
-        max_dr_main = float(stn.get('max_dr', 0) or 0.0)
-        clamped_target = max(0.0, float(target_dra))
+        max_dr_main = int(stn.get('max_dr', 0))
+        clamped_target = max(0, int(target_dra))
         clamped_target = min(max_dr_main, clamped_target)
         if target_dra > 0 and clamped_target <= 0:
             return None
@@ -472,9 +438,9 @@ def _build_baseline_narrow_ranges(
             entry['dra_loop'] = (0, 0)
         return entry
 
-    baseline_cases: list[dict[int, dict[str, tuple[float, float]]]] = []
+    baseline_cases: list[dict[int, dict[str, tuple[int, int]]]] = []
 
-    zero_case: dict[int, dict[str, tuple[float, float]]] = {}
+    zero_case: dict[int, dict[str, tuple[int, int]]] = {}
     for idx, stn in enumerate(stations):
         entry = _entry_for_station(stn, 0)
         if entry is not None and entry:
@@ -483,7 +449,7 @@ def _build_baseline_narrow_ranges(
         baseline_cases.append(zero_case)
 
     for idx, stn in enumerate(stations):
-        positive_case: dict[int, dict[str, tuple[float, float]]] = {}
+        positive_case: dict[int, dict[str, tuple[int, int]]] = {}
         has_positive = False
         for jdx, other in enumerate(stations):
             target = min_positive_dra if jdx == idx else 0
@@ -502,10 +468,6 @@ def _build_baseline_narrow_ranges(
 _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
-] = {}
-_ZERO_EXTENSION_CACHE: dict[
-    tuple,
-    tuple[tuple[float, float], ...],
 ] = {}
 
 
@@ -726,48 +688,6 @@ def _take_queue_front(
         for length, ppm in taken
         if float(length or 0.0) > 0
     )
-
-
-def _extend_zero_front(
-    entries: list[tuple[float, float]] | tuple[tuple[float, float], ...],
-    extra_length: float,
-) -> list[tuple[float, float]]:
-    """Return a copy of ``entries`` with additional zero-PPM coverage up front."""
-
-    try:
-        remaining = float(extra_length)
-    except (TypeError, ValueError):
-        remaining = 0.0
-    if remaining <= 1e-9:
-        return [
-            (float(length or 0.0), float(ppm or 0.0))
-            for length, ppm in entries
-            if float(length or 0.0) > 0
-        ]
-
-    adjusted: list[tuple[float, float]] = []
-    idx = 0
-    n = len(entries)
-    while idx < n and remaining > 1e-9:
-        length_val = float(entries[idx][0])
-        ppm_val = float(entries[idx][1])
-        if length_val <= 0:
-            idx += 1
-            continue
-        if ppm_val <= 1e-9:
-            adjusted.append((length_val, 0.0))
-        else:
-            take = min(length_val, remaining)
-            if take > 1e-9:
-                adjusted.append((take, 0.0))
-                length_val -= take
-                remaining -= take
-            if length_val > 1e-9:
-                adjusted.append((length_val, ppm_val))
-        idx += 1
-    if idx < n:
-        adjusted.extend(entries[idx:])
-    return adjusted
 
 
 def _update_mainline_dra(
@@ -1007,6 +927,21 @@ def _update_mainline_dra(
         if length > 0
     ]
 
+    dra_segments: list[tuple[float, float]] = []
+    for length, ppm_val in segment_cover_entries:
+        if length <= 0:
+            continue
+        try:
+            ppm_float = float(ppm_val)
+        except (TypeError, ValueError):
+            ppm_float = 0.0
+        if ppm_float > 0:
+            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
+                prev_len, _ = dra_segments[-1]
+                dra_segments[-1] = (prev_len + length, ppm_float)
+            else:
+                dra_segments.append((length, ppm_float))
+
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
         for length, ppm_val in (
@@ -1015,58 +950,11 @@ def _update_mainline_dra(
         if float(length) > 0
     ]
 
-    zero_extension_needed = False
-    if pump_running and pumped_length > 1e-9 and pumped_slices:
-        zero_pumped = 0.0
-        for length, ppm_val in pumped_slices:
-            try:
-                length_val = float(length or 0.0)
-            except (TypeError, ValueError):
-                length_val = 0.0
-            if length_val <= 0:
-                continue
-            try:
-                ppm_float = float(ppm_val or 0.0)
-            except (TypeError, ValueError):
-                ppm_float = 0.0
-            if ppm_float <= 1e-9:
-                zero_pumped += length_val
-        if zero_pumped + 1e-6 >= pumped_length:
-            zero_extension_needed = True
-
-    if zero_extension_needed and is_origin:
-        cache_key = (
-            tuple((round(length, 6), round(ppm, 6)) for length, ppm in combined_entries),
-            round(pumped_length, 6),
-        )
-        cached = _ZERO_EXTENSION_CACHE.get(cache_key)
-        if cached is not None:
-            combined_entries = [(float(length), float(ppm)) for length, ppm in cached]
-        else:
-            combined_entries = _extend_zero_front(combined_entries, pumped_length)
-            if len(_ZERO_EXTENSION_CACHE) > 4096:
-                _ZERO_EXTENSION_CACHE.clear()
-            _ZERO_EXTENSION_CACHE[cache_key] = tuple(combined_entries)
-
     merged_queue = _merge_queue(combined_entries)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
     ]
-    cover_for_segment = _take_queue_front(merged_queue, segment_length)
-    dra_segments: list[tuple[float, float]] = []
-    for length, ppm_val in cover_for_segment:
-        length_val = float(length)
-        if length_val <= 0:
-            continue
-        ppm_float = float(ppm_val)
-        if ppm_float > 0:
-            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
-                prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + length_val, ppm_float)
-            else:
-                dra_segments.append((length_val, ppm_float))
-
     return dra_segments, queue_after, inj_ppm_main
 
 
@@ -2019,8 +1907,8 @@ def solve_pipeline(
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
     rpm_step: int = RPM_STEP,
-    dra_step: float = DRA_STEP,
-    narrow_ranges: dict[int, dict[str, tuple[float, float]]] | None = None,
+    dra_step: int = DRA_STEP,
+    narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
@@ -2085,11 +1973,11 @@ def solve_pipeline(
         rpm_step = RPM_STEP
 
     try:
-        dra_step = float(dra_step)
+        dra_step = int(dra_step)
     except (TypeError, ValueError):
-        dra_step = float(DRA_STEP)
+        dra_step = DRA_STEP
     if dra_step <= 0:
-        dra_step = float(DRA_STEP)
+        dra_step = DRA_STEP
 
     try:
         coarse_multiplier = float(coarse_multiplier)
@@ -2295,9 +2183,9 @@ def solve_pipeline(
         if coarse_scale >= 1.0 and rpm_step > 0:
             coarse_rpm_step = max(coarse_rpm_step, rpm_step)
 
-        coarse_dra_step = dra_step * coarse_scale if dra_step > 0 else float(DRA_STEP) * coarse_scale
+        coarse_dra_step = int(round(dra_step * coarse_scale)) if dra_step > 0 else int(round(coarse_scale))
         if coarse_dra_step <= 0:
-            coarse_dra_step = dra_step if dra_step > 0 else float(DRA_STEP)
+            coarse_dra_step = dra_step if dra_step > 0 else 1
         if coarse_scale >= 1.0 and dra_step > 0:
             coarse_dra_step = max(coarse_dra_step, dra_step)
         coarse_res = solve_pipeline(
@@ -2330,14 +2218,14 @@ def solve_pipeline(
             return coarse_res
         window = max(rpm_step, coarse_rpm_step)
 
-        zero_dra_ranges: dict[int, dict[str, tuple[float, float]]] = {}
+        zero_dra_ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
-            zero_entry: dict[str, tuple[float, float]] = {
-                "dra_main": (0.0, 0.0),
+            zero_entry: dict[str, tuple[int, int]] = {
+                "dra_main": (0, 0),
             }
             loop_cfg = stn.get("loopline") or {}
             if loop_cfg:
-                zero_entry["dra_loop"] = (0.0, 0.0)
+                zero_entry["dra_loop"] = (0, 0)
             if stn.get("is_pump", False):
                 st_rpm_min = int(_station_min_rpm(stn))
                 st_rpm_max = int(_station_max_rpm(stn))
@@ -2396,12 +2284,12 @@ def solve_pipeline(
 
             zero_dra_ranges[idx] = zero_entry
 
-        ranges: dict[int, dict[str, tuple[float, float]]] = {}
+        ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
             if stn.get("is_pump", False):
                 coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
-                coarse_dr_main = float(coarse_res.get(f"drag_reduction_{name}", 0.0) or 0.0)
+                coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
                 st_rpm_min = int(_station_min_rpm(stn))
                 st_rpm_max = int(_station_max_rpm(stn))
                 if st_rpm_max <= 0 and st_rpm_min > 0:
@@ -2413,13 +2301,13 @@ def solve_pipeline(
                     rmin = max(st_rpm_min, coarse_rpm - window)
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
                     rmax = min(upper_bound, coarse_rpm + window)
-                max_dr_main = float(stn.get("max_dr", 0) or 0.0)
+                max_dr_main = int(stn.get("max_dr", 0))
                 if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
-                    dmin, dmax = 0.0, max_dr_main
+                    dmin, dmax = 0, max_dr_main
                 else:
-                    dmin = max(0.0, coarse_dr_main - dra_step)
+                    dmin = max(0, coarse_dr_main - dra_step)
                     dmax = min(max_dr_main, coarse_dr_main + dra_step)
-                entry: dict[str, tuple[float, float]] = {
+                entry: dict[str, tuple[int, int]] = {
                     "rpm": (rmin, rmax),
                     "dra_main": (dmin, dmax),
                 }
@@ -2477,15 +2365,15 @@ def solve_pipeline(
                         entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
                 loop = stn.get("loopline") or {}
                 if loop:
-                    coarse_dr_loop = float(coarse_res.get(f"drag_reduction_loop_{name}", 0.0) or 0.0)
-                    lmin = max(0.0, coarse_dr_loop - dra_step)
-                    lmax = min(float(loop.get("max_dr", 0) or 0.0), coarse_dr_loop + dra_step)
+                    coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
+                    lmin = max(0, coarse_dr_loop - dra_step)
+                    lmax = min(int(loop.get("max_dr", 0)), coarse_dr_loop + dra_step)
                     entry["dra_loop"] = (lmin, lmax)
                 ranges[idx] = entry
             else:
-                coarse_dr_main = float(coarse_res.get(f"drag_reduction_{name}", 0.0) or 0.0)
-                dmin = max(0.0, coarse_dr_main - dra_step)
-                dmax = min(float(stn.get("max_dr", 0) or 0.0), coarse_dr_main + dra_step)
+                coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                dmin = max(0, coarse_dr_main - dra_step)
+                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
                 ranges[idx] = {"dra_main": (dmin, dmax)}
         refine_result = solve_pipeline(
             stations,
@@ -2768,21 +2656,21 @@ def solve_pipeline(
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
-            max_dr_main = float(stn.get('max_dr', 0) or 0.0)
+            max_dr_main = int(stn.get('max_dr', 0))
             if fixed_dr is not None:
-                dra_main_vals = [float(fixed_dr)]
+                dra_main_vals = [int(round(fixed_dr))]
             else:
-                dr_min, dr_max = 0.0, max_dr_main
+                dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
-                    dr_min = max(0.0, float(rng['dra_main'][0]))
-                    dr_max = min(max_dr_main, float(rng['dra_main'][1]))
+                    dr_min = max(0, rng['dra_main'][0])
+                    dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
-            max_dr_loop = float(loop_dict.get('max_dr', 0) or 0.0) if loop_dict else 0.0
-            dr_loop_min, dr_loop_max = 0.0, max_dr_loop
+            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
+            dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
-                dr_loop_min = max(0.0, float(rng['dra_loop'][0]))
-                dr_loop_max = min(max_dr_loop, float(rng['dra_loop'][1]))
-            dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0.0]
+                dr_loop_min = max(0, rng['dra_loop'][0])
+                dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
+            dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
             for nop in range(min_p, max_p + 1):
                 if nop == 0:
                     rpm_iter = [None]
@@ -2827,23 +2715,23 @@ def solve_pipeline(
                 opts.insert(0, {
                     'nop': 0,
                     'rpm': 0,
-                    'dra_main': 0.0,
-                    'dra_loop': 0.0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
+                    'dra_main': 0,
+                    'dra_loop': 0,
+                    'dra_ppm_main': 0,
+                    'dra_ppm_loop': 0,
                 })
         else:
             # Non-pump stations can inject DRA independently whenever a
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
-            max_dr_main = float(stn.get('max_dr', 0) or 0.0)
+            max_dr_main = int(stn.get('max_dr', 0))
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
-                dr_min, dr_max = 0.0, max_dr_main
+                dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
-                    dr_min = max(0.0, float(rng['dra_main'][0]))
-                    dr_max = min(max_dr_main, float(rng['dra_main'][1]))
+                    dr_min = max(0, rng['dra_main'][0])
+                    dr_max = min(max_dr_main, rng['dra_main'][1])
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
@@ -2851,18 +2739,18 @@ def solve_pipeline(
                         'nop': 0,
                         'rpm': 0,
                         'dra_main': dra_main,
-                        'dra_loop': 0.0,
+                        'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
-                        'dra_ppm_loop': 0.0,
+                        'dra_ppm_loop': 0,
                     })
             if not non_pump_opts:
                 non_pump_opts.append({
                     'nop': 0,
                     'rpm': 0,
-                    'dra_main': 0.0,
-                    'dra_loop': 0.0,
-                    'dra_ppm_main': 0.0,
-                    'dra_ppm_loop': 0.0,
+                    'dra_main': 0,
+                    'dra_loop': 0,
+                    'dra_ppm_main': 0,
+                    'dra_ppm_loop': 0,
                 })
             opts.extend(non_pump_opts)
 
@@ -3005,7 +2893,7 @@ def solve_pipeline(
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
-            'carry_loop_dra': 0.0,
+            'carry_loop_dra': 0,
             'dra_queue_full': initial_queue,
             'dra_queue_at_inlet': initial_queue,
             'inj_ppm_main': 0,
@@ -3048,8 +2936,7 @@ def solve_pipeline(
                 # ``loop_usage_by_station`` when provided.
                 if stn_data['idx'] > 0 and loop_usage_by_station is not None:
                     usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
-                    opt_loop_val = float(opt.get('dra_loop', 0.0) or 0.0)
-                    if usage_prev == 2 and abs(opt_loop_val) > 1e-9:
+                    if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
                 dra_segments, queue_after_list, inj_ppm_main = _update_mainline_dra(
@@ -3322,7 +3209,7 @@ def solve_pipeline(
                         # segment-weighted mainline drag reduction
                         eff_dra_main_tot = eff_dra_main
                         # Carry-over drag reduction on the loop from the previous state
-                        carry_prev = float(state.get('carry_loop_dra', 0.0) or 0.0)
+                        carry_prev = int(state.get('carry_loop_dra', 0))
                         # In bypass mode the loopline may still inject additional DRA.
                         # Combine any upstream carry-over with the current option so
                         # the full effect is considered when splitting flow over the
@@ -3400,7 +3287,7 @@ def solve_pipeline(
                     # upstream station persists.  Otherwise use the station's
                     # prescribed DRA for the loopline.  When there is no loop flow
                     # the value is irrelevant but carried forward.
-                    carry_prev = float(state.get('carry_loop_dra', 0.0) or 0.0)
+                    carry_prev = int(state.get('carry_loop_dra', 0))
                     if sc['flow_loop'] > 0:
                         if sc.get('bypass_next'):
                             eff_dra_loop = carry_prev + opt['dra_loop']
@@ -3411,9 +3298,9 @@ def solve_pipeline(
                             inj_loop_current = opt['dra_loop']
                             inj_ppm_loop = opt['dra_ppm_loop']
                     else:
-                        eff_dra_loop = 0.0
-                        inj_loop_current = 0.0
-                        inj_ppm_loop = 0.0
+                        eff_dra_loop = 0
+                        inj_loop_current = 0
+                        inj_ppm_loop = 0
 
                     # Determine next carry-over drag reduction value for the loop.
                     if sc['flow_loop'] > 0:
@@ -3710,10 +3597,10 @@ def solve_pipeline(
         f"motor_kw_{term_name}": 0.0,
         f"power_cost_{term_name}": 0.0,
         f"dra_cost_{term_name}": 0.0,
-        f"dra_ppm_{term_name}": 0.0,
-        f"dra_ppm_loop_{term_name}": 0.0,
-        f"drag_reduction_{term_name}": 0.0,
-        f"drag_reduction_loop_{term_name}": 0.0,
+        f"dra_ppm_{term_name}": 0,
+        f"dra_ppm_loop_{term_name}": 0,
+        f"drag_reduction_{term_name}": 0,
+        f"drag_reduction_loop_{term_name}": 0,
         f"head_loss_{term_name}": 0.0,
         f"velocity_{term_name}": 0.0,
         f"reynolds_{term_name}": 0.0,
