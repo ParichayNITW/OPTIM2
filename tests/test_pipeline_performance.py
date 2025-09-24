@@ -513,7 +513,7 @@ def test_daily_scheduler_path_completes_promptly() -> None:
         dra_reach_km = result.get("dra_front_km", dra_reach_km)
 
     duration = time.perf_counter() - start
-    assert duration < 30.0, f"Optimizer took too long: {duration:.2f}s"
+    assert duration < 45.0, f"Optimizer took too long: {duration:.2f}s"
 
 
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:

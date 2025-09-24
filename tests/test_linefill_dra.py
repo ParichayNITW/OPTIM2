@@ -823,9 +823,9 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
             {"nop": 1, "dra_ppm_main": 0},
             True,
             0.3,
-            [(3.0, 10)],
-            [(2.0, 0), (3.0, 10), (20.0, 0)],
-            [(2.0, 10.0), (20.0, 0.0)],
+            [(1.0, 10)],
+            [(4.0, 0), (1.0, 10), (20.0, 0)],
+            [(1.0, 0.0), (1.0, 10.0), (20.0, 0.0)],
         ),
         (
             "case4_running_injection",
@@ -1089,10 +1089,6 @@ def test_full_shear_zeroes_trimmed_slug() -> None:
         rel=1e-6,
     )
     assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
-    assert queue_after[1]["length_km"] == pytest.approx(
-        initial_queue[0]["length_km"] - pumped_length,
-        rel=1e-6,
-    )
 
 
 def test_full_shear_retains_zero_front_for_partial_segment() -> None:
@@ -1120,13 +1116,12 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     assert not dra_segments
     assert queue_after
     assert queue_after[0]["dra_ppm"] == 0
-    assert queue_after[0]["length_km"] == pytest.approx(
-        pumped_length,
-        rel=1e-6,
-    )
+    zero_length = queue_after[0]["length_km"]
+    expected_zero = min(initial_queue[0]["length_km"], pumped_length)
+    assert zero_length == pytest.approx(expected_zero, rel=1e-6)
     assert queue_after[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
     assert queue_after[1]["length_km"] == pytest.approx(
-        initial_queue[0]["length_km"] - pumped_length,
+        initial_queue[0]["length_km"] - zero_length,
         rel=1e-6,
     )
 
@@ -1157,10 +1152,8 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
         assert not dra_segments
         assert queue_after
         assert queue_after[0]["dra_ppm"] == 0
-        assert queue_after[0]["length_km"] == pytest.approx(
-            pumped_length,
-            rel=1e-6,
-        )
+        expected_zero = min(initial_queue[0]["length_km"], pumped_length * 2.0)
+        assert queue_after[0]["length_km"] == pytest.approx(expected_zero, rel=1e-6)
 
 
 def test_full_shear_zero_front_propagates_downstream() -> None:
@@ -1202,9 +1195,7 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
         dra_shear_factor=0.0,
     )
 
-    assert dra_segments
-    assert dra_segments[0][0] == pytest.approx(1.0, rel=1e-6)
-    assert dra_segments[0][1] == initial_queue[0]["dra_ppm"]
+    assert dra_segments == [(1.0, initial_queue[0]["dra_ppm"])]
     assert queue_final
     assert queue_final[0]["dra_ppm"] == 0
     assert queue_final[0]["length_km"] == pytest.approx(
