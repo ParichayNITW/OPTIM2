@@ -974,7 +974,7 @@ def test_idle_pump_injection_reflected_in_results() -> None:
         enumerate_loops=False,
     )
 
-    narrow_ranges = {1: {"dra_main": (12, 12)}}
+    narrow_ranges = {1: {"dra_main": (12.0, 12.0)}}
 
     result = solve_pipeline(
         stations=copy.deepcopy(stations),
@@ -1393,7 +1393,7 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
         terminal=terminal,
         linefill=[],
         dra_reach_km=0.0,
-        narrow_ranges={0: {"dra_main": (0, 0)}},
+        narrow_ranges={0: {"dra_main": (0.0, 0.0)}},
         **common_kwargs,
     )
 
