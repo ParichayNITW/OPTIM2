@@ -574,8 +574,8 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
 
     def fake_cache(station, opt, **kwargs):
         cache = original_cache(station, opt, **kwargs)
-        dr_val = int(opt.get("dra_main", 0) or 0)
-        target = cost_map.get(dr_val)
+        dr_val = float(opt.get("dra_main", 0) or 0.0)
+        target = cost_map.get(int(round(dr_val)))
         if target is not None:
             delta = target - cache.get("power_cost", 0.0)
             cache["power_cost"] = target
@@ -587,7 +587,7 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
         return cache
 
     coarse_results: list[dict] = []
-    captured_ranges: list[dict[int, dict[str, tuple[int, int]]]] = []
+    captured_ranges: list[dict[int, dict[str, tuple[float, float]]]] = []
 
     def wrapped_solve(*args, **kwargs):  # type: ignore[override]
         _ensure_segment_slices(args, kwargs)
@@ -611,7 +611,7 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
     assert coarse_cost == pytest.approx(cost_map[0])
 
     dra_range = captured_ranges[0][0]["dra_main"]
-    assert dra_range == (0, 20)
+    assert dra_range == (0.0, 20.0)
 
     assert final_result.get("total_cost") == pytest.approx(cost_map[15])
     assert final_result.get("total_cost") < coarse_cost
@@ -680,9 +680,9 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
 
     def staged_cache(station, opt, **kwargs):
         cache = original_cache(station, opt, **kwargs)
-        dr_val = int(opt.get("dra_main", 0) or 0)
+        dr_val = float(opt.get("dra_main", 0) or 0.0)
         stage_map = stage_costs.get(stage_state["value"], stage_costs["refine"])
-        target = stage_map.get(dr_val)
+        target = stage_map.get(int(round(dr_val)))
         if target is not None:
             delta = target - cache.get("power_cost", 0.0)
             cache["power_cost"] = target
