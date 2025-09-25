@@ -1401,11 +1401,11 @@ def test_untreated_slug_remains_zero_until_injection() -> None:
             [(2.0, 0.0), (18.0, 10.0)],
         ],
         [
-            [(2.0, 0.0), (3.0, 10.0)],
-            [(2.0, 0.0), (18.0, 10.0)],
+            [(4.0, 0.0), (1.0, 10.0)],
+            [(4.0, 0.0), (16.0, 10.0)],
         ],
     ]
-    expected_final = [(2.0, 0.0), (3.0, 10.0), (2.0, 0.0), (18.0, 10.0)]
+    expected_final = [(4.0, 0.0), (1.0, 10.0), (4.0, 0.0), (16.0, 10.0)]
 
     for hour in range(2):
         offset = 0.0
@@ -1511,7 +1511,133 @@ def test_downstream_idle_injection_advances_slug_without_stack() -> None:
     assert seg_a_h1 == [(2.0, 12.0), (3.0, 10.0)]
     assert seg_b_h1 == [(2.0, 22.0), (18.0, 10.0)]
     seg_a_h2, seg_b_h2 = history[1]
-    assert seg_a_h2 == [(2.0, 12.0), (3.0, 10.0)]
+    assert seg_a_h2 == [(4.0, 12.0), (1.0, 10.0)]
     assert seg_b_h2 == [(4.0, 22.0), (16.0, 10.0)]
     total_length = sum(length for length, _ppm in queue_full)
     assert total_length == pytest.approx(sum(segment_lengths), rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    "case_name, pump_status, injections, expected",
+    [
+        (
+            "both_pumps_inject",
+            (True, True),
+            (12.0, 12.0),
+            [
+                ([(2.0, 12.0), (3.0, 10.0)], [(2.0, 12.0), (18.0, 10.0)]),
+                ([(4.0, 12.0), (1.0, 10.0)], [(4.0, 12.0), (16.0, 10.0)]),
+            ],
+        ),
+        (
+            "downstream_idle",
+            (True, False),
+            (12.0, 12.0),
+            [
+                ([(2.0, 12.0), (3.0, 10.0)], [(2.0, 22.0), (18.0, 10.0)]),
+                ([(4.0, 12.0), (1.0, 10.0)], [(4.0, 22.0), (16.0, 10.0)]),
+            ],
+        ),
+        (
+            "no_injection",
+            (True, True),
+            (0.0, 0.0),
+            [
+                ([(2.0, 0.0), (3.0, 10.0)], [(2.0, 0.0), (18.0, 10.0)]),
+                ([(4.0, 0.0), (1.0, 10.0)], [(4.0, 0.0), (16.0, 10.0)]),
+            ],
+        ),
+        (
+            "upstream_only_injection",
+            (True, True),
+            (12.0, 0.0),
+            [
+                ([(2.0, 12.0), (3.0, 10.0)], [(2.0, 0.0), (18.0, 10.0)]),
+                ([(4.0, 12.0), (1.0, 10.0)], [(4.0, 0.0), (16.0, 10.0)]),
+            ],
+        ),
+    ],
+)
+def test_pump_running_examples_match_expected(
+    case_name: str,
+    pump_status: tuple[bool, bool],
+    injections: tuple[float, float],
+    expected,
+) -> None:
+    diameter = 0.8
+    flow_m3h = _volume_from_km(2.0, diameter)
+    hours = 1.0
+    pump_shear_rate = 1.0
+    segment_lengths = [5.0, 20.0]
+    stations = [
+        {"idx": 0, "d_inner": diameter, "kv": 3.0, "L": segment_lengths[0]},
+        {"idx": 1, "d_inner": diameter, "kv": 3.0, "L": segment_lengths[1]},
+    ]
+
+    queue_full: list[tuple[float, float]] = [(sum(segment_lengths), 10.0)]
+    history: list[list[list[tuple[float, float]]]] = []
+
+    for _ in range(2):
+        hourly_segments: list[list[tuple[float, float]]] = []
+        offset = 0.0
+        for idx, stn in enumerate(stations):
+            queue_tuple = tuple(queue_full)
+            queue_inlet = _trim_queue_front(queue_tuple, offset)
+            prefix = _take_queue_front(queue_tuple, offset)
+            pump_running = bool(pump_status[idx])
+            inj_ppm = float(injections[idx])
+            dra_segments, queue_after, _ = _update_mainline_dra(
+                queue_inlet,
+                stn,
+                {"dra_ppm_main": inj_ppm, "nop": 1 if pump_running else 0},
+                stn["L"],
+                flow_m3h,
+                hours,
+                pump_running=pump_running,
+                pump_shear_rate=pump_shear_rate,
+                is_origin=stn["idx"] == 0,
+                upstream_prefix=prefix,
+            )
+            hourly_segments.append(dra_segments)
+            prefix_entries = tuple(
+                (float(length), float(ppm))
+                for length, ppm in prefix
+                if float(length) > 0
+            )
+            queue_body = tuple(
+                (
+                    float(entry.get("length_km", 0.0) or 0.0),
+                    float(entry.get("dra_ppm", 0.0) or 0.0),
+                )
+                for entry in queue_after
+                if float(entry.get("length_km", 0.0) or 0.0) > 0
+            )
+            queue_full = _merge_queue(prefix_entries + queue_body)
+            offset += stn["L"]
+        history.append(hourly_segments)
+
+    assert len(history) == len(expected)
+    for hour_idx, expected_segments in enumerate(expected):
+        for stn_idx, exp_segments in enumerate(expected_segments):
+            actual_segments = history[hour_idx][stn_idx]
+            assert len(actual_segments) == len(exp_segments), (
+                case_name,
+                hour_idx,
+                stn_idx,
+            )
+            for (act_len, act_ppm), (exp_len, exp_ppm) in zip(actual_segments, exp_segments):
+                assert act_len == pytest.approx(exp_len, rel=1e-9), (
+                    case_name,
+                    hour_idx,
+                    stn_idx,
+                )
+                assert act_ppm == pytest.approx(exp_ppm, rel=1e-9), (
+                    case_name,
+                    hour_idx,
+                    stn_idx,
+                )
+
+    assert sum(length for length, _ppm in queue_full) == pytest.approx(
+        sum(segment_lengths),
+        rel=1e-6,
+    )
