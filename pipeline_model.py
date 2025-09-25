@@ -721,8 +721,14 @@ def _take_queue_tail(
     if not taken:
         return ()
 
-    taken = [(float(length), float(ppm)) for length, ppm in taken if float(length or 0.0) > 0]
-    return tuple(taken)
+    taken.reverse()
+
+    normalised = [
+        (float(length), float(ppm))
+        for length, ppm in taken
+        if float(length or 0.0) > 0
+    ]
+    return tuple(normalised)
 
 
 def _update_mainline_dra(
