@@ -304,6 +304,44 @@ def test_linefill_dra_persists_through_running_pumps() -> None:
     assert treated_volume > 0.0
 
 
+@pytest.mark.parametrize("linefill_style", ["list", "dict"], ids=["list", "dict"])
+def test_initial_dra_column_is_parsed_for_linefill(linefill_style: str) -> None:
+    """``Initial DRA (ppm)`` entries should populate the solver's queue."""
+
+    stations = [_make_pump_station("Station A")]
+    terminal = {"name": "Terminal", "min_residual": 5, "elev": 0.0}
+
+    diameter = stations[0]["d"]
+    volume = _volume_from_km(10.0, diameter)
+    initial_ppm = 12.5
+
+    if linefill_style == "list":
+        linefill = [{"volume": volume, "Initial DRA (ppm)": initial_ppm}]
+    else:
+        linefill = {"volume": [volume], "Initial DRA (ppm)": [initial_ppm]}
+
+    result = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        FLOW=2500.0,
+        KV_list=[3.0, 3.0],
+        rho_list=[850.0, 850.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=linefill,
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        enumerate_loops=False,
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result["dra_ppm_station_a"] == pytest.approx(0.0)
+    assert result["dra_inlet_ppm_station_a"] == pytest.approx(initial_ppm)
+
+
 def test_zero_injection_benefits_from_inherited_slug() -> None:
     """Inherited DRA continues lowering SDH when no station injects."""
 
