@@ -2010,6 +2010,44 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
 
+        profile_entries: list[tuple[float, float]] = []
+        raw_profile = res.get(f"dra_profile_{key}")
+        if isinstance(raw_profile, (list, tuple)):
+            for entry in raw_profile:
+                if isinstance(entry, dict):
+                    length_val = entry.get('length_km', 0.0)
+                    ppm_val = entry.get('dra_ppm', 0.0)
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    length_val, ppm_val = entry[0], entry[1]
+                else:
+                    continue
+                try:
+                    length_f = float(length_val or 0.0)
+                except (TypeError, ValueError):
+                    length_f = 0.0
+                try:
+                    ppm_f = float(ppm_val or 0.0)
+                except (TypeError, ValueError):
+                    ppm_f = 0.0
+                if length_f <= 0:
+                    continue
+                profile_entries.append((length_f, ppm_f))
+
+        treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
+        inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
+        outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+        if profile_entries:
+            profile_str = "; ".join(
+                f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
+            )
+        else:
+            profile_str = ""
+
+        row['DRA Inlet PPM'] = inlet_ppm
+        row['DRA Outlet PPM'] = outlet_ppm
+        row['DRA Treated Length (km)'] = treated_length
+        row['DRA Profile (km@ppm)'] = profile_str
+
         speed_station = base_stn if base_stn else (stn if isinstance(stn, dict) else None)
         speed_map = get_speed_display_map(res, key, speed_station)
         for suffix, value in speed_map.items():
@@ -2902,7 +2940,8 @@ if not auto_batch:
         # Pandas may treat some columns as object if they contain NaN or are newly inserted.
         df_day_numeric = df_day.copy()
         # Identify columns eligible for numeric styling
-        num_cols = [c for c in df_day_numeric.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
+        non_numeric_cols = {"Time", "Station", "Pump Name", "Pattern", "DRA Profile (km@ppm)"}
+        num_cols = [c for c in df_day_numeric.columns if c not in non_numeric_cols]
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
 
@@ -2940,7 +2979,9 @@ if not auto_batch:
                 )
         else:
             num_cols_disp = [
-                c for c in df_display.columns if c not in ["Time", "Pattern", "Station", "Pump Name"]
+                c
+                for c in df_display.columns
+                if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
             ]
             fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
             df_disp_style = df_display.style.format(fmt_disp)

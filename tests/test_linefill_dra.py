@@ -17,6 +17,7 @@ import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
+    _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
     _update_mainline_dra,
@@ -604,6 +605,43 @@ def test_downstream_station_waits_for_advancing_front() -> None:
     combined_after_b = prefix_for_b + queue_after_b_inlet
     total_after_b_full = sum(length for length, _ppm in combined_after_b)
     assert total_after_b_full == pytest.approx(segment_a + segment_b, rel=1e-6)
+
+
+def test_segment_profile_from_queue_origin_segment() -> None:
+    """The profile helper should extract the origin segment without upstream offset."""
+
+    queue_full = (
+        (2.0, 12.0),
+        (3.0, 10.0),
+        (20.0, 10.0),
+    )
+
+    profile = _segment_profile_from_queue(queue_full, upstream_length=0.0, segment_length=5.0)
+
+    assert len(profile) == 2
+    assert profile[0][0] == pytest.approx(2.0, rel=1e-9)
+    assert profile[0][1] == pytest.approx(12.0, rel=1e-9)
+    assert profile[1][0] == pytest.approx(3.0, rel=1e-9)
+    assert profile[1][1] == pytest.approx(10.0, rel=1e-9)
+
+
+def test_segment_profile_from_queue_downstream_segment() -> None:
+    """Downstream segments should ignore the upstream prefix before slicing."""
+
+    queue_full = (
+        (2.0, 12.0),
+        (3.0, 10.0),
+        (2.0, 12.0),
+        (18.0, 10.0),
+    )
+
+    profile = _segment_profile_from_queue(queue_full, upstream_length=5.0, segment_length=20.0)
+
+    assert len(profile) == 2
+    assert profile[0][0] == pytest.approx(2.0, rel=1e-9)
+    assert profile[0][1] == pytest.approx(12.0, rel=1e-9)
+    assert profile[1][0] == pytest.approx(18.0, rel=1e-9)
+    assert profile[1][1] == pytest.approx(10.0, rel=1e-9)
 
 
 def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
