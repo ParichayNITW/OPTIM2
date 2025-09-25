@@ -935,12 +935,13 @@ def _update_mainline_dra(
             ppm_float = float(ppm_val)
         except (TypeError, ValueError):
             ppm_float = 0.0
-        if ppm_float > 0:
-            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
-                prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + length, ppm_float)
-            else:
-                dra_segments.append((length, ppm_float))
+        if abs(ppm_float) <= 1e-9:
+            ppm_float = 0.0
+        if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
+            prev_len, prev_ppm = dra_segments[-1]
+            dra_segments[-1] = (prev_len + length, prev_ppm)
+        else:
+            dra_segments.append((length, ppm_float))
 
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
