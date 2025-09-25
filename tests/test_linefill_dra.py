@@ -950,6 +950,54 @@ def test_two_station_case_profiles(
         assert length_actual == pytest.approx(length_expected, rel=1e-6), label
         assert ppm_actual == pytest.approx(ppm_expected, rel=1e-6), label
 
+
+def test_idle_pump_preserves_upstream_slug_even_with_shear() -> None:
+    """Idle pumps must not shear the upstream slug despite configured rates."""
+
+    diameter = 0.5
+    flow_m3h = _volume_from_km(2.0, diameter)
+    hours = 1.0
+    segment_a = 5.0
+    initial_queue = [
+        {"length_km": segment_a + 20.0, "dra_ppm": 10},
+    ]
+
+    dra_segments, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        {
+            "idx": 0,
+            "is_pump": True,
+            "d_inner": diameter,
+            "dra_shear_factor": 1.0,
+        },
+        {"nop": 0, "dra_ppm_main": 12},
+        segment_a,
+        flow_m3h,
+        hours,
+        pump_running=False,
+        pump_shear_rate=1.0,
+        dra_shear_factor=1.0,
+    )
+
+    assert len(dra_segments) == 2
+    length_a, ppm_a = dra_segments[0]
+    length_b, ppm_b = dra_segments[1]
+    assert length_a == pytest.approx(2.0, rel=1e-6)
+    assert ppm_a == pytest.approx(22.0, rel=1e-6)
+    assert length_b == pytest.approx(3.0, rel=1e-6)
+    assert ppm_b == pytest.approx(10.0, rel=1e-6)
+    queue_full = [
+        (
+            float(entry.get("length_km", 0.0) or 0.0),
+            float(entry.get("dra_ppm", 0.0) or 0.0),
+        )
+        for entry in queue_after
+        if float(entry.get("length_km", 0.0) or 0.0) > 0
+    ]
+    assert queue_full
+    length0, ppm0 = queue_full[0]
+    assert length0 == pytest.approx(2.0, rel=1e-6)
+    assert ppm0 == pytest.approx(22.0, rel=1e-6)
 def test_injected_slug_respects_shear_when_upstream() -> None:
     """Injection upstream of pumps should emerge at reduced ppm."""
 

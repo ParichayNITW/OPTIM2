@@ -815,7 +815,7 @@ def _update_mainline_dra(
     if pump_running:
         shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
     else:
-        shear = local_shear
+        shear = 0.0
     shear = max(0.0, min(shear, 1.0))
     injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
     apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
