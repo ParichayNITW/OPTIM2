@@ -905,12 +905,14 @@ def _update_mainline_dra(
             upstream_entries = upstream_prefix if upstream_prefix else ()
             base_entries: list[tuple[float, float]] = []
             if upstream_entries:
-                base_entries = list(_take_queue_tail(upstream_entries, pumped_length_val))
-                if base_entries:
-                    total_base = sum(float(length or 0.0) for length, _ppm in base_entries)
-                    min_base_ppm = min(float(ppm or 0.0) for _length, ppm in base_entries)
-                    if total_base > 1e-9:
-                        base_entries = [(min(total_base, pumped_length_val), min_base_ppm)]
+                base_entries = [
+                    (
+                        float(length or 0.0),
+                        float(ppm or 0.0),
+                    )
+                    for length, ppm in _take_queue_tail(upstream_entries, pumped_length_val)
+                    if float(length or 0.0) > 0
+                ]
                 carry_downstream = [
                     (float(length), max(float(ppm), 0.0))
                     for length, ppm in incoming_slices
@@ -918,7 +920,10 @@ def _update_mainline_dra(
                 ]
             if not base_entries:
                 base_entries = [
-                    (float(length or 0.0), float(ppm or 0.0))
+                    (
+                        float(length or 0.0),
+                        float(ppm or 0.0),
+                    )
                     for length, ppm in incoming_slices
                     if float(length or 0.0) > 0
                 ]
@@ -927,7 +932,14 @@ def _update_mainline_dra(
             covered = sum(length for length, _ppm in base_entries)
             if covered + 1e-9 < pumped_length_val:
                 base_entries.append((pumped_length_val - covered, 0.0))
-            for length, base_ppm in base_entries:
+            if base_entries:
+                if upstream_entries:
+                    ordered_entries = list(reversed(base_entries))
+                else:
+                    ordered_entries = list(base_entries)
+            else:
+                ordered_entries = []
+            for length, base_ppm in ordered_entries:
                 length = float(length)
                 if length <= 0:
                     continue
