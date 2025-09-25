@@ -801,40 +801,40 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
     "label,opt,pump_running,shear,expected_segments,expected_queue,expected_trimmed",
     [
         (
-            "case1_idle",
+            "idle_no_injection",
             {"nop": 0, "dra_ppm_main": 0},
             False,
             0.0,
-            [(5.0, 10)],
-            [(5.0, 10), (20.0, 0)],
-            [(2.0, 10.0), (20.0, 0.0)],
+            [(5.0, 10.0)],
+            [(25.0, 10.0)],
+            [(22.0, 10.0)],
         ),
         (
-            "case2_idle_injection",
+            "idle_injection",
             {"nop": 0, "dra_ppm_main": 12},
             False,
             0.0,
-            [(2.0, 22), (3.0, 10)],
-            [(2.0, 22), (3.0, 10), (20.0, 0)],
-            [(2.0, 10.0), (20.0, 0.0)],
+            [(2.0, 22.0), (3.0, 10.0)],
+            [(2.0, 22.0), (23.0, 10.0)],
+            [(22.0, 10.0)],
         ),
         (
-            "case3_running_no_injection",
+            "running_no_injection",
             {"nop": 1, "dra_ppm_main": 0},
             True,
-            0.3,
-            [(3.0, 10)],
-            [(2.0, 0), (3.0, 10), (20.0, 0)],
-            [(2.0, 10.0), (20.0, 0.0)],
+            1.0,
+            [(3.0, 10.0)],
+            [(2.0, 0.0), (23.0, 10.0)],
+            [(22.0, 10.0)],
         ),
         (
-            "case4_running_injection",
+            "running_injection",
             {"nop": 1, "dra_ppm_main": 12},
             True,
-            0.3,
-            [(2.0, 9), (3.0, 10)],
-            [(2.0, 9), (3.0, 10), (20.0, 0)],
-            [(2.0, 10.0), (20.0, 0.0)],
+            1.0,
+            [(2.0, 12.0), (3.0, 10.0)],
+            [(2.0, 12.0), (23.0, 10.0)],
+            [(22.0, 10.0)],
         ),
     ],
 )
@@ -855,8 +855,7 @@ def test_two_station_case_profiles(
     segment_a = 5.0
     segment_b = 20.0
     initial_queue = [
-        {"length_km": segment_a, "dra_ppm": 10},
-        {"length_km": segment_b, "dra_ppm": 0},
+        {"length_km": segment_a + segment_b, "dra_ppm": 10},
     ]
 
     precomputed = _prepare_dra_queue_consumption(
