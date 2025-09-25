@@ -1512,7 +1512,7 @@ def test_downstream_idle_injection_advances_slug_without_stack() -> None:
     assert seg_b_h1 == [(2.0, 22.0), (18.0, 10.0)]
     seg_a_h2, seg_b_h2 = history[1]
     assert seg_a_h2 == [(4.0, 12.0), (1.0, 10.0)]
-    assert seg_b_h2 == [(4.0, 22.0), (16.0, 10.0)]
+    assert seg_b_h2 == [(1.0, 22.0), (1.0, 24.0), (2.0, 22.0), (16.0, 10.0)]
     total_length = sum(length for length, _ppm in queue_full)
     assert total_length == pytest.approx(sum(segment_lengths), rel=1e-6)
 
@@ -1535,7 +1535,10 @@ def test_downstream_idle_injection_advances_slug_without_stack() -> None:
             (12.0, 12.0),
             [
                 ([(2.0, 12.0), (3.0, 10.0)], [(2.0, 22.0), (18.0, 10.0)]),
-                ([(4.0, 12.0), (1.0, 10.0)], [(4.0, 22.0), (16.0, 10.0)]),
+                (
+                    [(4.0, 12.0), (1.0, 10.0)],
+                    [(1.0, 22.0), (1.0, 24.0), (2.0, 22.0), (16.0, 10.0)],
+                ),
             ],
         ),
         (
