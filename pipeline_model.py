@@ -690,116 +690,6 @@ def _take_queue_front(
     )
 
 
-def _take_queue_tail(
-    queue_entries: list[tuple[float, float]]
-    | tuple[tuple[float, float], ...],
-    take_length: float,
-) -> tuple[tuple[float, float], ...]:
-    """Return the trailing ``take_length`` kilometres from ``queue_entries``."""
-
-    remaining = max(float(take_length or 0.0), 0.0)
-    if remaining <= 0:
-        return ()
-
-    taken: list[tuple[float, float]] = []
-    for length, ppm in reversed(queue_entries):
-        length_val = float(length or 0.0)
-        if length_val <= 0:
-            continue
-        ppm_val = float(ppm or 0.0)
-        portion = min(length_val, remaining)
-        if portion > 0:
-            taken.append((portion, ppm_val))
-            remaining -= portion
-        if remaining <= 1e-9:
-            break
-
-    if remaining > 1e-9:
-        taken.append((remaining, 0.0))
-        remaining = 0.0
-
-    if not taken:
-        return ()
-
-    taken.reverse()
-
-    normalised = [
-        (float(length), float(ppm))
-        for length, ppm in taken
-        if float(length or 0.0) > 0
-    ]
-    return tuple(normalised)
-
-
-def _extend_queue_front(
-    queue_entries: list[tuple[float, float]]
-    | tuple[tuple[float, float], ...],
-    extend_length: float,
-) -> tuple[tuple[float, float], ...]:
-    """Return ``queue_entries`` with the leading slice extended downstream."""
-
-    extend = max(float(extend_length or 0.0), 0.0)
-    if extend <= 1e-9:
-        return tuple(
-            (
-                float(length),
-                float(ppm),
-            )
-            for length, ppm in queue_entries
-            if float(length or 0.0) > 0
-        )
-
-    queue_list: list[list[float]] = [
-        [float(length or 0.0), float(ppm or 0.0)]
-        for length, ppm in queue_entries
-        if float(length or 0.0) > 0
-    ]
-    if not queue_list:
-        return ()
-
-    total_tail = sum(entry[0] for entry in queue_list[1:])
-    if total_tail + 1e-9 < extend:
-        return tuple(
-            (
-                float(length),
-                float(ppm),
-            )
-            for length, ppm in queue_entries
-            if float(length or 0.0) > 0
-        )
-
-    queue_list[0][0] += extend
-    remaining = extend
-    idx = 1
-    while remaining > 1e-9 and idx < len(queue_list):
-        available = queue_list[idx][0]
-        if available <= 1e-9:
-            queue_list[idx][0] = 0.0
-            idx += 1
-            continue
-        if available > remaining + 1e-9:
-            queue_list[idx][0] = available - remaining
-            remaining = 0.0
-        else:
-            remaining -= available
-            queue_list[idx][0] = 0.0
-            idx += 1
-
-    trimmed = [entry for entry in queue_list if entry[0] > 1e-9]
-    if not trimmed:
-        return ()
-
-    merged = _merge_queue([(length, ppm) for length, ppm in trimmed])
-    return tuple(
-        (
-            float(length),
-            float(ppm),
-        )
-        for length, ppm in merged
-        if float(length or 0.0) > 0
-    )
-
-
 def _update_mainline_dra(
     queue: list[dict] | list[tuple] | tuple | None,
     stn_data: dict,
@@ -813,7 +703,6 @@ def _update_mainline_dra(
     dra_shear_factor: float = 0.0,
     shear_injection: bool = False,
     is_origin: bool = False,
-    upstream_prefix: tuple[tuple[float, float], ...] | None = None,
     precomputed: tuple[
         float,
         tuple[tuple[float, float], ...],
@@ -894,85 +783,103 @@ def _update_mainline_dra(
     apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
 
     pumped_slices: list[tuple[float, float]] = []
-    incoming_head_ppm: float | None = None
-
-    carry_downstream: list[tuple[float, float]] = []
-    pumped_length_val = float(pumped_length)
 
     if not pump_running:
-        inj_effective = max(float(inj_ppm_main), 0.0)
-        if inj_effective > 0 and pumped_length_val > 0:
-            upstream_entries = upstream_prefix if upstream_prefix else ()
-            base_entries: list[tuple[float, float]] = []
-            if upstream_entries:
-                base_entries = [
-                    (
-                        float(length or 0.0),
-                        float(ppm or 0.0),
-                    )
-                    for length, ppm in _take_queue_tail(upstream_entries, pumped_length_val)
-                    if float(length or 0.0) > 0
-                ]
-                carry_downstream = [
-                    (float(length), max(float(ppm), 0.0))
-                    for length, ppm in incoming_slices
-                    if float(length or 0.0) > 0
-                ]
-            if not base_entries:
-                base_entries = [
-                    (
-                        float(length or 0.0),
-                        float(ppm or 0.0),
-                    )
-                    for length, ppm in incoming_slices
-                    if float(length or 0.0) > 0
-                ]
-                if not upstream_entries:
-                    carry_downstream = []
-            covered = sum(length for length, _ppm in base_entries)
-            if covered + 1e-9 < pumped_length_val:
-                base_entries.append((pumped_length_val - covered, 0.0))
-            if base_entries:
-                if upstream_entries:
-                    ordered_entries = list(reversed(base_entries))
-                else:
-                    ordered_entries = list(base_entries)
-            else:
-                ordered_entries = []
-            for length, base_ppm in ordered_entries:
-                length = float(length)
-                if length <= 0:
-                    continue
-                base_val = max(float(base_ppm), 0.0)
-                pumped_slices.append((length, base_val + inj_effective))
-        else:
+        inj_effective = float(inj_ppm_main)
+        if inj_effective > 0:
             for length, base_ppm in incoming_slices:
                 length = float(length)
                 if length <= 0:
                     continue
-                if incoming_head_ppm is None:
-                    incoming_head_ppm = float(base_ppm or 0.0)
-                base_val = max(float(base_ppm), 0.0)
-                pumped_slices.append((length, base_val))
+                pumped_slices.append((length, float(base_ppm) + inj_effective))
+        else:
+            pumped_slices.extend(incoming_slices)
     else:
-        inj_effective = max(float(inj_ppm_main), 0.0)
-        if inj_effective > 0 and apply_injection_shear and shear > 0:
-            inj_effective *= 1.0 - shear
+        inj_requested = max(float(inj_ppm_main), 0.0)
+        inj_curve_ok = False
+        inj_dr = 0.0
+        if inj_requested > 0:
+            try:
+                inj_dr = float(get_dr_for_ppm(kv, inj_requested))
+                inj_curve_ok = inj_dr > 0
+            except Exception:
+                inj_curve_ok = False
+                inj_dr = 0.0
+        if inj_curve_ok and inj_dr > 0 and apply_injection_shear and shear > 0:
+            inj_dr *= 1.0 - shear
+            if inj_dr < 0:
+                inj_dr = 0.0
+        if inj_curve_ok:
+            if inj_dr > 0:
+                try:
+                    inj_effective = float(get_ppm_for_dr(kv, inj_dr))
+                except Exception:
+                    inj_curve_ok = False
+                    inj_effective = inj_requested * (1.0 - shear if apply_injection_shear and shear > 0 else 1.0)
+            else:
+                inj_effective = 0.0
+        else:
+            inj_effective = inj_requested
+            if apply_injection_shear and shear > 0 and inj_effective > 0:
+                inj_effective *= 1.0 - shear
+        base_curve_cache: dict[float, tuple[bool, float]] = {}
         for length, base_ppm in incoming_slices:
-            length = float(length)
             if length <= 0:
                 continue
-            if incoming_head_ppm is None:
-                incoming_head_ppm = float(base_ppm or 0.0)
-            base_val = max(float(base_ppm), 0.0)
-            if is_origin and inj_effective <= 0 and float(inj_ppm_main) <= 0:
+            base_curve_ok = False
+            base_dr = 0.0
+            sheared_dr = 0.0
+            if is_origin and inj_ppm_main <= 0:
+                base_curve_ok = True
                 base_sheared = 0.0
             else:
-                base_sheared = base_val * (1.0 - shear)
-            if base_sheared <= 1e-9:
-                base_sheared = 0.0
-            combined = base_sheared + inj_effective if inj_effective > 0 else base_sheared
-            pumped_slices.append((length, combined))
+                base_ppm = float(base_ppm)
+                if base_ppm > 0:
+                    key = round(base_ppm, 6)
+                    cached = base_curve_cache.get(key)
+                    if cached is None:
+                        try:
+                            base_dr_val = float(get_dr_for_ppm(kv, base_ppm))
+                            cached = (base_dr_val > 0, base_dr_val if base_dr_val > 0 else 0.0)
+                        except Exception:
+                            cached = (False, 0.0)
+                        base_curve_cache[key] = cached
+                    base_curve_ok, base_dr = cached
+                else:
+                    base_curve_ok, base_dr = True, 0.0
+                if base_curve_ok:
+                    sheared_dr = base_dr * (1.0 - shear) if shear > 0 else base_dr
+                    if sheared_dr < 0:
+                        sheared_dr = 0.0
+                    if sheared_dr > 0:
+                        try:
+                            base_sheared = float(get_ppm_for_dr(kv, sheared_dr))
+                        except Exception:
+                            base_curve_ok = False
+                            base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                            sheared_dr = 0.0
+                    else:
+                        base_sheared = 0.0
+                else:
+                    base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                    sheared_dr = 0.0
+            if inj_ppm_main <= 0:
+                combined_ppm = base_sheared
+            else:
+                if base_sheared <= 1e-9:
+                    combined_ppm = base_sheared + inj_effective
+                elif base_curve_ok and inj_curve_ok:
+                    combined_dr = sheared_dr + inj_dr
+                    if combined_dr > 0:
+                        try:
+                            combined_ppm = float(get_ppm_for_dr(kv, combined_dr))
+                        except Exception:
+                            combined_ppm = base_sheared + inj_effective
+                    else:
+                        combined_ppm = 0.0
+                else:
+                    combined_ppm = base_sheared + inj_effective
+            pumped_slices.append((length, combined_ppm))
 
     segment_cover_entries: list[tuple[float, float]] = []
     downstream_entries: list[tuple[float, float]] = []
@@ -996,42 +903,6 @@ def _update_mainline_dra(
         for length, ppm_val in queue_remainder
         if float(length or 0.0) > 0
     ]
-    if carry_downstream:
-        total_remainder = sum(entry[0] for entry in queue_remainder_list)
-        available_within = total_remainder
-        carry_within: list[list[float]] = []
-        carry_excess: list[tuple[float, float]] = []
-        for length, ppm in carry_downstream:
-            length_val = float(length or 0.0)
-            if length_val <= 1e-9:
-                continue
-            stay = min(length_val, available_within)
-            if stay > 1e-9:
-                carry_within.append([stay, float(ppm or 0.0)])
-                available_within -= stay
-            excess = length_val - stay
-            if excess > 1e-9:
-                carry_excess.append((excess, float(ppm or 0.0)))
-        if carry_within:
-            adjust = sum(entry[0] for entry in carry_within)
-            idx_adj = 0
-            while adjust > 1e-9 and idx_adj < len(queue_remainder_list):
-                available = queue_remainder_list[idx_adj][0]
-                if available <= 1e-9:
-                    queue_remainder_list[idx_adj][0] = 0.0
-                    idx_adj += 1
-                    continue
-                if available > adjust + 1e-9:
-                    queue_remainder_list[idx_adj][0] = available - adjust
-                    adjust = 0.0
-                else:
-                    adjust -= available
-                    queue_remainder_list[idx_adj][0] = 0.0
-                    idx_adj += 1
-            queue_remainder_list = [entry for entry in queue_remainder_list if entry[0] > 1e-9]
-            queue_remainder_list = carry_within + queue_remainder_list
-        if carry_excess:
-            downstream_entries.extend(carry_excess)
 
     if remaining_seg > 0 and queue_remainder_list:
         idx = 0
@@ -1056,6 +927,21 @@ def _update_mainline_dra(
         if length > 0
     ]
 
+    dra_segments: list[tuple[float, float]] = []
+    for length, ppm_val in segment_cover_entries:
+        if length <= 0:
+            continue
+        try:
+            ppm_float = float(ppm_val)
+        except (TypeError, ValueError):
+            ppm_float = 0.0
+        if ppm_float > 0:
+            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
+                prev_len, _ = dra_segments[-1]
+                dra_segments[-1] = (prev_len + length, ppm_float)
+            else:
+                dra_segments.append((length, ppm_float))
+
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
         for length, ppm_val in (
@@ -1065,37 +951,9 @@ def _update_mainline_dra(
     ]
 
     merged_queue = _merge_queue(combined_entries)
-    queue_after_entries: list[tuple[float, float]] = [
-        (float(length), float(ppm))
-        for length, ppm in merged_queue
-        if float(length) > 0
-    ]
-
-    total_pumped = sum(float(length or 0.0) for length, _ppm in pumped_slices)
-    if pump_running and total_pumped > 1e-9 and queue_after_entries:
-        unique_ppm = {
-            round(float(ppm or 0.0), 9)
-            for _length, ppm in pumped_slices
-        }
-        front_ppm = float(queue_after_entries[0][1])
-        if (
-            len(unique_ppm) == 1
-            and abs(front_ppm - next(iter(unique_ppm))) <= 1e-9
-            and incoming_head_ppm is not None
-            and abs(next(iter(unique_ppm)) - float(incoming_head_ppm)) <= 1e-9
-        ):
-            total_tail = sum(length for length, _ppm in queue_after_entries[1:])
-            if total_tail + 1e-9 >= total_pumped:
-                queue_after_entries = list(
-                    _extend_queue_front(queue_after_entries, total_pumped)
-                )
-
-    dra_segments_entries = _take_queue_front(tuple(queue_after_entries), segment_length)
-    dra_segments = _merge_queue(list(dra_segments_entries))
-
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
-        for length, ppm in queue_after_entries
+        for length, ppm in merged_queue
     ]
     return dra_segments, queue_after, inj_ppm_main
 
@@ -3093,7 +2951,6 @@ def solve_pipeline(
                     dra_shear_factor=stn_data.get('dra_shear_factor', 0.0),
                     shear_injection=bool(stn_data.get('shear_injection', False)),
                     is_origin=stn_data['idx'] == 0,
-                    upstream_prefix=prefix_entries,
                     precomputed=precomputed_queue,
                 )
                 queue_after_body = tuple(
