@@ -773,113 +773,93 @@ def _update_mainline_dra(
         pumped_length, incoming_slices, queue_remainder = precomputed
 
     local_shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
-    global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0))
+    global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0)) if pump_running else 0.0
     if pump_running:
         shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
     else:
         shear = local_shear
-    kv = float(stn_data.get("kv", 3.0) or 3.0)
+    shear = max(0.0, min(shear, 1.0))
     injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
     apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
+    kv = float(stn_data.get("kv", 3.0) or 3.0)
 
-    pumped_slices: list[tuple[float, float]] = []
-
-    if not pump_running:
-        inj_effective = float(inj_ppm_main)
-        if inj_effective > 0:
-            for length, base_ppm in incoming_slices:
-                length = float(length)
-                if length <= 0:
-                    continue
-                pumped_slices.append((length, float(base_ppm) + inj_effective))
-        else:
-            pumped_slices.extend(incoming_slices)
-    else:
-        inj_requested = max(float(inj_ppm_main), 0.0)
-        inj_curve_ok = False
-        inj_dr = 0.0
-        if inj_requested > 0:
-            try:
-                inj_dr = float(get_dr_for_ppm(kv, inj_requested))
-                inj_curve_ok = inj_dr > 0
-            except Exception:
-                inj_curve_ok = False
-                inj_dr = 0.0
-        if inj_curve_ok and inj_dr > 0 and apply_injection_shear and shear > 0:
-            inj_dr *= 1.0 - shear
-            if inj_dr < 0:
-                inj_dr = 0.0
-        if inj_curve_ok:
-            if inj_dr > 0:
-                try:
-                    inj_effective = float(get_ppm_for_dr(kv, inj_dr))
-                except Exception:
-                    inj_curve_ok = False
-                    inj_effective = inj_requested * (1.0 - shear if apply_injection_shear and shear > 0 else 1.0)
-            else:
-                inj_effective = 0.0
-        else:
+    inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
+    inj_effective = 0.0
+    if inj_requested > 0:
+        if not pump_running or not apply_injection_shear:
             inj_effective = inj_requested
-            if apply_injection_shear and shear > 0 and inj_effective > 0:
-                inj_effective *= 1.0 - shear
-        base_curve_cache: dict[float, tuple[bool, float]] = {}
-        for length, base_ppm in incoming_slices:
-            if length <= 0:
-                continue
-            base_curve_ok = False
-            base_dr = 0.0
-            sheared_dr = 0.0
-            if is_origin and inj_ppm_main <= 0:
-                base_curve_ok = True
-                base_sheared = 0.0
+        else:
+            inj_dr = 0.0
+            if kv > 0:
+                try:
+                    inj_dr = float(get_dr_for_ppm(kv, inj_requested))
+                except Exception:
+                    inj_dr = 0.0
+            if inj_dr > 0:
+                dr_use = inj_dr * (1.0 - shear if shear > 0 else 1.0)
+                if dr_use < 0:
+                    dr_use = 0.0
+                if dr_use > 0:
+                    try:
+                        inj_effective = float(get_ppm_for_dr(kv, dr_use))
+                    except Exception:
+                        inj_effective = inj_requested * (1.0 - shear if shear > 0 else 1.0)
+                else:
+                    inj_effective = 0.0
             else:
-                base_ppm = float(base_ppm)
-                if base_ppm > 0:
-                    key = round(base_ppm, 6)
-                    cached = base_curve_cache.get(key)
-                    if cached is None:
-                        try:
-                            base_dr_val = float(get_dr_for_ppm(kv, base_ppm))
-                            cached = (base_dr_val > 0, base_dr_val if base_dr_val > 0 else 0.0)
-                        except Exception:
-                            cached = (False, 0.0)
-                        base_curve_cache[key] = cached
-                    base_curve_ok, base_dr = cached
+                multiplier = 1.0 - shear if shear > 0 else 1.0
+                if multiplier < 0.0:
+                    multiplier = 0.0
+                inj_effective = inj_requested * multiplier
+
+    upstream_multiplier = 1.0 - shear if shear > 0 else 1.0
+    if upstream_multiplier < 0.0:
+        upstream_multiplier = 0.0
+
+    base_dr_cache: dict[float, float] = {}
+    pumped_slices: list[tuple[float, float]] = []
+    for length, base_ppm in incoming_slices:
+        length_val = float(length)
+        if length_val <= 0:
+            continue
+        try:
+            base_val = float(base_ppm)
+        except (TypeError, ValueError):
+            base_val = 0.0
+        if base_val < 0:
+            base_val = 0.0
+        if pump_running and is_origin and inj_requested <= 0:
+            treated_ppm = 0.0
+        elif base_val > 0 and upstream_multiplier < 1.0 and kv > 0:
+            key = round(base_val, 6)
+            base_dr = base_dr_cache.get(key)
+            if base_dr is None:
+                try:
+                    base_dr = float(get_dr_for_ppm(kv, base_val))
+                except Exception:
+                    base_dr = -1.0
+                base_dr_cache[key] = base_dr
+            if base_dr and base_dr > 0:
+                sheared_dr = base_dr * upstream_multiplier
+                if sheared_dr > 0:
+                    try:
+                        treated_ppm = float(get_ppm_for_dr(kv, sheared_dr))
+                    except Exception:
+                        treated_ppm = base_val * upstream_multiplier
                 else:
-                    base_curve_ok, base_dr = True, 0.0
-                if base_curve_ok:
-                    sheared_dr = base_dr * (1.0 - shear) if shear > 0 else base_dr
-                    if sheared_dr < 0:
-                        sheared_dr = 0.0
-                    if sheared_dr > 0:
-                        try:
-                            base_sheared = float(get_ppm_for_dr(kv, sheared_dr))
-                        except Exception:
-                            base_curve_ok = False
-                            base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
-                            sheared_dr = 0.0
-                    else:
-                        base_sheared = 0.0
-                else:
-                    base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
-                    sheared_dr = 0.0
-            if inj_ppm_main <= 0:
-                combined_ppm = base_sheared
+                    treated_ppm = 0.0
             else:
-                if base_sheared <= 1e-9:
-                    combined_ppm = base_sheared + inj_effective
-                elif base_curve_ok and inj_curve_ok:
-                    combined_dr = sheared_dr + inj_dr
-                    if combined_dr > 0:
-                        try:
-                            combined_ppm = float(get_ppm_for_dr(kv, combined_dr))
-                        except Exception:
-                            combined_ppm = base_sheared + inj_effective
-                    else:
-                        combined_ppm = 0.0
-                else:
-                    combined_ppm = base_sheared + inj_effective
-            pumped_slices.append((length, combined_ppm))
+                treated_ppm = base_val * upstream_multiplier
+        elif upstream_multiplier >= 1.0:
+            treated_ppm = base_val
+        else:
+            treated_ppm = base_val * upstream_multiplier
+        combined_ppm = treated_ppm + inj_effective
+        if combined_ppm < 0:
+            combined_ppm = 0.0
+        pumped_slices.append((length_val, combined_ppm))
+
+    inj_ppm_main = inj_requested
 
     segment_cover_entries: list[tuple[float, float]] = []
     downstream_entries: list[tuple[float, float]] = []
