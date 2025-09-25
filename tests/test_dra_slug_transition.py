@@ -217,8 +217,8 @@ def test_partial_slug_advances_with_positive_injection() -> None:
         sdh_progression.append(result["sdh_origin_pump"])
         linefill_state = copy.deepcopy(result["linefill"])
 
-    assert all(b >= a for a, b in zip(sdh_progression, sdh_progression[1:]))
-    diffs = [b - a for a, b in zip(sdh_progression, sdh_progression[1:])]
+    assert all(b <= a for a, b in zip(sdh_progression, sdh_progression[1:]))
+    diffs = [a - b for a, b in zip(sdh_progression, sdh_progression[1:])]
     assert diffs, "Expected SDH to change over successive hours"
     assert max(diffs) <= 6.0
 
