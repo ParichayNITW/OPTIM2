@@ -721,8 +721,83 @@ def _take_queue_tail(
     if not taken:
         return ()
 
-    taken = [(float(length), float(ppm)) for length, ppm in taken if float(length or 0.0) > 0]
-    return tuple(taken)
+    taken.reverse()
+
+    normalised = [
+        (float(length), float(ppm))
+        for length, ppm in taken
+        if float(length or 0.0) > 0
+    ]
+    return tuple(normalised)
+
+
+def _extend_queue_front(
+    queue_entries: list[tuple[float, float]]
+    | tuple[tuple[float, float], ...],
+    extend_length: float,
+) -> tuple[tuple[float, float], ...]:
+    """Return ``queue_entries`` with the leading slice extended downstream."""
+
+    extend = max(float(extend_length or 0.0), 0.0)
+    if extend <= 1e-9:
+        return tuple(
+            (
+                float(length),
+                float(ppm),
+            )
+            for length, ppm in queue_entries
+            if float(length or 0.0) > 0
+        )
+
+    queue_list: list[list[float]] = [
+        [float(length or 0.0), float(ppm or 0.0)]
+        for length, ppm in queue_entries
+        if float(length or 0.0) > 0
+    ]
+    if not queue_list:
+        return ()
+
+    total_tail = sum(entry[0] for entry in queue_list[1:])
+    if total_tail + 1e-9 < extend:
+        return tuple(
+            (
+                float(length),
+                float(ppm),
+            )
+            for length, ppm in queue_entries
+            if float(length or 0.0) > 0
+        )
+
+    queue_list[0][0] += extend
+    remaining = extend
+    idx = 1
+    while remaining > 1e-9 and idx < len(queue_list):
+        available = queue_list[idx][0]
+        if available <= 1e-9:
+            queue_list[idx][0] = 0.0
+            idx += 1
+            continue
+        if available > remaining + 1e-9:
+            queue_list[idx][0] = available - remaining
+            remaining = 0.0
+        else:
+            remaining -= available
+            queue_list[idx][0] = 0.0
+            idx += 1
+
+    trimmed = [entry for entry in queue_list if entry[0] > 1e-9]
+    if not trimmed:
+        return ()
+
+    merged = _merge_queue([(length, ppm) for length, ppm in trimmed])
+    return tuple(
+        (
+            float(length),
+            float(ppm),
+        )
+        for length, ppm in merged
+        if float(length or 0.0) > 0
+    )
 
 
 def _update_mainline_dra(
@@ -819,6 +894,7 @@ def _update_mainline_dra(
     apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
 
     pumped_slices: list[tuple[float, float]] = []
+    incoming_head_ppm: float | None = None
 
     carry_downstream: list[tuple[float, float]] = []
     pumped_length_val = float(pumped_length)
@@ -830,6 +906,11 @@ def _update_mainline_dra(
             base_entries: list[tuple[float, float]] = []
             if upstream_entries:
                 base_entries = list(_take_queue_tail(upstream_entries, pumped_length_val))
+                if base_entries:
+                    total_base = sum(float(length or 0.0) for length, _ppm in base_entries)
+                    min_base_ppm = min(float(ppm or 0.0) for _length, ppm in base_entries)
+                    if total_base > 1e-9:
+                        base_entries = [(min(total_base, pumped_length_val), min_base_ppm)]
                 carry_downstream = [
                     (float(length), max(float(ppm), 0.0))
                     for length, ppm in incoming_slices
@@ -857,6 +938,8 @@ def _update_mainline_dra(
                 length = float(length)
                 if length <= 0:
                     continue
+                if incoming_head_ppm is None:
+                    incoming_head_ppm = float(base_ppm or 0.0)
                 base_val = max(float(base_ppm), 0.0)
                 pumped_slices.append((length, base_val))
     else:
@@ -867,6 +950,8 @@ def _update_mainline_dra(
             length = float(length)
             if length <= 0:
                 continue
+            if incoming_head_ppm is None:
+                incoming_head_ppm = float(base_ppm or 0.0)
             base_val = max(float(base_ppm), 0.0)
             if is_origin and inj_effective <= 0 and float(inj_ppm_main) <= 0:
                 base_sheared = 0.0
@@ -959,22 +1044,6 @@ def _update_mainline_dra(
         if length > 0
     ]
 
-    dra_segments: list[tuple[float, float]] = []
-    for length, ppm_val in segment_cover_entries:
-        if length <= 0:
-            continue
-        try:
-            ppm_float = float(ppm_val)
-        except (TypeError, ValueError):
-            ppm_float = 0.0
-        if abs(ppm_float) <= 1e-9:
-            ppm_float = 0.0
-        if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
-            prev_len, prev_ppm = dra_segments[-1]
-            dra_segments[-1] = (prev_len + length, prev_ppm)
-        else:
-            dra_segments.append((length, ppm_float))
-
     combined_entries: list[tuple[float, float]] = [
         (float(length), float(ppm_val))
         for length, ppm_val in (
@@ -984,9 +1053,37 @@ def _update_mainline_dra(
     ]
 
     merged_queue = _merge_queue(combined_entries)
+    queue_after_entries: list[tuple[float, float]] = [
+        (float(length), float(ppm))
+        for length, ppm in merged_queue
+        if float(length) > 0
+    ]
+
+    total_pumped = sum(float(length or 0.0) for length, _ppm in pumped_slices)
+    if pump_running and total_pumped > 1e-9 and queue_after_entries:
+        unique_ppm = {
+            round(float(ppm or 0.0), 9)
+            for _length, ppm in pumped_slices
+        }
+        front_ppm = float(queue_after_entries[0][1])
+        if (
+            len(unique_ppm) == 1
+            and abs(front_ppm - next(iter(unique_ppm))) <= 1e-9
+            and incoming_head_ppm is not None
+            and abs(next(iter(unique_ppm)) - float(incoming_head_ppm)) <= 1e-9
+        ):
+            total_tail = sum(length for length, _ppm in queue_after_entries[1:])
+            if total_tail + 1e-9 >= total_pumped:
+                queue_after_entries = list(
+                    _extend_queue_front(queue_after_entries, total_pumped)
+                )
+
+    dra_segments_entries = _take_queue_front(tuple(queue_after_entries), segment_length)
+    dra_segments = _merge_queue(list(dra_segments_entries))
+
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
-        for length, ppm in merged_queue
+        for length, ppm in queue_after_entries
     ]
     return dra_segments, queue_after, inj_ppm_main
 
