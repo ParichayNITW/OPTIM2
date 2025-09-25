@@ -826,43 +826,39 @@ def _update_mainline_dra(
         for length, base_ppm in incoming_slices:
             if length <= 0:
                 continue
+            base_ppm = float(base_ppm)
             base_curve_ok = False
             base_dr = 0.0
             sheared_dr = 0.0
-            if is_origin and inj_ppm_main <= 0:
-                base_curve_ok = True
-                base_sheared = 0.0
+            if base_ppm > 0:
+                key = round(base_ppm, 6)
+                cached = base_curve_cache.get(key)
+                if cached is None:
+                    try:
+                        base_dr_val = float(get_dr_for_ppm(kv, base_ppm))
+                        cached = (base_dr_val > 0, base_dr_val if base_dr_val > 0 else 0.0)
+                    except Exception:
+                        cached = (False, 0.0)
+                    base_curve_cache[key] = cached
+                base_curve_ok, base_dr = cached
             else:
-                base_ppm = float(base_ppm)
-                if base_ppm > 0:
-                    key = round(base_ppm, 6)
-                    cached = base_curve_cache.get(key)
-                    if cached is None:
-                        try:
-                            base_dr_val = float(get_dr_for_ppm(kv, base_ppm))
-                            cached = (base_dr_val > 0, base_dr_val if base_dr_val > 0 else 0.0)
-                        except Exception:
-                            cached = (False, 0.0)
-                        base_curve_cache[key] = cached
-                    base_curve_ok, base_dr = cached
-                else:
-                    base_curve_ok, base_dr = True, 0.0
-                if base_curve_ok:
-                    sheared_dr = base_dr * (1.0 - shear) if shear > 0 else base_dr
-                    if sheared_dr < 0:
-                        sheared_dr = 0.0
-                    if sheared_dr > 0:
-                        try:
-                            base_sheared = float(get_ppm_for_dr(kv, sheared_dr))
-                        except Exception:
-                            base_curve_ok = False
-                            base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
-                            sheared_dr = 0.0
-                    else:
-                        base_sheared = 0.0
-                else:
-                    base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                base_curve_ok, base_dr = True, 0.0
+            if base_curve_ok:
+                sheared_dr = base_dr * (1.0 - shear) if shear > 0 else base_dr
+                if sheared_dr < 0:
                     sheared_dr = 0.0
+                if sheared_dr > 0:
+                    try:
+                        base_sheared = float(get_ppm_for_dr(kv, sheared_dr))
+                    except Exception:
+                        base_curve_ok = False
+                        base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                        sheared_dr = 0.0
+                else:
+                    base_sheared = 0.0
+            else:
+                base_sheared = base_ppm * (1.0 - shear) if shear > 0 else base_ppm
+                sheared_dr = 0.0
             if inj_ppm_main <= 0:
                 combined_ppm = base_sheared
             else:
