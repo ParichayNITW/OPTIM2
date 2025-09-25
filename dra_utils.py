@@ -87,6 +87,52 @@ def _nearest_bounds(visc: float, data: Dict[float, pd.DataFrame | None]) -> Tupl
 _DEFAULT_CURVE_SENTINEL = object()
 _PPM_CACHE: Dict[tuple[float, ...], float] = {}
 _DR_CACHE: Dict[tuple[float, ...], float] = {}
+_PPM_BOUND_CACHE: Dict[tuple[float, ...], tuple[float, float]] = {}
+
+
+def get_ppm_bounds(
+    visc: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
+) -> tuple[float, float]:
+    """Return the minimum and maximum PPM supported by available curves."""
+
+    use_global = False
+    if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
+        dra_curve_data = DRA_CURVE_DATA
+        use_global = True
+
+    visc = float(visc)
+    cache_key = _round_cache_key(visc)
+    if use_global:
+        cached = _PPM_BOUND_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+
+    def _bounds_for(df: pd.DataFrame | None) -> tuple[float, float]:
+        if df is None or df.empty:
+            return (0.0, 0.0)
+        ppm_vals = df["PPM"].values.astype(float)
+        if ppm_vals.size == 0:
+            return (0.0, 0.0)
+        return (float(np.nanmin(ppm_vals)), float(np.nanmax(ppm_vals)))
+
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
+        return (0.0, 0.0)
+
+    lower_bounds = _bounds_for(dra_curve_data[lower])
+    if lower == upper:
+        return lower_bounds
+
+    upper_bounds = _bounds_for(dra_curve_data.get(upper))
+    min_ppm = lower_bounds[0] if upper_bounds[0] == 0.0 else min(lower_bounds[0], upper_bounds[0])
+    max_ppm = max(lower_bounds[1], upper_bounds[1])
+    result = (min_ppm, max_ppm)
+    if use_global:
+        if len(_PPM_BOUND_CACHE) > 8192:
+            _PPM_BOUND_CACHE.clear()
+        _PPM_BOUND_CACHE[cache_key] = result
+    return result
 
 
 def _round_cache_key(*values: float, precision: int = 2) -> tuple[float, ...]:
