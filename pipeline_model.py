@@ -690,6 +690,44 @@ def _take_queue_front(
     )
 
 
+def _segment_profile_from_queue(
+    queue_entries: list[tuple[float, float]]
+    | tuple[tuple[float, float], ...]
+    | None,
+    upstream_length: float,
+    segment_length: float,
+) -> tuple[tuple[float, float], ...]:
+    """Return the queue profile covering the current segment.
+
+    ``queue_entries`` should represent the full downstream queue after pumping
+    with the upstream-most slice at index ``0``.  ``upstream_length`` denotes
+    the distance between the queue head and the segment inlet, while
+    ``segment_length`` is the length of the segment itself.  The helper drops
+    the upstream portion, then returns the leading ``segment_length`` km of the
+    remaining queue.
+    """
+
+    if not queue_entries:
+        return ()
+
+    try:
+        upstream = max(float(upstream_length or 0.0), 0.0)
+    except (TypeError, ValueError):
+        upstream = 0.0
+    try:
+        seg_len = max(float(segment_length or 0.0), 0.0)
+    except (TypeError, ValueError):
+        seg_len = 0.0
+    if seg_len <= 0:
+        return ()
+
+    segment_queue = _trim_queue_front(queue_entries, upstream)
+    if not segment_queue:
+        return ()
+
+    return _take_queue_front(segment_queue, seg_len)
+
+
 def _update_mainline_dra(
     queue: list[dict] | list[tuple] | tuple | None,
     stn_data: dict,
@@ -2952,6 +2990,11 @@ def solve_pipeline(
                     if float(length or 0.0) > 0
                 )
                 seg_length_total = float(stn_data.get('L', 0.0) or 0.0)
+                segment_profile_raw = _segment_profile_from_queue(
+                    queue_after_full,
+                    upstream_length,
+                    seg_length_total,
+                )
                 queue_after_inlet = _trim_queue_front(queue_after_full, seg_length_total)
                 total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
                 if total_positive > 0:
@@ -3457,6 +3500,35 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
+                    profile_entries = [
+                        {
+                            'length_km': float(length),
+                            'dra_ppm': float(ppm),
+                        }
+                        for length, ppm in segment_profile_raw
+                        if float(length or 0.0) > 0
+                    ]
+                    treated_profile_length = sum(
+                        float(entry['length_km'])
+                        for entry in profile_entries
+                        if float(entry['dra_ppm']) > 0
+                    )
+                    inlet_ppm_profile = (
+                        float(profile_entries[0]['dra_ppm'])
+                        if profile_entries
+                        else 0.0
+                    )
+                    outlet_ppm_profile = (
+                        float(profile_entries[-1]['dra_ppm'])
+                        if profile_entries
+                        else 0.0
+                    )
+                    record.update({
+                        f"dra_profile_{stn_data['name']}": profile_entries,
+                        f"dra_treated_length_{stn_data['name']}": treated_profile_length,
+                        f"dra_inlet_ppm_{stn_data['name']}": inlet_ppm_profile,
+                        f"dra_outlet_ppm_{stn_data['name']}": outlet_ppm_profile,
+                    })
                     # Accumulate cost and update dynamic state.  When comparing states
                     # with the same residual bucket, prefer the one with lower cost
                     # or, when costs tie, the one with higher residual.  Carry
