@@ -2995,7 +2995,11 @@ def solve_pipeline(
                     upstream_length,
                     seg_length_total,
                 )
-                queue_after_inlet = _trim_queue_front(queue_after_full, seg_length_total)
+                trim_after_segment = max(upstream_length + seg_length_total, 0.0)
+                queue_after_inlet = _trim_queue_front(
+                    queue_after_full,
+                    trim_after_segment,
+                )
                 total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
                 if total_positive > 0:
                     eff_dra_main, treated_length = _effective_dra_response(
