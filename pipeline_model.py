@@ -3651,8 +3651,10 @@ def solve_pipeline(
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
 
-    queue_source = best_state.get('dra_queue_full')
-    if queue_source is None:
+    queue_source = best_state.get('dra_queue_at_inlet')
+    if not queue_source:
+        queue_source = best_state.get('dra_queue_full')
+    if not queue_source:
         queue_source = best_state.get('dra_queue', ())
     queue_final = [
         (
