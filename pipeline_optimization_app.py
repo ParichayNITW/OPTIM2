@@ -1940,6 +1940,14 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     origin_name = base_stations[0]['name'] if base_stations else ''
     base_map = {s['name']: s for s in base_stations}
 
+    def _float_or_none(value: object) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
         key = name.lower().replace(' ', '_')
@@ -2033,9 +2041,17 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     continue
                 profile_entries.append((length_f, ppm_f))
 
-        treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
-        inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
-        outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+        treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
+        if treated_length is None:
+            treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
+
+        inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
+        if inlet_ppm is None:
+            inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
+
+        outlet_ppm = _float_or_none(res.get(f"dra_outlet_ppm_{key}"))
+        if outlet_ppm is None:
+            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -2046,6 +2062,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         row['DRA Inlet PPM'] = inlet_ppm
         row['DRA Outlet PPM'] = outlet_ppm
         row['DRA Treated Length (km)'] = treated_length
+        base_length = _float_or_none(base_stn.get('L')) if isinstance(base_stn, dict) else None
+        if base_length is None:
+            base_length = 0.0
+        row['DRA Untreated Length (km)'] = max(base_length - treated_length, 0.0)
         row['DRA Profile (km@ppm)'] = profile_str
 
         speed_station = base_stn if base_stn else (stn if isinstance(stn, dict) else None)
