@@ -2041,9 +2041,33 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     continue
                 profile_entries.append((length_f, ppm_f))
 
+        derived_treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
+
         treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
+
+        ppm_values: list[float] = []
+        for _, ppm_val in profile_entries:
+            try:
+                ppm_values.append(float(ppm_val))
+            except (TypeError, ValueError):
+                ppm_values.append(0.0)
+        station_ppm_val = _float_or_none(res.get(f"dra_ppm_{key}"))
+        if station_ppm_val is not None:
+            ppm_values.append(station_ppm_val)
+
+        def _is_non_positive_ppm(value: float) -> bool:
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return True
+            if np.isnan(val):
+                return True
+            return val <= 0
+
         if treated_length is None:
-            treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
+            treated_length = derived_treated_length
+        elif treated_length > 0 and ppm_values and all(_is_non_positive_ppm(ppm) for ppm in ppm_values):
+            treated_length = derived_treated_length
 
         inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
         if inlet_ppm is None:
