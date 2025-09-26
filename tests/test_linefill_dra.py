@@ -17,10 +17,12 @@ import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
+    _queue_total_length,
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
     _update_mainline_dra,
+    _merge_queue,
     _volume_from_km,
     _segment_hydraulics,
     solve_pipeline as _solve_pipeline,
@@ -250,6 +252,24 @@ def _make_pump_station(name: str, *, max_dr: int = 0) -> dict:
     }
 
 
+def _profile_untreated_length(profile: list[dict]) -> float:
+    """Return the total untreated length for a DRA profile."""
+
+    total = 0.0
+    for entry in profile:
+        try:
+            length = float(entry.get("length_km", 0.0) or 0.0)
+        except Exception:
+            length = 0.0
+        try:
+            ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except Exception:
+            ppm = 0.0
+        if ppm <= 0.0:
+            total += length
+    return total
+
+
 def test_linefill_dra_persists_through_running_pumps() -> None:
     """Initial linefill DRA should reduce SDH even without new injections."""
 
@@ -302,6 +322,140 @@ def test_linefill_dra_persists_through_running_pumps() -> None:
         if float(batch.get("dra_ppm", 0) or 0.0) > 0
     )
     assert treated_volume > 0.0
+
+
+def test_downstream_profile_advances_between_hours() -> None:
+    """Successive runs should shift downstream DRA coverage as the slug moves."""
+
+    stations = [_make_pump_station("Station A"), _make_pump_station("Station B")]
+    diameter = 0.7
+    for stn in stations:
+        stn["d"] = stn["d_inner"] = diameter
+        stn["kv"] = 3.0
+    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
+    hours = 1.0
+    flow_m3h = _volume_from_km(5.0, diameter)
+    initial_queue = ((7.0, 0.0), (4.0, 10.0), (4.0, 0.0))
+    initial_linefill = [
+        {
+            "volume": _volume_from_km(length, diameter),
+            "dra_ppm": ppm,
+        }
+        for length, ppm in initial_queue
+    ]
+    common_kwargs = dict(
+        FLOW=flow_m3h,
+        KV_list=[3.0, 3.0, 3.0],
+        rho_list=[850.0, 850.0, 850.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=hours,
+        start_time="00:00",
+        enumerate_loops=False,
+    )
+
+    result_hour1 = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=copy.deepcopy(initial_linefill),
+        dra_reach_km=0.0,
+        **common_kwargs,
+    )
+
+    assert not result_hour1.get("error"), result_hour1.get("message")
+
+    profile_hour1 = result_hour1["dra_profile_station_b"]
+    untreated_hour1 = _profile_untreated_length(profile_hour1)
+
+    queue_prev_full: tuple[tuple[float, float], ...] = tuple(initial_queue)
+    queue_prev_inlet = queue_prev_full
+    for idx, stn in enumerate(stations):
+        stn_data = {
+            "idx": idx,
+            "is_pump": True,
+            "d_inner": diameter,
+            "L": float(stn["L"]),
+            "dra_shear_factor": 0.0,
+            "shear_injection": False,
+        }
+        total_prev_full = _queue_total_length(queue_prev_full)
+        total_prev_inlet = _queue_total_length(queue_prev_inlet)
+        upstream_length = max(total_prev_full - total_prev_inlet, 0.0)
+        prefix_entries: tuple[tuple[float, float], ...] = ()
+        if upstream_length > 1e-9:
+            prefix_entries = _take_queue_front(queue_prev_full, upstream_length)
+        precomputed = _prepare_dra_queue_consumption(
+            queue_prev_inlet,
+            stn_data["L"],
+            flow_m3h,
+            hours,
+            stn_data["d_inner"],
+        )
+        _, queue_after_list, _ = _update_mainline_dra(
+            queue_prev_inlet,
+            stn_data,
+            {"nop": 0, "dra_ppm_main": 0},
+            stn_data["L"],
+            flow_m3h,
+            hours,
+            pump_running=False,
+            pump_shear_rate=0.0,
+            dra_shear_factor=0.0,
+            shear_injection=False,
+            is_origin=idx == 0,
+            precomputed=precomputed,
+        )
+        queue_after_body = tuple(
+            (
+                float(entry.get("length_km", 0.0) or 0.0),
+                float(entry.get("dra_ppm", 0.0) or 0.0),
+            )
+            for entry in queue_after_list
+            if float(entry.get("length_km", 0.0) or 0.0) > 0.0
+        )
+        combined_full = tuple(prefix_entries) + queue_after_body
+        merged_after_full = _merge_queue(combined_full)
+        queue_after_full = tuple(
+            (float(length), float(ppm))
+            for length, ppm in merged_after_full
+            if float(length or 0.0) > 0.0
+        )
+        trim_after = max(upstream_length + stn_data["L"], 0.0)
+        queue_after_inlet = _trim_queue_front(queue_after_full, trim_after)
+        queue_prev_full = queue_after_full
+        queue_prev_inlet = queue_after_inlet
+
+    carry_queue = queue_prev_inlet
+    pumped_km = _queue_total_length(tuple(initial_queue)) - _queue_total_length(carry_queue)
+    if pumped_km > 0.0:
+        carry_queue = _merge_queue(carry_queue + ((pumped_km, 0.0),))
+
+    linefill_hour2 = [
+        {
+            "volume": _volume_from_km(length, diameter),
+            "dra_ppm": ppm,
+        }
+        for length, ppm in carry_queue
+        if float(length) > 0.0
+    ]
+
+    result_hour2 = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=linefill_hour2,
+        dra_reach_km=0.0,
+        **common_kwargs,
+    )
+
+    assert not result_hour2.get("error"), result_hour2.get("message")
+
+    profile_hour2 = result_hour2["dra_profile_station_b"]
+    untreated_hour2 = _profile_untreated_length(profile_hour2)
+
+    assert profile_hour1 != profile_hour2
+    assert untreated_hour2 > untreated_hour1
 
 
 def test_zero_injection_benefits_from_inherited_slug() -> None:
