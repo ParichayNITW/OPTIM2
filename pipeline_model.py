@@ -653,72 +653,6 @@ def _trim_queue_front(
     )
 
 
-def _trim_queue_tail(
-    queue_entries: list[tuple[float, float]]
-    | tuple[tuple[float, float], ...]
-    | None,
-    trim_length: float,
-) -> tuple[tuple[float, float], ...]:
-    """Return ``queue_entries`` shortened by ``trim_length`` from the tail."""
-
-    if not queue_entries:
-        return ()
-
-    try:
-        remaining = max(float(trim_length or 0.0), 0.0)
-    except (TypeError, ValueError):
-        remaining = 0.0
-
-    normalised: list[list[float]] = []
-    for entry in queue_entries:
-        if not entry:
-            continue
-        if isinstance(entry, (list, tuple)):
-            try:
-                length_val = float(entry[0] if len(entry) > 0 else 0.0)
-            except (TypeError, ValueError):
-                length_val = 0.0
-            try:
-                ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
-            except (TypeError, ValueError):
-                ppm_val = 0.0
-        else:
-            try:
-                length_val = float(entry)
-            except (TypeError, ValueError):
-                length_val = 0.0
-            ppm_val = 0.0
-        if length_val <= 0.0:
-            continue
-        normalised.append([length_val, ppm_val])
-
-    if not normalised:
-        return ()
-
-    if remaining <= 0.0:
-        return tuple((length, ppm) for length, ppm in normalised if length > 0.0)
-
-    idx = len(normalised) - 1
-    while idx >= 0 and remaining > 0.0:
-        length_val = normalised[idx][0]
-        if length_val <= 0.0:
-            normalised.pop(idx)
-            idx -= 1
-            continue
-        if remaining >= length_val - 1e-9:
-            remaining -= length_val
-            normalised.pop(idx)
-            idx -= 1
-        else:
-            normalised[idx][0] = length_val - remaining
-            remaining = 0.0
-
-    if not normalised:
-        return ()
-
-    return tuple((float(length), float(ppm)) for length, ppm in normalised if length > 0.0)
-
-
 def _take_queue_front(
     queue_entries: list[tuple[float, float]]
     | tuple[tuple[float, float], ...],
@@ -922,7 +856,6 @@ def _update_mainline_dra(
 
     base_dr_cache: dict[float, float] = {}
     pumped_slices: list[tuple[float, float]] = []
-    carried_slices: list[tuple[float, float]] = []
     for length, base_ppm in incoming_slices:
         length_val = float(length)
         if length_val <= 0:
@@ -933,7 +866,9 @@ def _update_mainline_dra(
             base_val = 0.0
         if base_val < 0:
             base_val = 0.0
-        if base_val > 0 and upstream_multiplier < 1.0 and kv > 0:
+        if pump_running and is_origin and inj_requested <= 0:
+            treated_ppm = 0.0
+        elif base_val > 0 and upstream_multiplier < 1.0 and kv > 0:
             key = round(base_val, 6)
             base_dr = base_dr_cache.get(key)
             if base_dr is None:
@@ -957,55 +892,58 @@ def _update_mainline_dra(
             treated_ppm = base_val
         else:
             treated_ppm = base_val * upstream_multiplier
-        if treated_ppm < 0:
-            treated_ppm = 0.0
-        carried_slices.append((length_val, treated_ppm))
         combined_ppm = treated_ppm + inj_effective
-        if pump_running and is_origin and inj_requested <= 0:
-            combined_ppm = 0.0
-        elif combined_ppm < 0:
+        if combined_ppm < 0:
             combined_ppm = 0.0
         pumped_slices.append((length_val, combined_ppm))
 
     inj_ppm_main = inj_requested
 
-    pumped_entries = [
-        (float(length), float(ppm_val))
-        for length, ppm_val in pumped_slices
-        if float(length) > 0
-    ]
+    segment_cover_entries: list[tuple[float, float]] = []
+    downstream_entries: list[tuple[float, float]] = []
+    remaining_seg = segment_length
+    for length, ppm_val in pumped_slices:
+        length = float(length)
+        if length <= 0:
+            continue
+        take = 0.0
+        if remaining_seg > 0:
+            take = min(length, remaining_seg)
+            if take > 0:
+                segment_cover_entries.append((take, ppm_val))
+                remaining_seg -= take
+        leftover = length - take
+        if leftover > 0:
+            downstream_entries.append((leftover, ppm_val))
 
-    remainder_entries = [
-        (float(length or 0.0), float(ppm_val or 0.0))
+    queue_remainder_list: list[list[float]] = [
+        [float(length or 0.0), float(ppm_val or 0.0)]
         for length, ppm_val in queue_remainder
         if float(length or 0.0) > 0
     ]
 
-    downstream_entries: list[tuple[float, float]]
-    if pump_running and is_origin and inj_requested <= 0:
-        carried_entries = [
-            (float(length), float(ppm_val))
-            for length, ppm_val in carried_slices
-            if float(length) > 0
-        ]
-        downstream_source = carried_entries + remainder_entries
-        if downstream_source:
-            trimmed = _trim_queue_tail(tuple(downstream_source), pumped_length)
-            downstream_entries = [
-                (float(length), float(ppm))
-                for length, ppm in trimmed
-                if float(length) > 0
-            ]
-        else:
-            downstream_entries = []
-    else:
-        downstream_entries = remainder_entries
+    if remaining_seg > 0 and queue_remainder_list:
+        idx = 0
+        while remaining_seg > 0 and idx < len(queue_remainder_list):
+            length, ppm_val = queue_remainder_list[idx]
+            take = min(length, remaining_seg)
+            if take > 0:
+                segment_cover_entries.append((take, ppm_val))
+                queue_remainder_list[idx][0] = length - take
+                remaining_seg -= take
+            if queue_remainder_list[idx][0] <= 0:
+                queue_remainder_list[idx][0] = 0.0
+                idx += 1
+            elif remaining_seg <= 0:
+                break
+            else:
+                idx += 1
 
-    combined_entries = pumped_entries + downstream_entries
-
-    merged_queue = _merge_queue(combined_entries)
-
-    segment_cover_entries = _take_queue_front(tuple(merged_queue), segment_length)
+    trimmed_remainder: list[tuple[float, float]] = [
+        (length, ppm_val)
+        for length, ppm_val in queue_remainder_list
+        if length > 0
+    ]
 
     dra_segments: list[tuple[float, float]] = []
     for length, ppm_val in segment_cover_entries:
@@ -1021,6 +959,16 @@ def _update_mainline_dra(
                 dra_segments[-1] = (prev_len + length, ppm_float)
             else:
                 dra_segments.append((length, ppm_float))
+
+    combined_entries: list[tuple[float, float]] = [
+        (float(length), float(ppm_val))
+        for length, ppm_val in (
+            segment_cover_entries + downstream_entries + trimmed_remainder
+        )
+        if float(length) > 0
+    ]
+
+    merged_queue = _merge_queue(combined_entries)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
@@ -3047,16 +2995,7 @@ def solve_pipeline(
                     upstream_length,
                     seg_length_total,
                 )
-                seg_queue_consumed = _queue_total_length(segment_profile_raw)
-                queue_total_length = _queue_total_length(queue_after_full)
-                trim_after_segment = min(
-                    queue_total_length,
-                    max(upstream_length + seg_queue_consumed, 0.0),
-                )
-                queue_after_inlet = _trim_queue_front(
-                    queue_after_full,
-                    trim_after_segment,
-                )
+                queue_after_inlet = _trim_queue_front(queue_after_full, seg_length_total)
                 total_positive = sum(length for length, ppm in dra_segments if ppm > 0)
                 if total_positive > 0:
                     eff_dra_main, treated_length = _effective_dra_response(
@@ -3656,10 +3595,8 @@ def solve_pipeline(
     last_maop_head = best_state['last_maop']
     last_maop_kg = best_state['last_maop_kg']
 
-    queue_source = best_state.get('dra_queue_at_inlet')
-    if not queue_source:
-        queue_source = best_state.get('dra_queue_full')
-    if not queue_source:
+    queue_source = best_state.get('dra_queue_full')
+    if queue_source is None:
         queue_source = best_state.get('dra_queue', ())
     queue_final = [
         (
