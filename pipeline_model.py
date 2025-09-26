@@ -3047,7 +3047,12 @@ def solve_pipeline(
                     upstream_length,
                     seg_length_total,
                 )
-                trim_after_segment = max(upstream_length + seg_length_total, 0.0)
+                seg_queue_consumed = _queue_total_length(segment_profile_raw)
+                queue_total_length = _queue_total_length(queue_after_full)
+                trim_after_segment = min(
+                    queue_total_length,
+                    max(upstream_length + seg_queue_consumed, 0.0),
+                )
                 queue_after_inlet = _trim_queue_front(
                     queue_after_full,
                     trim_after_segment,
