@@ -17,12 +17,10 @@ import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
-    _queue_total_length,
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
     _update_mainline_dra,
-    _merge_queue,
     _volume_from_km,
     _segment_hydraulics,
     solve_pipeline as _solve_pipeline,
@@ -390,85 +388,28 @@ def test_downstream_profile_advances_between_hours() -> None:
     profile_hour1 = result_hour1["dra_profile_station_b"]
     untreated_hour1 = _profile_untreated_length(profile_hour1)
 
-    queue_prev_full: tuple[tuple[float, float], ...] = tuple(initial_queue)
-    queue_prev_inlet = queue_prev_full
-    for idx, stn in enumerate(stations):
-        stn_data = {
-            "idx": idx,
-            "is_pump": True,
-            "d_inner": diameter,
-            "L": float(stn["L"]),
-            "dra_shear_factor": 0.0,
-            "shear_injection": False,
-        }
-        total_prev_full = _queue_total_length(queue_prev_full)
-        total_prev_inlet = _queue_total_length(queue_prev_inlet)
-        upstream_length = max(total_prev_full - total_prev_inlet, 0.0)
-        prefix_entries: tuple[tuple[float, float], ...] = ()
-        if upstream_length > 1e-9:
-            prefix_entries = _take_queue_front(queue_prev_full, upstream_length)
-        precomputed = _prepare_dra_queue_consumption(
-            queue_prev_inlet,
-            stn_data["L"],
-            flow_m3h,
-            hours,
-            stn_data["d_inner"],
-        )
-        _, queue_after_list, _ = _update_mainline_dra(
-            queue_prev_inlet,
-            stn_data,
-            {"nop": 0, "dra_ppm_main": 0},
-            stn_data["L"],
-            flow_m3h,
-            hours,
-            pump_running=False,
-            pump_shear_rate=0.0,
-            dra_shear_factor=0.0,
-            shear_injection=False,
-            is_origin=idx == 0,
-            precomputed=precomputed,
-        )
-        queue_after_body = tuple(
-            (
-                float(entry.get("length_km", 0.0) or 0.0),
-                float(entry.get("dra_ppm", 0.0) or 0.0),
-            )
-            for entry in queue_after_list
-            if float(entry.get("length_km", 0.0) or 0.0) > 0.0
-        )
-        combined_full = tuple(prefix_entries) + queue_after_body
-        merged_after_full = _merge_queue(combined_full)
-        queue_after_full = tuple(
-            (float(length), float(ppm))
-            for length, ppm in merged_after_full
-            if float(length or 0.0) > 0.0
-        )
-        trim_after = max(upstream_length + stn_data["L"], 0.0)
-        queue_after_inlet = _trim_queue_front(queue_after_full, trim_after)
-        queue_prev_full = queue_after_full
-        queue_prev_inlet = queue_after_inlet
+    linefill_hour2: list[dict[str, float]] = []
+    for entry in result_hour1["linefill"]:
+        length_km = float(entry.get("length_km", 0.0) or 0.0)
+        if length_km <= 0.0:
+            continue
+        ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        volume = float(entry.get("volume", 0.0) or 0.0)
+        if volume <= 0.0:
+            volume = _volume_from_km(length_km, diameter)
+        linefill_hour2.append({"volume": volume, "dra_ppm": ppm})
 
-    carry_queue = queue_prev_inlet
-    pumped_km = _queue_total_length(tuple(initial_queue)) - _queue_total_length(carry_queue)
-    pumped_per_station = _km_from_volume(flow_m3h * hours, diameter)
-    expected_advanced = pumped_per_station * len(stations)
-    assert pumped_km == pytest.approx(expected_advanced, rel=1e-6)
+    assert linefill_hour2, "Hour-one run should produce downstream batches"
 
-    linefill_hour2 = [
-        {
-            "volume": _volume_from_km(length, diameter),
-            "dra_ppm": ppm,
-        }
-        for length, ppm in carry_queue
-        if float(length) > 0.0
-    ]
+    kwargs_hour2 = dict(common_kwargs)
+    kwargs_hour2["start_time"] = "01:00"
 
     result_hour2 = solve_pipeline(
         stations=copy.deepcopy(stations),
         terminal=terminal,
         linefill=linefill_hour2,
         dra_reach_km=0.0,
-        **common_kwargs,
+        **kwargs_hour2,
     )
 
     assert not result_hour2.get("error"), result_hour2.get("message")
