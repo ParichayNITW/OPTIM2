@@ -289,6 +289,31 @@ def _linefill_front_untreated(linefill_state: list[dict], diameter: float) -> fl
     return front
 
 
+def _linefill_to_volumes(
+    linefill_state: list[dict], diameter: float
+) -> list[dict[str, float]]:
+    converted: list[dict[str, float]] = []
+    for entry in linefill_state:
+        try:
+            volume = float(entry.get("volume", 0.0) or 0.0)
+        except Exception:
+            volume = 0.0
+        if volume <= 0.0:
+            try:
+                length_km = float(entry.get("length_km", 0.0) or 0.0)
+            except Exception:
+                length_km = 0.0
+            if length_km <= 0.0:
+                continue
+            volume = _volume_from_km(length_km, diameter)
+        try:
+            ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except Exception:
+            ppm = 0.0
+        converted.append({"volume": volume, "dra_ppm": ppm})
+    return converted
+
+
 def test_linefill_dra_persists_through_running_pumps() -> None:
     """Initial linefill DRA should reduce SDH even without new injections."""
 
@@ -388,16 +413,7 @@ def test_downstream_profile_advances_between_hours() -> None:
     profile_hour1 = result_hour1["dra_profile_station_b"]
     untreated_hour1 = _profile_untreated_length(profile_hour1)
 
-    linefill_hour2: list[dict[str, float]] = []
-    for entry in result_hour1["linefill"]:
-        length_km = float(entry.get("length_km", 0.0) or 0.0)
-        if length_km <= 0.0:
-            continue
-        ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        volume = float(entry.get("volume", 0.0) or 0.0)
-        if volume <= 0.0:
-            volume = _volume_from_km(length_km, diameter)
-        linefill_hour2.append({"volume": volume, "dra_ppm": ppm})
+    linefill_hour2 = _linefill_to_volumes(result_hour1["linefill"], diameter)
 
     assert linefill_hour2, "Hour-one run should produce downstream batches"
 
