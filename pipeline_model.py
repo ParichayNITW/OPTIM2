@@ -866,7 +866,7 @@ def _update_mainline_dra(
             base_val = 0.0
         if base_val < 0:
             base_val = 0.0
-        if pump_running and is_origin and inj_requested <= 0:
+        if pump_running and is_origin and inj_requested <= 0 and base_val <= 0:
             treated_ppm = 0.0
         elif base_val > 0 and upstream_multiplier < 1.0 and kv > 0:
             key = round(base_val, 6)
