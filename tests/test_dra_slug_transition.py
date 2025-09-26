@@ -292,3 +292,66 @@ def test_queue_preserves_length_and_zero_front_progression() -> None:
     for previous, current in zip(zero_positions, zero_positions[1:]):
         assert current + 1e-9 >= previous
         assert current - previous <= reference + 1e-9
+
+
+def test_extended_slug_remains_at_queue_front() -> None:
+    """Pumping beyond a segment keeps the new slug leading the queue."""
+
+    segment_length = 8.0
+    flow_m3h = 1600.0
+    hours = 5.0
+    diameter = 0.7
+
+    queue_state = [
+        {"length_km": 25.0, "dra_ppm": 0.0},
+        {"length_km": 5.0, "dra_ppm": 7.0},
+    ]
+
+    stn_data = {
+        "idx": 0,
+        "L": segment_length,
+        "d_inner": diameter,
+        "d": diameter,
+        "kv": 3.0,
+    }
+    opt = {"dra_ppm_main": 18.0, "nop": 0}
+
+    precomputed = _prepare_dra_queue_consumption(
+        queue_state,
+        segment_length,
+        flow_m3h,
+        hours,
+        diameter,
+    )
+    pumped_length, _, _ = precomputed
+    assert pumped_length > segment_length + 1.0
+
+    _, queue_after, inj_ppm_main = _update_mainline_dra(
+        queue_state,
+        stn_data,
+        opt,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=False,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=True,
+        precomputed=precomputed,
+    )
+
+    assert queue_after, "Expected downstream queue to contain entries"
+    head = queue_after[0]
+    assert math.isclose(
+        float(head.get("dra_ppm", 0.0) or 0.0),
+        inj_ppm_main,
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    )
+    assert math.isclose(
+        float(head.get("length_km", 0.0) or 0.0),
+        pumped_length,
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    )
