@@ -969,17 +969,17 @@ def _update_mainline_dra(
             if float(length) > 0
         )
 
-    if trimmed_remainder:
-        combined_entries.extend(
-            (float(length), float(ppm_val))
-            for length, ppm_val in trimmed_remainder
-            if float(length) > 0
-        )
-
     if downstream_entries:
         combined_entries.extend(
             (float(length), float(ppm_val))
             for length, ppm_val in downstream_entries
+            if float(length) > 0
+        )
+
+    if trimmed_remainder:
+        combined_entries.extend(
+            (float(length), float(ppm_val))
+            for length, ppm_val in trimmed_remainder
             if float(length) > 0
         )
 
