@@ -866,7 +866,7 @@ def _update_mainline_dra(
             base_val = 0.0
         if base_val < 0:
             base_val = 0.0
-        if pump_running and is_origin and inj_requested <= 0 and base_val <= 0:
+        if pump_running and is_origin and inj_requested <= 0:
             treated_ppm = 0.0
         elif base_val > 0 and upstream_multiplier < 1.0 and kv > 0:
             key = round(base_val, 6)
@@ -960,28 +960,13 @@ def _update_mainline_dra(
             else:
                 dra_segments.append((length, ppm_float))
 
-    combined_entries: list[tuple[float, float]] = []
-
-    if segment_cover_entries:
-        combined_entries.extend(
-            (float(length), float(ppm_val))
-            for length, ppm_val in segment_cover_entries
-            if float(length) > 0
+    combined_entries: list[tuple[float, float]] = [
+        (float(length), float(ppm_val))
+        for length, ppm_val in (
+            segment_cover_entries + downstream_entries + trimmed_remainder
         )
-
-    if downstream_entries:
-        combined_entries.extend(
-            (float(length), float(ppm_val))
-            for length, ppm_val in downstream_entries
-            if float(length) > 0
-        )
-
-    if trimmed_remainder:
-        combined_entries.extend(
-            (float(length), float(ppm_val))
-            for length, ppm_val in trimmed_remainder
-            if float(length) > 0
-        )
+        if float(length) > 0
+    ]
 
     merged_queue = _merge_queue(combined_entries)
     queue_after = [
