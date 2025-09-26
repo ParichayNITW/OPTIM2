@@ -355,3 +355,71 @@ def test_extended_slug_remains_at_queue_front() -> None:
         rel_tol=1e-9,
         abs_tol=1e-9,
     )
+
+
+def test_origin_pump_retains_upstream_dra_without_new_injection() -> None:
+    """Existing DRA should advance even after the origin injector stops."""
+
+    segment_length = 12.0
+    flow_m3h = 1800.0
+    hours = 1.0
+    diameter = 0.7
+
+    stn_data = {
+        "idx": 0,
+        "L": segment_length,
+        "d_inner": diameter,
+        "d": diameter,
+        "kv": 3.0,
+    }
+
+    opt_on = {"dra_ppm_main": 24.0, "nop": 1}
+    opt_off = {"dra_ppm_main": 0.0, "nop": 1}
+
+    dra_segments_on, queue_after_on, inj_ppm_on = _update_mainline_dra(
+        [],
+        stn_data,
+        opt_on,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=0.3,
+        dra_shear_factor=0.2,
+        shear_injection=True,
+        is_origin=True,
+    )
+
+    assert inj_ppm_on > 0.0
+    assert dra_segments_on, "Expected injected DRA to appear in the segment"
+    assert queue_after_on, "Expected downstream queue to contain entries"
+
+    precomputed = _prepare_dra_queue_consumption(
+        queue_after_on,
+        segment_length,
+        flow_m3h,
+        hours,
+        diameter,
+    )
+
+    dra_segments_off, queue_after_off, inj_ppm_off = _update_mainline_dra(
+        queue_after_on,
+        stn_data,
+        opt_off,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=0.3,
+        dra_shear_factor=0.2,
+        shear_injection=True,
+        is_origin=True,
+        precomputed=precomputed,
+    )
+
+    assert inj_ppm_off == 0.0
+    assert dra_segments_off, "Expected upstream DRA to keep advancing"
+    assert queue_after_off, "Expected downstream queue to retain entries"
+
+    head_slice = queue_after_off[0]
+    assert float(head_slice.get("dra_ppm", 0.0) or 0.0) > 0.0
