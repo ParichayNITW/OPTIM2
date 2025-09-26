@@ -487,6 +487,84 @@ def test_origin_zero_injection_extends_front_between_runs() -> None:
     assert front_zero_hour2 == pytest.approx(pumped_length * 2.0, abs=1e-4)
 
 
+def test_multi_diameter_linefill_remains_feasible_across_hours() -> None:
+    """Multi-diameter pipelines should keep yielding solutions across hours."""
+
+    stations = [
+        _make_pump_station("Station A"),
+        _make_pump_station("Station B"),
+        _make_pump_station("Station C"),
+    ]
+    diameters = [0.56, 0.68, 0.6]
+    lengths = [32.0, 28.0, 46.0]
+    for stn, d_inner, seg_len in zip(stations, diameters, lengths):
+        stn["L"] = seg_len
+        stn["d"] = stn["d_inner"] = d_inner
+        stn["kv"] = 3.0
+        stn["dra_shear_factor"] = 0.0
+        stn["shear_injection"] = False
+
+    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
+
+    linefill_state = [
+        {"length_km": 30.0, "dra_ppm": 18.0},
+        {"length_km": 20.0, "dra_ppm": 0.0},
+        {"length_km": 45.0, "dra_ppm": 12.0},
+        {"length_km": 15.0, "dra_ppm": 0.0},
+        {"length_km": 35.0, "dra_ppm": 9.0},
+        {"length_km": 20.0, "dra_ppm": 0.0},
+    ]
+
+    common_kwargs = dict(
+        FLOW=1500.0,
+        KV_list=[3.0, 3.0, 3.0, 3.0],
+        rho_list=[845.0, 845.0, 845.0, 845.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=1.0,
+        start_time="00:00",
+        dra_reach_km=0.0,
+        enumerate_loops=False,
+    )
+
+    result_hour1 = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=copy.deepcopy(linefill_state),
+        **common_kwargs,
+    )
+
+    assert not result_hour1.get("error"), result_hour1.get("message")
+
+    kwargs_hour2 = dict(common_kwargs)
+    kwargs_hour2["start_time"] = "01:00"
+
+    result_hour2 = solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=copy.deepcopy(result_hour1["linefill"]),
+        **kwargs_hour2,
+    )
+
+    assert not result_hour2.get("error"), result_hour2.get("message")
+
+    length_hour1 = sum(
+        float(batch.get("length_km", 0.0) or 0.0)
+        for batch in result_hour1["linefill"]
+        if float(batch.get("length_km", 0.0) or 0.0) > 0.0
+    )
+    length_hour2 = sum(
+        float(batch.get("length_km", 0.0) or 0.0)
+        for batch in result_hour2["linefill"]
+        if float(batch.get("length_km", 0.0) or 0.0) > 0.0
+    )
+
+    assert length_hour1 > 0.0
+    assert length_hour2 > 0.0
+
+
 def test_zero_injection_benefits_from_inherited_slug() -> None:
     """Inherited DRA continues lowering SDH when no station injects."""
 
