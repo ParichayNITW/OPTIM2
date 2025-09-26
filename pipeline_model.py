@@ -2221,6 +2221,8 @@ def solve_pipeline(
                         ppm = float(ppm_val)
                     except Exception:
                         ppm = 0.0
+                    if not math.isfinite(ppm) or ppm < 0.0:
+                        ppm = 0.0
                     linefill_state.append({'volume': vol, 'dra_ppm': ppm})
         elif isinstance(linefill, list):
             for ent in linefill:
@@ -2233,6 +2235,8 @@ def solve_pipeline(
                 try:
                     ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
                 except Exception:
+                    ppm = 0.0
+                if not math.isfinite(ppm) or ppm < 0.0:
                     ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
