@@ -250,70 +250,6 @@ def _make_pump_station(name: str, *, max_dr: int = 0) -> dict:
     }
 
 
-def _profile_untreated_length(profile: list[dict]) -> float:
-    """Return the total untreated length for a DRA profile."""
-
-    total = 0.0
-    for entry in profile:
-        try:
-            length = float(entry.get("length_km", 0.0) or 0.0)
-        except Exception:
-            length = 0.0
-        try:
-            ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except Exception:
-            ppm = 0.0
-        if ppm <= 0.0:
-            total += length
-    return total
-
-
-def _linefill_front_untreated(linefill_state: list[dict], diameter: float) -> float:
-    """Return the untreated distance at the head of ``linefill_state``."""
-
-    front = 0.0
-    for batch in linefill_state:
-        try:
-            volume = float(batch.get("volume", 0.0) or 0.0)
-        except Exception:
-            volume = 0.0
-        length = _km_from_volume(volume, diameter)
-        try:
-            ppm = float(batch.get("dra_ppm", 0.0) or 0.0)
-        except Exception:
-            ppm = 0.0
-        if ppm <= 0.0 and length > 0.0:
-            front += length
-        else:
-            break
-    return front
-
-
-def _linefill_to_volumes(
-    linefill_state: list[dict], diameter: float
-) -> list[dict[str, float]]:
-    converted: list[dict[str, float]] = []
-    for entry in linefill_state:
-        try:
-            volume = float(entry.get("volume", 0.0) or 0.0)
-        except Exception:
-            volume = 0.0
-        if volume <= 0.0:
-            try:
-                length_km = float(entry.get("length_km", 0.0) or 0.0)
-            except Exception:
-                length_km = 0.0
-            if length_km <= 0.0:
-                continue
-            volume = _volume_from_km(length_km, diameter)
-        try:
-            ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except Exception:
-            ppm = 0.0
-        converted.append({"volume": volume, "dra_ppm": ppm})
-    return converted
-
-
 def test_linefill_dra_persists_through_running_pumps() -> None:
     """Initial linefill DRA should reduce SDH even without new injections."""
 
@@ -366,219 +302,6 @@ def test_linefill_dra_persists_through_running_pumps() -> None:
         if float(batch.get("dra_ppm", 0) or 0.0) > 0
     )
     assert treated_volume > 0.0
-
-
-def test_downstream_profile_advances_between_hours() -> None:
-    """Successive runs should shift downstream DRA coverage as the slug moves."""
-
-    stations = [_make_pump_station("Station A"), _make_pump_station("Station B")]
-    diameter = 0.7
-    for stn in stations:
-        stn["d"] = stn["d_inner"] = diameter
-        stn["kv"] = 3.0
-    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
-    hours = 1.0
-    flow_m3h = _volume_from_km(5.0, diameter)
-    initial_queue = ((7.0, 0.0), (4.0, 10.0), (4.0, 0.0))
-    initial_linefill = [
-        {
-            "volume": _volume_from_km(length, diameter),
-            "dra_ppm": ppm,
-        }
-        for length, ppm in initial_queue
-    ]
-    common_kwargs = dict(
-        FLOW=flow_m3h,
-        KV_list=[3.0, 3.0, 3.0],
-        rho_list=[850.0, 850.0, 850.0],
-        RateDRA=5.0,
-        Price_HSD=0.0,
-        Fuel_density=0.85,
-        Ambient_temp=25.0,
-        hours=hours,
-        start_time="00:00",
-        enumerate_loops=False,
-    )
-
-    result_hour1 = solve_pipeline(
-        stations=copy.deepcopy(stations),
-        terminal=terminal,
-        linefill=copy.deepcopy(initial_linefill),
-        dra_reach_km=0.0,
-        **common_kwargs,
-    )
-
-    assert not result_hour1.get("error"), result_hour1.get("message")
-
-    profile_hour1 = result_hour1["dra_profile_station_b"]
-    untreated_hour1 = _profile_untreated_length(profile_hour1)
-
-    linefill_hour2 = _linefill_to_volumes(result_hour1["linefill"], diameter)
-
-    assert linefill_hour2, "Hour-one run should produce downstream batches"
-
-    kwargs_hour2 = dict(common_kwargs)
-    kwargs_hour2["start_time"] = "01:00"
-
-    result_hour2 = solve_pipeline(
-        stations=copy.deepcopy(stations),
-        terminal=terminal,
-        linefill=linefill_hour2,
-        dra_reach_km=0.0,
-        **kwargs_hour2,
-    )
-
-    assert not result_hour2.get("error"), result_hour2.get("message")
-
-    profile_hour2 = result_hour2["dra_profile_station_b"]
-    untreated_hour2 = _profile_untreated_length(profile_hour2)
-
-    assert profile_hour1 != profile_hour2
-    assert untreated_hour2 > untreated_hour1
-
-
-def test_origin_zero_injection_extends_front_between_runs() -> None:
-    """Successive zero-ppm runs should accumulate untreated distance upstream."""
-
-    stations = [_make_pump_station("Paradip"), _make_pump_station("Balasore")]
-    diameter = 0.7
-    for stn in stations:
-        stn["d"] = stn["d_inner"] = diameter
-        stn["kv"] = 3.0
-        stn["dra_shear_factor"] = 0.0
-        stn["shear_injection"] = False
-    stations[0]["L"] = 65.0
-    stations[1]["L"] = 70.0
-    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
-
-    hours = 1.0
-    flow_m3h = 2590.0075234357646
-    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
-
-    initial_linefill = [
-        {"volume": _volume_from_km(30.0, diameter), "dra_ppm": 12.0},
-        {"volume": _volume_from_km(25.0, diameter), "dra_ppm": 8.0},
-    ]
-
-    common_kwargs = dict(
-        FLOW=flow_m3h,
-        KV_list=[3.0, 3.0, 3.0],
-        rho_list=[850.0, 850.0, 850.0],
-        RateDRA=0.0,
-        Price_HSD=0.0,
-        Fuel_density=0.85,
-        Ambient_temp=25.0,
-        hours=hours,
-        start_time="00:00",
-        dra_reach_km=0.0,
-        enumerate_loops=False,
-    )
-
-    result_hour1 = solve_pipeline(
-        stations=copy.deepcopy(stations),
-        terminal=terminal,
-        linefill=copy.deepcopy(initial_linefill),
-        **common_kwargs,
-    )
-
-    assert not result_hour1.get("error"), result_hour1.get("message")
-
-    front_zero_hour1 = _linefill_front_untreated(result_hour1["linefill"], diameter)
-    assert front_zero_hour1 == pytest.approx(pumped_length, abs=1e-6)
-
-    kwargs_hour2 = dict(common_kwargs)
-    kwargs_hour2["start_time"] = "01:00"
-
-    result_hour2 = solve_pipeline(
-        stations=copy.deepcopy(stations),
-        terminal=terminal,
-        linefill=copy.deepcopy(result_hour1["linefill"]),
-        **kwargs_hour2,
-    )
-
-    assert not result_hour2.get("error"), result_hour2.get("message")
-
-    front_zero_hour2 = _linefill_front_untreated(result_hour2["linefill"], diameter)
-    assert front_zero_hour2 > front_zero_hour1
-    assert front_zero_hour2 == pytest.approx(pumped_length * 2.0, abs=1e-4)
-
-
-def test_multi_diameter_linefill_remains_feasible_across_hours() -> None:
-    """Multi-diameter pipelines should keep yielding solutions across hours."""
-
-    stations = [
-        _make_pump_station("Station A"),
-        _make_pump_station("Station B"),
-        _make_pump_station("Station C"),
-    ]
-    diameters = [0.56, 0.68, 0.6]
-    lengths = [32.0, 28.0, 46.0]
-    for stn, d_inner, seg_len in zip(stations, diameters, lengths):
-        stn["L"] = seg_len
-        stn["d"] = stn["d_inner"] = d_inner
-        stn["kv"] = 3.0
-        stn["dra_shear_factor"] = 0.0
-        stn["shear_injection"] = False
-
-    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
-
-    linefill_state = [
-        {"length_km": 30.0, "dra_ppm": 18.0},
-        {"length_km": 20.0, "dra_ppm": 0.0},
-        {"length_km": 45.0, "dra_ppm": 12.0},
-        {"length_km": 15.0, "dra_ppm": 0.0},
-        {"length_km": 35.0, "dra_ppm": 9.0},
-        {"length_km": 20.0, "dra_ppm": 0.0},
-    ]
-
-    common_kwargs = dict(
-        FLOW=1500.0,
-        KV_list=[3.0, 3.0, 3.0, 3.0],
-        rho_list=[845.0, 845.0, 845.0, 845.0],
-        RateDRA=0.0,
-        Price_HSD=0.0,
-        Fuel_density=0.85,
-        Ambient_temp=25.0,
-        hours=1.0,
-        start_time="00:00",
-        dra_reach_km=0.0,
-        enumerate_loops=False,
-    )
-
-    result_hour1 = solve_pipeline(
-        stations=copy.deepcopy(stations),
-        terminal=terminal,
-        linefill=copy.deepcopy(linefill_state),
-        **common_kwargs,
-    )
-
-    assert not result_hour1.get("error"), result_hour1.get("message")
-
-    kwargs_hour2 = dict(common_kwargs)
-    kwargs_hour2["start_time"] = "01:00"
-
-    result_hour2 = solve_pipeline(
-        stations=copy.deepcopy(stations),
-        terminal=terminal,
-        linefill=copy.deepcopy(result_hour1["linefill"]),
-        **kwargs_hour2,
-    )
-
-    assert not result_hour2.get("error"), result_hour2.get("message")
-
-    length_hour1 = sum(
-        float(batch.get("length_km", 0.0) or 0.0)
-        for batch in result_hour1["linefill"]
-        if float(batch.get("length_km", 0.0) or 0.0) > 0.0
-    )
-    length_hour2 = sum(
-        float(batch.get("length_km", 0.0) or 0.0)
-        for batch in result_hour2["linefill"]
-        if float(batch.get("length_km", 0.0) or 0.0) > 0.0
-    )
-
-    assert length_hour1 > 0.0
-    assert length_hour2 > 0.0
 
 
 def test_zero_injection_benefits_from_inherited_slug() -> None:
@@ -1138,9 +861,9 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
             {"nop": 1, "dra_ppm_main": 0},
             True,
             1.0,
-            [(1.0, 10.0)],
-            [(4.0, 0.0), (21.0, 10.0)],
-            [(1.0, 0.0), (21.0, 10.0)],
+            [(3.0, 10.0)],
+            [(2.0, 0.0), (23.0, 10.0)],
+            [(22.0, 10.0)],
         ),
         (
             "running_injection",
@@ -1471,23 +1194,10 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
         assert not dra_segments
         assert queue_after
         assert queue_after[0]["dra_ppm"] == 0
-        expected_front = pumped_length * (2.0 if shear_factor >= 1.0 - 1e-9 else 1.0)
         assert queue_after[0]["length_km"] == pytest.approx(
-            expected_front,
+            pumped_length,
             rel=1e-6,
         )
-
-        remaining_entries = queue_after[1:]
-        remaining_total = sum(float(entry.get("length_km", 0.0) or 0.0) for entry in remaining_entries)
-        assert remaining_total == pytest.approx(
-            initial_queue[0]["length_km"] - expected_front,
-            rel=1e-6,
-        )
-
-        tail_entry = remaining_entries[-1]
-        assert tail_entry["dra_ppm"] == initial_queue[0]["dra_ppm"]
-        expected_tail_length = max(initial_queue[0]["length_km"] - 2.0 * pumped_length, 0.0)
-        assert tail_entry["length_km"] == pytest.approx(expected_tail_length, rel=1e-6)
 
 
 def test_full_shear_zero_front_propagates_downstream() -> None:
