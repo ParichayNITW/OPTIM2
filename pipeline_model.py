@@ -2346,8 +2346,39 @@ def solve_pipeline(
             state_top_k=state_top_k,
             state_cost_margin=state_cost_margin,
         )
-        if coarse_res.get("error"):
-            return coarse_res
+        coarse_failed = bool(coarse_res.get("error"))
+        refined_direct_result: dict | None = None
+        if coarse_failed:
+            refined_direct_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=True,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=None,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=state_top_k,
+                state_cost_margin=state_cost_margin,
+            )
+            if not refined_direct_result.get("error"):
+                coarse_res = refined_direct_result
+                coarse_failed = False
         window = max(rpm_step, coarse_rpm_step)
 
         zero_dra_ranges: dict[int, dict[str, tuple[int, int]]] = {}
@@ -2563,7 +2594,13 @@ def solve_pipeline(
             state_cost_margin=state_cost_margin,
         )
 
+        primary_candidate = None
+        if not coarse_failed and not coarse_res.get("error"):
+            primary_candidate = coarse_res
+
         candidates: list[dict] = []
+        if primary_candidate is not None:
+            candidates.append(primary_candidate)
         if not zero_dra_result.get('error'):
             candidates.append(zero_dra_result)
         if not refine_result.get('error'):
@@ -2612,7 +2649,12 @@ def solve_pipeline(
 
             return min(candidates, key=_result_key)
 
-        return refine_result
+        if refined_direct_result is not None and not refined_direct_result.get("error"):
+            return refined_direct_result
+        if not coarse_res.get("error"):
+            return coarse_res
+
+        return coarse_res if coarse_failed else refine_result
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs

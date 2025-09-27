@@ -1368,3 +1368,88 @@ def test_search_depth_controls_expand_combinatorial_search() -> None:
     assert expanded_coarse, "Expanded search did not record any coarse steps"
     assert expanded_coarse[0] < default_coarse[0]
     assert expanded_calls > default_calls
+
+
+def test_coarse_failure_triggers_refined_retry(monkeypatch):
+    import pipeline_model
+
+    rpm_step = 2
+    dra_step = 1
+    coarse_multiplier = 3.0
+
+    coarse_rpm_step = int(round(rpm_step * coarse_multiplier)) if rpm_step > 0 else int(round(coarse_multiplier))
+    if coarse_rpm_step <= 0:
+        coarse_rpm_step = rpm_step if rpm_step > 0 else 1
+    if coarse_multiplier >= 1.0 and rpm_step > 0:
+        coarse_rpm_step = max(coarse_rpm_step, rpm_step)
+
+    stations = [
+        {
+            "name": "Station Alpha",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "MinRPM": 1200,
+            "DOL": 1800,
+            "max_dr": 20,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 0.0}
+    success_payload = {
+        "total_cost": 42.0,
+        "residual_head_terminal": 0.0,
+        "num_pumps_station_alpha": 1,
+        "speed_station_alpha": 1200,
+        "drag_reduction_station_alpha": 5,
+    }
+    call_log: list[tuple[bool, int | None, int | None, object]] = []
+
+    original_solver = pipeline_model.solve_pipeline
+
+    def fake_solver(*args, **kwargs):
+        internal = kwargs.get("_internal_pass", False)
+        rpm = kwargs.get("rpm_step")
+        dra = kwargs.get("dra_step")
+        narrow = kwargs.get("narrow_ranges")
+        call_log.append((internal, rpm, dra, narrow))
+        if internal:
+            if rpm == coarse_rpm_step and narrow is None:
+                return {"error": "coarse-failure"}
+            if rpm == rpm_step and narrow is None:
+                return success_payload.copy()
+            return {"error": f"narrow-failure-{rpm}"}
+        return original_solver(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_model, "solve_pipeline", fake_solver)
+
+    result = pipeline_model.solve_pipeline_with_types(
+        stations,
+        terminal,
+        FLOW=1000.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=None,
+        dra_reach_km=0.0,
+        mop_kgcm2=None,
+        hours=24.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        rpm_step=rpm_step,
+        dra_step=dra_step,
+        coarse_multiplier=coarse_multiplier,
+    )
+
+    assert not result.get("error")
+    assert result["total_cost"] == success_payload["total_cost"]
+
+    coarse_calls = [entry for entry in call_log if entry[0] and entry[1] == coarse_rpm_step and entry[3] is None]
+    refined_calls = [entry for entry in call_log if entry[0] and entry[1] == rpm_step and entry[3] is None]
+
+    assert coarse_calls, f"expected coarse call in log, saw {call_log!r}"
+    assert refined_calls, f"expected refined retry in log, saw {call_log!r}"
