@@ -3027,7 +3027,9 @@ def run_all_updates():
             **search_kwargs,
         )
     if not res or res.get("error"):
-        msg = res.get("message") if isinstance(res, dict) else "Optimization failed"
+        if isinstance(res, dict):
+            st.session_state["last_error_response"] = res
+        msg = (res.get("message") or "Optimization failed") if isinstance(res, dict) else "Optimization failed"
         st.error(msg)
         return
     import copy
