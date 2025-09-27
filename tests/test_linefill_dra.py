@@ -1200,6 +1200,66 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
         )
 
 
+def test_origin_zero_front_advances_with_repeated_updates() -> None:
+    """Untreated origin fronts should accumulate across successive hours."""
+
+    initial_queue = [(158.0, 4.0)]
+    stn_data = {"is_pump": True, "d_inner": 0.82, "idx": 0}
+    opt = {"nop": 1, "dra_ppm_main": 0}
+    flow_m3h = 3600.0
+    hours = 1.0
+    segment_length = 0.0
+    pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
+
+    precomputed_stage1 = _prepare_dra_queue_consumption(
+        initial_queue,
+        segment_length,
+        flow_m3h,
+        hours,
+        stn_data["d_inner"],
+    )
+    _, queue_after_stage1, _ = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        opt,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+        precomputed=precomputed_stage1,
+    )
+
+    assert queue_after_stage1
+    zero_front_1 = queue_after_stage1[0]
+    assert zero_front_1["dra_ppm"] == 0
+    assert zero_front_1["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+
+    precomputed_stage2 = _prepare_dra_queue_consumption(
+        queue_after_stage1,
+        segment_length,
+        flow_m3h,
+        hours,
+        stn_data["d_inner"],
+    )
+    _, queue_after_stage2, _ = _update_mainline_dra(
+        queue_after_stage1,
+        stn_data,
+        opt,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+        precomputed=precomputed_stage2,
+    )
+
+    assert queue_after_stage2
+    zero_front_2 = queue_after_stage2[0]
+    assert zero_front_2["dra_ppm"] == 0
+    assert zero_front_2["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+
+
 def test_full_shear_zero_front_propagates_downstream() -> None:
     """Downstream segments should consume the 0 ppm zone before any treated slug."""
 
