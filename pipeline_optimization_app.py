@@ -2674,6 +2674,263 @@ def invalidate_results():
         st.session_state.pop(k, None)
 
 
+def _enforce_minimum_origin_dra(
+    state: dict,
+    *,
+    total_length_km: float,
+    min_ppm: float = 2.0,
+    min_fraction: float = 0.05,
+) -> bool:
+    """Ensure the upstream queue carries a non-zero DRA slug.
+
+    The helper mutates ``state`` in-place.  It returns ``True`` when the state
+    is tightened and ``False`` when no further tightening is possible (for
+    example, when the state already carries a positive slug).
+    """
+
+    if state.get("origin_enforced"):
+        return False
+
+    queue = []
+    changed = False
+    for entry in state.get("dra_linefill") or []:
+        if not isinstance(entry, dict):
+            continue
+        queue.append(dict(entry))
+
+    min_length = max(min_fraction * float(total_length_km), 0.0)
+    if min_length <= 0.0:
+        min_length = 1.0
+    min_length = min(float(total_length_km) if total_length_km > 0 else min_length, max(min_length, 1.0))
+
+    if not queue:
+        queue.append({"length_km": float(min_length), "dra_ppm": float(min_ppm)})
+        changed = True
+    else:
+        head = queue[0]
+        ppm_val = float(head.get("dra_ppm", 0.0) or 0.0)
+        length_val = float(head.get("length_km", 0.0) or 0.0)
+        vol_val = float(head.get("volume", 0.0) or 0.0)
+        if ppm_val <= 0.0:
+            head["dra_ppm"] = float(min_ppm)
+            changed = True
+        if length_val <= 0.0:
+            if vol_val > 0.0:
+                head["volume"] = vol_val
+            head["length_km"] = float(min_length)
+            changed = True
+        else:
+            if length_val < min_length:
+                head["length_km"] = float(min_length)
+                changed = True
+    if not changed:
+        return False
+
+    state["dra_linefill"] = queue
+    current_reach = float(state.get("dra_reach_km", 0.0) or 0.0)
+    state["dra_reach_km"] = max(current_reach, float(queue[0].get("length_km", min_length)))
+
+    vol_df = state.get("vol")
+    if isinstance(vol_df, pd.DataFrame) and len(vol_df) > 0:
+        vol_df = vol_df.copy()
+        vol_df.at[0, INIT_DRA_COL] = max(float(vol_df.iloc[0].get(INIT_DRA_COL, 0.0) or 0.0), float(min_ppm))
+        if "DRA ppm" in vol_df.columns:
+            vol_df.at[0, "DRA ppm"] = vol_df.at[0, INIT_DRA_COL]
+        state["vol"] = vol_df
+        state["linefill_snapshot"] = vol_df.copy()
+
+    state["origin_enforced"] = True
+    return True
+
+
+def _execute_time_series_solver(
+    stations_base: list[dict],
+    term_data: dict,
+    hours: list[int],
+    *,
+    flow_rate: float,
+    plan_df: pd.DataFrame | None,
+    current_vol: pd.DataFrame,
+    dra_linefill: list[dict],
+    dra_reach_km: float,
+    RateDRA: float,
+    Price_HSD: float,
+    fuel_density: float,
+    ambient_temp: float,
+    mop_kgcm2: float | None,
+    pump_shear_rate: float,
+    total_length: float,
+    sub_steps: int = 1,
+) -> dict:
+    """Run sequential optimisations for the provided ``hours``.
+
+    The routine encapsulates the daily/hourly optimisation loop so it can be
+    exercised by automated tests.  It returns the reports and linefill
+    snapshots together with the final queue state.  When infeasibilities occur
+    because the upstream DRA slug was removed, the solver backtracks one hour
+    and enforces a minimum-origin slug before retrying.
+    """
+
+    import copy
+
+    plan_local = plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None
+    current_vol_local = current_vol.copy()
+    dra_linefill_local = copy.deepcopy(dra_linefill)
+    dra_reach_local = float(dra_reach_km)
+
+    reports: list[dict] = []
+    linefill_snaps: list[pd.DataFrame] = []
+    hour_states: list[dict] = []
+    backtracked = False
+    backtrack_notes: list[str] = []
+
+    error_msg: str | None = None
+    ti = 0
+
+    while ti < len(hours):
+        hr = hours[ti]
+
+        if ti >= len(hour_states):
+            state = {
+                "vol": current_vol_local.copy(),
+                "plan": plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
+                "dra_linefill": copy.deepcopy(dra_linefill_local),
+                "dra_reach_km": float(dra_reach_local),
+                "linefill_snapshot": current_vol_local.copy(),
+            }
+            hour_states.append(state)
+            linefill_snaps.append(current_vol_local.copy())
+        else:
+            state = hour_states[ti]
+            current_vol_local = state["vol"].copy()
+            plan_local = state["plan"].copy() if isinstance(state.get("plan"), pd.DataFrame) else None
+            dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
+            dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
+            linefill_snaps[ti] = state["linefill_snapshot"].copy()
+
+        sdh_hourly: list[float] = []
+        res: dict = {}
+        block_cost = 0.0
+        power_cost_acc: dict[str, float] = {}
+        dra_cost_acc: dict[str, float] = {}
+        error_msg = None
+
+        for sub in range(sub_steps):
+            pumped_tmp = flow_rate * 1.0
+            future_vol, future_plan = shift_vol_linefill(
+                current_vol_local.copy(), pumped_tmp, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
+            )
+            kv_list, rho_list, segment_slices = combine_volumetric_profiles(
+                stations_base, current_vol_local, future_vol
+            )
+
+            stns_run = copy.deepcopy(stations_base)
+            start_str = f"{int((hr + sub) % 24):02d}:00"
+            res = solve_pipeline(
+                stns_run,
+                term_data,
+                flow_rate,
+                kv_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                fuel_density,
+                ambient_temp,
+                dra_linefill_local,
+                dra_reach_local,
+                mop_kgcm2,
+                hours=1.0,
+                start_time=start_str,
+                pump_shear_rate=pump_shear_rate,
+            )
+
+            block_cost += res.get("total_cost", 0.0)
+
+            if res.get("error"):
+                cur_hr = (hr + sub) % 24
+                error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
+                break
+
+            term_key = term_data["name"].lower().replace(" ", "_")
+            keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
+            for k in keys:
+                power_cost_acc[k] = power_cost_acc.get(k, 0.0) + float(res.get(f"power_cost_{k}", 0.0) or 0.0)
+                dra_cost_acc[k] = dra_cost_acc.get(k, 0.0) + float(res.get(f"dra_cost_{k}", 0.0) or 0.0)
+            sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
+            sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
+            sdh_hourly.append(max(sdh_vals))
+
+            dra_linefill_local = res.get("linefill", dra_linefill_local)
+            current_vol_local, plan_local = future_vol, future_plan
+            current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
+            dra_reach_local = res.get("dra_front_km", dra_reach_local)
+
+        if error_msg:
+            if ti == 0:
+                break
+
+            prev_state = hour_states[ti - 1]
+            prev_result = reports[ti - 1]["result"] if ti - 1 < len(reports) else {}
+            prev_front = float(prev_result.get("dra_front_km", 0.0) or 0.0)
+            tightened = False
+            if prev_front <= 1e-6:
+                tightened = _enforce_minimum_origin_dra(
+                    prev_state,
+                    total_length_km=total_length,
+                    min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
+                )
+            if not tightened:
+                break
+
+            backtracked = True
+            backtrack_notes.append(
+                f"Backtracked to {(hours[ti - 1] % 24):02d}:00 to enforce upstream DRA injection."
+            )
+
+            reports = reports[: ti - 1]
+            linefill_snaps = linefill_snaps[: ti]
+            hour_states = hour_states[: ti]
+
+            restored = prev_state
+            current_vol_local = restored["vol"].copy()
+            plan_local = restored["plan"].copy() if isinstance(restored.get("plan"), pd.DataFrame) else None
+            dra_linefill_local = copy.deepcopy(restored.get("dra_linefill", []))
+            dra_reach_local = float(restored.get("dra_reach_km", dra_reach_local))
+
+            ti -= 1
+            continue
+
+        for k, val in power_cost_acc.items():
+            res[f"power_cost_{k}"] = val
+        for k, val in dra_cost_acc.items():
+            res[f"dra_cost_{k}"] = val
+        res["total_cost"] = block_cost
+        reports.append(
+            {
+                "time": hr % 24,
+                "result": res,
+                "sdh_hourly": sdh_hourly,
+                "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
+            }
+        )
+
+        ti += 1
+
+    result = {
+        "reports": reports,
+        "linefill_snaps": linefill_snaps,
+        "final_vol": current_vol_local,
+        "final_plan": plan_local,
+        "final_dra_linefill": dra_linefill_local,
+        "final_dra_reach": dra_reach_local,
+        "error": error_msg,
+        "backtracked": backtracked,
+        "backtrack_notes": backtrack_notes,
+    }
+    return result
+
+
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
     invalidate_results()
@@ -2833,8 +3090,6 @@ if not auto_batch:
             spinner_msg = f"Running 1 optimization ({first_label})..."
         else:
             spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
-        reports = []
-        linefill_snaps = []
         st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         dra_reach_km = 200.0
@@ -2851,91 +3106,50 @@ if not auto_batch:
                 current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
-        error_msg = None
 
         with st.spinner(spinner_msg):
-            for ti, hr in enumerate(hours):
-                linefill_snaps.append(current_vol.copy())
-                sdh_hourly = []
-                res = {}
-                block_cost = 0.0
-                power_cost_acc: dict[str, float] = {}
-                dra_cost_acc: dict[str, float] = {}
-                for sub in range(sub_steps):
-                    pumped_tmp = FLOW_sched * 1.0
-                    future_vol, future_plan = shift_vol_linefill(
-                        current_vol.copy(), pumped_tmp, plan_df.copy() if plan_df is not None else None
-                    )
-                    # Determine worst-case fluid properties over this 1h window
-                    kv_list, rho_list, segment_slices = combine_volumetric_profiles(
-                        stations_base, current_vol, future_vol
-                    )
+            solver_result = _execute_time_series_solver(
+                stations_base,
+                term_data,
+                hours,
+                flow_rate=FLOW_sched,
+                plan_df=plan_df,
+                current_vol=current_vol,
+                dra_linefill=dra_linefill,
+                dra_reach_km=dra_reach_km,
+                RateDRA=RateDRA,
+                Price_HSD=Price_HSD,
+                fuel_density=st.session_state.get("Fuel_density", 820.0),
+                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                total_length=total_length,
+                sub_steps=sub_steps,
+            )
 
-                    stns_run = copy.deepcopy(stations_base)
-
-                    start_str = f"{int((hr + sub) % 24):02d}:00"
-                    res = solve_pipeline(
-                        stns_run,
-                        term_data,
-                        FLOW_sched,
-                        kv_list,
-                        rho_list,
-                        segment_slices,
-                        RateDRA,
-                        Price_HSD,
-                        st.session_state.get("Fuel_density", 820.0),
-                        st.session_state.get("Ambient_temp", 25.0),
-                        dra_linefill,
-                        dra_reach_km,
-                        st.session_state.get("MOP_kgcm2"),
-                        hours=1.0,
-                        start_time=start_str,
-                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                    )
-
-                    block_cost += res.get("total_cost", 0.0)
-
-                    if res.get("error"):
-                        cur_hr = (hr + sub) % 24
-                        error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
-                        break
-
-                    # Record SDH for objective calculation and accumulate per-station costs
-                    term_key = term_data["name"].lower().replace(" ", "_")
-                    keys = [s['name'].lower().replace(' ', '_') for s in stns_run]
-                    for k in keys:
-                        power_cost_acc[k] = power_cost_acc.get(k, 0.0) + float(res.get(f"power_cost_{k}", 0.0) or 0.0)
-                        dra_cost_acc[k] = dra_cost_acc.get(k, 0.0) + float(res.get(f"dra_cost_{k}", 0.0) or 0.0)
-                    sdh_vals = [float(res.get(f"sdh_{k}", 0.0) or 0.0) for k in keys]
-                    sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
-                    sdh_hourly.append(max(sdh_vals))
-
-                    dra_linefill = res.get("linefill", dra_linefill)
-                    current_vol, plan_df = future_vol, future_plan
-                    current_vol = apply_dra_ppm(current_vol, dra_linefill)
-                    dra_reach_km = res.get("dra_front_km", dra_reach_km)
-
-                if error_msg:
-                    break
-
-                for k, val in power_cost_acc.items():
-                    res[f"power_cost_{k}"] = val
-                for k, val in dra_cost_acc.items():
-                    res[f"dra_cost_{k}"] = val
-                res["total_cost"] = block_cost
-                reports.append(
-                    {
-                        "time": hr % 24,
-                        "result": res,
-                        "sdh_hourly": sdh_hourly,
-                        "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
-                    }
-                )
+        error_msg = solver_result["error"]
+        reports = solver_result["reports"]
+        linefill_snaps = solver_result["linefill_snaps"]
+        current_vol = solver_result["final_vol"]
+        plan_df = solver_result["final_plan"]
+        dra_linefill = solver_result["final_dra_linefill"]
+        dra_reach_km = solver_result["final_dra_reach"]
 
         if error_msg:
             st.session_state["linefill_next_day"] = pd.DataFrame()
             st.error(error_msg)
             st.stop()
+
+        if solver_result.get("backtracked"):
+            warn_msg = " ".join(solver_result.get("backtrack_notes") or [])
+            if not warn_msg:
+                warn_msg = (
+                    "Backtracking applied: zero DRA at the origin was infeasible for downstream hours."
+                )
+            st.warning(
+                warn_msg
+                + " Please avoid zero DRA requests at the origin when planning sequential hours."
+            )
 
         st.session_state["linefill_next_day"] = _get_linefill_snapshot_for_hour(
             linefill_snaps,
