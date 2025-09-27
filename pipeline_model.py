@@ -1130,39 +1130,62 @@ def _update_mainline_dra(
     if (
         pump_running
         and is_origin
-        and inj_requested <= 1e-12
         and initial_zero_prefix > 0.0
         and pumped_length > 0.0
         and merged_queue
     ):
         zero_tol = 1e-9
-        total_length = sum(float(length or 0.0) for length, _ppm in merged_queue if float(length or 0.0) > 0.0)
-        zero_ppm = 0.0
-        zero_front_pre = 0.0
-        rest_entries: list[tuple[float, float]]
-        if abs(merged_queue[0][1]) <= zero_tol:
-            zero_ppm = float(merged_queue[0][1])
-            zero_front_pre = float(merged_queue[0][0])
-            rest_entries = list(merged_queue[1:])
-        else:
-            zero_ppm = 0.0
+        pipeline_length = _queue_total_length(merged_queue)
+        if pipeline_length > 0.0:
+            base_queue = tuple(
+                (
+                    float(length or 0.0),
+                    float(ppm or 0.0),
+                )
+                for length, ppm in merged_queue
+                if float(length or 0.0) > 0.0
+            )
+
+            inj_entry: tuple[float, float] | None = None
+            inj_length = 0.0
+            if inj_effective > 1e-12:
+                inj_length = min(pumped_length, pipeline_length)
+                if inj_length > 0.0:
+                    inj_entry = (inj_length, float(max(inj_effective, 0.0)))
+            remainder_after_injection: tuple[tuple[float, float], ...]
+            if inj_length > 0.0:
+                remainder_after_injection = _trim_queue_front(base_queue, inj_length)
+            else:
+                remainder_after_injection = base_queue
+
+            rest_entries = [
+                (float(length or 0.0), float(ppm or 0.0))
+                for length, ppm in remainder_after_injection
+                if float(length or 0.0) > 0.0
+            ]
+
             zero_front_pre = 0.0
-            rest_entries = list(merged_queue)
+            if rest_entries and abs(rest_entries[0][1]) <= zero_tol:
+                zero_front_pre = float(rest_entries[0][0])
+                rest_entries = rest_entries[1:]
 
-        new_zero_length = initial_zero_prefix + pumped_length
-        if total_length > 0.0 and new_zero_length > total_length:
-            new_zero_length = total_length
+            zero_capacity = max(pipeline_length - inj_length, 0.0)
+            target_zero_length = min(initial_zero_prefix + pumped_length, zero_capacity)
+            if target_zero_length < zero_front_pre:
+                target_zero_length = zero_front_pre
 
-        trim_needed = max(0.0, new_zero_length - zero_front_pre)
-        trimmed_rest, leftover = _trim_queue_tail(rest_entries, trim_needed)
-        if leftover > 1e-9 and new_zero_length > 0.0:
-            new_zero_length = max(0.0, new_zero_length - leftover)
+            trim_needed = max(0.0, target_zero_length - zero_front_pre)
+            trimmed_rest, leftover = _trim_queue_tail(rest_entries, trim_needed)
+            if leftover > 1e-9 and target_zero_length > 0.0:
+                target_zero_length = max(0.0, target_zero_length - leftover)
 
-        adjusted_entries: list[tuple[float, float]] = []
-        if new_zero_length > 0.0:
-            adjusted_entries.append((new_zero_length, zero_ppm))
-        adjusted_entries.extend(trimmed_rest)
-        merged_queue = _merge_queue(adjusted_entries)
+            adjusted_entries: list[tuple[float, float]] = []
+            if inj_entry is not None and inj_entry[0] > 0.0:
+                adjusted_entries.append(inj_entry)
+            if target_zero_length > 0.0:
+                adjusted_entries.append((target_zero_length, 0.0))
+            adjusted_entries.extend(trimmed_rest)
+            merged_queue = _merge_queue(adjusted_entries)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
