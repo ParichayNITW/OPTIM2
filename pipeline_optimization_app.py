@@ -2873,8 +2873,26 @@ def _execute_time_series_solver(
             prev_state = hour_states[ti - 1]
             prev_result = reports[ti - 1]["result"] if ti - 1 < len(reports) else {}
             prev_front = float(prev_result.get("dra_front_km", 0.0) or 0.0)
+            untreated_head_km = 0.0
+            prev_linefill = prev_result.get("linefill") if isinstance(prev_result, dict) else None
+            if isinstance(prev_linefill, list):
+                for entry in prev_linefill:
+                    if not isinstance(entry, dict):
+                        continue
+                    ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    if ppm_val > 0.0:
+                        break
+                    length_raw = entry.get("length_km", 0.0)
+                    try:
+                        length_val = float(length_raw)
+                    except (TypeError, ValueError):
+                        length_val = 0.0
+                    if length_val <= 0.0:
+                        continue
+                    untreated_head_km += max(length_val, 0.0)
+            untreated_tolerance = 1e-3
             tightened = False
-            if prev_front <= 1e-6:
+            if untreated_head_km > untreated_tolerance or prev_front <= untreated_tolerance:
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
