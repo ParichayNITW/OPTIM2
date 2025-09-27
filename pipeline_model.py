@@ -2149,7 +2149,12 @@ def solve_pipeline(
     if linefill:
         if isinstance(linefill, dict):
             vols = linefill.get('volume') or linefill.get('Volume (m³)') or linefill.get('Volume')
-            ppms = linefill.get('dra_ppm') or linefill.get('DRA ppm') or {}
+            ppms = (
+                linefill.get('dra_ppm')
+                or linefill.get('DRA ppm')
+                or linefill.get('Initial DRA (ppm)')
+                or {}
+            )
             if vols is not None:
                 items = vols.items() if isinstance(vols, dict) else enumerate(vols)
                 for idx, v in items:
@@ -2179,7 +2184,12 @@ def solve_pipeline(
                 if vol <= 0:
                     continue
                 try:
-                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
+                    ppm = float(
+                        ent.get('dra_ppm')
+                        or ent.get('DRA ppm')
+                        or ent.get('Initial DRA (ppm)')
+                        or 0.0
+                    )
                 except Exception:
                     ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
