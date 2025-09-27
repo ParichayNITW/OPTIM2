@@ -298,6 +298,142 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     assert len(call_log) >= 3
 
 
+def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
+    import pipeline_optimization_app as app
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 15.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        }
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    hours = [0, 1]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 6000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = [
+        {"volume": 3000.0, "dra_ppm": 0.0},
+        {"volume": 3000.0, "dra_ppm": 2.5},
+    ]
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    call_log: list[tuple[int, float]] = []
+
+    def fake_solver(
+        stations,
+        terminal,
+        flow,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        fuel_density,
+        ambient_temp,
+        dra_linefill_in,
+        dra_reach_km,
+        mop_kgcm2,
+        *,
+        hours,
+        start_time,
+        pump_shear_rate,
+    ):
+        hour = int(start_time.split(":")[0])
+        head_ppm = 0.0
+        if dra_linefill_in:
+            try:
+                head_ppm = float(dra_linefill_in[0].get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                head_ppm = 0.0
+        call_log.append((hour, head_ppm))
+        if hour == 0:
+            if head_ppm > 0.0:
+                return {
+                    "error": False,
+                    "total_cost": 9.5,
+                    "linefill": [
+                        {"length_km": 3.5, "dra_ppm": head_ppm},
+                        {"length_km": 2.5, "dra_ppm": head_ppm},
+                    ],
+                    "dra_front_km": 6.0,
+                }
+            return {
+                "error": False,
+                "total_cost": 9.0,
+                "linefill": [
+                    {"length_km": 3.5, "dra_ppm": 0.0},
+                    {"length_km": 2.5, "dra_ppm": 2.5},
+                ],
+                "dra_front_km": 6.0,
+            }
+        if hour == 1:
+            if head_ppm <= 0.0:
+                return {
+                    "error": True,
+                    "message": "No feasible pump combination found for stations.",
+                }
+            return {
+                "error": False,
+                "total_cost": 10.0,
+                "linefill": [
+                    {"length_km": 2.0, "dra_ppm": 2.0},
+                    {"length_km": 4.0, "dra_ppm": 2.0},
+                ],
+                "dra_front_km": 6.0,
+            }
+        return {
+            "error": False,
+            "total_cost": 0.0,
+            "linefill": dra_linefill_in,
+            "dra_front_km": float(dra_reach_km),
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=450.0,
+        plan_df=None,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    assert result["error"] is None
+    assert result["backtracked"] is True
+    assert any("Backtracked" in note for note in result["backtrack_notes"])
+    assert len(result["reports"]) == 2
+    hours_called = [hour for hour, _ in call_log]
+    assert hours_called.count(1) >= 2
+    # Ensure the retried call carried a positive head slug
+    assert any(hour == 1 and ppm > 0.0 for hour, ppm in call_log)
+
+
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
         {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
