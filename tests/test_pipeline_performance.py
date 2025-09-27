@@ -252,6 +252,74 @@ def test_solver_includes_full_grid_candidate(monkeypatch):
     assert result[f"drag_reduction_{station_key}"] == exhaustive_result[f"drag_reduction_{station_key}"]
 
 
+def test_successful_exhaustive_short_circuits(monkeypatch):
+    import pipeline_model as pm
+
+    original_solve = pm.solve_pipeline
+    internal_passes: list[bool] = []
+
+    def counting_solver(*args, **kwargs):
+        if kwargs.get("_internal_pass"):
+            internal_passes.append(bool(kwargs.get("_exhaustive_pass")))
+            if len(args) > 1:
+                terminal = args[1]
+            else:
+                terminal = kwargs.get("terminal", {})
+            term_name = terminal.get("name", "terminal").strip().lower().replace(" ", "_")
+            residual_val = 12.0
+            total_cost = 150.0
+            if kwargs.get("_exhaustive_pass"):
+                residual_val = 11.0
+                total_cost = 90.0
+            return {
+                "error": False,
+                "total_cost": total_cost,
+                f"residual_head_{term_name}": residual_val,
+                "residual": residual_val,
+            }
+        return original_solve(*args, **kwargs)
+
+    monkeypatch.setattr(pm, "solve_pipeline", counting_solver)
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 0,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+
+    result = pm.solve_pipeline(
+        stations,
+        terminal,
+        1500.0,
+        [1.0],
+        [850.0],
+        [[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=820.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=24.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        loop_usage_by_station=[],
+        enumerate_loops=False,
+        rpm_step=5,
+        dra_step=5,
+    )
+
+    assert internal_passes == [False, True]
+    assert result["total_cost"] == pytest.approx(90.0)
+
+
 def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     import pipeline_optimization_app as app
 
