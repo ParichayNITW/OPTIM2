@@ -337,6 +337,10 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 RPM_STEP = 25
 DRA_STEP = 2
 MAX_DRA_KM = 250.0
+# Limit the total number of per-type RPM combinations explored when the solver
+# performs a refined retry pass.  This keeps the cartesian product of
+# per-type speed lists tractable while still including the extrema.
+REFINED_RETRY_COMBO_CAP = 256
 # Default scaling applied to the coarse search step sizes.  This multiplier
 # mirrors the legacy behaviour where the coarse pass used five times the
 # refinement step.
@@ -362,6 +366,82 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return vals
+
+
+def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
+    """Return ``target_len`` evenly spaced entries from ``values``.
+
+    The first and last elements are always preserved so the extrema remain
+    reachable even when down-sampling reduces the search resolution.
+    """
+
+    if target_len >= len(values):
+        return list(values)
+    if target_len <= 1:
+        return [values[0]]
+
+    result_indices: list[int] = [0]
+    span = len(values) - 1
+    total_slots = target_len - 1
+    for idx in range(1, target_len - 1):
+        raw = idx * span / total_slots
+        candidate = int(round(raw))
+        prev_idx = result_indices[-1]
+        min_idx = prev_idx + 1
+        remaining = target_len - idx - 1
+        max_idx = len(values) - 1 - remaining
+        if candidate < min_idx:
+            candidate = min_idx
+        if candidate > max_idx:
+            candidate = max_idx
+        result_indices.append(candidate)
+    result_indices.append(len(values) - 1)
+    return [values[i] for i in result_indices]
+
+
+def _cap_type_rpm_lists(type_rpm_lists: dict[str, list[int]], cap: int) -> None:
+    """Down-sample per-type RPM lists so their cartesian product stays below ``cap``."""
+
+    if not type_rpm_lists:
+        return
+    try:
+        cap_int = int(cap)
+    except (TypeError, ValueError):
+        cap_int = REFINED_RETRY_COMBO_CAP
+    if cap_int <= 0:
+        cap_int = 1
+
+    def _product_total() -> int:
+        total = 1
+        for vals in type_rpm_lists.values():
+            total *= max(1, len(vals))
+        return total
+
+    total = _product_total()
+    if total <= cap_int:
+        return
+
+    ordered = sorted(type_rpm_lists, key=lambda key: len(type_rpm_lists[key]), reverse=True)
+    while total > cap_int:
+        reduced = False
+        for key in ordered:
+            vals = type_rpm_lists[key]
+            length = len(vals)
+            if length <= 2:
+                continue
+            target = max(2, int(math.floor(length * cap_int / total)))
+            if target >= length:
+                continue
+            new_vals = _downsample_evenly(vals, target)
+            if len(new_vals) >= length:
+                continue
+            type_rpm_lists[key] = new_vals
+            total = total // length * len(new_vals)
+            reduced = True
+            if total <= cap_int:
+                break
+        if not reduced:
+            break
 
 
 def _build_baseline_narrow_ranges(
@@ -2044,6 +2124,7 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    refined_retry: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -2087,8 +2168,11 @@ def solve_pipeline(
     ``dra_step`` for the refinement pass and ``coarse_multiplier`` to scale
     the coarse pass step sizes.  Increasing ``state_top_k`` or
     ``state_cost_margin`` relaxes dynamic-programming pruning so more near-
-    optimal states are retained for subsequent stations.  When these
-    parameters are omitted the legacy defaults are used.
+    optimal states are retained for subsequent stations.  ``refined_retry``
+    signals the solver is running a fallback refinement pass and activates
+    additional safeguards such as capping per-type RPM combinations to keep
+    the retry tractable.  When these parameters are omitted the legacy
+    defaults are used.
     """
 
     try:
@@ -2375,6 +2459,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                refined_retry=True,
             )
             if not refined_direct_result.get("error"):
                 coarse_res = refined_direct_result
@@ -2828,6 +2913,9 @@ def solve_pipeline(
                             p_rpm_max = min(p_rpm_max, rng['rpm'][1])
                     type_order.append(ptype)
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
+
+            if refined_retry and type_rpm_lists:
+                _cap_type_rpm_lists(type_rpm_lists, REFINED_RETRY_COMBO_CAP)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = int(stn.get('max_dr', 0))
