@@ -2147,6 +2147,7 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    _exhaustive_pass: bool = False,
     refined_retry: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
@@ -2175,7 +2176,10 @@ def solve_pipeline(
     pass then narrows the RPM and DRA ranges around that coarse solution
     and re-solves using the user-provided ``rpm_step`` and ``dra_step``.
     ``narrow_ranges`` is an internal helper used to restrict the values
-    considered during the refinement stage.
+    considered during the refinement stage.  Regardless of whether the
+    coarse pass succeeds, a full-grid evaluation using the user-provided
+    steps is executed once per solve to guarantee a globally comparable
+    candidate is available.
 
     This function supports optional loop-use directives.  When
     ``enumerate_loops`` is ``True`` and no explicit
@@ -2287,6 +2291,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                _exhaustive_pass=_exhaustive_pass,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -2348,6 +2353,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                _exhaustive_pass=_exhaustive_pass,
             )
             if res.get('error'):
                 continue
@@ -2454,39 +2460,38 @@ def solve_pipeline(
             state_cost_margin=state_cost_margin,
         )
         coarse_failed = bool(coarse_res.get("error"))
-        refined_direct_result: dict | None = None
-        if coarse_failed:
-            refined_direct_result = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                segment_slices,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time,
-                pump_shear_rate=pump_shear_rate,
-                loop_usage_by_station=loop_usage_by_station,
-                enumerate_loops=False,
-                _internal_pass=True,
-                rpm_step=rpm_step,
-                dra_step=dra_step,
-                narrow_ranges=None,
-                coarse_multiplier=coarse_multiplier,
-                state_top_k=state_top_k,
-                state_cost_margin=state_cost_margin,
-                refined_retry=True,
-            )
-            if not refined_direct_result.get("error"):
-                coarse_res = refined_direct_result
-                coarse_failed = False
+        exhaustive_result = solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            start_time,
+            pump_shear_rate=pump_shear_rate,
+            loop_usage_by_station=loop_usage_by_station,
+            enumerate_loops=False,
+            _internal_pass=True,
+            rpm_step=rpm_step,
+            dra_step=dra_step,
+            narrow_ranges=None,
+            coarse_multiplier=coarse_multiplier,
+            state_top_k=state_top_k,
+            state_cost_margin=state_cost_margin,
+            _exhaustive_pass=True,
+            refined_retry=coarse_failed,
+        )
+        if coarse_failed and not exhaustive_result.get("error"):
+            coarse_res = exhaustive_result
+            coarse_failed = False
         window = max(rpm_step, coarse_rpm_step)
 
         zero_dra_ranges: dict[int, dict[str, tuple[int, int]]] = {}
@@ -2709,6 +2714,8 @@ def solve_pipeline(
         candidates: list[dict] = []
         if primary_candidate is not None:
             candidates.append(primary_candidate)
+        if not exhaustive_result.get("error"):
+            candidates.append(exhaustive_result)
         if not zero_dra_result.get('error'):
             candidates.append(zero_dra_result)
         if not refine_result.get('error'):
@@ -2757,8 +2764,8 @@ def solve_pipeline(
 
             return min(candidates, key=_result_key)
 
-        if refined_direct_result is not None and not refined_direct_result.get("error"):
-            return refined_direct_result
+        if not exhaustive_result.get("error"):
+            return exhaustive_result
         if not coarse_res.get("error"):
             return coarse_res
 
@@ -3836,13 +3843,16 @@ def solve_pipeline(
         # and globally prune to the top ``STATE_TOP_K`` states or those within
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
         # manageable while preserving near-optimal candidates.
-        items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-        threshold = best_cost_station + state_cost_margin
-        pruned: dict[int, dict] = {}
-        for idx, (residual_key, data) in enumerate(items):
-            if idx < state_top_k or data['cost'] <= threshold:
-                pruned[residual_key] = data
-        states = pruned
+        if _exhaustive_pass:
+            states = new_states
+        else:
+            items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
+            threshold = best_cost_station + state_cost_margin
+            pruned: dict[int, dict] = {}
+            for idx, (residual_key, data) in enumerate(items):
+                if idx < state_top_k or data['cost'] <= threshold:
+                    pruned[residual_key] = data
+            states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
