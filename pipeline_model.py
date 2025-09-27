@@ -604,6 +604,47 @@ def _queue_total_length(
     return total
 
 
+def _queue_leading_zero_length(
+    queue_entries: list[dict] | list[tuple] | tuple | None,
+) -> float:
+    """Return the cumulative length of the untreated head of ``queue_entries``."""
+
+    if not queue_entries:
+        return 0.0
+
+    total = 0.0
+    for raw in queue_entries:
+        if isinstance(raw, Mapping):
+            try:
+                length_val = float(raw.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                ppm_val = float(raw.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+        elif isinstance(raw, (list, tuple)) and raw:
+            try:
+                length_val = float(raw[0] if len(raw) > 0 else 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                ppm_val = float(raw[1] if len(raw) > 1 else 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+        else:
+            continue
+
+        if length_val <= 0.0:
+            continue
+        if abs(ppm_val) <= 1e-9:
+            total += length_val
+            continue
+        break
+
+    return total
+
+
 def _trim_queue_front(
     queue_entries: list[tuple[float, float]]
     | tuple[tuple[float, float], ...],
@@ -651,6 +692,41 @@ def _trim_queue_front(
         for length, ppm in merged_trimmed
         if float(length or 0.0) > 0
     )
+
+
+def _trim_queue_tail(
+    queue_entries: list[tuple[float, float]]
+    | tuple[tuple[float, float], ...],
+    trim_length: float,
+) -> tuple[list[tuple[float, float]], float]:
+    """Return ``queue_entries`` shortened by ``trim_length`` from the tail."""
+
+    remaining = max(float(trim_length or 0.0), 0.0)
+    normalised: list[tuple[float, float]] = [
+        (float(length or 0.0), float(ppm or 0.0))
+        for length, ppm in queue_entries
+        if float(length or 0.0) > 0.0
+    ]
+    if remaining <= 0.0:
+        return normalised, 0.0
+
+    idx = len(normalised) - 1
+    while idx >= 0 and remaining > 1e-9:
+        length_val, ppm_val = normalised[idx]
+        if length_val <= 0.0:
+            normalised.pop(idx)
+            idx -= 1
+            continue
+        if remaining >= length_val - 1e-9:
+            remaining -= length_val
+            normalised.pop(idx)
+            idx -= 1
+            continue
+        normalised[idx] = (length_val - remaining, ppm_val)
+        remaining = 0.0
+        break
+
+    return normalised, remaining
 
 
 def _take_queue_front(
@@ -793,6 +869,7 @@ def _update_mainline_dra(
         idx_val = stn_data.get('idx')
         if isinstance(idx_val, (int, float)):
             is_origin = int(idx_val) == 0
+    initial_zero_prefix = _queue_leading_zero_length(queue)
     segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
     flow_m3h = float(flow_m3h or 0.0)
     hours = max(float(hours or 0.0), 0.0)
@@ -969,6 +1046,43 @@ def _update_mainline_dra(
     ]
 
     merged_queue = _merge_queue(combined_entries)
+
+    if (
+        pump_running
+        and is_origin
+        and inj_requested <= 1e-12
+        and initial_zero_prefix > 0.0
+        and pumped_length > 0.0
+        and merged_queue
+    ):
+        zero_tol = 1e-9
+        total_length = sum(float(length or 0.0) for length, _ppm in merged_queue if float(length or 0.0) > 0.0)
+        zero_ppm = 0.0
+        zero_front_pre = 0.0
+        rest_entries: list[tuple[float, float]]
+        if abs(merged_queue[0][1]) <= zero_tol:
+            zero_ppm = float(merged_queue[0][1])
+            zero_front_pre = float(merged_queue[0][0])
+            rest_entries = list(merged_queue[1:])
+        else:
+            zero_ppm = 0.0
+            zero_front_pre = 0.0
+            rest_entries = list(merged_queue)
+
+        new_zero_length = initial_zero_prefix + pumped_length
+        if total_length > 0.0 and new_zero_length > total_length:
+            new_zero_length = total_length
+
+        trim_needed = max(0.0, new_zero_length - zero_front_pre)
+        trimmed_rest, leftover = _trim_queue_tail(rest_entries, trim_needed)
+        if leftover > 1e-9 and new_zero_length > 0.0:
+            new_zero_length = max(0.0, new_zero_length - leftover)
+
+        adjusted_entries: list[tuple[float, float]] = []
+        if new_zero_length > 0.0:
+            adjusted_entries.append((new_zero_length, zero_ppm))
+        adjusted_entries.extend(trimmed_rest)
+        merged_queue = _merge_queue(adjusted_entries)
     queue_after = [
         {'length_km': length, 'dra_ppm': ppm}
         for length, ppm in merged_queue
