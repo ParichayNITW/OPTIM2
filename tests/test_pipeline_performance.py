@@ -180,6 +180,78 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def test_solver_includes_full_grid_candidate(monkeypatch):
+    station = {
+        "name": "Station A",
+        "is_pump": False,
+        "L": 10.0,
+        "D": 0.7,
+        "t": 0.007,
+        "max_dr": 40,
+    }
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    station_key = "station_a"
+    term_key = "terminal"
+
+    coarse_result = {
+        "error": False,
+        "total_cost": 200.0,
+        f"residual_head_{term_key}": 12.0,
+        "residual": 12.0,
+        f"drag_reduction_{station_key}": 0,
+        "linefill": [],
+    }
+    exhaustive_result = {
+        "error": False,
+        "total_cost": 120.0,
+        f"residual_head_{term_key}": 11.5,
+        "residual": 11.5,
+        f"drag_reduction_{station_key}": 10,
+        "linefill": [],
+    }
+
+    import pipeline_model as pipeline_module
+
+    original = pipeline_module.solve_pipeline
+
+    def intercept(*args, **kwargs):
+        if kwargs.get("_internal_pass"):
+            if kwargs.get("_exhaustive_pass"):
+                return copy.deepcopy(exhaustive_result)
+            if kwargs.get("narrow_ranges") is None:
+                return copy.deepcopy(coarse_result)
+            return {"error": True}
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "solve_pipeline", intercept)
+
+    result = _solve_pipeline(
+        [station],
+        terminal,
+        1500.0,
+        [0.0],
+        [820.0],
+        [[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=820.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=24.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        loop_usage_by_station=[],
+        enumerate_loops=False,
+        rpm_step=1,
+        dra_step=1,
+    )
+
+    assert result["total_cost"] == pytest.approx(exhaustive_result["total_cost"])
+    assert result[f"drag_reduction_{station_key}"] == exhaustive_result[f"drag_reduction_{station_key}"]
+
+
 def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     import pipeline_optimization_app as app
 
