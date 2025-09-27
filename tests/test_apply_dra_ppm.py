@@ -220,3 +220,62 @@ def test_build_station_table_computes_defaults_when_solver_omits_metrics() -> No
     profile_str = row['DRA Profile (km@ppm)']
     assert '4.00 km @ 5.00 ppm' in profile_str
     assert '6.00 km @ 0.00 ppm' in profile_str
+
+
+def test_build_station_table_reverts_solver_length_when_profile_zero() -> None:
+    """Positive solver treated length should be ignored when ppm usage is zero."""
+
+    res = {
+        'stations_used': [
+            {
+                'name': 'station_c',
+                'orig_name': 'Station C',
+                'is_pump': True,
+            }
+        ],
+        'pipeline_flow_station_c': 700.0,
+        'loopline_flow_station_c': 0.0,
+        'pump_flow_station_c': 700.0,
+        'power_cost_station_c': 0.0,
+        'dra_cost_station_c': 0.0,
+        'dra_ppm_station_c': 0.0,
+        'dra_ppm_loop_station_c': 0.0,
+        'num_pumps_station_c': 1,
+        'efficiency_station_c': 70.0,
+        'pump_bkw_station_c': 85.0,
+        'motor_kw_station_c': 90.0,
+        'reynolds_station_c': 1.0,
+        'head_loss_station_c': 3.5,
+        'head_loss_kgcm2_station_c': 0.35,
+        'velocity_station_c': 1.2,
+        'residual_head_station_c': 20.0,
+        'rh_kgcm2_station_c': 2.0,
+        'sdh_station_c': 22.0,
+        'sdh_kgcm2_station_c': 2.2,
+        'maop_station_c': 60.0,
+        'maop_kgcm2_station_c': 6.0,
+        'drag_reduction_station_c': 0.0,
+        'drag_reduction_loop_station_c': 0.0,
+        'dra_profile_station_c': [
+            {'length_km': 5.0, 'dra_ppm': 0.0},
+            {'length_km': 7.0, 'dra_ppm': 0.0},
+        ],
+        'dra_treated_length_station_c': 12.0,
+    }
+
+    base_stations = [
+        {
+            'name': 'Station C',
+            'is_pump': True,
+            'pump_names': ['Pump Z'],
+            'max_pumps': 1,
+            'min_pumps': 1,
+            'L': 15.0,
+        }
+    ]
+
+    df = build_station_table(res, base_stations)
+    row = df.iloc[0]
+
+    assert row['DRA Treated Length (km)'] == pytest.approx(0.0, rel=1e-9, abs=1e-9)
+    assert row['DRA Untreated Length (km)'] == pytest.approx(15.0, rel=1e-9, abs=1e-9)
