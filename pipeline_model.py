@@ -2492,6 +2492,23 @@ def solve_pipeline(
         if coarse_failed and not exhaustive_result.get("error"):
             coarse_res = exhaustive_result
             coarse_failed = False
+        if not _internal_pass and not exhaustive_result.get("error"):
+            if coarse_res.get("error"):
+                return exhaustive_result
+
+            term_name = (
+                terminal.get("name", "terminal").strip().lower().replace(" ", "_")
+            )
+            term_req = float(terminal.get("min_residual", 0) or 0.0)
+
+            def _result_key(res: Mapping[str, object]) -> tuple[float, float]:
+                total_cost = float(res.get("total_cost", math.inf))
+                residual_val = float(
+                    res.get(f"residual_head_{term_name}", res.get("residual", term_req))
+                )
+                return (total_cost, residual_val - term_req)
+
+            return min((coarse_res, exhaustive_result), key=_result_key)
         window = max(rpm_step, coarse_rpm_step)
 
         zero_dra_ranges: dict[int, dict[str, tuple[int, int]]] = {}
