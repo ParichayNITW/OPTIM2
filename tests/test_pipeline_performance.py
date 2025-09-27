@@ -1453,3 +1453,115 @@ def test_coarse_failure_triggers_refined_retry(monkeypatch):
 
     assert coarse_calls, f"expected coarse call in log, saw {call_log!r}"
     assert refined_calls, f"expected refined retry in log, saw {call_log!r}"
+
+
+def test_refined_retry_caps_type_combinations(monkeypatch):
+    import math
+    import pipeline_model as pm
+
+    rpm_step = 50
+    dra_step = 5
+    coarse_multiplier = 3.0
+
+    coarse_rpm_step = int(round(rpm_step * coarse_multiplier)) if rpm_step > 0 else int(round(coarse_multiplier))
+    if coarse_rpm_step <= 0:
+        coarse_rpm_step = rpm_step if rpm_step > 0 else 1
+    if coarse_multiplier >= 1.0 and rpm_step > 0:
+        coarse_rpm_step = max(coarse_rpm_step, rpm_step)
+
+    stations = [
+        {
+            "name": "Station Mixed",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "MinRPM": 900,
+            "DOL": 1700,
+            "max_dr": 0,
+            "pump_types": {
+                "A": {"available": 1, "MinRPM": 1000, "DOL": 1600},
+                "B": {"available": 1, "MinRPM": 1100, "DOL": 1700},
+            },
+            "min_pumps": 2,
+            "max_pumps": 2,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 0.0}
+
+    base_kwargs = dict(
+        FLOW=900.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=None,
+        dra_reach_km=0.0,
+        mop_kgcm2=None,
+        hours=12.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        rpm_step=rpm_step,
+        dra_step=dra_step,
+        coarse_multiplier=coarse_multiplier,
+    )
+
+    original_solve = pm.solve_pipeline
+    original_allowed = pm._allowed_values
+    real_product = pm.product
+
+    def fake_allowed(min_val: int, max_val: int, step: int) -> list[int]:
+        if min_val == 1000 and max_val == 1600:
+            return [1000, 1080, 1160, 1240, 1320, 1400, 1480, 1560, 1600]
+        if min_val == 1100 and max_val == 1700:
+            return [1100, 1180, 1260, 1340, 1420, 1500, 1580, 1660, 1700]
+        return original_allowed(min_val, max_val, step)
+
+    recorded_lengths: list[tuple[int, ...]] = []
+    tracking_mode = {"active": False}
+
+    def tracking_product(*iterables):
+        sequences = [list(seq) for seq in iterables]
+        if tracking_mode["active"] and sequences:
+            recorded_lengths.append(tuple(len(seq) for seq in sequences))
+        return real_product(*sequences)
+
+    refined_retry_seen: list[bool] = []
+    coarse_seen: list[bool] = []
+
+    def selective_solver(*args, **kwargs):
+        internal = kwargs.get("_internal_pass", False)
+        rpm_local = kwargs.get("rpm_step")
+        refined_flag = bool(kwargs.get("refined_retry"))
+        narrow = kwargs.get("narrow_ranges")
+        tracking_mode["active"] = False
+        if internal and not refined_flag and narrow is None and rpm_local == coarse_rpm_step:
+            coarse_seen.append(True)
+            return {"error": "forced-coarse"}
+        if refined_flag:
+            refined_retry_seen.append(True)
+            tracking_mode["active"] = True
+            try:
+                return original_solve(*args, **kwargs)
+            finally:
+                tracking_mode["active"] = False
+        return original_solve(*args, **kwargs)
+
+    combo_cap = 12
+    monkeypatch.setattr(pm, "solve_pipeline", selective_solver)
+    monkeypatch.setattr(pm, "_allowed_values", fake_allowed)
+    monkeypatch.setattr(pm, "product", tracking_product)
+    monkeypatch.setattr(pm, "REFINED_RETRY_COMBO_CAP", combo_cap)
+
+    result = pm.solve_pipeline_with_types(stations, terminal, **base_kwargs)
+
+    assert coarse_seen, "coarse pass should be attempted"
+    assert refined_retry_seen, "refined retry should be triggered"
+    assert recorded_lengths, "expected to record per-type rpm lengths"
+    assert all(math.prod(lengths) <= combo_cap for lengths in recorded_lengths)
+    # Original lists contained 9 entries per type; ensure the retry reduced at least one list.
+    assert any(any(length < 9 for length in lengths) for lengths in recorded_lengths)
+    assert not result.get("error"), result.get("message")
