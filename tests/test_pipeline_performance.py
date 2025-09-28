@@ -15,6 +15,7 @@ from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
     _volume_from_km,
+    _km_from_volume,
     _update_mainline_dra,
 )
 from schedule_utils import kv_rho_from_vol
@@ -1996,3 +1997,116 @@ def test_sequential_two_station_run_retains_carry(monkeypatch):
     ppm_values = [ppm for _, ppm in dra_b if ppm > 0]
     assert ppm_values[0] == pytest.approx(25.0)
     assert any(float(entry.get("dra_ppm", 0.0) or 0.0) > 0 for entry in queue_after_b)
+
+
+def test_consecutive_injections_extend_dra_slug() -> None:
+    """Repeated injections should lengthen the treated reach hour by hour."""
+
+    diameter = 0.8
+    pumped_speed = 2.0
+    hours = 1.0
+    flow_m3h = _volume_from_km(pumped_speed, diameter)
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    initial_queue = [{"length_km": 25.0, "dra_ppm": 10.0}]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter}
+    operating = {"nop": 1, "dra_ppm_main": 12.0}
+
+    _, queue_after_hour1, _ = _update_mainline_dra(
+        initial_queue,
+        station,
+        operating,
+        5.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert queue_after_hour1
+    assert queue_after_hour1[0]["dra_ppm"] == pytest.approx(operating["dra_ppm_main"], rel=1e-6)
+    assert queue_after_hour1[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after_hour1[1]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-6)
+    assert queue_after_hour1[1]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length,
+        rel=1e-6,
+    )
+
+    _, queue_after_hour2, _ = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        operating,
+        5.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert queue_after_hour2
+    assert queue_after_hour2[0]["dra_ppm"] == pytest.approx(operating["dra_ppm_main"], rel=1e-6)
+    assert queue_after_hour2[0]["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+    assert queue_after_hour2[1]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-6)
+    assert queue_after_hour2[1]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length * 2.0,
+        rel=1e-6,
+    )
+
+
+def test_zero_injection_hour_advances_profile() -> None:
+    """Zero-DRA decisions should prepend untreated volume and trim the tail."""
+
+    diameter = 0.8
+    pumped_speed = 6.53
+    hours = 1.0
+    flow_m3h = _volume_from_km(pumped_speed, diameter)
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    initial_profile = [
+        {"length_km": 2.0, "dra_ppm": 5.0},
+        {"length_km": 100.0, "dra_ppm": 0.0},
+        {"length_km": 56.0, "dra_ppm": 4.0},
+    ]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter}
+    zero_option = {"nop": 1, "dra_ppm_main": 0.0}
+    segment_length = 158.0
+
+    _, queue_after_hour1, inj_ppm_hour1 = _update_mainline_dra(
+        initial_profile,
+        station,
+        zero_option,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert inj_ppm_hour1 == 0.0
+    assert queue_after_hour1
+    assert queue_after_hour1[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+    assert queue_after_hour1[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after_hour1[-1]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+    assert queue_after_hour1[-1]["length_km"] == pytest.approx(56.0 - pumped_length, rel=1e-6)
+    total_length_hour1 = sum(float(entry["length_km"]) for entry in queue_after_hour1)
+    assert total_length_hour1 == pytest.approx(segment_length, rel=1e-6)
+
+    _, queue_after_hour2, inj_ppm_hour2 = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        zero_option,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert inj_ppm_hour2 == 0.0
+    assert queue_after_hour2
+    assert queue_after_hour2[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+    assert queue_after_hour2[0]["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+    assert queue_after_hour2[-1]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+    assert queue_after_hour2[-1]["length_km"] == pytest.approx(56.0 - pumped_length * 2.0, rel=1e-6)
+    total_length_hour2 = sum(float(entry["length_km"]) for entry in queue_after_hour2)
+    assert total_length_hour2 == pytest.approx(segment_length, rel=1e-6)
