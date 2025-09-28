@@ -15,6 +15,7 @@ from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
     _volume_from_km,
+    _update_mainline_dra,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -1862,3 +1863,169 @@ def test_refined_retry_caps_type_combinations(monkeypatch):
     # Original lists contained 9 entries per type; ensure the retry reduced at least one list.
     assert any(any(length < 9 for length in lengths) for lengths in recorded_lengths)
     assert not result.get("error"), result.get("message")
+
+
+def test_sequential_two_station_run_retains_carry(monkeypatch):
+    import pipeline_model as pm
+
+    def fake_segment(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv: float,
+        dra: float,
+        dra_len: float,
+        slices=None,
+    ) -> tuple[float, float, float, float]:
+        return 0.0, 1.0, 1000.0, float(flow)
+
+    def fake_parallel(
+        flow: float,
+        L_main: float,
+        d_main: float,
+        rough_main: float,
+        dra_main: float,
+        dra_len_main: float,
+        L_loop: float,
+        d_loop: float,
+        rough_loop: float,
+        dra_loop: float,
+        dra_len_loop: float,
+        kv: float,
+        slices=None,
+    ) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]]:
+        main_stats = (1.0, 1.0, 1000.0, float(flow))
+        loop_stats = (1.0, 1.0, 1000.0, 0.0)
+        return 0.0, main_stats, loop_stats
+
+    def fake_pump_cache(
+        stn_data: dict,
+        opt: dict,
+        *,
+        flow_total: float,
+        hours: float,
+        start_time: str,
+        ambient_temp: float,
+        fuel_density: float,
+        price_hsd: float,
+    ) -> dict:
+        nop = int(opt.get("nop", 0) or 0)
+        rpm = float(opt.get("rpm", 0) or 0)
+        if nop <= 0 or rpm <= 0:
+            return {
+                "pump_details": [],
+                "tdh": 0.0,
+                "efficiency": 0.0,
+                "pump_bkw": 0.0,
+                "prime_kw": 0.0,
+                "power_cost": 0.0,
+            }
+        pump_details = [
+            {
+                "tdh": 5.0,
+                "eff": 75.0,
+                "count": nop,
+                "power_type": "Grid",
+                "ptype": "mock",
+                "rpm": int(rpm),
+                "data": {"sfc_mode": "manual", "sfc": 0.0, "DOL": rpm},
+            }
+        ]
+        return {
+            "pump_details": pump_details,
+            "tdh": 5.0,
+            "efficiency": 75.0,
+            "pump_bkw": 0.0,
+            "prime_kw": 0.0,
+            "power_cost": 0.0,
+        }
+
+    monkeypatch.setattr(pm, "_segment_hydraulics_composite", fake_segment)
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+    monkeypatch.setattr(pm, "_parallel_segment_hydraulics", fake_parallel)
+    monkeypatch.setattr(pm, "_build_pump_option_cache", fake_pump_cache)
+    monkeypatch.setattr(pm, "_downstream_requirement", lambda *args, **kwargs: 0)
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 1000,
+            "max_dr": 0,
+            "min_residual": 60,
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": 8.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 0,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    linefill = [{"length_km": 12.0, "dra_ppm": 25.0}]
+
+    result = pm.solve_pipeline(
+        stations,
+        terminal,
+        500.0,
+        [1.0, 1.0],
+        [850.0, 850.0],
+        [[] for _ in stations],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=linefill,
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        enumerate_loops=False,
+    )
+
+    assert not result.get("error"), result.get("message")
+
+    downstream_key = stations[1]["name"].strip().lower().replace(" ", "_")
+    profile = result.get(f"dra_profile_{downstream_key}")
+    assert profile is not None, "Downstream station should report a DRA profile"
+
+    flow_rate = 500.0
+    hours = 1.0
+    queue_initial = list(linefill)
+
+    dra_a, queue_after_a, _ = _update_mainline_dra(
+        queue_initial,
+        {"is_pump": True, "d_inner": 0.7, "idx": 0},
+        {"nop": 1, "dra_ppm_main": 0},
+        stations[0]["L"],
+        flow_rate,
+        hours,
+        pump_running=True,
+    )
+    assert queue_after_a, "Origin station should produce a downstream queue"
+
+    dra_b, queue_after_b, _ = _update_mainline_dra(
+        queue_after_a,
+        {"is_pump": False, "d_inner": 0.7, "idx": 1},
+        {"nop": 0, "dra_ppm_main": 0},
+        stations[1]["L"],
+        flow_rate,
+        hours,
+        pump_running=False,
+    )
+
+    carried = [length for length, ppm in dra_b if ppm > 0]
+    assert carried, "Sequential update should retain the carried DRA"
+    ppm_values = [ppm for _, ppm in dra_b if ppm > 0]
+    assert ppm_values[0] == pytest.approx(25.0)
+    assert any(float(entry.get("dra_ppm", 0.0) or 0.0) > 0 for entry in queue_after_b)
