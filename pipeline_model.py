@@ -949,23 +949,19 @@ def _update_mainline_dra(
         idx_val = stn_data.get('idx')
         if isinstance(idx_val, (int, float)):
             is_origin = int(idx_val) == 0
-    initial_zero_prefix = _queue_leading_zero_length(queue)
+
     segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
     flow_m3h = float(flow_m3h or 0.0)
     hours = max(float(hours or 0.0), 0.0)
-
     d_inner = float(stn_data.get("d_inner") or stn_data.get("d") or 0.0)
 
     if precomputed is None:
-        pumped_length, incoming_slices, queue_remainder = _prepare_dra_queue_consumption(
-            queue,
-            segment_length,
-            flow_m3h,
-            hours,
-            d_inner,
-        )
+        pumped_length = _km_from_volume(flow_m3h * hours, d_inner) if d_inner > 0 else 0.0
     else:
-        pumped_length, incoming_slices, queue_remainder = precomputed
+        pumped_length = float(precomputed[0] if precomputed and len(precomputed) > 0 else 0.0)
+    pumped_length = max(pumped_length, 0.0)
+
+    initial_zero_prefix = _queue_leading_zero_length(queue)
 
     local_shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
     global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0)) if pump_running else 0.0
@@ -1007,131 +1003,53 @@ def _update_mainline_dra(
                     multiplier = 0.0
                 inj_effective = inj_requested * multiplier
 
-    upstream_multiplier = 1.0 - shear if shear > 0 else 1.0
-    if upstream_multiplier < 0.0:
-        upstream_multiplier = 0.0
-
-    base_dr_cache: dict[float, float] = {}
-    pumped_slices: list[tuple[float, float]] = []
-    for length, base_ppm in incoming_slices:
-        length_val = float(length)
-        if length_val <= 0:
-            continue
-        try:
-            base_val = float(base_ppm)
-        except (TypeError, ValueError):
-            base_val = 0.0
-        if base_val < 0:
-            base_val = 0.0
-        if pump_running and is_origin and inj_requested <= 0:
-            treated_ppm = 0.0
-        elif base_val > 0 and upstream_multiplier < 1.0 and kv > 0:
-            key = round(base_val, 6)
-            base_dr = base_dr_cache.get(key)
-            if base_dr is None:
-                try:
-                    base_dr = float(get_dr_for_ppm(kv, base_val))
-                except Exception:
-                    base_dr = -1.0
-                base_dr_cache[key] = base_dr
-            if base_dr and base_dr > 0:
-                sheared_dr = base_dr * upstream_multiplier
-                if sheared_dr > 0:
-                    try:
-                        treated_ppm = float(get_ppm_for_dr(kv, sheared_dr))
-                    except Exception:
-                        treated_ppm = base_val * upstream_multiplier
-                else:
-                    treated_ppm = 0.0
+    existing_queue: list[tuple[float, float]] = []
+    if queue:
+        for raw in queue:
+            if isinstance(raw, Mapping):
+                length = float(raw.get("length_km", 0.0) or 0.0)
+                ppm_val = float(raw.get("dra_ppm", 0.0) or 0.0)
+            elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                length = float(raw[0] or 0.0)
+                ppm_val = float(raw[1] or 0.0)
             else:
-                treated_ppm = base_val * upstream_multiplier
-        elif upstream_multiplier >= 1.0:
-            treated_ppm = base_val
-        else:
-            treated_ppm = base_val * upstream_multiplier
-        combined_ppm = treated_ppm + inj_effective
-        if combined_ppm < 0:
-            combined_ppm = 0.0
-        pumped_slices.append((length_val, combined_ppm))
+                continue
+            if length <= 0:
+                continue
+            existing_queue.append((length, ppm_val))
 
-    inj_ppm_main = inj_requested
+    existing_queue = _merge_queue(existing_queue)
+    existing_total = _queue_total_length(existing_queue)
 
-    segment_cover_entries: list[tuple[float, float]] = []
-    downstream_entries: list[tuple[float, float]] = []
-    remaining_seg = segment_length
-    for length, ppm_val in pumped_slices:
-        length = float(length)
-        if length <= 0:
-            continue
-        take = 0.0
-        if remaining_seg > 0:
-            take = min(length, remaining_seg)
-            if take > 0:
-                segment_cover_entries.append((take, ppm_val))
-                remaining_seg -= take
-        leftover = length - take
-        if leftover > 0:
-            downstream_entries.append((leftover, ppm_val))
+    target_length = segment_length if segment_length > 0 else existing_total
+    if target_length <= 0:
+        target_length = existing_total
+    if target_length <= 0:
+        target_length = pumped_length
 
-    queue_remainder_list: list[list[float]] = [
-        [float(length or 0.0), float(ppm_val or 0.0)]
-        for length, ppm_val in queue_remainder
-        if float(length or 0.0) > 0
-    ]
+    head_length = pumped_length
+    if target_length > 0:
+        head_length = min(head_length, target_length)
 
-    if remaining_seg > 0 and queue_remainder_list:
-        idx = 0
-        while remaining_seg > 0 and idx < len(queue_remainder_list):
-            length, ppm_val = queue_remainder_list[idx]
-            take = min(length, remaining_seg)
-            if take > 0:
-                segment_cover_entries.append((take, ppm_val))
-                queue_remainder_list[idx][0] = length - take
-                remaining_seg -= take
-            if queue_remainder_list[idx][0] <= 0:
-                queue_remainder_list[idx][0] = 0.0
-                idx += 1
-            elif remaining_seg <= 0:
-                break
-            else:
-                idx += 1
+    head_entries: list[tuple[float, float]] = []
+    if head_length > 0:
+        head_entries.append((head_length, max(inj_effective, 0.0)))
 
-    trimmed_remainder: list[tuple[float, float]] = [
-        (length, ppm_val)
-        for length, ppm_val in queue_remainder_list
-        if length > 0
-    ]
+    combined_entries = head_entries + list(existing_queue)
+    combined_total = _queue_total_length(combined_entries)
 
-    dra_segments: list[tuple[float, float]] = []
-    for length, ppm_val in segment_cover_entries:
-        if length <= 0:
-            continue
-        try:
-            ppm_float = float(ppm_val)
-        except (TypeError, ValueError):
-            ppm_float = 0.0
-        if ppm_float > 0:
-            if dra_segments and abs(dra_segments[-1][1] - ppm_float) <= 1e-9:
-                prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + length, ppm_float)
-            else:
-                dra_segments.append((length, ppm_float))
+    excess_length = 0.0
+    if target_length > 0:
+        excess_length = max(combined_total - target_length, 0.0)
 
-    combined_entries: list[tuple[float, float]] = [
-        (float(length), float(ppm_val))
-        for length, ppm_val in (
-            segment_cover_entries + downstream_entries + trimmed_remainder
-        )
-        if float(length) > 0
-    ]
-
-    merged_queue = _merge_queue(combined_entries)
+    trimmed_queue, _leftover = _trim_queue_tail(combined_entries, excess_length)
+    merged_queue = _merge_queue(trimmed_queue)
 
     if (
         pump_running
         and is_origin
         and initial_zero_prefix > 0.0
-        and pumped_length > 0.0
+        and head_length > 0.0
         and merged_queue
     ):
         zero_tol = 1e-9
@@ -1149,7 +1067,7 @@ def _update_mainline_dra(
             inj_entry: tuple[float, float] | None = None
             inj_length = 0.0
             if inj_effective > 1e-12:
-                inj_length = min(pumped_length, pipeline_length)
+                inj_length = min(head_length, pipeline_length)
                 if inj_length > 0.0:
                     inj_entry = (inj_length, float(max(inj_effective, 0.0)))
             remainder_after_injection: tuple[tuple[float, float], ...]
@@ -1170,7 +1088,7 @@ def _update_mainline_dra(
                 rest_entries = rest_entries[1:]
 
             zero_capacity = max(pipeline_length - inj_length, 0.0)
-            target_zero_length = min(initial_zero_prefix + pumped_length, zero_capacity)
+            target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
             if target_zero_length < zero_front_pre:
                 target_zero_length = zero_front_pre
 
@@ -1186,13 +1104,35 @@ def _update_mainline_dra(
                 adjusted_entries.append((target_zero_length, 0.0))
             adjusted_entries.extend(trimmed_rest)
             merged_queue = _merge_queue(adjusted_entries)
+
     queue_after = [
-        {'length_km': length, 'dra_ppm': ppm}
+        {'length_km': float(length), 'dra_ppm': float(ppm)}
         for length, ppm in merged_queue
+        if float(length) > 0
     ]
-    return dra_segments, queue_after, inj_ppm_main
 
+    if segment_length > 0:
+        profile_source = _segment_profile_from_queue(merged_queue, 0.0, segment_length)
+    else:
+        profile_source = tuple(merged_queue)
 
+    dra_segments: list[tuple[float, float]] = []
+    for entry in profile_source:
+        if not entry:
+            continue
+        length = float(entry[0])
+        if length <= 0:
+            continue
+        ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
+        if ppm_val <= 0:
+            continue
+        if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
+            prev_len, _ = dra_segments[-1]
+            dra_segments[-1] = (prev_len + length, ppm_val)
+        else:
+            dra_segments.append((length, ppm_val))
+
+    return dra_segments, queue_after, inj_requested
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
@@ -3244,7 +3184,11 @@ def solve_pipeline(
                 # drag reduction is used instead.  We detect bypass using
                 # ``loop_usage_by_station`` when provided.
                 if stn_data['idx'] > 0 and loop_usage_by_station is not None:
-                    usage_prev = loop_usage_by_station[stn_data['idx'] - 1]
+                    prev_idx = stn_data['idx'] - 1
+                    if 0 <= prev_idx < len(loop_usage_by_station):
+                        usage_prev = loop_usage_by_station[prev_idx]
+                    else:
+                        usage_prev = 0
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
@@ -3861,7 +3805,28 @@ def solve_pipeline(
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
         # manageable while preserving near-optimal candidates.
         if _exhaustive_pass:
-            states = new_states
+            items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
+            exhaustive_top_k = max(state_top_k, int(state_top_k * 3))
+            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN)
+            within_threshold: list[tuple[int, dict]] = [
+                (key, data) for key, data in items if data['cost'] <= threshold
+            ]
+            if len(within_threshold) >= exhaustive_top_k:
+                selected = within_threshold[:exhaustive_top_k]
+            else:
+                selected = within_threshold
+                if len(selected) < exhaustive_top_k:
+                    remaining_slots = exhaustive_top_k - len(selected)
+                    extras: list[tuple[int, dict]] = []
+                    for key, data in items:
+                        if all(key != existing_key for existing_key, _ in selected):
+                            extras.append((key, data))
+                        if len(extras) >= remaining_slots:
+                            break
+                    selected = selected + extras
+            if not selected:
+                selected = items[:exhaustive_top_k]
+            states = {key: data for key, data in selected}
         else:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
             threshold = best_cost_station + state_cost_margin

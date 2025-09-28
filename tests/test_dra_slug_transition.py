@@ -292,3 +292,57 @@ def test_queue_preserves_length_and_zero_front_progression() -> None:
     for previous, current in zip(zero_positions, zero_positions[1:]):
         assert current + 1e-9 >= previous
         assert current - previous <= reference + 1e-9
+
+
+def test_zero_injection_advances_profile_by_appending_fresh_front() -> None:
+    """Newly injected fluid should appear at the head while trimming the tail."""
+
+    queue_state = [
+        {"length_km": 2.0, "dra_ppm": 5.0},
+        {"length_km": 100.0, "dra_ppm": 0.0},
+        {"length_km": 56.0, "dra_ppm": 4.0},
+    ]
+    stn_data = {
+        "idx": 0,
+        "L": 158.0,
+        "d_inner": 0.7,
+        "d": 0.7,
+        "kv": 3.0,
+    }
+    opt = {"dra_ppm_main": 0.0, "nop": 0}
+
+    pumped_length = 6.53
+    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+        queue_state,
+        stn_data,
+        opt,
+        158.0,
+        flow_m3h=0.0,
+        hours=1.0,
+        pump_running=False,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=True,
+        precomputed=(pumped_length, (), ()),
+    )
+
+    assert inj_ppm == 0.0
+    total_length = sum(float(entry["length_km"]) for entry in queue_after)
+    assert math.isclose(total_length, 158.0, rel_tol=1e-9, abs_tol=1e-9)
+
+    assert queue_after[0]["dra_ppm"] == 0.0
+    assert math.isclose(queue_after[0]["length_km"], pumped_length, rel_tol=1e-9, abs_tol=1e-6)
+
+    assert queue_after[1]["dra_ppm"] == 5.0
+    assert math.isclose(queue_after[1]["length_km"], 2.0, rel_tol=1e-9, abs_tol=1e-9)
+
+    assert queue_after[-1]["dra_ppm"] == 4.0
+    assert math.isclose(queue_after[-1]["length_km"], 49.47, rel_tol=1e-6, abs_tol=1e-6)
+
+    assert len(dra_segments) == 2
+    lengths = [seg[0] for seg in dra_segments]
+    ppm_vals = [seg[1] for seg in dra_segments]
+    assert math.isclose(lengths[0], 2.0, rel_tol=1e-9, abs_tol=1e-9)
+    assert math.isclose(lengths[1], 49.47, rel_tol=1e-6, abs_tol=1e-6)
+    assert ppm_vals == [5.0, 4.0]
