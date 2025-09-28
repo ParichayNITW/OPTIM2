@@ -910,6 +910,163 @@ def test_daily_scheduler_path_completes_promptly() -> None:
     assert duration < 30.0, f"Optimizer took too long: {duration:.2f}s"
 
 
+def test_daily_time_series_solver_finishes_within_budget() -> None:
+    import pipeline_optimization_app as app
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1500,
+            "DOL": 1500,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 185.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 55.0,
+            "D": 0.714,
+            "d": 0.714 - 2 * 0.007,
+            "t": 0.007,
+            "rough": 0.00004,
+            "elev": 0.0,
+            "min_residual": 28,
+            "max_dr": 20,
+            "power_type": "Grid",
+            "rate": 0.0,
+        },
+        {
+            "name": "Booster",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1480,
+            "DOL": 1480,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 180.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 84.0,
+            "L": 45.0,
+            "D": 0.714,
+            "d": 0.714 - 2 * 0.007,
+            "t": 0.007,
+            "rough": 0.00004,
+            "elev": 4.0,
+            "min_residual": 24,
+            "max_dr": 15,
+            "power_type": "Grid",
+            "rate": 0.0,
+        },
+    ]
+
+    term_data = {"name": "Terminal", "elev": 6.0, "min_residual": 22}
+    total_length = sum(stn["L"] for stn in stations)
+    hours = list(range(24))
+
+    d_inner = stations[0]["D"] - 2 * stations[0]["t"]
+
+    def _vol(length_km: float) -> float:
+        return _volume_from_km(length_km, d_inner)
+
+    current_vol = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": _vol(50.0),
+                "Viscosity (cSt)": 2.3,
+                "Density (kg/m³)": 816.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": _vol(30.0),
+                "Viscosity (cSt)": 2.9,
+                "Density (kg/m³)": 824.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Batch 3",
+                "Volume (m³)": _vol(20.0),
+                "Viscosity (cSt)": 3.2,
+                "Density (kg/m³)": 829.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+        ]
+    )
+
+    dra_linefill = [
+        {"volume": _vol(35.0), "dra_ppm": 5.0},
+        {"volume": _vol(25.0), "dra_ppm": 0.0},
+        {"volume": _vol(25.0), "dra_ppm": 7.0},
+        {"volume": _vol(15.0), "dra_ppm": 0.0},
+    ]
+
+    current_vol = app.apply_dra_ppm(current_vol, dra_linefill)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch 1",
+                "Volume (m³)": _vol(30.0),
+                "Viscosity (cSt)": 2.1,
+                "Density (kg/m³)": 814.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Plan Batch 2",
+                "Volume (m³)": _vol(35.0),
+                "Viscosity (cSt)": 2.7,
+                "Density (kg/m³)": 822.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Plan Batch 3",
+                "Volume (m³)": _vol(35.0),
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 827.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+        ]
+    )
+
+    start = time.perf_counter()
+    result = app._execute_time_series_solver(
+        copy.deepcopy(stations),
+        term_data,
+        hours,
+        flow_rate=1100.0,
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=copy.deepcopy(dra_linefill),
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=total_length,
+        sub_steps=1,
+    )
+    duration = time.perf_counter() - start
+
+    assert result["error"] is None
+    assert not result["backtracked"]
+    assert len(result["reports"]) == len(hours)
+    assert duration < 12.0, f"Daily schedule exceeded time budget: {duration:.2f}s"
+    for entry in result["reports"]:
+        assert "total_cost" in entry["result"]
+
+
 def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
     """Refinement should revisit the full DRA range when coarse hits an edge."""
 
