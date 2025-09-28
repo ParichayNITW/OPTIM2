@@ -1021,21 +1021,83 @@ def _update_mainline_dra(
     existing_queue = _merge_queue(existing_queue)
     existing_total = _queue_total_length(existing_queue)
 
-    target_length = segment_length if segment_length > 0 else existing_total
-    if target_length <= 0:
+    if existing_total > 0:
         target_length = existing_total
-    if target_length <= 0:
+    elif segment_length > 0:
+        target_length = segment_length
+    else:
         target_length = pumped_length
 
     head_length = pumped_length
     if target_length > 0:
         head_length = min(head_length, target_length)
 
-    head_entries: list[tuple[float, float]] = []
-    if head_length > 0:
-        head_entries.append((head_length, max(inj_effective, 0.0)))
+    pumped_remaining = max(pumped_length, 0.0)
+    pumped_portion: list[tuple[float, float]] = []
+    remaining_queue: list[tuple[float, float]] = []
+    for length, ppm_val in existing_queue:
+        length_float = float(length or 0.0)
+        ppm_float = float(ppm_val or 0.0)
+        if length_float <= 0:
+            continue
+        if pumped_remaining > 1e-9:
+            take = min(length_float, pumped_remaining)
+            if take > 0:
+                pumped_portion.append((take, ppm_float))
+                pumped_remaining -= take
+            leftover = length_float - take
+            if leftover > 1e-9:
+                remaining_queue.append((leftover, ppm_float))
+        else:
+            remaining_queue.append((length_float, ppm_float))
 
-    combined_entries = head_entries + list(existing_queue)
+    if pumped_remaining > 1e-9:
+        pumped_portion.append((pumped_remaining, 0.0))
+        pumped_remaining = 0.0
+
+    def _apply_shear(ppm_val: float) -> float:
+        ppm_float = float(ppm_val or 0.0)
+        if ppm_float <= 0:
+            return 0.0
+        if not pump_running or shear <= 0:
+            return ppm_float
+        dr_value = 0.0
+        if kv > 0:
+            try:
+                dr_value = float(get_dr_for_ppm(kv, ppm_float))
+            except Exception:
+                dr_value = 0.0
+        if dr_value > 0:
+            dr_value *= (1.0 - shear)
+            if dr_value <= 0:
+                return 0.0
+            try:
+                return float(get_ppm_for_dr(kv, dr_value))
+            except Exception:
+                return max(ppm_float * (1.0 - shear), 0.0)
+        return max(ppm_float * (1.0 - shear), 0.0)
+
+    pumped_adjusted: list[tuple[float, float]] = []
+    for length, ppm_val in pumped_portion:
+        length_float = float(length or 0.0)
+        if length_float <= 0:
+            continue
+        ppm_out = _apply_shear(ppm_val)
+        if is_origin and pump_running and inj_effective <= 0:
+            ppm_out = 0.0
+        elif not pump_running and inj_effective > 0:
+            ppm_out += inj_effective
+        pumped_adjusted.append((length_float, max(ppm_out, 0.0)))
+
+    combined_entries: list[tuple[float, float]]
+    if pump_running and inj_effective > 0:
+        combined_entries = []
+        if head_length > 0:
+            combined_entries.append((head_length, max(inj_effective, 0.0)))
+        combined_entries.extend(remaining_queue)
+    else:
+        combined_entries = pumped_adjusted + remaining_queue
+
     combined_total = _queue_total_length(combined_entries)
 
     excess_length = 0.0
@@ -1114,7 +1176,7 @@ def _update_mainline_dra(
     if segment_length > 0:
         profile_source = _segment_profile_from_queue(merged_queue, 0.0, segment_length)
     else:
-        profile_source = tuple(merged_queue)
+        profile_source = tuple()
 
     dra_segments: list[tuple[float, float]] = []
     for entry in profile_source:
