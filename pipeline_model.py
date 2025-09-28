@@ -931,34 +931,44 @@ def _update_mainline_dra(
     if target_length > 0:
         head_length = min(head_length, target_length)
 
-    pumped_remaining = max(pumped_length, 0.0)
     pumped_portion: list[tuple[float, float]] = []
     remaining_queue: list[tuple[float, float]] = []
-    for length, ppm_val in existing_queue:
-        length_float = float(length or 0.0)
-        ppm_float = float(ppm_val or 0.0)
-        if length_float <= 0:
-            continue
+    if precomputed is not None and len(precomputed) >= 3:
+        pumped_portion = [
+            (float(length or 0.0), float(ppm or 0.0))
+            for length, ppm in precomputed[1]
+            if float(length or 0.0) > 0.0
+        ]
+        remaining_queue = [
+            (float(length or 0.0), float(ppm or 0.0))
+            for length, ppm in precomputed[2]
+            if float(length or 0.0) > 0.0
+        ]
+    else:
+        pumped_remaining = max(pumped_length, 0.0)
+        for length, ppm_val in existing_queue:
+            length_float = float(length or 0.0)
+            ppm_float = float(ppm_val or 0.0)
+            if length_float <= 0.0:
+                continue
+            if pumped_remaining > 1e-9:
+                take = min(length_float, pumped_remaining)
+                if take > 1e-9:
+                    pumped_portion.append((take, ppm_float))
+                    pumped_remaining -= take
+                leftover = length_float - take
+                if leftover > 1e-9:
+                    remaining_queue.append((leftover, ppm_float))
+            else:
+                remaining_queue.append((length_float, ppm_float))
         if pumped_remaining > 1e-9:
-            take = min(length_float, pumped_remaining)
-            if take > 0:
-                pumped_portion.append((take, ppm_float))
-                pumped_remaining -= take
-            leftover = length_float - take
-            if leftover > 1e-9:
-                remaining_queue.append((leftover, ppm_float))
-        else:
-            remaining_queue.append((length_float, ppm_float))
-
-    if pumped_remaining > 1e-9:
-        pumped_portion.append((pumped_remaining, 0.0))
-        pumped_remaining = 0.0
+            pumped_portion.append((pumped_remaining, 0.0))
 
     def _apply_shear(ppm_val: float) -> float:
         ppm_float = float(ppm_val or 0.0)
-        if ppm_float <= 0:
+        if ppm_float <= 0.0:
             return 0.0
-        if not pump_running or shear <= 0:
+        if not pump_running or shear <= 0.0:
             return ppm_float
         dr_value = 0.0
         if kv > 0:
@@ -966,9 +976,9 @@ def _update_mainline_dra(
                 dr_value = float(get_dr_for_ppm(kv, ppm_float))
             except Exception:
                 dr_value = 0.0
-        if dr_value > 0:
+        if dr_value > 0.0:
             dr_value *= (1.0 - shear)
-            if dr_value <= 0:
+            if dr_value <= 0.0:
                 return 0.0
             try:
                 return float(get_ppm_for_dr(kv, dr_value))
@@ -980,21 +990,25 @@ def _update_mainline_dra(
     pumped_differs = False
     for length, ppm_val in pumped_portion:
         length_float = float(length or 0.0)
-        if length_float <= 0:
+        if length_float <= 0.0:
             continue
-        ppm_out = _apply_shear(ppm_val)
-        if is_origin and pump_running and inj_effective <= 0:
+        ppm_input = float(ppm_val or 0.0)
+        if is_origin and pump_running and inj_effective <= 0.0:
             ppm_out = 0.0
-        elif not pump_running and inj_effective > 0:
-            ppm_out += inj_effective
+        else:
+            ppm_out = _apply_shear(ppm_input)
+            if not pump_running and inj_effective > 0.0:
+                ppm_out += inj_effective
+            elif not pump_running and inj_effective <= 0.0:
+                ppm_out = ppm_input
         ppm_out = max(ppm_out, 0.0)
-        if not pumped_differs and abs(ppm_out - float(ppm_val or 0.0)) > 1e-9:
+        if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
         pumped_adjusted.append((length_float, ppm_out))
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
-        if inj_effective > 0:
+        if inj_effective > 0.0:
             advected_portion = [
                 (float(length), float(ppm))
                 for length, ppm in pumped_portion
@@ -1003,23 +1017,16 @@ def _update_mainline_dra(
             tail_queue = list(remaining_queue)
         else:
             advected_portion = pumped_adjusted
-            if pumped_differs:
-                tail_queue = list(existing_queue)
-            else:
-                tail_queue = list(remaining_queue)
+            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
-        if inj_effective > 0:
-            advected_portion = pumped_adjusted
+        advected_portion = pumped_adjusted
+        if inj_effective > 0.0:
             tail_queue = list(remaining_queue)
         else:
-            advected_portion = pumped_adjusted
-            if pumped_differs:
-                tail_queue = list(existing_queue)
-            else:
-                tail_queue = list(remaining_queue)
+            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and inj_effective > 0 and head_length > 0:
+    if pump_running and inj_effective > 0.0 and head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
 
     combined_entries.extend(advected_portion)

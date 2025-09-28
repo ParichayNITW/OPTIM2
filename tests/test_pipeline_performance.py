@@ -17,6 +17,10 @@ from pipeline_model import (
     _volume_from_km,
     _km_from_volume,
     _update_mainline_dra,
+    _merge_queue,
+    _segment_profile_from_queue,
+    _take_queue_front,
+    _trim_queue_front,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -2110,3 +2114,92 @@ def test_zero_injection_hour_advances_profile() -> None:
     assert queue_after_hour2[-1]["length_km"] == pytest.approx(56.0 - pumped_length * 2.0, rel=1e-6)
     total_length_hour2 = sum(float(entry["length_km"]) for entry in queue_after_hour2)
     assert total_length_hour2 == pytest.approx(segment_length, rel=1e-6)
+
+
+def test_dra_profile_reflects_hourly_push_examples() -> None:
+    """Profiles at successive stations should mirror the user's worked examples."""
+
+    diameter = 0.8
+    flow_m3h = _volume_from_km(2.0, diameter)
+    hours = 1.0
+
+    queue_initial = [{"length_km": 25.0, "dra_ppm": 10.0}]
+    station_a = {"idx": 0, "is_pump": True, "d_inner": diameter}
+    station_b = {"idx": 1, "is_pump": True, "d_inner": diameter}
+
+    def _profiles_for_case(
+        inj_a: float,
+        pump_a: bool,
+        inj_b: float,
+        pump_b: bool,
+    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+        queue_after_a = _update_mainline_dra(
+            queue_initial,
+            station_a,
+            {"nop": 1 if pump_a else 0, "dra_ppm_main": inj_a},
+            5.0,
+            flow_m3h,
+            hours,
+            pump_running=pump_a,
+            pump_shear_rate=1.0,
+        )[1]
+        queue_a_full = tuple(
+            (float(entry["length_km"]), float(entry["dra_ppm"]))
+            for entry in queue_after_a
+            if float(entry["length_km"]) > 0.0
+        )
+        merged_a = _merge_queue(queue_a_full)
+        profile_a = [
+            (float(length), float(ppm))
+            for length, ppm in _segment_profile_from_queue(merged_a, 0.0, 5.0)
+        ]
+
+        prefix_a = _take_queue_front(merged_a, 5.0)
+        inlet_b = _trim_queue_front(merged_a, 5.0)
+
+        queue_after_b = _update_mainline_dra(
+            [
+                {"length_km": float(length), "dra_ppm": float(ppm)}
+                for length, ppm in inlet_b
+            ],
+            station_b,
+            {"nop": 1 if pump_b else 0, "dra_ppm_main": inj_b},
+            20.0,
+            flow_m3h,
+            hours,
+            pump_running=pump_b,
+            pump_shear_rate=1.0,
+        )[1]
+        queue_b_full = _merge_queue(
+            tuple(prefix_a)
+            + tuple(
+                (float(entry["length_km"]), float(entry["dra_ppm"]))
+                for entry in queue_after_b
+                if float(entry["length_km"]) > 0.0
+            )
+        )
+        profile_b = [
+            (float(length), float(ppm))
+            for length, ppm in _segment_profile_from_queue(queue_b_full, 5.0, 20.0)
+        ]
+        return profile_a, profile_b
+
+    def _assert_profile(actual, expected):
+        assert len(actual) == len(expected)
+        for (len_actual, ppm_actual), (len_expected, ppm_expected) in zip(actual, expected):
+            assert len_actual == pytest.approx(len_expected, rel=1e-6)
+            assert ppm_actual == pytest.approx(ppm_expected, rel=1e-6)
+
+    profile_a, profile_b = _profiles_for_case(12.0, True, 12.0, True)
+    _assert_profile(profile_a, [(2.0, 12.0), (3.0, 10.0)])
+    _assert_profile(profile_b, [(2.0, 12.0), (18.0, 10.0)])
+
+    _, profile_b_idle = _profiles_for_case(12.0, True, 12.0, False)
+    _assert_profile(profile_b_idle, [(2.0, 22.0), (18.0, 10.0)])
+
+    profile_a_zero, profile_b_zero = _profiles_for_case(0.0, True, 0.0, True)
+    _assert_profile(profile_a_zero, [(2.0, 0.0), (3.0, 10.0)])
+    _assert_profile(profile_b_zero, [(2.0, 0.0), (18.0, 10.0)])
+
+    _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
+    _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
