@@ -977,6 +977,7 @@ def _update_mainline_dra(
         return max(ppm_float * (1.0 - shear), 0.0)
 
     pumped_adjusted: list[tuple[float, float]] = []
+    pumped_differs = False
     for length, ppm_val in pumped_portion:
         length_float = float(length or 0.0)
         if length_float <= 0:
@@ -986,16 +987,43 @@ def _update_mainline_dra(
             ppm_out = 0.0
         elif not pump_running and inj_effective > 0:
             ppm_out += inj_effective
-        pumped_adjusted.append((length_float, max(ppm_out, 0.0)))
+        ppm_out = max(ppm_out, 0.0)
+        if not pumped_differs and abs(ppm_out - float(ppm_val or 0.0)) > 1e-9:
+            pumped_differs = True
+        pumped_adjusted.append((length_float, ppm_out))
 
-    combined_entries: list[tuple[float, float]]
-    if pump_running and inj_effective > 0:
-        combined_entries = []
-        if head_length > 0:
-            combined_entries.append((head_length, max(inj_effective, 0.0)))
-        combined_entries.extend(remaining_queue)
+    tail_queue: list[tuple[float, float]]
+    if pump_running:
+        if inj_effective > 0:
+            advected_portion = [
+                (float(length), float(ppm))
+                for length, ppm in pumped_portion
+                if float(length or 0.0) > 0.0
+            ]
+            tail_queue = list(remaining_queue)
+        else:
+            advected_portion = pumped_adjusted
+            if pumped_differs:
+                tail_queue = list(existing_queue)
+            else:
+                tail_queue = list(remaining_queue)
     else:
-        combined_entries = pumped_adjusted + remaining_queue
+        if inj_effective > 0:
+            advected_portion = pumped_adjusted
+            tail_queue = list(remaining_queue)
+        else:
+            advected_portion = pumped_adjusted
+            if pumped_differs:
+                tail_queue = list(existing_queue)
+            else:
+                tail_queue = list(remaining_queue)
+
+    combined_entries: list[tuple[float, float]] = []
+    if pump_running and inj_effective > 0 and head_length > 0:
+        combined_entries.append((head_length, max(inj_effective, 0.0)))
+
+    combined_entries.extend(advected_portion)
+    combined_entries.extend(tail_queue)
 
     combined_total = _queue_total_length(combined_entries)
 
