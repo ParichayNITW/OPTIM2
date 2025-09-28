@@ -444,107 +444,6 @@ def _cap_type_rpm_lists(type_rpm_lists: dict[str, list[int]], cap: int) -> None:
             break
 
 
-def _build_baseline_narrow_ranges(
-    stations: list[Mapping[str, object]],
-    dra_step: int,
-) -> list[dict[int, dict[str, tuple[int, int]]]]:
-    """Return ``narrow_ranges`` enforcing baseline operating scenarios.
-
-    The helper constructs an all-stations baseline where every pump runs at its
-    minimum permissible RPM with zero drag reduction, along with per-station
-    variants where exactly one station injects the smallest positive DRA while
-    all others remain at zero.  The returned ranges clamp DRA on the loopline to
-    zero so that the scenarios mirror the hydraulic feasibility checks performed
-    by legacy tools.
-    """
-
-    try:
-        dra_step_int = int(dra_step)
-    except (TypeError, ValueError):
-        dra_step_int = DRA_STEP
-    if dra_step_int <= 0:
-        dra_step_int = DRA_STEP
-    min_positive_dra = max(1, dra_step_int)
-
-    def _entry_for_station(
-        stn: Mapping[str, object],
-        target_dra: int,
-    ) -> dict[str, tuple[int, int]] | None:
-        entry: dict[str, tuple[int, int]] = {}
-        is_pump = bool(stn.get('is_pump', False))
-        rpm_target = 0
-        if is_pump:
-            st_rpm_min = int(_station_min_rpm(stn))
-            st_rpm_max = int(_station_max_rpm(stn))
-            if st_rpm_max <= 0 and st_rpm_min > 0:
-                st_rpm_max = st_rpm_min
-            if st_rpm_min <= 0 < st_rpm_max:
-                st_rpm_min = st_rpm_max
-            rpm_target = st_rpm_min if st_rpm_min != 0 else st_rpm_max
-            entry['rpm'] = (rpm_target, rpm_target)
-
-            pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
-            combo_source: Mapping[str, float] | None = None
-            if isinstance(stn.get('active_combo'), Mapping):
-                combo_source = stn['active_combo']  # type: ignore[index]
-            elif isinstance(stn.get('pump_combo'), Mapping):
-                combo_source = stn['pump_combo']  # type: ignore[index]
-            elif isinstance(stn.get('combo'), Mapping):
-                combo_source = stn['combo']  # type: ignore[index]
-            if pump_types_data and combo_source:
-                for ptype, count in combo_source.items():
-                    if not isinstance(count, (int, float)) or count <= 0:
-                        continue
-                    pdata = pump_types_data.get(ptype, {})
-                    p_default = _station_min_rpm(stn, ptype=ptype, default=rpm_target)
-                    p_rpm_min = int(
-                        _extract_rpm(
-                            pdata.get('MinRPM'),
-                            default=p_default,
-                            prefer='min',
-                        )
-                    )
-                    entry[f'rpm_{ptype}'] = (p_rpm_min, p_rpm_min)
-
-        max_dr_main = int(stn.get('max_dr', 0))
-        clamped_target = max(0, int(target_dra))
-        clamped_target = min(max_dr_main, clamped_target)
-        if target_dra > 0 and clamped_target <= 0:
-            return None
-        entry['dra_main'] = (clamped_target, clamped_target)
-
-        loop = stn.get('loopline') or {}
-        if loop:
-            entry['dra_loop'] = (0, 0)
-        return entry
-
-    baseline_cases: list[dict[int, dict[str, tuple[int, int]]]] = []
-
-    zero_case: dict[int, dict[str, tuple[int, int]]] = {}
-    for idx, stn in enumerate(stations):
-        entry = _entry_for_station(stn, 0)
-        if entry is not None and entry:
-            zero_case[idx] = entry
-    if zero_case:
-        baseline_cases.append(zero_case)
-
-    for idx, stn in enumerate(stations):
-        positive_case: dict[int, dict[str, tuple[int, int]]] = {}
-        has_positive = False
-        for jdx, other in enumerate(stations):
-            target = min_positive_dra if jdx == idx else 0
-            entry = _entry_for_station(other, target)
-            if entry is None:
-                continue
-            positive_case[jdx] = entry
-            if jdx == idx:
-                dra_bounds = entry.get('dra_main')
-                if dra_bounds and dra_bounds[0] > 0:
-                    has_positive = True
-        if positive_case and has_positive:
-            baseline_cases.append(positive_case)
-
-    return baseline_cases
 _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
@@ -2513,72 +2412,6 @@ def solve_pipeline(
             return min((coarse_res, exhaustive_result), key=_result_key)
         window = max(rpm_step, coarse_rpm_step)
 
-        zero_dra_ranges: dict[int, dict[str, tuple[int, int]]] = {}
-        for idx, stn in enumerate(stations):
-            zero_entry: dict[str, tuple[int, int]] = {
-                "dra_main": (0, 0),
-            }
-            loop_cfg = stn.get("loopline") or {}
-            if loop_cfg:
-                zero_entry["dra_loop"] = (0, 0)
-            if stn.get("is_pump", False):
-                st_rpm_min = int(_station_min_rpm(stn))
-                st_rpm_max = int(_station_max_rpm(stn))
-                if st_rpm_max <= 0 and st_rpm_min > 0:
-                    st_rpm_max = st_rpm_min
-                if st_rpm_min > st_rpm_max:
-                    st_rpm_min, st_rpm_max = st_rpm_max, st_rpm_min
-                zero_entry["rpm"] = (st_rpm_min, st_rpm_max)
-
-                pump_types_data = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
-                combo_source: Mapping[str, float] | None = None
-                if isinstance(stn.get("active_combo"), Mapping):
-                    combo_source = stn["active_combo"]  # type: ignore[index]
-                elif isinstance(stn.get("pump_combo"), Mapping):
-                    combo_source = stn["pump_combo"]  # type: ignore[index]
-                elif isinstance(stn.get("combo"), Mapping):
-                    combo_source = stn["combo"]  # type: ignore[index]
-                if pump_types_data and combo_source:
-                    for ptype, count in combo_source.items():
-                        if not isinstance(count, (int, float)) or count <= 0:
-                            continue
-                        pdata = pump_types_data.get(ptype, {})
-                        pmin_default = int(
-                            _station_min_rpm(
-                                stn,
-                                ptype=ptype,
-                                default=st_rpm_min,
-                            )
-                        )
-                        pmax_default = int(
-                            _station_max_rpm(
-                                stn,
-                                ptype=ptype,
-                                default=st_rpm_max if st_rpm_max > 0 else st_rpm_min,
-                            )
-                        )
-                        p_rmin = int(
-                            _extract_rpm(
-                                pdata.get("MinRPM"),
-                                default=pmin_default,
-                                prefer="min",
-                            )
-                        )
-                        p_rmax = int(
-                            _extract_rpm(
-                                pdata.get("DOL"),
-                                default=pmax_default,
-                                prefer="max",
-                            )
-                        )
-                        if p_rmax <= 0 and pmax_default > 0:
-                            p_rmax = pmax_default
-                        if p_rmin > p_rmax:
-                            p_rmin, p_rmax = p_rmax, p_rmin
-                        zero_entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
-
-            zero_dra_ranges[idx] = zero_entry
-
         ranges: dict[int, dict[str, tuple[int, int]]] = {}
         for idx, stn in enumerate(stations):
             name = stn["name"].strip().lower().replace(" ", "_")
@@ -2698,34 +2531,6 @@ def solve_pipeline(
             state_cost_margin=state_cost_margin,
         )
 
-        zero_dra_result = solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            segment_slices,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-            start_time,
-            pump_shear_rate=pump_shear_rate,
-            loop_usage_by_station=loop_usage_by_station,
-            enumerate_loops=False,
-            _internal_pass=True,
-            rpm_step=coarse_rpm_step,
-            dra_step=coarse_dra_step,
-            narrow_ranges=zero_dra_ranges,
-            coarse_multiplier=coarse_multiplier,
-            state_top_k=state_top_k,
-            state_cost_margin=state_cost_margin,
-        )
-
         primary_candidate = None
         if not coarse_failed and not coarse_res.get("error"):
             primary_candidate = coarse_res
@@ -2735,42 +2540,8 @@ def solve_pipeline(
             candidates.append(primary_candidate)
         if not exhaustive_result.get("error"):
             candidates.append(exhaustive_result)
-        if not zero_dra_result.get('error'):
-            candidates.append(zero_dra_result)
         if not refine_result.get('error'):
             candidates.append(refine_result)
-
-        baseline_ranges = _build_baseline_narrow_ranges(stations, dra_step)
-        for base_range in baseline_ranges:
-            baseline_result = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                segment_slices,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time,
-                pump_shear_rate=pump_shear_rate,
-                loop_usage_by_station=loop_usage_by_station,
-                enumerate_loops=False,
-                _internal_pass=True,
-                rpm_step=rpm_step,
-                dra_step=dra_step,
-                narrow_ranges=base_range,
-                coarse_multiplier=coarse_multiplier,
-                state_top_k=state_top_k,
-                state_cost_margin=state_cost_margin,
-            )
-            if not baseline_result.get('error'):
-                candidates.append(baseline_result)
 
         if candidates:
             term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
@@ -3212,7 +2983,9 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
-        new_states: dict[int, dict] = {}
+        new_states: dict[object, dict] = {}
+        best_by_residual: dict[int, object] = {}
+        protected_counter = 0
         best_cost_station = float('inf')
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
@@ -3836,17 +3609,89 @@ def solve_pipeline(
                     bucket = residual_next
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
-                    existing = new_states.get(bucket)
-                    flow_next = flow_total
-                    if (
-                        existing is None
-                        or new_cost < existing['cost']
-                        or (
-                            abs(new_cost - existing['cost']) < 1e-9
-                            and residual_next > existing['residual']
+                    zero_dra_option = (
+                        int(opt.get('dra_main', 0) or 0) == 0
+                        and int(opt.get('dra_loop', 0) or 0) == 0
+                    )
+                    baseline_option = False
+                    if stn_data.get('is_pump', False):
+                        try:
+                            orig_station = stations[stn_data['idx']]
+                        except (IndexError, TypeError):
+                            orig_station = {}
+                        min_rpm_station = int(
+                            _station_min_rpm(orig_station, default=stn_data.get('min_rpm', 0))
                         )
-                    ):
-                        new_states[bucket] = {
+                        rpm_target = int(opt.get('rpm', 0) or 0)
+                        if opt.get('nop', 0) <= 0:
+                            baseline_option = True
+                        else:
+                            rpm_map = opt.get('rpm_map')
+                            if isinstance(rpm_map, Mapping) and rpm_map:
+                                per_type_min = True
+                                for ptype, rpm_val in rpm_map.items():
+                                    type_min = int(
+                                        _station_min_rpm(
+                                            orig_station,
+                                            ptype=ptype,
+                                            default=min_rpm_station,
+                                        )
+                                    )
+                                    if int(rpm_val) != type_min:
+                                        per_type_min = False
+                                        break
+                                if per_type_min:
+                                    baseline_option = True
+                            if not baseline_option:
+                                if min_rpm_station > 0:
+                                    baseline_option = rpm_target == min_rpm_station
+                                else:
+                                    baseline_option = rpm_target <= min_rpm_station
+                    else:
+                        baseline_option = zero_dra_option
+                    is_protected = zero_dra_option or baseline_option
+                    existing_key = best_by_residual.get(bucket)
+                    existing = new_states.get(existing_key) if existing_key is not None else None
+                    flow_next = flow_total
+                    replace_existing = False
+                    if existing is None:
+                        replace_existing = True
+                        key_to_use: object = bucket
+                    else:
+                        existing_protected = bool(existing.get('protected'))
+                        if (
+                            new_cost < existing['cost']
+                            or (
+                                abs(new_cost - existing['cost']) < 1e-9
+                                and residual_next > existing['residual']
+                            )
+                        ):
+                            if not (existing_protected and not is_protected):
+                                replace_existing = True
+                                key_to_use = existing_key  # type: ignore[assignment]
+                            else:
+                                replace_existing = False
+                        elif is_protected and not existing_protected:
+                            protected_counter += 1
+                            key_to_use = (bucket, f"protected_{protected_counter}")
+                            new_states[key_to_use] = {
+                                'cost': new_cost,
+                                'residual': residual_next,
+                                'records': new_record_list,
+                                'last_maop': stn_data['maop_head'],
+                                'last_maop_kg': stn_data['maop_kgcm2'],
+                                'flow': flow_next,
+                                'carry_loop_dra': new_carry,
+                                'dra_queue_full': queue_after_full,
+                                'dra_queue_at_inlet': queue_after_inlet,
+                                'inj_ppm_main': inj_ppm_main,
+                                'protected': True,
+                            }
+                            continue
+                        else:
+                            replace_existing = False
+                    if replace_existing:
+                        entry = {
                             'cost': new_cost,
                             'residual': residual_next,
                             'records': new_record_list,
@@ -3857,7 +3702,14 @@ def solve_pipeline(
                             'dra_queue_full': queue_after_full,
                             'dra_queue_at_inlet': queue_after_inlet,
                             'inj_ppm_main': inj_ppm_main,
+                            'protected': is_protected,
                         }
+                        if existing is not None and existing_key is not None:
+                            entry['protected'] = is_protected or bool(existing.get('protected'))
+                            new_states[existing_key] = entry
+                        else:
+                            new_states[key_to_use] = entry
+                            best_by_residual[bucket] = key_to_use
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
@@ -3868,32 +3720,59 @@ def solve_pipeline(
         # manageable while preserving near-optimal candidates.
         if _exhaustive_pass:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
+            protected_items = [
+                (key, data) for key, data in items if data.get('protected')
+            ]
             exhaustive_top_k = max(state_top_k, int(state_top_k * 3))
             threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN)
-            within_threshold: list[tuple[int, dict]] = [
-                (key, data) for key, data in items if data['cost'] <= threshold
+            within_threshold: list[tuple[object, dict]] = [
+                (key, data)
+                for key, data in items
+                if data['cost'] <= threshold or data.get('protected')
             ]
+            selected: list[tuple[object, dict]] = []
+            added_keys: set[object] = set()
+            for key, data in protected_items:
+                if key in added_keys:
+                    continue
+                selected.append((key, data))
+                added_keys.add(key)
             if len(within_threshold) >= exhaustive_top_k:
-                selected = within_threshold[:exhaustive_top_k]
+                candidates_iter = within_threshold
             else:
-                selected = within_threshold
-                if len(selected) < exhaustive_top_k:
-                    remaining_slots = exhaustive_top_k - len(selected)
-                    extras: list[tuple[int, dict]] = []
+                candidates_iter = within_threshold
+                if len(candidates_iter) < exhaustive_top_k:
+                    remaining_slots = exhaustive_top_k - len(candidates_iter)
+                    extras: list[tuple[object, dict]] = []
                     for key, data in items:
-                        if all(key != existing_key for existing_key, _ in selected):
-                            extras.append((key, data))
+                        if key in added_keys or any(key == existing_key for existing_key, _ in candidates_iter):
+                            continue
+                        extras.append((key, data))
                         if len(extras) >= remaining_slots:
                             break
-                    selected = selected + extras
+                    candidates_iter = candidates_iter + extras
+            for key, data in candidates_iter:
+                if key in added_keys:
+                    continue
+                if len(selected) >= exhaustive_top_k and not data.get('protected'):
+                    continue
+                selected.append((key, data))
+                added_keys.add(key)
             if not selected:
                 selected = items[:exhaustive_top_k]
             states = {key: data for key, data in selected}
         else:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
+            protected_entries = [
+                (key, data) for key, data in items if data.get('protected')
+            ]
             threshold = best_cost_station + state_cost_margin
-            pruned: dict[int, dict] = {}
+            pruned: dict[object, dict] = {}
+            for key, data in protected_entries:
+                pruned[key] = data
             for idx, (residual_key, data) in enumerate(items):
+                if residual_key in pruned:
+                    continue
                 if idx < state_top_k or data['cost'] <= threshold:
                     pruned[residual_key] = data
             states = pruned
