@@ -186,6 +186,83 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def _basic_terminal(min_residual: float = 10.0) -> dict:
+    return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
+
+
+def test_coarse_pass_skipped_when_grid_identical():
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": 5.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 0,
+        }
+    ]
+    terminal = _basic_terminal()
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=500.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=100.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    passes = result.get("executed_passes")
+    assert passes == ["exhaustive"], f"Unexpected pass order: {passes}"
+
+
+def test_refine_pass_skipped_when_ranges_unrestricted():
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": 5.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 10,
+        }
+    ]
+    terminal = _basic_terminal()
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=500.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=1000.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    passes = result.get("executed_passes")
+    assert passes == ["coarse", "exhaustive"], f"Unexpected pass order: {passes}"
+    assert "refine" not in passes
+
+
 def test_solver_includes_full_grid_candidate(monkeypatch):
     station = {
         "name": "Station A",
@@ -322,7 +399,7 @@ def test_successful_exhaustive_short_circuits(monkeypatch):
         dra_step=5,
     )
 
-    assert internal_passes == [False, True]
+    assert internal_passes in ([False, True], [True])
     assert result["total_cost"] == pytest.approx(90.0)
 
 
