@@ -2085,6 +2085,7 @@ def solve_pipeline(
     state_cost_margin: float = STATE_COST_MARGIN,
     _exhaustive_pass: bool = False,
     refined_retry: bool = False,
+    pass_trace: list[str] | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -2356,6 +2357,11 @@ def solve_pipeline(
     # solution using the user-provided steps.  The recursion is controlled
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
+    if _internal_pass:
+        pass_trace = None
+    elif pass_trace is None:
+        pass_trace = []
+
     if not _internal_pass:
         coarse_scale = coarse_multiplier
         coarse_rpm_step = int(round(rpm_step * coarse_scale)) if rpm_step > 0 else int(round(coarse_scale))
@@ -2369,33 +2375,112 @@ def solve_pipeline(
             coarse_dra_step = dra_step if dra_step > 0 else 1
         if coarse_scale >= 1.0 and dra_step > 0:
             coarse_dra_step = max(coarse_dra_step, dra_step)
-        coarse_res = solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            segment_slices,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-            start_time,
-            pump_shear_rate=pump_shear_rate,
-            loop_usage_by_station=loop_usage_by_station,
-            enumerate_loops=False,
-            _internal_pass=True,
-            rpm_step=coarse_rpm_step,
-            dra_step=coarse_dra_step,
-            coarse_multiplier=coarse_multiplier,
-            state_top_k=state_top_k,
-            state_cost_margin=state_cost_margin,
-        )
-        coarse_failed = bool(coarse_res.get("error"))
+        station_bounds: list[dict[str, object]] = []
+        for stn in stations:
+            bounds_entry: dict[str, object] = {}
+            is_pump = bool(stn.get('is_pump', False))
+            if is_pump:
+                st_rpm_min = int(_station_min_rpm(stn))
+                st_rpm_max = int(_station_max_rpm(stn))
+                if st_rpm_max <= 0 and st_rpm_min > 0:
+                    st_rpm_max = st_rpm_min
+                if st_rpm_max < st_rpm_min:
+                    st_rpm_min, st_rpm_max = st_rpm_max, st_rpm_min
+                bounds_entry['rpm'] = (st_rpm_min, st_rpm_max)
+                type_bounds: dict[str, tuple[int, int]] = {}
+                pump_types_rng = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
+                combo_rng = None
+                if isinstance(stn.get('active_combo'), Mapping):
+                    combo_rng = stn['active_combo']  # type: ignore[index]
+                elif isinstance(stn.get('pump_combo'), Mapping):
+                    combo_rng = stn['pump_combo']  # type: ignore[index]
+                elif isinstance(stn.get('combo'), Mapping):
+                    combo_rng = stn['combo']  # type: ignore[index]
+                if pump_types_rng and isinstance(combo_rng, Mapping):
+                    for ptype, count in combo_rng.items():
+                        if not isinstance(count, (int, float)) or count <= 0:
+                            continue
+                        pdata = pump_types_rng.get(ptype, {})
+                        pmin_default = int(_station_min_rpm(stn, ptype=ptype, default=st_rpm_min))
+                        pmax_default = int(_station_max_rpm(stn, ptype=ptype, default=st_rpm_max or st_rpm_min))
+                        p_rmin = int(_extract_rpm(pdata.get('MinRPM'), default=pmin_default, prefer='min'))
+                        p_rmax = int(_extract_rpm(pdata.get('DOL'), default=pmax_default, prefer='max'))
+                        if p_rmax <= 0 and pmax_default > 0:
+                            p_rmax = pmax_default
+                        if p_rmax < p_rmin:
+                            p_rmin, p_rmax = p_rmax, p_rmin
+                        type_bounds[str(ptype)] = (p_rmin, p_rmax)
+                if type_bounds:
+                    bounds_entry['type_rpm'] = type_bounds
+            max_dr_main = int(stn.get('max_dr', 0))
+            bounds_entry['dra_main'] = (0, max_dr_main if max_dr_main > 0 else 0)
+            loop = stn.get('loopline') or {}
+            loop_max = int(loop.get('max_dr', 0) or 0)
+            bounds_entry['dra_loop'] = (0, loop_max if loop_max > 0 else 0)
+            station_bounds.append(bounds_entry)
+
+        coarse_reduces_search = False
+        for bounds in station_bounds:
+            rpm_bounds = bounds.get('rpm')
+            if rpm_bounds and rpm_step > 0:
+                rmin, rmax = rpm_bounds  # type: ignore[misc]
+                if rmax > rmin:
+                    fine_vals = _allowed_values(rmin, rmax, rpm_step)
+                    coarse_vals = _allowed_values(rmin, rmax, coarse_rpm_step)
+                    if len(coarse_vals) < len(fine_vals):
+                        coarse_reduces_search = True
+                        break
+            dra_bounds = bounds.get('dra_main')
+            if not coarse_reduces_search and dra_bounds and dra_step > 0:
+                dmin, dmax = dra_bounds  # type: ignore[misc]
+                if dmax > dmin:
+                    fine_vals = _allowed_values(dmin, dmax, dra_step)
+                    coarse_vals = _allowed_values(dmin, dmax, coarse_dra_step)
+                    if len(coarse_vals) < len(fine_vals):
+                        coarse_reduces_search = True
+                        break
+            loop_bounds = bounds.get('dra_loop')
+            if not coarse_reduces_search and loop_bounds and dra_step > 0:
+                lmin, lmax = loop_bounds  # type: ignore[misc]
+                if lmax > lmin:
+                    fine_vals = _allowed_values(lmin, lmax, dra_step)
+                    coarse_vals = _allowed_values(lmin, lmax, coarse_dra_step)
+                    if len(coarse_vals) < len(fine_vals):
+                        coarse_reduces_search = True
+                        break
+
+        coarse_res: dict = {"error": True}
+        coarse_failed = True
+        if coarse_reduces_search:
+            coarse_res = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=True,
+                rpm_step=coarse_rpm_step,
+                dra_step=coarse_dra_step,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=state_top_k,
+                state_cost_margin=state_cost_margin,
+            )
+            coarse_failed = bool(coarse_res.get("error"))
+            if pass_trace is not None:
+                pass_trace.append('coarse')
         exhaustive_result = solve_pipeline(
             stations,
             terminal,
@@ -2424,7 +2509,10 @@ def solve_pipeline(
             state_cost_margin=state_cost_margin,
             _exhaustive_pass=True,
             refined_retry=coarse_failed,
+            pass_trace=None,
         )
+        if pass_trace is not None:
+            pass_trace.append('exhaustive')
         if coarse_failed and not exhaustive_result.get("error"):
             coarse_res = exhaustive_result
             coarse_failed = False
@@ -2447,124 +2535,150 @@ def solve_pipeline(
             return min((coarse_res, exhaustive_result), key=_result_key)
         window = max(rpm_step, coarse_rpm_step)
 
-        ranges: dict[int, dict[str, tuple[int, int]]] = {}
-        for idx, stn in enumerate(stations):
-            name = stn["name"].strip().lower().replace(" ", "_")
-            if stn.get("is_pump", False):
-                coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
-                coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                st_rpm_min = int(_station_min_rpm(stn))
-                st_rpm_max = int(_station_max_rpm(stn))
-                if st_rpm_max <= 0 and st_rpm_min > 0:
-                    st_rpm_max = st_rpm_min
-                if coarse_nop == 0:
-                    rmin = rmax = 0
+        refine_result: dict = {"error": True}
+        refinement_needed = False
+        if coarse_reduces_search and not coarse_res.get("error"):
+            ranges: dict[int, dict[str, tuple[int, int]]] = {}
+            for idx, stn in enumerate(stations):
+                name = stn["name"].strip().lower().replace(" ", "_")
+                bounds = station_bounds[idx] if idx < len(station_bounds) else {}
+                if stn.get("is_pump", False):
+                    coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
+                    coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                    st_rpm_min, st_rpm_max = bounds.get('rpm', (0, 0))  # type: ignore[assignment]
+                    if coarse_nop == 0:
+                        rmin = rmax = 0
+                    else:
+                        coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
+                        upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
+                        rmin = max(st_rpm_min, coarse_rpm - window)
+                        rmax = min(upper_bound, coarse_rpm + window)
+                        if rmin < st_rpm_min or rmax > upper_bound:
+                            rmin = max(rmin, st_rpm_min)
+                            rmax = min(rmax, upper_bound)
+                        if rmin > st_rpm_min or rmax < upper_bound:
+                            refinement_needed = True
+                    max_dr_main = int(stn.get("max_dr", 0))
+                    if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
+                        dmin, dmax = 0, max_dr_main
+                    else:
+                        dmin = max(0, coarse_dr_main - dra_step)
+                        dmax = min(max_dr_main, coarse_dr_main + dra_step)
+                        if dmin > 0 or dmax < max_dr_main:
+                            refinement_needed = True
+                    entry: dict[str, tuple[int, int]] = {
+                        "rpm": (rmin, rmax),
+                        "dra_main": (dmin, dmax),
+                    }
+                    pump_types_rng = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
+                    combo_rng = None
+                    if isinstance(stn.get("active_combo"), Mapping):
+                        combo_rng = stn["active_combo"]  # type: ignore[index]
+                    elif isinstance(stn.get("pump_combo"), Mapping):
+                        combo_rng = stn["pump_combo"]  # type: ignore[index]
+                    elif isinstance(stn.get("combo"), Mapping):
+                        combo_rng = stn["combo"]  # type: ignore[index]
+                    if pump_types_rng and isinstance(combo_rng, Mapping):
+                        type_bounds = bounds.get('type_rpm') if isinstance(bounds.get('type_rpm'), Mapping) else {}
+                        for ptype, count in combo_rng.items():
+                            if not isinstance(count, (int, float)) or count <= 0:
+                                continue
+                            pdata = pump_types_rng.get(ptype, {})
+                            pmin_default, pmax_default = type_bounds.get(str(ptype), (st_rpm_min, st_rpm_max)) if isinstance(type_bounds, Mapping) else (st_rpm_min, st_rpm_max)
+                            p_rmin = int(_extract_rpm(pdata.get("MinRPM"), default=pmin_default, prefer='min'))
+                            p_rmax = int(_extract_rpm(pdata.get("DOL"), default=pmax_default, prefer='max'))
+                            if p_rmax <= 0 and pmax_default > 0:
+                                p_rmax = pmax_default
+                            if p_rmax < p_rmin:
+                                p_rmin, p_rmax = p_rmax, p_rmin
+                            coarse_type_rpm: int | None = None
+                            if coarse_nop > 0:
+                                suffix = _normalise_speed_suffix(ptype)
+                                coarse_key = f"speed_{name}_{suffix}"
+                                coarse_val = coarse_res.get(coarse_key)
+                                if coarse_val is not None:
+                                    coarse_type_rpm = int(round(_coerce_float(coarse_val, default=0.0)))
+                                if coarse_type_rpm is None or coarse_type_rpm <= 0:
+                                    details_key = f"pump_details_{name}"
+                                    details_val = coarse_res.get(details_key)
+                                    if isinstance(details_val, list):
+                                        for detail in details_val:
+                                            if not isinstance(detail, Mapping):
+                                                continue
+                                            detail_ptype = detail.get('ptype')
+                                            detail_str = str(detail_ptype) if detail_ptype is not None else ""
+                                            target_str = str(ptype)
+                                            detail_suffix = _normalise_speed_suffix(detail_str) if detail_str else ""
+                                            if detail_str != target_str and detail_suffix != suffix:
+                                                continue
+                                            rpm_val = detail.get('rpm')
+                                            coarse_candidate = int(round(_coerce_float(rpm_val, default=0.0)))
+                                            if coarse_candidate > 0:
+                                                coarse_type_rpm = coarse_candidate
+                                                break
+                            if coarse_type_rpm is not None and coarse_type_rpm > 0:
+                                lower_bound = max(p_rmin, coarse_type_rpm - window)
+                                upper_bound = min(p_rmax, coarse_type_rpm + window)
+                                if upper_bound >= lower_bound:
+                                    if lower_bound > p_rmin or upper_bound < p_rmax:
+                                        refinement_needed = True
+                                    p_rmin, p_rmax = lower_bound, upper_bound
+                            entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
+                    loop = stn.get("loopline") or {}
+                    if loop:
+                        coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
+                        loop_max = int(loop.get("max_dr", 0))
+                        if coarse_dr_loop <= 0 or coarse_dr_loop >= loop_max:
+                            lmin = 0
+                            lmax = loop_max
+                        else:
+                            lmin = max(0, coarse_dr_loop - dra_step)
+                            lmax = min(loop_max, coarse_dr_loop + dra_step)
+                            if lmin > 0 or lmax < loop_max:
+                                refinement_needed = True
+                        entry["dra_loop"] = (lmin, lmax)
+                    ranges[idx] = entry
                 else:
-                    coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
-                    rmin = max(st_rpm_min, coarse_rpm - window)
-                    upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
-                    rmax = min(upper_bound, coarse_rpm + window)
-                max_dr_main = int(stn.get("max_dr", 0))
-                if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
-                    dmin, dmax = 0, max_dr_main
-                else:
-                    dmin = max(0, coarse_dr_main - dra_step)
-                    dmax = min(max_dr_main, coarse_dr_main + dra_step)
-                entry: dict[str, tuple[int, int]] = {
-                    "rpm": (rmin, rmax),
-                    "dra_main": (dmin, dmax),
-                }
-                pump_types_rng = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
-                combo_rng = None
-                if isinstance(stn.get("active_combo"), Mapping):
-                    combo_rng = stn["active_combo"]  # type: ignore[index]
-                elif isinstance(stn.get("pump_combo"), Mapping):
-                    combo_rng = stn["pump_combo"]  # type: ignore[index]
-                elif isinstance(stn.get("combo"), Mapping):
-                    combo_rng = stn["combo"]  # type: ignore[index]
-                if pump_types_rng and isinstance(combo_rng, Mapping):
-                    for ptype, count in combo_rng.items():
-                        if not isinstance(count, (int, float)) or count <= 0:
-                            continue
-                        pdata = pump_types_rng.get(ptype, {})
-                        pmin_default = int(_station_min_rpm(stn, ptype=ptype, default=st_rpm_min))
-                        pmax_default = int(_station_max_rpm(stn, ptype=ptype, default=st_rpm_max or st_rpm_min))
-                        p_rmin = int(_extract_rpm(pdata.get("MinRPM"), default=pmin_default, prefer='min'))
-                        p_rmax = int(_extract_rpm(pdata.get("DOL"), default=pmax_default, prefer='max'))
-                        if p_rmax <= 0 and pmax_default > 0:
-                            p_rmax = pmax_default
-                        if p_rmax < p_rmin:
-                            p_rmin, p_rmax = p_rmax, p_rmin
-                        coarse_type_rpm: int | None = None
-                        if coarse_nop > 0:
-                            suffix = _normalise_speed_suffix(ptype)
-                            coarse_key = f"speed_{name}_{suffix}"
-                            coarse_val = coarse_res.get(coarse_key)
-                            if coarse_val is not None:
-                                coarse_type_rpm = int(round(_coerce_float(coarse_val, default=0.0)))
-                            if coarse_type_rpm is None or coarse_type_rpm <= 0:
-                                details_key = f"pump_details_{name}"
-                                details_val = coarse_res.get(details_key)
-                                if isinstance(details_val, list):
-                                    for detail in details_val:
-                                        if not isinstance(detail, Mapping):
-                                            continue
-                                        detail_ptype = detail.get('ptype')
-                                        detail_str = str(detail_ptype) if detail_ptype is not None else ""
-                                        target_str = str(ptype)
-                                        detail_suffix = _normalise_speed_suffix(detail_str) if detail_str else ""
-                                        if detail_str != target_str and detail_suffix != suffix:
-                                            continue
-                                        rpm_val = detail.get('rpm')
-                                        coarse_candidate = int(round(_coerce_float(rpm_val, default=0.0)))
-                                        if coarse_candidate > 0:
-                                            coarse_type_rpm = coarse_candidate
-                                            break
-                        if coarse_type_rpm is not None and coarse_type_rpm > 0:
-                            lower_bound = max(p_rmin, coarse_type_rpm - window)
-                            upper_bound = min(p_rmax, coarse_type_rpm + window)
-                            if upper_bound >= lower_bound:
-                                p_rmin, p_rmax = lower_bound, upper_bound
-                        entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
-                loop = stn.get("loopline") or {}
-                if loop:
-                    coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
-                    lmin = max(0, coarse_dr_loop - dra_step)
-                    lmax = min(int(loop.get("max_dr", 0)), coarse_dr_loop + dra_step)
-                    entry["dra_loop"] = (lmin, lmax)
-                ranges[idx] = entry
-            else:
-                coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                dmin = max(0, coarse_dr_main - dra_step)
-                dmax = min(int(stn.get("max_dr", 0)), coarse_dr_main + dra_step)
-                ranges[idx] = {"dra_main": (dmin, dmax)}
-        refine_result = solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            segment_slices,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-            start_time,
-            pump_shear_rate=pump_shear_rate,
-            loop_usage_by_station=loop_usage_by_station,
-            enumerate_loops=False,
-            _internal_pass=True,
-            rpm_step=rpm_step,
-            dra_step=dra_step,
-            narrow_ranges=ranges,
-            coarse_multiplier=coarse_multiplier,
-            state_top_k=state_top_k,
-            state_cost_margin=state_cost_margin,
-        )
+                    coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                    max_dr = int(stn.get("max_dr", 0))
+                    if coarse_dr_main <= 0 or coarse_dr_main >= max_dr:
+                        dmin, dmax = 0, max_dr
+                    else:
+                        dmin = max(0, coarse_dr_main - dra_step)
+                        dmax = min(max_dr, coarse_dr_main + dra_step)
+                        if dmin > 0 or dmax < max_dr:
+                            refinement_needed = True
+                    ranges[idx] = {"dra_main": (dmin, dmax)}
+            if refinement_needed:
+                refine_result = solve_pipeline(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    loop_usage_by_station=loop_usage_by_station,
+                    enumerate_loops=False,
+                    _internal_pass=True,
+                    rpm_step=rpm_step,
+                    dra_step=dra_step,
+                    narrow_ranges=ranges,
+                    coarse_multiplier=coarse_multiplier,
+                    state_top_k=state_top_k,
+                    state_cost_margin=state_cost_margin,
+                )
+                if pass_trace is not None:
+                    pass_trace.append('refine')
 
         primary_candidate = None
         if not coarse_failed and not coarse_res.get("error"):
@@ -2587,14 +2701,22 @@ def solve_pipeline(
                 residual_val = float(res.get(f'residual_head_{term_name}', res.get('residual', term_req)))
                 return (total_cost, residual_val - term_req)
 
-            return min(candidates, key=_result_key)
+            result_choice = min(candidates, key=_result_key)
+            if pass_trace is not None:
+                result_choice = dict(result_choice)
+                result_choice['executed_passes'] = list(pass_trace)
+            return result_choice
 
         if not exhaustive_result.get("error"):
-            return exhaustive_result
-        if not coarse_res.get("error"):
-            return coarse_res
-
-        return coarse_res if coarse_failed else refine_result
+            result_choice = exhaustive_result
+        elif not coarse_res.get("error"):
+            result_choice = coarse_res
+        else:
+            result_choice = coarse_res if coarse_failed else refine_result
+        if pass_trace is not None:
+            result_choice = dict(result_choice)
+            result_choice['executed_passes'] = list(pass_trace)
+        return result_choice
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
@@ -2707,6 +2829,8 @@ def solve_pipeline(
         opts = []
         flow_m3s = flow / 3600.0
         area = np.pi * d_inner ** 2 / 4.0
+        station_rpm_min = 0
+        station_rpm_max = 0
         if stn.get('is_pump', False):
             min_p = stn.get('min_pumps', 0)
             if not origin_enforced:
