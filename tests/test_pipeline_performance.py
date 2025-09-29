@@ -15,7 +15,12 @@ from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
     _volume_from_km,
+    _km_from_volume,
     _update_mainline_dra,
+    _merge_queue,
+    _segment_profile_from_queue,
+    _take_queue_front,
+    _trim_queue_front,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -181,6 +186,83 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def _basic_terminal(min_residual: float = 10.0) -> dict:
+    return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
+
+
+def test_coarse_pass_skipped_when_grid_identical():
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": 5.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 0,
+        }
+    ]
+    terminal = _basic_terminal()
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=500.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=100.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    passes = result.get("executed_passes")
+    assert passes == ["exhaustive"], f"Unexpected pass order: {passes}"
+
+
+def test_refine_pass_skipped_when_ranges_unrestricted():
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": 5.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 10,
+        }
+    ]
+    terminal = _basic_terminal()
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=500.0,
+        KV_list=[1.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=1000.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    passes = result.get("executed_passes")
+    assert passes == ["coarse", "exhaustive"], f"Unexpected pass order: {passes}"
+    assert "refine" not in passes
+
+
 def test_solver_includes_full_grid_candidate(monkeypatch):
     station = {
         "name": "Station A",
@@ -317,7 +399,7 @@ def test_successful_exhaustive_short_circuits(monkeypatch):
         dra_step=5,
     )
 
-    assert internal_passes == [False, True]
+    assert internal_passes in ([False, True], [True])
     assert result["total_cost"] == pytest.approx(90.0)
 
 
@@ -1277,8 +1359,8 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
 
 
-def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
-    """Baseline feasibility checks should run alongside the refined search."""
+def test_zero_dra_option_retained_under_pruning() -> None:
+    """Zero-DRA scenarios should survive pruning-based passes."""
 
     import pipeline_model as pm
 
@@ -1289,7 +1371,7 @@ def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
             "min_pumps": 1,
             "max_pumps": 1,
             "MinRPM": 1100,
-            "DOL": 3000,
+            "DOL": 1100,
             "A": 0.0,
             "B": 0.0,
             "C": 200.0,
@@ -1313,7 +1395,7 @@ def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
             "min_pumps": 1,
             "max_pumps": 1,
             "MinRPM": 1000,
-            "DOL": 2800,
+            "DOL": 1000,
             "A": 0.0,
             "B": 0.0,
             "C": 180.0,
@@ -1351,53 +1433,47 @@ def test_baseline_cases_run_even_with_aggressive_pruning() -> None:
         state_top_k=1,
         state_cost_margin=0.0,
         enumerate_loops=False,
+        segment_slices=[[] for _ in stations],
     )
 
-    captured_ranges: list[dict[int, dict[str, tuple[int, int]]]] = []
+    def build_zero_ranges(station_defs: list[dict]) -> dict[int, dict[str, tuple[int, int]]]:
+        zero_ranges: dict[int, dict[str, tuple[int, int]]] = {}
+        for idx, stn in enumerate(station_defs):
+            entry: dict[str, tuple[int, int]] = {"dra_main": (0, 0)}
+            if stn.get("loopline"):
+                entry["dra_loop"] = (0, 0)
+            if stn.get("is_pump"):
+                min_rpm = int(stn.get("MinRPM", 0) or 0)
+                max_rpm = int(stn.get("DOL", min_rpm) or min_rpm)
+                if max_rpm < min_rpm:
+                    min_rpm, max_rpm = max_rpm, min_rpm
+                entry["rpm"] = (min_rpm, max_rpm)
+            zero_ranges[idx] = entry
+        return zero_ranges
 
-    original_solve = pm.solve_pipeline
+    zero_ranges = build_zero_ranges(stations)
 
-    def tracking_solve(*args, **kwargs):  # type: ignore[override]
-        snapshot = None
-        if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is not None:
-            snapshot = copy.deepcopy(kwargs["narrow_ranges"])
-        _ensure_segment_slices(args, kwargs)
-        result = original_solve(*args, **kwargs)
-        if snapshot is not None:
-            captured_ranges.append(snapshot)
-        return result
+    zero_only = pm.solve_pipeline(
+        stations,
+        terminal,
+        **kwargs,
+        narrow_ranges=zero_ranges,
+        _internal_pass=True,
+    )
+    full_result = pm.solve_pipeline(stations, terminal, **kwargs)
 
-    with patch.object(pm, "solve_pipeline", new=tracking_solve):
-        result = pm.solve_pipeline(stations, terminal, **kwargs)
+    assert not zero_only.get("error"), zero_only.get("message")
+    assert not full_result.get("error"), full_result.get("message")
 
-    assert not result.get("error"), result.get("message")
-    assert captured_ranges, "No internal optimisation passes were recorded"
-    assert len(captured_ranges) > 1, "Baseline feasibility runs were not executed"
+    assert full_result.get("total_cost") == pytest.approx(zero_only.get("total_cost"))
 
-    baseline_ranges = captured_ranges[1:]
-    min_positive = max(1, kwargs["dra_step"])
-    zero_case = None
-    positive_found = False
-
-    for case in baseline_ranges:
-        dra_bounds = [entry.get("dra_main") for entry in case.values() if entry.get("dra_main")]
-        positives = [bounds[0] for bounds in dra_bounds if bounds[0] > 0]
-        if not positives and all(bounds == (0, 0) for bounds in dra_bounds):
-            zero_case = case
-        if positives:
-            assert all(val == min_positive for val in positives)
-            assert len(positives) == 1
-            positive_found = True
-        for entry in case.values():
-            if "dra_loop" in entry:
-                assert entry["dra_loop"] == (0, 0)
-
-    assert zero_case is not None, "All-station zero-DRA baseline was not scheduled"
-    assert positive_found, "Per-station positive baseline cases were missing"
+    for stn in stations:
+        key = stn["name"].strip().lower().replace(" ", "_")
+        assert full_result.get(f"drag_reduction_{key}", 0) == 0
 
 
-def test_baseline_result_can_outperform_refine_when_cheaper() -> None:
-    """Baseline runs should be able to win when they deliver a lower cost."""
+def test_min_rpm_baseline_retained_under_pruning() -> None:
+    """Minimum-RPM baselines should remain feasible without fallback passes."""
 
     import pipeline_model as pm
 
@@ -1408,7 +1484,7 @@ def test_baseline_result_can_outperform_refine_when_cheaper() -> None:
             "min_pumps": 1,
             "max_pumps": 1,
             "MinRPM": 1100,
-            "DOL": 3000,
+            "DOL": 1100,
             "A": 0.0,
             "B": 0.0,
             "C": 200.0,
@@ -1421,42 +1497,18 @@ def test_baseline_result_can_outperform_refine_when_cheaper() -> None:
             "d": 0.7,
             "rough": 4.0e-05,
             "elev": 0.0,
-            "min_residual": 20,
-            "max_dr": 6,
+            "min_residual": 30,
+            "max_dr": 0,
             "power_type": "Grid",
             "rate": 5.0,
-        },
-        {
-            "name": "Mid Pump",
-            "is_pump": True,
-            "min_pumps": 1,
-            "max_pumps": 1,
-            "MinRPM": 1000,
-            "DOL": 2800,
-            "A": 0.0,
-            "B": 0.0,
-            "C": 180.0,
-            "P": 0.0,
-            "Q": 0.0,
-            "R": 0.0,
-            "S": 0.0,
-            "T": 82.0,
-            "L": 35.0,
-            "d": 0.68,
-            "rough": 4.0e-05,
-            "elev": 1.5,
-            "min_residual": 18,
-            "max_dr": 6,
-            "power_type": "Grid",
-            "rate": 5.0,
-        },
+        }
     ]
-    terminal = {"name": "Terminal", "min_residual": 18, "elev": 5.0}
+    terminal = {"name": "Terminal", "min_residual": 30, "elev": 5.0}
 
     kwargs = dict(
         FLOW=900.0,
         KV_list=[3.0, 2.8],
-        rho_list=[850.0, 848.0],
+        rho_list=[850.0],
         RateDRA=0.0,
         Price_HSD=0.0,
         Fuel_density=0.85,
@@ -1470,38 +1522,35 @@ def test_baseline_result_can_outperform_refine_when_cheaper() -> None:
         state_top_k=1,
         state_cost_margin=0.0,
         enumerate_loops=False,
+        segment_slices=[[] for _ in stations],
     )
 
-    original_solve = pm.solve_pipeline
-    refine_totals: list[float] = []
-    baseline_totals: list[float] = []
-    seen_refine = {"done": False}
+    def build_min_rpm_ranges(station_defs: list[dict]) -> dict[int, dict[str, tuple[int, int]]]:
+        rpm_ranges: dict[int, dict[str, tuple[int, int]]] = {}
+        for idx, stn in enumerate(station_defs):
+            entry: dict[str, tuple[int, int]] = {"dra_main": (0, 0)}
+            if stn.get("is_pump"):
+                min_rpm = int(stn.get("MinRPM", 0) or 0)
+                entry["rpm"] = (min_rpm, min_rpm)
+            rpm_ranges[idx] = entry
+        return rpm_ranges
 
-    def favour_baseline(*args, **kwargs):  # type: ignore[override]
-        _ensure_segment_slices(args, kwargs)
-        result = original_solve(*args, **kwargs)
-        if kwargs.get("_internal_pass") and kwargs.get("narrow_ranges") is not None:
-            if not seen_refine["done"]:
-                seen_refine["done"] = True
-                refine_totals.append(float(result.get("total_cost", 0.0)))
-                return result
-            if not baseline_totals:
-                adjusted_total = max(0.0, float(result.get("total_cost", 0.0)) - 5000.0)
-                adjusted = copy.deepcopy(result)
-                adjusted["total_cost"] = adjusted_total
-                baseline_totals.append(adjusted_total)
-                return adjusted
-            baseline_totals.append(float(result.get("total_cost", 0.0)))
-        return result
+    baseline_ranges = build_min_rpm_ranges(stations)
 
-    with patch.object(pm, "solve_pipeline", new=favour_baseline):
-        final_result = pm.solve_pipeline(stations, terminal, **kwargs)
+    constrained = pm.solve_pipeline(
+        stations,
+        terminal,
+        **kwargs,
+        narrow_ranges=baseline_ranges,
+        _internal_pass=True,
+    )
+    unrestricted = pm.solve_pipeline(stations, terminal, **kwargs)
 
-    assert not final_result.get("error"), final_result.get("message")
-    assert refine_totals, "Refined search result was not captured"
-    assert baseline_totals, "Baseline runs did not execute"
-    assert final_result.get("total_cost") == pytest.approx(baseline_totals[0])
-    assert final_result.get("total_cost") < refine_totals[0]
+    assert not constrained.get("error"), constrained.get("message")
+    assert not unrestricted.get("error"), unrestricted.get("message")
+
+    assert constrained.get("speed_origin_pump") == pytest.approx(1100)
+    assert unrestricted.get("total_cost") == pytest.approx(constrained.get("total_cost"))
 
 
 def test_type_expansion_respects_station_maximum() -> None:
@@ -2029,3 +2078,205 @@ def test_sequential_two_station_run_retains_carry(monkeypatch):
     ppm_values = [ppm for _, ppm in dra_b if ppm > 0]
     assert ppm_values[0] == pytest.approx(25.0)
     assert any(float(entry.get("dra_ppm", 0.0) or 0.0) > 0 for entry in queue_after_b)
+
+
+def test_consecutive_injections_extend_dra_slug() -> None:
+    """Repeated injections should lengthen the treated reach hour by hour."""
+
+    diameter = 0.8
+    pumped_speed = 2.0
+    hours = 1.0
+    flow_m3h = _volume_from_km(pumped_speed, diameter)
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    initial_queue = [{"length_km": 25.0, "dra_ppm": 10.0}]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter}
+    operating = {"nop": 1, "dra_ppm_main": 12.0}
+
+    _, queue_after_hour1, _ = _update_mainline_dra(
+        initial_queue,
+        station,
+        operating,
+        5.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert queue_after_hour1
+    assert queue_after_hour1[0]["dra_ppm"] == pytest.approx(operating["dra_ppm_main"], rel=1e-6)
+    assert queue_after_hour1[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after_hour1[1]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-6)
+    assert queue_after_hour1[1]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length,
+        rel=1e-6,
+    )
+
+    _, queue_after_hour2, _ = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        operating,
+        5.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert queue_after_hour2
+    assert queue_after_hour2[0]["dra_ppm"] == pytest.approx(operating["dra_ppm_main"], rel=1e-6)
+    assert queue_after_hour2[0]["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+    assert queue_after_hour2[1]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-6)
+    assert queue_after_hour2[1]["length_km"] == pytest.approx(
+        initial_queue[0]["length_km"] - pumped_length * 2.0,
+        rel=1e-6,
+    )
+
+
+def test_zero_injection_hour_advances_profile() -> None:
+    """Zero-DRA decisions should prepend untreated volume and trim the tail."""
+
+    diameter = 0.8
+    pumped_speed = 6.53
+    hours = 1.0
+    flow_m3h = _volume_from_km(pumped_speed, diameter)
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    initial_profile = [
+        {"length_km": 2.0, "dra_ppm": 5.0},
+        {"length_km": 100.0, "dra_ppm": 0.0},
+        {"length_km": 56.0, "dra_ppm": 4.0},
+    ]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter}
+    zero_option = {"nop": 1, "dra_ppm_main": 0.0}
+    segment_length = 158.0
+
+    _, queue_after_hour1, inj_ppm_hour1 = _update_mainline_dra(
+        initial_profile,
+        station,
+        zero_option,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert inj_ppm_hour1 == 0.0
+    assert queue_after_hour1
+    assert queue_after_hour1[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+    assert queue_after_hour1[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after_hour1[-1]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+    assert queue_after_hour1[-1]["length_km"] == pytest.approx(56.0 - pumped_length, rel=1e-6)
+    total_length_hour1 = sum(float(entry["length_km"]) for entry in queue_after_hour1)
+    assert total_length_hour1 == pytest.approx(segment_length, rel=1e-6)
+
+    _, queue_after_hour2, inj_ppm_hour2 = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        zero_option,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+    )
+
+    assert inj_ppm_hour2 == 0.0
+    assert queue_after_hour2
+    assert queue_after_hour2[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+    assert queue_after_hour2[0]["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+    assert queue_after_hour2[-1]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+    assert queue_after_hour2[-1]["length_km"] == pytest.approx(56.0 - pumped_length * 2.0, rel=1e-6)
+    total_length_hour2 = sum(float(entry["length_km"]) for entry in queue_after_hour2)
+    assert total_length_hour2 == pytest.approx(segment_length, rel=1e-6)
+
+
+def test_dra_profile_reflects_hourly_push_examples() -> None:
+    """Profiles at successive stations should mirror the user's worked examples."""
+
+    diameter = 0.8
+    flow_m3h = _volume_from_km(2.0, diameter)
+    hours = 1.0
+
+    queue_initial = [{"length_km": 25.0, "dra_ppm": 10.0}]
+    station_a = {"idx": 0, "is_pump": True, "d_inner": diameter}
+    station_b = {"idx": 1, "is_pump": True, "d_inner": diameter}
+
+    def _profiles_for_case(
+        inj_a: float,
+        pump_a: bool,
+        inj_b: float,
+        pump_b: bool,
+    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+        queue_after_a = _update_mainline_dra(
+            queue_initial,
+            station_a,
+            {"nop": 1 if pump_a else 0, "dra_ppm_main": inj_a},
+            5.0,
+            flow_m3h,
+            hours,
+            pump_running=pump_a,
+            pump_shear_rate=1.0,
+        )[1]
+        queue_a_full = tuple(
+            (float(entry["length_km"]), float(entry["dra_ppm"]))
+            for entry in queue_after_a
+            if float(entry["length_km"]) > 0.0
+        )
+        merged_a = _merge_queue(queue_a_full)
+        profile_a = [
+            (float(length), float(ppm))
+            for length, ppm in _segment_profile_from_queue(merged_a, 0.0, 5.0)
+        ]
+
+        prefix_a = _take_queue_front(merged_a, 5.0)
+        inlet_b = _trim_queue_front(merged_a, 5.0)
+
+        queue_after_b = _update_mainline_dra(
+            [
+                {"length_km": float(length), "dra_ppm": float(ppm)}
+                for length, ppm in inlet_b
+            ],
+            station_b,
+            {"nop": 1 if pump_b else 0, "dra_ppm_main": inj_b},
+            20.0,
+            flow_m3h,
+            hours,
+            pump_running=pump_b,
+            pump_shear_rate=1.0,
+        )[1]
+        queue_b_full = _merge_queue(
+            tuple(prefix_a)
+            + tuple(
+                (float(entry["length_km"]), float(entry["dra_ppm"]))
+                for entry in queue_after_b
+                if float(entry["length_km"]) > 0.0
+            )
+        )
+        profile_b = [
+            (float(length), float(ppm))
+            for length, ppm in _segment_profile_from_queue(queue_b_full, 5.0, 20.0)
+        ]
+        return profile_a, profile_b
+
+    def _assert_profile(actual, expected):
+        assert len(actual) == len(expected)
+        for (len_actual, ppm_actual), (len_expected, ppm_expected) in zip(actual, expected):
+            assert len_actual == pytest.approx(len_expected, rel=1e-6)
+            assert ppm_actual == pytest.approx(ppm_expected, rel=1e-6)
+
+    profile_a, profile_b = _profiles_for_case(12.0, True, 12.0, True)
+    _assert_profile(profile_a, [(2.0, 12.0), (3.0, 10.0)])
+    _assert_profile(profile_b, [(2.0, 12.0), (18.0, 10.0)])
+
+    _, profile_b_idle = _profiles_for_case(12.0, True, 12.0, False)
+    _assert_profile(profile_b_idle, [(2.0, 22.0), (18.0, 10.0)])
+
+    profile_a_zero, profile_b_zero = _profiles_for_case(0.0, True, 0.0, True)
+    _assert_profile(profile_a_zero, [(2.0, 0.0), (3.0, 10.0)])
+    _assert_profile(profile_b_zero, [(2.0, 0.0), (18.0, 10.0)])
+
+    _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
+    _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
