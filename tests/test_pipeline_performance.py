@@ -423,7 +423,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         [
             {
                 "Product": "Batch 1",
-                "Volume (m³)": 8000.0,
+                "Volume (m³)": 12000.0,
                 "Viscosity (cSt)": 2.5,
                 "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
@@ -437,28 +437,287 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
 
     call_log: list[tuple[int, bool]] = []
 
-    def fake_solver(
-        stations,
-        terminal,
-        flow,
-        kv_list,
-        rho_list,
-        segment_slices,
-        RateDRA,
-        Price_HSD,
-        fuel_density,
-        ambient_temp,
-        dra_linefill_in,
-        dra_reach_km,
-        mop_kgcm2,
-        *,
-        hours,
-        start_time,
-        pump_shear_rate,
-    ):
-        hour = int(start_time.split(":")[0])
+    def fake_solver(*solver_args, **solver_kwargs):
+        (
+            stations,
+            terminal,
+            flow,
+            kv_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            fuel_density,
+            ambient_temp,
+            dra_linefill_in,
+            dra_reach_km,
+            mop_kgcm2,
+            *_,
+        ) = solver_args
+
+        start_time = solver_kwargs.get("start_time", "00:00")
+        hour = int(str(start_time).split(":")[0])
         positive = any(float(entry.get("dra_ppm", 0.0) or 0.0) > 0 for entry in dra_linefill_in or [])
         call_log.append((hour, positive))
+        if hour == 0:
+            if positive:
+                return {
+                    "error": False,
+                    "total_cost": 12.0,
+                    "linefill": [{"length_km": 6.0, "dra_ppm": 3.0}],
+                    "dra_front_km": 6.0,
+                }
+            return {
+                "error": False,
+                "total_cost": 10.0,
+                "linefill": [{"length_km": 0.0, "dra_ppm": 0.0}],
+                "dra_front_km": 0.0,
+            }
+        if hour == 1:
+            if positive or float(dra_reach_km) > 0.0:
+                return {
+                    "error": False,
+                    "total_cost": 11.0,
+                    "linefill": [{"length_km": 5.0, "dra_ppm": 2.5}],
+                    "dra_front_km": 5.0,
+                }
+            return {
+                "error": True,
+                "message": "No feasible pump combination found for stations.",
+            }
+        return {
+            "error": False,
+            "total_cost": 0.0,
+            "linefill": dra_linefill_in,
+            "dra_front_km": float(dra_reach_km),
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch",
+                "Volume (m³)": 8000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=500.0,
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    assert result["error"] is None
+    assert result["backtracked"] is True
+    assert len(result["reports"]) == 2
+    first_front = result["reports"][0]["result"].get("dra_front_km", 0.0)
+    assert first_front > 0.0
+    assert len(call_log) >= 3
+
+
+def test_enforce_minimum_origin_dra_updates_plan_split():
+    import pipeline_optimization_app as app
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch 1",
+                "Volume (m³)": 400.0,
+                "Viscosity (cSt)": 2.4,
+                "Density (kg/m³)": 818.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Plan Batch 2",
+                "Volume (m³)": 700.0,
+                "Viscosity (cSt)": 2.8,
+                "Density (kg/m³)": 822.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Plan Batch 3",
+                "Volume (m³)": 600.0,
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 825.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+        ]
+    )
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 3500.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": 3000.0,
+                "Viscosity (cSt)": 2.9,
+                "Density (kg/m³)": 824.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Batch 3",
+                "Volume (m³)": 2500.0,
+                "Viscosity (cSt)": 3.1,
+                "Density (kg/m³)": 828.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+        ]
+    )
+
+    state = {
+        "plan": plan_df,
+        "vol": vol_df,
+        "dra_linefill": [],
+        "dra_reach_km": 0.0,
+    }
+
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=40.0,
+        min_ppm=2.0,
+        min_fraction=0.1,
+    )
+
+    assert changed is True
+
+    enforced_plan = state["plan"]
+    assert isinstance(enforced_plan, pd.DataFrame)
+    assert len(enforced_plan) == 4
+    enforced_volumes = enforced_plan["Volume (m³)"].tolist()
+    enforced_ppm = enforced_plan[app.INIT_DRA_COL].tolist()
+    assert enforced_volumes[:2] == pytest.approx([400.0, 500.0])
+    assert all(ppm >= 2.0 for ppm in enforced_ppm[:2])
+    assert enforced_ppm[2] == pytest.approx(0.0)
+
+    queue = state["dra_linefill"]
+    assert queue
+    assert pytest.approx(queue[0]["volume"], rel=1e-6) == 900.0
+    assert queue[0]["dra_ppm"] >= 2.0
+
+    vol_snapshot = state["vol"]
+    assert float(vol_snapshot.iloc[0][app.INIT_DRA_COL]) >= 2.0
+
+
+def test_enforce_minimum_origin_dra_requires_volume_column():
+    import pipeline_optimization_app as app
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch 1",
+                "Viscosity (cSt)": 2.4,
+                "Density (kg/m³)": 818.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 3500.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+
+    state = {
+        "plan": plan_df,
+        "vol": vol_df,
+        "dra_linefill": [],
+    }
+
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=40.0,
+        min_ppm=2.0,
+        min_fraction=0.1,
+    )
+
+    assert changed is False
+    assert "missing a volume column" in state.get("origin_error", "")
+
+
+def test_time_series_solver_reports_error_without_plan(monkeypatch):
+    import pipeline_optimization_app as app
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 20.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        }
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    hours = [0, 1]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 8000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        (
+            stations,
+            terminal,
+            flow,
+            kv_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            fuel_density,
+            ambient_temp,
+            dra_linefill_in,
+            dra_reach_km,
+            mop_kgcm2,
+            *_,
+        ) = solver_args
+
+        start_time = solver_kwargs.get("start_time", "00:00")
+        hour = int(str(start_time).split(":")[0])
+        positive = any(float(entry.get("dra_ppm", 0.0) or 0.0) > 0 for entry in dra_linefill_in or [])
         if hour == 0:
             if positive:
                 return {
@@ -513,12 +772,10 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         sub_steps=1,
     )
 
-    assert result["error"] is None
-    assert result["backtracked"] is True
-    assert len(result["reports"]) == 2
-    first_front = result["reports"][0]["result"].get("dra_front_km", 0.0)
-    assert first_front > 0.0
-    assert len(call_log) >= 3
+    assert result["error"] == (
+        "Zero DRA infeasible: upstream plan is empty so the enforced slug cannot be injected."
+    )
+    assert result["backtracked"] is False
 
 
 def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
@@ -557,26 +814,26 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
 
     call_log: list[tuple[int, float]] = []
 
-    def fake_solver(
-        stations,
-        terminal,
-        flow,
-        kv_list,
-        rho_list,
-        segment_slices,
-        RateDRA,
-        Price_HSD,
-        fuel_density,
-        ambient_temp,
-        dra_linefill_in,
-        dra_reach_km,
-        mop_kgcm2,
-        *,
-        hours,
-        start_time,
-        pump_shear_rate,
-    ):
-        hour = int(start_time.split(":")[0])
+    def fake_solver(*solver_args, **solver_kwargs):
+        (
+            stations,
+            terminal,
+            flow,
+            kv_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            fuel_density,
+            ambient_temp,
+            dra_linefill_in,
+            dra_reach_km,
+            mop_kgcm2,
+            *_,
+        ) = solver_args
+
+        start_time = solver_kwargs.get("start_time", "00:00")
+        hour = int(str(start_time).split(":")[0])
         head_ppm = 0.0
         if dra_linefill_in:
             try:
@@ -628,12 +885,24 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
 
     monkeypatch.setattr(app, "solve_pipeline", fake_solver)
 
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch 1",
+                "Volume (m³)": 5000.0,
+                "Viscosity (cSt)": 2.3,
+                "Density (kg/m³)": 818.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
     result = app._execute_time_series_solver(
         stations_base,
         term_data,
         hours,
         flow_rate=450.0,
-        plan_df=None,
+        plan_df=plan_df,
         current_vol=current_vol,
         dra_linefill=dra_linefill,
         dra_reach_km=0.0,
