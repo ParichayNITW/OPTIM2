@@ -3217,6 +3217,10 @@ def run_all_updates():
                     stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
 
     search_kwargs = _collect_search_depth_kwargs()
+    forced_detail = st.session_state.get("origin_enforced_detail")
+    if not isinstance(forced_detail, dict):
+        forced_detail = None
+
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
@@ -3234,6 +3238,7 @@ def run_all_updates():
             st.session_state.get("MOP_kgcm2"),
             24.0,
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+            forced_origin_detail=copy.deepcopy(forced_detail) if forced_detail else None,
             **search_kwargs,
         )
     if not res or res.get("error"):
