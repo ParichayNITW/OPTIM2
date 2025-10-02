@@ -2677,12 +2677,100 @@ def invalidate_results():
         st.session_state.pop(k, None)
 
 
+def _estimate_treatable_length(
+    *,
+    total_length_km: float,
+    total_volume_m3: float,
+    flow_m3_per_hour: float | None,
+    hours: float,
+    queue_entries: list[dict] | None = None,
+    plan_volume_m3: float | None = None,
+) -> float:
+    """Estimate how much of the queue can be treated during ``hours``.
+
+    The helper primarily relies on the volumetric representation of the pipeline.
+    When ``total_volume_m3`` reflects the volume of fluid occupying
+    ``total_length_km`` of pipe, their ratio provides a conversion between pumped
+    volume and treated distance.  When that aggregate volume is unavailable, the
+    routine attempts to infer a reasonable conversion factor from the queued
+    slices or, as a last resort, the pending plan volume so the enforced slug
+    never exaggerates its downstream reach.
+    """
+
+    try:
+        total_length = float(total_length_km)
+    except (TypeError, ValueError):
+        total_length = 0.0
+    try:
+        total_volume = float(total_volume_m3)
+    except (TypeError, ValueError):
+        total_volume = 0.0
+
+    try:
+        flow_val = float(flow_m3_per_hour) if flow_m3_per_hour is not None else 0.0
+    except (TypeError, ValueError):
+        flow_val = 0.0
+    try:
+        hours_val = float(hours)
+    except (TypeError, ValueError):
+        hours_val = 0.0
+
+    if flow_val <= 0.0 or hours_val <= 0.0:
+        return 0.0
+
+    km_per_m3_candidates: list[float] = []
+    if total_length > 0.0 and total_volume > 0.0:
+        km_per_m3_candidates.append(total_length / total_volume)
+
+    queue_total_length = 0.0
+    queue_total_volume = 0.0
+    if queue_entries:
+        for entry in queue_entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                length_val = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                volume_val = float(entry.get("volume", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                volume_val = 0.0
+            if length_val > 0.0:
+                queue_total_length += length_val
+            if volume_val > 0.0:
+                queue_total_volume += volume_val
+        if queue_total_length > 0.0 and queue_total_volume > 0.0:
+            km_per_m3_candidates.append(queue_total_length / queue_total_volume)
+
+    if not km_per_m3_candidates and total_length > 0.0 and plan_volume_m3 is not None:
+        try:
+            plan_volume = float(plan_volume_m3)
+        except (TypeError, ValueError):
+            plan_volume = 0.0
+        if plan_volume > 0.0:
+            km_per_m3_candidates.append(total_length / plan_volume)
+
+    if not km_per_m3_candidates:
+        return 0.0
+
+    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    if km_per_m3 <= 0.0:
+        return 0.0
+
+    pumped_volume = flow_val * hours_val
+    treatable = pumped_volume * km_per_m3
+    return max(treatable, 0.0)
+
+
 def _enforce_minimum_origin_dra(
     state: dict,
     *,
     total_length_km: float,
     min_ppm: float = 2.0,
     min_fraction: float = 0.05,
+    hourly_flow_m3: float | None = None,
+    step_hours: float = 1.0,
 ) -> bool:
     """Ensure the upstream queue carries a non-zero DRA slug.
 
@@ -2771,11 +2859,52 @@ def _enforce_minimum_origin_dra(
     else:
         col_vol = "Volume (m³)"
 
+    if total_volume <= 0.0:
+        snapshot_df = state.get("linefill_snapshot")
+        if isinstance(snapshot_df, pd.DataFrame) and len(snapshot_df) > 0:
+            snapshot_df = ensure_initial_dra_column(snapshot_df.copy(), default=0.0, fill_blanks=True)
+            snap_col = "Volume (m³)" if "Volume (m³)" in snapshot_df.columns else "Volume"
+            try:
+                total_volume = float(
+                    pd.to_numeric(snapshot_df[snap_col], errors="coerce").fillna(0.0).sum()
+                )
+            except Exception:
+                total_volume = 0.0
+
+    queue_total_volume = 0.0
+    for entry in queue:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            queue_total_volume += float(entry.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+
+    if total_volume <= 0.0 and queue_total_volume > 0.0:
+        total_volume = queue_total_volume
+
     slug_length = float(queue[0].get("length_km", min_length) or min_length)
     try:
         total_length = float(total_length_km)
     except (TypeError, ValueError):
         total_length = 0.0
+
+    treatable_limit = _estimate_treatable_length(
+        total_length_km=total_length,
+        total_volume_m3=total_volume,
+        flow_m3_per_hour=hourly_flow_m3,
+        hours=step_hours,
+        queue_entries=queue,
+        plan_volume_m3=plan_total_volume,
+    )
+    if treatable_limit > 0.0:
+        slug_length = min(slug_length, treatable_limit)
+        if slug_length <= 0.0:
+            slug_length = treatable_limit
+
+    if slug_length <= 0.0:
+        slug_length = float(min_length)
+    queue[0]["length_km"] = float(slug_length)
 
     existing_volume = float(queue[0].get("volume", 0.0) or 0.0)
     target_volume = 0.0
@@ -2926,6 +3055,7 @@ def _enforce_minimum_origin_dra(
         "length_km": float(queue[0].get("length_km", min_length)),
         "volume_m3": float(slug_volume),
         "plan_injections": plan_injections,
+        "treatable_km": float(treatable_limit),
     }
 
     state["origin_enforced"] = True
@@ -3132,6 +3262,8 @@ def _execute_time_series_solver(
                     prev_state,
                     total_length_km=total_length,
                     min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
+                    hourly_flow_m3=flow_rate,
+                    step_hours=1.0 / max(float(sub_steps or 1), 1.0),
                 )
                 if tightened:
                     detail = prev_state.get("origin_enforced_detail") or {}
@@ -3141,6 +3273,7 @@ def _execute_time_series_solver(
                         "length_km": float(detail.get("length_km", 0.0) or 0.0),
                         "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
                         "plan_injections": list(detail.get("plan_injections") or []),
+                        "treatable_km": float(detail.get("treatable_km", 0.0) or 0.0),
                     }
                     enforced_actions.append(detail_record)
                     volume_fmt = detail_record["volume_m3"]
@@ -3148,8 +3281,9 @@ def _execute_time_series_solver(
                     length_fmt = detail_record["length_km"]
                     backtrack_hour = hours[ti - 1] % 24
                     detail_note = (
-                        f"Origin queue now carries {length_fmt:.1f} km of treated product after enforcing "
-                        f"{volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm at {backtrack_hour:02d}:00."
+                        f"Origin queue updated: {volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm scheduled at "
+                        f"{backtrack_hour:02d}:00 to restore feasibility. This request will treat approximately "
+                        f"{length_fmt:.1f} km once pumped downstream."
                     )
                     injections = detail_record.get("plan_injections") or []
                     if injections:
@@ -3162,7 +3296,7 @@ def _execute_time_series_solver(
                             )
                             slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
                         if slices:
-                            detail_note += " Plan slices: " + "; ".join(slices) + "."
+                            detail_note += " Scheduled plan slices: " + "; ".join(slices) + "."
                 else:
                     origin_error = prev_state.get("origin_error")
             if not tightened:
@@ -3255,13 +3389,13 @@ def _build_enforced_origin_warning(
                     injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0
                 )
                 detail_parts.append(
-                    f"{hour_label} – {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
+                    f"{hour_label} – Scheduled {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
                 )
         else:
             vol_val = float(entry.get("volume_m3", 0.0) or 0.0)
             ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
             detail_parts.append(
-                f"{hour_label} – Origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
+                f"{hour_label} – Scheduled origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
             )
 
     if detail_parts:
