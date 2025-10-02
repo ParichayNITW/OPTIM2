@@ -2086,6 +2086,7 @@ def solve_pipeline(
     _exhaustive_pass: bool = False,
     refined_retry: bool = False,
     pass_trace: list[str] | None = None,
+    forced_origin_detail: dict | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -2229,6 +2230,7 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 _exhaustive_pass=_exhaustive_pass,
+                forced_origin_detail=forced_origin_detail,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -2291,6 +2293,7 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 _exhaustive_pass=_exhaustive_pass,
+                forced_origin_detail=forced_origin_detail,
             )
             if res.get('error'):
                 continue
@@ -2477,6 +2480,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                forced_origin_detail=forced_origin_detail,
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -2510,6 +2514,7 @@ def solve_pipeline(
             _exhaustive_pass=True,
             refined_retry=coarse_failed,
             pass_trace=None,
+            forced_origin_detail=forced_origin_detail,
         )
         if pass_trace is not None:
             pass_trace.append('exhaustive')
@@ -2676,6 +2681,7 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
+                    forced_origin_detail=forced_origin_detail,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -4028,6 +4034,38 @@ def solve_pipeline(
     result['total_cost'] = total_cost
     result['dra_front_km'] = sum(length for length, ppm in queue_final if ppm > 0)
     result['error'] = False
+
+    if forced_origin_detail and stations:
+        origin_info = forced_origin_detail.copy()
+        forced_ppm = float(origin_info.get('dra_ppm', 0.0) or 0.0)
+        if forced_ppm > 0:
+            origin_name = stations[0].get('name', 'origin')
+            origin_key = str(origin_name).strip().lower().replace(' ', '_')
+            ppm_key = f"dra_ppm_{origin_key}"
+            cost_key = f"dra_cost_{origin_key}"
+            flow_key = f"pipeline_flow_{origin_key}"
+            existing_ppm = float(result.get(ppm_key, 0.0) or 0.0)
+            updated_ppm = forced_ppm if forced_ppm > existing_ppm else existing_ppm
+            result[ppm_key] = updated_ppm
+
+            flow_main = float(result.get(flow_key, 0.0) or 0.0)
+            hours_val = float(hours)
+            existing_cost = float(result.get(cost_key, 0.0) or 0.0)
+            cost_target = existing_cost
+            if flow_main > 0 and RateDRA is not None:
+                cost_candidate = updated_ppm * (flow_main * 1000.0 * hours_val / 1e6) * RateDRA
+                if cost_candidate > existing_cost + 1e-9:
+                    cost_target = cost_candidate
+            if cost_target > existing_cost + 1e-9:
+                result[cost_key] = cost_target
+                result['total_cost'] = float(result.get('total_cost', 0.0)) + (cost_target - existing_cost)
+            if best_state.get('records'):
+                record0 = best_state['records'][0]
+                if isinstance(record0, dict):
+                    record0[ppm_key] = result.get(ppm_key, updated_ppm)
+                    record0[cost_key] = result.get(cost_key, cost_target)
+            result['forced_origin_detail'] = copy.deepcopy(origin_info)
+
     return result
 
 
@@ -4053,6 +4091,7 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    forced_origin_detail: dict | None = None,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -4155,6 +4194,7 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
+                    forced_origin_detail=forced_origin_detail,
                 )
                 if result.get("error"):
                     continue
