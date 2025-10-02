@@ -551,6 +551,14 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     assert enforced_actions
     enforced_detail = enforced_actions[0]
     enforced_ppm = float(enforced_detail.get("dra_ppm", 0.0) or 0.0)
+    expected_treatable = app._estimate_treatable_length(
+        total_length_km=sum(stn["L"] for stn in stations_base),
+        total_volume_m3=float(vol_df["Volume (m³)"].sum()),
+        flow_m3_per_hour=500.0,
+        hours=1.0,
+    )
+    assert enforced_detail.get("length_km") == pytest.approx(expected_treatable)
+    assert enforced_detail.get("treatable_km") == pytest.approx(expected_treatable)
     first_result = result["reports"][0]["result"]
     assert first_result.get("dra_ppm_station_a", 0.0) == pytest.approx(enforced_ppm)
     flow_main = float(first_result.get("pipeline_flow_station_a", 0.0) or 0.0)
@@ -560,8 +568,10 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     backtrack_notes = result.get("backtrack_notes") or []
     assert backtrack_notes
     note_text = backtrack_notes[0]
-    assert "Origin queue now carries" in note_text
-    assert "Plan slices:" in note_text
+    assert "Origin queue updated" in note_text
+    assert "scheduled at" in note_text.lower()
+    assert "approximately" in note_text.lower()
+    assert "Scheduled plan slices:" in note_text
     assert f"{enforced_detail.get('length_km', 0.0):.1f} km" in note_text
 
     plan_injections = enforced_detail.get("plan_injections") or []
@@ -582,7 +592,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         label = app._format_plan_injection_label(injection)
         vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
         ppm_val = float(injection.get("dra_ppm", enforced_detail.get("dra_ppm", 0.0)) or 0.0)
-        assert label in warning_text
+        assert f"Scheduled {label}" in warning_text
         assert f"{vol_val:.0f} m³" in warning_text
         assert f"{ppm_val:.2f} ppm" in warning_text
 
@@ -679,10 +689,138 @@ def test_enforce_minimum_origin_dra_updates_plan_split():
     assert detail is not None
     assert detail["volume_m3"] == pytest.approx(900.0)
     assert detail["dra_ppm"] >= 2.0
+    assert detail.get("treatable_km", 0.0) == pytest.approx(0.0)
     injections = detail.get("plan_injections")
     assert isinstance(injections, list) and injections
     total_injected = sum(entry.get("volume_m3", 0.0) for entry in injections)
     assert total_injected == pytest.approx(900.0)
+
+
+def test_enforce_minimum_origin_dra_caps_length_by_flow():
+    import pipeline_optimization_app as app
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch",
+                "Volume (m³)": 1000.0,
+                "Viscosity (cSt)": 2.6,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch",
+                "Volume (m³)": 12000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+
+    state = {
+        "plan": plan_df,
+        "vol": vol_df,
+        "dra_linefill": [],
+        "dra_reach_km": 0.0,
+    }
+
+    total_length = 200.0
+    flow_rate = 300.0
+    hours = 1.0
+    treatable_expected = app._estimate_treatable_length(
+        total_length_km=total_length,
+        total_volume_m3=float(vol_df["Volume (m³)"].sum()),
+        flow_m3_per_hour=flow_rate,
+        hours=hours,
+    )
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=total_length,
+        min_ppm=2.0,
+        min_fraction=0.05,
+        hourly_flow_m3=flow_rate,
+        step_hours=hours,
+    )
+
+    assert changed is True
+    queue = state["dra_linefill"]
+    assert queue
+    head = queue[0]
+    assert head["length_km"] == pytest.approx(treatable_expected)
+    detail = state.get("origin_enforced_detail")
+    assert detail
+    assert detail["length_km"] == pytest.approx(treatable_expected)
+    assert detail.get("treatable_km") == pytest.approx(treatable_expected)
+
+
+def test_enforce_minimum_origin_dra_uses_queue_volume_when_snapshot_missing():
+    import pipeline_optimization_app as app
+
+    diameter = 0.7
+    total_length = 120.0
+    total_volume = _volume_from_km(total_length, diameter)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch",
+                "Volume (m³)": total_volume / 3.0,
+                "Viscosity (cSt)": 2.8,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
+    queue = [
+        {
+            "length_km": total_length,
+            "dra_ppm": 0.0,
+            "volume": total_volume,
+        }
+    ]
+
+    state = {
+        "plan": plan_df,
+        "vol": None,
+        "linefill_snapshot": None,
+        "dra_linefill": queue,
+        "dra_reach_km": 0.0,
+    }
+
+    flow_length_per_hour = 4.0
+    flow_rate = _volume_from_km(flow_length_per_hour, diameter)
+
+    treatable_expected = app._estimate_treatable_length(
+        total_length_km=total_length,
+        total_volume_m3=total_volume,
+        flow_m3_per_hour=flow_rate,
+        hours=1.0,
+        queue_entries=queue,
+        plan_volume_m3=float(plan_df["Volume (m³)"].sum()),
+    )
+
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=total_length,
+        min_ppm=3.0,
+        min_fraction=0.05,
+        hourly_flow_m3=flow_rate,
+        step_hours=1.0,
+    )
+
+    assert changed is True
+    detail = state.get("origin_enforced_detail")
+    assert detail
+    assert detail["length_km"] == pytest.approx(treatable_expected)
+    assert detail.get("treatable_km") == pytest.approx(treatable_expected)
 
 
 def test_enforce_minimum_origin_dra_requires_volume_column():
@@ -982,7 +1120,9 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
 
     assert result["error"] is None
     assert result["backtracked"] is True
-    assert any("Backtracked" in note for note in result["backtrack_notes"])
+    backtrack_notes = result.get("backtrack_notes") or []
+    assert backtrack_notes
+    assert any("Origin queue updated" in note for note in backtrack_notes)
     assert len(result["reports"]) == 2
     actions = result.get("enforced_origin_actions")
     assert isinstance(actions, list) and actions
