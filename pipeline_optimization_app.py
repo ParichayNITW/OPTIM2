@@ -2692,6 +2692,7 @@ def _enforce_minimum_origin_dra(
         return False
 
     state.pop("origin_error", None)
+    state.pop("origin_enforced_detail", None)
 
     queue = []
     changed = False
@@ -2803,7 +2804,9 @@ def _enforce_minimum_origin_dra(
 
     enforced_rows: list[dict] = []
     remaining = float(slug_volume)
-    for _, row in plan_df.iterrows():
+    plan_injections: list[dict] = []
+
+    for row_idx, row in plan_df.iterrows():
         row_dict = row.to_dict()
         try:
             row_vol = float(row_dict.get(plan_col_vol, 0.0) or 0.0)
@@ -2828,6 +2831,15 @@ def _enforce_minimum_origin_dra(
                 row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
             enforced_rows.append(row_dict)
             remaining -= row_vol
+            if (row_dict[INIT_DRA_COL] > existing_ppm + 1e-9 or existing_ppm <= 1e-9) and row_vol > 1e-9:
+                plan_injections.append(
+                    {
+                        "source_index": int(row_idx),
+                        "product": row_dict.get("Product"),
+                        "volume_m3": float(row_vol),
+                        "dra_ppm": float(row_dict[INIT_DRA_COL]),
+                    }
+                )
             continue
 
         slug_row = row_dict.copy()
@@ -2844,6 +2856,17 @@ def _enforce_minimum_origin_dra(
             remainder["DRA ppm"] = remainder[INIT_DRA_COL]
         enforced_rows.append(remainder)
         remaining = 0.0
+
+        slug_volume_taken = float(slug_row.get(plan_col_vol, 0.0) or 0.0)
+        if (slug_row[INIT_DRA_COL] > existing_ppm + 1e-9 or existing_ppm <= 1e-9) and slug_volume_taken > 1e-9:
+            plan_injections.append(
+                {
+                    "source_index": int(row_idx),
+                    "product": slug_row.get("Product"),
+                    "volume_m3": slug_volume_taken,
+                    "dra_ppm": float(slug_row[INIT_DRA_COL]),
+                }
+            )
 
     if remaining > 1e-6:
         state["origin_error"] = (
@@ -2871,6 +2894,13 @@ def _enforce_minimum_origin_dra(
             vol_df.at[0, "DRA ppm"] = vol_df.at[0, INIT_DRA_COL]
         state["vol"] = vol_df
         state["linefill_snapshot"] = vol_df.copy()
+
+    state["origin_enforced_detail"] = {
+        "dra_ppm": float(queue[0].get("dra_ppm", min_ppm)),
+        "length_km": float(queue[0].get("length_km", min_length)),
+        "volume_m3": float(slug_volume),
+        "plan_injections": plan_injections,
+    }
 
     state["origin_enforced"] = True
     return True
@@ -2916,6 +2946,7 @@ def _execute_time_series_solver(
     hour_states: list[dict] = []
     backtracked = False
     backtrack_notes: list[str] = []
+    enforced_actions: list[dict] = []
 
     error_msg: str | None = None
     ti = 0
@@ -3029,13 +3060,31 @@ def _execute_time_series_solver(
             untreated_tolerance = 1e-3
             tightened = False
             origin_error = None
+            detail_note: str | None = None
             if untreated_head_km > untreated_tolerance or prev_front <= untreated_tolerance:
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
                     min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
                 )
-                if not tightened:
+                if tightened:
+                    detail = prev_state.get("origin_enforced_detail") or {}
+                    detail_record = {
+                        "hour": hours[ti - 1] % 24,
+                        "dra_ppm": float(detail.get("dra_ppm", 0.0) or 0.0),
+                        "length_km": float(detail.get("length_km", 0.0) or 0.0),
+                        "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
+                        "plan_injections": list(detail.get("plan_injections") or []),
+                    }
+                    enforced_actions.append(detail_record)
+                    volume_fmt = detail_record["volume_m3"]
+                    ppm_fmt = detail_record["dra_ppm"]
+                    length_fmt = detail_record["length_km"]
+                    detail_note = (
+                        f"Backtracked to {(hours[ti - 1] % 24):02d}:00 and enforced {volume_fmt:.0f} m³ @ "
+                        f"{ppm_fmt:.2f} ppm across {length_fmt:.1f} km upstream."
+                    )
+                else:
                     origin_error = prev_state.get("origin_error")
             if not tightened:
                 if origin_error:
@@ -3043,9 +3092,12 @@ def _execute_time_series_solver(
                 break
 
             backtracked = True
-            backtrack_notes.append(
-                f"Backtracked to {(hours[ti - 1] % 24):02d}:00 to enforce upstream DRA injection."
-            )
+            if detail_note:
+                backtrack_notes.append(detail_note)
+            else:
+                backtrack_notes.append(
+                    f"Backtracked to {(hours[ti - 1] % 24):02d}:00 to enforce upstream DRA injection."
+                )
 
             reports = reports[: ti - 1]
             linefill_snaps = linefill_snaps[: ti]
@@ -3086,6 +3138,7 @@ def _execute_time_series_solver(
         "error": error_msg,
         "backtracked": backtracked,
         "backtrack_notes": backtrack_notes,
+        "enforced_origin_actions": enforced_actions,
     }
     return result
 
@@ -3307,6 +3360,22 @@ if not auto_batch:
                 warn_msg = (
                     "Backtracking applied: zero DRA at the origin was infeasible for downstream hours."
                 )
+            enforced_details = solver_result.get("enforced_origin_actions") or []
+            if enforced_details:
+                detail_parts = []
+                for entry in enforced_details:
+                    try:
+                        hour_val = int(entry.get("hour", 0)) % 24
+                    except Exception:
+                        hour_val = 0
+                    volume_val = float(entry.get("volume_m3", 0.0) or 0.0)
+                    ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    length_val = float(entry.get("length_km", 0.0) or 0.0)
+                    detail_parts.append(
+                        f"{hour_val:02d}:00 → {volume_val:.0f} m³ @ {ppm_val:.2f} ppm ({length_val:.1f} km)"
+                    )
+                if detail_parts:
+                    warn_msg += " Enforced injections: " + "; ".join(detail_parts) + "."
             st.warning(
                 warn_msg
                 + " Please avoid zero DRA requests at the origin when planning sequential hours."
