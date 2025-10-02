@@ -2797,6 +2797,29 @@ def _enforce_minimum_origin_dra(
         slug_volume = existing_volume
 
     slug_volume = float(max(slug_volume, 0.0))
+    if plan_total_volume > 0.0 and slug_volume > plan_total_volume + 1e-9:
+        # When the upstream plan does not have enough volume to satisfy the
+        # requested slug, trim the enforced volume to what can actually be
+        # sourced from the plan instead of bailing out with an infeasibility.
+        # This situation can occur when operators tighten the plan after a
+        # backtracking step has already recorded a larger slug requirement.
+        #
+        # ``slug_volume`` represents the amount needed to cover the desired
+        # queue length at ``min_ppm``.  Capping the volume ensures the loop
+        # below finishes without leaving a positive ``remaining`` amount while
+        # still keeping a non-zero slug in the queue.  The queue length is
+        # scaled proportionally so the stored metadata reflects what the plan
+        # can honour.
+        reduction_ratio = plan_total_volume / slug_volume if slug_volume > 0 else 0.0
+        slug_volume = plan_total_volume
+        head_entry = queue[0]
+        head_entry["volume"] = slug_volume
+        if reduction_ratio > 0:
+            try:
+                current_length = float(head_entry.get("length_km", min_length) or 0.0)
+            except (TypeError, ValueError):
+                current_length = float(min_length)
+            head_entry["length_km"] = max(current_length * reduction_ratio, 0.0)
     if slug_volume <= 0.0:
         state["origin_error"] = (
             "Zero DRA infeasible: unable to determine a valid volume for the enforced upstream slug."
