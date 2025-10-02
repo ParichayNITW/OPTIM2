@@ -3148,8 +3148,9 @@ def _execute_time_series_solver(
                     length_fmt = detail_record["length_km"]
                     backtrack_hour = hours[ti - 1] % 24
                     detail_note = (
-                        f"Origin queue now carries {length_fmt:.1f} km of treated product after enforcing "
-                        f"{volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm at {backtrack_hour:02d}:00."
+                        f"Origin queue updated: {volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm scheduled at "
+                        f"{backtrack_hour:02d}:00 to restore feasibility. This request will treat approximately "
+                        f"{length_fmt:.1f} km once pumped downstream."
                     )
                     injections = detail_record.get("plan_injections") or []
                     if injections:
@@ -3162,7 +3163,7 @@ def _execute_time_series_solver(
                             )
                             slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
                         if slices:
-                            detail_note += " Plan slices: " + "; ".join(slices) + "."
+                            detail_note += " Scheduled plan slices: " + "; ".join(slices) + "."
                 else:
                     origin_error = prev_state.get("origin_error")
             if not tightened:
@@ -3255,13 +3256,13 @@ def _build_enforced_origin_warning(
                     injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0
                 )
                 detail_parts.append(
-                    f"{hour_label} – {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
+                    f"{hour_label} – Scheduled {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
                 )
         else:
             vol_val = float(entry.get("volume_m3", 0.0) or 0.0)
             ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
             detail_parts.append(
-                f"{hour_label} – Origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
+                f"{hour_label} – Scheduled origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
             )
 
     if detail_parts:

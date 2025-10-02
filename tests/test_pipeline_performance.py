@@ -560,8 +560,10 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     backtrack_notes = result.get("backtrack_notes") or []
     assert backtrack_notes
     note_text = backtrack_notes[0]
-    assert "Origin queue now carries" in note_text
-    assert "Plan slices:" in note_text
+    assert "Origin queue updated" in note_text
+    assert "scheduled at" in note_text.lower()
+    assert "approximately" in note_text.lower()
+    assert "Scheduled plan slices:" in note_text
     assert f"{enforced_detail.get('length_km', 0.0):.1f} km" in note_text
 
     plan_injections = enforced_detail.get("plan_injections") or []
@@ -582,7 +584,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         label = app._format_plan_injection_label(injection)
         vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
         ppm_val = float(injection.get("dra_ppm", enforced_detail.get("dra_ppm", 0.0)) or 0.0)
-        assert label in warning_text
+        assert f"Scheduled {label}" in warning_text
         assert f"{vol_val:.0f} m³" in warning_text
         assert f"{ppm_val:.2f} ppm" in warning_text
 
