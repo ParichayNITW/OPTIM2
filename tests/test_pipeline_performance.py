@@ -621,6 +621,15 @@ def test_enforce_minimum_origin_dra_updates_plan_split():
     vol_snapshot = state["vol"]
     assert float(vol_snapshot.iloc[0][app.INIT_DRA_COL]) >= 2.0
 
+    detail = state.get("origin_enforced_detail")
+    assert detail is not None
+    assert detail["volume_m3"] == pytest.approx(900.0)
+    assert detail["dra_ppm"] >= 2.0
+    injections = detail.get("plan_injections")
+    assert isinstance(injections, list) and injections
+    total_injected = sum(entry.get("volume_m3", 0.0) for entry in injections)
+    assert total_injected == pytest.approx(900.0)
+
 
 def test_enforce_minimum_origin_dra_requires_volume_column():
     import pipeline_optimization_app as app
@@ -664,6 +673,7 @@ def test_enforce_minimum_origin_dra_requires_volume_column():
 
     assert changed is False
     assert "missing a volume column" in state.get("origin_error", "")
+    assert "origin_enforced_detail" not in state
 
 
 def test_time_series_solver_reports_error_without_plan(monkeypatch):
@@ -920,6 +930,12 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
     assert result["backtracked"] is True
     assert any("Backtracked" in note for note in result["backtrack_notes"])
     assert len(result["reports"]) == 2
+    actions = result.get("enforced_origin_actions")
+    assert isinstance(actions, list) and actions
+    first_action = actions[0]
+    assert first_action["hour"] == 0
+    assert first_action["dra_ppm"] > 0.0
+    assert first_action["volume_m3"] > 0.0
     hours_called = [hour for hour, _ in call_log]
     assert hours_called.count(1) >= 2
     # Ensure the retried call carried a positive head slug
