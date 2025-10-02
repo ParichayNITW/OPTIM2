@@ -557,6 +557,12 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     expected_cost = enforced_ppm * (flow_main * 1000.0 * 1.0 / 1e6) * 5.0
     assert first_result.get("dra_cost_station_a", 0.0) == pytest.approx(expected_cost)
     assert len(call_log) >= 3
+    warning_text = app._build_enforced_origin_warning(
+        result.get("backtrack_notes"), result.get("enforced_origin_actions")
+    )
+    assert "Plan Batch" in warning_text
+    assert "ppm" in warning_text
+    assert "m³" in warning_text
 
 
 def test_enforce_minimum_origin_dra_updates_plan_split():
