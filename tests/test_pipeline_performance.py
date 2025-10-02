@@ -459,14 +459,31 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         hour = int(str(start_time).split(":")[0])
         positive = any(float(entry.get("dra_ppm", 0.0) or 0.0) > 0 for entry in dra_linefill_in or [])
         call_log.append((hour, positive))
+        forced_detail = solver_kwargs.get("forced_origin_detail")
+        hours_val = float(solver_kwargs.get("hours", 1.0))
         if hour == 0:
-            if positive:
+            if positive and not forced_detail:
                 return {
                     "error": False,
                     "total_cost": 12.0,
                     "linefill": [{"length_km": 6.0, "dra_ppm": 3.0}],
                     "dra_front_km": 6.0,
                 }
+            if forced_detail:
+                forced_ppm = float(forced_detail.get("dra_ppm", 0.0) or 0.0)
+                cost_factor = flow * 1000.0 * hours_val / 1e6
+                dra_cost = forced_ppm * cost_factor * RateDRA
+                result = {
+                    "error": False,
+                    "total_cost": 12.0 + dra_cost,
+                    "linefill": [{"length_km": 6.0, "dra_ppm": forced_ppm or 3.0}],
+                    "dra_front_km": 6.0,
+                    "pipeline_flow_station_a": flow,
+                    "dra_ppm_station_a": forced_ppm,
+                    "dra_cost_station_a": dra_cost,
+                    "forced_origin_detail": copy.deepcopy(forced_detail),
+                }
+                return result
             return {
                 "error": False,
                 "total_cost": 10.0,
@@ -530,6 +547,15 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     assert len(result["reports"]) == 2
     first_front = result["reports"][0]["result"].get("dra_front_km", 0.0)
     assert first_front > 0.0
+    enforced_actions = result.get("enforced_origin_actions") or []
+    assert enforced_actions
+    enforced_detail = enforced_actions[0]
+    enforced_ppm = float(enforced_detail.get("dra_ppm", 0.0) or 0.0)
+    first_result = result["reports"][0]["result"]
+    assert first_result.get("dra_ppm_station_a", 0.0) == pytest.approx(enforced_ppm)
+    flow_main = float(first_result.get("pipeline_flow_station_a", 0.0) or 0.0)
+    expected_cost = enforced_ppm * (flow_main * 1000.0 * 1.0 / 1e6) * 5.0
+    assert first_result.get("dra_cost_station_a", 0.0) == pytest.approx(expected_cost)
     assert len(call_log) >= 3
 
 
