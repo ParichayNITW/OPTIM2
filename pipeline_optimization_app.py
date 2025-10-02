@@ -2683,14 +2683,18 @@ def _estimate_treatable_length(
     total_volume_m3: float,
     flow_m3_per_hour: float | None,
     hours: float,
+    queue_entries: list[dict] | None = None,
+    plan_volume_m3: float | None = None,
 ) -> float:
     """Estimate how much of the queue can be treated during ``hours``.
 
-    The helper relies on the volumetric representation of the pipeline: when
-    ``total_volume_m3`` reflects the volume of fluid currently occupying
-    ``total_length_km`` of pipe, the ratio provides a conversion between pumped
-    volume and treated distance.  ``flow_m3_per_hour`` describes the mainline
-    throughput scheduled for the enforced hour.
+    The helper primarily relies on the volumetric representation of the pipeline.
+    When ``total_volume_m3`` reflects the volume of fluid occupying
+    ``total_length_km`` of pipe, their ratio provides a conversion between pumped
+    volume and treated distance.  When that aggregate volume is unavailable, the
+    routine attempts to infer a reasonable conversion factor from the queued
+    slices or, as a last resort, the pending plan volume so the enforced slug
+    never exaggerates its downstream reach.
     """
 
     try:
@@ -2701,9 +2705,6 @@ def _estimate_treatable_length(
         total_volume = float(total_volume_m3)
     except (TypeError, ValueError):
         total_volume = 0.0
-
-    if total_length <= 0.0 or total_volume <= 0.0:
-        return 0.0
 
     try:
         flow_val = float(flow_m3_per_hour) if flow_m3_per_hour is not None else 0.0
@@ -2717,8 +2718,47 @@ def _estimate_treatable_length(
     if flow_val <= 0.0 or hours_val <= 0.0:
         return 0.0
 
+    km_per_m3_candidates: list[float] = []
+    if total_length > 0.0 and total_volume > 0.0:
+        km_per_m3_candidates.append(total_length / total_volume)
+
+    queue_total_length = 0.0
+    queue_total_volume = 0.0
+    if queue_entries:
+        for entry in queue_entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                length_val = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                volume_val = float(entry.get("volume", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                volume_val = 0.0
+            if length_val > 0.0:
+                queue_total_length += length_val
+            if volume_val > 0.0:
+                queue_total_volume += volume_val
+        if queue_total_length > 0.0 and queue_total_volume > 0.0:
+            km_per_m3_candidates.append(queue_total_length / queue_total_volume)
+
+    if not km_per_m3_candidates and total_length > 0.0 and plan_volume_m3 is not None:
+        try:
+            plan_volume = float(plan_volume_m3)
+        except (TypeError, ValueError):
+            plan_volume = 0.0
+        if plan_volume > 0.0:
+            km_per_m3_candidates.append(total_length / plan_volume)
+
+    if not km_per_m3_candidates:
+        return 0.0
+
+    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    if km_per_m3 <= 0.0:
+        return 0.0
+
     pumped_volume = flow_val * hours_val
-    km_per_m3 = total_length / total_volume
     treatable = pumped_volume * km_per_m3
     return max(treatable, 0.0)
 
@@ -2819,6 +2859,30 @@ def _enforce_minimum_origin_dra(
     else:
         col_vol = "Volume (m³)"
 
+    if total_volume <= 0.0:
+        snapshot_df = state.get("linefill_snapshot")
+        if isinstance(snapshot_df, pd.DataFrame) and len(snapshot_df) > 0:
+            snapshot_df = ensure_initial_dra_column(snapshot_df.copy(), default=0.0, fill_blanks=True)
+            snap_col = "Volume (m³)" if "Volume (m³)" in snapshot_df.columns else "Volume"
+            try:
+                total_volume = float(
+                    pd.to_numeric(snapshot_df[snap_col], errors="coerce").fillna(0.0).sum()
+                )
+            except Exception:
+                total_volume = 0.0
+
+    queue_total_volume = 0.0
+    for entry in queue:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            queue_total_volume += float(entry.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+
+    if total_volume <= 0.0 and queue_total_volume > 0.0:
+        total_volume = queue_total_volume
+
     slug_length = float(queue[0].get("length_km", min_length) or min_length)
     try:
         total_length = float(total_length_km)
@@ -2830,6 +2894,8 @@ def _enforce_minimum_origin_dra(
         total_volume_m3=total_volume,
         flow_m3_per_hour=hourly_flow_m3,
         hours=step_hours,
+        queue_entries=queue,
+        plan_volume_m3=plan_total_volume,
     )
     if treatable_limit > 0.0:
         slug_length = min(slug_length, treatable_limit)

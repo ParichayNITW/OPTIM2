@@ -760,6 +760,69 @@ def test_enforce_minimum_origin_dra_caps_length_by_flow():
     assert detail.get("treatable_km") == pytest.approx(treatable_expected)
 
 
+def test_enforce_minimum_origin_dra_uses_queue_volume_when_snapshot_missing():
+    import pipeline_optimization_app as app
+
+    diameter = 0.7
+    total_length = 120.0
+    total_volume = _volume_from_km(total_length, diameter)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch",
+                "Volume (m³)": total_volume / 3.0,
+                "Viscosity (cSt)": 2.8,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
+    queue = [
+        {
+            "length_km": total_length,
+            "dra_ppm": 0.0,
+            "volume": total_volume,
+        }
+    ]
+
+    state = {
+        "plan": plan_df,
+        "vol": None,
+        "linefill_snapshot": None,
+        "dra_linefill": queue,
+        "dra_reach_km": 0.0,
+    }
+
+    flow_length_per_hour = 4.0
+    flow_rate = _volume_from_km(flow_length_per_hour, diameter)
+
+    treatable_expected = app._estimate_treatable_length(
+        total_length_km=total_length,
+        total_volume_m3=total_volume,
+        flow_m3_per_hour=flow_rate,
+        hours=1.0,
+        queue_entries=queue,
+        plan_volume_m3=float(plan_df["Volume (m³)"].sum()),
+    )
+
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=total_length,
+        min_ppm=3.0,
+        min_fraction=0.05,
+        hourly_flow_m3=flow_rate,
+        step_hours=1.0,
+    )
+
+    assert changed is True
+    detail = state.get("origin_enforced_detail")
+    assert detail
+    assert detail["length_km"] == pytest.approx(treatable_expected)
+    assert detail.get("treatable_km") == pytest.approx(treatable_expected)
+
+
 def test_enforce_minimum_origin_dra_requires_volume_column():
     import pipeline_optimization_app as app
 
