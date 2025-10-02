@@ -557,12 +557,34 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     expected_cost = enforced_ppm * (flow_main * 1000.0 * 1.0 / 1e6) * 5.0
     assert first_result.get("dra_cost_station_a", 0.0) == pytest.approx(expected_cost)
     assert len(call_log) >= 3
+    backtrack_notes = result.get("backtrack_notes") or []
+    assert backtrack_notes
+    note_text = backtrack_notes[0]
+    assert "Origin queue now carries" in note_text
+    assert "Plan slices:" in note_text
+    assert f"{enforced_detail.get('length_km', 0.0):.1f} km" in note_text
+
+    plan_injections = enforced_detail.get("plan_injections") or []
+    assert plan_injections
+    for injection in plan_injections:
+        label = app._format_plan_injection_label(injection)
+        vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
+        ppm_val = float(injection.get("dra_ppm", enforced_detail.get("dra_ppm", 0.0)) or 0.0)
+        assert label in note_text
+        assert f"{vol_val:.0f} m³" in note_text
+        assert f"{ppm_val:.2f} ppm" in note_text
+
     warning_text = app._build_enforced_origin_warning(
-        result.get("backtrack_notes"), result.get("enforced_origin_actions")
+        backtrack_notes, result.get("enforced_origin_actions")
     )
-    assert "Plan Batch" in warning_text
-    assert "ppm" in warning_text
-    assert "m³" in warning_text
+    assert f"{int(enforced_detail.get('hour', 0)) % 24:02d}:00" in warning_text
+    for injection in plan_injections:
+        label = app._format_plan_injection_label(injection)
+        vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
+        ppm_val = float(injection.get("dra_ppm", enforced_detail.get("dra_ppm", 0.0)) or 0.0)
+        assert label in warning_text
+        assert f"{vol_val:.0f} m³" in warning_text
+        assert f"{ppm_val:.2f} ppm" in warning_text
 
 
 def test_enforce_minimum_origin_dra_updates_plan_split():
