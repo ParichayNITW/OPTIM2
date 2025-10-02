@@ -2932,6 +2932,33 @@ def _enforce_minimum_origin_dra(
     return True
 
 
+def _format_plan_injection_label(
+    injection: dict, *, default_label: str = "Plan slice"
+) -> str:
+    """Return a descriptive label for a plan injection entry."""
+
+    product = injection.get("product")
+    label = str(product).strip() if product not in (None, "") else ""
+
+    source_index = injection.get("source_index")
+    if source_index not in (None, ""):
+        try:
+            idx_val = int(source_index)
+        except (TypeError, ValueError):
+            idx_repr = str(source_index).strip()
+        else:
+            idx_repr = f"#{idx_val}"
+        if label:
+            label = f"{label} ({idx_repr})"
+        else:
+            label = f"Source {idx_repr}"
+
+    if not label:
+        label = default_label
+
+    return label
+
+
 def _execute_time_series_solver(
     stations_base: list[dict],
     term_data: dict,
@@ -3119,10 +3146,23 @@ def _execute_time_series_solver(
                     volume_fmt = detail_record["volume_m3"]
                     ppm_fmt = detail_record["dra_ppm"]
                     length_fmt = detail_record["length_km"]
+                    backtrack_hour = hours[ti - 1] % 24
                     detail_note = (
-                        f"Backtracked to {(hours[ti - 1] % 24):02d}:00 and enforced {volume_fmt:.0f} m³ @ "
-                        f"{ppm_fmt:.2f} ppm across {length_fmt:.1f} km upstream."
+                        f"Origin queue now carries {length_fmt:.1f} km of treated product after enforcing "
+                        f"{volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm at {backtrack_hour:02d}:00."
                     )
+                    injections = detail_record.get("plan_injections") or []
+                    if injections:
+                        slices = []
+                        for injection in injections:
+                            label = _format_plan_injection_label(injection)
+                            vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
+                            ppm_val = float(
+                                injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0
+                            )
+                            slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+                        if slices:
+                            detail_note += " Plan slices: " + "; ".join(slices) + "."
                 else:
                     origin_error = prev_state.get("origin_error")
             if not tightened:
@@ -3194,32 +3234,35 @@ def _build_enforced_origin_warning(
 
     detail_parts: list[str] = []
     for entry in enforced_details or []:
+        hour_val = entry.get("hour")
+        hour_label = "Origin"
+        if hour_val not in (None, ""):
+            try:
+                hour_int = int(hour_val)
+            except (TypeError, ValueError):
+                hour_str = str(hour_val).strip()
+                if hour_str:
+                    hour_label = hour_str
+            else:
+                hour_label = f"{hour_int % 24:02d}:00"
+
         injections = entry.get("plan_injections") or []
         if injections:
             for injection in injections:
-                product = injection.get("product")
-                source_index = injection.get("source_index")
-                label = str(product).strip() if product else ""
-                if source_index is not None and source_index != "":
-                    try:
-                        idx_val = int(source_index)
-                    except (TypeError, ValueError):
-                        idx_repr = str(source_index).strip()
-                    else:
-                        idx_repr = f"#{idx_val}"
-                    if label:
-                        label = f"{label} ({idx_repr})"
-                    else:
-                        label = f"Source {idx_repr}"
-                if not label:
-                    label = "Plan slice"
+                label = _format_plan_injection_label(injection)
                 vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
-                ppm_val = float(injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0)
-                detail_parts.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+                ppm_val = float(
+                    injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0
+                )
+                detail_parts.append(
+                    f"{hour_label} – {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
+                )
         else:
             vol_val = float(entry.get("volume_m3", 0.0) or 0.0)
             ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
-            detail_parts.append(f"Slug total: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+            detail_parts.append(
+                f"{hour_label} – Origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
+            )
 
     if detail_parts:
         warn_msg += " Enforced injections: " + "; ".join(detail_parts) + "."
