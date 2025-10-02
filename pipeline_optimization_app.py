@@ -2691,6 +2691,8 @@ def _enforce_minimum_origin_dra(
     if state.get("origin_enforced"):
         return False
 
+    state.pop("origin_error", None)
+
     queue = []
     changed = False
     for entry in state.get("dra_linefill") or []:
@@ -2726,11 +2728,142 @@ def _enforce_minimum_origin_dra(
     if not changed:
         return False
 
+    plan_df = state.get("plan")
+    if not isinstance(plan_df, pd.DataFrame) or plan_df.empty:
+        state["origin_error"] = (
+            "Zero DRA infeasible: upstream plan is empty so the enforced slug cannot be injected."
+        )
+        return False
+
+    plan_df = ensure_initial_dra_column(plan_df.copy(), default=0.0, fill_blanks=True)
+    plan_df = plan_df.reset_index(drop=True)
+    plan_columns = list(plan_df.columns)
+    if "Volume (m³)" in plan_df.columns:
+        plan_col_vol = "Volume (m³)"
+    elif "Volume" in plan_df.columns:
+        plan_col_vol = "Volume"
+    else:
+        state["origin_error"] = (
+            "Zero DRA infeasible: day plan is missing a volume column so the enforced slug cannot be allocated."
+        )
+        return False
+    try:
+        plan_total_volume = float(pd.to_numeric(plan_df[plan_col_vol], errors="coerce").fillna(0.0).sum())
+    except Exception:
+        plan_total_volume = 0.0
+    enforce_cols = {plan_col_vol, INIT_DRA_COL}
+    if "DRA ppm" in plan_df.columns:
+        enforce_cols.add("DRA ppm")
+
+    vol_df = state.get("vol")
+    total_volume = 0.0
+    if isinstance(vol_df, pd.DataFrame) and len(vol_df) > 0:
+        vol_df = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
+        col_vol = "Volume (m³)" if "Volume (m³)" in vol_df.columns else "Volume"
+        try:
+            total_volume = float(pd.to_numeric(vol_df[col_vol], errors="coerce").fillna(0.0).sum())
+        except Exception:
+            total_volume = 0.0
+    else:
+        col_vol = "Volume (m³)"
+
+    slug_length = float(queue[0].get("length_km", min_length) or min_length)
+    try:
+        total_length = float(total_length_km)
+    except (TypeError, ValueError):
+        total_length = 0.0
+
+    existing_volume = float(queue[0].get("volume", 0.0) or 0.0)
+    target_volume = 0.0
+    if total_length > 0.0 and total_volume > 0.0:
+        target_volume = total_volume * (slug_length / total_length)
+    if target_volume <= 0.0:
+        volume_basis = plan_total_volume if plan_total_volume > 0.0 else total_volume
+        if volume_basis > 0.0:
+            if total_length > 0.0:
+                target_volume = volume_basis * (slug_length / total_length)
+            if target_volume <= 0.0:
+                target_volume = volume_basis * float(min_fraction)
+
+    if existing_volume > 0.0 and target_volume > 0.0:
+        slug_volume = min(existing_volume, target_volume)
+    elif target_volume > 0.0:
+        slug_volume = target_volume
+    else:
+        slug_volume = existing_volume
+
+    slug_volume = float(max(slug_volume, 0.0))
+    if slug_volume <= 0.0:
+        state["origin_error"] = (
+            "Zero DRA infeasible: unable to determine a valid volume for the enforced upstream slug."
+        )
+        return False
+
+    queue[0]["volume"] = slug_volume
+
+    enforced_rows: list[dict] = []
+    remaining = float(slug_volume)
+    for _, row in plan_df.iterrows():
+        row_dict = row.to_dict()
+        try:
+            row_vol = float(row_dict.get(plan_col_vol, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            row_vol = 0.0
+
+        if remaining <= 1e-9:
+            enforced_rows.append(row_dict)
+            continue
+
+        existing_ppm = float(row_dict.get(INIT_DRA_COL, 0.0) or 0.0)
+        if row_vol <= 1e-9:
+            row_dict[INIT_DRA_COL] = max(existing_ppm, float(min_ppm))
+            if "DRA ppm" in enforce_cols:
+                row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
+            enforced_rows.append(row_dict)
+            continue
+
+        if row_vol <= remaining + 1e-9:
+            row_dict[INIT_DRA_COL] = max(existing_ppm, float(min_ppm))
+            if "DRA ppm" in enforce_cols:
+                row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
+            enforced_rows.append(row_dict)
+            remaining -= row_vol
+            continue
+
+        slug_row = row_dict.copy()
+        slug_row[plan_col_vol] = remaining
+        slug_row[INIT_DRA_COL] = max(existing_ppm, float(min_ppm))
+        if "DRA ppm" in enforce_cols:
+            slug_row["DRA ppm"] = slug_row[INIT_DRA_COL]
+        enforced_rows.append(slug_row)
+
+        remainder = row_dict.copy()
+        remainder[plan_col_vol] = row_vol - remaining
+        remainder[INIT_DRA_COL] = existing_ppm
+        if "DRA ppm" in enforce_cols:
+            remainder["DRA ppm"] = remainder[INIT_DRA_COL]
+        enforced_rows.append(remainder)
+        remaining = 0.0
+
+    if remaining > 1e-6:
+        state["origin_error"] = (
+            "Zero DRA infeasible: day plan does not contain enough volume to honour the enforced slug."
+        )
+        return False
+
+    enforced_plan = pd.DataFrame(enforced_rows)
+    if plan_columns:
+        missing_cols = [col for col in plan_columns if col not in enforced_plan.columns]
+        for col in missing_cols:
+            enforced_plan[col] = plan_df[col]
+        enforced_plan = enforced_plan[plan_columns]
+
+    state["plan"] = enforced_plan.reset_index(drop=True)
+
     state["dra_linefill"] = queue
     current_reach = float(state.get("dra_reach_km", 0.0) or 0.0)
     state["dra_reach_km"] = max(current_reach, float(queue[0].get("length_km", min_length)))
 
-    vol_df = state.get("vol")
     if isinstance(vol_df, pd.DataFrame) and len(vol_df) > 0:
         vol_df = vol_df.copy()
         vol_df.at[0, INIT_DRA_COL] = max(float(vol_df.iloc[0].get(INIT_DRA_COL, 0.0) or 0.0), float(min_ppm))
@@ -2868,6 +3001,9 @@ def _execute_time_series_solver(
 
         if error_msg:
             if ti == 0:
+                origin_error = state.get("origin_error") if isinstance(state, dict) else None
+                if origin_error:
+                    error_msg = origin_error
                 break
 
             prev_state = hour_states[ti - 1]
@@ -2892,13 +3028,18 @@ def _execute_time_series_solver(
                     untreated_head_km += max(length_val, 0.0)
             untreated_tolerance = 1e-3
             tightened = False
+            origin_error = None
             if untreated_head_km > untreated_tolerance or prev_front <= untreated_tolerance:
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
                     min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
                 )
+                if not tightened:
+                    origin_error = prev_state.get("origin_error")
             if not tightened:
+                if origin_error:
+                    error_msg = origin_error
                 break
 
             backtracked = True
