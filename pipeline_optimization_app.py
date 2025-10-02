@@ -3182,6 +3182,51 @@ def _execute_time_series_solver(
     return result
 
 
+def _build_enforced_origin_warning(
+    backtrack_notes: list[str] | None,
+    enforced_details: list[dict] | None,
+) -> str:
+    warn_msg = " ".join(backtrack_notes or [])
+    if not warn_msg:
+        warn_msg = (
+            "Backtracking applied: zero DRA at the origin was infeasible for downstream hours."
+        )
+
+    detail_parts: list[str] = []
+    for entry in enforced_details or []:
+        injections = entry.get("plan_injections") or []
+        if injections:
+            for injection in injections:
+                product = injection.get("product")
+                source_index = injection.get("source_index")
+                label = str(product).strip() if product else ""
+                if source_index is not None and source_index != "":
+                    try:
+                        idx_val = int(source_index)
+                    except (TypeError, ValueError):
+                        idx_repr = str(source_index).strip()
+                    else:
+                        idx_repr = f"#{idx_val}"
+                    if label:
+                        label = f"{label} ({idx_repr})"
+                    else:
+                        label = f"Source {idx_repr}"
+                if not label:
+                    label = "Plan slice"
+                vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
+                ppm_val = float(injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0)
+                detail_parts.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+        else:
+            vol_val = float(entry.get("volume_m3", 0.0) or 0.0)
+            ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+            detail_parts.append(f"Slug total: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+
+    if detail_parts:
+        warn_msg += " Enforced injections: " + "; ".join(detail_parts) + "."
+
+    return warn_msg
+
+
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
     invalidate_results()
@@ -3399,27 +3444,10 @@ if not auto_batch:
             st.stop()
 
         if solver_result.get("backtracked"):
-            warn_msg = " ".join(solver_result.get("backtrack_notes") or [])
-            if not warn_msg:
-                warn_msg = (
-                    "Backtracking applied: zero DRA at the origin was infeasible for downstream hours."
-                )
-            enforced_details = solver_result.get("enforced_origin_actions") or []
-            if enforced_details:
-                detail_parts = []
-                for entry in enforced_details:
-                    try:
-                        hour_val = int(entry.get("hour", 0)) % 24
-                    except Exception:
-                        hour_val = 0
-                    volume_val = float(entry.get("volume_m3", 0.0) or 0.0)
-                    ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
-                    length_val = float(entry.get("length_km", 0.0) or 0.0)
-                    detail_parts.append(
-                        f"{hour_val:02d}:00 → {volume_val:.0f} m³ @ {ppm_val:.2f} ppm ({length_val:.1f} km)"
-                    )
-                if detail_parts:
-                    warn_msg += " Enforced injections: " + "; ".join(detail_parts) + "."
+            warn_msg = _build_enforced_origin_warning(
+                solver_result.get("backtrack_notes"),
+                solver_result.get("enforced_origin_actions"),
+            )
             st.warning(
                 warn_msg
                 + " Please avoid zero DRA requests at the origin when planning sequential hours."
