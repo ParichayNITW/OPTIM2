@@ -2979,6 +2979,7 @@ def _execute_time_series_solver(
         dra_cost_acc: dict[str, float] = {}
         error_msg = None
 
+        forced_detail_used: dict | None = None
         for sub in range(sub_steps):
             pumped_tmp = flow_rate * 1.0
             future_vol, future_plan = shift_vol_linefill(
@@ -2990,6 +2991,11 @@ def _execute_time_series_solver(
 
             stns_run = copy.deepcopy(stations_base)
             start_str = f"{int((hr + sub) % 24):02d}:00"
+            forced_detail = None
+            if sub == 0:
+                detail_obj = state.get("origin_enforced_detail")
+                if isinstance(detail_obj, dict):
+                    forced_detail = copy.deepcopy(detail_obj)
             res = solve_pipeline(
                 stns_run,
                 term_data,
@@ -3007,9 +3013,13 @@ def _execute_time_series_solver(
                 hours=1.0,
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
+                forced_origin_detail=forced_detail,
             )
 
             block_cost += res.get("total_cost", 0.0)
+
+            if forced_detail and not forced_detail_used:
+                forced_detail_used = copy.deepcopy(forced_detail)
 
             if res.get("error"):
                 cur_hr = (hr + sub) % 24
@@ -3029,6 +3039,9 @@ def _execute_time_series_solver(
             current_vol_local, plan_local = future_vol, future_plan
             current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
             dra_reach_local = res.get("dra_front_km", dra_reach_local)
+
+        if forced_detail_used and isinstance(res, dict):
+            res.setdefault("forced_origin_detail", forced_detail_used)
 
         if error_msg:
             if ti == 0:
