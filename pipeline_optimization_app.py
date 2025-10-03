@@ -31,6 +31,10 @@ if "Ambient_temp" not in st.session_state:
     st.session_state["Ambient_temp"] = 25.0
 if "pump_shear_rate" not in st.session_state:
     st.session_state["pump_shear_rate"] = 0.0
+if "max_laced_flow_m3h" not in st.session_state:
+    st.session_state["max_laced_flow_m3h"] = st.session_state.get("FLOW", 1000.0)
+if "max_laced_visc_cst" not in st.session_state:
+    st.session_state["max_laced_visc_cst"] = 10.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -234,6 +238,14 @@ def restore_case_dict(loaded_data):
     st.session_state['pump_shear_rate'] = loaded_data.get('pump_shear_rate', 0.0)
     st.session_state['MOP_kgcm2'] = loaded_data.get('MOP_kgcm2', 100.0)
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
+    st.session_state['max_laced_flow_m3h'] = loaded_data.get(
+        'max_laced_flow_m3h',
+        st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
+    )
+    st.session_state['max_laced_visc_cst'] = loaded_data.get(
+        'max_laced_visc_cst',
+        st.session_state.get('max_laced_visc_cst', 10.0),
+    )
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
         ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
@@ -380,6 +392,26 @@ with st.sidebar:
             value=st.session_state.get("MOP_kgcm2", 100.0),
             step=1.0,
             key="MOP_kgcm2",
+        )
+
+    with st.container():
+        st.markdown("<div class='section-title' style='font-size:1.1em;'>Provide Inputs for DRA lacing of pipeline</div>", unsafe_allow_html=True)
+        st.number_input(
+            "Target laced flow (m³/h)",
+            min_value=0.0,
+            value=float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))),
+            step=10.0,
+            key="max_laced_flow_m3h",
+            help="Defines the maximum flow rate that DRA lacing is tuned to support.",
+        )
+        st.number_input(
+            "Target laced viscosity (cSt)",
+            min_value=0.0,
+            value=float(st.session_state.get("max_laced_visc_cst", 10.0)),
+            step=0.1,
+            format="%.2f",
+            key="max_laced_visc_cst",
+            help="Viscosity reference used when evaluating DRA lacing performance.",
         )
 
         rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
@@ -1027,6 +1059,8 @@ def get_full_case_dict():
         "Ambient_temp": st.session_state.get('Ambient_temp', 25.0),
         "MOP_kgcm2": st.session_state.get('MOP_kgcm2', 100.0),
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
+        "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
+        "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -4028,6 +4062,13 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
                 file_name="results.csv",
             )
+
+            baseline_flow = st.session_state.get("max_laced_flow_m3h")
+            baseline_visc = st.session_state.get("max_laced_visc_cst")
+            st.markdown("#### DRA Lacing Baseline")
+            base_cols = st.columns(2)
+            base_cols[0].metric("Target laced flow (m³/h)", f"{baseline_flow:,.2f}" if baseline_flow is not None else "N/A")
+            base_cols[1].metric("Target laced viscosity (cSt)", f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A")
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
