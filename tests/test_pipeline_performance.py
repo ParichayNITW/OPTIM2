@@ -974,6 +974,74 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
     assert detail.get("floor_length_km") >= summary["length_km"]
 
 
+def test_enforce_minimum_origin_dra_preserves_segment_floors():
+    import pipeline_optimization_app as app
+
+    baseline = {
+        "segments": [
+            {"station_idx": 0, "length_km": 12.0, "dra_ppm": 3.0},
+            {"station_idx": 1, "length_km": 8.0, "dra_ppm": 6.0},
+        ]
+    }
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 3000.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+            {
+                "Product": "Batch 2",
+                "Volume (m³)": 2500.0,
+                app.INIT_DRA_COL: 0.0,
+            },
+        ]
+    )
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Linefill 1",
+                "Volume (m³)": 5000.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+
+    state = {
+        "plan": plan_df,
+        "vol": vol_df,
+        "dra_linefill": [],
+        "dra_reach_km": 0.0,
+    }
+
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=20.0,
+        min_ppm=0.0,
+        min_fraction=0.0,
+        baseline_requirement=baseline,
+    )
+
+    assert changed is True
+
+    queue = state["dra_linefill"]
+    assert isinstance(queue, list) and len(queue) >= 2
+    assert queue[0]["dra_ppm"] == pytest.approx(3.0)
+    assert queue[1]["dra_ppm"] == pytest.approx(6.0)
+    assert queue[0]["length_km"] == pytest.approx(12.0)
+    assert queue[1]["length_km"] == pytest.approx(8.0)
+
+    detail = state.get("origin_enforced_detail")
+    assert detail is not None
+    segments_detail = detail.get("segments")
+    assert isinstance(segments_detail, list) and len(segments_detail) == 2
+    assert segments_detail[0]["dra_ppm"] == pytest.approx(3.0)
+    assert segments_detail[1]["dra_ppm"] == pytest.approx(6.0)
+
+
 def test_compute_minimum_lacing_requirement_finds_floor():
     import pipeline_model as model
 
