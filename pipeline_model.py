@@ -1083,35 +1083,22 @@ def _update_mainline_dra(
                 zero_front_pre = float(rest_entries[0][0])
                 rest_entries = rest_entries[1:]
 
-            # Preserve the original untreated pocket instead of inflating it with the
-            # newly pumped head length.  The downstream queue already reflects the
-            # tracked volume, so we only trim downstream treated fluid when required.
-            desired_zero = float(initial_zero_prefix)
-            if desired_zero < zero_front_pre:
-                desired_zero = zero_front_pre
             zero_capacity = max(pipeline_length - inj_length, 0.0)
-            if zero_capacity > 0.0:
-                desired_zero = min(desired_zero, zero_capacity)
-            else:
-                desired_zero = 0.0
+            target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
+            if target_zero_length < zero_front_pre:
+                target_zero_length = zero_front_pre
 
-            # Rebuild the queue as the injected slug, then the preserved zero front,
-            # and finally the downstream treated batches.  This mirrors how field
-            # hydraulics advance: new fluid leads the train while untreated pockets
-            # persist until the true tail encroaches on them.
+            trim_needed = max(0.0, target_zero_length - zero_front_pre)
+            trimmed_rest, leftover = _trim_queue_tail(rest_entries, trim_needed)
+            if leftover > 1e-9 and target_zero_length > 0.0:
+                target_zero_length = max(0.0, target_zero_length - leftover)
+
             adjusted_entries: list[tuple[float, float]] = []
             if inj_entry is not None and inj_entry[0] > 0.0:
                 adjusted_entries.append(inj_entry)
-            if desired_zero > 0.0:
-                adjusted_entries.append((desired_zero, 0.0))
-            adjusted_entries.extend(rest_entries)
-
-            if adjusted_entries:
-                adjusted_total = _queue_total_length(adjusted_entries)
-                trim_needed = max(adjusted_total - pipeline_length, 0.0)
-                if trim_needed > 1e-9:
-                    adjusted_entries, _ = _trim_queue_tail(adjusted_entries, trim_needed)
-
+            if target_zero_length > 0.0:
+                adjusted_entries.append((target_zero_length, 0.0))
+            adjusted_entries.extend(trimmed_rest)
             merged_queue = _merge_queue(adjusted_entries)
 
     queue_after = [
@@ -3837,29 +3824,14 @@ def solve_pipeline(
                         key_to_use: object = bucket
                     else:
                         existing_protected = bool(existing.get('protected'))
-                        better_cost = new_cost < existing['cost']
-                        better_residual = (
-                            abs(new_cost - existing['cost']) < 1e-9
-                            and residual_next > existing['residual']
-                        )
-                        if better_cost or better_residual:
-                            if existing_protected and not is_protected:
-                                # Preserve the protected baseline under a
-                                # dedicated key so economically superior
-                                # injected states can replace the canonical
-                                # entry for this residual bucket.
-                                baseline_key = (bucket, "baseline")
-                                prior = new_states.get(baseline_key)
-                                if (
-                                    prior is None
-                                    or existing['cost'] < prior['cost'] - 1e-9
-                                ):
-                                    baseline_entry = existing.copy()
-                                    baseline_entry['protected'] = True
-                                    new_states[baseline_key] = baseline_entry
-                                replace_existing = True
-                                key_to_use = existing_key  # type: ignore[assignment]
-                            elif not (existing_protected and not is_protected):
+                        if (
+                            new_cost < existing['cost']
+                            or (
+                                abs(new_cost - existing['cost']) < 1e-9
+                                and residual_next > existing['residual']
+                            )
+                        ):
+                            if not (existing_protected and not is_protected):
                                 replace_existing = True
                                 key_to_use = existing_key  # type: ignore[assignment]
                             else:
@@ -3960,41 +3932,14 @@ def solve_pipeline(
                 (key, data) for key, data in items if data.get('protected')
             ]
             threshold = best_cost_station + state_cost_margin
-            dra_extension = max(state_cost_margin, STATE_COST_MARGIN)
             pruned: dict[object, dict] = {}
             for key, data in protected_entries:
                 pruned[key] = data
-            dra_retained: list[tuple[object, dict]] = []
             for idx, (residual_key, data) in enumerate(items):
-                inj_ppm = float(data.get('inj_ppm_main', 0.0) or 0.0)
-                inj_positive = inj_ppm > 0.0
-                limit = threshold + (dra_extension if inj_positive else 0.0)
-                if idx < state_top_k or data['cost'] <= limit:
-                    if residual_key not in pruned:
-                        pruned[residual_key] = data
-                    elif inj_positive:
-                        alt_key = (residual_key, f"dra_{len(pruned)}")
-                        pruned[alt_key] = data
+                if residual_key in pruned:
                     continue
-                if inj_positive:
-                    dra_retained.append((residual_key, data))
-            if dra_retained:
-                # Preserve a handful of high-cost injected states so downstream
-                # stations can benefit from their reduced head losses.  The
-                # additional entries keep the search breadth tractable while
-                # ensuring expensive but strategically valuable DRA paths do not
-                # disappear after this station.
-                dra_retained.sort(key=lambda kv: (kv[1]['cost'], -kv[1]['residual']))
-                extra_slots = max(1, min(len(dra_retained), state_top_k + 2))
-                for residual_key, data in dra_retained:
-                    if residual_key not in pruned:
-                        pruned[residual_key] = data
-                    else:
-                        alt_key = (residual_key, f"dra_{len(pruned)}")
-                        pruned[alt_key] = data
-                    extra_slots -= 1
-                    if extra_slots <= 0:
-                        break
+                if idx < state_top_k or data['cost'] <= threshold:
+                    pruned[residual_key] = data
             states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
