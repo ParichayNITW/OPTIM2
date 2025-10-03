@@ -913,12 +913,26 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
     assert detail.get("floor_length_km") >= baseline["length_km"]
 
 
-def test_compute_minimum_lacing_requirement_finds_floor(monkeypatch):
+def test_compute_minimum_lacing_requirement_finds_floor():
     import pipeline_model as model
 
     stations = [
         {
             "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
             "L": 10.0,
             "d": 0.7,
             "t": 0.007,
@@ -927,13 +941,7 @@ def test_compute_minimum_lacing_requirement_finds_floor(monkeypatch):
             "supply": 0.0,
         }
     ]
-    terminal = {"min_residual": 0.0}
-
-    def fake_requirement(stns, *_args, **_kwargs):
-        dr_val = float(stns[0].get("max_dr", 0.0) or 0.0)
-        return 5.0 if dr_val < 12.0 else -1.0
-
-    monkeypatch.setattr(model, "_downstream_requirement", fake_requirement)
+    terminal = {"min_residual": 0.0, "elev": 0.0}
 
     result = model.compute_minimum_lacing_requirement(
         stations,
@@ -943,8 +951,25 @@ def test_compute_minimum_lacing_requirement_finds_floor(monkeypatch):
     )
 
     assert result["length_km"] == pytest.approx(10.0)
-    assert result["dra_perc"] >= 12.0
+    assert result["dra_perc"] > 0.0
     assert result["dra_ppm"] > 0.0
+
+    flow = 1200.0
+    head_loss, *_ = model._segment_hydraulics(
+        flow,
+        stations[0]["L"],
+        stations[0]["d"],
+        stations[0]["rough"],
+        2.5,
+        0.0,
+        0.0,
+    )
+    pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
+    max_head = sum(p.get("tdh", 0.0) for p in pump_info)
+    sdh_required = max(head_loss, 0.0)
+    expected_dr = max(sdh_required - max_head, 0.0) / sdh_required * 100.0 if sdh_required > 0 else 0.0
+    assert result["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
+    assert result["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
 
 
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
