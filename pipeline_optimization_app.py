@@ -45,7 +45,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -99,6 +99,80 @@ def ensure_initial_dra_column(
     if blank_mask.any():
         df.loc[blank_mask, INIT_DRA_COL] = default
     return df
+
+
+def _summarise_baseline_requirement(
+    baseline_requirement: Mapping[str, object] | None,
+) -> dict[str, float | bool]:
+    """Return aggregate information for a baseline lacing requirement."""
+
+    summary: dict[str, float | bool] = {
+        "dra_ppm": 0.0,
+        "dra_perc": 0.0,
+        "length_km": 0.0,
+        "has_segments": False,
+        "has_positive_segments": False,
+        "segment_count": 0,
+    }
+
+    if not isinstance(baseline_requirement, Mapping):
+        return summary
+
+    segments_raw = baseline_requirement.get("segments")
+    if isinstance(segments_raw, (list, tuple)):
+        summary["segment_count"] = sum(1 for entry in segments_raw if isinstance(entry, Mapping))
+        if summary["segment_count"]:
+            summary["has_segments"] = True
+        positive_length = 0.0
+        for entry in segments_raw:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                seg_length = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_length = 0.0
+            try:
+                seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_ppm = 0.0
+            try:
+                seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_perc = 0.0
+            if seg_ppm > summary["dra_ppm"]:
+                summary["dra_ppm"] = seg_ppm
+            if seg_perc > summary["dra_perc"]:
+                summary["dra_perc"] = seg_perc
+            if seg_ppm > 0.0 or seg_perc > 0.0:
+                summary["has_positive_segments"] = True
+                if seg_length > 0.0:
+                    positive_length += seg_length
+        if positive_length > 0.0:
+            summary["length_km"] = positive_length
+
+    if summary["dra_ppm"] <= 0.0:
+        try:
+            summary["dra_ppm"] = max(
+                summary["dra_ppm"], float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+            )
+        except (TypeError, ValueError):
+            pass
+    if summary["dra_perc"] <= 0.0:
+        try:
+            summary["dra_perc"] = max(
+                summary["dra_perc"], float(baseline_requirement.get("dra_perc", 0.0) or 0.0)
+            )
+        except (TypeError, ValueError):
+            pass
+    if summary["length_km"] <= 0.0:
+        try:
+            summary["length_km"] = max(
+                summary["length_km"], float(baseline_requirement.get("length_km", 0.0) or 0.0)
+            )
+        except (TypeError, ValueError):
+            pass
+
+    return summary
 
 
 def _get_linefill_snapshot_for_hour(
@@ -2319,6 +2393,7 @@ def solve_pipeline(
     baseline_enforceable = True
     baseline_warnings: list = []
     baseline_segments: list[dict] | None = None
+    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
@@ -2326,12 +2401,10 @@ def solve_pipeline(
             if message:
                 st.warning(message)
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
-        length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
         segments_raw = baseline_requirement.get("segments")
         if isinstance(segments_raw, list):
             baseline_segments = copy.deepcopy(segments_raw)
-        if baseline_enforceable and ppm_floor > 0 and length_floor > 0:
+        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
@@ -2365,7 +2438,18 @@ def solve_pipeline(
                 detail["dra_perc"] = max(current_perc, perc_floor)
         return detail or None
 
-    baseline_for_enforcement = baseline_requirement if baseline_enforceable else None
+    baseline_for_enforcement: dict | None = None
+    if baseline_enforceable:
+        base_detail: dict[str, float] = {}
+        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        if ppm_floor > 0.0:
+            base_detail["dra_ppm"] = ppm_floor
+        if perc_floor > 0.0:
+            base_detail["dra_perc"] = perc_floor
+        if base_detail:
+            base_detail["length_km"] = 0.0
+            baseline_for_enforcement = base_detail
     baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
@@ -2913,15 +2997,15 @@ def _enforce_minimum_origin_dra(
     except (TypeError, ValueError):
         floor_ppm = 0.0
     floor_length = 0.0
-    if isinstance(baseline_requirement, dict):
-        try:
-            floor_ppm = max(floor_ppm, float(baseline_requirement.get("dra_ppm", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            pass
-        try:
-            floor_length = max(floor_length, float(baseline_requirement.get("length_km", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            pass
+    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+    try:
+        floor_ppm = max(floor_ppm, float(baseline_summary.get("dra_ppm", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        floor_length = max(floor_length, float(baseline_summary.get("length_km", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        pass
     if min_fraction is None:
         min_fraction = 0.0
     try:
@@ -3624,6 +3708,8 @@ def run_all_updates():
         baseline_requirement = None
     baseline_enforceable = True
     baseline_warnings: list = []
+    baseline_segments: list[dict] | None = None
+    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
@@ -3631,14 +3717,19 @@ def run_all_updates():
             if message:
                 st.warning(message)
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
-        length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
-        if baseline_enforceable and ppm_floor > 0 and length_floor > 0:
+        segments_raw = baseline_requirement.get("segments")
+        if isinstance(segments_raw, list):
+            baseline_segments = copy.deepcopy(segments_raw)
+        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
+    if baseline_enforceable and baseline_segments:
+        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
+    else:
+        st.session_state.pop("origin_lacing_segment_baseline", None)
 
     def _merge_baseline_detail(base_detail: dict | None, detail: dict | None) -> dict | None:
         if base_detail is None and detail is None:
@@ -3661,7 +3752,18 @@ def run_all_updates():
                 merged["dra_perc"] = max(current_perc, perc_floor)
         return merged
 
-    baseline_for_enforcement = baseline_requirement if baseline_enforceable else None
+    baseline_for_enforcement: dict | None = None
+    if baseline_enforceable:
+        base_detail: dict[str, float] = {}
+        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        if ppm_floor > 0.0:
+            base_detail["dra_ppm"] = ppm_floor
+        if perc_floor > 0.0:
+            base_detail["dra_perc"] = perc_floor
+        if base_detail:
+            base_detail["length_km"] = 0.0
+            baseline_for_enforcement = base_detail
     forced_detail_effective = _merge_baseline_detail(baseline_for_enforcement, forced_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -4234,22 +4336,29 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             base_cols[0].metric("Target laced flow (m³/h)", f"{baseline_flow:,.2f}" if baseline_flow is not None else "N/A")
             base_cols[1].metric("Target laced viscosity (cSt)", f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A")
             baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
+            baseline_summary = _summarise_baseline_requirement(baseline_detail)
             floor_cols = st.columns(3)
-            floor_length = baseline_detail.get("length_km")
-            floor_ppm = baseline_detail.get("dra_ppm")
-            floor_perc = baseline_detail.get("dra_perc")
-            floor_cols[0].metric(
-                "Enforced queue length (km)",
-                f"{float(floor_length):,.2f}" if isinstance(floor_length, (int, float)) and float(floor_length) > 0 else "N/A",
-            )
-            floor_cols[1].metric(
-                "Minimum origin ppm",
-                f"{float(floor_ppm):,.2f}" if isinstance(floor_ppm, (int, float)) and float(floor_ppm) > 0 else "N/A",
-            )
-            floor_cols[2].metric(
-                "Minimum origin %DR",
-                f"{float(floor_perc):,.2f}" if isinstance(floor_perc, (int, float)) and float(floor_perc) > 0 else "N/A",
-            )
+            if baseline_summary.get("has_segments"):
+                seg_note = "See segment table"
+                floor_cols[0].metric("Enforced queue length (km)", seg_note)
+                floor_cols[1].metric("Minimum origin ppm", seg_note)
+                floor_cols[2].metric("Minimum origin %DR", seg_note)
+            else:
+                floor_length = baseline_summary.get("length_km", 0.0)
+                floor_ppm = baseline_summary.get("dra_ppm", 0.0)
+                floor_perc = baseline_summary.get("dra_perc", 0.0)
+                floor_cols[0].metric(
+                    "Enforced queue length (km)",
+                    f"{float(floor_length):,.2f}" if isinstance(floor_length, (int, float)) and float(floor_length) > 0 else "N/A",
+                )
+                floor_cols[1].metric(
+                    "Minimum origin ppm",
+                    f"{float(floor_ppm):,.2f}" if isinstance(floor_ppm, (int, float)) and float(floor_ppm) > 0 else "N/A",
+                )
+                floor_cols[2].metric(
+                    "Minimum origin %DR",
+                    f"{float(floor_perc):,.2f}" if isinstance(floor_perc, (int, float)) and float(floor_perc) > 0 else "N/A",
+                )
 
             segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
             if segment_baseline:
