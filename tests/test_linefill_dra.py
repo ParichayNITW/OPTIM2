@@ -1357,6 +1357,52 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
     assert zero_entry["length_km"] == pytest.approx(expected_zero_length, rel=1e-6)
 
 
+def test_origin_injection_preserves_zero_front_ordering() -> None:
+    """Injecting after a dry spell keeps the untreated pocket unchanged in length."""
+
+    diameter_inner = 0.7461504
+    flow_m3h = 2942.0
+    hours = 1.0
+    segment_length = 158.0
+
+    initial_queue = [(100.94, 0.0), (57.06, 4.0)]
+    stn_data = {"is_pump": True, "d_inner": diameter_inner, "idx": 0}
+    operating = {"nop": 1, "dra_ppm_main": 2.0}
+
+    precomputed = _prepare_dra_queue_consumption(
+        initial_queue,
+        segment_length,
+        flow_m3h,
+        hours,
+        diameter_inner,
+    )
+
+    _, queue_after, _ = _update_mainline_dra(
+        initial_queue,
+        stn_data,
+        operating,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        dra_shear_factor=0.0,
+        pump_shear_rate=0.0,
+        is_origin=True,
+        precomputed=precomputed,
+    )
+
+    assert queue_after
+    assert queue_after[0]["dra_ppm"] == pytest.approx(operating["dra_ppm_main"], rel=1e-6)
+    assert queue_after[0]["length_km"] == pytest.approx(
+        _km_from_volume(flow_m3h * hours, diameter_inner),
+        rel=1e-6,
+    )
+    assert queue_after[1]["dra_ppm"] == pytest.approx(0.0, abs=1e-12)
+    assert queue_after[1]["length_km"] == pytest.approx(initial_queue[0][0], rel=1e-6)
+    assert queue_after[2]["dra_ppm"] == pytest.approx(initial_queue[1][1], rel=1e-6)
+    assert queue_after[2]["length_km"] == pytest.approx(50.3317823065332, rel=1e-6)
+
+
 def test_full_shear_zero_front_propagates_downstream() -> None:
     """Downstream segments should consume the 0 ppm zone before any treated slug."""
 
