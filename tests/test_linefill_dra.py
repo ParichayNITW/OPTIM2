@@ -1234,7 +1234,8 @@ def test_origin_zero_front_remains_bounded_with_repeated_updates() -> None:
     assert queue_after_stage1
     zero_front_1 = queue_after_stage1[0]
     assert zero_front_1["dra_ppm"] == 0
-    assert zero_front_1["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    zero_reference = zero_front_1["length_km"]
+    assert zero_reference == pytest.approx(pumped_length, rel=1e-6)
 
     precomputed_stage2 = _prepare_dra_queue_consumption(
         queue_after_stage1,
@@ -1258,7 +1259,7 @@ def test_origin_zero_front_remains_bounded_with_repeated_updates() -> None:
     assert queue_after_stage2
     zero_front_2 = queue_after_stage2[0]
     assert zero_front_2["dra_ppm"] == 0
-    assert zero_front_2["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert zero_front_2["length_km"] == pytest.approx(zero_reference, rel=1e-6)
 
 
 def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
@@ -1314,7 +1315,8 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
     assert queue_stage2
     accumulated_zero = queue_stage2[0]
     assert accumulated_zero["dra_ppm"] == 0
-    assert accumulated_zero["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    zero_reference = accumulated_zero["length_km"]
+    assert zero_reference == pytest.approx(pumped_length, rel=1e-6)
 
     opt_inject = {"nop": 1, "dra_ppm_main": 25.0}
 
@@ -1340,7 +1342,7 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
     assert inj_ppm == pytest.approx(opt_inject["dra_ppm_main"], rel=1e-9)
     assert queue_stage3
     total_length = sum(entry["length_km"] for entry in queue_stage3)
-    expected_zero_length = pumped_length
+    expected_zero_length = zero_reference
     assert expected_zero_length <= total_length + 1e-6
 
     injected_slug = queue_stage3[0]
