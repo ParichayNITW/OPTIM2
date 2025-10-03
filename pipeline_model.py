@@ -1089,6 +1089,11 @@ def _update_mainline_dra(
             desired_zero = float(initial_zero_prefix)
             if desired_zero < zero_front_pre:
                 desired_zero = zero_front_pre
+            zero_capacity = max(pipeline_length - inj_length, 0.0)
+            if zero_capacity > 0.0:
+                desired_zero = min(desired_zero, zero_capacity)
+            else:
+                desired_zero = 0.0
 
             # Rebuild the queue as the injected slug, then the preserved zero front,
             # and finally the downstream treated batches.  This mirrors how field
