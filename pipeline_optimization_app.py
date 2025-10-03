@@ -175,6 +175,72 @@ def _summarise_baseline_requirement(
     return summary
 
 
+def _collect_segment_floors(
+    baseline_requirement: Mapping[str, object] | None,
+    *,
+    min_ppm: float = 0.0,
+) -> list[dict[str, object]]:
+    """Normalise baseline segments for enforcement and display."""
+
+    segments: list[dict[str, object]] = []
+
+    if not isinstance(baseline_requirement, Mapping):
+        return segments
+
+    segments_raw = baseline_requirement.get("segments")
+    if not isinstance(segments_raw, Sequence):
+        return segments
+
+    processed: list[tuple[int, dict[str, object]]] = []
+    for order_idx, entry in enumerate(segments_raw):
+        if not isinstance(entry, Mapping):
+            continue
+
+        try:
+            seg_length = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        if seg_length <= 0.0:
+            continue
+
+        try:
+            baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            baseline_ppm = 0.0
+
+        floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
+        if floor_ppm <= 0.0:
+            continue
+
+        try:
+            station_idx = int(entry.get("station_idx", order_idx))
+        except (TypeError, ValueError):
+            station_idx = order_idx
+
+        seg_detail: dict[str, object] = {
+            "station_idx": station_idx,
+            "length_km": float(seg_length),
+            "dra_ppm": float(floor_ppm),
+        }
+
+        try:
+            seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_perc = 0.0
+        if seg_perc > 0.0:
+            seg_detail["dra_perc"] = seg_perc
+
+        if bool(entry.get("limited_by_station")):
+            seg_detail["limited_by_station"] = True
+
+        processed.append((station_idx, order_idx, seg_detail))
+
+    processed.sort(key=lambda item: (item[0], item[1]))
+    segments = [item[2] for item in processed]
+
+    return segments
+
+
 def _get_linefill_snapshot_for_hour(
     linefill_snaps: Sequence[pd.DataFrame] | None,
     hours: Sequence[int] | None,
@@ -2401,9 +2467,9 @@ def solve_pipeline(
             if message:
                 st.warning(message)
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segments_raw = baseline_requirement.get("segments")
-        if isinstance(segments_raw, list):
-            baseline_segments = copy.deepcopy(segments_raw)
+        segment_floors = _collect_segment_floors(baseline_requirement)
+        if segment_floors:
+            baseline_segments = copy.deepcopy(segment_floors)
         if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
@@ -2986,7 +3052,6 @@ def _enforce_minimum_origin_dra(
     state.pop("origin_enforced_detail", None)
 
     queue = []
-    changed = False
     for entry in state.get("dra_linefill") or []:
         if not isinstance(entry, dict):
             continue
@@ -2996,16 +3061,23 @@ def _enforce_minimum_origin_dra(
         floor_ppm = max(float(min_ppm or 0.0), 0.0)
     except (TypeError, ValueError):
         floor_ppm = 0.0
-    floor_length = 0.0
-    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    try:
-        floor_ppm = max(floor_ppm, float(baseline_summary.get("dra_ppm", 0.0) or 0.0))
-    except (TypeError, ValueError):
-        pass
-    try:
-        floor_length = max(floor_length, float(baseline_summary.get("length_km", 0.0) or 0.0))
-    except (TypeError, ValueError):
-        pass
+
+    fallback_length = 0.0
+    fallback_perc = 0.0
+    if isinstance(baseline_requirement, Mapping):
+        try:
+            floor_ppm = max(floor_ppm, float(baseline_requirement.get("dra_ppm", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            fallback_length = max(fallback_length, float(baseline_requirement.get("length_km", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            fallback_perc = max(fallback_perc, float(baseline_requirement.get("dra_perc", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+
     if min_fraction is None:
         min_fraction = 0.0
     try:
@@ -3014,32 +3086,38 @@ def _enforce_minimum_origin_dra(
         min_length = 0.0
     if min_length <= 0.0:
         min_length = 1.0
-    if floor_length > 0.0:
-        min_length = max(min_length, floor_length)
-    min_length = min(float(total_length_km) if total_length_km > 0 else min_length, max(min_length, 1.0))
 
-    if not queue:
-        queue.append({"length_km": float(min_length), "dra_ppm": float(floor_ppm)})
-        changed = True
+    try:
+        total_length_value = float(total_length_km)
+    except (TypeError, ValueError):
+        total_length_value = 0.0
+    if total_length_value > 0.0:
+        min_length = min(total_length_value, max(min_length, 1.0))
     else:
-        head = queue[0]
-        ppm_val = float(head.get("dra_ppm", 0.0) or 0.0)
-        length_val = float(head.get("length_km", 0.0) or 0.0)
-        vol_val = float(head.get("volume", 0.0) or 0.0)
-        if ppm_val <= 0.0:
-            head["dra_ppm"] = float(floor_ppm)
-            changed = True
-        if length_val <= 0.0:
-            if vol_val > 0.0:
-                head["volume"] = vol_val
-            head["length_km"] = float(min_length)
-            changed = True
-        else:
-            if length_val < min_length:
-                head["length_km"] = float(min_length)
-                changed = True
-    if not changed:
+        min_length = max(min_length, 1.0)
+
+    segments_source = _collect_segment_floors(baseline_requirement, min_ppm=floor_ppm)
+    segments_to_enforce = [dict(seg) for seg in segments_source]
+
+    if not segments_to_enforce:
+        fallback_length = max(fallback_length, min_length if floor_ppm > 0.0 else 0.0)
+        if total_length_value > 0.0 and fallback_length > 0.0:
+            fallback_length = min(total_length_value, fallback_length)
+        fallback_ppm = float(floor_ppm)
+        if fallback_length > 0.0 and fallback_ppm > 0.0:
+            fallback_segment: dict[str, object] = {
+                "station_idx": 0,
+                "length_km": float(fallback_length),
+                "dra_ppm": fallback_ppm,
+            }
+            if fallback_perc > 0.0:
+                fallback_segment["dra_perc"] = fallback_perc
+            segments_to_enforce.append(fallback_segment)
+
+    if not segments_to_enforce:
         return False
+
+    changed = False
 
     plan_df = state.get("plan")
     if not isinstance(plan_df, pd.DataFrame) or plan_df.empty:
@@ -3104,11 +3182,7 @@ def _enforce_minimum_origin_dra(
     if total_volume <= 0.0 and queue_total_volume > 0.0:
         total_volume = queue_total_volume
 
-    slug_length = float(queue[0].get("length_km", min_length) or min_length)
-    try:
-        total_length = float(total_length_km)
-    except (TypeError, ValueError):
-        total_length = 0.0
+    total_length = float(total_length_value)
 
     treatable_limit = _estimate_treatable_length(
         total_length_km=total_length,
@@ -3118,69 +3192,169 @@ def _enforce_minimum_origin_dra(
         queue_entries=queue,
         plan_volume_m3=plan_total_volume,
     )
-    if treatable_limit > 0.0:
-        slug_length = min(slug_length, treatable_limit)
-        if slug_length <= 0.0:
-            slug_length = treatable_limit
 
-    if slug_length <= 0.0:
-        slug_length = float(min_length)
-    queue[0]["length_km"] = float(slug_length)
+    total_required_length = 0.0
+    for seg in segments_to_enforce:
+        try:
+            total_required_length += float(seg.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
 
-    existing_volume = float(queue[0].get("volume", 0.0) or 0.0)
+    if treatable_limit > 0.0 and total_required_length > 0.0:
+        ratio = treatable_limit / total_required_length
+        if ratio < 1.0:
+            for seg in segments_to_enforce:
+                try:
+                    seg_length = float(seg.get("length_km", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_length = 0.0
+                seg["length_km"] = max(seg_length * ratio, 0.0)
+            total_required_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in segments_to_enforce)
+            if total_required_length <= 0.0 and segments_to_enforce:
+                segments_to_enforce[0]["length_km"] = float(treatable_limit)
+                for seg in segments_to_enforce[1:]:
+                    seg["length_km"] = 0.0
+                total_required_length = float(treatable_limit)
+
+    if total_required_length <= 0.0:
+        total_required_length = float(min_length)
+        if segments_to_enforce:
+            segments_to_enforce[0]["length_km"] = float(total_required_length)
+            for seg in segments_to_enforce[1:]:
+                seg["length_km"] = 0.0
+
+    existing_total_volume = 0.0
+    for idx, seg in enumerate(segments_to_enforce):
+        if idx >= len(queue):
+            break
+        entry = queue[idx]
+        if not isinstance(entry, dict):
+            continue
+        try:
+            existing_total_volume += float(entry.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+
     target_volume = 0.0
-    if total_length > 0.0 and total_volume > 0.0:
-        target_volume = total_volume * (slug_length / total_length)
+    if total_length > 0.0 and total_volume > 0.0 and total_required_length > 0.0:
+        target_volume = total_volume * (total_required_length / total_length)
     if target_volume <= 0.0:
         volume_basis = plan_total_volume if plan_total_volume > 0.0 else total_volume
         if volume_basis > 0.0:
-            if total_length > 0.0:
-                target_volume = volume_basis * (slug_length / total_length)
+            if total_length > 0.0 and total_required_length > 0.0:
+                target_volume = volume_basis * (total_required_length / total_length)
             if target_volume <= 0.0:
                 target_volume = volume_basis * float(min_fraction)
 
-    if existing_volume > 0.0 and target_volume > 0.0:
-        slug_volume = min(existing_volume, target_volume)
+    if existing_total_volume > 0.0 and target_volume > 0.0:
+        slug_volume_total = min(existing_total_volume, target_volume)
     elif target_volume > 0.0:
-        slug_volume = target_volume
+        slug_volume_total = target_volume
     else:
-        slug_volume = existing_volume
+        slug_volume_total = existing_total_volume
 
-    slug_volume = float(max(slug_volume, 0.0))
-    if plan_total_volume > 0.0 and slug_volume > plan_total_volume + 1e-9:
-        # When the upstream plan does not have enough volume to satisfy the
-        # requested slug, trim the enforced volume to what can actually be
-        # sourced from the plan instead of bailing out with an infeasibility.
-        # This situation can occur when operators tighten the plan after a
-        # backtracking step has already recorded a larger slug requirement.
-        #
-        # ``slug_volume`` represents the amount needed to cover the desired
-        # queue length at the enforced concentration.  Capping the volume ensures the loop
-        # below finishes without leaving a positive ``remaining`` amount while
-        # still keeping a non-zero slug in the queue.  The queue length is
-        # scaled proportionally so the stored metadata reflects what the plan
-        # can honour.
-        reduction_ratio = plan_total_volume / slug_volume if slug_volume > 0 else 0.0
-        slug_volume = plan_total_volume
-        head_entry = queue[0]
-        head_entry["volume"] = slug_volume
-        if reduction_ratio > 0:
-            try:
-                current_length = float(head_entry.get("length_km", min_length) or 0.0)
-            except (TypeError, ValueError):
-                current_length = float(min_length)
-            head_entry["length_km"] = max(current_length * reduction_ratio, 0.0)
-    if slug_volume <= 0.0:
+    slug_volume_total = float(max(slug_volume_total, 0.0))
+    if plan_total_volume > 0.0 and slug_volume_total > plan_total_volume + 1e-9:
+        reduction_ratio = plan_total_volume / slug_volume_total if slug_volume_total > 0 else 0.0
+        slug_volume_total = plan_total_volume
+        if reduction_ratio > 0.0:
+            for seg in segments_to_enforce:
+                try:
+                    seg_length = float(seg.get("length_km", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_length = 0.0
+                seg["length_km"] = max(seg_length * reduction_ratio, 0.0)
+            total_required_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in segments_to_enforce)
+
+    if slug_volume_total <= 0.0:
         state["origin_error"] = (
             "Zero DRA infeasible: unable to determine a valid volume for the enforced upstream slug."
         )
         return False
 
-    queue[0]["volume"] = slug_volume
+    segment_volumes: list[float] = []
+    if total_required_length > 0.0:
+        km_to_volume = slug_volume_total / total_required_length if slug_volume_total > 0.0 else 0.0
+    else:
+        km_to_volume = 0.0
+    assigned_volume = 0.0
+    for idx, seg in enumerate(segments_to_enforce):
+        try:
+            seg_length = float(seg.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        if km_to_volume <= 0.0 or seg_length <= 0.0:
+            volume_val = 0.0
+        elif idx == len(segments_to_enforce) - 1:
+            volume_val = max(slug_volume_total - assigned_volume, 0.0)
+        else:
+            volume_val = km_to_volume * seg_length
+            assigned_volume += volume_val
+        segment_volumes.append(float(max(volume_val, 0.0)))
+
+    while len(queue) < len(segments_to_enforce):
+        queue.append({})
+
+    queue_modified = False
+    for idx, seg in enumerate(segments_to_enforce):
+        entry = queue[idx]
+        if not isinstance(entry, dict):
+            entry = {}
+            queue[idx] = entry
+        try:
+            prev_length = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            prev_length = 0.0
+        try:
+            prev_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            prev_ppm = 0.0
+        try:
+            prev_volume = float(entry.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            prev_volume = 0.0
+
+        new_length = float(seg.get("length_km", 0.0) or 0.0)
+        new_ppm = float(seg.get("dra_ppm", 0.0) or 0.0)
+        new_volume = float(segment_volumes[idx] if idx < len(segment_volumes) else 0.0)
+
+        if (
+            abs(prev_length - new_length) > 1e-9
+            or abs(prev_ppm - new_ppm) > 1e-9
+            or abs(prev_volume - new_volume) > 1e-6
+        ):
+            queue_modified = True
+
+        entry["length_km"] = new_length
+        entry["dra_ppm"] = new_ppm
+        entry["volume"] = new_volume
+
+    origin_ppm = float(segments_to_enforce[0].get("dra_ppm", floor_ppm)) if segments_to_enforce else float(floor_ppm)
 
     enforced_rows: list[dict] = []
-    remaining = float(slug_volume)
     plan_injections: list[dict] = []
+
+    requirements: list[dict[str, float]] = []
+    for idx, volume_val in enumerate(segment_volumes):
+        if volume_val > 1e-9:
+            requirements.append(
+                {
+                    "remaining": float(volume_val),
+                    "ppm": float(segments_to_enforce[idx].get("dra_ppm", 0.0) or 0.0),
+                }
+            )
+
+    remaining_total = sum(req["remaining"] for req in requirements)
+    if requirements:
+        global_floor_ppm = max(req["ppm"] for req in requirements)
+    else:
+        global_floor_ppm = max(
+            (float(seg.get("dra_ppm", 0.0) or 0.0) for seg in segments_to_enforce),
+            default=float(origin_ppm),
+        )
+        remaining_total = 0.0
+
+    plan_changed = False
 
     for row_idx, row in plan_df.iterrows():
         row_dict = row.to_dict()
@@ -3189,62 +3363,68 @@ def _enforce_minimum_origin_dra(
         except (TypeError, ValueError):
             row_vol = 0.0
 
-        if remaining <= 1e-9:
+        if remaining_total <= 1e-9:
             enforced_rows.append(row_dict)
             continue
 
         existing_ppm = float(row_dict.get(INIT_DRA_COL, 0.0) or 0.0)
         if row_vol <= 1e-9:
-            row_dict[INIT_DRA_COL] = max(existing_ppm, float(floor_ppm))
+            applied_ppm = max(existing_ppm, float(global_floor_ppm))
+            if applied_ppm > existing_ppm + 1e-9:
+                plan_changed = True
+            row_dict[INIT_DRA_COL] = applied_ppm
             if "DRA ppm" in enforce_cols:
                 row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
             enforced_rows.append(row_dict)
             continue
 
-        if row_vol <= remaining + 1e-9:
-            row_dict[INIT_DRA_COL] = max(existing_ppm, float(floor_ppm))
+        remaining_row = row_vol
+        row_split = False
+        while remaining_row > 1e-9 and requirements and remaining_total > 1e-9:
+            current_req = requirements[0]
+            take = min(remaining_row, current_req["remaining"])
+            if take <= 1e-9:
+                take = remaining_row
+
+            applied_ppm = max(existing_ppm, float(current_req["ppm"]))
+            slug_row = row_dict.copy()
+            slug_row[plan_col_vol] = take
+            slug_row[INIT_DRA_COL] = applied_ppm
             if "DRA ppm" in enforce_cols:
-                row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
-            enforced_rows.append(row_dict)
-            remaining -= row_vol
-            if (row_dict[INIT_DRA_COL] > existing_ppm + 1e-9 or existing_ppm <= 1e-9) and row_vol > 1e-9:
+                slug_row["DRA ppm"] = slug_row[INIT_DRA_COL]
+            enforced_rows.append(slug_row)
+            row_split = True
+
+            remaining_row -= take
+            current_req["remaining"] -= take
+            remaining_total -= take
+            if current_req["remaining"] <= 1e-9:
+                requirements.pop(0)
+
+            if (applied_ppm > existing_ppm + 1e-9 or existing_ppm <= 1e-9) and take > 1e-9:
                 plan_injections.append(
                     {
                         "source_index": int(row_idx),
                         "product": row_dict.get("Product"),
-                        "volume_m3": float(row_vol),
-                        "dra_ppm": float(row_dict[INIT_DRA_COL]),
+                        "volume_m3": float(take),
+                        "dra_ppm": float(applied_ppm),
                     }
                 )
-            continue
+                plan_changed = True
+            elif abs(applied_ppm - existing_ppm) > 1e-9:
+                plan_changed = True
 
-        slug_row = row_dict.copy()
-        slug_row[plan_col_vol] = remaining
-        slug_row[INIT_DRA_COL] = max(existing_ppm, float(floor_ppm))
-        if "DRA ppm" in enforce_cols:
-            slug_row["DRA ppm"] = slug_row[INIT_DRA_COL]
-        enforced_rows.append(slug_row)
+        if remaining_row > 1e-9:
+            remainder = row_dict.copy()
+            remainder[plan_col_vol] = remaining_row
+            remainder[INIT_DRA_COL] = existing_ppm
+            if "DRA ppm" in enforce_cols:
+                remainder["DRA ppm"] = remainder[INIT_DRA_COL]
+            enforced_rows.append(remainder)
+            if row_split:
+                plan_changed = True
 
-        remainder = row_dict.copy()
-        remainder[plan_col_vol] = row_vol - remaining
-        remainder[INIT_DRA_COL] = existing_ppm
-        if "DRA ppm" in enforce_cols:
-            remainder["DRA ppm"] = remainder[INIT_DRA_COL]
-        enforced_rows.append(remainder)
-        remaining = 0.0
-
-        slug_volume_taken = float(slug_row.get(plan_col_vol, 0.0) or 0.0)
-        if (slug_row[INIT_DRA_COL] > existing_ppm + 1e-9 or existing_ppm <= 1e-9) and slug_volume_taken > 1e-9:
-            plan_injections.append(
-                {
-                    "source_index": int(row_idx),
-                    "product": slug_row.get("Product"),
-                    "volume_m3": slug_volume_taken,
-                    "dra_ppm": float(slug_row[INIT_DRA_COL]),
-                }
-            )
-
-    if remaining > 1e-6:
+    if remaining_total > 1e-6:
         state["origin_error"] = (
             "Zero DRA infeasible: day plan does not contain enough volume to honour the enforced slug."
         )
@@ -3260,32 +3440,61 @@ def _enforce_minimum_origin_dra(
     state["plan"] = enforced_plan.reset_index(drop=True)
 
     state["dra_linefill"] = queue
-    current_reach = float(state.get("dra_reach_km", 0.0) or 0.0)
-    state["dra_reach_km"] = max(current_reach, float(queue[0].get("length_km", min_length)))
 
+    enforced_total_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in segments_to_enforce)
+    current_reach = float(state.get("dra_reach_km", 0.0) or 0.0)
+    state["dra_reach_km"] = max(current_reach, float(enforced_total_length))
+
+    vol_changed = False
     if isinstance(vol_df, pd.DataFrame) and len(vol_df) > 0:
         vol_df = vol_df.copy()
-        vol_df.at[0, INIT_DRA_COL] = max(float(vol_df.iloc[0].get(INIT_DRA_COL, 0.0) or 0.0), float(floor_ppm))
+        original_ppm = float(vol_df.iloc[0].get(INIT_DRA_COL, 0.0) or 0.0)
+        new_ppm = max(original_ppm, origin_ppm)
+        if new_ppm > original_ppm + 1e-9:
+            vol_changed = True
+        vol_df.at[0, INIT_DRA_COL] = new_ppm
         if "DRA ppm" in vol_df.columns:
-            vol_df.at[0, "DRA ppm"] = vol_df.at[0, INIT_DRA_COL]
+            vol_df.at[0, "DRA ppm"] = new_ppm
         state["vol"] = vol_df
         state["linefill_snapshot"] = vol_df.copy()
 
-    enforced_length = float(queue[0].get("length_km", min_length))
-    enforced_ppm = float(queue[0].get("dra_ppm", floor_ppm))
+    max_segment_ppm = max(
+        (float(seg.get("dra_ppm", 0.0) or 0.0) for seg in segments_to_enforce),
+        default=float(origin_ppm),
+    )
+
+    detail_segments: list[dict[str, object]] = []
+    for seg, volume_val in zip(segments_to_enforce, segment_volumes):
+        seg_detail: dict[str, object] = {
+            "station_idx": seg.get("station_idx"),
+            "length_km": float(seg.get("length_km", 0.0) or 0.0),
+            "dra_ppm": float(seg.get("dra_ppm", 0.0) or 0.0),
+            "volume_m3": float(volume_val),
+        }
+        if "dra_perc" in seg:
+            try:
+                seg_detail["dra_perc"] = float(seg.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+        if seg.get("limited_by_station"):
+            seg_detail["limited_by_station"] = True
+        detail_segments.append(seg_detail)
 
     state["origin_enforced_detail"] = {
-        "dra_ppm": enforced_ppm,
-        "length_km": enforced_length,
-        "volume_m3": float(slug_volume),
+        "dra_ppm": float(max_segment_ppm),
+        "length_km": float(enforced_total_length),
+        "volume_m3": float(slug_volume_total),
         "plan_injections": plan_injections,
         "treatable_km": float(treatable_limit),
-        "floor_ppm": enforced_ppm,
-        "floor_length_km": enforced_length,
+        "floor_ppm": float(max_segment_ppm),
+        "floor_length_km": float(enforced_total_length),
+        "segments": detail_segments,
     }
 
-    state["origin_enforced"] = True
-    return True
+    changed = queue_modified or plan_changed or vol_changed
+
+    state["origin_enforced"] = bool(changed)
+    return bool(changed)
 
 
 def _format_plan_injection_label(
@@ -3494,6 +3703,10 @@ def _execute_time_series_solver(
                 )
                 if tightened:
                     detail = prev_state.get("origin_enforced_detail") or {}
+                    st.session_state["origin_enforced_detail"] = copy.deepcopy(detail)
+                    segments_detail = detail.get("segments") if isinstance(detail, dict) else None
+                    if isinstance(segments_detail, list) and segments_detail:
+                        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments_detail)
                     detail_record = {
                         "hour": hours[ti - 1] % 24,
                         "dra_ppm": float(detail.get("dra_ppm", 0.0) or 0.0),
@@ -3717,9 +3930,9 @@ def run_all_updates():
             if message:
                 st.warning(message)
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segments_raw = baseline_requirement.get("segments")
-        if isinstance(segments_raw, list):
-            baseline_segments = copy.deepcopy(segments_raw)
+        segment_floors = _collect_segment_floors(baseline_requirement)
+        if segment_floors:
+            baseline_segments = copy.deepcopy(segment_floors)
         if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
@@ -4360,7 +4573,17 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     f"{float(floor_perc):,.2f}" if isinstance(floor_perc, (int, float)) and float(floor_perc) > 0 else "N/A",
                 )
 
-            segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
+            enforced_segments = []
+            enforced_detail_state = st.session_state.get("origin_enforced_detail")
+            if isinstance(enforced_detail_state, dict):
+                segments_detail = enforced_detail_state.get("segments")
+                if isinstance(segments_detail, list) and segments_detail:
+                    enforced_segments = copy.deepcopy(segments_detail)
+
+            if enforced_segments:
+                segment_baseline = enforced_segments
+            else:
+                segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
             if segment_baseline:
                 seg_rows: list[dict[str, object]] = []
                 for entry in segment_baseline:
