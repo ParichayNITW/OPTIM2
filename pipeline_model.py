@@ -1805,10 +1805,16 @@ def compute_minimum_lacing_requirement(
         )
         residual_in = downstream_residual
 
-    result['dra_perc'] = float(max_dra_perc)
-    result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
-    result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
     result['segments'] = segment_requirements
+    if segment_requirements:
+        result['dra_perc'] = None
+        result['dra_ppm'] = None
+        result['dra_perc_uncapped'] = None
+        result['length_km'] = None
+    else:
+        result['dra_perc'] = float(max_dra_perc)
+        result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
+        result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
     return result
 
 

@@ -908,10 +908,11 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
     assert changed is True
     detail = state.get("origin_enforced_detail")
     assert detail
-    assert detail["dra_ppm"] >= baseline["dra_ppm"]
-    assert detail["length_km"] >= baseline["length_km"]
-    assert detail.get("floor_ppm") >= baseline["dra_ppm"]
-    assert detail.get("floor_length_km") >= baseline["length_km"]
+    summary = app._summarise_baseline_requirement(baseline)
+    assert detail["dra_ppm"] >= summary["dra_ppm"]
+    assert detail["length_km"] >= summary["length_km"]
+    assert detail.get("floor_ppm") >= summary["dra_ppm"]
+    assert detail.get("floor_length_km") >= summary["length_km"]
 
 
 def test_compute_minimum_lacing_requirement_finds_floor():
@@ -951,9 +952,10 @@ def test_compute_minimum_lacing_requirement_finds_floor():
         max_visc_cst=2.5,
     )
 
-    assert result["length_km"] == pytest.approx(10.0)
-    assert result["dra_perc"] > 0.0
-    assert result["dra_ppm"] > 0.0
+    assert result["length_km"] is None
+    assert result["dra_perc"] is None
+    assert result["dra_ppm"] is None
+    assert result.get("dra_perc_uncapped") is None
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
 
@@ -971,8 +973,6 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     max_head = sum(p.get("tdh", 0.0) for p in pump_info)
     sdh_required = max(head_loss, 0.0)
     expected_dr = max(sdh_required - max_head, 0.0) / sdh_required * 100.0 if sdh_required > 0 else 0.0
-    assert result["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
-    assert result["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
     seg_entry = segments[0]
     assert seg_entry["station_idx"] == 0
     assert seg_entry["length_km"] == pytest.approx(10.0)
@@ -1018,8 +1018,8 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
         max_visc_cst=2.5,
     )
 
-    assert result["dra_perc"] == pytest.approx(30.0)
-    assert result.get("dra_perc_uncapped", 0.0) > result["dra_perc"]
+    assert result["dra_perc"] is None
+    assert result.get("dra_perc_uncapped") is None
     warnings = result.get("warnings")
     assert isinstance(warnings, list) and warnings
     assert any(w.get("type") == "station_max_dr_exceeded" for w in warnings if isinstance(w, dict))
@@ -1028,6 +1028,7 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert isinstance(segments, list) and len(segments) == 1
     seg_entry = segments[0]
     assert seg_entry["dra_perc"] == pytest.approx(30.0)
+    assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
     assert seg_entry.get("limited_by_station") is True
     assert seg_entry.get("dra_ppm") == pytest.approx(model.get_ppm_for_dr(2.5, 30.0))
 
