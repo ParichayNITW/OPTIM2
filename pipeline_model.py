@@ -1261,13 +1261,16 @@ def compute_minimum_lacing_requirement(
 
     The helper estimates the drag-reduction level that must be preserved at the
     origin when the entire pipeline is treated at the user-specified worst-case
-    flow and viscosity.  It walks the downstream requirement solver to
-    determine the lowest %DR (and corresponding PPM) that avoids increasing the
-    required upstream head above the suction reference (assumed to be 0 m).
-    The returned dictionary provides both the treated length (equal to the
-    total pipeline length) and the minimum concentration in PPM.  When the
-    inputs are insufficient to derive a value the helper falls back to a zero
-    requirement.
+    flow and viscosity.  It walks each station pair, evaluates the superimposed
+    discharge head (SDH) at design flow, clamps that requirement to the
+    available pressure envelope (MAOP/MOP) and compares it against the head the
+    station can produce when all pump combinations operate at their DOL speed.
+    Whenever the available head is insufficient the required drag reduction is
+    computed from ``%DR = 100 * (SDH - (residual + max_head)) / SDH`` with the
+    upstream residual assumed to stay at the suction reference (0 m).  The
+    returned dictionary provides both the treated length (equal to the total
+    pipeline length) and the minimum concentration in PPM.  When the inputs are
+    insufficient to derive a value the helper falls back to a zero requirement.
     """
 
     result = {
@@ -1302,6 +1305,149 @@ def compute_minimum_lacing_requirement(
     if dra_upper <= 0.0:
         dra_upper = 70.0
 
+    terminal_min_residual = 0.0
+    try:
+        terminal_min_residual = float(terminal.get('min_residual', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        terminal_min_residual = 0.0
+
+    def _coerce_float_local(value, default=0.0) -> float:
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if math.isnan(val):
+            return float(default)
+        return val
+
+    def _station_density(stn: Mapping[str, object]) -> float:
+        rho_val = _coerce_float_local(stn.get('rho'), 0.0)
+        if rho_val <= 0.0:
+            rho_val = 850.0
+        return rho_val
+
+    def _station_inner_diameter(stn: Mapping[str, object]) -> tuple[float, float]:
+        default_t = 0.007
+        if stn.get('D') is not None:
+            thickness = _coerce_float_local(stn.get('t'), default_t)
+            outer_d = _coerce_float_local(stn.get('D'), stn.get('d', 0.0))
+            d_inner = outer_d - 2 * thickness
+        else:
+            d_inner = _coerce_float_local(stn.get('d'), 0.0)
+            outer_d = d_inner
+            thickness = _coerce_float_local(stn.get('t'), default_t)
+        if d_inner <= 0.0 and outer_d > 0.0 and thickness > 0.0:
+            d_inner = outer_d - 2 * thickness
+        return max(d_inner, 0.0), max(outer_d, 0.0)
+
+    def _station_maop_head(stn: Mapping[str, object], rho: float, mop_kgcm2: float) -> float:
+        explicit_head = stn.get('maop_head')
+        if explicit_head is not None:
+            head_val = _coerce_float_local(explicit_head, 0.0)
+            if head_val > 0.0:
+                return head_val
+        explicit_kg = stn.get('maop_kgcm2') or stn.get('MAOP_kgcm2')
+        if explicit_kg is not None:
+            kg_val = _coerce_float_local(explicit_kg, 0.0)
+            if kg_val > 0.0 and rho > 0.0:
+                return kg_val * 10000.0 / rho
+
+        d_inner, outer_d = _station_inner_diameter(stn)
+        thickness = _coerce_float_local(stn.get('t'), 0.007)
+        SMYS = _coerce_float_local(stn.get('SMYS'), 52000.0) or 52000.0
+        design_factor = 0.72
+        if outer_d <= 0.0:
+            outer_d = d_inner
+        if outer_d <= 0.0 or thickness <= 0.0:
+            maop_head = 0.0
+        else:
+            maop_psi = 2 * SMYS * design_factor * (thickness / outer_d)
+            maop_kgcm2 = maop_psi * 0.0703069
+            maop_head = maop_kgcm2 * 10000.0 / rho if rho > 0.0 else 0.0
+
+        mop_head = 0.0
+        if mop_kgcm2 > 0.0 and rho > 0.0:
+            mop_head = mop_kgcm2 * 10000.0 / rho
+        if mop_head > 0.0 and maop_head > 0.0:
+            return min(maop_head, mop_head)
+        if mop_head > 0.0:
+            return mop_head
+        return maop_head
+
+    def _collect_mop_kgcm2(data: Mapping[str, object]) -> float:
+        for key in ('MOP_kgcm2', 'mop_kgcm2', 'MOP', 'MOP (kg/cm²)'):
+            if key in data:
+                val = _coerce_float_local(data.get(key), 0.0)
+                if val > 0.0:
+                    return val
+        return 0.0
+
+    def _max_head_at_dol(stn: Mapping[str, object], flow: float) -> float:
+        if not stn.get('is_pump'):
+            return 0.0
+        flow_val = _coerce_float_local(flow, 0.0)
+        if flow_val <= 0.0:
+            return 0.0
+
+        max_head = 0.0
+        max_pumps_limit = int(_coerce_float_local(stn.get('max_pumps'), 0.0))
+        min_pumps = int(_coerce_float_local(stn.get('min_pumps'), 0.0))
+        if max_pumps_limit <= 0:
+            max_pumps_limit = 0
+
+        pump_types = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
+        base_combo = stn.get('pump_combo') if isinstance(stn.get('pump_combo'), Mapping) else None
+        if pump_types:
+            availA = int(_coerce_float_local(pump_types.get('A', {}).get('available', 0), 0.0))
+            availB = int(_coerce_float_local(pump_types.get('B', {}).get('available', 0), 0.0))
+            combos = generate_type_combinations(availA, availB)
+            if not base_combo:
+                base_combo = {'A': availA, 'B': availB}
+            for numA, numB in combos:
+                total_units = numA + numB
+                if total_units <= 0:
+                    continue
+                if max_pumps_limit and total_units > max_pumps_limit:
+                    continue
+                if min_pumps and total_units < min_pumps:
+                    continue
+                rpm_map: dict[str, float] = {}
+                if numA > 0:
+                    rpm_map['A'] = _coerce_float_local(
+                        pump_types.get('A', {}).get('DOL'),
+                        _station_max_rpm(stn, ptype='A'),
+                    )
+                if numB > 0:
+                    rpm_map['B'] = _coerce_float_local(
+                        pump_types.get('B', {}).get('DOL'),
+                        _station_max_rpm(stn, ptype='B'),
+                    )
+                stn_copy = copy.deepcopy(stn)
+                stn_copy['pump_combo'] = base_combo
+                stn_copy['active_combo'] = {k: v for k, v in (('A', numA), ('B', numB)) if v > 0}
+                pump_info = _pump_head(stn_copy, flow_val, rpm_map, total_units)
+                head_val = sum(_coerce_float_local(p.get('tdh'), 0.0) for p in pump_info)
+                if head_val > max_head:
+                    max_head = head_val
+            return max_head
+
+        # Single-type pump handling
+        nop_limit = max_pumps_limit if max_pumps_limit else int(_coerce_float_local(stn.get('max_pumps'), 0.0))
+        if nop_limit <= 0:
+            nop_limit = max(min_pumps, 1)
+        rpm_default = _station_max_rpm(stn)
+        rpm_map_single: dict[str, float]
+        if rpm_default > 0:
+            rpm_map_single = {'*': rpm_default}
+        else:
+            rpm_map_single = {}
+        for nop in range(1, nop_limit + 1):
+            pump_info = _pump_head(stn, flow_val, rpm_map_single, nop)
+            head_val = sum(_coerce_float_local(p.get('tdh'), 0.0) for p in pump_info)
+            if head_val > max_head:
+                max_head = head_val
+        return max_head
+
     total_length = 0.0
     stations_copy: list[dict] = []
     for stn in stations:
@@ -1317,14 +1463,8 @@ def compute_minimum_lacing_requirement(
 
     flows = [max_flow]
     for stn in stations_copy:
-        try:
-            delivery = float(stn.get('delivery', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            delivery = 0.0
-        try:
-            supply = float(stn.get('supply', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            supply = 0.0
+        delivery = _coerce_float_local(stn.get('delivery', 0.0), 0.0)
+        supply = _coerce_float_local(stn.get('supply', 0.0), 0.0)
         prev_flow = flows[-1]
         flows.append(prev_flow - delivery + supply)
 
@@ -1336,57 +1476,94 @@ def compute_minimum_lacing_requirement(
         if len(slices_use) < len(stations_copy):
             slices_use.extend([[]] * (len(stations_copy) - len(slices_use)))
 
-    def _requirement_for(dr_value: float) -> float:
-        dr_val = max(float(dr_value or 0.0), 0.0)
-        stn_local: list[dict] = []
-        for stn in stations_copy:
-            entry = copy.deepcopy(stn)
-            entry['max_dr'] = dr_val
-            loop_info = entry.get('loopline')
-            if isinstance(loop_info, Mapping):
-                loop_copy = dict(loop_info)
-                loop_copy['max_dr'] = dr_val
-                entry['loopline'] = loop_copy
-            stn_local.append(entry)
+    downstream_requirements: list[float] = [0.0] * len(stations_copy)
+    cumulative_min = max(terminal_min_residual, 0.0)
+    for idx in range(len(stations_copy) - 1, -1, -1):
+        downstream_requirements[idx] = cumulative_min
         try:
-            req = _downstream_requirement(
-                stn_local,
-                -1,
-                terminal,
-                flows,
-                kv_list,
-                slices_use,
-            )
-        except Exception:
-            req = 0.0
-        return float(req)
+            stn_min = float(stations_copy[idx].get('min_residual', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            stn_min = 0.0
+        cumulative_min = max(cumulative_min, stn_min)
 
-    target_requirement = 0.0
-    base_req = _requirement_for(0.0)
-    if base_req <= target_requirement + 1e-6:
-        return result
+    mop_global = _collect_mop_kgcm2(terminal)
 
-    low = 0.0
-    high = min(dra_upper, 100.0)
-    req_high = _requirement_for(high)
-    if req_high > target_requirement and high < 100.0:
-        # No feasible drag reduction identified within bounds – return upper.
-        dr_required = high
-    else:
-        for _ in range(20):
-            mid = (low + high) / 2.0
-            req_mid = _requirement_for(mid)
-            if req_mid <= target_requirement:
-                high = mid
+    max_dra_perc = 0.0
+    max_dra_ppm = 0.0
+    residual_in = 0.0
+
+    for idx, stn in enumerate(stations_copy):
+        flow_segment = flows[idx + 1] if idx + 1 < len(flows) else flows[-1]
+        flow_segment = max(_coerce_float_local(flow_segment, max_flow), 0.0)
+        kv = kv_list[idx] if idx < len(kv_list) else visc_max
+        L = max(_coerce_float_local(stn.get('L'), 0.0), 0.0)
+        rough = max(_coerce_float_local(stn.get('rough', 0.0), 0.00004), 0.0)
+        elev_current = _coerce_float_local(stn.get('elev', 0.0), 0.0)
+        if idx + 1 < len(stations_copy):
+            elev_next = _coerce_float_local(stations_copy[idx + 1].get('elev', 0.0), 0.0)
+        else:
+            elev_next = _coerce_float_local(terminal.get('elev', 0.0), 0.0)
+        elev_delta = elev_next - elev_current
+
+        d_inner, _ = _station_inner_diameter(stn)
+        head_loss = 0.0
+        if L > 0.0 and d_inner > 0.0 and flow_segment > 0.0:
+            if slices_use[idx]:
+                head_loss, *_ = _segment_hydraulics_composite(
+                    flow_segment,
+                    L,
+                    d_inner,
+                    rough,
+                    kv,
+                    0.0,
+                    0.0,
+                    slices=slices_use[idx],
+                )
             else:
-                low = mid
-        dr_required = high
+                head_loss, *_ = _segment_hydraulics(
+                    flow_segment,
+                    L,
+                    d_inner,
+                    rough,
+                    kv,
+                    0.0,
+                    0.0,
+                )
 
-    result['dra_perc'] = float(dr_required)
-    try:
-        result['dra_ppm'] = float(get_ppm_for_dr(visc_max, dr_required)) if dr_required > 0 else 0.0
-    except Exception:
-        result['dra_ppm'] = 0.0
+        downstream_residual = downstream_requirements[idx] if idx < len(downstream_requirements) else terminal_min_residual
+        downstream_residual = max(downstream_residual, 0.0)
+
+        sdh_required = downstream_residual + head_loss + elev_delta
+        if sdh_required < downstream_residual:
+            sdh_required = downstream_residual
+
+        rho_val = _station_density(stn)
+        mop_station = _collect_mop_kgcm2(stn)
+        mop_use = mop_station if mop_station > 0.0 else mop_global
+        maop_head = _station_maop_head(stn, rho_val, mop_use)
+        if maop_head > 0.0:
+            sdh_required = min(sdh_required, maop_head)
+
+        sdh_required = max(sdh_required, 0.0)
+        if sdh_required <= 0.0:
+            residual_in = downstream_residual
+            continue
+
+        max_head = _max_head_at_dol(stn, flow_segment)
+        gap = sdh_required - (residual_in + max_head)
+        if gap > 1e-6 and sdh_required > 0.0:
+            dr_needed = (gap / sdh_required) * 100.0
+            dr_needed = min(max(dr_needed, 0.0), dra_upper)
+            if dr_needed > max_dra_perc:
+                max_dra_perc = dr_needed
+                try:
+                    max_dra_ppm = float(get_ppm_for_dr(visc_max, dr_needed)) if dr_needed > 0 else 0.0
+                except Exception:
+                    max_dra_ppm = 0.0
+        residual_in = downstream_residual
+
+    result['dra_perc'] = float(max_dra_perc)
+    result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
     return result
 
 
