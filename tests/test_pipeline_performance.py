@@ -187,6 +187,65 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def test_segment_floor_without_injection_is_infeasible():
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 1000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 190.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 6.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 0,
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": 8.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 0,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 5.0}
+    untreated_queue = [{"length_km": 14.0, "dra_ppm": 0.0}]
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=500.0,
+        KV_list=[3.0, 3.0],
+        rho_list=[850.0, 850.0],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=untreated_queue,
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        segment_floors=[
+            {"station_idx": 1, "length_km": stations[1]["L"], "dra_ppm": 5.0}
+        ],
+        enumerate_loops=False,
+    )
+
+    assert result.get("error") is True
+
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 
@@ -1141,7 +1200,7 @@ def test_segment_floors_overlay_queue_minimum():
     origin_opt = {"nop": 1, "dra_ppm_main": 0.0}
     origin_floor = {"length_km": segment_lengths[0], "dra_ppm": 3.0}
 
-    dra_segments, queue_after_origin, _ = _update_mainline_dra(
+    dra_segments, queue_after_origin, _, requires_injection = _update_mainline_dra(
         initial_queue,
         origin_data,
         origin_opt,
@@ -1155,6 +1214,7 @@ def test_segment_floors_overlay_queue_minimum():
         is_origin=True,
         segment_floor=origin_floor,
     )
+    assert requires_injection is False
 
     merged_origin = _merge_queue(
         [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_origin]
@@ -1175,7 +1235,7 @@ def test_segment_floors_overlay_queue_minimum():
     downstream_opt = {"nop": 0, "dra_ppm_main": 0.0}
     downstream_floor = {"length_km": segment_lengths[1], "dra_ppm": 5.0}
 
-    _, queue_after_downstream, _ = _update_mainline_dra(
+    _, queue_after_downstream, _, requires_injection = _update_mainline_dra(
         queue_after_origin,
         downstream_data,
         downstream_opt,
@@ -1189,6 +1249,7 @@ def test_segment_floors_overlay_queue_minimum():
         is_origin=False,
         segment_floor=downstream_floor,
     )
+    assert requires_injection is True
 
     merged_final = _merge_queue(
         [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_downstream]
@@ -2861,7 +2922,7 @@ def test_sequential_two_station_run_retains_carry(monkeypatch):
     hours = 1.0
     queue_initial = list(linefill)
 
-    dra_a, queue_after_a, _ = _update_mainline_dra(
+    dra_a, queue_after_a, _, _ = _update_mainline_dra(
         queue_initial,
         {"is_pump": True, "d_inner": 0.7, "idx": 0},
         {"nop": 1, "dra_ppm_main": 0},
@@ -2872,7 +2933,7 @@ def test_sequential_two_station_run_retains_carry(monkeypatch):
     )
     assert queue_after_a, "Origin station should produce a downstream queue"
 
-    dra_b, queue_after_b, _ = _update_mainline_dra(
+    dra_b, queue_after_b, _, _ = _update_mainline_dra(
         queue_after_a,
         {"is_pump": False, "d_inner": 0.7, "idx": 1},
         {"nop": 0, "dra_ppm_main": 0},
@@ -2902,7 +2963,7 @@ def test_consecutive_injections_extend_dra_slug() -> None:
     station = {"idx": 0, "is_pump": True, "d_inner": diameter}
     operating = {"nop": 1, "dra_ppm_main": 12.0}
 
-    _, queue_after_hour1, _ = _update_mainline_dra(
+    _, queue_after_hour1, _, _ = _update_mainline_dra(
         initial_queue,
         station,
         operating,
@@ -2922,7 +2983,7 @@ def test_consecutive_injections_extend_dra_slug() -> None:
         rel=1e-6,
     )
 
-    _, queue_after_hour2, _ = _update_mainline_dra(
+    _, queue_after_hour2, _, _ = _update_mainline_dra(
         queue_after_hour1,
         station,
         operating,
@@ -2961,7 +3022,7 @@ def test_zero_injection_hour_advances_profile() -> None:
     zero_option = {"nop": 1, "dra_ppm_main": 0.0}
     segment_length = 158.0
 
-    _, queue_after_hour1, inj_ppm_hour1 = _update_mainline_dra(
+    _, queue_after_hour1, inj_ppm_hour1, _ = _update_mainline_dra(
         initial_profile,
         station,
         zero_option,
@@ -2981,7 +3042,7 @@ def test_zero_injection_hour_advances_profile() -> None:
     total_length_hour1 = sum(float(entry["length_km"]) for entry in queue_after_hour1)
     assert total_length_hour1 == pytest.approx(segment_length, rel=1e-6)
 
-    _, queue_after_hour2, inj_ppm_hour2 = _update_mainline_dra(
+    _, queue_after_hour2, inj_ppm_hour2, _ = _update_mainline_dra(
         queue_after_hour1,
         station,
         zero_option,
@@ -3047,7 +3108,7 @@ def test_bypassed_station_respects_segment_floor() -> None:
     option = {"nop": 0, "dra_ppm_main": 0.0}
     segment_floor = {"length_km": segment_length, "dra_ppm": 50.0}
 
-    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
         initial_queue,
         station,
         option,

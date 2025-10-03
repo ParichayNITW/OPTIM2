@@ -387,7 +387,7 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
     segment_length = pumped_length / 2.0
 
-    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -427,7 +427,7 @@ def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
     hours = 0.5
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
 
-    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -492,7 +492,7 @@ def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
     ]
 
     for case in cases:
-        dra_segments, queue_after, _ = _update_mainline_dra(
+        dra_segments, queue_after, _, _ = _update_mainline_dra(
             copy.deepcopy(initial_queue),
             dict(stn_base),
             case["opt"],
@@ -538,7 +538,7 @@ def test_downstream_station_waits_for_advancing_front() -> None:
 
     opt_idle = {"nop": 0, "dra_ppm_main": 12}
 
-    _, queue_after_a, _ = _update_mainline_dra(
+    _, queue_after_a, _, _ = _update_mainline_dra(
         initial_queue,
         {"idx": 0, "is_pump": True, "d_inner": diameter},
         opt_idle,
@@ -570,7 +570,7 @@ def test_downstream_station_waits_for_advancing_front() -> None:
         for length, ppm in queue_for_b
     ]
 
-    dra_segments_b, queue_after_b, inj_ppm_b = _update_mainline_dra(
+    dra_segments_b, queue_after_b, inj_ppm_b, _ = _update_mainline_dra(
         queue_for_b_dicts,
         {"idx": 1, "is_pump": True, "d_inner": diameter},
         opt_idle,
@@ -668,7 +668,7 @@ def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
     pumped_length_b = float(precomputed_b[0])
     assert pumped_length_b == pytest.approx(0.0, abs=1e-9)
 
-    dra_segments_b, queue_after_b, inj_ppm_b = _update_mainline_dra(
+    dra_segments_b, queue_after_b, inj_ppm_b, _ = _update_mainline_dra(
         initial_queue,
         {"idx": 1, "is_pump": True, "d_inner": diameter},
         opt_idle,
@@ -763,7 +763,7 @@ def test_running_pump_shears_trimmed_slug() -> None:
     hours = 0.5
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
 
-    dra_segments, queue_after, _ = _update_mainline_dra(
+    dra_segments, queue_after, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -802,7 +802,7 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
     hours = 0.25
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
 
-    dra_segments, queue_after, _ = _update_mainline_dra(
+    dra_segments, queue_after, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -905,7 +905,7 @@ def test_two_station_case_profiles(
     )
     pumped_length = float(precomputed[0])
 
-    dra_segments, queue_after, _ = _update_mainline_dra(
+    dra_segments, queue_after, _, _ = _update_mainline_dra(
         initial_queue,
         {
             "idx": 0,
@@ -959,7 +959,7 @@ def test_injected_slug_respects_shear_when_upstream() -> None:
     hours = 0.25
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
 
-    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
         [],
         stn_data,
         opt,
@@ -1049,7 +1049,7 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
 
     # Advance through the first pump stage without consuming segment length so the sheared
     # slug remains available for the next stage.
-    _, queue_after_stage1, _ = _update_mainline_dra(
+    _, queue_after_stage1, _, _ = _update_mainline_dra(
         queue,
         stn_data,
         opt,
@@ -1075,7 +1075,7 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
     assert ppm_stage1 == pytest.approx(expected_stage1)
 
     # Repeat for the second pump stage.
-    _, queue_after_stage2, _ = _update_mainline_dra(
+    _, queue_after_stage2, _, _ = _update_mainline_dra(
         queue_after_stage1,
         stn_data,
         opt,
@@ -1107,7 +1107,7 @@ def test_full_shear_zeroes_trimmed_slug() -> None:
     hours = 0.5
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
 
-    dra_segments, queue_after, _ = _update_mainline_dra(
+    dra_segments, queue_after, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -1143,7 +1143,7 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
     segment_length = pumped_length / 2.0
 
-    dra_segments, queue_after, _ = _update_mainline_dra(
+    dra_segments, queue_after, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -1180,7 +1180,7 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
     segment_length = pumped_length / 2.0
 
     for shear_factor in (1.0, 0.25):
-        dra_segments, queue_after, _ = _update_mainline_dra(
+        dra_segments, queue_after, _, _ = _update_mainline_dra(
             initial_queue,
             stn_data,
             opt,
@@ -1218,7 +1218,7 @@ def test_origin_zero_front_advances_with_repeated_updates() -> None:
         hours,
         stn_data["d_inner"],
     )
-    _, queue_after_stage1, _ = _update_mainline_dra(
+    _, queue_after_stage1, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -1242,7 +1242,7 @@ def test_origin_zero_front_advances_with_repeated_updates() -> None:
         hours,
         stn_data["d_inner"],
     )
-    _, queue_after_stage2, _ = _update_mainline_dra(
+    _, queue_after_stage2, _, _ = _update_mainline_dra(
         queue_after_stage1,
         stn_data,
         opt,
@@ -1279,7 +1279,7 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
         hours,
         stn_data["d_inner"],
     )
-    _, queue_stage1, _ = _update_mainline_dra(
+    _, queue_stage1, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt_zero,
@@ -1298,7 +1298,7 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
         hours,
         stn_data["d_inner"],
     )
-    _, queue_stage2, _ = _update_mainline_dra(
+    _, queue_stage2, _, _ = _update_mainline_dra(
         queue_stage1,
         stn_data,
         opt_zero,
@@ -1324,7 +1324,7 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
         hours,
         stn_data["d_inner"],
     )
-    _, queue_stage3, inj_ppm = _update_mainline_dra(
+    _, queue_stage3, inj_ppm, _ = _update_mainline_dra(
         queue_stage2,
         stn_data,
         opt_inject,
@@ -1365,7 +1365,7 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
     pumped_length = _km_from_volume(flow_m3h * hours, stn_data["d_inner"])
     segment_length = pumped_length / 3.0
 
-    _, queue_after, _ = _update_mainline_dra(
+    _, queue_after, _, _ = _update_mainline_dra(
         initial_queue,
         stn_data,
         opt,
@@ -1382,7 +1382,7 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
     zero_length = zero_front["length_km"]
 
     downstream_segment = zero_length + 1.0
-    dra_segments, queue_final, _ = _update_mainline_dra(
+    dra_segments, queue_final, _, _ = _update_mainline_dra(
         queue_after,
         {"is_pump": False, "d_inner": stn_data["d_inner"], "idx": 2},
         {"nop": 0, "dra_ppm_main": 0},

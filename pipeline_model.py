@@ -982,7 +982,12 @@ def _update_mainline_dra(
         tuple[tuple[float, float], ...],
     ] | None = None,
     segment_floor: Mapping[str, object] | None = None,
-) -> tuple[list[tuple[float, float]], tuple[tuple[float, float], ...], float]:
+) -> tuple[
+    list[tuple[float, float]],
+    tuple[tuple[float, float], ...],
+    float,
+    bool,
+]:
     """Advance the mainline DRA queue for ``segment_length`` kilometres.
 
     Parameters
@@ -1017,11 +1022,13 @@ def _update_mainline_dra(
     Returns
     -------
     tuple
-        ``(dra_segments, queue_after, inj_ppm_main)`` where ``dra_segments``
+        ``(dra_segments, queue_after, inj_ppm_main, floor_requires_injection)`` where ``dra_segments``
         is an ordered list of ``(length_km, ppm)`` describing the portion of
         the queue covering ``segment_length``.  ``queue_after`` provides the
         updated downstream queue after pumping ``flow_m3h * hours`` and
         ``inj_ppm_main`` echoes the injected concentration for reporting.
+        ``floor_requires_injection`` is ``True`` when a downstream DRA floor
+        could not be met without additional injection upstream.
     """
 
     inj_ppm_main = float(opt.get("dra_ppm_main", 0.0) or 0.0)
@@ -1251,6 +1258,7 @@ def _update_mainline_dra(
         or inj_effective > 0.0
         or (has_floor_requirement and pumped_length_total > 0.0)
     )
+    floor_requires_injection = False
     if enforce_floor and has_floor_requirement:
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
@@ -1258,12 +1266,31 @@ def _update_mainline_dra(
         )
         floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
         if floor_target > 0.0:
-            updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
-            updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
-            if not pumped_differs and updated_adjusted != pumped_adjusted:
-                pumped_differs = True
-            pumped_portion = updated_portion
-            pumped_adjusted = updated_adjusted
+            ppm_tol = 1e-9
+            if inj_effective <= 0.0:
+                front_before = _take_queue_front(pumped_portion, floor_target)
+                has_positive = False
+                front_max_ppm = 0.0
+                needs_raise = False
+                for length, ppm in front_before:
+                    if float(length or 0.0) <= ppm_tol:
+                        continue
+                    ppm_val = float(ppm or 0.0)
+                    if ppm_val > ppm_tol:
+                        has_positive = True
+                    if ppm_val > front_max_ppm:
+                        front_max_ppm = ppm_val
+                    if ppm_val < floor_ppm - ppm_tol:
+                        needs_raise = True
+                if needs_raise and (not has_positive or front_max_ppm < floor_ppm - ppm_tol):
+                    floor_requires_injection = True
+            if not floor_requires_injection:
+                updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
+                updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
+                if not pumped_differs and updated_adjusted != pumped_adjusted:
+                    pumped_differs = True
+                pumped_portion = updated_portion
+                pumped_adjusted = updated_adjusted
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -1387,7 +1414,7 @@ def _update_mainline_dra(
         else:
             dra_segments.append((length, ppm_val))
 
-    return dra_segments, queue_after, inj_requested
+    return dra_segments, queue_after, inj_requested, floor_requires_injection
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
@@ -3942,7 +3969,12 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
-                dra_segments, queue_after_list, inj_ppm_main = _update_mainline_dra(
+                (
+                    dra_segments,
+                    queue_after_list,
+                    inj_ppm_main,
+                    floor_requires_injection,
+                ) = _update_mainline_dra(
                     dra_queue_prev_inlet,
                     stn_data,
                     opt,
@@ -3957,6 +3989,8 @@ def solve_pipeline(
                     precomputed=precomputed_queue,
                     segment_floor=stn_data.get('baseline_floor'),
                 )
+                if floor_requires_injection:
+                    continue
                 queue_after_body = tuple(
                     (
                         float(entry.get('length_km', 0.0) or 0.0),
