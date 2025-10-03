@@ -1136,6 +1136,82 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
     assert any(hour == 1 and ppm > 0.0 for hour, ppm in call_log)
 
 
+def test_time_series_solver_preserves_hourly_profiles(monkeypatch) -> None:
+    import pipeline_optimization_app as app
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        }
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 15.0}
+    hours = [0, 1]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 5000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = [{"volume": 5000.0, "dra_ppm": 0.0}]
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    shared_profile = [{"length_km": 3.0, "dra_ppm": 0.0}]
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        start_time = solver_kwargs.get("start_time", "00:00")
+        hour = int(str(start_time).split(":")[0])
+        shared_profile[0]["dra_ppm"] = float(hour + 1)
+        shared_profile[0]["length_km"] = 3.0 + hour
+        return {
+            "error": False,
+            "total_cost": 10.0 + hour,
+            "linefill": shared_profile,
+            "dra_front_km": shared_profile[0]["length_km"],
+            "dra_profile_station_a": shared_profile,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=450.0,
+        plan_df=None,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    reports = result.get("reports") or []
+    assert len(reports) == 2
+    ppm_hour0 = reports[0]["result"]["dra_profile_station_a"][0]["dra_ppm"]
+    ppm_hour1 = reports[1]["result"]["dra_profile_station_a"][0]["dra_ppm"]
+    assert ppm_hour0 != ppm_hour1
+    assert ppm_hour0 == pytest.approx(1.0)
+    assert ppm_hour1 == pytest.approx(2.0)
+
+
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
         {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
