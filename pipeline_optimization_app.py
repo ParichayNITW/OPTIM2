@@ -3229,7 +3229,7 @@ def _execute_time_series_solver(
             sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
             sdh_hourly.append(max(sdh_vals))
 
-            dra_linefill_local = res.get("linefill", dra_linefill_local)
+            dra_linefill_local = copy.deepcopy(res.get("linefill", dra_linefill_local))
             current_vol_local, plan_local = future_vol, future_plan
             current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
             dra_reach_local = res.get("dra_front_km", dra_reach_local)
@@ -3341,10 +3341,12 @@ def _execute_time_series_solver(
         for k, val in dra_cost_acc.items():
             res[f"dra_cost_{k}"] = val
         res["total_cost"] = block_cost
+        # Deep-copy the solver output so hourly report snapshots remain immutable.
+        res_snapshot = copy.deepcopy(res)
         reports.append(
             {
                 "time": hr % 24,
-                "result": res,
+                "result": res_snapshot,
                 "sdh_hourly": sdh_hourly,
                 "sdh_max": max(sdh_hourly) if sdh_hourly else 0.0,
             }
