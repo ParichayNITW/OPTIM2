@@ -228,3 +228,33 @@ def test_build_station_table_computes_defaults_when_solver_omits_metrics() -> No
     assert '6.00 km @ 0.00 ppm' in profile_str
     assert '1.50 km @ 5.00 ppm' not in profile_str
     assert '2.50 km @ 5.00 ppm' not in profile_str
+
+def test_build_station_table_merges_profile_entries() -> None:
+    """Profile strings should collapse adjacent slices with identical ppm."""
+
+    res = {
+        'stations_used': [{'name': 'Station A'}],
+        'pipeline_flow_station_a': 1000.0,
+        'loopline_flow_station_a': 0.0,
+        'pump_flow_station_a': 1000.0,
+        'power_cost_station_a': 0.0,
+        'dra_cost_station_a': 0.0,
+        'dra_profile_station_a': [
+            {'length_km': 6.73, 'dra_ppm': 2.0},
+            {'length_km': 6.73, 'dra_ppm': 2.0},
+            {'length_km': 10.0, 'dra_ppm': 4.0},
+            {'length_km': 5.0, 'dra_ppm': 4.0},
+        ],
+        'dra_treated_length_station_a': 28.46,
+        'dra_inlet_ppm_station_a': 2.0,
+        'dra_outlet_ppm_station_a': 4.0,
+    }
+
+    base_stations = [{'name': 'Station A', 'L': 40.0, 'pump_names': ['Pump 1']}]
+
+    df = build_station_table(res, base_stations)
+    assert not df.empty
+    row = df.iloc[0]
+    assert row['DRA Profile (km@ppm)'] == "13.46 km @ 2.00 ppm; 15.00 km @ 4.00 ppm"
+    assert row['DRA Treated Length (km)'] == pytest.approx(28.46)
+    assert row['DRA Untreated Length (km)'] == pytest.approx(11.54)
