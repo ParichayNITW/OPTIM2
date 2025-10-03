@@ -2292,6 +2292,59 @@ def solve_pipeline(
     if pump_shear_rate is None:
         pump_shear_rate = st.session_state.get("pump_shear_rate", 0.0)
 
+    baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
+    baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
+
+    baseline_requirement: dict | None = None
+    try:
+        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+            stations,
+            terminal,
+            max_flow_m3h=float(baseline_flow),
+            max_visc_cst=float(baseline_visc),
+            segment_slices=segment_slices,
+        )
+    except Exception:
+        baseline_requirement = None
+
+    if isinstance(baseline_requirement, dict):
+        ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+        length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
+        if ppm_floor > 0 and length_floor > 0:
+            st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+        else:
+            st.session_state.pop("origin_lacing_baseline", None)
+    else:
+        st.session_state.pop("origin_lacing_baseline", None)
+
+    def _combine_origin_detail(
+        base_detail: dict | None,
+        user_detail: dict | None,
+    ) -> dict | None:
+        if base_detail is None and user_detail is None:
+            return None
+        detail: dict = {}
+        if isinstance(user_detail, dict):
+            detail.update(copy.deepcopy(user_detail))
+        if isinstance(base_detail, dict):
+            ppm_floor = float(base_detail.get("dra_ppm", 0.0) or 0.0)
+            length_floor = float(base_detail.get("length_km", 0.0) or 0.0)
+            perc_floor = float(base_detail.get("dra_perc", 0.0) or 0.0)
+            current_ppm = float(detail.get("dra_ppm", 0.0) or 0.0)
+            current_length = float(detail.get("length_km", 0.0) or 0.0)
+            current_perc = float(detail.get("dra_perc", 0.0) or 0.0)
+            if ppm_floor > 0:
+                detail["dra_ppm"] = max(current_ppm, ppm_floor)
+            if length_floor > 0:
+                detail["length_km"] = max(current_length, length_floor)
+            if perc_floor > 0:
+                detail["dra_perc"] = max(current_perc, perc_floor)
+        return detail
+
+    forced_detail_effective = _combine_origin_detail(baseline_requirement, forced_origin_detail)
+    if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
+        forced_detail_effective = None
+
     try:
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
@@ -2313,7 +2366,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
-                forced_origin_detail=forced_origin_detail,
+                forced_origin_detail=forced_detail_effective,
                 **search_kwargs,
             )
         else:
@@ -2334,7 +2387,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
-                forced_origin_detail=forced_origin_detail,
+                forced_origin_detail=forced_detail_effective,
                 **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
@@ -2801,8 +2854,9 @@ def _enforce_minimum_origin_dra(
     state: dict,
     *,
     total_length_km: float,
-    min_ppm: float = 2.0,
-    min_fraction: float = 0.05,
+    min_ppm: float | None = None,
+    min_fraction: float | None = 0.05,
+    baseline_requirement: dict | None = None,
     hourly_flow_m3: float | None = None,
     step_hours: float = 1.0,
 ) -> bool:
@@ -2826,13 +2880,34 @@ def _enforce_minimum_origin_dra(
             continue
         queue.append(dict(entry))
 
-    min_length = max(min_fraction * float(total_length_km), 0.0)
+    try:
+        floor_ppm = max(float(min_ppm or 0.0), 0.0)
+    except (TypeError, ValueError):
+        floor_ppm = 0.0
+    floor_length = 0.0
+    if isinstance(baseline_requirement, dict):
+        try:
+            floor_ppm = max(floor_ppm, float(baseline_requirement.get("dra_ppm", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            floor_length = max(floor_length, float(baseline_requirement.get("length_km", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+    if min_fraction is None:
+        min_fraction = 0.0
+    try:
+        min_length = max(float(min_fraction) * float(total_length_km), 0.0)
+    except (TypeError, ValueError):
+        min_length = 0.0
     if min_length <= 0.0:
         min_length = 1.0
+    if floor_length > 0.0:
+        min_length = max(min_length, floor_length)
     min_length = min(float(total_length_km) if total_length_km > 0 else min_length, max(min_length, 1.0))
 
     if not queue:
-        queue.append({"length_km": float(min_length), "dra_ppm": float(min_ppm)})
+        queue.append({"length_km": float(min_length), "dra_ppm": float(floor_ppm)})
         changed = True
     else:
         head = queue[0]
@@ -2840,7 +2915,7 @@ def _enforce_minimum_origin_dra(
         length_val = float(head.get("length_km", 0.0) or 0.0)
         vol_val = float(head.get("volume", 0.0) or 0.0)
         if ppm_val <= 0.0:
-            head["dra_ppm"] = float(min_ppm)
+            head["dra_ppm"] = float(floor_ppm)
             changed = True
         if length_val <= 0.0:
             if vol_val > 0.0:
@@ -2968,7 +3043,7 @@ def _enforce_minimum_origin_dra(
         # backtracking step has already recorded a larger slug requirement.
         #
         # ``slug_volume`` represents the amount needed to cover the desired
-        # queue length at ``min_ppm``.  Capping the volume ensures the loop
+        # queue length at the enforced concentration.  Capping the volume ensures the loop
         # below finishes without leaving a positive ``remaining`` amount while
         # still keeping a non-zero slug in the queue.  The queue length is
         # scaled proportionally so the stored metadata reflects what the plan
@@ -3008,14 +3083,14 @@ def _enforce_minimum_origin_dra(
 
         existing_ppm = float(row_dict.get(INIT_DRA_COL, 0.0) or 0.0)
         if row_vol <= 1e-9:
-            row_dict[INIT_DRA_COL] = max(existing_ppm, float(min_ppm))
+            row_dict[INIT_DRA_COL] = max(existing_ppm, float(floor_ppm))
             if "DRA ppm" in enforce_cols:
                 row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
             enforced_rows.append(row_dict)
             continue
 
         if row_vol <= remaining + 1e-9:
-            row_dict[INIT_DRA_COL] = max(existing_ppm, float(min_ppm))
+            row_dict[INIT_DRA_COL] = max(existing_ppm, float(floor_ppm))
             if "DRA ppm" in enforce_cols:
                 row_dict["DRA ppm"] = row_dict[INIT_DRA_COL]
             enforced_rows.append(row_dict)
@@ -3033,7 +3108,7 @@ def _enforce_minimum_origin_dra(
 
         slug_row = row_dict.copy()
         slug_row[plan_col_vol] = remaining
-        slug_row[INIT_DRA_COL] = max(existing_ppm, float(min_ppm))
+        slug_row[INIT_DRA_COL] = max(existing_ppm, float(floor_ppm))
         if "DRA ppm" in enforce_cols:
             slug_row["DRA ppm"] = slug_row[INIT_DRA_COL]
         enforced_rows.append(slug_row)
@@ -3078,18 +3153,23 @@ def _enforce_minimum_origin_dra(
 
     if isinstance(vol_df, pd.DataFrame) and len(vol_df) > 0:
         vol_df = vol_df.copy()
-        vol_df.at[0, INIT_DRA_COL] = max(float(vol_df.iloc[0].get(INIT_DRA_COL, 0.0) or 0.0), float(min_ppm))
+        vol_df.at[0, INIT_DRA_COL] = max(float(vol_df.iloc[0].get(INIT_DRA_COL, 0.0) or 0.0), float(floor_ppm))
         if "DRA ppm" in vol_df.columns:
             vol_df.at[0, "DRA ppm"] = vol_df.at[0, INIT_DRA_COL]
         state["vol"] = vol_df
         state["linefill_snapshot"] = vol_df.copy()
 
+    enforced_length = float(queue[0].get("length_km", min_length))
+    enforced_ppm = float(queue[0].get("dra_ppm", floor_ppm))
+
     state["origin_enforced_detail"] = {
-        "dra_ppm": float(queue[0].get("dra_ppm", min_ppm)),
-        "length_km": float(queue[0].get("length_km", min_length)),
+        "dra_ppm": enforced_ppm,
+        "length_km": enforced_length,
         "volume_m3": float(slug_volume),
         "plan_injections": plan_injections,
         "treatable_km": float(treatable_limit),
+        "floor_ppm": enforced_ppm,
+        "floor_length_km": enforced_length,
     }
 
     state["origin_enforced"] = True
@@ -3296,6 +3376,7 @@ def _execute_time_series_solver(
                     prev_state,
                     total_length_km=total_length,
                     min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
+                    baseline_requirement=st.session_state.get("origin_lacing_baseline"),
                     hourly_flow_m3=flow_rate,
                     step_hours=1.0 / max(float(sub_steps or 1), 1.0),
                 )
@@ -3500,6 +3581,54 @@ def run_all_updates():
     if not isinstance(forced_detail, dict):
         forced_detail = None
 
+    baseline_flow = st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))
+    baseline_visc = st.session_state.get("max_laced_visc_cst", max(kv_list or [1.0]))
+    baseline_requirement = None
+    try:
+        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+            stations_data,
+            term_data,
+            max_flow_m3h=float(baseline_flow),
+            max_visc_cst=float(baseline_visc),
+            segment_slices=segment_slices,
+        )
+    except Exception:
+        baseline_requirement = None
+    if isinstance(baseline_requirement, dict):
+        ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+        length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
+        if ppm_floor > 0 and length_floor > 0:
+            st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+        else:
+            st.session_state.pop("origin_lacing_baseline", None)
+    else:
+        st.session_state.pop("origin_lacing_baseline", None)
+
+    def _merge_baseline_detail(base_detail: dict | None, detail: dict | None) -> dict | None:
+        if base_detail is None and detail is None:
+            return None
+        merged: dict = {}
+        if isinstance(detail, dict):
+            merged.update(copy.deepcopy(detail))
+        if isinstance(base_detail, dict):
+            ppm_floor = float(base_detail.get("dra_ppm", 0.0) or 0.0)
+            length_floor = float(base_detail.get("length_km", 0.0) or 0.0)
+            perc_floor = float(base_detail.get("dra_perc", 0.0) or 0.0)
+            current_ppm = float(merged.get("dra_ppm", 0.0) or 0.0)
+            current_length = float(merged.get("length_km", 0.0) or 0.0)
+            current_perc = float(merged.get("dra_perc", 0.0) or 0.0)
+            if ppm_floor > 0:
+                merged["dra_ppm"] = max(current_ppm, ppm_floor)
+            if length_floor > 0:
+                merged["length_km"] = max(current_length, length_floor)
+            if perc_floor > 0:
+                merged["dra_perc"] = max(current_perc, perc_floor)
+        return merged
+
+    forced_detail_effective = _merge_baseline_detail(baseline_requirement, forced_detail)
+    if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
+        forced_detail_effective = None
+
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
@@ -3517,7 +3646,7 @@ def run_all_updates():
             st.session_state.get("MOP_kgcm2"),
             24.0,
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-            forced_origin_detail=copy.deepcopy(forced_detail) if forced_detail else None,
+            forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
             **search_kwargs,
         )
     if not res or res.get("error"):
@@ -3526,7 +3655,6 @@ def run_all_updates():
         msg = (res.get("message") or "Optimization failed") if isinstance(res, dict) else "Optimization failed"
         st.error(msg)
         return
-    import copy
     st.session_state["last_res"] = copy.deepcopy(res)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
@@ -3549,7 +3677,6 @@ if not auto_batch:
         is_hourly = bool(run_hour)
         st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
 
-        import copy
         stations_base = copy.deepcopy(st.session_state.stations)
         for stn in stations_base:
             if stn.get('pump_types'):
@@ -4069,6 +4196,23 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             base_cols = st.columns(2)
             base_cols[0].metric("Target laced flow (m³/h)", f"{baseline_flow:,.2f}" if baseline_flow is not None else "N/A")
             base_cols[1].metric("Target laced viscosity (cSt)", f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A")
+            baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
+            floor_cols = st.columns(3)
+            floor_length = baseline_detail.get("length_km")
+            floor_ppm = baseline_detail.get("dra_ppm")
+            floor_perc = baseline_detail.get("dra_perc")
+            floor_cols[0].metric(
+                "Enforced queue length (km)",
+                f"{float(floor_length):,.2f}" if isinstance(floor_length, (int, float)) and float(floor_length) > 0 else "N/A",
+            )
+            floor_cols[1].metric(
+                "Minimum origin ppm",
+                f"{float(floor_ppm):,.2f}" if isinstance(floor_ppm, (int, float)) and float(floor_ppm) > 0 else "N/A",
+            )
+            floor_cols[2].metric(
+                "Minimum origin %DR",
+                f"{float(floor_perc):,.2f}" if isinstance(floor_perc, (int, float)) and float(floor_perc) > 0 else "N/A",
+            )
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
