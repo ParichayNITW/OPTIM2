@@ -186,6 +186,99 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def test_schedule_remains_feasible_across_dra_rates():
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 1100,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 180.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 82.0,
+            "L": 30.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 4e-05,
+            "elev": 0.0,
+            "min_residual": 50,
+            "max_dr": 0,
+            "power_type": "Grid",
+            "rate": 0.0,
+        },
+        {
+            "name": "Mid Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1080,
+            "DOL": 1080,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 175.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 82.0,
+            "L": 40.0,
+            "D": 0.68,
+            "t": 0.007,
+            "rough": 4e-05,
+            "elev": 3.0,
+            "min_residual": 40,
+            "max_dr": 40,
+            "power_type": "Grid",
+            "rate": 0.0,
+        },
+        {
+            "name": "Downstream Segment",
+            "is_pump": False,
+            "L": 50.0,
+            "D": 0.68,
+            "t": 0.007,
+            "rough": 4e-05,
+            "elev": 5.0,
+            "min_residual": 35,
+            "max_dr": 0,
+        },
+    ]
+    terminal = {"name": "Terminal", "min_residual": 45, "elev": 6.0}
+    kv_list = [3.0, 2.8, 2.6]
+    rho_list = [850.0, 845.0, 840.0]
+
+    def run_solver(rate: float) -> dict:
+        result = solve_pipeline(
+            copy.deepcopy(stations),
+            terminal,
+            FLOW=1500.0,
+            KV_list=kv_list,
+            rho_list=rho_list,
+            RateDRA=rate,
+            Price_HSD=0.0,
+            Fuel_density=0.85,
+            Ambient_temp=25.0,
+            linefill=[],
+            dra_reach_km=0.0,
+            hours=12.0,
+            start_time="00:00",
+        )
+        assert not result.get("error"), result.get("message")
+        terminal_residual = float(result.get("residual_head_terminal", 0.0) or 0.0)
+        assert terminal_residual + 1e-6 >= float(terminal["min_residual"])
+        return result
+
+    run_solver(375.0)
+    run_solver(45.0)
+
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 

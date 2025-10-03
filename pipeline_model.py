@@ -611,6 +611,48 @@ def _queue_total_length(
     return total
 
 
+def _queue_state_signature(
+    queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
+    *,
+    max_segments: int = 3,
+) -> tuple[int, float, float, float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
+    """Return a hashable signature describing the downstream DRA queue state."""
+
+    if not queue_entries:
+        return (0, 0.0, 0.0, 0.0, (), ())
+
+    cleaned: list[tuple[float, float]] = []
+    for raw in queue_entries:
+        try:
+            length_val = float(raw[0] if isinstance(raw, (list, tuple)) and raw else 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        try:
+            ppm_val = float(raw[1] if isinstance(raw, (list, tuple)) and len(raw) > 1 else 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if length_val <= 0.0:
+            continue
+        cleaned.append((length_val, ppm_val))
+
+    if not cleaned:
+        return (0, 0.0, 0.0, 0.0, (), ())
+
+    total_length = round(sum(length for length, _ppm in cleaned), 3)
+    head_ppm = round(cleaned[0][1], 2)
+    tail_ppm = round(cleaned[-1][1], 2)
+    head_segments = tuple(
+        (round(length, 2), round(ppm, 2))
+        for length, ppm in cleaned[:max_segments]
+    )
+    tail_segments = tuple(
+        (round(length, 2), round(ppm, 2))
+        for length, ppm in cleaned[-max_segments:]
+    )
+
+    return (len(cleaned), total_length, head_ppm, tail_ppm, head_segments, tail_segments)
+
+
 def _queue_leading_zero_length(
     queue_entries: list[dict] | list[tuple] | tuple | None,
 ) -> float:
@@ -3565,7 +3607,7 @@ def solve_pipeline(
 
     for stn_data in station_opts:
         new_states: dict[object, dict] = {}
-        best_by_residual: dict[int, object] = {}
+        best_by_residual: dict[tuple[int, object], object] = {}
         protected_counter = 0
         best_cost_station = float('inf')
         for state in states.values():
@@ -4188,6 +4230,8 @@ def solve_pipeline(
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
                     bucket = residual_next
+                    queue_signature = _queue_state_signature(queue_after_full)
+                    bucket_key = (bucket, queue_signature)
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
                     zero_dra_option = (
@@ -4231,13 +4275,13 @@ def solve_pipeline(
                     else:
                         baseline_option = zero_dra_option
                     is_protected = zero_dra_option or baseline_option
-                    existing_key = best_by_residual.get(bucket)
+                    existing_key = best_by_residual.get(bucket_key)
                     existing = new_states.get(existing_key) if existing_key is not None else None
                     flow_next = flow_total
                     replace_existing = False
                     if existing is None:
                         replace_existing = True
-                        key_to_use: object = bucket
+                        key_to_use: object = bucket_key
                     else:
                         existing_protected = bool(existing.get('protected'))
                         if (
@@ -4254,7 +4298,7 @@ def solve_pipeline(
                                 replace_existing = False
                         elif is_protected and not existing_protected:
                             protected_counter += 1
-                            key_to_use = (bucket, f"protected_{protected_counter}")
+                            key_to_use = (bucket_key, f"protected_{protected_counter}")
                             new_states[key_to_use] = {
                                 'cost': new_cost,
                                 'residual': residual_next,
@@ -4288,9 +4332,10 @@ def solve_pipeline(
                         if existing is not None and existing_key is not None:
                             entry['protected'] = is_protected or bool(existing.get('protected'))
                             new_states[existing_key] = entry
+                            best_by_residual[bucket_key] = existing_key
                         else:
                             new_states[key_to_use] = entry
-                            best_by_residual[bucket] = key_to_use
+                            best_by_residual[bucket_key] = key_to_use
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
