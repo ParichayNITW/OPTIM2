@@ -690,6 +690,8 @@ def test_enforce_minimum_origin_dra_updates_plan_split():
     assert detail["volume_m3"] == pytest.approx(900.0)
     assert detail["dra_ppm"] >= 2.0
     assert detail.get("treatable_km", 0.0) == pytest.approx(0.0)
+    assert detail.get("floor_ppm", 0.0) >= 2.0
+    assert detail.get("floor_length_km", 0.0) == pytest.approx(4.0)
     injections = detail.get("plan_injections")
     assert isinstance(injections, list) and injections
     total_injected = sum(entry.get("volume_m3", 0.0) for entry in injections)
@@ -758,6 +760,7 @@ def test_enforce_minimum_origin_dra_caps_length_by_flow():
     assert detail
     assert detail["length_km"] == pytest.approx(treatable_expected)
     assert detail.get("treatable_km") == pytest.approx(treatable_expected)
+    assert detail.get("floor_length_km") == pytest.approx(treatable_expected)
 
 
 def test_enforce_minimum_origin_dra_uses_queue_volume_when_snapshot_missing():
@@ -821,6 +824,7 @@ def test_enforce_minimum_origin_dra_uses_queue_volume_when_snapshot_missing():
     assert detail
     assert detail["length_km"] == pytest.approx(treatable_expected)
     assert detail.get("treatable_km") == pytest.approx(treatable_expected)
+    assert detail.get("floor_length_km") == pytest.approx(treatable_expected)
 
 
 def test_enforce_minimum_origin_dra_requires_volume_column():
@@ -866,6 +870,97 @@ def test_enforce_minimum_origin_dra_requires_volume_column():
     assert changed is False
     assert "missing a volume column" in state.get("origin_error", "")
     assert "origin_enforced_detail" not in state
+
+
+def test_enforce_minimum_origin_dra_respects_baseline_requirement():
+    import pipeline_optimization_app as app
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch",
+                "Volume (m³)": 2000.0,
+                "Viscosity (cSt)": 2.7,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+
+    state = {
+        "plan": plan_df,
+        "vol": plan_df.copy(),
+        "dra_linefill": [],
+        "dra_reach_km": 0.0,
+    }
+
+    baseline = {"dra_ppm": 5.0, "length_km": 12.0, "dra_perc": 8.0}
+
+    changed = app._enforce_minimum_origin_dra(
+        state,
+        total_length_km=40.0,
+        min_ppm=2.0,
+        min_fraction=0.05,
+        baseline_requirement=baseline,
+    )
+
+    assert changed is True
+    detail = state.get("origin_enforced_detail")
+    assert detail
+    assert detail["dra_ppm"] >= baseline["dra_ppm"]
+    assert detail["length_km"] >= baseline["length_km"]
+    assert detail.get("floor_ppm") >= baseline["dra_ppm"]
+    assert detail.get("floor_length_km") >= baseline["length_km"]
+
+
+def test_compute_minimum_lacing_requirement_finds_floor(monkeypatch):
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "L": 10.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+        }
+    ]
+    terminal = {"min_residual": 0.0}
+
+    def fake_requirement(stns, *_args, **_kwargs):
+        dr_val = float(stns[0].get("max_dr", 0.0) or 0.0)
+        return 5.0 if dr_val < 12.0 else -1.0
+
+    monkeypatch.setattr(model, "_downstream_requirement", fake_requirement)
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=1200.0,
+        max_visc_cst=2.5,
+    )
+
+    assert result["length_km"] == pytest.approx(10.0)
+    assert result["dra_perc"] >= 12.0
+    assert result["dra_ppm"] > 0.0
+
+
+def test_compute_minimum_lacing_requirement_handles_invalid_input():
+    import pipeline_model as model
+
+    stations = []
+    terminal = {"min_residual": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=0.0,
+        max_visc_cst=-1.0,
+    )
+
+    assert result == {"dra_perc": 0.0, "dra_ppm": 0.0, "length_km": 0.0}
 
 
 def test_time_series_solver_reports_error_without_plan(monkeypatch):
