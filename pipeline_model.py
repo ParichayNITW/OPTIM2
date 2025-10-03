@@ -729,6 +729,19 @@ def _overlay_queue_floor(
                 seg_remaining = 0.0
 
     merged = _merge_queue(adjusted)
+    if total_available > 0.0 and merged:
+        merged_total = sum(length for length, _ppm in merged)
+        if merged_total > total_available + tol:
+            trimmed, _excess = _trim_queue_tail(merged, merged_total - total_available)
+            merged = _merge_queue(trimmed)
+        elif merged_total < total_available - tol:
+            deficit = total_available - merged_total
+            if merged:
+                last_len, last_ppm = merged[-1]
+                merged[-1] = (last_len + deficit, last_ppm)
+            else:
+                merged = [(deficit, ppm_val)]
+
     return [(float(length), float(ppm)) for length, ppm in merged if float(length or 0.0) > 0.0]
 
 
@@ -1227,8 +1240,18 @@ def _update_mainline_dra(
             pumped_differs = True
         pumped_adjusted.append((length_float, ppm_out))
 
-    enforce_floor = pump_running or inj_effective > 0.0
-    if enforce_floor and floor_length > 0.0 and floor_ppm > 0.0:
+    pumped_length_total = sum(
+        float(length or 0.0)
+        for length, _ppm in pumped_portion
+        if float(length or 0.0) > 0.0
+    )
+    has_floor_requirement = floor_length > 0.0 and floor_ppm > 0.0
+    enforce_floor = (
+        pump_running
+        or inj_effective > 0.0
+        or (has_floor_requirement and pumped_length_total > 0.0)
+    )
+    if enforce_floor and has_floor_requirement:
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
             sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),

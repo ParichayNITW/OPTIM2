@@ -2965,6 +2965,56 @@ def test_queue_floor_preserves_downstream_slug() -> None:
     assert downstream_profile[0][1] == pytest.approx(4.0, rel=1e-9)
 
 
+def test_bypassed_station_respects_segment_floor() -> None:
+    """Stations in bypass should still honour the configured segment floor."""
+
+    diameter = 0.7
+    segment_length = 5.0
+    hours = 1.0
+    flow_m3h = _volume_from_km(segment_length, diameter)
+
+    initial_queue = [
+        {"length_km": 2.0, "dra_ppm": 70.0},
+        {"length_km": 8.0, "dra_ppm": 30.0},
+    ]
+
+    station = {"idx": 1, "is_pump": False, "d_inner": diameter, "kv": 3.0}
+    option = {"nop": 0, "dra_ppm_main": 0.0}
+    segment_floor = {"length_km": segment_length, "dra_ppm": 50.0}
+
+    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+        initial_queue,
+        station,
+        option,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=False,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=False,
+        segment_floor=segment_floor,
+    )
+
+    assert inj_ppm == pytest.approx(0.0)
+    assert dra_segments
+    assert sum(length for length, _ppm in dra_segments) == pytest.approx(segment_length, rel=1e-6)
+    assert dra_segments[0][0] == pytest.approx(2.0, rel=1e-6)
+    assert dra_segments[0][1] == pytest.approx(70.0, rel=1e-6)
+    min_ppm = min(ppm for _length, ppm in dra_segments)
+    assert min_ppm >= segment_floor["dra_ppm"] - 1e-9
+
+    assert queue_after
+    total_length = sum(float(entry["length_km"]) for entry in queue_after)
+    assert total_length == pytest.approx(10.0, rel=1e-6)
+    assert queue_after[0]["length_km"] == pytest.approx(2.0, rel=1e-6)
+    assert queue_after[0]["dra_ppm"] == pytest.approx(70.0, rel=1e-6)
+    assert queue_after[1]["length_km"] == pytest.approx(3.0, rel=1e-6)
+    assert queue_after[1]["dra_ppm"] == pytest.approx(50.0, rel=1e-6)
+    assert queue_after[-1]["dra_ppm"] == pytest.approx(30.0, rel=1e-6)
+
+
 def test_dra_profile_reflects_hourly_push_examples() -> None:
     """Profiles at successive stations should mirror the user's worked examples."""
 
