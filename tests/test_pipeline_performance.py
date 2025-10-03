@@ -972,6 +972,52 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert result["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
 
 
+def test_compute_minimum_lacing_requirement_flags_station_cap():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 10.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 30.0,
+        }
+    ]
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=1200.0,
+        max_visc_cst=2.5,
+    )
+
+    assert result["dra_perc"] == pytest.approx(30.0)
+    assert result.get("dra_perc_uncapped", 0.0) > result["dra_perc"]
+    warnings = result.get("warnings")
+    assert isinstance(warnings, list) and warnings
+    assert any(w.get("type") == "station_max_dr_exceeded" for w in warnings if isinstance(w, dict))
+    assert result.get("enforceable") is False
+
+
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
     import pipeline_model as model
 
@@ -985,7 +1031,11 @@ def test_compute_minimum_lacing_requirement_handles_invalid_input():
         max_visc_cst=-1.0,
     )
 
-    assert result == {"dra_perc": 0.0, "dra_ppm": 0.0, "length_km": 0.0}
+    assert result["dra_perc"] == 0.0
+    assert result["dra_ppm"] == 0.0
+    assert result["length_km"] == 0.0
+    assert result.get("warnings") == []
+    assert result.get("enforceable") is True
 
 
 def test_time_series_solver_reports_error_without_plan(monkeypatch):
