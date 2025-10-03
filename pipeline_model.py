@@ -1083,14 +1083,17 @@ def _update_mainline_dra(
                 zero_front_pre = float(rest_entries[0][0])
                 rest_entries = rest_entries[1:]
 
-            zero_capacity = max(pipeline_length - inj_length, 0.0)
             # Preserve the original untreated pocket instead of inflating it with the
-            # newly pumped head length.  The downstream queue already reflects any
-            # volume tracking so we only trim if we genuinely exceed that length.
-            desired_zero = min(initial_zero_prefix, zero_capacity)
+            # newly pumped head length.  The downstream queue already reflects the
+            # tracked volume, so we only trim downstream treated fluid when required.
+            desired_zero = float(initial_zero_prefix)
             if desired_zero < zero_front_pre:
                 desired_zero = zero_front_pre
 
+            # Rebuild the queue as the injected slug, then the preserved zero front,
+            # and finally the downstream treated batches.  This mirrors how field
+            # hydraulics advance: new fluid leads the train while untreated pockets
+            # persist until the true tail encroaches on them.
             adjusted_entries: list[tuple[float, float]] = []
             if inj_entry is not None and inj_entry[0] > 0.0:
                 adjusted_entries.append(inj_entry)
