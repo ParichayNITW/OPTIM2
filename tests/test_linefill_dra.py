@@ -1606,6 +1606,193 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     assert forced_zero["residual_head_station_a"] == optimal["residual_head_station_a"]
 
 
+def test_costly_injection_survives_pruning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """High-cost injected states must persist so downstream gains materialise."""
+
+    def fake_segment(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv: float,
+        dra: float,
+        dra_len: float,
+    ) -> tuple[float, float, float, float]:
+        base = 80.0 if float(length) < 6.0 else 60.0
+        reduction = 0.0
+        if dra > 0:
+            reduction = 40.0 if float(length) < 6.0 else 60.0
+        return base - reduction, 1.0, 1.0, 0.01
+
+    def fake_composite(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv_default: float,
+        dra_perc: float,
+        dra_length: float | None = None,
+        slices=None,
+        limit: float | None = None,
+    ) -> tuple[float, float, float, float]:
+        target_length = length if limit is None else min(float(limit), float(length))
+        total_head = 0.0
+        remaining = target_length
+        remaining_dra = dra_length
+        stats: tuple[float, float, float] | None = None
+        if slices:
+            for entry in slices:
+                seg_len = min(float(entry.get("length_km", 0.0) or 0.0), remaining)
+                if seg_len <= 0:
+                    continue
+                use_kv = float(entry.get("kv", kv_default) or kv_default)
+                dra_seg = 0.0
+                if remaining_dra is not None:
+                    dra_seg = float(min(remaining_dra, seg_len))
+                    remaining_dra -= dra_seg
+                head, v, Re, f = fake_segment(flow, seg_len, d_inner, rough, use_kv, dra_perc, dra_seg)
+                total_head += head
+                if stats is None:
+                    stats = (v, Re, f)
+                remaining -= seg_len
+                if remaining <= 0:
+                    break
+        if remaining > 1e-9:
+            extra_dra = float(remaining_dra) if remaining_dra is not None else 0.0
+            head, v, Re, f = fake_segment(flow, remaining, d_inner, rough, kv_default, dra_perc, extra_dra)
+            total_head += head
+            if stats is None:
+                stats = (v, Re, f)
+        if stats is None:
+            stats = (1.0, 1.0, 0.01)
+        return total_head, stats[0], stats[1], stats[2]
+
+    def fake_pump_head(stn: dict, flow_m3h: float, rpm_map, nop: int) -> list[dict]:
+        if nop <= 0:
+            return []
+        rpm_val = 1100
+        if isinstance(rpm_map, Mapping):
+            rpm_val = int(rpm_map.get("type1", rpm_val))
+        return [
+            {
+                "tdh": 100.0 * nop,
+                "eff": 80.0,
+                "count": nop,
+                "power_type": stn.get("power_type", "Grid"),
+                "ptype": "mock",
+                "rpm": rpm_val,
+                "data": {
+                    "sfc_mode": stn.get("sfc_mode", "manual"),
+                    "sfc": stn.get("sfc", 0.0),
+                    "DOL": stn.get("DOL", 1000),
+                    "power_type": stn.get("power_type", "Grid"),
+                },
+            }
+        ]
+
+    def fake_update(
+        queue,
+        stn_data: dict,
+        opt: dict,
+        segment_length: float,
+        flow_m3h: float,
+        hours: float,
+        *,
+        pump_running: bool = False,
+        pump_shear_rate: float = 0.0,
+        dra_shear_factor: float = 0.0,
+        shear_injection: bool = False,
+        is_origin: bool = False,
+        precomputed=None,
+    ) -> tuple[list[tuple[float, float]], list[dict], float]:
+        seg_len = float(segment_length or 0.0)
+        ppm = float(opt.get("dra_ppm_main", 0) or 0.0)
+        if ppm <= 0 and float(opt.get("dra_main", 0) or 0) > 0:
+            ppm = 5.0
+        queue_after = [{"length_km": 100.0, "dra_ppm": ppm}] if ppm > 0 else []
+        return [(seg_len, ppm)], queue_after, ppm
+
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+    monkeypatch.setattr(pm, "_segment_hydraulics_composite", fake_composite)
+    monkeypatch.setattr(pm, "_pump_head", fake_pump_head)
+    monkeypatch.setattr(pm, "_update_mainline_dra", fake_update)
+    monkeypatch.setattr(pm, "get_ppm_for_dr", lambda kv, dr: float(dr) * 10.0)
+    monkeypatch.setattr(pm, "get_dr_for_ppm", lambda kv, ppm: float(ppm) / 10.0)
+
+    stations = [
+        _make_pump_station("Station A", max_dr=10),
+        _make_pump_station("Station B", max_dr=0),
+    ]
+    stations[0]["MinRPM"] = 900
+    stations[0]["DOL"] = 1200
+    stations[0]["pump_types"] = {"type1": {"min_rpm": 900, "max_rpm": 1200}}
+    stations[0]["pump_combo"] = [{"type": "type1", "count": 1}]
+    stations[0]["active_combo"] = [{"type": "type1", "count": 1}]
+    stations[0]["rate"] = 1.0
+    stations[1]["rate"] = 1.0
+    stations[1]["min_pumps"] = 0
+    stations[1]["max_pumps"] = 1
+    stations[1]["L"] = 7.0
+
+    terminal = {"name": "Terminal", "min_residual": 30, "elev": 0.0}
+    common_kwargs = dict(
+        FLOW=3000.0,
+        KV_list=[3.0, 3.0, 3.0],
+        rho_list=[850.0, 850.0, 850.0],
+        segment_slices=[
+            [{"length_km": stations[0]["L"], "kv": 3.0, "rho": 850.0}],
+            [{"length_km": stations[1]["L"], "kv": 3.0, "rho": 850.0}],
+        ],
+        RateDRA=0.2,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=24.0,
+        start_time="00:00",
+        enumerate_loops=False,
+        _internal_pass=True,
+        state_cost_margin=0.0,
+    )
+
+    rpm_only = {0: {"rpm": (1100, 1100)}}
+    optimal = pm.solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        narrow_ranges=copy.deepcopy(rpm_only),
+        state_top_k=1,
+        **common_kwargs,
+    )
+
+    wide_search = pm.solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        narrow_ranges=copy.deepcopy(rpm_only),
+        state_top_k=50,
+        **common_kwargs,
+    )
+
+    assert optimal["dra_ppm_station_a"] > 0
+    assert optimal["dra_ppm_station_a"] == wide_search["dra_ppm_station_a"]
+    assert optimal["num_pumps_station_b"] == 0
+
+    forced_zero = pm.solve_pipeline(
+        stations=copy.deepcopy(stations),
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        narrow_ranges={0: {"rpm": (1100, 1100), "dra_main": (0, 0)}},
+        **common_kwargs,
+    )
+
+    assert forced_zero["dra_ppm_station_a"] == 0
+    assert forced_zero["num_pumps_station_b"] == 1
+    assert forced_zero["total_cost"] > optimal["total_cost"]
+
+
 def test_injection_replaces_costlier_protected_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cheaper injected states should coexist with protected baselines."""
 
