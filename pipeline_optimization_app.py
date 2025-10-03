@@ -2307,10 +2307,18 @@ def solve_pipeline(
     except Exception:
         baseline_requirement = None
 
+    baseline_enforceable = True
+    baseline_warnings: list = []
     if isinstance(baseline_requirement, dict):
+        baseline_warnings = baseline_requirement.get("warnings") or []
+        for warning in baseline_warnings:
+            message = warning.get("message") if isinstance(warning, dict) else None
+            if message:
+                st.warning(message)
+        baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
         ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
         length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
-        if ppm_floor > 0 and length_floor > 0:
+        if baseline_enforceable and ppm_floor > 0 and length_floor > 0:
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
@@ -2341,7 +2349,8 @@ def solve_pipeline(
                 detail["dra_perc"] = max(current_perc, perc_floor)
         return detail
 
-    forced_detail_effective = _combine_origin_detail(baseline_requirement, forced_origin_detail)
+    baseline_for_enforcement = baseline_requirement if baseline_enforceable else None
+    forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
@@ -3594,10 +3603,18 @@ def run_all_updates():
         )
     except Exception:
         baseline_requirement = None
+    baseline_enforceable = True
+    baseline_warnings: list = []
     if isinstance(baseline_requirement, dict):
+        baseline_warnings = baseline_requirement.get("warnings") or []
+        for warning in baseline_warnings:
+            message = warning.get("message") if isinstance(warning, dict) else None
+            if message:
+                st.warning(message)
+        baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
         ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
         length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
-        if ppm_floor > 0 and length_floor > 0:
+        if baseline_enforceable and ppm_floor > 0 and length_floor > 0:
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
@@ -3625,7 +3642,8 @@ def run_all_updates():
                 merged["dra_perc"] = max(current_perc, perc_floor)
         return merged
 
-    forced_detail_effective = _merge_baseline_detail(baseline_requirement, forced_detail)
+    baseline_for_enforcement = baseline_requirement if baseline_enforceable else None
+    forced_detail_effective = _merge_baseline_detail(baseline_for_enforcement, forced_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 

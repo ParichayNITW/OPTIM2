@@ -1277,6 +1277,9 @@ def compute_minimum_lacing_requirement(
         'dra_perc': 0.0,
         'dra_ppm': 0.0,
         'length_km': 0.0,
+        'dra_perc_uncapped': 0.0,
+        'warnings': [],
+        'enforceable': True,
     }
 
     if not stations:
@@ -1490,6 +1493,7 @@ def compute_minimum_lacing_requirement(
 
     max_dra_perc = 0.0
     max_dra_ppm = 0.0
+    max_dra_perc_uncapped = 0.0
     residual_in = 0.0
 
     for idx, stn in enumerate(stations_copy):
@@ -1552,8 +1556,40 @@ def compute_minimum_lacing_requirement(
         max_head = _max_head_at_dol(stn, flow_segment)
         gap = sdh_required - (residual_in + max_head)
         if gap > 1e-6 and sdh_required > 0.0:
-            dr_needed = (gap / sdh_required) * 100.0
+            dr_unbounded = (gap / sdh_required) * 100.0
+            if dr_unbounded < 0.0:
+                dr_unbounded = 0.0
+            if dr_unbounded > max_dra_perc_uncapped:
+                max_dra_perc_uncapped = dr_unbounded
+
+            station_max_dr = _coerce_float_local(stn.get('max_dr', 0.0), 0.0)
+            cap_limit = dra_upper
+            limited_by_station = False
+            if station_max_dr > 0.0:
+                cap_limit = min(cap_limit, station_max_dr)
+                if dr_unbounded > station_max_dr + 1e-6:
+                    limited_by_station = True
+
+            dr_needed = min(dr_unbounded, cap_limit)
             dr_needed = min(max(dr_needed, 0.0), dra_upper)
+
+            if limited_by_station:
+                station_name = stn.get('name')
+                warning_msg = (
+                    f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded:.2f}% DR "
+                    f"but is capped at {station_max_dr:.2f}%."
+                )
+                result['warnings'].append(
+                    {
+                        'type': 'station_max_dr_exceeded',
+                        'station': station_name,
+                        'required_dr': dr_unbounded,
+                        'max_dr': station_max_dr,
+                        'message': warning_msg,
+                    }
+                )
+                result['enforceable'] = False
+
             if dr_needed > max_dra_perc:
                 max_dra_perc = dr_needed
                 try:
@@ -1564,6 +1600,7 @@ def compute_minimum_lacing_requirement(
 
     result['dra_perc'] = float(max_dra_perc)
     result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
+    result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
     return result
 
 
