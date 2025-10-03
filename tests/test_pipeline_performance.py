@@ -954,6 +954,8 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert result["length_km"] == pytest.approx(10.0)
     assert result["dra_perc"] > 0.0
     assert result["dra_ppm"] > 0.0
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
 
     flow = 1200.0
     head_loss, *_ = model._segment_hydraulics(
@@ -971,6 +973,11 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     expected_dr = max(sdh_required - max_head, 0.0) / sdh_required * 100.0 if sdh_required > 0 else 0.0
     assert result["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
     assert result["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
+    seg_entry = segments[0]
+    assert seg_entry["station_idx"] == 0
+    assert seg_entry["length_km"] == pytest.approx(10.0)
+    assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
+    assert seg_entry["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
 
 
 def test_compute_minimum_lacing_requirement_flags_station_cap():
@@ -1017,6 +1024,12 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert isinstance(warnings, list) and warnings
     assert any(w.get("type") == "station_max_dr_exceeded" for w in warnings if isinstance(w, dict))
     assert result.get("enforceable") is False
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    seg_entry = segments[0]
+    assert seg_entry["dra_perc"] == pytest.approx(30.0)
+    assert seg_entry.get("limited_by_station") is True
+    assert seg_entry.get("dra_ppm") == pytest.approx(model.get_ppm_for_dr(2.5, 30.0))
 
 
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
@@ -1035,8 +1048,88 @@ def test_compute_minimum_lacing_requirement_handles_invalid_input():
     assert result["dra_perc"] == 0.0
     assert result["dra_ppm"] == 0.0
     assert result["length_km"] == 0.0
+    assert result.get("segments") == []
     assert result.get("warnings") == []
     assert result.get("enforceable") is True
+
+
+def test_segment_floors_overlay_queue_minimum():
+    diameter = 0.7
+    segment_lengths = [6.0, 152.0]
+    flow_rate = _volume_from_km(segment_lengths[0], diameter)
+
+    initial_queue = [
+        {"length_km": sum(segment_lengths), "dra_ppm": 4.0},
+    ]
+
+    origin_data = {
+        "idx": 0,
+        "name": "Origin",
+        "L": segment_lengths[0],
+        "d_inner": diameter,
+        "kv": 3.0,
+        "dra_shear_factor": 0.0,
+        "shear_injection": False,
+        "linefill_slices": [],
+    }
+    origin_opt = {"nop": 1, "dra_ppm_main": 0.0}
+    origin_floor = {"length_km": segment_lengths[0], "dra_ppm": 3.0}
+
+    dra_segments, queue_after_origin, _ = _update_mainline_dra(
+        initial_queue,
+        origin_data,
+        origin_opt,
+        segment_lengths[0],
+        flow_rate,
+        1.0,
+        pump_running=True,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=True,
+        segment_floor=origin_floor,
+    )
+
+    merged_origin = _merge_queue(
+        [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_origin]
+    )
+    assert dra_segments and dra_segments[0] == pytest.approx((segment_lengths[0], 3.0), rel=1e-3)
+    assert merged_origin[0] == pytest.approx((segment_lengths[0], 3.0), rel=1e-3)
+
+    downstream_data = {
+        "idx": 1,
+        "name": "Station B",
+        "L": segment_lengths[1],
+        "d_inner": diameter,
+        "kv": 3.0,
+        "dra_shear_factor": 0.0,
+        "shear_injection": False,
+        "linefill_slices": [],
+    }
+    downstream_opt = {"nop": 0, "dra_ppm_main": 0.0}
+    downstream_floor = {"length_km": segment_lengths[1], "dra_ppm": 5.0}
+
+    _, queue_after_downstream, _ = _update_mainline_dra(
+        queue_after_origin,
+        downstream_data,
+        downstream_opt,
+        segment_lengths[1],
+        flow_rate,
+        1.0,
+        pump_running=False,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=False,
+        segment_floor=downstream_floor,
+    )
+
+    merged_final = _merge_queue(
+        [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_downstream]
+    )
+    assert merged_final == pytest.approx(
+        [(segment_lengths[0], 3.0), (segment_lengths[1], 4.0)], rel=1e-3
+    )
 
 
 def test_time_series_solver_reports_error_without_plan(monkeypatch):

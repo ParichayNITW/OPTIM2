@@ -1894,7 +1894,8 @@ def build_summary_dataframe(
 
     params_pre = [
         "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Bypass Next?",
-        "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM", "No. of Pumps",
+        "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM",
+        "Baseline Floor Length (km)", "Baseline Floor PPM", "Baseline Floor %DR", "No. of Pumps",
     ]
     params_post = [
         "Pump Eff (%)", "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
@@ -1914,6 +1915,9 @@ def build_summary_dataframe(
             res.get(f"power_cost_{key}", 0.0),
             res.get(f"dra_cost_{key}", 0.0),
             station_ppm.get(key, np.nan),
+            res.get(f"baseline_floor_length_{key}", np.nan),
+            res.get(f"baseline_floor_ppm_{key}", np.nan),
+            res.get(f"baseline_floor_perc_{key}", np.nan),
             int(res.get(f"num_pumps_{key}", 0)),
         ]
         if idx < len(stations_data):
@@ -1950,13 +1954,18 @@ def build_summary_dataframe(
         if drop_cols:
             df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
     df_sum = df_sum.round(2)
-    if 'DRA PPM' in df_sum['Parameters'].values:
-        idx = df_sum[df_sum['Parameters'] == 'DRA PPM'].index[0]
-        for col in df_sum.columns:
-            if col == 'Parameters':
-                continue
-            val = df_sum.at[idx, col]
-            df_sum.at[idx, col] = val if float(val or 0) > 0 else np.nan
+    for label in ['DRA PPM', 'Baseline Floor PPM', 'Baseline Floor %DR', 'Baseline Floor Length (km)']:
+        if label in df_sum['Parameters'].values:
+            idx = df_sum[df_sum['Parameters'] == label].index[0]
+            for col in df_sum.columns:
+                if col == 'Parameters':
+                    continue
+                val = df_sum.at[idx, col]
+                try:
+                    numeric = float(val or 0)
+                except (TypeError, ValueError):
+                    numeric = 0.0
+                df_sum.at[idx, col] = val if numeric > 0 else np.nan
     return df_sum
 
 
@@ -2309,6 +2318,7 @@ def solve_pipeline(
 
     baseline_enforceable = True
     baseline_warnings: list = []
+    baseline_segments: list[dict] | None = None
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
@@ -2318,23 +2328,29 @@ def solve_pipeline(
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
         ppm_floor = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
         length_floor = float(baseline_requirement.get("length_km", 0.0) or 0.0)
+        segments_raw = baseline_requirement.get("segments")
+        if isinstance(segments_raw, list):
+            baseline_segments = copy.deepcopy(segments_raw)
         if baseline_enforceable and ppm_floor > 0 and length_floor > 0:
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
+    if baseline_enforceable and baseline_segments:
+        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
+    else:
+        st.session_state.pop("origin_lacing_segment_baseline", None)
 
     def _combine_origin_detail(
         base_detail: dict | None,
         user_detail: dict | None,
     ) -> dict | None:
-        if base_detail is None and user_detail is None:
+        has_user = isinstance(user_detail, dict) and bool(user_detail)
+        if not has_user:
             return None
-        detail: dict = {}
-        if isinstance(user_detail, dict):
-            detail.update(copy.deepcopy(user_detail))
-        if isinstance(base_detail, dict):
+        detail: dict = copy.deepcopy(user_detail) if isinstance(user_detail, dict) else {}
+        if isinstance(base_detail, dict) and detail:
             ppm_floor = float(base_detail.get("dra_ppm", 0.0) or 0.0)
             length_floor = float(base_detail.get("length_km", 0.0) or 0.0)
             perc_floor = float(base_detail.get("dra_perc", 0.0) or 0.0)
@@ -2347,9 +2363,10 @@ def solve_pipeline(
                 detail["length_km"] = max(current_length, length_floor)
             if perc_floor > 0:
                 detail["dra_perc"] = max(current_perc, perc_floor)
-        return detail
+        return detail or None
 
     baseline_for_enforcement = baseline_requirement if baseline_enforceable else None
+    baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -2376,6 +2393,7 @@ def solve_pipeline(
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
+                segment_floors=baseline_segment_floors,
                 **search_kwargs,
             )
         else:
@@ -2397,6 +2415,7 @@ def solve_pipeline(
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
+                segment_floors=baseline_segment_floors,
                 **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
@@ -4231,6 +4250,51 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 "Minimum origin %DR",
                 f"{float(floor_perc):,.2f}" if isinstance(floor_perc, (int, float)) and float(floor_perc) > 0 else "N/A",
             )
+
+            segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
+            if segment_baseline:
+                seg_rows: list[dict[str, object]] = []
+                for entry in segment_baseline:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        idx = int(entry.get("station_idx", -1))
+                    except (TypeError, ValueError):
+                        idx = -1
+                    if 0 <= idx < len(stations_data):
+                        start_name = stations_data[idx].get("name", f"Station {idx + 1}")
+                        if idx + 1 < len(stations_data):
+                            end_name = stations_data[idx + 1].get("name", f"Station {idx + 2}")
+                        else:
+                            end_name = st.session_state.get("terminal_name", "Terminal")
+                    else:
+                        start_name = f"Station {idx + 1}" if idx >= 0 else "Unknown"
+                        end_name = st.session_state.get("terminal_name", "Terminal")
+                    seg_label = f"{start_name} → {end_name}" if start_name else end_name
+                    try:
+                        seg_length = float(entry.get("length_km", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_length = 0.0
+                    try:
+                        seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_ppm = 0.0
+                    try:
+                        seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_perc = 0.0
+                    seg_rows.append(
+                        {
+                            "Segment": seg_label,
+                            "Length (km)": seg_length,
+                            "Floor PPM": seg_ppm,
+                            "Floor %DR": seg_perc,
+                        }
+                    )
+                if seg_rows:
+                    seg_df = pd.DataFrame(seg_rows)
+                    seg_df = seg_df.round({"Length (km)": 2, "Floor PPM": 2, "Floor %DR": 2})
+                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)

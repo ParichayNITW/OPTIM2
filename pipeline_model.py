@@ -663,6 +663,75 @@ def _ensure_queue_floor(
     )
 
 
+def _overlay_queue_floor(
+    entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
+    length_required: float,
+    ppm_required: float,
+) -> list[tuple[float, float]]:
+    """Return ``entries`` ensuring the first ``length_required`` km meet ``ppm_required``."""
+
+    try:
+        length_val = max(float(length_required or 0.0), 0.0)
+    except (TypeError, ValueError):
+        length_val = 0.0
+    try:
+        ppm_val = max(float(ppm_required or 0.0), 0.0)
+    except (TypeError, ValueError):
+        ppm_val = 0.0
+
+    normalised: list[tuple[float, float]] = []
+    if entries:
+        for item in entries:
+            if not item:
+                continue
+            if isinstance(item, (list, tuple)):
+                length_item = item[0] if len(item) > 0 else 0.0
+                ppm_item = item[1] if len(item) > 1 else 0.0
+            else:
+                length_item = item
+                ppm_item = 0.0
+            try:
+                length_norm = float(length_item or 0.0)
+            except (TypeError, ValueError):
+                length_norm = 0.0
+            if length_norm <= 0.0:
+                continue
+            try:
+                ppm_norm = float(ppm_item or 0.0)
+            except (TypeError, ValueError):
+                ppm_norm = 0.0
+            normalised.append((length_norm, ppm_norm))
+
+    if not normalised or length_val <= 0.0 or ppm_val <= 0.0:
+        return list(normalised)
+
+    total_available = sum(length for length, _ppm in normalised)
+    if total_available <= 0.0:
+        return list(normalised)
+
+    target = min(length_val, total_available)
+    remaining = target
+    tol = 1e-9
+    adjusted: list[tuple[float, float]] = []
+
+    for length, ppm in normalised:
+        seg_remaining = float(length)
+        ppm_float = float(ppm)
+        while seg_remaining > tol:
+            if remaining > tol:
+                take = min(seg_remaining, remaining)
+                ppm_use = ppm_float if ppm_float >= ppm_val - tol else ppm_val
+                adjusted.append((take, ppm_use))
+                seg_remaining -= take
+                remaining -= take
+            else:
+                adjusted.append((seg_remaining, ppm_float))
+                seg_remaining = 0.0
+
+    merged = _merge_queue(adjusted)
+    return [(float(length), float(ppm)) for length, ppm in merged if float(length or 0.0) > 0.0]
+
+
 def _queue_total_length(
     queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
 ) -> float:
@@ -899,6 +968,7 @@ def _update_mainline_dra(
         tuple[tuple[float, float], ...],
         tuple[tuple[float, float], ...],
     ] | None = None,
+    segment_floor: Mapping[str, object] | None = None,
 ) -> tuple[list[tuple[float, float]], tuple[tuple[float, float], ...], float]:
     """Advance the mainline DRA queue for ``segment_length`` kilometres.
 
@@ -970,6 +1040,34 @@ def _update_mainline_dra(
     injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
     apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
     kv = float(stn_data.get("kv", 3.0) or 3.0)
+
+    floor_length = 0.0
+    floor_ppm = 0.0
+    if isinstance(segment_floor, Mapping):
+        try:
+            floor_length = float(segment_floor.get('length_km', segment_length) or 0.0)
+        except (TypeError, ValueError):
+            floor_length = 0.0
+        try:
+            floor_ppm = float(segment_floor.get('dra_ppm', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            floor_ppm = 0.0
+        if floor_ppm <= 0.0:
+            try:
+                floor_perc = float(segment_floor.get('dra_perc', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                floor_perc = 0.0
+            if floor_perc > 0.0 and kv > 0.0:
+                try:
+                    floor_ppm = float(get_ppm_for_dr(kv, floor_perc))
+                except Exception:
+                    floor_ppm = 0.0
+        if segment_length > 0.0 and floor_length > segment_length:
+            floor_length = segment_length
+        if floor_length < 0.0:
+            floor_length = 0.0
+        if floor_ppm < 0.0:
+            floor_ppm = 0.0
 
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
@@ -1128,6 +1226,21 @@ def _update_mainline_dra(
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
         pumped_adjusted.append((length_float, ppm_out))
+
+    enforce_floor = pump_running or inj_effective > 0.0
+    if enforce_floor and floor_length > 0.0 and floor_ppm > 0.0:
+        available_length = max(
+            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+        )
+        floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
+        if floor_target > 0.0:
+            updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
+            updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
+            if not pumped_differs and updated_adjusted != pumped_adjusted:
+                pumped_differs = True
+            pumped_portion = updated_portion
+            pumped_adjusted = updated_adjusted
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -1351,6 +1464,7 @@ def compute_minimum_lacing_requirement(
         'warnings': [],
         'enforceable': True,
     }
+    result['segments'] = []
 
     if not stations:
         return result
@@ -1561,6 +1675,7 @@ def compute_minimum_lacing_requirement(
 
     mop_global = _collect_mop_kgcm2(terminal)
 
+    segment_requirements: list[dict[str, float | int]] = []
     max_dra_perc = 0.0
     max_dra_ppm = 0.0
     max_dra_perc_uncapped = 0.0
@@ -1624,6 +1739,10 @@ def compute_minimum_lacing_requirement(
             continue
 
         max_head = _max_head_at_dol(stn, flow_segment)
+        dr_needed = 0.0
+        dra_ppm_needed = 0.0
+        dr_unbounded = 0.0
+        limited_by_station = False
         gap = sdh_required - (residual_in + max_head)
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
@@ -1634,7 +1753,6 @@ def compute_minimum_lacing_requirement(
 
             station_max_dr = _coerce_float_local(stn.get('max_dr', 0.0), 0.0)
             cap_limit = dra_upper
-            limited_by_station = False
             if station_max_dr > 0.0:
                 cap_limit = min(cap_limit, station_max_dr)
                 if dr_unbounded > station_max_dr + 1e-6:
@@ -1660,17 +1778,37 @@ def compute_minimum_lacing_requirement(
                 )
                 result['enforceable'] = False
 
+            try:
+                dra_ppm_needed = (
+                    float(get_ppm_for_dr(visc_max, dr_needed))
+                    if dr_needed > 0
+                    else 0.0
+                )
+            except Exception:
+                dra_ppm_needed = 0.0
+
             if dr_needed > max_dra_perc:
                 max_dra_perc = dr_needed
-                try:
-                    max_dra_ppm = float(get_ppm_for_dr(visc_max, dr_needed)) if dr_needed > 0 else 0.0
-                except Exception:
-                    max_dra_ppm = 0.0
+                max_dra_ppm = dra_ppm_needed
+
+        segment_requirements.append(
+            {
+                'station_idx': idx,
+                'length_km': float(L),
+                'dra_perc': float(dr_needed),
+                'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
+                'dra_perc_uncapped': float(dr_unbounded),
+                'sdh_required': float(sdh_required),
+                'max_head_available': float(residual_in + max_head),
+                'limited_by_station': bool(limited_by_station),
+            }
+        )
         residual_in = downstream_residual
 
     result['dra_perc'] = float(max_dra_perc)
     result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
     result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
+    result['segments'] = segment_requirements
     return result
 
 
@@ -2566,6 +2704,7 @@ def solve_pipeline(
     refined_retry: bool = False,
     pass_trace: list[str] | None = None,
     forced_origin_detail: dict | None = None,
+    segment_floors: list[dict] | tuple[dict, ...] | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -2580,7 +2719,10 @@ def solve_pipeline(
     dictionaries with at least ``volume`` (m³) and ``dra_ppm`` keys.  The
     leading batch's concentration is used as the upstream DRA level for the
     first station.  The function returns the updated linefill after pumping
-    under the key ``"linefill"``.
+    under the key ``"linefill"``.  ``segment_floors`` optionally supplies a
+    minimum treated length/ppm pair for each station segment (indexed from zero)
+    so that enforced baseline concentrations can be maintained without
+    collapsing the profile to a single origin-wide requirement.
 
     ``pump_shear_rate`` applies a uniform fractional attenuation to any DRA
     slug passing through an active pump.  The value is clamped to the
@@ -2672,6 +2814,52 @@ def solve_pipeline(
                 cleaned_slices.append([])
         segment_slices = cleaned_slices
 
+    segment_floor_lookup: dict[int, dict[str, float]] = {}
+    if segment_floors:
+        for entry in segment_floors:
+            if not isinstance(entry, Mapping):
+                continue
+            idx_val = entry.get('station_idx', entry.get('idx'))
+            try:
+                idx_int = int(idx_val)
+            except (TypeError, ValueError):
+                continue
+            if idx_int < 0 or idx_int >= len(stations):
+                continue
+            try:
+                length_val = float(entry.get('length_km', stations[idx_int].get('L', 0.0)) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                ppm_val = float(entry.get('dra_ppm', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            try:
+                perc_val = float(entry.get('dra_perc', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                perc_val = 0.0
+            limited_flag = bool(entry.get('limited_by_station', False))
+            if length_val <= 0.0:
+                try:
+                    length_val = float(stations[idx_int].get('L', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    length_val = 0.0
+            if length_val < 0.0:
+                length_val = 0.0
+            if ppm_val < 0.0:
+                ppm_val = 0.0
+            if perc_val < 0.0:
+                perc_val = 0.0
+            existing = segment_floor_lookup.get(idx_int, {})
+            combined: dict[str, float | bool] = {
+                'length_km': max(float(existing.get('length_km', 0.0)), length_val),
+                'dra_ppm': max(float(existing.get('dra_ppm', 0.0)), ppm_val),
+                'dra_perc': max(float(existing.get('dra_perc', 0.0)), perc_val),
+            }
+            if limited_flag or existing.get('limited_by_station'):
+                combined['limited_by_station'] = True
+            segment_floor_lookup[idx_int] = combined  # type: ignore[assignment]
+
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
     # specified.  Each candidate pattern is mapped onto the stations with
@@ -2710,6 +2898,7 @@ def solve_pipeline(
                 state_cost_margin=state_cost_margin,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -2773,6 +2962,7 @@ def solve_pipeline(
                 state_cost_margin=state_cost_margin,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
             )
             if res.get('error'):
                 continue
@@ -2960,6 +3150,7 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -2994,6 +3185,7 @@ def solve_pipeline(
             refined_retry=coarse_failed,
             pass_trace=None,
             forced_origin_detail=forced_origin_detail,
+            segment_floors=segment_floors,
         )
         if pass_trace is not None:
             pass_trace.append('exhaustive')
@@ -3161,6 +3353,7 @@ def solve_pipeline(
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
                     forced_origin_detail=forced_origin_detail,
+                    segment_floors=segment_floors,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -3542,6 +3735,7 @@ def solve_pipeline(
             'coef_R': float(stn.get('R', 0.0)),
             'coef_S': float(stn.get('S', 0.0)),
             'coef_T': float(stn.get('T', 0.0)),
+            'baseline_floor': segment_floor_lookup.get(i - 1),
             'min_rpm': station_rpm_min,
             'dol': station_rpm_max,
             'power_type': stn.get('power_type', 'Grid'),
@@ -3728,6 +3922,7 @@ def solve_pipeline(
                     shear_injection=bool(stn_data.get('shear_injection', False)),
                     is_origin=stn_data['idx'] == 0,
                     precomputed=precomputed_queue,
+                    segment_floor=stn_data.get('baseline_floor'),
                 )
                 queue_after_body = tuple(
                     (
@@ -4193,6 +4388,28 @@ def solve_pipeline(
                         f"min_rpm_{stn_data['name']}": stn_data['min_rpm'],
                         f"dol_{stn_data['name']}": stn_data['dol'],
                     }
+                    baseline_floor = stn_data.get('baseline_floor')
+                    if isinstance(baseline_floor, Mapping):
+                        try:
+                            floor_len = float(baseline_floor.get('length_km', 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            floor_len = 0.0
+                        try:
+                            floor_ppm = float(baseline_floor.get('dra_ppm', 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            floor_ppm = 0.0
+                        try:
+                            floor_perc = float(baseline_floor.get('dra_perc', 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            floor_perc = 0.0
+                        if floor_len > 0.0:
+                            record[f"baseline_floor_length_{stn_data['name']}"] = floor_len
+                        if floor_ppm > 0.0:
+                            record[f"baseline_floor_ppm_{stn_data['name']}"] = floor_ppm
+                        if floor_perc > 0.0:
+                            record[f"baseline_floor_perc_{stn_data['name']}"] = floor_perc
+                        if baseline_floor.get('limited_by_station'):
+                            record[f"baseline_floor_limited_{stn_data['name']}"] = True
                     if sc['flow_loop'] > 0:
                         record.update({
                             f"velocity_loop_{stn_data['name']}": sc['v_loop'],
@@ -4524,6 +4741,28 @@ def solve_pipeline(
 
     linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
     result['linefill'] = linefill_from_queue
+    if segment_floor_lookup:
+        floors_export: list[dict[str, float | int | bool]] = []
+        for idx, data in sorted(segment_floor_lookup.items()):
+            entry_out: dict[str, float | int | bool] = {
+                'station_idx': int(idx),
+            }
+            try:
+                entry_out['length_km'] = float(data.get('length_km', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                entry_out['length_km'] = 0.0
+            try:
+                entry_out['dra_ppm'] = float(data.get('dra_ppm', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                entry_out['dra_ppm'] = 0.0
+            try:
+                entry_out['dra_perc'] = float(data.get('dra_perc', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                entry_out['dra_perc'] = 0.0
+            if data.get('limited_by_station'):
+                entry_out['limited_by_station'] = True
+            floors_export.append(entry_out)
+        result['baseline_segment_floors'] = floors_export
 
     term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
     result.update({
@@ -4615,6 +4854,7 @@ def solve_pipeline_with_types(
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
     forced_origin_detail: dict | None = None,
+    segment_floors: list[dict] | tuple[dict, ...] | None = None,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -4718,6 +4958,7 @@ def solve_pipeline_with_types(
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
                     forced_origin_detail=forced_origin_detail,
+                    segment_floors=segment_floors,
                 )
                 if result.get("error"):
                     continue
