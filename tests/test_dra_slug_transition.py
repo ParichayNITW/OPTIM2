@@ -3,6 +3,8 @@ import copy
 import math
 import sys
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from pipeline_model import (
@@ -294,8 +296,8 @@ def test_queue_preserves_length_and_zero_front_progression() -> None:
         assert current - previous <= reference + 1e-9
 
 
-def test_zero_injection_advances_profile_by_appending_fresh_front() -> None:
-    """Newly injected fluid should appear at the head while trimming the tail."""
+def test_zero_injection_retains_existing_profile() -> None:
+    """Without a new slug the queue should keep its untreated pocket unchanged."""
 
     queue_state = [
         {"length_km": 2.0, "dra_ppm": 5.0},
@@ -311,38 +313,39 @@ def test_zero_injection_advances_profile_by_appending_fresh_front() -> None:
     }
     opt = {"dra_ppm_main": 0.0, "nop": 0}
 
-    pumped_length = 6.53
+    flow_m3h = 2000.0
+    hours = 1.0
+    precomputed = _prepare_dra_queue_consumption(
+        queue_state,
+        stn_data["L"],
+        flow_m3h,
+        hours,
+        stn_data["d_inner"],
+    )
+
+    pumped_length = precomputed[0]
+    assert pumped_length > 0.0
+
     dra_segments, queue_after, inj_ppm = _update_mainline_dra(
         queue_state,
         stn_data,
         opt,
-        158.0,
-        flow_m3h=0.0,
-        hours=1.0,
+        stn_data["L"],
+        flow_m3h=flow_m3h,
+        hours=hours,
         pump_running=False,
         pump_shear_rate=0.0,
         dra_shear_factor=0.0,
         shear_injection=False,
         is_origin=True,
-        precomputed=(pumped_length, (), ()),
+        precomputed=precomputed,
     )
 
     assert inj_ppm == 0.0
-    total_length = sum(float(entry["length_km"]) for entry in queue_after)
-    assert math.isclose(total_length, 158.0, rel_tol=1e-9, abs_tol=1e-9)
+    assert queue_after == queue_state
 
-    assert queue_after[0]["dra_ppm"] == 0.0
-    assert math.isclose(queue_after[0]["length_km"], pumped_length, rel_tol=1e-9, abs_tol=1e-6)
-
-    assert queue_after[1]["dra_ppm"] == 5.0
-    assert math.isclose(queue_after[1]["length_km"], 2.0, rel_tol=1e-9, abs_tol=1e-9)
-
-    assert queue_after[-1]["dra_ppm"] == 4.0
-    assert math.isclose(queue_after[-1]["length_km"], 49.47, rel_tol=1e-6, abs_tol=1e-6)
-
-    assert len(dra_segments) == 2
+    assert dra_segments
     lengths = [seg[0] for seg in dra_segments]
     ppm_vals = [seg[1] for seg in dra_segments]
-    assert math.isclose(lengths[0], 2.0, rel_tol=1e-9, abs_tol=1e-9)
-    assert math.isclose(lengths[1], 49.47, rel_tol=1e-6, abs_tol=1e-6)
-    assert ppm_vals == [5.0, 4.0]
+    assert lengths == pytest.approx([2.0, 56.0], rel=1e-9)
+    assert ppm_vals == pytest.approx([5.0, 4.0], rel=1e-9)

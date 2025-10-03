@@ -1137,21 +1137,26 @@ def _update_mainline_dra(
                 rest_entries = rest_entries[1:]
 
             zero_capacity = max(pipeline_length - inj_length, 0.0)
-            target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
-            if target_zero_length < zero_front_pre:
-                target_zero_length = zero_front_pre
-
-            trim_needed = max(0.0, target_zero_length - zero_front_pre)
-            trimmed_rest, leftover = _trim_queue_tail(rest_entries, trim_needed)
-            if leftover > 1e-9 and target_zero_length > 0.0:
-                target_zero_length = max(0.0, target_zero_length - leftover)
+            # Preserve the original untreated pocket instead of inflating it with the
+            # newly pumped head length.  The downstream queue already reflects any
+            # volume tracking so we only trim if we genuinely exceed that length.
+            desired_zero = min(initial_zero_prefix, zero_capacity)
+            if desired_zero < zero_front_pre:
+                desired_zero = zero_front_pre
 
             adjusted_entries: list[tuple[float, float]] = []
             if inj_entry is not None and inj_entry[0] > 0.0:
                 adjusted_entries.append(inj_entry)
-            if target_zero_length > 0.0:
-                adjusted_entries.append((target_zero_length, 0.0))
-            adjusted_entries.extend(trimmed_rest)
+            if desired_zero > 0.0:
+                adjusted_entries.append((desired_zero, 0.0))
+            adjusted_entries.extend(rest_entries)
+
+            if adjusted_entries:
+                adjusted_total = _queue_total_length(adjusted_entries)
+                trim_needed = max(adjusted_total - pipeline_length, 0.0)
+                if trim_needed > 1e-9:
+                    adjusted_entries, _ = _trim_queue_tail(adjusted_entries, trim_needed)
+
             merged_queue = _merge_queue(adjusted_entries)
 
     queue_after = [
