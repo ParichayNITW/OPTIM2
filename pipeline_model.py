@@ -565,6 +565,34 @@ def _merge_queue(
     return merged
 
 
+def _ensure_queue_floor(
+    queue_entries: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
+    length_required: float,
+    ppm_required: float,
+) -> tuple[tuple[float, float], ...]:
+    """Ensure ``queue_entries`` contains at least ``length_required`` at ``ppm_required``."""
+
+    try:
+        length_val = max(float(length_required or 0.0), 0.0)
+    except (TypeError, ValueError):
+        length_val = 0.0
+    try:
+        ppm_val = max(float(ppm_required or 0.0), 0.0)
+    except (TypeError, ValueError):
+        ppm_val = 0.0
+
+    if length_val <= 0.0 or ppm_val <= 0.0:
+        if not queue_entries:
+            return ()
+        return tuple((float(l), float(p)) for l, p in queue_entries if float(l or 0.0) > 0)
+
+    baseline_entries = [(length_val, ppm_val)]
+    if queue_entries:
+        baseline_entries.extend(queue_entries)
+    merged = _merge_queue(baseline_entries)
+    return tuple((float(l), float(p)) for l, p in merged if float(l or 0.0) > 0)
+
+
 def _queue_total_length(
     queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
 ) -> float:
@@ -944,6 +972,25 @@ def _update_mainline_dra(
             for length, ppm in precomputed[2]
             if float(length or 0.0) > 0.0
         ]
+        if not pumped_portion and not remaining_queue and existing_queue:
+            pumped_remaining = max(pumped_length, 0.0)
+            for length, ppm_val in existing_queue:
+                length_float = float(length or 0.0)
+                ppm_float = float(ppm_val or 0.0)
+                if length_float <= 0.0:
+                    continue
+                if pumped_remaining > 1e-9:
+                    take = min(length_float, pumped_remaining)
+                    if take > 1e-9:
+                        pumped_portion.append((take, ppm_float))
+                        pumped_remaining -= take
+                    leftover = length_float - take
+                    if leftover > 1e-9:
+                        remaining_queue.append((leftover, ppm_float))
+                else:
+                    remaining_queue.append((length_float, ppm_float))
+            if pumped_remaining > 1e-9:
+                pumped_portion.append((pumped_remaining, 0.0))
     else:
         pumped_remaining = max(pumped_length, 0.0)
         for length, ppm_val in existing_queue:
@@ -993,7 +1040,13 @@ def _update_mainline_dra(
         if length_float <= 0.0:
             continue
         ppm_input = float(ppm_val or 0.0)
-        if is_origin and pump_running and inj_effective <= 0.0:
+        zero_output = False
+        if is_origin and inj_effective <= 0.0:
+            if pump_running:
+                zero_output = True
+            elif flow_m3h <= 0.0:
+                zero_output = True
+        if zero_output:
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
@@ -1193,6 +1246,148 @@ def _segment_hydraulics(
             head_loss = hl_dra + hl_nodra
 
     return head_loss, v, Re, f
+
+
+def compute_minimum_lacing_requirement(
+    stations: list[dict],
+    terminal: dict,
+    *,
+    max_flow_m3h: float,
+    max_visc_cst: float,
+    segment_slices: list[list[dict]] | None = None,
+    dra_upper_bound: float = 70.0,
+) -> dict:
+    """Return the minimum lacing requirement to maintain downstream SDH.
+
+    The helper estimates the drag-reduction level that must be preserved at the
+    origin when the entire pipeline is treated at the user-specified worst-case
+    flow and viscosity.  It walks the downstream requirement solver to
+    determine the lowest %DR (and corresponding PPM) that avoids increasing the
+    required upstream head above the suction reference (assumed to be 0 m).
+    The returned dictionary provides both the treated length (equal to the
+    total pipeline length) and the minimum concentration in PPM.  When the
+    inputs are insufficient to derive a value the helper falls back to a zero
+    requirement.
+    """
+
+    result = {
+        'dra_perc': 0.0,
+        'dra_ppm': 0.0,
+        'length_km': 0.0,
+    }
+
+    if not stations:
+        return result
+
+    try:
+        max_flow = float(max_flow_m3h)
+    except (TypeError, ValueError):
+        max_flow = 0.0
+    if max_flow <= 0.0:
+        return result
+
+    try:
+        visc_max = float(max_visc_cst)
+    except (TypeError, ValueError):
+        visc_max = 0.0
+    if visc_max <= 0.0:
+        visc_max = 1.0
+
+    if dra_upper_bound is None:
+        dra_upper_bound = 70.0
+    try:
+        dra_upper = float(dra_upper_bound)
+    except (TypeError, ValueError):
+        dra_upper = 70.0
+    if dra_upper <= 0.0:
+        dra_upper = 70.0
+
+    total_length = 0.0
+    stations_copy: list[dict] = []
+    for stn in stations:
+        entry = copy.deepcopy(stn)
+        try:
+            total_length += float(entry.get('L', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            total_length += 0.0
+        stations_copy.append(entry)
+    if total_length <= 0.0:
+        total_length = 0.0
+    result['length_km'] = total_length
+
+    flows = [max_flow]
+    for stn in stations_copy:
+        try:
+            delivery = float(stn.get('delivery', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            delivery = 0.0
+        try:
+            supply = float(stn.get('supply', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            supply = 0.0
+        prev_flow = flows[-1]
+        flows.append(prev_flow - delivery + supply)
+
+    kv_list = [visc_max for _ in stations_copy]
+    if segment_slices is None:
+        slices_use: list[list[dict]] = [[] for _ in stations_copy]
+    else:
+        slices_use = [list(seg or []) for seg in segment_slices[: len(stations_copy)]]
+        if len(slices_use) < len(stations_copy):
+            slices_use.extend([[]] * (len(stations_copy) - len(slices_use)))
+
+    def _requirement_for(dr_value: float) -> float:
+        dr_val = max(float(dr_value or 0.0), 0.0)
+        stn_local: list[dict] = []
+        for stn in stations_copy:
+            entry = copy.deepcopy(stn)
+            entry['max_dr'] = dr_val
+            loop_info = entry.get('loopline')
+            if isinstance(loop_info, Mapping):
+                loop_copy = dict(loop_info)
+                loop_copy['max_dr'] = dr_val
+                entry['loopline'] = loop_copy
+            stn_local.append(entry)
+        try:
+            req = _downstream_requirement(
+                stn_local,
+                -1,
+                terminal,
+                flows,
+                kv_list,
+                slices_use,
+            )
+        except Exception:
+            req = 0.0
+        return float(req)
+
+    target_requirement = 0.0
+    base_req = _requirement_for(0.0)
+    if base_req <= target_requirement + 1e-6:
+        return result
+
+    low = 0.0
+    high = min(dra_upper, 100.0)
+    req_high = _requirement_for(high)
+    if req_high > target_requirement and high < 100.0:
+        # No feasible drag reduction identified within bounds – return upper.
+        dr_required = high
+    else:
+        for _ in range(20):
+            mid = (low + high) / 2.0
+            req_mid = _requirement_for(mid)
+            if req_mid <= target_requirement:
+                high = mid
+            else:
+                low = mid
+        dr_required = high
+
+    result['dra_perc'] = float(dr_required)
+    try:
+        result['dra_ppm'] = float(get_ppm_for_dr(visc_max, dr_required)) if dr_required > 0 else 0.0
+    except Exception:
+        result['dra_ppm'] = 0.0
+    return result
 
 
 def _segment_hydraulics_composite(
@@ -2747,6 +2942,23 @@ def solve_pipeline(
         prev_flow = segment_flows[-1]
         segment_flows.append(prev_flow - delivery + supply)
 
+    origin_dra_floor_ppm = 0.0
+    origin_dra_floor_perc = 0.0
+    if isinstance(forced_origin_detail, Mapping):
+        try:
+            origin_dra_floor_ppm = max(float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0), 0.0)
+        except (TypeError, ValueError):
+            origin_dra_floor_ppm = 0.0
+        try:
+            origin_dra_floor_perc = max(float(forced_origin_detail.get('dra_perc', 0.0) or 0.0), 0.0)
+        except (TypeError, ValueError):
+            origin_dra_floor_perc = 0.0
+        if origin_dra_floor_perc <= 0.0 and origin_dra_floor_ppm > 0.0 and KV_list:
+            try:
+                origin_dra_floor_perc = float(get_dr_for_ppm(KV_list[0], origin_dra_floor_ppm))
+            except Exception:
+                origin_dra_floor_perc = 0.0
+
     default_t = 0.007
     default_e = 0.00004
 
@@ -2911,7 +3123,14 @@ def solve_pipeline(
                 if rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
+                if i == 1 and origin_dra_floor_perc > 0:
+                    dr_floor = int(math.ceil(origin_dra_floor_perc))
+                    dr_min = max(dr_min, dr_floor)
+                if dr_min > dr_max:
+                    dr_min = dr_max
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
+                if not dra_main_vals and dr_max >= 0:
+                    dra_main_vals = [dr_max]
             max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
@@ -2979,7 +3198,14 @@ def solve_pipeline(
                 if rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
+                if i == 1 and origin_dra_floor_perc > 0:
+                    dr_floor = int(math.ceil(origin_dra_floor_perc))
+                    dr_min = max(dr_min, dr_floor)
+                if dr_min > dr_max:
+                    dr_min = dr_max
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
+                if not dra_vals and dr_max >= 0:
+                    dra_vals = [dr_max]
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     non_pump_opts.append({
@@ -3131,6 +3357,19 @@ def solve_pipeline(
         for length, ppm_val in initial_queue_entries
         if float(length) > 0
     )
+
+    baseline_floor: dict | None = None
+    if isinstance(forced_origin_detail, Mapping):
+        ppm_floor = float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0)
+        length_floor = float(forced_origin_detail.get('length_km', 0.0) or 0.0)
+        if ppm_floor > 0 and length_floor > 0:
+            baseline_floor = {
+                'dra_ppm': ppm_floor,
+                'length_km': length_floor,
+            }
+
+    if baseline_floor:
+        initial_queue = _ensure_queue_floor(initial_queue, baseline_floor['length_km'], baseline_floor['dra_ppm'])
 
     states: dict[int, dict] = {
         init_residual: {
