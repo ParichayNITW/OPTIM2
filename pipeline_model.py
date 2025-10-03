@@ -1702,8 +1702,6 @@ def compute_minimum_lacing_requirement(
     max_dra_perc = 0.0
     max_dra_ppm = 0.0
     max_dra_perc_uncapped = 0.0
-    residual_in = 0.0
-
     for idx, stn in enumerate(stations_copy):
         flow_segment = flows[idx + 1] if idx + 1 < len(flows) else flows[-1]
         flow_segment = max(_coerce_float_local(flow_segment, max_flow), 0.0)
@@ -1744,6 +1742,12 @@ def compute_minimum_lacing_requirement(
 
         downstream_residual = downstream_requirements[idx] if idx < len(downstream_requirements) else terminal_min_residual
         downstream_residual = max(downstream_residual, 0.0)
+        try:
+            station_min_residual = float(stn.get('min_residual', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            station_min_residual = 0.0
+        station_min_residual = max(station_min_residual, 0.0)
+        residual_head = max(downstream_residual, station_min_residual)
 
         sdh_required = downstream_residual + head_loss + elev_delta
         if sdh_required < downstream_residual:
@@ -1758,7 +1762,6 @@ def compute_minimum_lacing_requirement(
 
         sdh_required = max(sdh_required, 0.0)
         if sdh_required <= 0.0:
-            residual_in = downstream_residual
             continue
 
         max_head = _max_head_at_dol(stn, flow_segment)
@@ -1766,7 +1769,8 @@ def compute_minimum_lacing_requirement(
         dra_ppm_needed = 0.0
         dr_unbounded = 0.0
         limited_by_station = False
-        gap = sdh_required - (residual_in + max_head)
+        available_head = residual_head + max_head
+        gap = sdh_required - available_head
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
             if dr_unbounded < 0.0:
@@ -1822,11 +1826,11 @@ def compute_minimum_lacing_requirement(
                 'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
                 'dra_perc_uncapped': float(dr_unbounded),
                 'sdh_required': float(sdh_required),
-                'max_head_available': float(residual_in + max_head),
+                'residual_head': float(residual_head),
+                'max_head_available': float(available_head),
                 'limited_by_station': bool(limited_by_station),
             }
         )
-        residual_in = downstream_residual
 
     result['segments'] = segment_requirements
     if segment_requirements:
