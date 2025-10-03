@@ -581,16 +581,86 @@ def _ensure_queue_floor(
     except (TypeError, ValueError):
         ppm_val = 0.0
 
-    if length_val <= 0.0 or ppm_val <= 0.0:
-        if not queue_entries:
-            return ()
-        return tuple((float(l), float(p)) for l, p in queue_entries if float(l or 0.0) > 0)
-
-    baseline_entries = [(length_val, ppm_val)]
+    normalised: list[tuple[float, float]] = []
     if queue_entries:
-        baseline_entries.extend(queue_entries)
-    merged = _merge_queue(baseline_entries)
-    return tuple((float(l), float(p)) for l, p in merged if float(l or 0.0) > 0)
+        for entry in queue_entries:
+            if not entry:
+                continue
+            if isinstance(entry, (list, tuple)):
+                length_item = entry[0] if len(entry) > 0 else 0.0
+                ppm_item = entry[1] if len(entry) > 1 else 0.0
+            else:
+                length_item = entry
+                ppm_item = 0.0
+            try:
+                length_norm = float(length_item or 0.0)
+            except (TypeError, ValueError):
+                length_norm = 0.0
+            if length_norm <= 0.0:
+                continue
+            try:
+                ppm_norm = float(ppm_item or 0.0)
+            except (TypeError, ValueError):
+                ppm_norm = 0.0
+            normalised.append((length_norm, ppm_norm))
+
+    total_length_in = sum(length for length, _ppm in normalised)
+    target_length = total_length_in if total_length_in > 1e-9 else length_val
+
+    if length_val <= 0.0 or ppm_val <= 0.0:
+        if not normalised:
+            return ()
+        merged_only = _merge_queue(normalised)
+        if not merged_only:
+            return ()
+        merged_total = sum(length for length, _ppm in merged_only)
+        if target_length > 0.0 and merged_total > target_length + 1e-9:
+            trimmed = _take_queue_front(merged_only, target_length)
+            merged_only = _merge_queue(trimmed)
+        return tuple(
+            (float(length), float(ppm))
+            for length, ppm in merged_only
+            if float(length or 0.0) > 0.0
+        )
+
+    if not normalised:
+        baseline = [(length_val, ppm_val)] if length_val > 0.0 else []
+    else:
+        baseline = []
+        remaining = length_val
+        for length_norm, ppm_norm in normalised:
+            length_slice = float(length_norm)
+            ppm_slice = float(ppm_norm)
+            if length_slice <= 0.0:
+                continue
+            if remaining > 1e-9:
+                portion = min(length_slice, remaining)
+                if portion > 0.0:
+                    ppm_floor = ppm_slice if ppm_slice >= ppm_val - 1e-9 else ppm_val
+                    baseline.append((portion, ppm_floor))
+                    remaining -= portion
+                remainder = length_slice - portion
+                if remainder > 1e-9:
+                    baseline.append((remainder, ppm_slice))
+            else:
+                baseline.append((length_slice, ppm_slice))
+        if remaining > 1e-9:
+            baseline.append((remaining, ppm_val))
+
+    merged = _merge_queue(baseline)
+    if not merged:
+        return ()
+
+    merged_total = sum(length for length, _ppm in merged)
+    if target_length > 0.0 and merged_total > target_length + 1e-9:
+        trimmed = _take_queue_front(merged, target_length)
+        merged = _merge_queue(trimmed)
+
+    return tuple(
+        (float(length), float(ppm))
+        for length, ppm in merged
+        if float(length or 0.0) > 0.0
+    )
 
 
 def _queue_total_length(
