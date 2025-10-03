@@ -980,6 +980,71 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
 
 
+def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 10.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "min_residual": 8.0,
+        }
+    ]
+    terminal = {"min_residual": 4.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=1200.0,
+        max_visc_cst=2.5,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    seg_entry = segments[0]
+
+    flow = 1200.0
+    head_loss, *_ = model._segment_hydraulics(
+        flow,
+        stations[0]["L"],
+        stations[0]["d"],
+        stations[0]["rough"],
+        2.5,
+        0.0,
+        0.0,
+    )
+    pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
+    max_head = sum(p.get("tdh", 0.0) for p in pump_info)
+    residual_head = max(stations[0]["min_residual"], terminal["min_residual"])
+    sdh_required = terminal["min_residual"] + head_loss
+
+    expected_gap = max(sdh_required - (residual_head + max_head), 0.0)
+    expected_dr = expected_gap / sdh_required * 100.0 if sdh_required > 0 else 0.0
+
+    assert seg_entry["residual_head"] == pytest.approx(residual_head)
+    assert seg_entry["max_head_available"] == pytest.approx(residual_head + max_head)
+    assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
+
+
 def test_compute_minimum_lacing_requirement_flags_station_cap():
     import pipeline_model as model
 
