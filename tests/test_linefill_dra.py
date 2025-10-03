@@ -1458,7 +1458,8 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
         shear_injection: bool = False,
         is_origin: bool = False,
         precomputed=None,
-    ) -> tuple[list[tuple[float, float]], list[dict], float]:
+        segment_floor=None,
+    ) -> tuple[list[tuple[float, float]], list[dict], float, bool]:
         seg_len = float(segment_length or 0.0)
         ppm = float(opt.get("dra_ppm_main", 0) or 0.0)
         if ppm <= 0 and float(opt.get("dra_main", 0) or 0) > 0:
@@ -1487,7 +1488,7 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
         else:
             dra_segments = [(seg_len, 0.0)]
             queue_after = []
-        return dra_segments, queue_after, ppm
+        return dra_segments, queue_after, ppm, False
 
     def fake_get_ppm(kv: float, dr: float) -> float:
         return float(dr) * 10.0
