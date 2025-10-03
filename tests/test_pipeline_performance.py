@@ -18,6 +18,7 @@ from pipeline_model import (
     _km_from_volume,
     _update_mainline_dra,
     _merge_queue,
+    _ensure_queue_floor,
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
@@ -2840,6 +2841,34 @@ def test_zero_injection_hour_advances_profile() -> None:
     assert queue_after_hour2[-1]["length_km"] == pytest.approx(56.0 - pumped_length * 2.0, rel=1e-6)
     total_length_hour2 = sum(float(entry["length_km"]) for entry in queue_after_hour2)
     assert total_length_hour2 == pytest.approx(segment_length, rel=1e-6)
+
+
+def test_queue_floor_preserves_downstream_slug() -> None:
+    """Applying the floor should retain richer slices beyond the baseline head."""
+
+    initial_queue = ((6.0, 0.0), (152.0, 4.0))
+
+    floored_queue = _ensure_queue_floor(initial_queue, 6.0, 3.0)
+
+    assert floored_queue
+    assert len(floored_queue) == 2
+    assert floored_queue[0][0] == pytest.approx(6.0, rel=1e-9)
+    assert floored_queue[0][1] == pytest.approx(3.0, rel=1e-9)
+    assert floored_queue[1][0] == pytest.approx(152.0, rel=1e-9)
+    assert floored_queue[1][1] == pytest.approx(4.0, rel=1e-9)
+    assert sum(length for length, _ppm in floored_queue) == pytest.approx(158.0, rel=1e-9)
+
+    full_profile = _segment_profile_from_queue(floored_queue, 0.0, 158.0)
+    assert len(full_profile) == 2
+    assert full_profile[0][0] == pytest.approx(6.0, rel=1e-9)
+    assert full_profile[0][1] == pytest.approx(3.0, rel=1e-9)
+    assert full_profile[1][0] == pytest.approx(152.0, rel=1e-9)
+    assert full_profile[1][1] == pytest.approx(4.0, rel=1e-9)
+
+    downstream_profile = _segment_profile_from_queue(floored_queue, 6.0, 152.0)
+    assert len(downstream_profile) == 1
+    assert downstream_profile[0][0] == pytest.approx(152.0, rel=1e-9)
+    assert downstream_profile[0][1] == pytest.approx(4.0, rel=1e-9)
 
 
 def test_dra_profile_reflects_hourly_push_examples() -> None:
