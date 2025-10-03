@@ -3955,14 +3955,41 @@ def solve_pipeline(
                 (key, data) for key, data in items if data.get('protected')
             ]
             threshold = best_cost_station + state_cost_margin
+            dra_extension = max(state_cost_margin, STATE_COST_MARGIN)
             pruned: dict[object, dict] = {}
             for key, data in protected_entries:
                 pruned[key] = data
+            dra_retained: list[tuple[object, dict]] = []
             for idx, (residual_key, data) in enumerate(items):
-                if residual_key in pruned:
+                inj_ppm = float(data.get('inj_ppm_main', 0.0) or 0.0)
+                inj_positive = inj_ppm > 0.0
+                limit = threshold + (dra_extension if inj_positive else 0.0)
+                if idx < state_top_k or data['cost'] <= limit:
+                    if residual_key not in pruned:
+                        pruned[residual_key] = data
+                    elif inj_positive:
+                        alt_key = (residual_key, f"dra_{len(pruned)}")
+                        pruned[alt_key] = data
                     continue
-                if idx < state_top_k or data['cost'] <= threshold:
-                    pruned[residual_key] = data
+                if inj_positive:
+                    dra_retained.append((residual_key, data))
+            if dra_retained:
+                # Preserve a handful of high-cost injected states so downstream
+                # stations can benefit from their reduced head losses.  The
+                # additional entries keep the search breadth tractable while
+                # ensuring expensive but strategically valuable DRA paths do not
+                # disappear after this station.
+                dra_retained.sort(key=lambda kv: (kv[1]['cost'], -kv[1]['residual']))
+                extra_slots = max(1, min(len(dra_retained), state_top_k + 2))
+                for residual_key, data in dra_retained:
+                    if residual_key not in pruned:
+                        pruned[residual_key] = data
+                    else:
+                        alt_key = (residual_key, f"dra_{len(pruned)}")
+                        pruned[alt_key] = data
+                    extra_slots -= 1
+                    if extra_slots <= 0:
+                        break
             states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
