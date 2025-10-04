@@ -3324,4 +3324,5 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b_zero, [(2.0, 0.0), (18.0, 10.0)])
 
     _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
-    _assert_profile(profile_b_no_injection,
+    _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
+
