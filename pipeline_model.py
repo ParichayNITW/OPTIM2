@@ -1110,6 +1110,78 @@ def _segment_profile_from_queue(
     return _take_queue_front(segment_queue, seg_len)
 
 
+def _predict_effective_injection(
+    ppm_requested: float,
+    kv: float,
+    *,
+    pump_running: bool,
+    pump_shear_rate: float,
+    dra_shear_factor: float,
+    shear_injection: bool,
+    injector_position: str | None,
+) -> float:
+    """Return the estimated post-shear concentration for an injected slug."""
+
+    try:
+        inj_requested = float(ppm_requested or 0.0)
+    except (TypeError, ValueError):
+        inj_requested = 0.0
+    if inj_requested <= 0.0:
+        return 0.0
+
+    try:
+        kv_val = float(kv or 0.0)
+    except (TypeError, ValueError):
+        kv_val = 0.0
+
+    try:
+        local_shear = float(dra_shear_factor or 0.0)
+    except (TypeError, ValueError):
+        local_shear = 0.0
+    local_shear = max(0.0, min(local_shear, 1.0))
+
+    try:
+        global_shear = float(pump_shear_rate or 0.0)
+    except (TypeError, ValueError):
+        global_shear = 0.0
+    global_shear = max(0.0, min(global_shear, 1.0)) if pump_running else 0.0
+
+    if pump_running:
+        shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
+    else:
+        shear = local_shear
+    shear = max(0.0, min(shear, 1.0))
+
+    injector_pos = str(injector_position or "").lower()
+    apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
+    if not pump_running or not apply_injection_shear:
+        return max(inj_requested, 0.0)
+
+    inj_dr = 0.0
+    if kv_val > 0.0:
+        try:
+            inj_dr = float(get_dr_for_ppm(kv_val, inj_requested))
+        except Exception:
+            inj_dr = 0.0
+
+    if inj_dr > 0.0:
+        dr_use = inj_dr * (1.0 - shear if shear > 0 else 1.0)
+        if dr_use <= 0.0:
+            return 0.0
+        try:
+            return float(get_ppm_for_dr(kv_val, dr_use))
+        except Exception:
+            multiplier = 1.0 - shear if shear > 0 else 1.0
+            if multiplier < 0.0:
+                multiplier = 0.0
+            return inj_requested * multiplier
+
+    multiplier = 1.0 - shear if shear > 0 else 1.0
+    if multiplier < 0.0:
+        multiplier = 0.0
+    return inj_requested * multiplier
+
+
 def _update_mainline_dra(
     queue: list[dict] | list[tuple] | tuple | None,
     stn_data: dict,
@@ -1405,23 +1477,20 @@ def _update_mainline_dra(
         or inj_effective > 0.0
         or (has_floor_requirement and pumped_length_total > 0.0)
     )
-    floor_requires_injection = False
-    if has_floor_requirement:
-        if inj_effective <= 0.0:
-            floor_requires_injection = True
-        elif enforce_floor:
-            available_length = max(
-                sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
-                sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
-            )
-            floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
-            if floor_target > 0.0:
-                updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
-                updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
-                if not pumped_differs and updated_adjusted != pumped_adjusted:
-                    pumped_differs = True
-                pumped_portion = updated_portion
-                pumped_adjusted = updated_adjusted
+    floor_requires_injection = has_floor_requirement and inj_effective <= 0.0
+    if has_floor_requirement and not floor_requires_injection and enforce_floor:
+        available_length = max(
+            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+        )
+        floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
+        if floor_target > 0.0:
+            updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
+            updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
+            if not pumped_differs and updated_adjusted != pumped_adjusted:
+                pumped_differs = True
+            pumped_portion = updated_portion
+            pumped_adjusted = updated_adjusted
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -3883,6 +3952,9 @@ def solve_pipeline(
                 dr_loop_min = max(0, rng['dra_loop'][0])
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
+            station_shear_factor = float(stn.get('dra_shear_factor', 0.0) or 0.0)
+            station_shear_injection = bool(stn.get('shear_injection', False))
+            injector_position = stn.get('dra_injector_position')
             for nop in range(min_p, max_p + 1):
                 if nop == 0:
                     rpm_iter = [None]
@@ -3912,6 +3984,30 @@ def solve_pipeline(
                             ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
                             if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
                                 continue
+                            inj_effective_est = _predict_effective_injection(
+                                ppm_main,
+                                kv,
+                                pump_running=nop > 0,
+                                pump_shear_rate=pump_shear_rate,
+                                dra_shear_factor=station_shear_factor,
+                                shear_injection=station_shear_injection,
+                                injector_position=injector_position,
+                            )
+                            if ppm_main > 0.0 and inj_effective_est <= 0.0:
+                                ppm_candidate = max(ppm_main, floor_ppm_min)
+                                if ppm_candidate > ppm_main:
+                                    inj_effective_est = _predict_effective_injection(
+                                        ppm_candidate,
+                                        kv,
+                                        pump_running=nop > 0,
+                                        pump_shear_rate=pump_shear_rate,
+                                        dra_shear_factor=station_shear_factor,
+                                        shear_injection=station_shear_injection,
+                                        injector_position=injector_position,
+                                    )
+                                if inj_effective_est <= 0.0:
+                                    continue
+                                ppm_main = ppm_candidate
                             opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
@@ -5115,6 +5211,35 @@ def solve_pipeline(
 
     linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
     result['linefill'] = linefill_from_queue
+    floor_summary: list[dict[str, float | str]] = []
+    for key, value in result.items():
+        if not key.startswith('floor_injection_applied_'):
+            continue
+        if not value:
+            continue
+        suffix = key[len('floor_injection_applied_'):]
+        entry: dict[str, float | str] = {
+            'station': suffix,
+        }
+        try:
+            entry['ppm'] = float(result.get(f'floor_injection_ppm_{suffix}', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry['ppm'] = 0.0
+        try:
+            entry['perc'] = float(result.get(f'floor_injection_perc_{suffix}', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry['perc'] = 0.0
+        try:
+            entry['floor_min_ppm'] = float(result.get(f'floor_min_ppm_{suffix}', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry['floor_min_ppm'] = 0.0
+        try:
+            entry['floor_min_perc'] = float(result.get(f'floor_min_perc_{suffix}', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry['floor_min_perc'] = 0.0
+        floor_summary.append(entry)
+    if floor_summary:
+        result['floor_injection_summary'] = floor_summary
     if segment_floor_lookup:
         floors_export: list[dict[str, float | int | bool]] = []
         for idx, data in sorted(segment_floor_lookup.items()):
