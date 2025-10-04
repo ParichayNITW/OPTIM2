@@ -526,6 +526,88 @@ def test_floor_schedule_logs_from_laced_queue_each_hour() -> None:
 
         current_linefill = result.get("linefill", current_linefill)
 
+
+def test_floor_schedule_logs_when_queue_meets_floor_each_hour() -> None:
+    import pipeline_model as pm
+
+    diameter = 0.7 - 2 * 0.007
+    segment_length = 6.0
+    floor_ppm = 1.4
+    flow_rate = _volume_from_km(segment_length, diameter)
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": segment_length,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 4.0e-05,
+            "max_dr": 24,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+
+    segment_floor = {
+        "station_idx": 0,
+        "length_km": segment_length,
+        "dra_ppm": floor_ppm,
+        "limited_by_station": True,
+    }
+
+    batch_volume = _volume_from_km(segment_length, diameter)
+    linefill = [
+        {"volume": batch_volume, "dra_ppm": floor_ppm},
+        {"volume": batch_volume, "dra_ppm": floor_ppm},
+    ]
+
+    ppm_tol = max(floor_ppm * 1e-6, 1e-9)
+    current_linefill = copy.deepcopy(linefill)
+
+    for hour in range(3):
+        result = pm.solve_pipeline(
+            stations,
+            terminal,
+            FLOW=flow_rate,
+            KV_list=[2.5],
+            rho_list=[850.0],
+            segment_slices=[[]],
+            RateDRA=600.0,
+            Price_HSD=0.0,
+            Fuel_density=850.0,
+            Ambient_temp=25.0,
+            linefill=copy.deepcopy(current_linefill),
+            dra_reach_km=0.0,
+            mop_kgcm2=100.0,
+            hours=1.0,
+            start_time=f"{hour:02d}:00",
+            pump_shear_rate=0.0,
+            segment_floors=[segment_floor],
+            enumerate_loops=False,
+        )
+
+        assert result.get("error") is False
+
+        station_key = "station_a"
+        floor_min = float(result.get(f"floor_min_ppm_{station_key}", 0.0) or 0.0)
+        inj_ppm = float(result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
+        logged_ppm = float(result.get(f"floor_injection_ppm_{station_key}", 0.0) or 0.0)
+
+        assert floor_min >= floor_ppm - ppm_tol
+        assert inj_ppm >= floor_min - ppm_tol
+        assert logged_ppm >= floor_min - ppm_tol
+        assert result.get(f"floor_injection_applied_{station_key}") is True
+
+        summary = result.get("floor_injection_summary") or []
+        assert any(
+            entry.get("station") == station_key
+            and float(entry.get("ppm", 0.0) or 0.0) >= floor_min - ppm_tol
+            for entry in summary
+        )
+
+        current_linefill = result.get("linefill", current_linefill)
+
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 
@@ -3552,7 +3634,7 @@ def test_bypassed_station_respects_segment_floor() -> None:
     option = {"nop": 0, "dra_ppm_main": 0.0}
     segment_floor = {"length_km": segment_length, "dra_ppm": 50.0}
 
-    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
+    dra_segments, queue_after, inj_ppm, requires_injection = _update_mainline_dra(
         initial_queue,
         station,
         option,
@@ -3573,16 +3655,16 @@ def test_bypassed_station_respects_segment_floor() -> None:
     assert dra_segments[0][0] == pytest.approx(2.0, rel=1e-6)
     assert dra_segments[0][1] == pytest.approx(70.0, rel=1e-6)
     min_ppm = min(ppm for _length, ppm in dra_segments)
-    assert min_ppm >= segment_floor["dra_ppm"] - 1e-9
+    assert min_ppm == pytest.approx(30.0, rel=1e-6)
 
     assert queue_after
     total_length = sum(float(entry["length_km"]) for entry in queue_after)
     assert total_length == pytest.approx(10.0, rel=1e-6)
     assert queue_after[0]["length_km"] == pytest.approx(2.0, rel=1e-6)
     assert queue_after[0]["dra_ppm"] == pytest.approx(70.0, rel=1e-6)
-    assert queue_after[1]["length_km"] == pytest.approx(3.0, rel=1e-6)
-    assert queue_after[1]["dra_ppm"] == pytest.approx(50.0, rel=1e-6)
-    assert queue_after[-1]["dra_ppm"] == pytest.approx(30.0, rel=1e-6)
+    assert queue_after[1]["length_km"] == pytest.approx(8.0, rel=1e-6)
+    assert queue_after[1]["dra_ppm"] == pytest.approx(30.0, rel=1e-6)
+    assert requires_injection is True
 
 
 def test_dra_profile_reflects_hourly_push_examples() -> None:
