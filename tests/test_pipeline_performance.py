@@ -301,7 +301,8 @@ def test_floor_requirement_enforces_positive_injection_and_reporting() -> None:
     def stub_update(queue, stn_data, opt, segment_length, flow_m3h, hours, **kwargs):
         if stn_data.get("dra_floor_ppm_min", 0.0) > 0.0:
             assert opt.get("dra_main", 0) > 0
-            assert opt.get("dra_ppm_main", 0.0) > 0.0
+            ppm_floor = float(stn_data.get("dra_floor_ppm_min", 0.0) or 0.0)
+            assert opt.get("dra_ppm_main", 0.0) >= ppm_floor - 1e-9
         call_log.append(opt.copy())
         ppm = float(opt.get("dra_ppm_main", 0.0) or 0.0)
         return (
@@ -633,11 +634,20 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         hours_val = float(solver_kwargs.get("hours", 1.0))
         if hour == 0:
             if positive and not forced_detail:
+                ppm_val = 3.0
+                cost_factor = flow * 1000.0 * hours_val / 1e6
+                dra_cost = ppm_val * cost_factor * RateDRA
                 return {
                     "error": False,
-                    "total_cost": 12.0,
-                    "linefill": [{"length_km": 6.0, "dra_ppm": 3.0, "volume": 1000.0}],
+                    "total_cost": 12.0 + dra_cost,
+                    "linefill": [{"length_km": 6.0, "dra_ppm": ppm_val, "volume": 1000.0}],
                     "dra_front_km": 6.0,
+                    "pipeline_flow_station_a": flow,
+                    "dra_ppm_station_a": ppm_val,
+                    "dra_cost_station_a": dra_cost,
+                    "dra_profile_station_a": [
+                        {"length_km": 6.0, "dra_ppm": ppm_val},
+                    ],
                 }
             if forced_detail:
                 forced_ppm = float(forced_detail.get("dra_ppm", 0.0) or 0.0)
@@ -654,6 +664,9 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
                     "dra_ppm_station_a": forced_ppm,
                     "dra_cost_station_a": dra_cost,
                     "forced_origin_detail": copy.deepcopy(forced_detail),
+                    "dra_profile_station_a": [
+                        {"length_km": 6.0, "dra_ppm": forced_ppm or 3.0},
+                    ],
                 }
                 return result
             return {
@@ -664,11 +677,26 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
             }
         if hour == 1:
             if positive or float(dra_reach_km) > 0.0:
+                ppm_from_queue = 0.0
+                for entry in dra_linefill_in or []:
+                    val = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    if val > 0.0:
+                        ppm_from_queue = val
+                        break
+                ppm_val = max(ppm_from_queue, 3.0)
+                cost_factor = flow * 1000.0 * hours_val / 1e6
+                dra_cost = ppm_val * cost_factor * RateDRA
                 return {
                     "error": False,
-                    "total_cost": 11.0,
-                    "linefill": [{"length_km": 5.0, "dra_ppm": 2.5, "volume": 1000.0}],
+                    "total_cost": 11.0 + dra_cost,
+                    "linefill": [{"length_km": 5.0, "dra_ppm": ppm_val, "volume": 1000.0}],
                     "dra_front_km": 5.0,
+                    "pipeline_flow_station_a": flow,
+                    "dra_ppm_station_a": ppm_val,
+                    "dra_cost_station_a": dra_cost,
+                    "dra_profile_station_a": [
+                        {"length_km": 5.0, "dra_ppm": ppm_val},
+                    ],
                 }
             return {
                 "error": True,
@@ -758,6 +786,22 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         assert label in note_text
         assert f"{vol_val:.0f} m³" in note_text
         assert f"{ppm_val:.2f} ppm" in note_text
+
+    ppm_floor = enforced_ppm
+    ppm_tol = max(ppm_floor * 1e-6, 1e-9)
+    for entry in result["reports"]:
+        hour_result = entry["result"]
+        inj_ppm = float(hour_result.get("dra_ppm_station_a", 0.0) or 0.0)
+        if inj_ppm <= 0.0:
+            continue
+        assert inj_ppm >= ppm_floor - ppm_tol
+        profile = hour_result.get("dra_profile_station_a") or []
+        assert profile
+        first_slice = profile[0]
+        assert float(first_slice.get("dra_ppm", 0.0) or 0.0) == pytest.approx(inj_ppm)
+        flow_val = float(hour_result.get("pipeline_flow_station_a", 0.0) or 0.0)
+        expected_cost_hour = inj_ppm * (flow_val * 1000.0 * 1.0 / 1e6) * 5.0
+        assert hour_result.get("dra_cost_station_a", 0.0) == pytest.approx(expected_cost_hour)
 
     first_snapshot = result["linefill_snaps"][0]
     assert isinstance(first_snapshot, pd.DataFrame)
@@ -1401,13 +1445,15 @@ def test_segment_floors_overlay_queue_minimum():
         is_origin=True,
         segment_floor=origin_floor,
     )
-    assert requires_injection is False
+    assert requires_injection is True
 
     merged_origin = _merge_queue(
         [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_origin]
     )
-    assert dra_segments and dra_segments[0] == pytest.approx((segment_lengths[0], 3.0), rel=1e-3)
-    assert merged_origin[0] == pytest.approx((segment_lengths[0], 3.0), rel=1e-3)
+    assert not dra_segments
+    assert merged_origin == pytest.approx(
+        [(segment_lengths[0], 0.0), (segment_lengths[1], 4.0)], rel=1e-3
+    )
 
     downstream_data = {
         "idx": 1,
@@ -1442,7 +1488,7 @@ def test_segment_floors_overlay_queue_minimum():
         [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_downstream]
     )
     assert merged_final == pytest.approx(
-        [(segment_lengths[0], 3.0), (segment_lengths[1], 4.0)], rel=1e-3
+        [(segment_lengths[0], 0.0), (segment_lengths[1], 4.0)], rel=1e-3
     )
 
 
