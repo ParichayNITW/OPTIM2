@@ -98,7 +98,7 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
             "name": "Station A",
             "is_pump": True,
             "L": 12.0,
-            "D": 0.7,
+            "d": 0.7,
             "t": 0.007,
         },
         {
@@ -355,6 +355,73 @@ def test_floor_requirement_enforces_positive_injection_and_reporting() -> None:
     assert result.get("floor_injection_applied_station_a") is True
     recorded_floor = result.get("floor_injection_ppm_station_a", 0.0)
     assert recorded_floor >= floor_ppm
+
+
+def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
+    import pipeline_model as pm
+
+    diameter = 0.7 - 2 * 0.007
+    floor_ppm = 1.0
+    segment_length = 8.0
+    flow_rate = _volume_from_km(segment_length, diameter)
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": segment_length,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "max_dr": 20,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0}
+    segment_floor = {"station_idx": 0, "length_km": segment_length, "dra_ppm": floor_ppm, "limited_by_station": True}
+
+    linefill = [
+        {"volume": _volume_from_km(segment_length, diameter), "dra_ppm": floor_ppm},
+        {"volume": _volume_from_km(2.0, diameter), "dra_ppm": 0.0},
+    ]
+
+    baseline_tol = max(floor_ppm * 1e-6, 1e-9)
+    current_linefill = linefill
+    for hour in range(3):
+        result = pm.solve_pipeline(
+            stations,
+            terminal,
+            FLOW=flow_rate,
+            KV_list=[2.5],
+            rho_list=[850.0],
+            segment_slices=[[]],
+            RateDRA=500.0,
+            Price_HSD=0.0,
+            Fuel_density=850.0,
+            Ambient_temp=25.0,
+            linefill=current_linefill,
+            dra_reach_km=0.0,
+            mop_kgcm2=100.0,
+            hours=1.0,
+            start_time=f"{hour:02d}:00",
+            pump_shear_rate=0.0,
+            segment_floors=[segment_floor],
+            enumerate_loops=False,
+        )
+
+        assert result.get("error") is False
+        inj_ppm = float(result.get("dra_ppm_station_a", 0.0) or 0.0)
+        floor_min = float(result.get("floor_min_ppm_station_a", 0.0) or 0.0)
+        assert floor_min >= floor_ppm - baseline_tol
+        assert inj_ppm >= floor_min - baseline_tol
+
+        summary = result.get("floor_injection_summary") or []
+        assert any(
+            entry.get("station") == "station_a" and entry.get("ppm", 0.0) >= floor_min - baseline_tol
+            for entry in summary
+        )
+
+        current_linefill = result.get("linefill", current_linefill)
 
 
 def _basic_terminal(min_residual: float = 10.0) -> dict:
