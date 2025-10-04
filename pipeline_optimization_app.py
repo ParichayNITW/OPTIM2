@@ -35,6 +35,8 @@ if "max_laced_flow_m3h" not in st.session_state:
     st.session_state["max_laced_flow_m3h"] = st.session_state.get("FLOW", 1000.0)
 if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
+if "min_laced_suction_m" not in st.session_state:
+    st.session_state["min_laced_suction_m"] = 0.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -386,6 +388,10 @@ def restore_case_dict(loaded_data):
         'max_laced_visc_cst',
         st.session_state.get('max_laced_visc_cst', 10.0),
     )
+    st.session_state['min_laced_suction_m'] = loaded_data.get(
+        'min_laced_suction_m',
+        st.session_state.get('min_laced_suction_m', 0.0),
+    )
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
         ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
@@ -552,6 +558,18 @@ with st.sidebar:
             format="%.2f",
             key="max_laced_visc_cst",
             help="Viscosity reference used when evaluating DRA lacing performance.",
+        )
+        st.number_input(
+            "Minimum suction pressure (m)",
+            min_value=0.0,
+            value=float(st.session_state.get("min_laced_suction_m", 0.0)),
+            step=0.1,
+            format="%.2f",
+            key="min_laced_suction_m",
+            help=(
+                "Headroom to reserve at the suction reference when enforcing downstream"
+                " SDH requirements."
+            ),
         )
 
         rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
@@ -1201,6 +1219,7 @@ def get_full_case_dict():
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
+        "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -2452,6 +2471,7 @@ def solve_pipeline(
             max_flow_m3h=float(baseline_flow),
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
+            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
         )
     except Exception:
         baseline_requirement = None
@@ -3947,6 +3967,7 @@ def run_all_updates():
             max_flow_m3h=float(baseline_flow),
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
+            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
         )
     except Exception:
         baseline_requirement = None
