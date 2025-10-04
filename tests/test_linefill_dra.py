@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pandas as pd
@@ -1602,3 +1603,171 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     assert forced_zero["num_pumps_station_b"] == 1
     assert forced_zero["total_cost"] > optimal["total_cost"]
     assert forced_zero["residual_head_station_a"] == optimal["residual_head_station_a"]
+
+
+def test_injection_replaces_costlier_protected_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cheaper injected states should coexist with protected baselines."""
+
+    def fake_segment(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv: float,
+        dra: float,
+        dra_len: float,
+    ) -> tuple[float, float, float, float]:
+        head_loss = 130.0 if dra <= 0 else 80.0
+        return head_loss, 1.0, 1.0, 0.01
+
+    def fake_update(
+        queue,
+        stn_data: dict,
+        opt: dict,
+        segment_length: float,
+        flow_m3h: float,
+        hours: float,
+        *,
+        pump_running: bool = False,
+        pump_shear_rate: float = 0.0,
+        dra_shear_factor: float = 0.0,
+        shear_injection: bool = False,
+        is_origin: bool = False,
+        precomputed=None,
+    ) -> tuple[list[tuple[float, float]], list[dict], float]:
+        seg_len = float(segment_length or 0.0)
+        ppm = float(opt.get("dra_ppm_main", 0) or 0.0)
+        if ppm <= 0 and float(opt.get("dra_main", 0) or 0) > 0:
+            ppm = 5.0
+        queue_entries: list[tuple[float, float]] = []
+        if queue:
+            for raw in queue:
+                if isinstance(raw, dict):
+                    queue_entries.append(
+                        (
+                            float(raw.get("length_km", 0.0) or 0.0),
+                            float(raw.get("dra_ppm", 0.0) or 0.0),
+                        )
+                    )
+                elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                    queue_entries.append((float(raw[0] or 0.0), float(raw[1] or 0.0)))
+        if ppm > 0:
+            dra_segments = [(seg_len, ppm)]
+            queue_after = [{"length_km": 120.0, "dra_ppm": ppm}]
+        elif queue_entries:
+            head_ppm = queue_entries[0][1]
+            dra_segments = [(seg_len, head_ppm)]
+            queue_after = [
+                {"length_km": max(queue_entries[0][0], 120.0), "dra_ppm": head_ppm}
+            ]
+        else:
+            dra_segments = [(seg_len, 0.0)]
+            queue_after = []
+        return dra_segments, queue_after, ppm
+
+    def fake_get_ppm(kv: float, dr: float) -> float:
+        return float(dr) * 10.0
+
+    def fake_get_dr(kv: float, ppm: float) -> float:
+        return float(ppm) / 10.0
+
+    def fake_pump_head(stn: dict, flow_m3h: float, rpm_map, nop: int) -> list[dict]:
+        rpm_val = 0
+        if isinstance(rpm_map, Mapping):
+            rpm_vals = [int(val) for val in rpm_map.values() if isinstance(val, (int, float))]
+            if rpm_vals:
+                rpm_val = max(rpm_vals)
+        if rpm_val <= 0:
+            rpm_val = int(stn.get("MinRPM", 900))
+        base = 55.0 if rpm_val <= 1000 else 70.0
+        total_tdh = base * max(1, nop)
+        return [
+            {
+                "tdh": total_tdh,
+                "eff": 80.0,
+                "count": max(1, nop),
+                "power_type": stn.get("power_type", "Grid"),
+                "ptype": "mock",
+                "rpm": rpm_val,
+                "data": {
+                    "DOL": stn.get("DOL", 1100),
+                    "power_type": stn.get("power_type", "Grid"),
+                    "sfc_mode": stn.get("sfc_mode", "manual"),
+                    "sfc": stn.get("sfc", 0.0),
+                },
+            }
+        ]
+
+    def fake_composite(
+        flow: float,
+        length: float,
+        d_inner: float,
+        rough: float,
+        kv_default: float,
+        dra_perc: float,
+        dra_length: float | None = None,
+        slices=None,
+        limit: float | None = None,
+    ) -> tuple[float, float, float, float]:
+        return fake_segment(flow, length, d_inner, rough, kv_default, dra_perc, dra_length or 0.0)
+
+    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
+    monkeypatch.setattr(pm, "_segment_hydraulics_composite", fake_composite)
+    monkeypatch.setattr(pm, "_update_mainline_dra", fake_update)
+    monkeypatch.setattr(pm, "get_ppm_for_dr", fake_get_ppm)
+    monkeypatch.setattr(pm, "get_dr_for_ppm", fake_get_dr)
+    monkeypatch.setattr(pm, "_pump_head", fake_pump_head)
+
+    station = _make_pump_station("Station A", max_dr=10)
+    station["min_pumps"] = 1
+    station["max_pumps"] = 2
+    station["MinRPM"] = 900
+    station["DOL"] = 1100
+    station["rate"] = 1.0
+    station["tariffs"] = []
+    station["min_residual"] = 50
+
+    terminal = {"name": "Terminal", "min_residual": 30, "elev": 0.0}
+    common_kwargs = dict(
+        FLOW=3000.0,
+        KV_list=[3.0, 3.0],
+        rho_list=[850.0, 850.0],
+        segment_slices=[
+            [{"length_km": station["L"], "kv": 3.0, "rho": 850.0}],
+        ],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        hours=12.0,
+        start_time="00:00",
+        enumerate_loops=False,
+        _internal_pass=True,
+        rpm_step=100,
+        dra_step=10,
+    )
+
+    optimal = solve_pipeline(
+        stations=[copy.deepcopy(station)],
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        **common_kwargs,
+    )
+
+    assert optimal["dra_ppm_station_a"] > 0
+    assert optimal["num_pumps_station_a"] == 1
+    assert optimal["speed_station_a"] == 1100
+
+    forced_baseline = solve_pipeline(
+        stations=[copy.deepcopy(station)],
+        terminal=terminal,
+        linefill=[],
+        dra_reach_km=0.0,
+        narrow_ranges={0: {"dra_main": (0, 0)}},
+        **common_kwargs,
+    )
+
+    assert forced_baseline["dra_ppm_station_a"] == 0
+    assert forced_baseline["num_pumps_station_a"] == 2
+    assert forced_baseline["total_cost"] > optimal["total_cost"]

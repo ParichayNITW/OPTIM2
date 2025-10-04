@@ -4904,14 +4904,29 @@ def solve_pipeline(
                         key_to_use: object = bucket
                     else:
                         existing_protected = bool(existing.get('protected'))
-                        if (
-                            new_cost < existing['cost']
-                            or (
-                                abs(new_cost - existing['cost']) < 1e-9
-                                and residual_next > existing['residual']
-                            )
-                        ):
-                            if not (existing_protected and not is_protected):
+                        better_cost = new_cost < existing['cost']
+                        better_residual = (
+                            abs(new_cost - existing['cost']) < 1e-9
+                            and residual_next > existing['residual']
+                        )
+                        if better_cost or better_residual:
+                            if existing_protected and not is_protected:
+                                # Preserve the protected baseline under a
+                                # dedicated key so economically superior
+                                # injected states can replace the canonical
+                                # entry for this residual bucket.
+                                baseline_key = (bucket, "baseline")
+                                prior = new_states.get(baseline_key)
+                                if (
+                                    prior is None
+                                    or existing['cost'] < prior['cost'] - 1e-9
+                                ):
+                                    baseline_entry = existing.copy()
+                                    baseline_entry['protected'] = True
+                                    new_states[baseline_key] = baseline_entry
+                                replace_existing = True
+                                key_to_use = existing_key  # type: ignore[assignment]
+                            elif not (existing_protected and not is_protected):
                                 replace_existing = True
                                 key_to_use = existing_key  # type: ignore[assignment]
                             else:
