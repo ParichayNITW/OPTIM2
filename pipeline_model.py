@@ -1282,7 +1282,8 @@ def _update_mainline_dra(
 
     floor_length = 0.0
     floor_ppm = 0.0
-    if isinstance(segment_floor, Mapping):
+    floor_specified = isinstance(segment_floor, Mapping)
+    if floor_specified:
         try:
             floor_length = float(segment_floor.get('length_km', segment_length) or 0.0)
         except (TypeError, ValueError):
@@ -1471,14 +1472,10 @@ def _update_mainline_dra(
         for length, _ppm in pumped_portion
         if float(length or 0.0) > 0.0
     )
-    has_floor_requirement = floor_length > 0.0 and floor_ppm > 0.0
-    enforce_floor = (
-        pump_running
-        or inj_effective > 0.0
-        or (has_floor_requirement and pumped_length_total > 0.0)
-    )
-    floor_requires_injection = has_floor_requirement and inj_effective <= 0.0
-    if has_floor_requirement and not floor_requires_injection and enforce_floor:
+    has_floor_requirement = floor_specified and floor_length > 0.0 and floor_ppm > 0.0
+    floor_requires_injection = floor_specified and inj_effective <= 0.0
+    enforce_floor = has_floor_requirement and inj_effective > 0.0
+    if enforce_floor:
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
             sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
@@ -3946,6 +3943,20 @@ def solve_pipeline(
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
                 if not dra_main_vals and dr_max >= 0:
                     dra_main_vals = [dr_max]
+                if floor_ppm_min > 0.0 and not floor_limited and dra_main_vals:
+                    filtered_vals: list[int] = []
+                    for candidate in dra_main_vals:
+                        if candidate <= 0:
+                            continue
+                        if kv > 0.0:
+                            try:
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
+                            except Exception:
+                                ppm_candidate = 0.0
+                            if ppm_candidate < floor_ppm_min - floor_ppm_tol:
+                                continue
+                        filtered_vals.append(candidate)
+                    dra_main_vals = filtered_vals
             max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
@@ -4078,6 +4089,20 @@ def solve_pipeline(
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 if not dra_vals and dr_max >= 0:
                     dra_vals = [dr_max]
+                if floor_ppm_min > 0.0 and not floor_limited and dra_vals:
+                    filtered_vals = []
+                    for candidate in dra_vals:
+                        if candidate <= 0:
+                            continue
+                        if kv > 0.0:
+                            try:
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
+                            except Exception:
+                                ppm_candidate = 0.0
+                            if ppm_candidate < floor_ppm_min - floor_ppm_tol:
+                                continue
+                        filtered_vals.append(candidate)
+                    dra_vals = filtered_vals
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
