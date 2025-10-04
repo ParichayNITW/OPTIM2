@@ -1,6 +1,7 @@
 import contextlib
 import copy
 import json
+import math
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,8 @@ import pytest
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import dra_utils
 
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
@@ -1405,7 +1408,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     result = model.compute_minimum_lacing_requirement(
         stations,
         terminal,
-        max_flow_m3h=1200.0,
+        max_flow_m3h=900.0,
         max_visc_cst=2.5,
         min_suction_head=min_suction,
     )
@@ -1417,7 +1420,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
 
-    flow = 1200.0
+    flow = 900.0
     head_loss, *_ = model._segment_hydraulics(
         flow,
         stations[0]["L"],
@@ -1439,6 +1442,11 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["station_idx"] == 0
     assert seg_entry["length_km"] == pytest.approx(10.0)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
+    dra_curve = dra_utils.DRA_CURVE_DATA.get(2.5)
+    assert dra_curve is not None and not dra_curve.empty
+    interpolated_ppm = dra_utils._ppm_from_df(dra_curve, expected_dr)
+    assert not math.isclose(interpolated_ppm, round(interpolated_ppm))
+    assert seg_entry["dra_ppm"] == math.ceil(interpolated_ppm)
     assert seg_entry["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
