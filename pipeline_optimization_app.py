@@ -2485,36 +2485,57 @@ def solve_pipeline(
         base_detail: dict | None,
         user_detail: dict | None,
     ) -> dict | None:
-        has_user = isinstance(user_detail, dict) and bool(user_detail)
-        if not has_user:
+        """Merge optimiser baseline floors with any user-forced injection."""
+
+        base = copy.deepcopy(base_detail) if isinstance(base_detail, dict) else None
+        user = copy.deepcopy(user_detail) if isinstance(user_detail, dict) else None
+
+        if base and not user:
+            return base
+        if user and not base:
+            return user if user else None
+        if not base or not user:
             return None
-        detail: dict = copy.deepcopy(user_detail) if isinstance(user_detail, dict) else {}
-        if isinstance(base_detail, dict) and detail:
-            ppm_floor = float(base_detail.get("dra_ppm", 0.0) or 0.0)
-            length_floor = float(base_detail.get("length_km", 0.0) or 0.0)
-            perc_floor = float(base_detail.get("dra_perc", 0.0) or 0.0)
-            current_ppm = float(detail.get("dra_ppm", 0.0) or 0.0)
-            current_length = float(detail.get("length_km", 0.0) or 0.0)
-            current_perc = float(detail.get("dra_perc", 0.0) or 0.0)
-            if ppm_floor > 0:
-                detail["dra_ppm"] = max(current_ppm, ppm_floor)
-            if length_floor > 0:
-                detail["length_km"] = max(current_length, length_floor)
-            if perc_floor > 0:
-                detail["dra_perc"] = max(current_perc, perc_floor)
-        return detail or None
+
+        ppm_floor = float(base.get("dra_ppm", 0.0) or 0.0)
+        length_floor = float(base.get("length_km", 0.0) or 0.0)
+        perc_floor = float(base.get("dra_perc", 0.0) or 0.0)
+
+        current_ppm = float(user.get("dra_ppm", 0.0) or 0.0)
+        current_length = float(user.get("length_km", 0.0) or 0.0)
+        current_perc = float(user.get("dra_perc", 0.0) or 0.0)
+
+        if ppm_floor > 0.0:
+            user["dra_ppm"] = max(current_ppm, ppm_floor)
+        if length_floor > 0.0:
+            user["length_km"] = max(current_length, length_floor)
+        if perc_floor > 0.0:
+            user["dra_perc"] = max(current_perc, perc_floor)
+
+        if base.get("segments") and "segments" not in user:
+            user["segments"] = copy.deepcopy(base["segments"])
+
+        return user or None
 
     baseline_for_enforcement: dict | None = None
     if baseline_enforceable:
-        base_detail: dict[str, float] = {}
+        base_detail: dict[str, object] = {}
         ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
         perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
         if ppm_floor > 0.0:
             base_detail["dra_ppm"] = ppm_floor
         if perc_floor > 0.0:
             base_detail["dra_perc"] = perc_floor
+        if baseline_segments:
+            base_detail["segments"] = copy.deepcopy(baseline_segments)
+            seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
+            if seg_total > 0.0:
+                base_detail["length_km"] = seg_total
+        if "length_km" not in base_detail:
+            length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
+            if length_floor > 0.0:
+                base_detail["length_km"] = length_floor
         if base_detail:
-            base_detail["length_km"] = 0.0
             baseline_for_enforcement = base_detail
     baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
