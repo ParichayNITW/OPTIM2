@@ -246,6 +246,116 @@ def test_segment_floor_without_injection_is_infeasible():
     assert result.get("error") is True
 
 
+def test_segment_floor_without_injection_short_circuits_option() -> None:
+    queue = [
+        {"length_km": 5.0, "dra_ppm": 0.05},
+    ]
+    station = {
+        "idx": 0,
+        "is_pump": False,
+        "d_inner": 0.7,
+        "kv": 0.0,
+        "name": "Station A",
+    }
+    option = {"nop": 0, "dra_ppm_main": 0.0}
+    segment_floor = {"length_km": 5.0, "dra_ppm": 0.05}
+
+    _, _, inj_ppm, requires_injection = _update_mainline_dra(
+        queue,
+        station,
+        option,
+        5.0,
+        _volume_from_km(5.0, 0.7),
+        1.0,
+        pump_running=False,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=False,
+        segment_floor=segment_floor,
+    )
+
+    assert inj_ppm == pytest.approx(0.0)
+    assert requires_injection is True
+
+
+def test_floor_requirement_enforces_positive_injection_and_reporting() -> None:
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": 5.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "kv": 0.0,
+            "max_dr": 6,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+
+    call_log: list[dict] = []
+
+    def stub_update(queue, stn_data, opt, segment_length, flow_m3h, hours, **kwargs):
+        if stn_data.get("dra_floor_ppm_min", 0.0) > 0.0:
+            assert opt.get("dra_main", 0) > 0
+            assert opt.get("dra_ppm_main", 0.0) > 0.0
+        call_log.append(opt.copy())
+        ppm = float(opt.get("dra_ppm_main", 0.0) or 0.0)
+        return (
+            [(segment_length, ppm)],
+            [{"length_km": segment_length, "dra_ppm": ppm}],
+            ppm,
+            False,
+        )
+
+    def stub_segment_hydraulics(*_args, **_kwargs):
+        return (0.0, 1.0, 1.0, 0.01)
+
+    def stub_effective_dra_response(*_args, **_kwargs):
+        return (5.0, 1.0)
+
+    with patch("pipeline_model._update_mainline_dra", side_effect=stub_update), patch(
+        "pipeline_model._segment_hydraulics_composite", side_effect=stub_segment_hydraulics
+    ), patch("pipeline_model._segment_hydraulics", side_effect=stub_segment_hydraulics), patch(
+        "pipeline_model._effective_dra_response", side_effect=stub_effective_dra_response
+    ):
+        result = pm.solve_pipeline(
+            stations,
+            terminal,
+            FLOW=500.0,
+            KV_list=[0.0],
+            rho_list=[850.0],
+            segment_slices=[[{"length_km": 5.0, "kv": 0.0, "rho": 850.0}]],
+            RateDRA=1000.0,
+            Price_HSD=0.0,
+            Fuel_density=850.0,
+            Ambient_temp=25.0,
+            linefill=[{"length_km": 50.0, "dra_ppm": 0.05}],
+            dra_reach_km=0.0,
+            mop_kgcm2=100.0,
+            hours=1.0,
+            start_time="00:00",
+            pump_shear_rate=0.0,
+            segment_floors=[
+                {"station_idx": 0, "length_km": 5.0, "dra_ppm": 0.05, "limited_by_station": True}
+            ],
+            enumerate_loops=False,
+        )
+
+    assert call_log, "No station options evaluated"
+    assert result.get("error") is False
+    inj_field = result.get("dra_ppm_station_a", 0.0)
+    assert inj_field > 0.0
+    floor_ppm = result.get("floor_min_ppm_station_a", 0.0)
+    assert floor_ppm > 0.0
+    assert result.get("floor_injection_applied_station_a") is True
+    recorded_floor = result.get("floor_injection_ppm_station_a", 0.0)
+    assert recorded_floor >= floor_ppm
+
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 

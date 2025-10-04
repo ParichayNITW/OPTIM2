@@ -1407,31 +1407,15 @@ def _update_mainline_dra(
     )
     floor_requires_injection = False
     if enforce_floor and has_floor_requirement:
-        available_length = max(
-            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
-            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
-        )
-        floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
-        if floor_target > 0.0:
-            ppm_tol = 1e-9
-            if inj_effective <= 0.0:
-                front_before = _take_queue_front(pumped_portion, floor_target)
-                has_positive = False
-                front_max_ppm = 0.0
-                needs_raise = False
-                for length, ppm in front_before:
-                    if float(length or 0.0) <= ppm_tol:
-                        continue
-                    ppm_val = float(ppm or 0.0)
-                    if ppm_val > ppm_tol:
-                        has_positive = True
-                    if ppm_val > front_max_ppm:
-                        front_max_ppm = ppm_val
-                    if ppm_val < floor_ppm - ppm_tol:
-                        needs_raise = True
-                if needs_raise and (not has_positive or front_max_ppm < floor_ppm - ppm_tol):
-                    floor_requires_injection = True
-            if not floor_requires_injection:
+        if inj_effective <= 0.0:
+            floor_requires_injection = True
+        else:
+            available_length = max(
+                sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+                sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+            )
+            floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
+            if floor_target > 0.0:
                 updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
                 updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
                 if not pumped_differs and updated_adjusted != pumped_adjusted:
@@ -3868,6 +3852,25 @@ def solve_pipeline(
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 if floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
+                min_step = dra_step if dra_step > 0 else 1
+                if floor_ppm_min > 0.0:
+                    if dr_min <= 0:
+                        dr_min = max(dr_min, min_step)
+                    if dr_min <= dr_max:
+                        ppm_tol = max(floor_ppm_min * 1e-6, 1e-9)
+                        step_size = max(min_step, 1)
+                        candidate = dr_min
+                        while candidate <= dr_max:
+                            try:
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
+                            except Exception:
+                                ppm_candidate = 0.0
+                            if ppm_candidate >= floor_ppm_min - ppm_tol:
+                                dr_min = candidate
+                                break
+                            candidate += step_size
+                        else:
+                            dr_min = dr_max
                 if dr_min > dr_max:
                     dr_min = dr_max
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
@@ -3952,6 +3955,25 @@ def solve_pipeline(
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 if floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
+                min_step = dra_step if dra_step > 0 else 1
+                if floor_ppm_min > 0.0:
+                    if dr_min <= 0:
+                        dr_min = max(dr_min, min_step)
+                    if dr_min <= dr_max:
+                        ppm_tol = max(floor_ppm_min * 1e-6, 1e-9)
+                        step_size = max(min_step, 1)
+                        candidate = dr_min
+                        while candidate <= dr_max:
+                            try:
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
+                            except Exception:
+                                ppm_candidate = 0.0
+                            if ppm_candidate >= floor_ppm_min - ppm_tol:
+                                dr_min = candidate
+                                break
+                            candidate += step_size
+                        else:
+                            dr_min = dr_max
                 if dr_min > dr_max:
                     dr_min = dr_max
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
@@ -4743,16 +4765,20 @@ def solve_pipeline(
                     floor_tol = 1e-6
                     dra_main_selected = float(opt.get('dra_main', 0) or 0.0)
                     if floor_min_perc > 0.0 and dra_main_selected > 0.0:
-                        if abs(dra_main_selected - floor_min_perc) <= floor_tol:
+                        if dra_main_selected >= floor_min_perc - floor_tol:
                             floor_applied = True
-                        elif floor_min_ppm > 0.0 and inj_ppm_main > 0.0:
-                            ppm_tol = max(floor_min_ppm * 1e-6, floor_tol)
-                            if abs(inj_ppm_main - floor_min_ppm) <= ppm_tol:
-                                floor_applied = True
+                    if not floor_applied and floor_min_ppm > 0.0 and inj_ppm_main > 0.0:
+                        ppm_tol = max(floor_min_ppm * 1e-6, floor_tol)
+                        if inj_ppm_main >= floor_min_ppm - ppm_tol:
+                            floor_applied = True
                     if floor_applied:
                         record[f"floor_injection_applied_{stn_data['name']}"] = True
-                        record[f"floor_injection_perc_{stn_data['name']}"] = dra_main_selected
-                        record[f"floor_injection_ppm_{stn_data['name']}"] = inj_ppm_main
+                        perc_value = dra_main_selected if dra_main_selected > 0.0 else floor_min_perc
+                        ppm_value = inj_ppm_main if inj_ppm_main > 0.0 else floor_min_ppm
+                        if perc_value > 0.0:
+                            record[f"floor_injection_perc_{stn_data['name']}"] = perc_value
+                        if ppm_value > 0.0:
+                            record[f"floor_injection_ppm_{stn_data['name']}"] = max(ppm_value, floor_min_ppm)
                     if sc['flow_loop'] > 0:
                         record.update({
                             f"velocity_loop_{stn_data['name']}": sc['v_loop'],
