@@ -1406,10 +1406,10 @@ def _update_mainline_dra(
         or (has_floor_requirement and pumped_length_total > 0.0)
     )
     floor_requires_injection = False
-    if enforce_floor and has_floor_requirement:
+    if has_floor_requirement:
         if inj_effective <= 0.0:
             floor_requires_injection = True
-        else:
+        elif enforce_floor:
             available_length = max(
                 sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
                 sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
@@ -3767,6 +3767,7 @@ def solve_pipeline(
             if floor_ppm_from_min > floor_ppm_min:
                 floor_ppm_min = floor_ppm_from_min
         floor_perc_min_int = int(floor_perc_min) if floor_perc_min > 0.0 else 0
+        floor_ppm_tol = max(floor_ppm_min * 1e-6, 1e-9) if floor_ppm_min > 0.0 else 1e-9
 
         opts = []
         flow_m3s = flow / 3600.0
@@ -3909,6 +3910,8 @@ def solve_pipeline(
                         for dra_loop in dra_loop_vals:
                             ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                             ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
+                            if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
+                                continue
                             opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
@@ -3981,6 +3984,8 @@ def solve_pipeline(
                     dra_vals = [dr_max]
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                    if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
+                        continue
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
@@ -3992,7 +3997,7 @@ def solve_pipeline(
                         'dra_floor_ppm_min': float(floor_ppm_min),
                         'dra_floor_limited': bool(floor_limited),
                     })
-            if not non_pump_opts:
+            if not non_pump_opts and floor_ppm_min <= 0.0:
                 non_pump_opts.append({
                     'nop': 0,
                     'rpm': 0,
