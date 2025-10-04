@@ -1472,8 +1472,8 @@ def _update_mainline_dra(
         for length, _ppm in pumped_portion
         if float(length or 0.0) > 0.0
     )
-    has_floor_requirement = floor_specified and floor_length > 0.0 and floor_ppm > 0.0
-    floor_requires_injection = floor_specified and inj_effective <= 0.0
+    has_floor_requirement = bool(floor_specified and floor_length > 0.0 and floor_ppm > 0.0)
+    floor_requires_injection = has_floor_requirement and inj_effective <= 0.0
     enforce_floor = has_floor_requirement and inj_effective > 0.0
     if enforce_floor:
         available_length = max(
@@ -3844,6 +3844,13 @@ def solve_pipeline(
                 floor_ppm_from_min = 0.0
             if floor_ppm_from_min > floor_ppm_min:
                 floor_ppm_min = floor_ppm_from_min
+        floor_dr_min_float = 0.0
+        if floor_ppm_min > 0.0 and kv > 0.0:
+            try:
+                floor_dr_min_float = float(get_dr_for_ppm(kv, floor_ppm_min))
+            except Exception:
+                floor_dr_min_float = 0.0
+        floor_dr_min_int = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 0
         floor_perc_min_int = int(floor_perc_min) if floor_perc_min > 0.0 else 0
         floor_ppm_tol = max(floor_ppm_min * 1e-6, 1e-9) if floor_ppm_min > 0.0 else 1e-9
 
@@ -3931,6 +3938,8 @@ def solve_pipeline(
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 if floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
+                if floor_dr_min_int > 0:
+                    dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
                 if floor_ppm_min > 0.0:
                     if dr_min <= 0:
@@ -4077,6 +4086,8 @@ def solve_pipeline(
                     dr_max = min(max_dr_main, rng['dra_main'][1])
                 if floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
+                if floor_dr_min_int > 0:
+                    dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
                 if floor_ppm_min > 0.0:
                     if dr_min <= 0:
