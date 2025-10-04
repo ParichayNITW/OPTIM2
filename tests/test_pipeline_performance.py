@@ -417,6 +417,15 @@ def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
         floor_min = float(result.get("floor_min_ppm_station_a", 0.0) or 0.0)
         assert floor_min >= floor_ppm - baseline_tol
         assert inj_ppm >= floor_min - baseline_tol
+        reports = result.get("reports") or []
+        for report_entry in reports:
+            report_result = report_entry.get("result") or {}
+            logged_ppm = float(report_result.get("floor_injection_ppm_station_a", 0.0) or 0.0)
+            assert logged_ppm >= floor_min - baseline_tol
+            profile = report_result.get("dra_profile_station_a") or []
+            inj_val = float(report_result.get("dra_ppm_station_a", 0.0) or 0.0)
+            if inj_val <= 0.0:
+                assert not profile
 
         summary = result.get("floor_injection_summary") or []
         assert any(
@@ -513,6 +522,7 @@ def test_floor_schedule_logs_from_laced_queue_each_hour() -> None:
             for entry in summary
             if entry.get("station")
         }
+        reports = result.get("reports") or []
 
         for idx, stn in enumerate(stations):
             station_key = stn["name"].strip().lower().replace(" ", "_")
@@ -523,6 +533,14 @@ def test_floor_schedule_logs_from_laced_queue_each_hour() -> None:
             assert logged_ppm >= floor_ppm - ppm_tol
             assert recorded_ppm >= floor_ppm - ppm_tol
             assert summary_ppm.get(station_key, 0.0) >= floor_ppm - ppm_tol
+            for report_entry in reports:
+                report_result = report_entry.get("result") or {}
+                hourly_logged = float(report_result.get(f"floor_injection_ppm_{station_key}", 0.0) or 0.0)
+                assert hourly_logged >= floor_ppm - ppm_tol
+                hourly_profile = report_result.get(f"dra_profile_{station_key}") or []
+                hourly_inj = float(report_result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
+                if hourly_inj <= 0.0:
+                    assert not hourly_profile
 
         current_linefill = result.get("linefill", current_linefill)
 
@@ -604,6 +622,16 @@ def test_floor_schedule_logs_when_queue_meets_floor_each_hour() -> None:
             and float(entry.get("ppm", 0.0) or 0.0) >= floor_min - ppm_tol
             for entry in summary
         )
+
+        reports = result.get("reports") or []
+        for report_entry in reports:
+            report_result = report_entry.get("result") or {}
+            hourly_logged = float(report_result.get(f"floor_injection_ppm_{station_key}", 0.0) or 0.0)
+            assert hourly_logged >= floor_min - ppm_tol
+            hourly_profile = report_result.get(f"dra_profile_{station_key}") or []
+            hourly_inj = float(report_result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
+            if hourly_inj <= 0.0:
+                assert not hourly_profile
 
         current_linefill = result.get("linefill", current_linefill)
 
@@ -1043,10 +1071,13 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     for entry in result["reports"]:
         hour_result = entry["result"]
         inj_ppm = float(hour_result.get("dra_ppm_station_a", 0.0) or 0.0)
+        logged_floor = float(hour_result.get("floor_injection_ppm_station_a", 0.0) or 0.0)
+        assert logged_floor >= ppm_floor - ppm_tol
+        profile = hour_result.get("dra_profile_station_a") or []
         if inj_ppm <= 0.0:
+            assert not profile
             continue
         assert inj_ppm >= ppm_floor - ppm_tol
-        profile = hour_result.get("dra_profile_station_a") or []
         assert profile
         first_slice = profile[0]
         assert float(first_slice.get("dra_ppm", 0.0) or 0.0) == pytest.approx(inj_ppm)
