@@ -2224,20 +2224,31 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     continue
                 profile_entries.append((length_f, ppm_f))
 
+        merged_profile_entries = (
+            pipeline_model._merge_queue(profile_entries) if profile_entries else []
+        )
+
         treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
         if treated_length is None:
-            treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
+            treated_length = sum(
+                length for length, ppm in merged_profile_entries if ppm > 0
+            )
 
         inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
         if inlet_ppm is None:
-            inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
+            inlet_ppm = (
+                merged_profile_entries[0][1] if merged_profile_entries else 0.0
+            )
 
         outlet_ppm = _float_or_none(res.get(f"dra_outlet_ppm_{key}"))
         if outlet_ppm is None:
-            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
-        if profile_entries:
+            outlet_ppm = (
+                merged_profile_entries[-1][1] if merged_profile_entries else 0.0
+            )
+        if merged_profile_entries:
             profile_str = "; ".join(
-                f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
+                f"{length:.2f} km @ {ppm:.2f} ppm"
+                for length, ppm in merged_profile_entries
             )
         else:
             profile_str = ""
