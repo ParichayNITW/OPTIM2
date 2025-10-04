@@ -424,6 +424,105 @@ def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
         current_linefill = result.get("linefill", current_linefill)
 
 
+def test_floor_schedule_logs_from_laced_queue_each_hour() -> None:
+    import pipeline_model as pm
+
+    diameter = 0.7 - 2 * 0.007
+    segment_lengths = (4.0, 6.0)
+    floor_requirements = (1.2, 1.8)
+    flow_rate = _volume_from_km(5.0, diameter)
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": False,
+            "L": segment_lengths[0],
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 4.0e-05,
+            "max_dr": 24,
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": segment_lengths[1],
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 4.0e-05,
+            "max_dr": 28,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+
+    segment_floors = [
+        {"station_idx": 0, "length_km": segment_lengths[0], "dra_ppm": floor_requirements[0]},
+        {"station_idx": 1, "length_km": segment_lengths[1], "dra_ppm": floor_requirements[1]},
+    ]
+
+    segment_slices = [
+        [
+            {"length_km": segment_lengths[0] / 2.0, "kv": 2.6, "rho": 832.0},
+            {"length_km": segment_lengths[0] / 2.0, "kv": 3.1, "rho": 838.0},
+        ],
+        [
+            {"length_km": 2.0, "kv": 2.7, "rho": 830.0},
+            {"length_km": segment_lengths[1] - 2.0, "kv": 3.3, "rho": 842.0},
+        ],
+    ]
+
+    initial_linefill: list[dict] = []
+    for idx, length in enumerate(segment_lengths):
+        segment_volume = _volume_from_km(length, diameter)
+        ppm_floor = floor_requirements[idx]
+        initial_linefill.append({"volume": 0.6 * segment_volume, "dra_ppm": ppm_floor})
+        initial_linefill.append({"volume": 0.4 * segment_volume, "dra_ppm": ppm_floor + 0.4})
+
+    ppm_tol = max(max(floor_requirements) * 1e-6, 1e-9)
+    current_linefill = copy.deepcopy(initial_linefill)
+
+    for hour in range(3):
+        result = pm.solve_pipeline(
+            stations,
+            terminal,
+            FLOW=flow_rate,
+            KV_list=[2.6, 3.0],
+            rho_list=[832.0, 838.0],
+            segment_slices=segment_slices,
+            RateDRA=600.0,
+            Price_HSD=0.0,
+            Fuel_density=850.0,
+            Ambient_temp=25.0,
+            linefill=copy.deepcopy(current_linefill),
+            dra_reach_km=0.0,
+            mop_kgcm2=100.0,
+            hours=1.0,
+            start_time=f"{hour:02d}:00",
+            pump_shear_rate=0.0,
+            segment_floors=segment_floors,
+            enumerate_loops=False,
+        )
+
+        assert result.get("error") is False
+
+        summary = result.get("floor_injection_summary") or []
+        summary_ppm = {
+            entry.get("station"): float(entry.get("ppm", 0.0) or 0.0)
+            for entry in summary
+            if entry.get("station")
+        }
+
+        for idx, stn in enumerate(stations):
+            station_key = stn["name"].strip().lower().replace(" ", "_")
+            floor_ppm = floor_requirements[idx]
+            assert result.get(f"floor_injection_applied_{station_key}") is True
+            logged_ppm = float(result.get(f"floor_injection_ppm_{station_key}", 0.0) or 0.0)
+            recorded_ppm = float(result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
+            assert logged_ppm >= floor_ppm - ppm_tol
+            assert recorded_ppm >= floor_ppm - ppm_tol
+            assert summary_ppm.get(station_key, 0.0) >= floor_ppm - ppm_tol
+
+        current_linefill = result.get("linefill", current_linefill)
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 
