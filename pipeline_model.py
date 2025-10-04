@@ -2045,6 +2045,9 @@ def compute_minimum_lacing_requirement(
             except Exception:
                 dra_ppm_needed = 0.0
 
+            if dra_ppm_needed > 0.0:
+                dra_ppm_needed = math.ceil(dra_ppm_needed)
+
             if dr_needed > max_dra_perc:
                 max_dra_perc = dr_needed
                 max_dra_ppm = dra_ppm_needed
