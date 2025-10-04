@@ -3923,7 +3923,10 @@ def solve_pipeline(
                             if floor_limited:
                                 opt_entry['dra_floor_limited'] = True
                             opts.append(opt_entry)
-            if not any(o['nop'] == 0 for o in opts):
+            allow_zero_option = not floor_limited and floor_perc_min_int <= 0 and floor_ppm_min <= 0.0
+            if i == 1:
+                allow_zero_option = False
+            if allow_zero_option and not any(o['nop'] == 0 for o in opts):
                 opts.insert(0, {
                     'nop': 0,
                     'rpm': 0,
