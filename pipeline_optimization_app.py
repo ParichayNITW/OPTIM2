@@ -3765,6 +3765,16 @@ def _execute_time_series_solver(
             ti -= 1
             continue
 
+        state["vol"] = current_vol_local.copy()
+        if isinstance(plan_local, pd.DataFrame):
+            state["plan"] = plan_local.copy()
+        else:
+            state["plan"] = None
+        state["dra_linefill"] = copy.deepcopy(dra_linefill_local)
+        state["dra_reach_km"] = float(dra_reach_local)
+        state["linefill_snapshot"] = current_vol_local.copy()
+        linefill_snaps[ti] = current_vol_local.copy()
+
         for k, val in power_cost_acc.items():
             res[f"power_cost_{k}"] = val
         for k, val in dra_cost_acc.items():
@@ -3944,38 +3954,174 @@ def run_all_updates():
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
 
+    def _normalise_segments_for_detail(detail_obj: Mapping[str, object] | None) -> list[dict[str, object]]:
+        segments_out: list[dict[str, object]] = []
+        if not isinstance(detail_obj, Mapping):
+            return segments_out
+
+        raw_segments = detail_obj.get("segments")
+        if not isinstance(raw_segments, Sequence):
+            return segments_out
+
+        processed: list[tuple[int, dict[str, object]]] = []
+        for order_idx, entry in enumerate(raw_segments):
+            if not isinstance(entry, Mapping):
+                continue
+
+            try:
+                seg_length = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_length = 0.0
+            if seg_length <= 0.0:
+                continue
+
+            try:
+                seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_ppm = 0.0
+            if seg_ppm <= 0.0:
+                continue
+
+            try:
+                seg_idx = int(entry.get("station_idx", order_idx))
+            except (TypeError, ValueError):
+                seg_idx = order_idx
+
+            seg_detail: dict[str, object] = {
+                "station_idx": seg_idx,
+                "length_km": float(seg_length),
+                "dra_ppm": float(seg_ppm),
+            }
+
+            try:
+                seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_perc = 0.0
+            if seg_perc > 0.0:
+                seg_detail["dra_perc"] = seg_perc
+
+            if bool(entry.get("limited_by_station")):
+                seg_detail["limited_by_station"] = True
+
+            processed.append((order_idx, seg_detail))
+
+        processed.sort(key=lambda item: item[0])
+        segments_out = [item[1] for item in processed]
+        return segments_out
+
+    def _merge_segment_details(
+        base_segments: list[dict[str, object]],
+        detail_segments: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        if not base_segments and not detail_segments:
+            return []
+
+        merged_segments = [copy.deepcopy(seg) for seg in detail_segments]
+        index_lookup: dict[int, list[int]] = {}
+        for idx, seg in enumerate(merged_segments):
+            station_idx = int(seg.get("station_idx", idx))
+            index_lookup.setdefault(station_idx, []).append(idx)
+
+        for order_idx, seg in enumerate(base_segments):
+            station_idx = int(seg.get("station_idx", order_idx))
+            candidates = index_lookup.get(station_idx, [])
+            target_entry: dict[str, object] | None = None
+            if candidates:
+                target_entry = merged_segments[candidates[0]]
+            else:
+                target_entry = copy.deepcopy(seg)
+                merged_segments.append(target_entry)
+                index_lookup.setdefault(station_idx, []).append(len(merged_segments) - 1)
+
+            length_val = float(seg.get("length_km", 0.0) or 0.0)
+            ppm_val = float(seg.get("dra_ppm", 0.0) or 0.0)
+            perc_val = float(seg.get("dra_perc", 0.0) or 0.0)
+            limited_flag = bool(seg.get("limited_by_station"))
+
+            if length_val > 0.0:
+                target_entry["length_km"] = max(
+                    float(target_entry.get("length_km", 0.0) or 0.0),
+                    length_val,
+                )
+            if ppm_val > 0.0:
+                target_entry["dra_ppm"] = max(
+                    float(target_entry.get("dra_ppm", 0.0) or 0.0),
+                    ppm_val,
+                )
+            if perc_val > 0.0:
+                target_entry["dra_perc"] = max(
+                    float(target_entry.get("dra_perc", 0.0) or 0.0),
+                    perc_val,
+                )
+            if limited_flag:
+                target_entry["limited_by_station"] = True
+
+        return merged_segments
+
     def _merge_baseline_detail(base_detail: dict | None, detail: dict | None) -> dict | None:
         if base_detail is None and detail is None:
             return None
-        merged: dict = {}
+
+        merged: dict[str, object] = {}
         if isinstance(detail, dict):
             merged.update(copy.deepcopy(detail))
+
+        base_segments = _normalise_segments_for_detail(base_detail)
+        detail_segments = _normalise_segments_for_detail(detail)
+        merged_segments = _merge_segment_details(base_segments, detail_segments)
+
+        if merged_segments:
+            merged["segments"] = merged_segments
+
+        def _apply_floor(key: str, value: float) -> None:
+            try:
+                floor_val = float(value or 0.0)
+            except (TypeError, ValueError):
+                return
+            if floor_val <= 0.0:
+                return
+            current_val = float(merged.get(key, 0.0) or 0.0)
+            if floor_val > current_val:
+                merged[key] = floor_val
+
+        if merged_segments:
+            total_seg_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in merged_segments)
+            max_seg_ppm = max(
+                (float(seg.get("dra_ppm", 0.0) or 0.0) for seg in merged_segments),
+                default=0.0,
+            )
+            max_seg_perc = max(
+                (float(seg.get("dra_perc", 0.0) or 0.0) for seg in merged_segments),
+                default=0.0,
+            )
+            _apply_floor("length_km", total_seg_length)
+            _apply_floor("dra_ppm", max_seg_ppm)
+            _apply_floor("dra_perc", max_seg_perc)
+
         if isinstance(base_detail, dict):
-            ppm_floor = float(base_detail.get("dra_ppm", 0.0) or 0.0)
-            length_floor = float(base_detail.get("length_km", 0.0) or 0.0)
-            perc_floor = float(base_detail.get("dra_perc", 0.0) or 0.0)
-            current_ppm = float(merged.get("dra_ppm", 0.0) or 0.0)
-            current_length = float(merged.get("length_km", 0.0) or 0.0)
-            current_perc = float(merged.get("dra_perc", 0.0) or 0.0)
-            if ppm_floor > 0:
-                merged["dra_ppm"] = max(current_ppm, ppm_floor)
-            if length_floor > 0:
-                merged["length_km"] = max(current_length, length_floor)
-            if perc_floor > 0:
-                merged["dra_perc"] = max(current_perc, perc_floor)
+            _apply_floor("dra_ppm", base_detail.get("dra_ppm", 0.0))
+            _apply_floor("length_km", base_detail.get("length_km", 0.0))
+            _apply_floor("dra_perc", base_detail.get("dra_perc", 0.0))
+
+        if not merged:
+            return None
         return merged
 
     baseline_for_enforcement: dict | None = None
     if baseline_enforceable:
-        base_detail: dict[str, float] = {}
+        base_detail: dict[str, object] = {}
         ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
         perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
         if ppm_floor > 0.0:
             base_detail["dra_ppm"] = ppm_floor
         if perc_floor > 0.0:
             base_detail["dra_perc"] = perc_floor
+        if baseline_segments:
+            base_detail["segments"] = copy.deepcopy(baseline_segments)
+            total_seg_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
+            if total_seg_length > 0.0:
+                base_detail["length_km"] = total_seg_length
         if base_detail:
-            base_detail["length_km"] = 0.0
             baseline_for_enforcement = base_detail
     forced_detail_effective = _merge_baseline_detail(baseline_for_enforcement, forced_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:

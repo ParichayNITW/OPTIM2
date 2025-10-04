@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from itertools import product
 import math
 
@@ -565,12 +565,146 @@ def _merge_queue(
     return merged
 
 
+def _normalise_segment_requirements(
+    segment_requirements: Sequence[Mapping[str, object] | Sequence[object]] | None,
+) -> list[tuple[float, float]]:
+    """Return ``segment_requirements`` as a list of ``(length_km, ppm)`` tuples."""
+
+    normalised: list[tuple[float, float]] = []
+    if not segment_requirements:
+        return normalised
+
+    for entry in segment_requirements:
+        length_raw: float | int | None
+        ppm_raw: float | int | None
+        if isinstance(entry, Mapping):
+            length_raw = entry.get('length_km')  # type: ignore[assignment]
+            ppm_raw = entry.get('dra_ppm')  # type: ignore[assignment]
+        elif isinstance(entry, Sequence) and len(entry) >= 2:
+            length_raw = entry[0]  # type: ignore[assignment]
+            ppm_raw = entry[1]  # type: ignore[assignment]
+        else:
+            continue
+
+        try:
+            length_val = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+
+        if length_val <= 0.0 or ppm_val <= 0.0:
+            continue
+        normalised.append((length_val, ppm_val))
+
+    return normalised
+
+
+def _raise_queue_ppm_intervals(
+    intervals: list[list[float]],
+    start: float,
+    end: float,
+    ppm_required: float,
+) -> list[list[float]]:
+    """Raise ``intervals`` so the range [start, end) meets ``ppm_required``."""
+
+    adjusted: list[list[float]] = []
+    tol = 1e-9
+    for seg_start, seg_end, seg_ppm in intervals:
+        if seg_end <= start + tol or seg_start >= end - tol:
+            adjusted.append([seg_start, seg_end, seg_ppm])
+            continue
+
+        current_start = seg_start
+        current_end = seg_end
+        current_ppm = seg_ppm
+
+        if current_start < start - tol:
+            adjusted.append([current_start, start, current_ppm])
+            current_start = start
+
+        overlap_end = min(current_end, end)
+        floor_ppm = current_ppm if current_ppm >= ppm_required - tol else ppm_required
+        adjusted.append([current_start, overlap_end, floor_ppm])
+
+        if current_end > overlap_end + tol:
+            adjusted.append([overlap_end, current_end, current_ppm])
+
+    adjusted.sort(key=lambda item: item[0])
+    merged: list[list[float]] = []
+    for seg_start, seg_end, seg_ppm in adjusted:
+        if seg_end - seg_start <= tol:
+            continue
+        if (
+            merged
+            and abs(merged[-1][2] - seg_ppm) <= tol
+            and abs(merged[-1][1] - seg_start) <= tol
+        ):
+            merged[-1][1] = seg_end
+        else:
+            merged.append([seg_start, seg_end, seg_ppm])
+
+    return merged
+
+
+def _apply_segment_floors_to_queue(
+    queue_entries: list[tuple[float, float]],
+    segment_targets: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Return ``queue_entries`` adjusted so each segment floor is satisfied."""
+
+    if not segment_targets:
+        return list(queue_entries)
+
+    intervals: list[list[float]] = []
+    position = 0.0
+    tol = 1e-9
+    for length_val, ppm_val in queue_entries:
+        length_float = float(length_val)
+        if length_float <= tol:
+            continue
+        ppm_float = float(ppm_val)
+        intervals.append([position, position + length_float, ppm_float])
+        position += length_float
+
+    total_length = position
+    offset = 0.0
+    for seg_length, seg_ppm in segment_targets:
+        seg_length = float(seg_length)
+        seg_ppm = float(seg_ppm)
+        if seg_length <= tol or seg_ppm <= tol:
+            offset += max(seg_length, 0.0)
+            continue
+        seg_start = offset
+        seg_end = seg_start + seg_length
+        if seg_start > total_length + tol:
+            intervals.append([total_length, seg_start, 0.0])
+            total_length = seg_start
+        if seg_end > total_length + tol:
+            intervals.append([total_length, seg_end, 0.0])
+            total_length = seg_end
+        intervals = _raise_queue_ppm_intervals(intervals, seg_start, seg_end, seg_ppm)
+        offset = seg_end
+
+    adjusted: list[tuple[float, float]] = []
+    for seg_start, seg_end, seg_ppm in intervals:
+        length_val = seg_end - seg_start
+        if length_val <= tol:
+            continue
+        adjusted.append((length_val, seg_ppm))
+
+    return _merge_queue(adjusted)
+
+
 def _ensure_queue_floor(
     queue_entries: tuple[tuple[float, float], ...] | list[tuple[float, float]] | None,
     length_required: float,
     ppm_required: float,
+    segment_requirements: Sequence[Mapping[str, object] | Sequence[object]] | None = None,
 ) -> tuple[tuple[float, float], ...]:
-    """Ensure ``queue_entries`` contains at least ``length_required`` at ``ppm_required``."""
+    """Ensure ``queue_entries`` satisfies either the global or per-segment floors."""
 
     try:
         length_val = max(float(length_required or 0.0), 0.0)
@@ -604,8 +738,21 @@ def _ensure_queue_floor(
                 ppm_norm = 0.0
             normalised.append((length_norm, ppm_norm))
 
+    segment_targets = _normalise_segment_requirements(segment_requirements)
+
     total_length_in = sum(length for length, _ppm in normalised)
-    target_length = total_length_in if total_length_in > 1e-9 else length_val
+    if total_length_in > 1e-9:
+        target_length = total_length_in
+    else:
+        target_length = length_val
+
+    if segment_targets:
+        required_total = sum(length for length, _ppm in segment_targets)
+        if required_total > 0.0:
+            target_length = max(target_length, required_total)
+        normalised = _apply_segment_floors_to_queue(normalised, segment_targets)
+        length_val = 0.0
+        ppm_val = 0.0
 
     if length_val <= 0.0 or ppm_val <= 0.0:
         if not normalised:
@@ -3973,14 +4120,45 @@ def solve_pipeline(
     if isinstance(forced_origin_detail, Mapping):
         ppm_floor = float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0)
         length_floor = float(forced_origin_detail.get('length_km', 0.0) or 0.0)
-        if ppm_floor > 0 and length_floor > 0:
+
+        segment_floor_raw = forced_origin_detail.get('segments')
+        segment_floor_norm: list[dict[str, float]] = []
+        if isinstance(segment_floor_raw, Sequence):
+            for entry in segment_floor_raw:
+                if not isinstance(entry, Mapping):
+                    continue
+                try:
+                    seg_length = float(entry.get('length_km', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_length = 0.0
+                try:
+                    seg_ppm = float(entry.get('dra_ppm', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_ppm = 0.0
+                if seg_length <= 0.0 or seg_ppm <= 0.0:
+                    continue
+                segment_floor_norm.append({'length_km': seg_length, 'dra_ppm': seg_ppm})
+            if segment_floor_norm:
+                seg_total = sum(item['length_km'] for item in segment_floor_norm)
+                seg_max_ppm = max(item['dra_ppm'] for item in segment_floor_norm)
+                length_floor = max(length_floor, seg_total)
+                ppm_floor = max(ppm_floor, seg_max_ppm)
+
+        if ppm_floor > 0.0 or length_floor > 0.0 or segment_floor_norm:
             baseline_floor = {
-                'dra_ppm': ppm_floor,
-                'length_km': length_floor,
+                'dra_ppm': max(ppm_floor, 0.0),
+                'length_km': max(length_floor, 0.0),
             }
+            if segment_floor_norm:
+                baseline_floor['segments'] = segment_floor_norm
 
     if baseline_floor:
-        initial_queue = _ensure_queue_floor(initial_queue, baseline_floor['length_km'], baseline_floor['dra_ppm'])
+        initial_queue = _ensure_queue_floor(
+            initial_queue,
+            baseline_floor.get('length_km', 0.0),
+            baseline_floor.get('dra_ppm', 0.0),
+            baseline_floor.get('segments'),
+        )
 
     states: dict[int, dict] = {
         init_residual: {
