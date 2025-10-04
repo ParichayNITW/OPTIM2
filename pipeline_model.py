@@ -1686,6 +1686,7 @@ def compute_minimum_lacing_requirement(
     max_visc_cst: float,
     segment_slices: list[list[dict]] | None = None,
     dra_upper_bound: float = 70.0,
+    min_suction_head: float = 0.0,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -1696,8 +1697,9 @@ def compute_minimum_lacing_requirement(
     available pressure envelope (MAOP/MOP) and compares it against the head the
     station can produce when all pump combinations operate at their DOL speed.
     Whenever the available head is insufficient the required drag reduction is
-    computed from ``%DR = 100 * (SDH - (residual + max_head)) / SDH`` with the
-    upstream residual assumed to stay at the suction reference (0 m).  The
+    computed from ``%DR = 100 * (SDH - (residual + max_head - suction)) / SDH``
+    with the upstream residual assumed to stay at the suction reference, which
+    defaults to ``0 m`` but may be overridden with ``min_suction_head``.  The
     returned dictionary provides both the treated length (equal to the total
     pipeline length) and the minimum concentration in PPM.  When the inputs are
     insufficient to derive a value the helper falls back to a zero requirement.
@@ -1753,6 +1755,10 @@ def compute_minimum_lacing_requirement(
         if math.isnan(val):
             return float(default)
         return val
+
+    min_suction = _coerce_float_local(min_suction_head, 0.0)
+    if min_suction < 0.0:
+        min_suction = 0.0
 
     def _station_density(stn: Mapping[str, object]) -> float:
         rho_val = _coerce_float_local(stn.get('rho'), 0.0)
@@ -1994,7 +2000,8 @@ def compute_minimum_lacing_requirement(
         dr_unbounded = 0.0
         limited_by_station = False
         available_head = residual_head + max_head
-        gap = sdh_required - available_head
+        effective_available_head = max(available_head - min_suction, 0.0)
+        gap = sdh_required - effective_available_head
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
             if dr_unbounded < 0.0:
@@ -2051,7 +2058,9 @@ def compute_minimum_lacing_requirement(
                 'dra_perc_uncapped': float(dr_unbounded),
                 'sdh_required': float(sdh_required),
                 'residual_head': float(residual_head),
-                'max_head_available': float(available_head),
+                'max_head_available': float(effective_available_head),
+                'available_head_before_suction': float(available_head),
+                'suction_head': float(min_suction),
                 'limited_by_station': bool(limited_by_station),
             }
         )
