@@ -6,6 +6,7 @@ Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict, Tuple
 
@@ -153,8 +154,23 @@ def _compute_ppm_for_dr(
     if lower not in dra_curve_data or dra_curve_data[lower] is None:
         return 0.0
 
-    def round_ppm(val: float, step: float = 0.5) -> float:
-        return round(val / step) * step
+    def round_ppm(val: float, step: float = 1.0) -> float:
+        """Round ``val`` up to the next multiple of ``step``.
+
+        ``step`` defaults to ``1.0`` so that injection requirements are
+        expressed in whole PPM increments.  Callers that require different
+        granularity may provide their preferred increment.
+        """
+
+        try:
+            step_value = float(step)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            step_value = 1.0
+        if step_value <= 0.0:
+            step_value = 1.0
+        if val <= 0.0:
+            return 0.0
+        return math.ceil(val / step_value) * step_value
 
     if lower == upper:
         return round_ppm(_ppm_from_df(dra_curve_data[lower], dr))
@@ -174,7 +190,8 @@ def get_ppm_for_dr(
 ) -> float:
     """Interpolate PPM for a given drag reduction and viscosity.
 
-    Returns the PPM value rounded to the nearest 0.5.
+    Returns the PPM value rounded up to the next whole PPM (or custom
+    increment).
     """
 
     if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
