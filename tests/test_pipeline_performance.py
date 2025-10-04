@@ -526,7 +526,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
                 return {
                     "error": False,
                     "total_cost": 12.0,
-                    "linefill": [{"length_km": 6.0, "dra_ppm": 3.0}],
+                    "linefill": [{"length_km": 6.0, "dra_ppm": 3.0, "volume": 1000.0}],
                     "dra_front_km": 6.0,
                 }
             if forced_detail:
@@ -536,7 +536,9 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
                 result = {
                     "error": False,
                     "total_cost": 12.0 + dra_cost,
-                    "linefill": [{"length_km": 6.0, "dra_ppm": forced_ppm or 3.0}],
+                    "linefill": [
+                        {"length_km": 6.0, "dra_ppm": forced_ppm or 3.0, "volume": 1000.0}
+                    ],
                     "dra_front_km": 6.0,
                     "pipeline_flow_station_a": flow,
                     "dra_ppm_station_a": forced_ppm,
@@ -547,7 +549,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
             return {
                 "error": False,
                 "total_cost": 10.0,
-                "linefill": [{"length_km": 0.0, "dra_ppm": 0.0}],
+                "linefill": [{"length_km": 0.0, "dra_ppm": 0.0, "volume": 0.0}],
                 "dra_front_km": 0.0,
             }
         if hour == 1:
@@ -555,7 +557,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
                 return {
                     "error": False,
                     "total_cost": 11.0,
-                    "linefill": [{"length_km": 5.0, "dra_ppm": 2.5}],
+                    "linefill": [{"length_km": 5.0, "dra_ppm": 2.5, "volume": 1000.0}],
                     "dra_front_km": 5.0,
                 }
             return {
@@ -565,7 +567,10 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         return {
             "error": False,
             "total_cost": 0.0,
-            "linefill": dra_linefill_in,
+            "linefill": [
+                {**entry, "volume": float(entry.get("volume", 0.0) or 0.0)}
+                for entry in dra_linefill_in or []
+            ],
             "dra_front_km": float(dra_reach_km),
         }
 
@@ -643,6 +648,10 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         assert label in note_text
         assert f"{vol_val:.0f} m³" in note_text
         assert f"{ppm_val:.2f} ppm" in note_text
+
+    first_snapshot = result["linefill_snaps"][0]
+    assert isinstance(first_snapshot, pd.DataFrame)
+    assert first_snapshot[app.INIT_DRA_COL].max() > 0.0
 
     warning_text = app._build_enforced_origin_warning(
         backtrack_notes, result.get("enforced_origin_actions")
@@ -3159,6 +3168,26 @@ def test_queue_floor_preserves_downstream_slug() -> None:
     assert downstream_profile[0][1] == pytest.approx(4.0, rel=1e-9)
 
 
+def test_queue_floor_splices_segment_requirements() -> None:
+    """Segment floors should be inserted ahead of the existing queue."""
+
+    initial_queue: tuple[tuple[float, float], ...] = ()
+    segment_floors = [
+        {"length_km": 4.0, "dra_ppm": 8.0},
+        {"length_km": 2.0, "dra_ppm": 12.0},
+    ]
+
+    floored_queue = _ensure_queue_floor(initial_queue, 0.0, 0.0, segment_floors)
+
+    assert floored_queue
+    assert floored_queue[0][0] == pytest.approx(4.0, rel=1e-9)
+    assert floored_queue[0][1] == pytest.approx(8.0, rel=1e-9)
+    assert floored_queue[1][0] == pytest.approx(2.0, rel=1e-9)
+    assert floored_queue[1][1] == pytest.approx(12.0, rel=1e-9)
+    total_length = sum(length for length, _ppm in floored_queue)
+    assert total_length == pytest.approx(6.0, rel=1e-9)
+
+
 def test_bypassed_station_respects_segment_floor() -> None:
     """Stations in bypass should still honour the configured segment floor."""
 
@@ -3295,4 +3324,4 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b_zero, [(2.0, 0.0), (18.0, 10.0)])
 
     _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
-    _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
+    _assert_profile(profile_b_no_injection,
