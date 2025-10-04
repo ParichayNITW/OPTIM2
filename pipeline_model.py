@@ -1759,6 +1759,7 @@ def compute_minimum_lacing_requirement(
     min_suction = _coerce_float_local(min_suction_head, 0.0)
     if min_suction < 0.0:
         min_suction = 0.0
+    result['suction_head'] = float(min_suction)
 
     def _station_density(stn: Mapping[str, object]) -> float:
         rho_val = _coerce_float_local(stn.get('rho'), 0.0)

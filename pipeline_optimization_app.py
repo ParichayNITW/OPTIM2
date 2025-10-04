@@ -226,6 +226,12 @@ def _collect_segment_floors(
         }
 
         try:
+            seg_suction = float(entry.get("suction_head", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_suction = 0.0
+        seg_detail["suction_head"] = seg_suction
+
+        try:
             seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
         except (TypeError, ValueError):
             seg_perc = 0.0
@@ -4733,9 +4739,20 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             baseline_flow = st.session_state.get("max_laced_flow_m3h")
             baseline_visc = st.session_state.get("max_laced_visc_cst")
             st.markdown("#### DRA Lacing Baseline")
-            base_cols = st.columns(2)
-            base_cols[0].metric("Target laced flow (m³/h)", f"{baseline_flow:,.2f}" if baseline_flow is not None else "N/A")
-            base_cols[1].metric("Target laced viscosity (cSt)", f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A")
+            baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0))
+            base_cols = st.columns(3)
+            base_cols[0].metric(
+                "Target laced flow (m³/h)",
+                f"{baseline_flow:,.2f}" if baseline_flow is not None else "N/A",
+            )
+            base_cols[1].metric(
+                "Target laced viscosity (cSt)",
+                f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A",
+            )
+            base_cols[2].metric(
+                "Minimum suction pressure (m)",
+                f"{baseline_suction:,.2f}" if baseline_suction > 0 else "0.00",
+            )
             baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
             baseline_summary = _summarise_baseline_requirement(baseline_detail)
             floor_cols = st.columns(3)
@@ -4803,18 +4820,34 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
                     except (TypeError, ValueError):
                         seg_perc = 0.0
+                    try:
+                        seg_suction = float(entry.get("suction_head", baseline_suction) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_suction = baseline_suction
+
                     seg_rows.append(
                         {
                             "Segment": seg_label,
                             "Length (km)": seg_length,
                             "Floor PPM": seg_ppm,
                             "Floor %DR": seg_perc,
+                            "Suction head (m)": seg_suction,
                         }
                     )
                 if seg_rows:
                     seg_df = pd.DataFrame(seg_rows)
-                    seg_df = seg_df.round({"Length (km)": 2, "Floor PPM": 2, "Floor %DR": 2})
+                    seg_df = seg_df.round(
+                        {
+                            "Length (km)": 2,
+                            "Floor PPM": 2,
+                            "Floor %DR": 2,
+                            "Suction head (m)": 2,
+                        }
+                    )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                    st.caption(
+                        "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
+                    )
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
