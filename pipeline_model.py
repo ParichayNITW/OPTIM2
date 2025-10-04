@@ -1472,9 +1472,10 @@ def _update_mainline_dra(
         for length, _ppm in pumped_portion
         if float(length or 0.0) > 0.0
     )
-    has_floor_requirement = bool(floor_specified and floor_length > 0.0 and floor_ppm > 0.0)
-    floor_requires_injection = has_floor_requirement and inj_effective <= 0.0
-    enforce_floor = has_floor_requirement and inj_effective > 0.0
+    floor_defined = bool(floor_specified and floor_length > 0.0)
+    enforceable_floor = bool(floor_specified and floor_length > 0.0 and floor_ppm > 0.0)
+    floor_requires_injection = floor_defined and inj_effective <= 0.0
+    enforce_floor = enforceable_floor and inj_effective > 0.0
     if enforce_floor:
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
@@ -4015,6 +4016,8 @@ def solve_pipeline(
                         for dra_loop in dra_loop_vals:
                             ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                             ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
+                            if floor_ppm_min > 0.0 and ppm_main > 0.0 and ppm_main < floor_ppm_min:
+                                ppm_main = floor_ppm_min
                             if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
                                 continue
                             inj_effective_est = _predict_effective_injection(
@@ -4129,6 +4132,8 @@ def solve_pipeline(
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                    if floor_ppm_min > 0.0 and ppm_main > 0.0 and ppm_main < floor_ppm_min:
+                        ppm_main = floor_ppm_min
                     if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
                         continue
                     non_pump_opts.append({
@@ -5002,21 +5007,27 @@ def solve_pipeline(
                         for length, ppm in segment_profile_raw
                         if float(length or 0.0) > 0
                     ]
-                    treated_profile_length = sum(
-                        float(entry['length_km'])
-                        for entry in profile_entries
-                        if float(entry['dra_ppm']) > 0
-                    )
-                    inlet_ppm_profile = (
-                        float(profile_entries[0]['dra_ppm'])
-                        if profile_entries
-                        else 0.0
-                    )
-                    outlet_ppm_profile = (
-                        float(profile_entries[-1]['dra_ppm'])
-                        if profile_entries
-                        else 0.0
-                    )
+                    if inj_ppm_main <= 0.0:
+                        profile_entries = []
+                        treated_profile_length = 0.0
+                        inlet_ppm_profile = 0.0
+                        outlet_ppm_profile = 0.0
+                    else:
+                        treated_profile_length = sum(
+                            float(entry['length_km'])
+                            for entry in profile_entries
+                            if float(entry['dra_ppm']) > 0
+                        )
+                        inlet_ppm_profile = (
+                            float(profile_entries[0]['dra_ppm'])
+                            if profile_entries
+                            else 0.0
+                        )
+                        outlet_ppm_profile = (
+                            float(profile_entries[-1]['dra_ppm'])
+                            if profile_entries
+                            else 0.0
+                        )
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
