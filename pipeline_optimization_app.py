@@ -325,6 +325,58 @@ def _collect_segment_floors(
     processed.sort(key=lambda item: (item[0], item[1]))
     segments = [item[2] for item in processed]
 
+    if not segments and segments_raw:
+        fallback_entries: list[dict[str, object]] = []
+        for order_idx, entry in enumerate(segments_raw):
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                station_idx = int(entry.get("station_idx", order_idx))
+            except (TypeError, ValueError):
+                station_idx = order_idx
+            try:
+                seg_length = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_length = 0.0
+            if seg_length <= 0.0:
+                seg_length = length_map.get(station_idx, 0.0)
+            try:
+                baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                baseline_ppm = 0.0
+            if seg_length <= 0.0 or baseline_ppm <= 0.0:
+                continue
+
+            fallback_detail: dict[str, object] = {
+                "station_idx": station_idx,
+                "length_km": float(seg_length),
+                "dra_ppm": float(max(baseline_ppm, min_floor_ppm)),
+            }
+
+            try:
+                seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_perc = 0.0
+            if seg_perc > 0.0 or min_floor_perc > 0.0:
+                fallback_detail["dra_perc"] = float(max(seg_perc, min_floor_perc, 0.0))
+
+            seg_suction = suction_default
+            try:
+                seg_suction = float(entry.get("suction_head", suction_default) or 0.0)
+            except (TypeError, ValueError):
+                seg_suction = suction_default
+            if station_idx < len(suction_profile):
+                seg_suction = suction_profile[station_idx]
+            fallback_detail["suction_head"] = float(max(seg_suction, 0.0))
+
+            if bool(entry.get("limited_by_station")):
+                fallback_detail["limited_by_station"] = True
+
+            fallback_entries.append(fallback_detail)
+
+        if fallback_entries:
+            segments = fallback_entries
+
     return segments
 
 
