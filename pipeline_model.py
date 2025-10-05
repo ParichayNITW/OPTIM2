@@ -5095,35 +5095,42 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
-                    profile_entries = [
-                        {
-                            'length_km': float(length),
-                            'dra_ppm': float(ppm),
-                        }
-                        for length, ppm in segment_profile_raw
-                        if float(length or 0.0) > 0
-                    ]
+                    profile_entries: list[dict[str, float]] = []
+                    for length, ppm in segment_profile_raw:
+                        try:
+                            length_f = float(length or 0.0)
+                        except (TypeError, ValueError):
+                            length_f = 0.0
+                        try:
+                            ppm_f = float(ppm or 0.0)
+                        except (TypeError, ValueError):
+                            ppm_f = 0.0
+                        if length_f <= 0.0:
+                            continue
+                        profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
+
+                    treated_profile_length = sum(
+                        entry['length_km']
+                        for entry in profile_entries
+                        if entry['dra_ppm'] > 0.0
+                    )
+                    inlet_ppm_profile = (
+                        profile_entries[0]['dra_ppm']
+                        if profile_entries
+                        else 0.0
+                    )
+                    outlet_ppm_profile = (
+                        profile_entries[-1]['dra_ppm']
+                        if profile_entries
+                        else 0.0
+                    )
                     if inj_ppm_main <= 0.0:
-                        profile_entries = []
                         treated_profile_length = 0.0
-                        inlet_ppm_profile = 0.0
-                        outlet_ppm_profile = 0.0
-                    else:
-                        treated_profile_length = sum(
-                            float(entry['length_km'])
-                            for entry in profile_entries
-                            if float(entry['dra_ppm']) > 0
-                        )
-                        inlet_ppm_profile = (
-                            float(profile_entries[0]['dra_ppm'])
-                            if profile_entries
-                            else 0.0
-                        )
-                        outlet_ppm_profile = (
-                            float(profile_entries[-1]['dra_ppm'])
-                            if profile_entries
-                            else 0.0
-                        )
+                        if not profile_entries or all(
+                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                        ):
+                            inlet_ppm_profile = 0.0
+                            outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
