@@ -358,6 +358,7 @@ def test_floor_requirement_enforces_positive_injection_and_reporting() -> None:
     assert result.get("floor_injection_applied_station_a") is True
     recorded_floor = result.get("floor_injection_ppm_station_a", 0.0)
     assert recorded_floor >= floor_ppm
+    assert result.get("station_suction_heads") == [0.0]
 
 
 def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
@@ -1564,6 +1565,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
     assert seg_entry["max_head_available"] == pytest.approx(effective_available)
+    assert result["suction_heads"] == pytest.approx([min_suction])
 
 
 def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
@@ -1635,6 +1637,7 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
     assert seg_entry["max_head_available"] == pytest.approx(effective_available)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
+    assert result["suction_heads"] == pytest.approx([min_suction])
 
 
 def test_compute_minimum_lacing_requirement_flags_station_cap():
@@ -1691,6 +1694,76 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry.get("dra_ppm") == pytest.approx(model.get_ppm_for_dr(2.5, 30.0))
 
 
+def test_compute_minimum_lacing_requirement_accepts_sequence_suction():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 10.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+        },
+        {
+            "name": "Station B",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 8.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+        },
+    ]
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    suction_profile = [1.0, 2.5]
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=2.5,
+        min_suction_head=suction_profile,
+    )
+
+    assert result["suction_head"] == pytest.approx(suction_profile[0])
+    assert result["suction_heads"] == pytest.approx(suction_profile)
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == len(stations)
+    for idx, seg in enumerate(segments):
+        assert seg["suction_head"] == pytest.approx(suction_profile[idx])
+
+
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
     import pipeline_model as model
 
@@ -1711,6 +1784,7 @@ def test_compute_minimum_lacing_requirement_handles_invalid_input():
     assert result.get("segments") == []
     assert result.get("warnings") == []
     assert result.get("enforceable") is True
+    assert result.get("suction_heads") == []
 
 
 def test_segment_floors_overlay_queue_minimum():
