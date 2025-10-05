@@ -1309,9 +1309,6 @@ def _update_mainline_dra(
         if floor_ppm < 0.0:
             floor_ppm = 0.0
 
-    floor_target_ppm = max(floor_ppm, 0.0)
-    floor_ppm_tol = max(floor_target_ppm * 1e-6, 1e-9) if floor_target_ppm > 0.0 else 1e-9
-
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
     if inj_requested > 0:
@@ -1340,12 +1337,6 @@ def _update_mainline_dra(
                 if multiplier < 0.0:
                     multiplier = 0.0
                 inj_effective = inj_requested * multiplier
-
-    if floor_target_ppm > 0.0:
-        if inj_requested > 0.0 and inj_requested < floor_target_ppm - floor_ppm_tol:
-            inj_requested = floor_target_ppm
-        if inj_effective > 0.0 and inj_effective < floor_target_ppm - floor_ppm_tol:
-            inj_effective = floor_target_ppm
 
     existing_queue: list[tuple[float, float]] = []
     if queue:
@@ -1621,13 +1612,7 @@ def _update_mainline_dra(
         else:
             dra_segments.append((length, ppm_val))
 
-    inj_reported = inj_requested
-    if floor_target_ppm > 0.0:
-        inj_reported = max(inj_reported, floor_target_ppm)
-    if inj_effective > 0.0:
-        inj_reported = max(inj_reported, inj_effective)
-
-    return dra_segments, queue_after, inj_reported, floor_requires_injection
+    return dra_segments, queue_after, inj_requested, floor_requires_injection
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
@@ -1702,7 +1687,7 @@ def compute_minimum_lacing_requirement(
     max_visc_cst: float,
     segment_slices: list[list[dict]] | None = None,
     dra_upper_bound: float = 70.0,
-    min_suction_head: float | Sequence[float] = 0.0,
+    min_suction_head: float = 0.0,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -1716,8 +1701,6 @@ def compute_minimum_lacing_requirement(
     computed from ``%DR = 100 * (SDH - (residual + max_head - suction)) / SDH``
     with the upstream residual assumed to stay at the suction reference, which
     defaults to ``0 m`` but may be overridden with ``min_suction_head``.  The
-    ``min_suction_head`` argument accepts either a scalar applied uniformly to
-    all stations or a sequence supplying per-station values.  The
     returned dictionary provides both the treated length (equal to the total
     pipeline length) and the minimum concentration in PPM.  When the inputs are
     insufficient to derive a value the helper falls back to a zero requirement.
@@ -1732,8 +1715,6 @@ def compute_minimum_lacing_requirement(
         'enforceable': True,
     }
     result['segments'] = []
-    result['suction_head'] = 0.0
-    result['suction_heads'] = []
 
     if not stations:
         return result
@@ -1776,24 +1757,10 @@ def compute_minimum_lacing_requirement(
             return float(default)
         return val
 
-    # Normalise suction profile
-    suction_sequence: list[float] = []
-    if isinstance(min_suction_head, Sequence) and not isinstance(min_suction_head, (str, bytes)):
-        for idx in range(len(stations)):
-            if idx < len(min_suction_head):
-                val = _coerce_float_local(min_suction_head[idx], 0.0)
-            else:
-                val = 0.0
-            if math.isnan(val) or val < 0.0:
-                val = 0.0
-            suction_sequence.append(float(val))
-    else:
-        base_suction = _coerce_float_local(min_suction_head, 0.0)
-        if math.isnan(base_suction) or base_suction < 0.0:
-            base_suction = 0.0
-        suction_sequence = [float(base_suction)] * len(stations)
-    result['suction_head'] = float(suction_sequence[0]) if suction_sequence else 0.0
-    result['suction_heads'] = [float(val) for val in suction_sequence]
+    min_suction = _coerce_float_local(min_suction_head, 0.0)
+    if min_suction < 0.0:
+        min_suction = 0.0
+    result['suction_head'] = float(min_suction)
 
     def _station_density(stn: Mapping[str, object]) -> float:
         rho_val = _coerce_float_local(stn.get('rho'), 0.0)
@@ -1925,14 +1892,12 @@ def compute_minimum_lacing_requirement(
 
     total_length = 0.0
     stations_copy: list[dict] = []
-    for idx_stn, stn in enumerate(stations):
+    for stn in stations:
         entry = copy.deepcopy(stn)
         try:
             total_length += float(entry.get('L', 0.0) or 0.0)
         except (TypeError, ValueError):
             total_length += 0.0
-        suction_val = suction_sequence[idx_stn] if idx_stn < len(suction_sequence) else 0.0
-        entry['suction_head'] = float(suction_val)
         stations_copy.append(entry)
     if total_length <= 0.0:
         total_length = 0.0
@@ -2036,9 +2001,8 @@ def compute_minimum_lacing_requirement(
         dra_ppm_needed = 0.0
         dr_unbounded = 0.0
         limited_by_station = False
-        suction_use = suction_sequence[idx] if idx < len(suction_sequence) else 0.0
         available_head = residual_head + max_head
-        effective_available_head = max(available_head - suction_use, 0.0)
+        effective_available_head = max(available_head - min_suction, 0.0)
         gap = sdh_required - effective_available_head
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
@@ -2083,6 +2047,9 @@ def compute_minimum_lacing_requirement(
             except Exception:
                 dra_ppm_needed = 0.0
 
+            if dra_ppm_needed > 0.0:
+                dra_ppm_needed = math.ceil(dra_ppm_needed)
+
             if dr_needed > max_dra_perc:
                 max_dra_perc = dr_needed
                 max_dra_ppm = dra_ppm_needed
@@ -2098,7 +2065,7 @@ def compute_minimum_lacing_requirement(
                 'residual_head': float(residual_head),
                 'max_head_available': float(effective_available_head),
                 'available_head_before_suction': float(available_head),
-                'suction_head': float(suction_use),
+                'suction_head': float(min_suction),
                 'limited_by_station': bool(limited_by_station),
             }
         )
@@ -2995,7 +2962,6 @@ def solve_pipeline(
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
     *,
-    station_suction_heads: Sequence[float] | float | None = None,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
@@ -3165,27 +3131,6 @@ def solve_pipeline(
                 combined['limited_by_station'] = True
             segment_floor_lookup[idx_int] = combined  # type: ignore[assignment]
 
-    N = len(stations)
-
-    def _coerce_suction_value(raw: float | int | None) -> float:
-        if raw is None:
-            return 0.0
-        val = _coerce_float(raw, 0.0)
-        if math.isnan(val) or val < 0.0:
-            val = 0.0
-        return float(val)
-
-    if isinstance(station_suction_heads, Sequence) and not isinstance(station_suction_heads, (str, bytes)):
-        suction_profile = [
-            _coerce_suction_value(station_suction_heads[idx])
-            if idx < len(station_suction_heads)
-            else 0.0
-            for idx in range(N)
-        ]
-    else:
-        base_suction_val = _coerce_suction_value(station_suction_heads) if station_suction_heads is not None else 0.0
-        suction_profile = [base_suction_val] * N
-
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
     # specified.  Each candidate pattern is mapped onto the stations with
@@ -3215,7 +3160,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                station_suction_heads=suction_profile,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -3280,7 +3224,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                station_suction_heads=suction_profile,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -3348,6 +3291,8 @@ def solve_pipeline(
                     ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
+
+    N = len(stations)
 
     # ------------------------------------------------------------------
     # Two-pass optimisation: first run a coarse search with enlarged
@@ -3467,7 +3412,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                station_suction_heads=suction_profile,
                 loop_usage_by_station=loop_usage_by_station,
                 enumerate_loops=False,
                 _internal_pass=True,
@@ -3499,7 +3443,6 @@ def solve_pipeline(
             hours,
             start_time,
             pump_shear_rate=pump_shear_rate,
-            station_suction_heads=suction_profile,
             loop_usage_by_station=loop_usage_by_station,
             enumerate_loops=False,
             _internal_pass=True,
@@ -3671,7 +3614,6 @@ def solve_pipeline(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
-                    station_suction_heads=suction_profile,
                     loop_usage_by_station=loop_usage_by_station,
                     enumerate_loops=False,
                     _internal_pass=True,
@@ -4263,8 +4205,6 @@ def solve_pipeline(
             'sfc_mode': stn.get('sfc_mode', 'manual'),
             'engine_params': stn.get('engine_params', {}),
             'elev': float(stn.get('elev', 0.0)),
-            'suction_head': float(suction_profile[i - 1]) if i - 1 < len(suction_profile) else 0.0,
-            'suction_next': float(suction_profile[i]) if i < len(suction_profile) else 0.0,
         })
         cum_dist += L
     # Cache the baseline downstream head requirement for each station using the
@@ -4420,12 +4360,6 @@ def solve_pipeline(
         best_by_residual: dict[int, object] = {}
         protected_counter = 0
         best_cost_station = float('inf')
-        suction_current = float(stn_data.get('suction_head', 0.0) or 0.0)
-        if suction_current < 0.0:
-            suction_current = 0.0
-        suction_next_req = float(stn_data.get('suction_next', 0.0) or 0.0)
-        if suction_next_req < 0.0:
-            suction_next_req = 0.0
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
             dra_queue_prev_full = state.get('dra_queue_full')
@@ -4435,7 +4369,6 @@ def solve_pipeline(
             dra_queue_prev_inlet = state.get('dra_queue_at_inlet')
             if dra_queue_prev_inlet is None:
                 dra_queue_prev_inlet = dra_queue_prev_full
-            residual_inlet = float(state.get('residual', 0.0))
             prefix_entries: tuple[tuple[float, float], ...] = ()
             total_prev_full = _queue_total_length(dra_queue_prev_full)
             total_prev_inlet = _queue_total_length(dra_queue_prev_inlet)
@@ -4467,14 +4400,6 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
-                if stn_data.get('is_pump', False):
-                    if residual_inlet < suction_current - 1e-6:
-                        continue
-                    residual_effective = residual_inlet - suction_current
-                    if residual_effective < 0.0:
-                        residual_effective = 0.0
-                else:
-                    residual_effective = residual_inlet
                 (
                     dra_segments,
                     queue_after_list,
@@ -4863,22 +4788,19 @@ def solve_pipeline(
                     # Compute the resulting superimposed discharge head after the pump and
                     # check MAOP constraints.  Use the head delivered by the pumps on
                     # this segment.
-                    sdh = residual_inlet + tdh
+                    sdh = state['residual'] + tdh
                     if sdh > stn_data['maop_head'] or (
                         sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
                     ):
                         continue
 
                     # Compute downstream residual head after segment loss and elevation
-                    sdh_effective = residual_effective + tdh
-                    residual_next = int(round(sdh_effective - sc['head_loss'] - stn_data['elev_delta']))
+                    residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
 
                     # Compute minimum downstream requirement.  Use the cached baseline
                     # unless bypassing the next station, in which case recompute with
                     # updated flows so downstream pumps see the correct mainline demand.
-                    min_req = float(baseline_req[stn_data['idx']])
-                    if suction_next_req > min_req:
-                        min_req = suction_next_req
+                    min_req = baseline_req[stn_data['idx']]
                     if sc.get('bypass_next') and stn_data['idx'] + 1 < N:
                         # Recompute downstream flows; the mainline flow changes only
                         # when bypassing the next station.  ``seg_flows_tmp`` holds the
@@ -4903,20 +4825,16 @@ def solve_pipeline(
                                 j += 1
                             else:
                                 break
-                        min_req = float(
-                            _downstream_requirement(
-                                stations,
-                                stn_data['idx'],
-                                terminal,
-                                seg_flows_tmp,
-                                KV_list,
-                                segment_slices,
-                                loop_usage_by_station=loop_usage_by_station,
-                                pump_flow_overrides=pump_overrides,
-                            )
+                        min_req = _downstream_requirement(
+                            stations,
+                            stn_data['idx'],
+                            terminal,
+                            seg_flows_tmp,
+                            KV_list,
+                            segment_slices,
+                            loop_usage_by_station=loop_usage_by_station,
+                            pump_flow_overrides=pump_overrides,
                         )
-                        if suction_next_req > min_req:
-                            min_req = suction_next_req
                     if residual_next < min_req:
                         continue
 
@@ -4954,7 +4872,6 @@ def solve_pipeline(
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
-                        f"suction_head_{stn_data['name']}": suction_current,
                         f"velocity_{stn_data['name']}": sc['v'],
                         f"reynolds_{stn_data['name']}": sc['Re'],
                         f"friction_{stn_data['name']}": sc['f'],
@@ -5351,7 +5268,6 @@ def solve_pipeline(
         for length, ppm in queue_final
     ]
     result['dra_segments'] = dra_segments_result
-    result['station_suction_heads'] = [float(val) for val in suction_profile]
 
     linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
     result['linefill'] = linefill_from_queue
@@ -5491,8 +5407,6 @@ def solve_pipeline_with_types(
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
-    *,
-    station_suction_heads: Sequence[float] | float | None = None,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     coarse_multiplier: float = COARSE_MULTIPLIER,
@@ -5525,32 +5439,12 @@ def solve_pipeline_with_types(
     best_stations = None
     N = len(stations)
 
-    def _coerce_suction_value(raw: float | int | None) -> float:
-        if raw is None:
-            return 0.0
-        val = _coerce_float(raw, 0.0)
-        if math.isnan(val) or val < 0.0:
-            val = 0.0
-        return float(val)
-
-    if isinstance(station_suction_heads, Sequence) and not isinstance(station_suction_heads, (str, bytes)):
-        suction_profile = [
-            _coerce_suction_value(station_suction_heads[idx])
-            if idx < len(station_suction_heads)
-            else 0.0
-            for idx in range(N)
-        ]
-    else:
-        base_suction_val = _coerce_suction_value(station_suction_heads) if station_suction_heads is not None else 0.0
-        suction_profile = [base_suction_val] * N
-
     def expand_all(
         pos: int,
         stn_acc: list[dict],
         kv_acc: list[float],
         rho_acc: list[float],
         slices_acc: list[list[dict]],
-        suction_acc: list[float],
     ):
         nonlocal best_result, best_cost, best_stations
         if pos >= N:
@@ -5615,7 +5509,6 @@ def solve_pipeline_with_types(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
-                    station_suction_heads=suction_acc,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                     rpm_step=rpm_step,
@@ -5732,15 +5625,7 @@ def solve_pipeline_with_types(
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
                         unit['max_pumps'] = actA + actB
                         unit['min_pumps'] = actA + actB
-                        suction_val = suction_profile[pos] if pos < len(suction_profile) else 0.0
-                        expand_all(
-                            pos + 1,
-                            stn_acc + [unit],
-                            kv_acc + [kv],
-                            rho_acc + [rho],
-                            slices_acc + [current_slices],
-                            suction_acc + [suction_val],
-                        )
+                        expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
         else:
             expand_all(
                 pos + 1,
@@ -5748,10 +5633,9 @@ def solve_pipeline_with_types(
                 kv_acc + [kv],
                 rho_acc + [rho],
                 slices_acc + [current_slices],
-                suction_acc + [suction_profile[pos] if pos < len(suction_profile) else 0.0],
             )
 
-    expand_all(0, [], [], [], [], [])
+    expand_all(0, [], [], [], [])
 
     if best_result is None:
         return {
