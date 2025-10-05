@@ -37,11 +37,6 @@ if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
 if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
-if (
-    "station_suction_heads" not in st.session_state
-    or not isinstance(st.session_state.get("station_suction_heads"), list)
-):
-    st.session_state["station_suction_heads"] = []
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -196,57 +191,27 @@ def _collect_segment_floors(
 
     segments_raw = baseline_requirement.get("segments")
     if not isinstance(segments_raw, Sequence):
-        segments_raw = []
+        return segments
 
-    raw_lengths = baseline_requirement.get("segment_lengths")
-    if not isinstance(raw_lengths, Sequence):
-        raw_lengths = baseline_requirement.get("station_lengths")
-    length_map: dict[int, float] = {}
-    if isinstance(raw_lengths, Sequence):
-        for idx, raw_length in enumerate(raw_lengths):
-            try:
-                length_val = float(raw_length if raw_length is not None else 0.0)
-            except (TypeError, ValueError):
-                length_val = 0.0
-            if length_val > 0.0:
-                length_map[idx] = float(length_val)
-
-    suction_default = 0.0
-    try:
-        suction_default = float(baseline_requirement.get("suction_head", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        suction_default = 0.0
-
-    suction_profile: list[float] = []
-    suction_source = baseline_requirement.get("suction_heads")
-    if not isinstance(suction_source, Sequence):
-        suction_source = baseline_requirement.get("station_suction_heads")
-    if isinstance(suction_source, Sequence):
-        for raw in suction_source:
-            try:
-                suction_val = float(raw if raw is not None else 0.0)
-            except (TypeError, ValueError):
-                suction_val = 0.0
-            if not np.isfinite(suction_val) or suction_val < 0.0:
-                suction_val = 0.0
-            suction_profile.append(float(suction_val))
-
-    try:
-        global_ppm = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        global_ppm = 0.0
-    try:
-        global_perc = float(baseline_requirement.get("dra_perc", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        global_perc = 0.0
-
-    min_floor_ppm = max(float(min_ppm or 0.0), global_ppm, 0.0)
-    min_floor_perc = max(global_perc, 0.0)
-
-    processed: list[tuple[int, int, dict[str, object]]] = []
-    seen_indices: set[int] = set()
+    processed: list[tuple[int, dict[str, object]]] = []
     for order_idx, entry in enumerate(segments_raw):
         if not isinstance(entry, Mapping):
+            continue
+
+        try:
+            seg_length = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        if seg_length <= 0.0:
+            continue
+
+        try:
+            baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            baseline_ppm = 0.0
+
+        floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
+        if floor_ppm <= 0.0:
             continue
 
         try:
@@ -254,256 +219,34 @@ def _collect_segment_floors(
         except (TypeError, ValueError):
             station_idx = order_idx
 
-        try:
-            seg_length = float(entry.get("length_km", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_length = 0.0
-        if seg_length <= 0.0:
-            seg_length = length_map.get(station_idx, 0.0)
-
-        try:
-            baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            baseline_ppm = 0.0
-
-        floor_ppm = max(min_floor_ppm, baseline_ppm, 0.0)
-
         seg_detail: dict[str, object] = {
             "station_idx": station_idx,
-            "length_km": float(max(seg_length, 0.0)),
+            "length_km": float(seg_length),
             "dra_ppm": float(floor_ppm),
         }
 
         try:
-            seg_suction = float(entry.get("suction_head", suction_default) or 0.0)
+            seg_suction = float(entry.get("suction_head", 0.0) or 0.0)
         except (TypeError, ValueError):
-            seg_suction = suction_default
-        if station_idx < len(suction_profile):
-            seg_suction = suction_profile[station_idx]
-        seg_detail["suction_head"] = float(max(seg_suction, 0.0))
+            seg_suction = 0.0
+        seg_detail["suction_head"] = seg_suction
 
         try:
             seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
         except (TypeError, ValueError):
             seg_perc = 0.0
-        seg_detail["dra_perc"] = float(max(seg_perc, min_floor_perc, 0.0))
+        if seg_perc > 0.0:
+            seg_detail["dra_perc"] = seg_perc
 
         if bool(entry.get("limited_by_station")):
             seg_detail["limited_by_station"] = True
 
         processed.append((station_idx, order_idx, seg_detail))
-        seen_indices.add(station_idx)
-
-    station_count = 0
-    if processed:
-        station_count = max(station_count, max(idx for idx, _order, _seg in processed) + 1)
-    station_count = max(station_count, len(suction_profile))
-    if length_map:
-        station_count = max(station_count, max(length_map.keys()) + 1)
-
-    if station_count and not processed:
-        # Ensure the placeholder order remains stable when we only have metadata.
-        processed = []
-
-    placeholder_order = len(processed)
-    for idx in range(station_count):
-        if idx in seen_indices:
-            continue
-
-        seg_length = length_map.get(idx, 0.0)
-        seg_suction = suction_profile[idx] if idx < len(suction_profile) else suction_default
-        seg_detail = {
-            "station_idx": idx,
-            "length_km": float(max(seg_length, 0.0)),
-            "dra_ppm": float(min_floor_ppm),
-            "dra_perc": float(min_floor_perc),
-            "suction_head": float(max(seg_suction, 0.0)),
-        }
-        processed.append((idx, placeholder_order, seg_detail))
-        placeholder_order += 1
 
     processed.sort(key=lambda item: (item[0], item[1]))
     segments = [item[2] for item in processed]
 
-    if not segments and segments_raw:
-        fallback_entries: list[dict[str, object]] = []
-        for order_idx, entry in enumerate(segments_raw):
-            if not isinstance(entry, Mapping):
-                continue
-            try:
-                station_idx = int(entry.get("station_idx", order_idx))
-            except (TypeError, ValueError):
-                station_idx = order_idx
-            try:
-                seg_length = float(entry.get("length_km", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_length = 0.0
-            if seg_length <= 0.0:
-                seg_length = length_map.get(station_idx, 0.0)
-            try:
-                baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                baseline_ppm = 0.0
-            if seg_length <= 0.0 or baseline_ppm <= 0.0:
-                continue
-
-            fallback_detail: dict[str, object] = {
-                "station_idx": station_idx,
-                "length_km": float(seg_length),
-                "dra_ppm": float(max(baseline_ppm, min_floor_ppm)),
-            }
-
-            try:
-                seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_perc = 0.0
-            if seg_perc > 0.0 or min_floor_perc > 0.0:
-                fallback_detail["dra_perc"] = float(max(seg_perc, min_floor_perc, 0.0))
-
-            seg_suction = suction_default
-            try:
-                seg_suction = float(entry.get("suction_head", suction_default) or 0.0)
-            except (TypeError, ValueError):
-                seg_suction = suction_default
-            if station_idx < len(suction_profile):
-                seg_suction = suction_profile[station_idx]
-            fallback_detail["suction_head"] = float(max(seg_suction, 0.0))
-
-            if bool(entry.get("limited_by_station")):
-                fallback_detail["limited_by_station"] = True
-
-            fallback_entries.append(fallback_detail)
-
-        if fallback_entries:
-            segments = fallback_entries
-
     return segments
-
-
-def _build_segment_floor_dataframe(
-    segment_baseline: Sequence[Mapping[str, object]] | None,
-    stations_data: Sequence[Mapping[str, object]] | None,
-    *,
-    terminal_name: str = "Terminal",
-    default_suction: float = 0.0,
-) -> pd.DataFrame:
-    """Return a dataframe describing per-segment floor requirements."""
-
-    rows: list[dict[str, object]] = []
-    if not isinstance(segment_baseline, Sequence) or not segment_baseline:
-        return pd.DataFrame(columns=[
-            "Segment",
-            "Length (km)",
-            "Floor PPM",
-            "Floor %DR",
-            "Suction head (m)",
-        ])
-
-    station_names: list[str] = []
-    if isinstance(stations_data, Sequence):
-        for entry in stations_data:
-            if isinstance(entry, Mapping):
-                name = entry.get("name")
-                if isinstance(name, str) and name.strip():
-                    station_names.append(name)
-                    continue
-            station_names.append(f"Station {len(station_names) + 1}")
-
-    fallback_terminal = terminal_name if isinstance(terminal_name, str) and terminal_name else "Terminal"
-
-    for entry in segment_baseline:
-        if not isinstance(entry, Mapping):
-            continue
-        try:
-            idx = int(entry.get("station_idx", -1))
-        except (TypeError, ValueError):
-            idx = -1
-
-        if 0 <= idx < len(station_names):
-            start_name = station_names[idx]
-            if idx + 1 < len(station_names):
-                end_name = station_names[idx + 1]
-            else:
-                end_name = fallback_terminal
-        else:
-            start_name = f"Station {idx + 1}" if idx >= 0 else "Unknown"
-            end_name = fallback_terminal
-
-        seg_label = f"{start_name} → {end_name}" if start_name else end_name
-
-        try:
-            seg_length = float(entry.get("length_km", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_length = 0.0
-        try:
-            seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_ppm = 0.0
-        try:
-            seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_perc = 0.0
-        try:
-            seg_suction = float(entry.get("suction_head", default_suction) or 0.0)
-        except (TypeError, ValueError):
-            seg_suction = default_suction
-
-        rows.append(
-            {
-                "Segment": seg_label,
-                "Length (km)": float(seg_length),
-                "Floor PPM": float(seg_ppm),
-                "Floor %DR": float(seg_perc),
-                "Suction head (m)": float(seg_suction),
-            }
-        )
-
-    if not rows:
-        return pd.DataFrame(
-            columns=[
-                "Segment",
-                "Length (km)",
-                "Floor PPM",
-                "Floor %DR",
-                "Suction head (m)",
-            ]
-        )
-
-    return pd.DataFrame(rows)
-
-
-def _current_station_suction_profile(
-    stations: Sequence[Mapping[str, object]] | None,
-) -> list[float]:
-    """Return the per-station suction head profile from ``st.session_state``."""
-
-    if not isinstance(stations, Sequence) or not stations:
-        return []
-
-    raw_profile = st.session_state.get("station_suction_heads", [])
-    try:
-        default_val = float(st.session_state.get("min_laced_suction_m", 0.0))
-    except (TypeError, ValueError):
-        default_val = 0.0
-    if not np.isfinite(default_val) or default_val < 0.0:
-        default_val = 0.0
-
-    profile: list[float] = []
-    seq_profile = raw_profile if isinstance(raw_profile, Sequence) else []
-    for idx in range(len(stations)):
-        if isinstance(seq_profile, Sequence) and idx < len(seq_profile):
-            raw_val = seq_profile[idx]
-        else:
-            raw_val = default_val
-        try:
-            suction_val = float(raw_val)
-        except (TypeError, ValueError):
-            suction_val = default_val
-        if not np.isfinite(suction_val) or suction_val < 0.0:
-            suction_val = 0.0
-        profile.append(float(suction_val))
-
-    return profile
 
 
 def _get_linefill_snapshot_for_hour(
@@ -655,23 +398,6 @@ def restore_case_dict(loaded_data):
         'min_laced_suction_m',
         st.session_state.get('min_laced_suction_m', 0.0),
     )
-    suction_profile = loaded_data.get('station_suction_heads')
-    if isinstance(suction_profile, list):
-        cleaned_suction: list[float] = []
-        default_suction = float(st.session_state.get('min_laced_suction_m', 0.0))
-        if not np.isfinite(default_suction) or default_suction < 0.0:
-            default_suction = 0.0
-        for val in suction_profile:
-            try:
-                suction_val = float(val)
-            except (TypeError, ValueError):
-                suction_val = default_suction
-            if not np.isfinite(suction_val) or suction_val < 0.0:
-                suction_val = 0.0
-            cleaned_suction.append(float(suction_val))
-        st.session_state['station_suction_heads'] = cleaned_suction
-    else:
-        st.session_state['station_suction_heads'] = st.session_state.get('station_suction_heads', [])
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
         ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
@@ -840,7 +566,7 @@ with st.sidebar:
             help="Viscosity reference used when evaluating DRA lacing performance.",
         )
         st.number_input(
-            "Minimum suction head (m)",
+            "Minimum suction pressure (m)",
             min_value=0.0,
             value=float(st.session_state.get("min_laced_suction_m", 0.0)),
             step=0.1,
@@ -851,39 +577,6 @@ with st.sidebar:
                 " SDH requirements."
             ),
         )
-
-        stations_local = st.session_state.get("stations", [])
-        suction_default = float(st.session_state.get("min_laced_suction_m", 0.0))
-        suction_profile = st.session_state.get("station_suction_heads", [])
-        if isinstance(stations_local, list) and stations_local:
-            st.markdown("###### Station suction assumptions")
-            updated_profile: list[float] = []
-            for idx, station in enumerate(stations_local):
-                if idx < len(suction_profile):
-                    raw_val = suction_profile[idx]
-                else:
-                    raw_val = suction_default
-                try:
-                    suction_val = float(raw_val)
-                except (TypeError, ValueError):
-                    suction_val = suction_default
-                if not np.isfinite(suction_val) or suction_val < 0.0:
-                    suction_val = 0.0
-                label = station.get("name") if isinstance(station, Mapping) else None
-                if not isinstance(label, str) or not label.strip():
-                    label = f"Station {idx + 1}"
-                updated_value = st.number_input(
-                    f"{label} suction head (m)",
-                    min_value=0.0,
-                    value=float(updated_profile[idx]) if idx < len(updated_profile) else float(suction_val),
-                    step=0.1,
-                    format="%.2f",
-                    key=f"station_suction_head_{idx}",
-                )
-                updated_profile.append(float(updated_value))
-            st.session_state["station_suction_heads"] = updated_profile
-        else:
-            st.session_state["station_suction_heads"] = []
 
         rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
         dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
@@ -1533,7 +1226,6 @@ def get_full_case_dict():
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
-        "station_suction_heads": list(st.session_state.get('station_suction_heads', [])),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -2560,7 +2252,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
-        treated_length = float(treated_length or 0.0)
 
         inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
         if inlet_ppm is None:
@@ -2574,7 +2265,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
             )
         else:
-            profile_str = "0.00 km @ 0.00 ppm"
+            profile_str = ""
 
         row['DRA Inlet PPM'] = inlet_ppm
         row['DRA Outlet PPM'] = outlet_ppm
@@ -2778,8 +2469,6 @@ def solve_pipeline(
     baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
     baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
 
-    suction_profile = _current_station_suction_profile(stations)
-
     baseline_requirement: dict | None = None
     try:
         baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
@@ -2788,9 +2477,7 @@ def solve_pipeline(
             max_flow_m3h=float(baseline_flow),
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
-            min_suction_head=(
-                suction_profile if suction_profile else float(st.session_state.get("min_laced_suction_m", 0.0))
-            ),
+            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
         )
     except Exception:
         baseline_requirement = None
@@ -2809,14 +2496,13 @@ def solve_pipeline(
         segment_floors = _collect_segment_floors(baseline_requirement)
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
-        store_baseline = bool(baseline_summary.get("has_positive_segments")) or bool(baseline_segments)
-        if store_baseline:
+        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_segments:
+    if baseline_enforceable and baseline_segments:
         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
@@ -2858,25 +2544,26 @@ def solve_pipeline(
         return user or None
 
     baseline_for_enforcement: dict | None = None
-    base_detail: dict[str, object] = {}
-    ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
-    perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
-    if ppm_floor > 0.0:
-        base_detail["dra_ppm"] = ppm_floor
-    if perc_floor > 0.0:
-        base_detail["dra_perc"] = perc_floor
-    if baseline_segments:
-        base_detail["segments"] = copy.deepcopy(baseline_segments)
-        seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
-        if seg_total > 0.0:
-            base_detail["length_km"] = seg_total
-    if "length_km" not in base_detail:
-        length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
-        if length_floor > 0.0:
-            base_detail["length_km"] = length_floor
-    if base_detail:
-        baseline_for_enforcement = base_detail
-    baseline_segment_floors = baseline_segments if baseline_segments else None
+    if baseline_enforceable:
+        base_detail: dict[str, object] = {}
+        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        if ppm_floor > 0.0:
+            base_detail["dra_ppm"] = ppm_floor
+        if perc_floor > 0.0:
+            base_detail["dra_perc"] = perc_floor
+        if baseline_segments:
+            base_detail["segments"] = copy.deepcopy(baseline_segments)
+            seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
+            if seg_total > 0.0:
+                base_detail["length_km"] = seg_total
+        if "length_km" not in base_detail:
+            length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
+            if length_floor > 0.0:
+                base_detail["length_km"] = length_floor
+        if base_detail:
+            baseline_for_enforcement = base_detail
+    baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -2902,7 +2589,6 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
-                station_suction_heads=suction_profile,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -2925,7 +2611,6 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
-                station_suction_heads=suction_profile,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -4306,14 +3991,13 @@ def run_all_updates():
         segment_floors = _collect_segment_floors(baseline_requirement)
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
-        store_baseline = bool(baseline_summary.get("has_positive_segments")) or bool(baseline_segments)
-        if store_baseline:
+        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_segments:
+    if baseline_enforceable and baseline_segments:
         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
@@ -4472,30 +4156,24 @@ def run_all_updates():
         return merged
 
     baseline_for_enforcement: dict | None = None
-    base_detail: dict[str, object] = {}
-    ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
-    perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
-    if ppm_floor > 0.0:
-        base_detail["dra_ppm"] = ppm_floor
-    if perc_floor > 0.0:
-        base_detail["dra_perc"] = perc_floor
-    if baseline_segments:
-        base_detail["segments"] = copy.deepcopy(baseline_segments)
-        total_seg_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
-        if total_seg_length > 0.0:
-            base_detail["length_km"] = total_seg_length
-    if "length_km" not in base_detail:
-        length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
-        if length_floor > 0.0:
-            base_detail["length_km"] = length_floor
-    if base_detail:
-        baseline_for_enforcement = base_detail
-    baseline_segment_floors = baseline_segments if baseline_segments else None
+    if baseline_enforceable:
+        base_detail: dict[str, object] = {}
+        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        if ppm_floor > 0.0:
+            base_detail["dra_ppm"] = ppm_floor
+        if perc_floor > 0.0:
+            base_detail["dra_perc"] = perc_floor
+        if baseline_segments:
+            base_detail["segments"] = copy.deepcopy(baseline_segments)
+            total_seg_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
+            if total_seg_length > 0.0:
+                base_detail["length_km"] = total_seg_length
+        if base_detail:
+            baseline_for_enforcement = base_detail
     forced_detail_effective = _merge_baseline_detail(baseline_for_enforcement, forced_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
-
-    suction_profile = _current_station_suction_profile(stations_data)
 
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
@@ -4514,9 +4192,7 @@ def run_all_updates():
             st.session_state.get("MOP_kgcm2"),
             24.0,
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-            station_suction_heads=suction_profile,
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
-            segment_floors=baseline_segment_floors,
             **search_kwargs,
         )
     if not res or res.get("error"):
@@ -5063,8 +4739,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             baseline_flow = st.session_state.get("max_laced_flow_m3h")
             baseline_visc = st.session_state.get("max_laced_visc_cst")
             st.markdown("#### DRA Lacing Baseline")
-            stations_for_display = st.session_state.get("stations", [])
-            suction_profile = _current_station_suction_profile(stations_for_display)
             baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0))
             base_cols = st.columns(3)
             base_cols[0].metric(
@@ -5075,37 +4749,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 "Target laced viscosity (cSt)",
                 f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A",
             )
-            if suction_profile and len(suction_profile) == len(stations_for_display):
-                first_val = suction_profile[0]
-                if all(abs(val - first_val) <= 1e-6 for val in suction_profile[1:]):
-                    suction_display = f"{first_val:,.2f}"
-                else:
-                    suction_display = "Varies"
-            else:
-                suction_display = f"{baseline_suction:,.2f}" if baseline_suction > 0 else "0.00"
             base_cols[2].metric(
-                "Minimum suction head (m)",
-                suction_display,
+                "Minimum suction pressure (m)",
+                f"{baseline_suction:,.2f}" if baseline_suction > 0 else "0.00",
             )
-            if suction_profile and stations_for_display:
-                suction_rows: list[dict[str, object]] = []
-                for idx, station in enumerate(stations_for_display):
-                    name = station.get("name") if isinstance(station, Mapping) else None
-                    if not isinstance(name, str) or not name.strip():
-                        name = f"Station {idx + 1}"
-                    value = suction_profile[idx] if idx < len(suction_profile) else baseline_suction
-                    suction_rows.append({
-                        "Station": name,
-                        "Suction head (m)": float(value),
-                    })
-                suction_df = pd.DataFrame(suction_rows)
-                if not suction_df.empty:
-                    suction_style = suction_df.style.format({"Suction head (m)": "{:.2f}".format})
-                    st.dataframe(
-                        suction_style,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
             baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
             baseline_summary = _summarise_baseline_requirement(baseline_detail)
             floor_cols = st.columns(3)
@@ -5142,25 +4789,62 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 segment_baseline = enforced_segments
             else:
                 segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
-            if not segment_baseline:
-                segment_baseline = _collect_segment_floors(baseline_detail)
             if segment_baseline:
-                seg_df = _build_segment_floor_dataframe(
-                    segment_baseline,
-                    stations_data,
-                    terminal_name=st.session_state.get("terminal_name", "Terminal"),
-                    default_suction=baseline_suction,
-                )
-                if not seg_df.empty:
-                    seg_style = seg_df.style.format(
+                seg_rows: list[dict[str, object]] = []
+                for entry in segment_baseline:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        idx = int(entry.get("station_idx", -1))
+                    except (TypeError, ValueError):
+                        idx = -1
+                    if 0 <= idx < len(stations_data):
+                        start_name = stations_data[idx].get("name", f"Station {idx + 1}")
+                        if idx + 1 < len(stations_data):
+                            end_name = stations_data[idx + 1].get("name", f"Station {idx + 2}")
+                        else:
+                            end_name = st.session_state.get("terminal_name", "Terminal")
+                    else:
+                        start_name = f"Station {idx + 1}" if idx >= 0 else "Unknown"
+                        end_name = st.session_state.get("terminal_name", "Terminal")
+                    seg_label = f"{start_name} → {end_name}" if start_name else end_name
+                    try:
+                        seg_length = float(entry.get("length_km", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_length = 0.0
+                    try:
+                        seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_ppm = 0.0
+                    try:
+                        seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_perc = 0.0
+                    try:
+                        seg_suction = float(entry.get("suction_head", baseline_suction) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_suction = baseline_suction
+
+                    seg_rows.append(
                         {
-                            "Length (km)": "{:.2f}".format,
-                            "Floor PPM": "{:.2f}".format,
-                            "Floor %DR": "{:.2f}".format,
-                            "Suction head (m)": "{:.2f}".format,
+                            "Segment": seg_label,
+                            "Length (km)": seg_length,
+                            "Floor PPM": seg_ppm,
+                            "Floor %DR": seg_perc,
+                            "Suction head (m)": seg_suction,
                         }
                     )
-                    st.dataframe(seg_style, use_container_width=True, hide_index=True)
+                if seg_rows:
+                    seg_df = pd.DataFrame(seg_rows)
+                    seg_df = seg_df.round(
+                        {
+                            "Length (km)": 2,
+                            "Floor PPM": 2,
+                            "Floor %DR": 2,
+                            "Suction head (m)": 2,
+                        }
+                    )
+                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
                     st.caption(
                         "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                     )
