@@ -160,7 +160,12 @@ def _compute_ppm_for_dr(
     dra_curve_data: Dict[float, pd.DataFrame | None],
     rounding_step: float | None = None,
 ) -> float:
-    """Internal helper implementing :func:`get_ppm_for_dr` without caching."""
+    """Return the ceiled PPM requirement for ``dr`` at viscosity ``visc``.
+
+    The helper interpolates between the nearest drag-reducer curves and then
+    applies a ceiling to the next multiple of ``rounding_step`` (defaulting to
+    whole-PPM increments).
+    """
 
     visc = float(visc)
     lower, upper = _nearest_bounds(visc, dra_curve_data)
