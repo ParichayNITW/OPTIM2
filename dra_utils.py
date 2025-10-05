@@ -148,7 +148,7 @@ def get_ppm_bounds(
     return result
 
 
-def _round_cache_key(*values: float, precision: int = 2) -> tuple[float, ...]:
+def _round_cache_key(*values: float, precision: int = 6) -> tuple[float, ...]:
     """Return a tuple suitable for memoisation keyed by rounded ``values``."""
 
     return tuple(round(float(val), precision) for val in values)
@@ -174,7 +174,11 @@ def _compute_ppm_for_dr(
 
         if val <= 0.0:
             return 0.0
-        return math.ceil(val / step_value) * step_value
+        quotient = val / step_value
+        nearest = round(quotient)
+        if math.isclose(quotient, nearest, rel_tol=1e-9, abs_tol=1e-9):
+            return nearest * step_value
+        return math.ceil(quotient) * step_value
 
     if lower == upper:
         return round_ppm(_ppm_from_df(dra_curve_data[lower], dr))
