@@ -4739,7 +4739,16 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             baseline_flow = st.session_state.get("max_laced_flow_m3h")
             baseline_visc = st.session_state.get("max_laced_visc_cst")
             st.markdown("#### DRA Lacing Baseline")
-            baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0))
+            baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
+            try:
+                baseline_suction = float(
+                    (baseline_detail or {}).get(
+                        "suction_head", st.session_state.get("min_laced_suction_m", 0.0)
+                    )
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
             base_cols = st.columns(3)
             base_cols[0].metric(
                 "Target laced flow (m³/h)",
@@ -4753,7 +4762,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 "Minimum suction pressure (m)",
                 f"{baseline_suction:,.2f}" if baseline_suction > 0 else "0.00",
             )
-            baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
             baseline_summary = _summarise_baseline_requirement(baseline_detail)
             floor_cols = st.columns(3)
             if baseline_summary.get("has_segments"):
