@@ -424,8 +424,9 @@ def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
             assert logged_ppm >= floor_min - baseline_tol
             profile = report_result.get("dra_profile_station_a") or []
             inj_val = float(report_result.get("dra_ppm_station_a", 0.0) or 0.0)
-            if inj_val <= 0.0:
-                assert not profile
+            assert inj_val >= floor_min - baseline_tol
+            assert inj_val > 0.0
+            assert profile
 
         summary = result.get("floor_injection_summary") or []
         assert any(
@@ -539,7 +540,10 @@ def test_floor_schedule_logs_from_laced_queue_each_hour() -> None:
                 assert hourly_logged >= floor_ppm - ppm_tol
                 hourly_profile = report_result.get(f"dra_profile_{station_key}") or []
                 hourly_inj = float(report_result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
-                if hourly_inj <= 0.0:
+                assert hourly_inj >= floor_ppm - ppm_tol
+                if hourly_inj > 0.0:
+                    assert hourly_profile
+                else:
                     assert not hourly_profile
 
         current_linefill = result.get("linefill", current_linefill)
@@ -630,7 +634,10 @@ def test_floor_schedule_logs_when_queue_meets_floor_each_hour() -> None:
             assert hourly_logged >= floor_min - ppm_tol
             hourly_profile = report_result.get(f"dra_profile_{station_key}") or []
             hourly_inj = float(report_result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
-            if hourly_inj <= 0.0:
+            assert hourly_inj >= floor_min - ppm_tol
+            if hourly_inj > 0.0:
+                assert hourly_profile
+            else:
                 assert not hourly_profile
 
         current_linefill = result.get("linefill", current_linefill)
