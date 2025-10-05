@@ -2358,6 +2358,175 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
             assert {"length_km", "kv", "rho"} <= set(entry.keys())
 
 
+def test_scheduler_honours_warning_floor(monkeypatch):
+    import importlib
+    import pipeline_optimization_app as app
+
+    baseline_ppm = 4.0
+    baseline_segments = [
+        {
+            "station_idx": 0,
+            "length_km": 10.0,
+            "dra_ppm": baseline_ppm,
+            "dra_perc": 30.0,
+            "limited_by_station": True,
+        }
+    ]
+    baseline_requirement = {
+        "enforceable": False,
+        "warnings": [
+            {
+                "type": "station_max_dr_exceeded",
+                "message": "Station A requires 34.14% DR but is capped at 30.00%.",
+            }
+        ],
+        "segments": copy.deepcopy(baseline_segments),
+        "segment_lengths": [10.0],
+        "dra_ppm": baseline_ppm,
+        "dra_perc": 30.0,
+        "length_km": 10.0,
+    }
+
+    warnings: list[str] = []
+    monkeypatch.setattr(app.st, "warning", lambda msg: warnings.append(str(msg)))
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+
+    monkeypatch.setattr(
+        app.pipeline_model,
+        "compute_minimum_lacing_requirement",
+        lambda *args, **kwargs: copy.deepcopy(baseline_requirement),
+    )
+
+    captured_segment_floors: list | None = None
+    captured_forced_detail: list | None = None
+
+    def fake_solver(
+        stations,
+        terminal,
+        FLOW,
+        KV_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        Fuel_density,
+        Ambient_temp,
+        linefill,
+        *args,
+        **kwargs,
+    ):
+        nonlocal captured_segment_floors, captured_forced_detail
+        segment_floors = kwargs.get("segment_floors")
+        forced_detail = kwargs.get("forced_origin_detail")
+        if segment_floors is not None:
+            captured_segment_floors = copy.deepcopy(segment_floors)
+        if forced_detail is not None:
+            captured_forced_detail = copy.deepcopy(forced_detail)
+        ppm = 0.0
+        if segment_floors:
+            ppm = max(float(seg.get("dra_ppm", 0.0) or 0.0) for seg in segment_floors)
+        elif isinstance(forced_detail, dict):
+            ppm = float(forced_detail.get("dra_ppm", 0.0) or 0.0)
+        station_key = stations[0]["name"].lower().replace(" ", "_") if stations else "station"
+        return {
+            "error": False,
+            f"dra_ppm_{station_key}": ppm,
+            f"floor_injection_ppm_{station_key}": ppm,
+            f"floor_injection_applied_{station_key}": ppm > 0.0,
+            "linefill": linefill,
+            "dra_front_km": 0.0,
+            "loop_usage": [],
+            "total_cost": 100.0,
+        }
+
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline_with_types", fake_solver)
+
+    session = app.st.session_state
+    tracked = [
+        "max_laced_flow_m3h",
+        "max_laced_visc_cst",
+        "min_laced_suction_m",
+        "origin_lacing_baseline",
+        "origin_lacing_segment_baseline",
+        "origin_enforced_detail",
+    ]
+    sentinel = object()
+    previous = {key: session.get(key, sentinel) for key in tracked}
+
+    segment_state_snapshot: list | None = None
+
+    try:
+        session["max_laced_flow_m3h"] = 1200.0
+        session["max_laced_visc_cst"] = 2.5
+        session["min_laced_suction_m"] = 1.5
+        session.pop("origin_lacing_baseline", None)
+        session.pop("origin_lacing_segment_baseline", None)
+        session.pop("origin_enforced_detail", None)
+
+        stations = [
+            {
+                "name": "Station A",
+                "is_pump": True,
+                "L": 10.0,
+                "D": 0.7,
+                "t": 0.007,
+                "MinRPM": 3000,
+                "DOL": 3000,
+            }
+        ]
+        terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+        current_vol = pd.DataFrame(
+            [
+                {
+                    "Product": "Batch",
+                    "Volume (m³)": 5000.0,
+                    "Viscosity (cSt)": 2.5,
+                    "Density (kg/m³)": 830.0,
+                    app.INIT_DRA_COL: 0.0,
+                }
+            ]
+        )
+
+        result = app._execute_time_series_solver(
+            stations,
+            terminal,
+            [0],
+            flow_rate=1200.0,
+            plan_df=None,
+            current_vol=current_vol,
+            dra_linefill=[],
+            dra_reach_km=0.0,
+            RateDRA=500.0,
+            Price_HSD=0.0,
+            fuel_density=820.0,
+            ambient_temp=25.0,
+            mop_kgcm2=100.0,
+            pump_shear_rate=0.0,
+            total_length=10.0,
+        )
+        segment_state_snapshot = copy.deepcopy(session.get("origin_lacing_segment_baseline"))
+    finally:
+        for key, value in previous.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+    assert warnings and "capped at 30.00%" in warnings[0]
+    assert captured_segment_floors and captured_segment_floors[0]
+    assert captured_forced_detail is not None
+
+    reports = result.get("reports") or []
+    assert reports, "Expected schedule reports"
+    hourly_result = reports[0]["result"]
+    station_key = "station_a"
+    assert hourly_result.get(f"dra_ppm_{station_key}") == pytest.approx(baseline_ppm)
+    assert hourly_result.get(f"floor_injection_ppm_{station_key}") == pytest.approx(baseline_ppm)
+    assert hourly_result.get(f"floor_injection_applied_{station_key}") is True
+
+    assert isinstance(segment_state_snapshot, list) and segment_state_snapshot
+    assert max(float(seg.get("dra_ppm", 0.0) or 0.0) for seg in segment_state_snapshot) == pytest.approx(baseline_ppm)
 def test_merge_segment_profiles_preserves_heterogeneity():
     import pipeline_optimization_app as app
 
