@@ -3150,6 +3150,27 @@ def solve_pipeline(
                 combined['limited_by_station'] = True
             segment_floor_lookup[idx_int] = combined  # type: ignore[assignment]
 
+    N = len(stations)
+
+    def _coerce_suction_value(raw: float | int | None) -> float:
+        if raw is None:
+            return 0.0
+        val = _coerce_float(raw, 0.0)
+        if math.isnan(val) or val < 0.0:
+            val = 0.0
+        return float(val)
+
+    if isinstance(station_suction_heads, Sequence) and not isinstance(station_suction_heads, (str, bytes)):
+        suction_profile = [
+            _coerce_suction_value(station_suction_heads[idx])
+            if idx < len(station_suction_heads)
+            else 0.0
+            for idx in range(N)
+        ]
+    else:
+        base_suction_val = _coerce_suction_value(station_suction_heads) if station_suction_heads is not None else 0.0
+        suction_profile = [base_suction_val] * N
+
     # When requested, perform an outer enumeration over loop usage patterns.
     # We only enter this branch when no explicit per-station loop usage is
     # specified.  Each candidate pattern is mapped onto the stations with
@@ -3312,27 +3333,6 @@ def solve_pipeline(
                     ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
-
-    N = len(stations)
-
-    def _coerce_suction_value(raw: float | int | None) -> float:
-        if raw is None:
-            return 0.0
-        val = _coerce_float(raw, 0.0)
-        if math.isnan(val) or val < 0.0:
-            val = 0.0
-        return float(val)
-
-    if isinstance(station_suction_heads, Sequence) and not isinstance(station_suction_heads, (str, bytes)):
-        suction_profile = [
-            _coerce_suction_value(station_suction_heads[idx])
-            if idx < len(station_suction_heads)
-            else 0.0
-            for idx in range(N)
-        ]
-    else:
-        base_suction_val = _coerce_suction_value(station_suction_heads) if station_suction_heads is not None else 0.0
-        suction_profile = [base_suction_val] * N
 
     # ------------------------------------------------------------------
     # Two-pass optimisation: first run a coarse search with enlarged
