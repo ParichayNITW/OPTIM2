@@ -2757,13 +2757,14 @@ def solve_pipeline(
         segment_floors = _collect_segment_floors(baseline_requirement)
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
-        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
+        store_baseline = bool(baseline_summary.get("has_positive_segments")) or bool(baseline_segments)
+        if store_baseline:
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_enforceable and baseline_segments:
+    if baseline_segments:
         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
@@ -2805,26 +2806,25 @@ def solve_pipeline(
         return user or None
 
     baseline_for_enforcement: dict | None = None
-    if baseline_enforceable:
-        base_detail: dict[str, object] = {}
-        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
-        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
-        if ppm_floor > 0.0:
-            base_detail["dra_ppm"] = ppm_floor
-        if perc_floor > 0.0:
-            base_detail["dra_perc"] = perc_floor
-        if baseline_segments:
-            base_detail["segments"] = copy.deepcopy(baseline_segments)
-            seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
-            if seg_total > 0.0:
-                base_detail["length_km"] = seg_total
-        if "length_km" not in base_detail:
-            length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
-            if length_floor > 0.0:
-                base_detail["length_km"] = length_floor
-        if base_detail:
-            baseline_for_enforcement = base_detail
-    baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
+    base_detail: dict[str, object] = {}
+    ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+    perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+    if ppm_floor > 0.0:
+        base_detail["dra_ppm"] = ppm_floor
+    if perc_floor > 0.0:
+        base_detail["dra_perc"] = perc_floor
+    if baseline_segments:
+        base_detail["segments"] = copy.deepcopy(baseline_segments)
+        seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
+        if seg_total > 0.0:
+            base_detail["length_km"] = seg_total
+    if "length_km" not in base_detail:
+        length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
+        if length_floor > 0.0:
+            base_detail["length_km"] = length_floor
+    if base_detail:
+        baseline_for_enforcement = base_detail
+    baseline_segment_floors = baseline_segments if baseline_segments else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -4254,13 +4254,14 @@ def run_all_updates():
         segment_floors = _collect_segment_floors(baseline_requirement)
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
-        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
+        store_baseline = bool(baseline_summary.get("has_positive_segments")) or bool(baseline_segments)
+        if store_baseline:
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_enforceable and baseline_segments:
+    if baseline_segments:
         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
@@ -4419,21 +4420,25 @@ def run_all_updates():
         return merged
 
     baseline_for_enforcement: dict | None = None
-    if baseline_enforceable:
-        base_detail: dict[str, object] = {}
-        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
-        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
-        if ppm_floor > 0.0:
-            base_detail["dra_ppm"] = ppm_floor
-        if perc_floor > 0.0:
-            base_detail["dra_perc"] = perc_floor
-        if baseline_segments:
-            base_detail["segments"] = copy.deepcopy(baseline_segments)
-            total_seg_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
-            if total_seg_length > 0.0:
-                base_detail["length_km"] = total_seg_length
-        if base_detail:
-            baseline_for_enforcement = base_detail
+    base_detail: dict[str, object] = {}
+    ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+    perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+    if ppm_floor > 0.0:
+        base_detail["dra_ppm"] = ppm_floor
+    if perc_floor > 0.0:
+        base_detail["dra_perc"] = perc_floor
+    if baseline_segments:
+        base_detail["segments"] = copy.deepcopy(baseline_segments)
+        total_seg_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
+        if total_seg_length > 0.0:
+            base_detail["length_km"] = total_seg_length
+    if "length_km" not in base_detail:
+        length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
+        if length_floor > 0.0:
+            base_detail["length_km"] = length_floor
+    if base_detail:
+        baseline_for_enforcement = base_detail
+    baseline_segment_floors = baseline_segments if baseline_segments else None
     forced_detail_effective = _merge_baseline_detail(baseline_for_enforcement, forced_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -4459,6 +4464,7 @@ def run_all_updates():
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
             station_suction_heads=suction_profile,
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
+            segment_floors=baseline_segment_floors,
             **search_kwargs,
         )
     if not res or res.get("error"):
