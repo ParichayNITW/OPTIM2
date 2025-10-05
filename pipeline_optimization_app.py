@@ -193,7 +193,7 @@ def _collect_segment_floors(
     if not isinstance(segments_raw, Sequence):
         return segments
 
-    processed: list[tuple[int, dict[str, object]]] = []
+    processed: list[tuple[int, int, dict[str, object]]] = []
     for order_idx, entry in enumerate(segments_raw):
         if not isinstance(entry, Mapping):
             continue
@@ -211,8 +211,6 @@ def _collect_segment_floors(
             baseline_ppm = 0.0
 
         floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
-        if floor_ppm <= 0.0:
-            continue
 
         try:
             station_idx = int(entry.get("station_idx", order_idx))
@@ -235,8 +233,7 @@ def _collect_segment_floors(
             seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
         except (TypeError, ValueError):
             seg_perc = 0.0
-        if seg_perc > 0.0:
-            seg_detail["dra_perc"] = seg_perc
+        seg_detail["dra_perc"] = float(max(seg_perc, 0.0))
 
         if bool(entry.get("limited_by_station")):
             seg_detail["limited_by_station"] = True
@@ -247,6 +244,98 @@ def _collect_segment_floors(
     segments = [item[2] for item in processed]
 
     return segments
+
+
+def _build_segment_floor_dataframe(
+    segment_baseline: Sequence[Mapping[str, object]] | None,
+    stations_data: Sequence[Mapping[str, object]] | None,
+    *,
+    terminal_name: str = "Terminal",
+    default_suction: float = 0.0,
+) -> pd.DataFrame:
+    """Return a dataframe describing per-segment floor requirements."""
+
+    rows: list[dict[str, object]] = []
+    if not isinstance(segment_baseline, Sequence) or not segment_baseline:
+        return pd.DataFrame(columns=[
+            "Segment",
+            "Length (km)",
+            "Floor PPM",
+            "Floor %DR",
+            "Suction head (m)",
+        ])
+
+    station_names: list[str] = []
+    if isinstance(stations_data, Sequence):
+        for entry in stations_data:
+            if isinstance(entry, Mapping):
+                name = entry.get("name")
+                if isinstance(name, str) and name.strip():
+                    station_names.append(name)
+                    continue
+            station_names.append(f"Station {len(station_names) + 1}")
+
+    fallback_terminal = terminal_name if isinstance(terminal_name, str) and terminal_name else "Terminal"
+
+    for entry in segment_baseline:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            idx = int(entry.get("station_idx", -1))
+        except (TypeError, ValueError):
+            idx = -1
+
+        if 0 <= idx < len(station_names):
+            start_name = station_names[idx]
+            if idx + 1 < len(station_names):
+                end_name = station_names[idx + 1]
+            else:
+                end_name = fallback_terminal
+        else:
+            start_name = f"Station {idx + 1}" if idx >= 0 else "Unknown"
+            end_name = fallback_terminal
+
+        seg_label = f"{start_name} → {end_name}" if start_name else end_name
+
+        try:
+            seg_length = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        try:
+            seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_ppm = 0.0
+        try:
+            seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_perc = 0.0
+        try:
+            seg_suction = float(entry.get("suction_head", default_suction) or 0.0)
+        except (TypeError, ValueError):
+            seg_suction = default_suction
+
+        rows.append(
+            {
+                "Segment": seg_label,
+                "Length (km)": float(seg_length),
+                "Floor PPM": float(seg_ppm),
+                "Floor %DR": float(seg_perc),
+                "Suction head (m)": float(seg_suction),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "Segment",
+                "Length (km)",
+                "Floor PPM",
+                "Floor %DR",
+                "Suction head (m)",
+            ]
+        )
+
+    return pd.DataFrame(rows)
 
 
 def _get_linefill_snapshot_for_hour(
@@ -4790,61 +4879,22 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             else:
                 segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
             if segment_baseline:
-                seg_rows: list[dict[str, object]] = []
-                for entry in segment_baseline:
-                    if not isinstance(entry, dict):
-                        continue
-                    try:
-                        idx = int(entry.get("station_idx", -1))
-                    except (TypeError, ValueError):
-                        idx = -1
-                    if 0 <= idx < len(stations_data):
-                        start_name = stations_data[idx].get("name", f"Station {idx + 1}")
-                        if idx + 1 < len(stations_data):
-                            end_name = stations_data[idx + 1].get("name", f"Station {idx + 2}")
-                        else:
-                            end_name = st.session_state.get("terminal_name", "Terminal")
-                    else:
-                        start_name = f"Station {idx + 1}" if idx >= 0 else "Unknown"
-                        end_name = st.session_state.get("terminal_name", "Terminal")
-                    seg_label = f"{start_name} → {end_name}" if start_name else end_name
-                    try:
-                        seg_length = float(entry.get("length_km", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        seg_length = 0.0
-                    try:
-                        seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        seg_ppm = 0.0
-                    try:
-                        seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        seg_perc = 0.0
-                    try:
-                        seg_suction = float(entry.get("suction_head", baseline_suction) or 0.0)
-                    except (TypeError, ValueError):
-                        seg_suction = baseline_suction
-
-                    seg_rows.append(
+                seg_df = _build_segment_floor_dataframe(
+                    segment_baseline,
+                    stations_data,
+                    terminal_name=st.session_state.get("terminal_name", "Terminal"),
+                    default_suction=baseline_suction,
+                )
+                if not seg_df.empty:
+                    seg_style = seg_df.style.format(
                         {
-                            "Segment": seg_label,
-                            "Length (km)": seg_length,
-                            "Floor PPM": seg_ppm,
-                            "Floor %DR": seg_perc,
-                            "Suction head (m)": seg_suction,
+                            "Length (km)": "{:.2f}".format,
+                            "Floor PPM": "{:.2f}".format,
+                            "Floor %DR": "{:.2f}".format,
+                            "Suction head (m)": "{:.2f}".format,
                         }
                     )
-                if seg_rows:
-                    seg_df = pd.DataFrame(seg_rows)
-                    seg_df = seg_df.round(
-                        {
-                            "Length (km)": 2,
-                            "Floor PPM": 2,
-                            "Floor %DR": 2,
-                            "Suction head (m)": 2,
-                        }
-                    )
-                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                    st.dataframe(seg_style, use_container_width=True, hide_index=True)
                     st.caption(
                         "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                     )
