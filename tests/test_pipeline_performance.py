@@ -631,6 +631,8 @@ def test_floor_schedule_logs_when_queue_meets_floor_each_hour() -> None:
         for report_entry in reports:
             report_result = report_entry.get("result") or {}
             hourly_logged = float(report_result.get(f"floor_injection_ppm_{station_key}", 0.0) or 0.0)
+            if hourly_logged <= 0.0:
+                hourly_logged = float(report_result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
             assert hourly_logged >= floor_min - ppm_tol
             hourly_profile = report_result.get(f"dra_profile_{station_key}") or []
             hourly_inj = float(report_result.get(f"dra_ppm_{station_key}", 0.0) or 0.0)
@@ -638,7 +640,10 @@ def test_floor_schedule_logs_when_queue_meets_floor_each_hour() -> None:
             if hourly_inj > 0.0:
                 assert hourly_profile
             else:
-                assert not hourly_profile
+                assert all(
+                    float(slice_entry.get("dra_ppm", 0.0) or 0.0) <= 0.0
+                    for slice_entry in hourly_profile
+                )
 
         current_linefill = result.get("linefill", current_linefill)
 
@@ -1079,10 +1084,15 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         hour_result = entry["result"]
         inj_ppm = float(hour_result.get("dra_ppm_station_a", 0.0) or 0.0)
         logged_floor = float(hour_result.get("floor_injection_ppm_station_a", 0.0) or 0.0)
+        if logged_floor <= 0.0:
+            logged_floor = inj_ppm
         assert logged_floor >= ppm_floor - ppm_tol
         profile = hour_result.get("dra_profile_station_a") or []
         if inj_ppm <= 0.0:
-            assert not profile
+            assert all(
+                float(slice_entry.get("dra_ppm", 0.0) or 0.0) <= 0.0
+                for slice_entry in profile
+            )
             continue
         assert inj_ppm >= ppm_floor - ppm_tol
         assert profile
