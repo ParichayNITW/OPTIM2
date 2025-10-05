@@ -1309,6 +1309,9 @@ def _update_mainline_dra(
         if floor_ppm < 0.0:
             floor_ppm = 0.0
 
+    floor_target_ppm = max(floor_ppm, 0.0)
+    floor_ppm_tol = max(floor_target_ppm * 1e-6, 1e-9) if floor_target_ppm > 0.0 else 1e-9
+
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
     if inj_requested > 0:
@@ -1337,6 +1340,12 @@ def _update_mainline_dra(
                 if multiplier < 0.0:
                     multiplier = 0.0
                 inj_effective = inj_requested * multiplier
+
+    if floor_target_ppm > 0.0:
+        if inj_requested > 0.0 and inj_requested < floor_target_ppm - floor_ppm_tol:
+            inj_requested = floor_target_ppm
+        if inj_effective > 0.0 and inj_effective < floor_target_ppm - floor_ppm_tol:
+            inj_effective = floor_target_ppm
 
     existing_queue: list[tuple[float, float]] = []
     if queue:
@@ -1612,7 +1621,13 @@ def _update_mainline_dra(
         else:
             dra_segments.append((length, ppm_val))
 
-    return dra_segments, queue_after, inj_requested, floor_requires_injection
+    inj_reported = inj_requested
+    if floor_target_ppm > 0.0:
+        inj_reported = max(inj_reported, floor_target_ppm)
+    if inj_effective > 0.0:
+        inj_reported = max(inj_reported, inj_effective)
+
+    return dra_segments, queue_after, inj_reported, floor_requires_injection
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
