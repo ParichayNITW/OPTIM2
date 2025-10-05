@@ -41,3 +41,11 @@ def test_get_ppm_for_dr_honours_custom_rounding_step() -> None:
     data = _sample_curve()
     result = get_ppm_for_dr(3.0, 5.0, dra_curve_data=data, rounding_step=0.5)
     assert result == pytest.approx(3.5)
+
+
+def test_get_ppm_for_dr_rounds_fractional_interpolations_upwards() -> None:
+    """Interpolated values that fall between integers round up."""
+
+    data = _sample_curve()
+    interpolated = get_ppm_for_dr(3.0, 7.0, dra_curve_data=data)
+    assert interpolated == pytest.approx(5.0)
