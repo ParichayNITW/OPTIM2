@@ -37,6 +37,11 @@ if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
 if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
+if (
+    "station_suction_heads" not in st.session_state
+    or not isinstance(st.session_state.get("station_suction_heads"), list)
+):
+    st.session_state["station_suction_heads"] = []
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -338,6 +343,40 @@ def _build_segment_floor_dataframe(
     return pd.DataFrame(rows)
 
 
+def _current_station_suction_profile(
+    stations: Sequence[Mapping[str, object]] | None,
+) -> list[float]:
+    """Return the per-station suction head profile from ``st.session_state``."""
+
+    if not isinstance(stations, Sequence) or not stations:
+        return []
+
+    raw_profile = st.session_state.get("station_suction_heads", [])
+    try:
+        default_val = float(st.session_state.get("min_laced_suction_m", 0.0))
+    except (TypeError, ValueError):
+        default_val = 0.0
+    if not np.isfinite(default_val) or default_val < 0.0:
+        default_val = 0.0
+
+    profile: list[float] = []
+    seq_profile = raw_profile if isinstance(raw_profile, Sequence) else []
+    for idx in range(len(stations)):
+        if isinstance(seq_profile, Sequence) and idx < len(seq_profile):
+            raw_val = seq_profile[idx]
+        else:
+            raw_val = default_val
+        try:
+            suction_val = float(raw_val)
+        except (TypeError, ValueError):
+            suction_val = default_val
+        if not np.isfinite(suction_val) or suction_val < 0.0:
+            suction_val = 0.0
+        profile.append(float(suction_val))
+
+    return profile
+
+
 def _get_linefill_snapshot_for_hour(
     linefill_snaps: Sequence[pd.DataFrame] | None,
     hours: Sequence[int] | None,
@@ -487,6 +526,23 @@ def restore_case_dict(loaded_data):
         'min_laced_suction_m',
         st.session_state.get('min_laced_suction_m', 0.0),
     )
+    suction_profile = loaded_data.get('station_suction_heads')
+    if isinstance(suction_profile, list):
+        cleaned_suction: list[float] = []
+        default_suction = float(st.session_state.get('min_laced_suction_m', 0.0))
+        if not np.isfinite(default_suction) or default_suction < 0.0:
+            default_suction = 0.0
+        for val in suction_profile:
+            try:
+                suction_val = float(val)
+            except (TypeError, ValueError):
+                suction_val = default_suction
+            if not np.isfinite(suction_val) or suction_val < 0.0:
+                suction_val = 0.0
+            cleaned_suction.append(float(suction_val))
+        st.session_state['station_suction_heads'] = cleaned_suction
+    else:
+        st.session_state['station_suction_heads'] = st.session_state.get('station_suction_heads', [])
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
         ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
@@ -655,7 +711,7 @@ with st.sidebar:
             help="Viscosity reference used when evaluating DRA lacing performance.",
         )
         st.number_input(
-            "Minimum suction pressure (m)",
+            "Minimum suction head (m)",
             min_value=0.0,
             value=float(st.session_state.get("min_laced_suction_m", 0.0)),
             step=0.1,
@@ -666,6 +722,39 @@ with st.sidebar:
                 " SDH requirements."
             ),
         )
+
+        stations_local = st.session_state.get("stations", [])
+        suction_default = float(st.session_state.get("min_laced_suction_m", 0.0))
+        suction_profile = st.session_state.get("station_suction_heads", [])
+        if isinstance(stations_local, list) and stations_local:
+            st.markdown("###### Station suction assumptions")
+            updated_profile: list[float] = []
+            for idx, station in enumerate(stations_local):
+                if idx < len(suction_profile):
+                    raw_val = suction_profile[idx]
+                else:
+                    raw_val = suction_default
+                try:
+                    suction_val = float(raw_val)
+                except (TypeError, ValueError):
+                    suction_val = suction_default
+                if not np.isfinite(suction_val) or suction_val < 0.0:
+                    suction_val = 0.0
+                label = station.get("name") if isinstance(station, Mapping) else None
+                if not isinstance(label, str) or not label.strip():
+                    label = f"Station {idx + 1}"
+                updated_value = st.number_input(
+                    f"{label} suction head (m)",
+                    min_value=0.0,
+                    value=float(updated_profile[idx]) if idx < len(updated_profile) else float(suction_val),
+                    step=0.1,
+                    format="%.2f",
+                    key=f"station_suction_head_{idx}",
+                )
+                updated_profile.append(float(updated_value))
+            st.session_state["station_suction_heads"] = updated_profile
+        else:
+            st.session_state["station_suction_heads"] = []
 
         rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
         dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
@@ -1315,6 +1404,7 @@ def get_full_case_dict():
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
+        "station_suction_heads": list(st.session_state.get('station_suction_heads', [])),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -2558,6 +2648,8 @@ def solve_pipeline(
     baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
     baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
 
+    suction_profile = _current_station_suction_profile(stations)
+
     baseline_requirement: dict | None = None
     try:
         baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
@@ -2566,7 +2658,9 @@ def solve_pipeline(
             max_flow_m3h=float(baseline_flow),
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
-            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
+            min_suction_head=(
+                suction_profile if suction_profile else float(st.session_state.get("min_laced_suction_m", 0.0))
+            ),
         )
     except Exception:
         baseline_requirement = None
@@ -2678,6 +2772,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                station_suction_heads=suction_profile,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -2700,6 +2795,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                station_suction_heads=suction_profile,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -4264,6 +4360,8 @@ def run_all_updates():
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    suction_profile = _current_station_suction_profile(stations_data)
+
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
@@ -4281,6 +4379,7 @@ def run_all_updates():
             st.session_state.get("MOP_kgcm2"),
             24.0,
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+            station_suction_heads=suction_profile,
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
             **search_kwargs,
         )
@@ -4828,6 +4927,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             baseline_flow = st.session_state.get("max_laced_flow_m3h")
             baseline_visc = st.session_state.get("max_laced_visc_cst")
             st.markdown("#### DRA Lacing Baseline")
+            stations_for_display = st.session_state.get("stations", [])
+            suction_profile = _current_station_suction_profile(stations_for_display)
             baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0))
             base_cols = st.columns(3)
             base_cols[0].metric(
@@ -4838,10 +4939,37 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 "Target laced viscosity (cSt)",
                 f"{baseline_visc:,.2f}" if baseline_visc is not None else "N/A",
             )
+            if suction_profile and len(suction_profile) == len(stations_for_display):
+                first_val = suction_profile[0]
+                if all(abs(val - first_val) <= 1e-6 for val in suction_profile[1:]):
+                    suction_display = f"{first_val:,.2f}"
+                else:
+                    suction_display = "Varies"
+            else:
+                suction_display = f"{baseline_suction:,.2f}" if baseline_suction > 0 else "0.00"
             base_cols[2].metric(
-                "Minimum suction pressure (m)",
-                f"{baseline_suction:,.2f}" if baseline_suction > 0 else "0.00",
+                "Minimum suction head (m)",
+                suction_display,
             )
+            if suction_profile and stations_for_display:
+                suction_rows: list[dict[str, object]] = []
+                for idx, station in enumerate(stations_for_display):
+                    name = station.get("name") if isinstance(station, Mapping) else None
+                    if not isinstance(name, str) or not name.strip():
+                        name = f"Station {idx + 1}"
+                    value = suction_profile[idx] if idx < len(suction_profile) else baseline_suction
+                    suction_rows.append({
+                        "Station": name,
+                        "Suction head (m)": float(value),
+                    })
+                suction_df = pd.DataFrame(suction_rows)
+                if not suction_df.empty:
+                    suction_style = suction_df.style.format({"Suction head (m)": "{:.2f}".format})
+                    st.dataframe(
+                        suction_style,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
             baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
             baseline_summary = _summarise_baseline_requirement(baseline_detail)
             floor_cols = st.columns(3)
