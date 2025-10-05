@@ -391,6 +391,7 @@ def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
 
     baseline_tol = max(floor_ppm * 1e-6, 1e-9)
     current_linefill = linefill
+    cost_factor = flow_rate * 1000.0 / 1e6
     for hour in range(3):
         result = pm.solve_pipeline(
             stations,
@@ -418,6 +419,8 @@ def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
         floor_min = float(result.get("floor_min_ppm_station_a", 0.0) or 0.0)
         assert floor_min >= floor_ppm - baseline_tol
         assert inj_ppm >= floor_min - baseline_tol
+        expected_cost = inj_ppm * cost_factor * 500.0
+        assert result.get("dra_cost_station_a", 0.0) == pytest.approx(expected_cost)
         reports = result.get("reports") or []
         for report_entry in reports:
             report_result = report_entry.get("result") or {}
@@ -427,6 +430,9 @@ def test_hourly_floor_requirement_forces_injection_each_hour() -> None:
             inj_val = float(report_result.get("dra_ppm_station_a", 0.0) or 0.0)
             if inj_val <= 0.0:
                 assert not profile
+            else:
+                hourly_cost = float(report_result.get("dra_cost_station_a", 0.0) or 0.0)
+                assert hourly_cost == pytest.approx(inj_val * cost_factor * 500.0)
 
         summary = result.get("floor_injection_summary") or []
         assert any(
@@ -2516,6 +2522,8 @@ def test_scheduler_honours_warning_floor(monkeypatch):
     assert warnings and "capped at 30.00%" in warnings[0]
     assert captured_segment_floors and captured_segment_floors[0]
     assert captured_forced_detail is not None
+    assert captured_segment_floors[0].get("dra_ppm") == pytest.approx(baseline_ppm)
+    assert captured_segment_floors[0].get("limited_by_station") is True
 
     reports = result.get("reports") or []
     assert reports, "Expected schedule reports"
