@@ -1282,6 +1282,7 @@ def _update_mainline_dra(
 
     floor_length = 0.0
     floor_ppm = 0.0
+    floor_segments: list[tuple[float, float]] = []
     floor_specified = isinstance(segment_floor, Mapping)
     if floor_specified:
         try:
@@ -1302,6 +1303,32 @@ def _update_mainline_dra(
                     floor_ppm = float(get_ppm_for_dr(kv, floor_perc))
                 except Exception:
                     floor_ppm = 0.0
+        seg_floor_raw = segment_floor.get('segments')
+        if isinstance(seg_floor_raw, Sequence):
+            for seg_entry in seg_floor_raw:
+                if not isinstance(seg_entry, Mapping):
+                    continue
+                try:
+                    seg_length = float(seg_entry.get('length_km', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_length = 0.0
+                try:
+                    seg_ppm = float(seg_entry.get('dra_ppm', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_ppm = 0.0
+                if seg_ppm <= 0.0:
+                    try:
+                        seg_perc = float(seg_entry.get('dra_perc', 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_perc = 0.0
+                    if seg_perc > 0.0 and kv > 0.0:
+                        try:
+                            seg_ppm = float(get_ppm_for_dr(kv, seg_perc))
+                        except Exception:
+                            seg_ppm = 0.0
+                if seg_length <= 0.0 or seg_ppm <= 0.0:
+                    continue
+                floor_segments.append((seg_length, seg_ppm))
         if segment_length > 0.0 and floor_length > segment_length:
             floor_length = segment_length
         if floor_length < 0.0:
@@ -1472,23 +1499,51 @@ def _update_mainline_dra(
         for length, _ppm in pumped_portion
         if float(length or 0.0) > 0.0
     )
-    floor_defined = bool(floor_specified and floor_length > 0.0)
-    enforceable_floor = bool(floor_specified and floor_length > 0.0 and floor_ppm > 0.0)
-    floor_requires_injection = floor_defined and inj_effective <= 0.0
-    enforce_floor = enforceable_floor and inj_effective > 0.0
+    segments_defined = bool(floor_segments)
+    floor_defined = bool(floor_specified and (floor_length > 0.0 or segments_defined))
+    enforceable_floor = bool(
+        floor_specified
+        and inj_effective > 0.0
+        and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
+    )
+    floor_requires_injection = bool(floor_defined and inj_effective <= 0.0)
+    if segments_defined and inj_effective <= 0.0:
+        floor_requires_injection = True
+    enforce_floor = enforceable_floor and not floor_requires_injection
     if enforce_floor:
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
             sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
         )
-        floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
-        if floor_target > 0.0:
-            updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
-            updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
-            if not pumped_differs and updated_adjusted != pumped_adjusted:
-                pumped_differs = True
-            pumped_portion = updated_portion
-            pumped_adjusted = updated_adjusted
+        if segments_defined:
+            targets = []
+            for seg_length, seg_ppm in floor_segments:
+                if seg_length > 0.0 and seg_ppm > 0.0:
+                    targets.append((min(seg_length, available_length), seg_ppm))
+            if targets:
+                applied_segment = False
+                remaining_length = available_length
+                for seg_length, seg_ppm in targets:
+                    if remaining_length <= 0.0:
+                        break
+                    target_length = min(seg_length, remaining_length)
+                    if target_length <= 0.0:
+                        continue
+                    pumped_portion = _overlay_queue_floor(pumped_portion, target_length, seg_ppm)
+                    pumped_adjusted = _overlay_queue_floor(pumped_adjusted, target_length, seg_ppm)
+                    remaining_length -= target_length
+                    applied_segment = True
+                if not pumped_differs and applied_segment:
+                    pumped_differs = True
+        else:
+            floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
+            if floor_target > 0.0:
+                updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
+                updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
+                if not pumped_differs and updated_adjusted != pumped_adjusted:
+                    pumped_differs = True
+                pumped_portion = updated_portion
+                pumped_adjusted = updated_adjusted
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -4009,14 +4064,48 @@ def solve_pipeline(
                     else:
                         rpm = int(rpm_choice[0]) if isinstance(rpm_choice, tuple) else int(rpm_choice)
                         rpm_map_choice = {}
+                    tol_ppm = max(floor_ppm_tol, 1e-9)
+                    ppm_candidates: list[tuple[int, float]] = []
+                    seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
+                        ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                        if floor_ppm_min > 0.0:
+                            ppm_main = max(ppm_main, floor_ppm_min)
+                        if floor_ppm_min > 0.0 and ppm_main <= 0.0:
+                            continue
+                        if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
+                            continue
+                        if ppm_main < 0.0:
+                            ppm_main = 0.0
+                        key = int(round(ppm_main / tol_ppm)) if tol_ppm > 0 else int(round(ppm_main))
+                        if key in seen_ppm_keys:
+                            continue
+                        seen_ppm_keys.add(key)
+                        dra_use = int(dra_main)
+                        if ppm_main > 0.0 and kv > 0.0:
+                            try:
+                                dra_from_ppm = float(get_dr_for_ppm(kv, ppm_main))
+                            except Exception:
+                                dra_from_ppm = dra_main
+                            if dra_from_ppm > dra_use:
+                                dra_use = int(math.ceil(dra_from_ppm))
+                        ppm_candidates.append((dra_use, ppm_main))
+                    if not ppm_candidates and floor_ppm_min > 0.0 and dra_main_vals:
+                        fallback_ppm = floor_ppm_min
+                        dra_use = int(floor_dr_min_int or floor_perc_min_int or 0)
+                        if kv > 0.0:
+                            try:
+                                dra_from_ppm = float(get_dr_for_ppm(kv, fallback_ppm))
+                            except Exception:
+                                dra_from_ppm = 0.0
+                            if dra_from_ppm > dra_use:
+                                dra_use = int(math.ceil(dra_from_ppm))
+                        if dra_use <= 0:
+                            dra_use = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 1
+                        ppm_candidates.append((dra_use, fallback_ppm))
+                    for dra_main_use, ppm_main in ppm_candidates:
                         for dra_loop in dra_loop_vals:
-                            ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                             ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
-                            if floor_ppm_min > 0.0 and ppm_main > 0.0 and ppm_main < floor_ppm_min:
-                                ppm_main = floor_ppm_min
-                            if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
-                                continue
                             inj_effective_est = _predict_effective_injection(
                                 ppm_main,
                                 kv,
@@ -4044,7 +4133,7 @@ def solve_pipeline(
                             opt_entry = {
                                 'nop': nop,
                                 'rpm': rpm,
-                                'dra_main': dra_main,
+                                'dra_main': dra_main_use,
                                 'dra_loop': dra_loop,
                                 'dra_ppm_main': ppm_main,
                                 'dra_ppm_loop': ppm_loop,
@@ -4131,12 +4220,22 @@ def solve_pipeline(
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     if floor_ppm_min > 0.0 and ppm_main > 0.0 and ppm_main < floor_ppm_min:
                         ppm_main = floor_ppm_min
+                    if floor_ppm_min > 0.0 and ppm_main <= 0.0:
+                        continue
                     if floor_ppm_min > 0.0 and ppm_main < floor_ppm_min - floor_ppm_tol:
                         continue
+                    dra_use = int(dra_main)
+                    if ppm_main > 0.0 and kv > 0.0:
+                        try:
+                            dra_from_ppm = float(get_dr_for_ppm(kv, ppm_main))
+                        except Exception:
+                            dra_from_ppm = dra_main
+                        if dra_from_ppm > dra_use:
+                            dra_use = int(math.ceil(dra_from_ppm))
                     non_pump_opts.append({
                         'nop': 0,
                         'rpm': 0,
-                        'dra_main': dra_main,
+                        'dra_main': dra_use,
                         'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
                         'dra_ppm_loop': 0,
