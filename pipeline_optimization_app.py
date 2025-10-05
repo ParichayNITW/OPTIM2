@@ -2508,6 +2508,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
+        treated_length = float(treated_length or 0.0)
 
         inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
         if inlet_ppm is None:
@@ -2521,7 +2522,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
             )
         else:
-            profile_str = ""
+            profile_str = "0.00 km @ 0.00 ppm"
 
         row['DRA Inlet PPM'] = inlet_ppm
         row['DRA Outlet PPM'] = outlet_ppm
