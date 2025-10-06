@@ -822,7 +822,7 @@ if "stations" not in st.session_state:
         'min_residual': 50.0, 'is_pump': False,
         'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
         'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
-        'max_dr': pipeline_model.DEFAULT_MAX_DR,
+        'max_dr': 0.0,
         'delivery': 0.0,
         'supply': 0.0
     }]
@@ -837,7 +837,7 @@ with st.sidebar:
             'min_residual': 50.0, 'is_pump': False,
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
-            'max_dr': pipeline_model.DEFAULT_MAX_DR,
+            'max_dr': 0.0,
             'delivery': 0.0,
             'supply': 0.0
         }
@@ -857,7 +857,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
             stn['max_dr'] = st.number_input(
                 "Max achievable Drag Reduction (%)",
-                value=stn.get('max_dr', pipeline_model.DEFAULT_MAX_DR),
+                value=stn.get('max_dr', 0.0),
                 key=f"mdr{idx}"
             )
             if idx == 1:
@@ -893,7 +893,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
                 loop['max_dr'] = st.number_input(
                     "Max Drag Reduction (%)",
-                    value=loop.get('max_dr', pipeline_model.DEFAULT_MAX_DR),
+                    value=loop.get('max_dr', 0.0),
                     key=f"loopmdr{idx}"
                 )
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")

@@ -20,6 +20,10 @@ except Exception:  # pragma: no cover - numba may be unavailable
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 
+# ``DEFAULT_MAX_DR`` remains available for callers that want to expose a
+# convenient UI default (e.g. pre-populating form fields).  The solver itself
+# treats a non-positive or missing limit as "no injection available" unless a
+# caller explicitly supplies a fallback.
 DEFAULT_MAX_DR = 70
 
 # ---------------------------------------------------------------------------
@@ -101,23 +105,32 @@ def _coerce_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
-def _normalise_max_dr(value, *, fallback: float | None = DEFAULT_MAX_DR) -> float:
-    """Return an allowable drag-reduction limit from ``value``.
+def _normalise_max_dr(value, *, fallback: float | None = None) -> float:
+    """Return a non-negative drag-reduction cap derived from ``value``.
 
-    When ``value`` is missing, non-numeric or non-positive the ``fallback``
-    (70% by default) ensures the optimiser still explores DRA usage.
+    ``0`` or missing values indicate that no injection facility exists.  Only
+    when ``fallback`` is provided (and positive) will a substitute be used for
+    such cases.  This keeps stations without a DRA system from injecting while
+    still letting callers opt-in to defaults in other contexts (e.g. UI forms).
     """
 
     try:
         dr_value = float(value)
     except (TypeError, ValueError):
         dr_value = 0.0
-    if dr_value <= 0.0:
-        return float(fallback or 0.0) if fallback is not None else 0.0
-    return dr_value
+    if dr_value > 0.0:
+        return dr_value
+    if fallback is not None:
+        try:
+            fallback_val = float(fallback)
+        except (TypeError, ValueError):
+            fallback_val = 0.0
+        if fallback_val > 0.0:
+            return fallback_val
+    return 0.0
 
 
-def _max_dr_int(value, *, fallback: float | None = DEFAULT_MAX_DR) -> int:
+def _max_dr_int(value, *, fallback: float | None = None) -> int:
     """Return the integer drag-reduction cap for optimisation loops."""
 
     return int(_normalise_max_dr(value, fallback=fallback))
@@ -1500,15 +1513,11 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if flow_m3h <= 0.0:
-            zero_output = True
-        elif (
-            is_origin
-            and inj_effective <= 0.0
-            and pump_running
-            and ppm_input <= 0.0
-        ):
-            zero_output = True
+        if is_origin and inj_effective <= 0.0:
+            if pump_running:
+                zero_output = True
+            elif flow_m3h <= 0.0:
+                zero_output = True
         if zero_output:
             ppm_out = 0.0
         else:
@@ -1593,7 +1602,7 @@ def _update_mainline_dra(
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if head_length > 0.0:
+    if pump_running and inj_effective > 0.0 and head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
 
     combined_entries.extend(advected_portion)
@@ -5152,12 +5161,13 @@ def solve_pipeline(
                         if profile_entries
                         else 0.0
                     )
-                    if not profile_entries or all(
-                        entry['dra_ppm'] <= 0.0 for entry in profile_entries
-                    ):
+                    if inj_ppm_main <= 0.0:
                         treated_profile_length = 0.0
-                        inlet_ppm_profile = 0.0
-                        outlet_ppm_profile = 0.0
+                        if not profile_entries or all(
+                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                        ):
+                            inlet_ppm_profile = 0.0
+                            outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
