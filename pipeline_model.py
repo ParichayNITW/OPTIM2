@@ -20,6 +20,8 @@ except Exception:  # pragma: no cover - numba may be unavailable
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 
+DEFAULT_MAX_DR = 70
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -97,6 +99,28 @@ def _coerce_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _normalise_max_dr(value, *, fallback: float | None = DEFAULT_MAX_DR) -> float:
+    """Return an allowable drag-reduction limit from ``value``.
+
+    When ``value`` is missing, non-numeric or non-positive the ``fallback``
+    (70% by default) ensures the optimiser still explores DRA usage.
+    """
+
+    try:
+        dr_value = float(value)
+    except (TypeError, ValueError):
+        dr_value = 0.0
+    if dr_value <= 0.0:
+        return float(fallback or 0.0) if fallback is not None else 0.0
+    return dr_value
+
+
+def _max_dr_int(value, *, fallback: float | None = DEFAULT_MAX_DR) -> int:
+    """Return the integer drag-reduction cap for optimisation loops."""
+
+    return int(_normalise_max_dr(value, fallback=fallback))
 
 
 def _extract_rpm(
@@ -2070,7 +2094,7 @@ def compute_minimum_lacing_requirement(
             if dr_unbounded > max_dra_perc_uncapped:
                 max_dra_perc_uncapped = dr_unbounded
 
-            station_max_dr = _coerce_float_local(stn.get('max_dr', 0.0), 0.0)
+            station_max_dr = _normalise_max_dr(stn.get('max_dr'))
             cap_limit = dra_upper
             if station_max_dr > 0.0:
                 cap_limit = min(cap_limit, station_max_dr)
@@ -2945,7 +2969,7 @@ def _downstream_requirement(
             else:
                 d_inner_loop = loop.get('d', d_inner)
             rough_loop = loop.get('rough', rough)
-            dra_loop = loop.get('max_dr', 0.0)
+            dra_loop = _normalise_max_dr(loop.get('max_dr'))
             # Use the upstream flow ``flows[i]`` for loop peaks to account for bypassed flow.
             peak_req_loop = peak_requirement(loop_flow, loop.get('peaks'), d_inner_loop, rough_loop, dra_loop, None)
             peak_req = max(peak_req_main, peak_req_loop)
@@ -3411,10 +3435,10 @@ def solve_pipeline(
                         type_bounds[str(ptype)] = (p_rmin, p_rmax)
                 if type_bounds:
                     bounds_entry['type_rpm'] = type_bounds
-            max_dr_main = int(stn.get('max_dr', 0))
+            max_dr_main = _max_dr_int(stn.get('max_dr'))
             bounds_entry['dra_main'] = (0, max_dr_main if max_dr_main > 0 else 0)
-            loop = stn.get('loopline') or {}
-            loop_max = int(loop.get('max_dr', 0) or 0)
+            loop = stn.get('loopline') if isinstance(stn.get('loopline'), Mapping) else None
+            loop_max = _max_dr_int(loop.get('max_dr')) if loop else 0
             bounds_entry['dra_loop'] = (0, loop_max if loop_max > 0 else 0)
             station_bounds.append(bounds_entry)
 
@@ -3561,7 +3585,7 @@ def solve_pipeline(
                             rmax = min(rmax, upper_bound)
                         if rmin > st_rpm_min or rmax < upper_bound:
                             refinement_needed = True
-                    max_dr_main = int(stn.get("max_dr", 0))
+                    max_dr_main = _max_dr_int(stn.get("max_dr"))
                     if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
                         dmin, dmax = 0, max_dr_main
                     else:
@@ -3627,10 +3651,10 @@ def solve_pipeline(
                                         refinement_needed = True
                                     p_rmin, p_rmax = lower_bound, upper_bound
                             entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
-                    loop = stn.get("loopline") or {}
+                    loop = stn.get("loopline") if isinstance(stn.get("loopline"), Mapping) else None
                     if loop:
                         coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
-                        loop_max = int(loop.get("max_dr", 0))
+                        loop_max = _max_dr_int(loop.get("max_dr"))
                         if coarse_dr_loop <= 0 or coarse_dr_loop >= loop_max:
                             lmin = 0
                             lmax = loop_max
@@ -3643,7 +3667,7 @@ def solve_pipeline(
                     ranges[idx] = entry
                 else:
                     coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                    max_dr = int(stn.get("max_dr", 0))
+                    max_dr = _max_dr_int(stn.get("max_dr"))
                     if coarse_dr_main <= 0 or coarse_dr_main >= max_dr:
                         dmin, dmax = 0, max_dr
                     else:
@@ -3839,7 +3863,7 @@ def solve_pipeline(
                 'L': L_loop,
                 'd_inner': d_inner_loop,
                 'rough': rough_loop,
-                'max_dr': loop_info.get('max_dr', 0.0),
+                'max_dr': _normalise_max_dr(loop_info.get('max_dr')),
                 'maop_head': maop_head_loop,
                 'maop_kgcm2': maop_kg_loop,
             }
@@ -3983,7 +4007,7 @@ def solve_pipeline(
                 _cap_type_rpm_lists(type_rpm_lists, REFINED_RETRY_COMBO_CAP)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
-            max_dr_main = int(stn.get('max_dr', 0))
+            max_dr_main = _max_dr_int(stn.get('max_dr'))
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
@@ -4036,7 +4060,7 @@ def solve_pipeline(
                                 continue
                         filtered_vals.append(candidate)
                     dra_main_vals = filtered_vals
-            max_dr_loop = int(loop_dict.get('max_dr', 0)) if loop_dict else 0
+            max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
@@ -4171,7 +4195,7 @@ def solve_pipeline(
             # facility exists (max_dr > 0).  If no injection is available the
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
-            max_dr_main = int(stn.get('max_dr', 0))
+            max_dr_main = _max_dr_int(stn.get('max_dr'))
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
