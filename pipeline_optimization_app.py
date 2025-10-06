@@ -855,7 +855,11 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
             stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
             stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", value=stn.get('max_dr', 0.0), key=f"mdr{idx}")
+            stn['max_dr'] = st.number_input(
+                "Max achievable Drag Reduction (%)",
+                value=stn.get('max_dr', 0.0),
+                key=f"mdr{idx}"
+            )
             if idx == 1:
                 stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         with col2:
@@ -887,7 +891,11 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS{idx}")
             with lcol3:
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
-                loop['max_dr'] = st.number_input("Max Drag Reduction (%)", value=loop.get('max_dr', 0.0), key=f"loopmdr{idx}")
+                loop['max_dr'] = st.number_input(
+                    "Max Drag Reduction (%)",
+                    value=loop.get('max_dr', 0.0),
+                    key=f"loopmdr{idx}"
+                )
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
 
             loop_peak_key = f"loop_peak_data_{idx}"
