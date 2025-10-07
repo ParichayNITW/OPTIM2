@@ -27,6 +27,7 @@ class HourResult:
     rows: List[Dict[str, Any]] = field(default_factory=list)
     max_dr_percent: float = 0.0
     cost_currency: Optional[float] = None
+    pump_settings: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     legacy_payload: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -55,6 +56,13 @@ class HourResult:
                     continue
                 total += float(value)
             self.cost_currency = float(total)
+
+        if self.pump_settings or not self.legacy_payload:
+            return
+
+        pump_settings = self.legacy_payload.get("pump_settings")
+        if isinstance(pump_settings, dict):
+            self.pump_settings = pump_settings
 
 
 def _round_cache(value: float) -> float:
@@ -532,6 +540,7 @@ def solve_for_hour(
         rows=station_rows,
         max_dr_percent=max_dr,
         cost_currency=float(total_cost),
+        pump_settings=pump_settings,
         legacy_payload={
             "stations": station_rows,
             "pump_settings": pump_settings,
@@ -587,6 +596,7 @@ def solve_pipeline(
             rows=[],
             max_dr_percent=0.0,
             cost_currency=float("inf"),
+            pump_settings={},
             legacy_payload={
                 "stations": [],
                 "pump_settings": {},
@@ -614,6 +624,7 @@ def solve_pipeline(
                     rows=[],
                     max_dr_percent=0.0,
                     cost_currency=float("inf"),
+                    pump_settings={},
                     legacy_payload={
                         "stations": [],
                         "pump_settings": {},
