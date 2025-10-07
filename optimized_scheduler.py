@@ -24,9 +24,11 @@ class HourResult:
 
     hour: int
     feasible: bool
+    hour_index: Optional[int] = None
     rows: List[Dict[str, Any]] = field(default_factory=list)
     max_dr_percent: float = 0.0
     cost_currency: Optional[float] = None
+    pump_settings: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     legacy_payload: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -55,6 +57,13 @@ class HourResult:
                     continue
                 total += float(value)
             self.cost_currency = float(total)
+
+        if self.pump_settings or not self.legacy_payload:
+            return
+
+        pump_settings = self.legacy_payload.get("pump_settings")
+        if isinstance(pump_settings, dict):
+            self.pump_settings = pump_settings
 
 
 def _round_cache(value: float) -> float:
@@ -457,6 +466,8 @@ def solve_for_hour(
 
     config = _normalise_pipeline_config(pipeline_config)
     flow = config.flow_for_hour(hour)
+    start_hour = int(cfg.start_hour) if cfg is not None else 0
+    hour_label = (start_hour + hour) % 24
     total_cost = 0.0
     max_dr = 0.0
     station_rows: List[Dict[str, Any]] = []
@@ -472,7 +483,7 @@ def solve_for_hour(
             temperature_c=temperature,
         )
         if not result.feasible:
-            hour_result = HourResult(hour=hour, feasible=False)
+            hour_result = HourResult(hour=hour_label, hour_index=hour, feasible=False)
             hour_result.legacy_payload = {
                 "stations": [],
                 "pump_settings": {},
@@ -527,11 +538,13 @@ def solve_for_hour(
         flow = _apply_configuration_flow(station_norm, flow, result.config)
 
     hour_result = HourResult(
-        hour=hour,
+        hour=hour_label,
+        hour_index=hour,
         feasible=True,
         rows=station_rows,
         max_dr_percent=max_dr,
         cost_currency=float(total_cost),
+        pump_settings=pump_settings,
         legacy_payload={
             "stations": station_rows,
             "pump_settings": pump_settings,
@@ -557,16 +570,20 @@ def solve_pipeline(
 
     config = _normalise_pipeline_config(pipeline_config)
     hours = range(config.hours)
+    start_hour = int(cfg.start_hour) if cfg is not None else 0
     if not parallel or config.hours <= 1:
         results: list[HourResult] = []
         for hr in hours:
+            hour_display = (start_hour + hr) % 24
             if progress_callback:
-                progress_callback("hour_start", hour=hr, pct=None)
+                progress_callback("hour_start", hour=hour_display, pct=None)
             hr_result = solve_for_hour(config, hr, cfg=cfg)
             results.append(hr_result)
             if progress_callback:
                 progress_callback(
-                    "hour_done", hour=hr, pct=(len(results) / config.hours) * 100.0
+                    "hour_done",
+                    hour=hour_display,
+                    pct=(len(results) / config.hours) * 100.0,
                 )
         return results, "serial"
 
@@ -582,11 +599,13 @@ def solve_pipeline(
 
     results: list[HourResult] = [
         HourResult(
-            hour=hr,
+            hour=(start_hour + hr) % 24,
+            hour_index=hr,
             feasible=False,
             rows=[],
             max_dr_percent=0.0,
             cost_currency=float("inf"),
+            pump_settings={},
             legacy_payload={
                 "stations": [],
                 "pump_settings": {},
@@ -597,7 +616,7 @@ def solve_pipeline(
     ]
     if progress_callback:
         for hr in hours:
-            progress_callback("hour_start", hour=hr, pct=None)
+            progress_callback("hour_start", hour=(start_hour + hr) % 24, pct=None)
     with executor:
         futures = {
             executor.submit(solve_for_hour, config, hr, cfg=cfg): hr for hr in hours
@@ -605,15 +624,18 @@ def solve_pipeline(
         completed = 0
         for future in concurrent.futures.as_completed(futures):
             hr = futures[future]
+            hour_display = (start_hour + hr) % 24
             try:
                 results[hr] = future.result(timeout=cfg.per_hour_timeout_s if cfg else None)
             except Exception as exc:  # pragma: no cover - defensive
                 failure = HourResult(
-                    hour=hr,
+                    hour=hour_display,
+                    hour_index=hr,
                     feasible=False,
                     rows=[],
                     max_dr_percent=0.0,
                     cost_currency=float("inf"),
+                    pump_settings={},
                     legacy_payload={
                         "stations": [],
                         "pump_settings": {},
@@ -625,7 +647,9 @@ def solve_pipeline(
             completed += 1
             if progress_callback:
                 progress_callback(
-                    "hour_done", hour=hr, pct=(completed / config.hours) * 100.0
+                    "hour_done",
+                    hour=hour_display,
+                    pct=(completed / config.hours) * 100.0,
                 )
     return results, backend
 
@@ -665,6 +689,7 @@ def solve_day(
             msg = "Daily optimisation complete"
         progress_callback(kind, hour=hour, pct=pct, msg=msg)
 
+    start_hour = int(cfg.start_hour) if cfg is not None else 0
     case_copy = dict(case)
     hours = int(case_copy.get("hours", 24) or 24)
     case_copy["hours"] = hours
@@ -678,7 +703,12 @@ def solve_day(
     case_copy["inlet_flow"] = inlet_flow[:hours]
 
     if progress_callback:
-        progress_callback("hour_start", hour=0, pct=0.0, msg="Starting optimisation")
+        progress_callback(
+            "hour_start",
+            hour=start_hour % 24,
+            pct=0.0,
+            msg="Starting optimisation",
+        )
 
     results, backend = solve_pipeline(
         case_copy,
@@ -729,6 +759,7 @@ class SchedulerConfig:
     min_peak_head_m: float = 25.0
     parallel_hours: bool = True
     per_hour_timeout_s: float | None = None
+    start_hour: int = 7
 
 
 @dataclass(frozen=True)
