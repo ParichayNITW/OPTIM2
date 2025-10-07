@@ -4,18 +4,57 @@ from __future__ import annotations
 
 import cProfile
 import concurrent.futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import io
 import math
 import os
 import pstats
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 import uuid
 
 CACHE_DECIMALS = 6
 RPM_REFINEMENT_THRESHOLD = 12
 DEFAULT_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
+
+
+@dataclass
+class HourResult:
+    """Structured information about a solved hour."""
+
+    hour: int
+    feasible: bool
+    rows: List[Dict[str, Any]] = field(default_factory=list)
+    max_dr_percent: float = 0.0
+    cost_currency: Optional[float] = None
+    legacy_payload: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def pretty_table(self) -> str:
+        """Return a Markdown table representation of :attr:`rows`."""
+
+        if not self.rows:
+            return "_no data_"
+        headers = list(self.rows[0].keys())
+        header_row = "|" + "|".join(headers) + "|"
+        divider = "|" + "|".join(["---"] * len(headers)) + "|"
+        body_lines = [
+            "|" + "|".join(str(row.get(col, "")) for col in headers) + "|"
+            for row in self.rows
+        ]
+        return "\n".join([header_row, divider, *body_lines])
+
+    def finalize(self) -> None:
+        """Ensure the aggregate cost is populated from per-row values."""
+
+        if self.cost_currency is None:
+            total = 0.0
+            for row in self.rows:
+                value = row.get("cost_currency")
+                if value is None:
+                    continue
+                total += float(value)
+            self.cost_currency = float(total)
 
 
 def _round_cache(value: float) -> float:
@@ -418,13 +457,11 @@ def solve_for_hour(
 
     config = _normalise_pipeline_config(pipeline_config)
     flow = config.flow_for_hour(hour)
-    schedule: dict[str, list[dict[str, int | float | str]]] = {}
     total_cost = 0.0
-    feasible = True
     max_dr = 0.0
-    rows: list[tuple[str, str, int, int]] = []
+    station_rows: List[Dict[str, Any]] = []
+    pump_settings: Dict[str, List[Dict[str, Any]]] = {}
     temperature = config.ambient_temp_c
-    message: str | None = None
 
     for station in config.stations:
         station_norm = _normalise_station(station)
@@ -435,30 +472,77 @@ def solve_for_hour(
             temperature_c=temperature,
         )
         if not result.feasible:
-            feasible = False
-            message = result.reason
-            break
+            hour_result = HourResult(hour=hour, feasible=False)
+            hour_result.legacy_payload = {
+                "stations": [],
+                "pump_settings": {},
+                "reason": result.reason,
+            }
+            hour_result.finalize()
+            return hour_result
+
         total_cost += result.cost
-        pretty_rows: list[dict[str, int | float | str]] = []
+
+        pump_entries: List[Dict[str, Any]] = []
         for pump, (rpm, dr) in zip(station_norm.pumps, result.config):
             label = pump.label or pump.type_id
-            rows.append((station_norm.name, label, rpm, dr))
-            max_dr = max(max_dr, float(dr))
-            pretty_rows.append({"pump": label, "rpm": int(rpm), "dr_percent": int(dr)})
-        schedule[station_norm.name] = pretty_rows
+            rpm_int = int(rpm)
+            dr_float = float(dr)
+            pump_entries.append({
+                "pump": label,
+                "rpm": rpm_int,
+                "dr_percent": dr_float,
+            })
+            max_dr = max(max_dr, dr_float)
+
+        pump_settings[station_norm.name] = pump_entries
+
+        pumps_on = sum(1 for entry in pump_entries if entry["rpm"] > 0)
+        representative_rpm = pump_entries[0]["rpm"] if pump_entries else 0
+        station_row: Dict[str, Any] = {
+            "station": station_norm.name,
+            "is_pump": True,
+            "pump_label": ", ".join(
+                f"{entry['pump']} @ {entry['rpm']} rpm" for entry in pump_entries
+            )
+            or "-",
+            "pumps_on": pumps_on,
+            "rpm": representative_rpm,
+            "dr_percent": max((entry["dr_percent"] for entry in pump_entries), default=0.0),
+            "head_added_m": None,
+            "suction_head_m": None,
+            "discharge_head_m": None,
+            "residual_head_at_peak_m": None,
+            "batch_viscosity_cst": None,
+            "batch_density_kgm3": None,
+            "energy_kwh": None,
+            "fuel_l": None,
+            "power_type": None,
+            "tariff_rate": None,
+            "hsd_price": None,
+            "cost_currency": float(result.cost),
+        }
+        station_rows.append(station_row)
+
         flow = _apply_configuration_flow(station_norm, flow, result.config)
 
-    if not feasible:
-        pretty_table = "No feasible configuration found."
-        total_cost = float("inf")
-    else:
-        headers = "| Station | Pump | RPM | DRA (%) |\n|---|---|---:|---:|"
-        body = "\n".join(
-            f"| {station} | {pump} | {rpm} | {dr} |" for station, pump, rpm, dr in rows
-        )
-        pretty_table = f"{headers}\n{body}" if body else headers
-
-    return HourResult(feasible, total_cost, schedule, max_dr, pretty_table, message)
+    hour_result = HourResult(
+        hour=hour,
+        feasible=True,
+        rows=station_rows,
+        max_dr_percent=max_dr,
+        cost_currency=float(total_cost),
+        legacy_payload={
+            "stations": station_rows,
+            "pump_settings": pump_settings,
+            "constraints": {
+                "peak_min_residual_m": cfg.min_peak_head_m if cfg else None,
+                "dra_cap_percent": cfg.dra_cap_percent if cfg else None,
+            },
+        },
+    )
+    hour_result.finalize()
+    return hour_result
 
 
 def solve_pipeline(
@@ -497,7 +581,19 @@ def solve_pipeline(
         backend = "thread"
 
     results: list[HourResult] = [
-        HourResult(False, float("inf"), {}, 0.0, "No result", "Not started") for _ in hours
+        HourResult(
+            hour=hr,
+            feasible=False,
+            rows=[],
+            max_dr_percent=0.0,
+            cost_currency=float("inf"),
+            legacy_payload={
+                "stations": [],
+                "pump_settings": {},
+                "reason": "Not started",
+            },
+        )
+        for hr in hours
     ]
     if progress_callback:
         for hr in hours:
@@ -512,14 +608,20 @@ def solve_pipeline(
             try:
                 results[hr] = future.result(timeout=cfg.per_hour_timeout_s if cfg else None)
             except Exception as exc:  # pragma: no cover - defensive
-                results[hr] = HourResult(
-                    False,
-                    float("inf"),
-                    {},
-                    0.0,
-                    "No feasible configuration found.",
-                    f"Execution failed: {exc}",
+                failure = HourResult(
+                    hour=hr,
+                    feasible=False,
+                    rows=[],
+                    max_dr_percent=0.0,
+                    cost_currency=float("inf"),
+                    legacy_payload={
+                        "stations": [],
+                        "pump_settings": {},
+                        "reason": f"Execution failed: {exc}",
+                    },
                 )
+                failure.finalize()
+                results[hr] = failure
             completed += 1
             if progress_callback:
                 progress_callback(
@@ -638,18 +740,6 @@ class StationSearchResult:
     config: tuple[tuple[int, int], ...]
     max_dr_percent: float
     reason: str | None = None
-
-
-@dataclass(frozen=True)
-class HourResult:
-    """User-facing summary for a solved hour."""
-
-    feasible: bool
-    cost_currency: float
-    pump_settings: dict[str, list[dict[str, int | float | str]]]
-    max_dr_percent: float
-    pretty_table: str
-    message: str | None = None
 
 
 @dataclass(frozen=True)
