@@ -2029,6 +2029,7 @@ def compute_minimum_lacing_requirement(
     max_dra_perc = 0.0
     max_dra_ppm = 0.0
     max_dra_perc_uncapped = 0.0
+    carried_head_available = 0.0
     for idx, stn in enumerate(stations_copy):
         flow_segment = flows[idx + 1] if idx + 1 < len(flows) else flows[-1]
         flow_segment = max(_coerce_float_local(flow_segment, max_flow), 0.0)
@@ -2097,6 +2098,8 @@ def compute_minimum_lacing_requirement(
         dr_unbounded = 0.0
         limited_by_station = False
         available_head = residual_head + max_head
+        if carried_head_available > residual_head:
+            available_head = max(available_head, carried_head_available)
         suction_requirement = min_suction if stn.get('is_pump') else 0.0
         effective_available_head = max(available_head - suction_requirement, 0.0)
         gap = sdh_required - effective_available_head
@@ -2161,6 +2164,8 @@ def compute_minimum_lacing_requirement(
             'limited_by_station': bool(limited_by_station),
         }
         segment_requirements.append(segment_entry)
+
+        carried_head_available = effective_available_head
 
         if example_segment is None or segment_entry['dra_perc_uncapped'] > example_segment.get('dra_perc_uncapped', 0.0):
             example_segment = {
