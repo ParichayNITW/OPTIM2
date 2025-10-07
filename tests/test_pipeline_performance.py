@@ -77,6 +77,64 @@ def solve_pipeline_with_types(*args, segment_slices=None, **kwargs):
     return _solve_pipeline_with_types(*args, **kwargs)
 
 
+def test_segment_hydraulics_cache_hits():
+    import pipeline_model as model
+
+    model._segment_hydraulics.cache_clear()
+    model._segment_hydraulics(1500.0, 10.0, 0.7, 0.00004, 3.0, 0.0)
+    info_before = model._segment_hydraulics.cache_info()
+    model._segment_hydraulics(1500.0, 10.0, 0.7, 0.00004, 3.0, 0.0)
+    info_after = model._segment_hydraulics.cache_info()
+    assert info_after.hits >= info_before.hits
+
+
+def test_segment_hydraulics_composite_cache_hits():
+    import pipeline_model as model
+
+    model._segment_hydraulics_composite.cache_clear()
+    args = (
+        1500.0,
+        12.0,
+        0.7,
+        0.00004,
+        3.0,
+        10.0,
+        None,
+        [{'length_km': 6.0, 'kv': 3.0, 'rho': 820.0}],
+        None,
+    )
+    model._segment_hydraulics_composite(*args)
+    info_before = model._segment_hydraulics_composite.cache_info()
+    model._segment_hydraulics_composite(*args)
+    info_after = model._segment_hydraulics_composite.cache_info()
+    assert info_after.hits >= info_before.hits
+
+
+def test_profile_solve_pipeline_returns_stats(monkeypatch):
+    import pipeline_model as model
+
+    def fake_solve_pipeline(*args, **kwargs):
+        return {"total_cost": 0.0, "args": args, "kwargs": kwargs}
+
+    monkeypatch.setattr(model, "solve_pipeline", fake_solve_pipeline)
+
+    result, stats = model.profile_solve_pipeline(
+        [],
+        {},
+        0.0,
+        [],
+        [],
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+
+    assert result["total_cost"] == 0.0
+    assert "fake_solve_pipeline" in stats
+
+
 def test_run_all_updates_passes_segment_slices(monkeypatch):
     import pipeline_optimization_app as app
 
