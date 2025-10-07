@@ -1805,6 +1805,8 @@ def compute_minimum_lacing_requirement(
         'dra_perc_uncapped': 0.0,
         'warnings': [],
         'enforceable': True,
+        'explanation': '',
+        'example_segment': None,
     }
     result['segments'] = []
 
@@ -2022,7 +2024,8 @@ def compute_minimum_lacing_requirement(
 
     mop_global = _collect_mop_kgcm2(terminal)
 
-    segment_requirements: list[dict[str, float | int]] = []
+    segment_requirements: list[dict[str, float | int | bool]] = []
+    example_segment: dict | None = None
     max_dra_perc = 0.0
     max_dra_ppm = 0.0
     max_dra_perc_uncapped = 0.0
@@ -2144,21 +2147,29 @@ def compute_minimum_lacing_requirement(
                 max_dra_perc = dr_needed
                 max_dra_ppm = dra_ppm_needed
 
-        segment_requirements.append(
-            {
-                'station_idx': idx,
-                'length_km': float(L),
-                'dra_perc': float(dr_needed),
-                'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
-                'dra_perc_uncapped': float(dr_unbounded),
-                'sdh_required': float(sdh_required),
-                'residual_head': float(residual_head),
-                'max_head_available': float(effective_available_head),
-                'available_head_before_suction': float(available_head),
-                'suction_head': float(suction_requirement),
-                'limited_by_station': bool(limited_by_station),
+        segment_entry = {
+            'station_idx': idx,
+            'length_km': float(L),
+            'dra_perc': float(dr_needed),
+            'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
+            'dra_perc_uncapped': float(dr_unbounded),
+            'sdh_required': float(sdh_required),
+            'residual_head': float(residual_head),
+            'max_head_available': float(effective_available_head),
+            'available_head_before_suction': float(available_head),
+            'suction_head': float(suction_requirement),
+            'limited_by_station': bool(limited_by_station),
+        }
+        segment_requirements.append(segment_entry)
+
+        if example_segment is None or segment_entry['dra_perc_uncapped'] > example_segment.get('dra_perc_uncapped', 0.0):
+            example_segment = {
+                **segment_entry,
+                'station_name': stn.get('name') or f'Station {idx + 1}',
+                'sdh_gap': float(max(gap, 0.0)),
+                'flow_m3h': float(max_flow),
+                'viscosity_cst': float(visc_max),
             }
-        )
 
     result['segments'] = segment_requirements
     if segment_requirements:
@@ -2166,10 +2177,28 @@ def compute_minimum_lacing_requirement(
         result['dra_ppm'] = None
         result['dra_perc_uncapped'] = None
         result['length_km'] = None
+        if example_segment is not None and example_segment.get('dra_perc_uncapped', 0.0) > 0.0:
+            station_name = example_segment.get('station_name', 'Upstream station')
+            required = example_segment.get('sdh_required', 0.0)
+            available = example_segment.get('available_head_before_suction', 0.0)
+            suction = example_segment.get('suction_head', 0.0)
+            effective = example_segment.get('max_head_available', 0.0)
+            gap_val = example_segment.get('sdh_gap', 0.0)
+            flow_ref = example_segment.get('flow_m3h', max_flow)
+            visc_ref = example_segment.get('viscosity_cst', visc_max)
+            result['explanation'] = (
+                f"{station_name} falls short of the required {required:.2f} m SDH at "
+                f"{flow_ref:.0f} m³/h and {visc_ref:.2f} cSt. The pumps provide {available:.2f} m "
+                f"before suction, leaving {effective:.2f} m after reserving {suction:.2f} m for suction. "
+                f"That {gap_val:.2f} m deficit translates to {example_segment['dra_perc_uncapped']:.2f}% DR in this scenario."
+            )
+            result['example_segment'] = example_segment
     else:
         result['dra_perc'] = float(max_dra_perc)
         result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
         result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
+        result['explanation'] = ''
+        result['example_segment'] = None
     return result
 
 
