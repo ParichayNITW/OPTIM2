@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-from collections.abc import Mapping, Sequence
-from itertools import product
+import concurrent.futures
+import io
 import math
+import os
+from collections.abc import Mapping, Sequence
+from functools import lru_cache
+from itertools import product
 
 import numpy as np
+import pstats
 
 try:
     from numba import njit
@@ -25,6 +30,70 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 # treats a non-positive or missing limit as "no injection available" unless a
 # caller explicitly supplies a fallback.
 DEFAULT_MAX_DR = 70
+
+DEFAULT_LOOP_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
+_SEGMENT_CACHE_DECIMALS = 6
+_SEGMENT_CACHE_SIZE = 65536
+
+
+def _solve_pipeline_loop_case(args: tuple) -> tuple[list[int], dict]:
+    (
+        stations,
+        terminal,
+        FLOW,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        Fuel_density,
+        Ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours,
+        start_time,
+        pump_shear_rate,
+        usage,
+        rpm_step,
+        dra_step,
+        coarse_multiplier,
+        state_top_k,
+        state_cost_margin,
+        forced_origin_detail,
+        segment_floors,
+        cost_cap,
+    ) = args
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        Fuel_density,
+        Ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours,
+        start_time,
+        pump_shear_rate=pump_shear_rate,
+        loop_usage_by_station=usage,
+        enumerate_loops=False,
+        rpm_step=rpm_step,
+        dra_step=dra_step,
+        coarse_multiplier=coarse_multiplier,
+        state_top_k=state_top_k,
+        state_cost_margin=state_cost_margin,
+        forced_origin_detail=forced_origin_detail,
+        segment_floors=segment_floors,
+        cost_cap=cost_cap,
+    )
+    return usage, result
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -1727,7 +1796,7 @@ def _update_mainline_dra(
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
 @njit(cache=True, fastmath=True)
-def _segment_hydraulics(
+def _segment_hydraulics_core(
     flow_m3h: float,
     L: float,
     d_inner: float,
@@ -1790,6 +1859,49 @@ def _segment_hydraulics(
             head_loss = hl_dra + hl_nodra
 
     return head_loss, v, Re, f
+
+
+@lru_cache(maxsize=_SEGMENT_CACHE_SIZE)
+def _segment_hydraulics_cached(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv: float,
+    dra_perc: float,
+    dra_length: float | None,
+) -> tuple[float, float, float, float]:
+    result = _segment_hydraulics_core(flow_m3h, L, d_inner, rough, kv, dra_perc, dra_length)
+    return tuple(float(val) for val in result)
+
+
+def _segment_hydraulics(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv: float,
+    dra_perc: float,
+    dra_length: float | None = None,
+) -> tuple[float, float, float, float]:
+    key = (
+        round(float(flow_m3h), _SEGMENT_CACHE_DECIMALS),
+        round(float(L), _SEGMENT_CACHE_DECIMALS),
+        round(float(d_inner), _SEGMENT_CACHE_DECIMALS),
+        round(float(rough), _SEGMENT_CACHE_DECIMALS),
+        round(float(kv), _SEGMENT_CACHE_DECIMALS),
+        round(float(dra_perc), _SEGMENT_CACHE_DECIMALS),
+        None if dra_length is None else round(float(dra_length), _SEGMENT_CACHE_DECIMALS),
+    )
+    return _segment_hydraulics_cached(*key)
+
+
+def _segment_hydraulics_cache_clear() -> None:
+    _segment_hydraulics_cached.cache_clear()
+
+
+_segment_hydraulics.cache_clear = _segment_hydraulics_cache_clear  # type: ignore[attr-defined]
+_segment_hydraulics.cache_info = _segment_hydraulics_cached.cache_info  # type: ignore[attr-defined]
 
 
 def compute_minimum_lacing_requirement(
@@ -2228,6 +2340,65 @@ def compute_minimum_lacing_requirement(
     return result
 
 
+def _normalise_slices_for_cache(
+    slices: list[dict] | tuple[dict, ...] | None,
+) -> tuple[tuple[float, float, float], ...]:
+    if not slices:
+        return tuple()
+
+    normalised: list[tuple[float, float, float]] = []
+    for entry in slices:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            seg_len = float(entry.get('length_km', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_len = 0.0
+        if seg_len <= 0.0:
+            continue
+        try:
+            seg_kv = float(entry.get('kv', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_kv = 0.0
+        try:
+            seg_rho = float(entry.get('rho', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_rho = 0.0
+        normalised.append(
+            (
+                round(seg_len, _SEGMENT_CACHE_DECIMALS),
+                round(seg_kv, _SEGMENT_CACHE_DECIMALS),
+                round(seg_rho, _SEGMENT_CACHE_DECIMALS),
+            )
+        )
+    return tuple(normalised)
+
+
+@lru_cache(maxsize=_SEGMENT_CACHE_SIZE)
+def _segment_hydraulics_composite_cached(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv_default: float,
+    dra_perc: float,
+    dra_length: float | None,
+    slices_key: tuple[tuple[float, float, float], ...],
+    limit: float | None,
+) -> tuple[float, float, float, float]:
+    return _segment_hydraulics_composite_uncached(
+        flow_m3h,
+        L,
+        d_inner,
+        rough,
+        kv_default,
+        dra_perc,
+        dra_length,
+        slices_key,
+        limit,
+    )
+
+
 def _segment_hydraulics_composite(
     flow_m3h: float,
     L: float,
@@ -2239,15 +2410,33 @@ def _segment_hydraulics_composite(
     slices: list[dict] | tuple[dict, ...] | None = None,
     limit: float | None = None,
 ) -> tuple[float, float, float, float]:
-    """Accumulate hydraulic losses across heterogeneous linefill slices.
+    slices_key = _normalise_slices_for_cache(slices)
+    key = (
+        round(float(flow_m3h), _SEGMENT_CACHE_DECIMALS),
+        round(float(L), _SEGMENT_CACHE_DECIMALS),
+        round(float(d_inner), _SEGMENT_CACHE_DECIMALS),
+        round(float(rough), _SEGMENT_CACHE_DECIMALS),
+        round(float(kv_default), _SEGMENT_CACHE_DECIMALS),
+        round(float(dra_perc), _SEGMENT_CACHE_DECIMALS),
+        None if dra_length is None else round(float(dra_length), _SEGMENT_CACHE_DECIMALS),
+        slices_key,
+        None if limit is None else round(float(limit), _SEGMENT_CACHE_DECIMALS),
+    )
+    return _segment_hydraulics_composite_cached(*key)
 
-    ``slices`` is a sequence of dictionaries each containing ``length_km``,
-    ``kv`` and ``rho`` entries describing the batches occupying the segment in
-    upstream-to-downstream order.  ``limit`` may truncate the calculation to
-    the first ``limit`` kilometres of the segment (useful for intermediate
-    peaks).  When no slices are provided the function falls back to treating
-    the segment as uniform with ``kv_default``.
-    """
+
+def _segment_hydraulics_composite_uncached(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv_default: float,
+    dra_perc: float,
+    dra_length: float | None,
+    slices_key: tuple[tuple[float, float, float], ...],
+    limit: float | None,
+) -> tuple[float, float, float, float]:
+    """Accumulate hydraulic losses across heterogeneous linefill slices."""
 
     try:
         total_length = float(L)
@@ -2262,26 +2451,9 @@ def _segment_hydraulics_composite(
         dra_lim = None if dra_length is None else 0.0
         return _segment_hydraulics(flow_m3h, 0.0, d_inner, rough, kv_default, dra_perc, dra_lim)
 
-    # Normalise slice data
     slice_seq: list[dict] = []
-    if slices:
-        for entry in slices:
-            if not isinstance(entry, Mapping):
-                continue
-            try:
-                seg_len = float(entry.get('length_km', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_len = 0.0
-            if seg_len <= 0.0:
-                continue
-            try:
-                seg_kv = float(entry.get('kv', kv_default) or kv_default)
-            except (TypeError, ValueError):
-                seg_kv = kv_default
-            try:
-                seg_rho = float(entry.get('rho', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_rho = 0.0
+    if slices_key:
+        for seg_len, seg_kv, seg_rho in slices_key:
             slice_seq.append({'length_km': seg_len, 'kv': seg_kv, 'rho': seg_rho})
 
     dra_available = None
@@ -2344,6 +2516,14 @@ def _segment_hydraulics_composite(
         first_stats = (float(v), float(Re), float(f))
 
     return total_hl, first_stats[0], first_stats[1], first_stats[2]
+
+
+def _segment_hydraulics_composite_cache_clear() -> None:
+    _segment_hydraulics_composite_cached.cache_clear()
+
+
+_segment_hydraulics_composite.cache_clear = _segment_hydraulics_composite_cache_clear  # type: ignore[attr-defined]
+_segment_hydraulics_composite.cache_info = _segment_hydraulics_composite_cached.cache_info  # type: ignore[attr-defined]
 
 
 def _effective_dra_response(
@@ -3359,55 +3539,115 @@ def solve_pipeline(
         cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
         best_case_cost = cost_cap
-        for case in cases:
-            usage = [0] * len(stations)
-            for pos, val in zip(loop_positions, case):
-                usage[pos] = val
-            case_cap = best_case_cost
-            res = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                segment_slices,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time,
-                pump_shear_rate=pump_shear_rate,
-                loop_usage_by_station=usage,
-                enumerate_loops=False,
-                rpm_step=rpm_step,
-                dra_step=dra_step,
-                coarse_multiplier=coarse_multiplier,
-                state_top_k=state_top_k,
-                state_cost_margin=state_cost_margin,
-                _exhaustive_pass=_exhaustive_pass,
-                forced_origin_detail=forced_origin_detail,
-                segment_floors=segment_floors,
-                cost_cap=case_cap,
-            )
-            if res.get('error'):
-                continue
-            if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
-                # Track which loop usage produced the best result.  Store a
-                # copy to avoid mutating the result of nested calls.  Users
-                # can inspect this field to derive human‑friendly names.
-                res_with_usage = res.copy()
-                res_with_usage['loop_usage'] = usage.copy()
-                best_res = res_with_usage
-                best_val = res.get('total_cost')
-                if isinstance(best_val, (int, float)) and math.isfinite(best_val):
-                    if best_case_cost is None:
-                        best_case_cost = float(best_val)
-                    else:
-                        best_case_cost = min(best_case_cost, float(best_val))
+        disable_parallel = os.environ.get('OPTIM_DISABLE_LOOP_PARALLEL')
+        use_parallel = (
+            len(cases) > 1
+            and DEFAULT_LOOP_WORKERS > 1
+            and not disable_parallel
+        )
+        if use_parallel:
+            tasks: list[concurrent.futures.Future] = []
+            try:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=DEFAULT_LOOP_WORKERS) as executor:
+                    for case in cases:
+                        usage = [0] * len(stations)
+                        for pos, val in zip(loop_positions, case):
+                            usage[pos] = val
+                        case_args = (
+                            copy.deepcopy(stations),
+                            copy.deepcopy(terminal),
+                            FLOW,
+                            list(KV_list),
+                            list(rho_list),
+                            copy.deepcopy(segment_slices),
+                            RateDRA,
+                            Price_HSD,
+                            Fuel_density,
+                            Ambient_temp,
+                            copy.deepcopy(linefill),
+                            dra_reach_km,
+                            mop_kgcm2,
+                            hours,
+                            start_time,
+                            pump_shear_rate,
+                            usage,
+                            rpm_step,
+                            dra_step,
+                            coarse_multiplier,
+                            state_top_k,
+                            state_cost_margin,
+                            forced_origin_detail,
+                            segment_floors,
+                            best_case_cost,
+                        )
+                        tasks.append(executor.submit(_solve_pipeline_loop_case, case_args))
+                    for future in concurrent.futures.as_completed(tasks):
+                        try:
+                            usage, res = future.result()
+                        except Exception:
+                            continue
+                        if res.get('error'):
+                            continue
+                        total_cost = res.get('total_cost', float('inf'))
+                        if best_res is None or total_cost < best_res.get('total_cost', float('inf')):
+                            res_with_usage = res.copy()
+                            res_with_usage['loop_usage'] = usage.copy()
+                            best_res = res_with_usage
+                            if isinstance(total_cost, (int, float)) and math.isfinite(total_cost):
+                                if best_case_cost is None:
+                                    best_case_cost = float(total_cost)
+                                else:
+                                    best_case_cost = min(best_case_cost, float(total_cost))
+            except Exception:
+                use_parallel = False
+
+        if not use_parallel:
+            for case in cases:
+                usage = [0] * len(stations)
+                for pos, val in zip(loop_positions, case):
+                    usage[pos] = val
+                case_cap = best_case_cost
+                res = solve_pipeline(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    loop_usage_by_station=usage,
+                    enumerate_loops=False,
+                    rpm_step=rpm_step,
+                    dra_step=dra_step,
+                    coarse_multiplier=coarse_multiplier,
+                    state_top_k=state_top_k,
+                    state_cost_margin=state_cost_margin,
+                    _exhaustive_pass=_exhaustive_pass,
+                    forced_origin_detail=forced_origin_detail,
+                    segment_floors=segment_floors,
+                    cost_cap=case_cap,
+                )
+                if res.get('error'):
+                    continue
+                total_cost = res.get('total_cost', float('inf'))
+                if best_res is None or total_cost < best_res.get('total_cost', float('inf')):
+                    res_with_usage = res.copy()
+                    res_with_usage['loop_usage'] = usage.copy()
+                    best_res = res_with_usage
+                    if isinstance(total_cost, (int, float)) and math.isfinite(total_cost):
+                        if best_case_cost is None:
+                            best_case_cost = float(total_cost)
+                        else:
+                            best_case_cost = min(best_case_cost, float(total_cost))
         return best_res or {
             'error': True,
             'message': 'No feasible pump combination found for stations.',
@@ -5931,6 +6171,27 @@ def solve_pipeline_with_types(
 
     best_result['stations_used'] = best_stations
     return best_result
+
+
+def profile_solve_pipeline(
+    *args,
+    stats_limit: int = 25,
+    **kwargs,
+) -> tuple[dict, str]:
+    """Profile :func:`solve_pipeline` and return the stats output."""
+
+    import cProfile
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        result = solve_pipeline(*args, **kwargs)
+    finally:
+        profiler.disable()
+
+    stats_stream = io.StringIO()
+    pstats.Stats(profiler, stream=stats_stream).sort_stats('cumtime').print_stats(stats_limit)
+    return result, stats_stream.getvalue()
 
 
 _exported_names = [name for name in globals() if not name.startswith('_')]
