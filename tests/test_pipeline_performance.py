@@ -1670,6 +1670,132 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert example["residual_head"] == pytest.approx(residual_head)
 
 
+def test_compute_minimum_lacing_requirement_carries_head_between_stations():
+    import pipeline_model as model
+
+    pump_station = {
+        "name": "Mundra",
+        "elev": 25.0,
+        "D": 0.7112,
+        "t": 0.0111252,
+        "SMYS": 65000.0,
+        "rough": 4e-05,
+        "L": 73.976,
+        "min_residual": 50.0,
+        "is_pump": True,
+        "max_pumps": 3,
+        "MinRPM": 2500.0,
+        "DOL": 2980.0,
+        "max_dr": 30.0,
+        "rho": 880.0,
+        "KV": 40.0,
+        "A": -1.877458994638973e-05,
+        "B": 0.03390802108010663,
+        "C": 305.04695484464486,
+        "P": 1.7215246834883544e-13,
+        "Q": 1.991025285863343e-09,
+        "R": -2.8617028326873257e-05,
+        "S": 0.09064678178635964,
+        "T": 2.735903165930897,
+        "pump_types": {
+            "A": {
+                "names": ["Pump A 1", "Pump A 2", "Pump A 3"],
+                "name": "Pump A 1",
+                "head_data": [
+                    {"Flow (m³/hr)": 500.59, "Head (m)": 317.52},
+                    {"Flow (m³/hr)": 1035.6, "Head (m)": 319.39},
+                    {"Flow (m³/hr)": 1769.49, "Head (m)": 307.24},
+                    {"Flow (m³/hr)": 2131.97, "Head (m)": 291.85},
+                    {"Flow (m³/hr)": 2386.26, "Head (m)": 278.61},
+                    {"Flow (m³/hr)": 2488.27, "Head (m)": 273.25},
+                    {"Flow (m³/hr)": 2623.56, "Head (m)": 264.54},
+                    {"Flow (m³/hr)": 3023.32, "Head (m)": 236.17},
+                ],
+                "eff_data": [
+                    {"Flow (m³/hr)": 500.59, "Efficiency (%)": 41.22},
+                    {"Flow (m³/hr)": 1035.6, "Efficiency (%)": 68.25},
+                    {"Flow (m³/hr)": 1769.49, "Efficiency (%)": 86.55},
+                    {"Flow (m³/hr)": 2131.97, "Efficiency (%)": 88.39},
+                    {"Flow (m³/hr)": 2386.26, "Efficiency (%)": 88.6},
+                    {"Flow (m³/hr)": 2488.27, "Efficiency (%)": 88.61},
+                    {"Flow (m³/hr)": 2623.56, "Efficiency (%)": 87.77},
+                    {"Flow (m³/hr)": 3023.32, "Efficiency (%)": 84.58},
+                ],
+                "power_type": "Grid",
+                "MinRPM": 2200.0,
+                "DOL": 2980.0,
+                "rate": 9.0,
+                "tariffs": [],
+                "sfc_mode": "none",
+                "sfc": 0.0,
+                "engine_params": {},
+                "available": 3,
+                "A": -1.877458994638973e-05,
+                "B": 0.03390802108010663,
+                "C": 305.04695484464486,
+                "P": 1.7215246834883544e-13,
+                "Q": 1.991025285863343e-09,
+                "R": -2.8617028326873257e-05,
+                "S": 0.09064678178635964,
+                "T": 2.735903165930897,
+            }
+        },
+        "head_data": [
+            {"Flow (m³/hr)": 500.59, "Head (m)": 317.52},
+            {"Flow (m³/hr)": 1035.6, "Head (m)": 319.39},
+            {"Flow (m³/hr)": 1769.49, "Head (m)": 307.24},
+            {"Flow (m³/hr)": 2131.97, "Head (m)": 291.85},
+            {"Flow (m³/hr)": 2386.26, "Head (m)": 278.61},
+            {"Flow (m³/hr)": 2488.27, "Head (m)": 273.25},
+            {"Flow (m³/hr)": 2623.56, "Head (m)": 264.54},
+            {"Flow (m³/hr)": 3023.32, "Head (m)": 236.17},
+        ],
+        "eff_data": [
+            {"Flow (m³/hr)": 500.59, "Efficiency (%)": 41.22},
+            {"Flow (m³/hr)": 1035.6, "Efficiency (%)": 68.25},
+            {"Flow (m³/hr)": 1769.49, "Efficiency (%)": 86.55},
+            {"Flow (m³/hr)": 2131.97, "Efficiency (%)": 88.39},
+            {"Flow (m³/hr)": 2386.26, "Efficiency (%)": 88.6},
+            {"Flow (m³/hr)": 2488.27, "Efficiency (%)": 88.61},
+            {"Flow (m³/hr)": 2623.56, "Efficiency (%)": 87.77},
+            {"Flow (m³/hr)": 3023.32, "Efficiency (%)": 84.58},
+        ],
+    }
+
+    downstream_station = {
+        "name": "Churwa",
+        "elev": 40.082,
+        "D": 0.9144,
+        "t": 0.009525,
+        "SMYS": 70000.0,
+        "rough": 4e-05,
+        "L": 194.724,
+        "min_residual": 50.0,
+        "is_pump": False,
+        "max_dr": 30.0,
+        "rho": 880.0,
+        "KV": 40.0,
+    }
+
+    stations = [pump_station, downstream_station]
+    terminal = {"name": "Terminal", "elev": 257.0, "min_residual": 50.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=2200.0,
+        max_visc_cst=12.0,
+        dra_upper_bound=30.0,
+        min_suction_head=50.0,
+    )
+
+    assert result.get("enforceable") is True
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 2
+    assert segments[0]["dra_perc"] == pytest.approx(0.0)
+    assert segments[1]["dra_perc"] == pytest.approx(0.0)
+
+
 def test_compute_minimum_lacing_requirement_flags_station_cap():
     import pipeline_model as model
 
