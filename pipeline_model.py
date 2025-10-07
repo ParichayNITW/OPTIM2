@@ -130,10 +130,30 @@ def _normalise_max_dr(value, *, fallback: float | None = None) -> float:
     return 0.0
 
 
-def _max_dr_int(value, *, fallback: float | None = None) -> int:
-    """Return the integer drag-reduction cap for optimisation loops."""
+GLOBAL_MAX_DRA_CAP = 30.0
 
-    capped = min(_normalise_max_dr(value, fallback=fallback), 30.0)
+
+def _max_dr_int(
+    value,
+    *,
+    fallback: float | None = None,
+    cap: float | None = GLOBAL_MAX_DRA_CAP,
+) -> int:
+    """Return the integer drag-reduction cap for optimisation loops.
+
+    The returned value never exceeds the smaller of ``cap`` and the input value
+    (or fallback when the input is missing).  Passing ``cap=None`` disables the
+    global clamp which is otherwise set to :data:`GLOBAL_MAX_DRA_CAP` (30%).
+    """
+
+    capped = _normalise_max_dr(value, fallback=fallback)
+    if cap is not None:
+        try:
+            cap_val = float(cap)
+        except (TypeError, ValueError):
+            cap_val = GLOBAL_MAX_DRA_CAP
+        if cap_val > 0.0:
+            capped = min(capped, cap_val)
     return int(capped)
 
 
@@ -3449,6 +3469,20 @@ def solve_pipeline(
     elif pass_trace is None:
         pass_trace = []
 
+    followup_cost_cap = cost_cap
+
+    def _with_cost_cap(result: Mapping[str, object]) -> dict:
+        if followup_cost_cap is None:
+            return dict(result) if not isinstance(result, dict) else result
+        cap_val = _coerce_float(followup_cost_cap, math.inf)
+        if not math.isfinite(cap_val):
+            return dict(result) if not isinstance(result, dict) else result
+        if isinstance(result, dict) and result.get('cost_cap_applied') == cap_val:
+            return result
+        updated = dict(result)
+        updated['cost_cap_applied'] = cap_val
+        return updated
+
     if not _internal_pass:
         coarse_scale = coarse_multiplier
         coarse_rpm_step = int(round(rpm_step * coarse_scale)) if rpm_step > 0 else int(round(coarse_scale))
@@ -3571,6 +3605,13 @@ def solve_pipeline(
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
                 pass_trace.append('coarse')
+            if not coarse_failed:
+                coarse_cost = _coerce_float(coarse_res.get("total_cost"), math.inf)
+                if math.isfinite(coarse_cost):
+                    if followup_cost_cap is None:
+                        followup_cost_cap = coarse_cost
+                    else:
+                        followup_cost_cap = min(followup_cost_cap, coarse_cost)
         exhaustive_result = solve_pipeline(
             stations,
             terminal,
@@ -3602,6 +3643,7 @@ def solve_pipeline(
             pass_trace=None,
             forced_origin_detail=forced_origin_detail,
             segment_floors=segment_floors,
+            cost_cap=followup_cost_cap,
         )
         if pass_trace is not None:
             pass_trace.append('exhaustive')
@@ -3770,7 +3812,7 @@ def solve_pipeline(
                     state_cost_margin=state_cost_margin,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
-                    cost_cap=cost_cap,
+                    cost_cap=followup_cost_cap,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -3797,10 +3839,19 @@ def solve_pipeline(
                 return (total_cost, residual_val - term_req)
 
             result_choice = min(candidates, key=_result_key)
-            if pass_trace is not None:
+            cap_val = None
+            if followup_cost_cap is not None:
+                cap_val = _coerce_float(followup_cost_cap, math.inf)
+                if not math.isfinite(cap_val):
+                    cap_val = None
+            needs_copy = pass_trace is not None or cap_val is not None
+            if needs_copy:
                 result_choice = dict(result_choice)
+            if pass_trace is not None:
                 result_choice['executed_passes'] = list(pass_trace)
-            return result_choice
+            if cap_val is not None:
+                result_choice['cost_cap_applied'] = cap_val
+            return _with_cost_cap(result_choice)
 
         if not exhaustive_result.get("error"):
             result_choice = exhaustive_result
@@ -3811,7 +3862,7 @@ def solve_pipeline(
         if pass_trace is not None:
             result_choice = dict(result_choice)
             result_choice['executed_passes'] = list(pass_trace)
-        return result_choice
+        return _with_cost_cap(result_choice)
 
     # -----------------------------------------------------------------------
     # Sanitize viscosity (KV_list) and density (rho_list) inputs
@@ -5592,6 +5643,9 @@ def solve_pipeline(
                     record0[ppm_key] = result.get(ppm_key, updated_ppm)
                     record0[cost_key] = result.get(cost_key, cost_target)
             result['forced_origin_detail'] = copy.deepcopy(origin_info)
+
+    if followup_cost_cap is not None:
+        result = _with_cost_cap(result)
 
     return result
 
