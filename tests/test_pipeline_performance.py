@@ -1582,6 +1582,16 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
     assert seg_entry["max_head_available"] == pytest.approx(effective_available)
 
+    explanation = result.get("explanation")
+    assert isinstance(explanation, str) and "Station A" in explanation
+    example = result.get("example_segment")
+    assert isinstance(example, dict)
+    assert example["station_idx"] == 0
+    assert example["station_name"] == "Station A"
+    assert example["sdh_gap"] == pytest.approx(expected_gap)
+    assert example["flow_m3h"] == pytest.approx(flow)
+    assert example["viscosity_cst"] == pytest.approx(2.5)
+
 
 def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     import pipeline_model as model
@@ -1653,6 +1663,12 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert seg_entry["max_head_available"] == pytest.approx(effective_available)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
 
+    example = result.get("example_segment")
+    assert isinstance(example, dict) and example["station_idx"] == 0
+    assert example["station_name"] == "Station A"
+    assert example["sdh_gap"] == pytest.approx(expected_gap)
+    assert example["residual_head"] == pytest.approx(residual_head)
+
 
 def test_compute_minimum_lacing_requirement_flags_station_cap():
     import pipeline_model as model
@@ -1706,6 +1722,7 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
     assert seg_entry.get("limited_by_station") is True
     assert seg_entry.get("dra_ppm") == pytest.approx(model.get_ppm_for_dr(2.5, 30.0))
+    assert result.get("example_segment", {}).get("station_name") == "Station A"
 
 
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
@@ -1728,6 +1745,8 @@ def test_compute_minimum_lacing_requirement_handles_invalid_input():
     assert result.get("segments") == []
     assert result.get("warnings") == []
     assert result.get("enforceable") is True
+    assert result.get("explanation") == ""
+    assert result.get("example_segment") is None
 
 
 def test_segment_floors_overlay_queue_minimum():
