@@ -143,6 +143,8 @@ def test_solve_for_hour_returns_hour_result():
     assert hour_result.cost_currency is not None
     assert hour_result.pump_settings
     assert hour_result.legacy_payload.get("pump_settings")
+    assert hour_result.hour == 7
+    assert hour_result.hour_index == 0
 
 
 def test_profile_solver_reports_functions():
