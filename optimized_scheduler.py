@@ -126,6 +126,12 @@ class Station:
     refinement_iterations: int = 2
     peaks: tuple[PeakConstraint, ...] = ()
     temperature_c: float | None = None
+    is_pump: bool = True
+    min_pumps: int = 0
+    max_pumps: int | None = None
+    power_type: str | None = None
+    tariff_rate: float = 0.0
+    hsd_price: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -204,6 +210,31 @@ def _normalise_station(definition: Station | Mapping[str, object]) -> Station:
     peaks = tuple(_normalise_peak(peak) for peak in peaks_raw if peak is not None)
     temperature = definition.get("temperature_c")
     temperature_c = float(temperature) if temperature not in (None, "") else None
+    is_pump = bool(definition.get("is_pump", True))
+    try:
+        min_pumps = int(definition.get("min_pumps", 0) or 0)
+    except (TypeError, ValueError):
+        min_pumps = 0
+    try:
+        max_pumps_val = definition.get("max_pumps")
+        max_pumps = int(max_pumps_val) if max_pumps_val not in (None, "") else None
+    except (TypeError, ValueError):
+        max_pumps = None
+    power_type_raw = definition.get("power_type")
+    power_type = str(power_type_raw) if power_type_raw not in (None, "") else None
+    try:
+        tariff_rate = float(definition.get("rate", definition.get("tariff", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        tariff_rate = 0.0
+    try:
+        hsd_price = float(definition.get("hsd_price", definition.get("fuel_price", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        hsd_price = 0.0
+    if is_pump and min_pumps <= 0:
+        min_pumps = 1
+    if pumps:
+        min_pumps = min(min_pumps, len(pumps))
+
     return Station(
         name=name,
         pumps=pumps,
@@ -211,6 +242,12 @@ def _normalise_station(definition: Station | Mapping[str, object]) -> Station:
         refinement_iterations=iterations,
         peaks=peaks,
         temperature_c=temperature_c,
+        is_pump=is_pump,
+        min_pumps=max(min_pumps, 0),
+        max_pumps=max_pumps,
+        power_type=power_type,
+        tariff_rate=tariff_rate,
+        hsd_price=hsd_price,
     )
 
 
@@ -402,7 +439,7 @@ def solve_station(
                 return True
         return False
 
-    def dfs(idx: int, flow: float, cost: float, max_dr_used: float) -> None:
+    def dfs(idx: int, flow: float, cost: float, max_dr_used: float, active: int) -> None:
         nonlocal best_cost, best_config, best_max_dr, infeasible_reason
         if cost >= best_cost or cost >= bound:
             return
@@ -415,6 +452,12 @@ def solve_station(
             return
         cache[key] = cost if seen_cost is None or cost < seen_cost else seen_cost
         if idx == len(pumps):
+            if stn.min_pumps and active < stn.min_pumps:
+                infeasible_reason = "Minimum pumps not satisfied"
+                return
+            if stn.max_pumps is not None and active > stn.max_pumps:
+                infeasible_reason = "Maximum pumps exceeded"
+                return
             best_cost = cost
             best_config = tuple(current)
             best_max_dr = max_dr_used
@@ -435,10 +478,11 @@ def solve_station(
                 if new_cost >= best_cost or new_cost >= bound:
                     continue
                 current.append((int(rpm), int(dr)))
-                dfs(idx + 1, flow_next, new_cost, new_max_dr)
+                next_active = active + (1 if rpm > 0 else 0)
+                dfs(idx + 1, flow_next, new_cost, new_max_dr, next_active)
                 current.pop()
 
-    dfs(0, float(flow_in), 0.0, 0.0)
+    dfs(0, float(flow_in), 0.0, 0.0, 0)
     feasible = math.isfinite(best_cost)
     reason = None if feasible else infeasible_reason
     return StationSearchResult(feasible, best_cost, best_config, best_max_dr, reason)
@@ -473,6 +517,13 @@ def solve_for_hour(
     station_rows: List[Dict[str, Any]] = []
     pump_settings: Dict[str, List[Dict[str, Any]]] = {}
     temperature = config.ambient_temp_c
+    legacy_result: Dict[str, Any] = {
+        "stations_used": [],
+        "linefill": [],
+        "dra_front_km": 0.0,
+        "total_cost": 0.0,
+        "flow_pattern_name": "",
+    }
 
     for station in config.stations:
         station_norm = _normalise_station(station)
@@ -495,6 +546,8 @@ def solve_for_hour(
         total_cost += result.cost
 
         pump_entries: List[Dict[str, Any]] = []
+        station_pump_names: list[str] = []
+        active_combo: Dict[str, int] = {}
         for pump, (rpm, dr) in zip(station_norm.pumps, result.config):
             label = pump.label or pump.type_id
             rpm_int = int(rpm)
@@ -505,37 +558,111 @@ def solve_for_hour(
                 "dr_percent": dr_float,
             })
             max_dr = max(max_dr, dr_float)
+            if rpm_int > 0:
+                station_pump_names.append(label)
+                active_combo[label] = active_combo.get(label, 0) + 1
 
         pump_settings[station_norm.name] = pump_entries
 
         pumps_on = sum(1 for entry in pump_entries if entry["rpm"] > 0)
         representative_rpm = pump_entries[0]["rpm"] if pump_entries else 0
-        station_row: Dict[str, Any] = {
-            "station": station_norm.name,
-            "is_pump": True,
-            "pump_label": ", ".join(
-                f"{entry['pump']} @ {entry['rpm']} rpm" for entry in pump_entries
-            )
-            or "-",
-            "pumps_on": pumps_on,
-            "rpm": representative_rpm,
-            "dr_percent": max((entry["dr_percent"] for entry in pump_entries), default=0.0),
-            "head_added_m": None,
-            "suction_head_m": None,
-            "discharge_head_m": None,
-            "residual_head_at_peak_m": None,
-            "batch_viscosity_cst": None,
-            "batch_density_kgm3": None,
-            "energy_kwh": None,
-            "fuel_l": None,
-            "power_type": None,
-            "tariff_rate": None,
-            "hsd_price": None,
-            "cost_currency": float(result.cost),
-        }
-        station_rows.append(station_row)
-
+        station_flow_in = float(flow)
         flow = _apply_configuration_flow(station_norm, flow, result.config)
+        station_flow_out = float(flow)
+
+        power_cost = float(result.cost)
+        dra_cost = 0.0
+        total_station_cost = power_cost + dra_cost
+
+        legacy_key = station_norm.name.lower().replace(" ", "_")
+        legacy_result[f"pipeline_flow_in_{legacy_key}"] = station_flow_in
+        legacy_result[f"pipeline_flow_{legacy_key}"] = station_flow_out
+        legacy_result[f"loopline_flow_{legacy_key}"] = 0.0
+        legacy_result[f"pump_flow_{legacy_key}"] = max(station_flow_out - station_flow_in, 0.0)
+        legacy_result[f"power_cost_{legacy_key}"] = power_cost
+        legacy_result[f"dra_cost_{legacy_key}"] = dra_cost
+        legacy_result[f"dra_ppm_{legacy_key}"] = max((entry["dr_percent"] for entry in pump_entries), default=0.0)
+        legacy_result[f"dra_ppm_loop_{legacy_key}"] = 0.0
+        legacy_result[f"drag_reduction_{legacy_key}"] = max((entry["dr_percent"] for entry in pump_entries), default=0.0)
+        legacy_result[f"drag_reduction_loop_{legacy_key}"] = 0.0
+        legacy_result[f"num_pumps_{legacy_key}"] = pumps_on
+        legacy_result[f"speed_{legacy_key}"] = representative_rpm
+        legacy_result[f"efficiency_{legacy_key}"] = 0.0
+        legacy_result[f"pump_bkw_{legacy_key}"] = 0.0
+        legacy_result[f"motor_kw_{legacy_key}"] = 0.0
+        legacy_result[f"reynolds_{legacy_key}"] = 0.0
+        legacy_result[f"head_loss_{legacy_key}"] = 0.0
+        legacy_result[f"head_loss_kgcm2_{legacy_key}"] = 0.0
+        legacy_result[f"velocity_{legacy_key}"] = 0.0
+        legacy_result[f"residual_head_{legacy_key}"] = 0.0
+        legacy_result[f"rh_kgcm2_{legacy_key}"] = 0.0
+        legacy_result[f"sdh_{legacy_key}"] = 0.0
+        legacy_result[f"sdh_kgcm2_{legacy_key}"] = 0.0
+        legacy_result[f"maop_{legacy_key}"] = 0.0
+        legacy_result[f"maop_kgcm2_{legacy_key}"] = 0.0
+        legacy_result[f"dra_profile_{legacy_key}"] = []
+        legacy_result[f"dra_treated_length_{legacy_key}"] = 0.0
+        legacy_result[f"dra_untreated_length_{legacy_key}"] = 0.0
+
+        legacy_result.setdefault("total_cost", 0.0)
+        legacy_result["total_cost"] = float(legacy_result["total_cost"]) + total_station_cost
+
+        station_rows.append(
+            {
+                "Time": f"{hour_label:02d}:00",
+                "Station": station_norm.name,
+                "Pump Name": ", ".join(station_pump_names) or "",
+                "Pipeline Flow (m³/hr)": station_flow_out,
+                "Loopline Flow (m³/hr)": 0.0,
+                "Pump Flow (m³/hr)": max(station_flow_out - station_flow_in, 0.0),
+                "Power & Fuel Cost (INR)": power_cost,
+                "DRA Cost (INR)": dra_cost,
+                "DRA PPM": legacy_result[f"dra_ppm_{legacy_key}"],
+                "Loop DRA PPM": 0.0,
+                "No. of Pumps": pumps_on,
+                "Pump Eff (%)": 0.0,
+                "Pump BKW (kW)": 0.0,
+                "Motor Input (kW)": 0.0,
+                "Reynolds No.": 0.0,
+                "Head Loss (m)": 0.0,
+                "Head Loss (kg/cm²)": 0.0,
+                "Vel (m/s)": 0.0,
+                "Residual Head (m)": 0.0,
+                "Residual Head (kg/cm²)": 0.0,
+                "SDH (m)": 0.0,
+                "SDH (kg/cm²)": 0.0,
+                "MAOP (m)": 0.0,
+                "MAOP (kg/cm²)": 0.0,
+                "Drag Reduction (%)": legacy_result[f"dra_ppm_{legacy_key}"],
+                "Loop Drag Reduction (%)": 0.0,
+                "DRA Inlet PPM": legacy_result[f"dra_ppm_{legacy_key}"],
+                "DRA Outlet PPM": legacy_result[f"dra_ppm_{legacy_key}"],
+                "DRA Treated Length (km)": 0.0,
+                "DRA Untreated Length (km)": 0.0,
+                "DRA Profile (km@ppm)": "",
+                "Total Cost (INR)": total_station_cost,
+            }
+        )
+
+        legacy_result["stations_used"].append(
+            {
+                "name": station_norm.name,
+                "is_pump": station_norm.is_pump,
+                "pump_names": station_pump_names,
+                "pump_combo": active_combo,
+            }
+        )
+
+    term_key = "terminal"
+    legacy_result[f"pipeline_flow_{term_key}"] = float(flow)
+    legacy_result[f"pipeline_flow_in_{term_key}"] = float(flow)
+    legacy_result[f"pump_flow_{term_key}"] = 0.0
+    legacy_result[f"sdh_{term_key}"] = 0.0
+    legacy_result[f"sdh_kgcm2_{term_key}"] = 0.0
+    legacy_result[f"residual_head_{term_key}"] = 0.0
+    legacy_result[f"rh_kgcm2_{term_key}"] = 0.0
+    legacy_result[f"power_cost_{term_key}"] = 0.0
+    legacy_result[f"dra_cost_{term_key}"] = 0.0
 
     hour_result = HourResult(
         hour=hour_label,
@@ -546,7 +673,8 @@ def solve_for_hour(
         cost_currency=float(total_cost),
         pump_settings=pump_settings,
         legacy_payload={
-            "stations": station_rows,
+            "result": legacy_result,
+            "stations": legacy_result.get("stations_used", []),
             "pump_settings": pump_settings,
             "constraints": {
                 "peak_min_residual_m": cfg.min_peak_head_m if cfg else None,
