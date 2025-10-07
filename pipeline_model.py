@@ -2094,7 +2094,8 @@ def compute_minimum_lacing_requirement(
         dr_unbounded = 0.0
         limited_by_station = False
         available_head = residual_head + max_head
-        effective_available_head = max(available_head - min_suction, 0.0)
+        suction_requirement = min_suction if stn.get('is_pump') else 0.0
+        effective_available_head = max(available_head - suction_requirement, 0.0)
         gap = sdh_required - effective_available_head
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
@@ -2154,7 +2155,7 @@ def compute_minimum_lacing_requirement(
                 'residual_head': float(residual_head),
                 'max_head_available': float(effective_available_head),
                 'available_head_before_suction': float(available_head),
-                'suction_head': float(min_suction),
+                'suction_head': float(suction_requirement),
                 'limited_by_station': bool(limited_by_station),
             }
         )
