@@ -167,4 +167,3 @@ def test_solve_day_wraps_pipeline_results():
     assert isinstance(day, DayResult)
     assert len(day.hours) == 2
     assert progress_calls, "Expected progress callbacks"
-
