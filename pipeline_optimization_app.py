@@ -6,15 +6,6 @@ import altair as alt
 import pipeline_model
 import datetime as dt
 
-from optimized_scheduler import HourResult, SchedulerConfig, solve_day
-
-import multiprocessing as mp
-if mp.get_start_method(allow_none=True) != "spawn":
-    try:
-        mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        pass
-
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
     st.session_state["stations"] = []
@@ -51,7 +42,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from math import isclose, pi, sqrt
-import math
 import hashlib
 import uuid
 import json
@@ -1398,13 +1388,6 @@ st.sidebar.download_button(
     file_name="pipeline_case.json",
     mime="application/json"
 )
-
-
-def current_case_dict() -> dict[str, object]:
-    """Return a deep copy of the active case."""
-
-    return copy.deepcopy(get_full_case_dict())
-
 
 def _default_segment_slices(
     stations: list[dict], kv_list: list[float], rho_list: list[float]
@@ -3695,6 +3678,7 @@ def _execute_time_series_solver(
     pump_shear_rate: float,
     total_length: float,
     sub_steps: int = 1,
+    progress_callback=None,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -3724,8 +3708,21 @@ def _execute_time_series_solver(
     combined_warnings: list[object] = []
     ti = 0
 
+    total_hours = len(hours)
+
     while ti < len(hours):
         hr = hours[ti]
+
+        if progress_callback is not None:
+            try:
+                progress_callback(
+                    "hour_start",
+                    hour=int(hr % 24),
+                    index=ti,
+                    total=total_hours,
+                )
+            except Exception:
+                pass
 
         if ti >= len(hour_states):
             state = {
@@ -3945,6 +3942,8 @@ def _execute_time_series_solver(
         state["linefill_snapshot"] = current_vol_local.copy()
         linefill_snaps[ti] = current_vol_local.copy()
 
+        block_cost = float(sum(power_cost_acc.values()) + sum(dra_cost_acc.values()))
+
         for k, val in power_cost_acc.items():
             res[f"power_cost_{k}"] = val
         for k, val in dra_cost_acc.items():
@@ -3959,7 +3958,39 @@ def _execute_time_series_solver(
             }
         )
 
+        if progress_callback is not None:
+            try:
+                pct = int(((ti + 1) / total_hours) * 100) if total_hours else 100
+                progress_callback(
+                    "hour_done",
+                    hour=int(hr % 24),
+                    index=ti,
+                    total=total_hours,
+                    pct=pct,
+                )
+            except Exception:
+                pass
+
         ti += 1
+
+    if progress_callback is not None:
+        try:
+            completed = len(reports)
+            summary_msg = (
+                f"Optimized {completed} of {total_hours} hours"
+                if completed < total_hours
+                else "Optimization complete"
+            )
+            if error_msg:
+                summary_msg += "; partial results available"
+            progress_callback(
+                "summary",
+                msg=summary_msg,
+                completed=completed,
+                total=total_hours,
+            )
+        except Exception:
+            pass
 
     result = {
         "reports": reports,
@@ -3985,8 +4016,14 @@ def _hash_dataframe_for_cache(df: pd.DataFrame) -> str:
 
 
 @st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _hash_dataframe_for_cache})
-def _run_time_series_solver_cached(*args, **kwargs) -> dict:
+def _run_time_series_solver_cached_core(*args, **kwargs) -> dict:
     return _execute_time_series_solver(*args, **kwargs)
+
+
+def _run_time_series_solver_cached(*args, progress_callback=None, **kwargs) -> dict:
+    if progress_callback is not None:
+        return _execute_time_series_solver(*args, progress_callback=progress_callback, **kwargs)
+    return _run_time_series_solver_cached_core(*args, **kwargs)
 
 
 def _build_enforced_origin_warning(
@@ -4361,32 +4398,38 @@ def run_all_updates():
     st.rerun()
 
 
-def make_ui_progress():
-    """Return a Streamlit-friendly progress callback."""
-
-    bar = st.progress(0)
-    text = st.empty()
-
-    def cb(kind: str, **kw):
-        if kind == "hour_start":
-            hour = kw.get("hour")
-            if hour is not None:
-                text.write(f"Solving hour {int(hour) % 24:02d}:00 …")
-        elif kind == "hour_done":
-            pct = kw.get("pct", 0)
-            try:
-                pct_val = int(pct)
-            except (TypeError, ValueError):
-                pct_val = 0
-            bar.progress(min(100, max(0, pct_val)))
-        elif kind == "summary":
-            msg = kw.get("msg") or "Optimisation complete"
-            text.write(msg)
-
-    return cb
-
-
 if not auto_batch:
+
+    def _make_solver_progress(total_hours: int):
+        total_hours = int(total_hours or 0)
+        if total_hours <= 0:
+            return None
+
+        progress_bar = st.progress(0)
+        status = st.empty()
+
+        def _callback(kind: str, **info):
+            try:
+                if kind == "hour_start":
+                    hour_val = info.get("hour")
+                    if isinstance(hour_val, int):
+                        status.write(f"Solving hour {hour_val % 24:02d}:00 …")
+                elif kind == "hour_done":
+                    pct = info.get("pct")
+                    if pct is None and total_hours > 0:
+                        idx = info.get("index", 0)
+                        pct = int(((idx or 0) + 1) / total_hours * 100)
+                    if isinstance(pct, (int, float)):
+                        pct_int = max(0, min(100, int(pct)))
+                        progress_bar.progress(pct_int)
+                elif kind == "summary":
+                    msg = info.get("msg") or "Optimization finished."
+                    status.write(str(msg))
+            except Exception:
+                pass
+
+        return _callback
+
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
     st.button("Start task", key="start_task", type="primary", on_click=run_all_updates)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -4398,7 +4441,6 @@ if not auto_batch:
     if run_day or run_hour:
         is_hourly = bool(run_hour)
         st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
-
 
         stations_base = copy.deepcopy(st.session_state.stations)
         for stn in stations_base:
@@ -4422,85 +4464,167 @@ if not auto_batch:
                 if names:
                     stn['pump_name'] = names[0]
 
-        cfg = SchedulerConfig(
-            rpm_refine_step=int(st.session_state.get("adv_refine_rpm_step", 25)),
-            dr_step=float(st.session_state.get("adv_refine_dr_step", 2.0)),
-            coarse_mult=float(st.session_state.get("adv_coarse_mult", 5.0)),
-            max_states=int(st.session_state.get("adv_dp_states", 50)),
-            dp_cost_margin=float(st.session_state.get("adv_dp_margin", 5000.0)),
-            dra_cap_percent=30.0,
-            min_peak_head_m=25.0,
-            parallel_hours=not is_hourly,
-            per_hour_timeout_s=90,
-        )
+        term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
 
-        case = current_case_dict()
-        terminal_section = case.setdefault("terminal", {})
-        terminal_section.setdefault("name", terminal_name)
-        terminal_section.setdefault("elev", terminal_elev)
-        terminal_section.setdefault("min_residual", terminal_head)
-        terminal_min_res = float(terminal_section.get("min_residual", terminal_head))
-
-        base_flow = float(st.session_state.get("FLOW", 1000.0))
-        if is_hourly:
-            case["hours"] = 1
-            case["inlet_flow"] = [float(st.session_state.get("hourly_flow", base_flow))]
-        else:
-            case["hours"] = 24
-            case["inlet_flow"] = [base_flow] * case["hours"]
-
-        ui_cb = make_ui_progress()
-        ui_cb("hour_start", hour=0)
-
-        try:
-            day_result = solve_day(
-                case,
-                cfg,
-                terminal_min_residual_m=terminal_min_res,
-                progress_callback=ui_cb,
-            )
-        except Exception as exc:
-            st.error(f"Optimizer crashed: {exc}")
+        # Prepare initial volumetric linefill
+        vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
+        if isinstance(vol_df, pd.DataFrame):
+            vol_df = ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+        if vol_df is None or len(vol_df) == 0:
+            st.error("Please enter linefill (volumetric) data.")
             st.stop()
 
-        total_cost = 0.0
-        for hr, hr_res in enumerate(day_result.hours):
-            if not isinstance(hr_res, HourResult):
-                continue
-            if not hr_res.feasible:
-                st.warning(
-                    f"No hydraulically feasible solution found at {hr:02d}:00 hrs "
-                    f"(≤ {cfg.dra_cap_percent:.0f}% DR & peak head ≥ {cfg.min_peak_head_m:.0f} m)."
-                )
-                continue
-            if hr_res.max_dr_percent > cfg.dra_cap_percent + 1e-6:
-                st.warning(
-                    f"No hydraulically feasible solution found at {hr:02d}:00 hrs "
-                    f"because it required {hr_res.max_dr_percent:.2f}% DR (> {cfg.dra_cap_percent:.0f}%)."
-                )
-                continue
+        # Determine FLOW for this mode
+        plan_df = st.session_state.get("day_plan_df", pd.DataFrame())
+        if isinstance(plan_df, pd.DataFrame):
+            plan_df = ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+        if is_hourly:
+            FLOW_sched = st.session_state.get("hourly_flow", st.session_state.get("FLOW", 1000.0))
+        else:
+            daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
+            FLOW_sched = daily_m3 / 24.0
 
-            with st.expander(
-                f"Hour {hr:02d}:00 schedule (cost = {hr_res.cost_currency:,.0f})",
-                expanded=False,
-            ):
-                st.write(hr_res.pretty_table)
-                st.json(hr_res.pump_settings)
-            if isinstance(hr_res.cost_currency, (int, float)) and math.isfinite(
-                float(hr_res.cost_currency)
-            ):
-                total_cost += float(hr_res.cost_currency)
-
-        st.success(f"Total daily cost = {total_cost:,.0f}")
+        if is_hourly:
+            hours = [7]
+        else:
+            hours = [(7 + h) % 24 for h in range(24)]
+        sub_steps = 1
+        total_runs = len(hours) * sub_steps if hours else 0
+        first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+        last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
+        if is_hourly:
+            spinner_msg = f"Running 1 optimization ({first_label})..."
+        else:
+            spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         st.session_state["linefill_next_day"] = None
+        total_length = sum(stn.get('L', 0.0) for stn in stations_base)
+        dra_reach_km = 200.0
 
-        st.session_state["day_df"] = None
-        st.session_state["day_df_raw"] = None
-        st.session_state["day_reports"] = None
-        st.session_state["day_linefill_snaps"] = None
-        st.session_state["day_hours"] = None
-        st.session_state["day_stations"] = None
+        current_vol = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
+        if "DRA ppm" not in current_vol.columns:
+            current_vol["DRA ppm"] = current_vol[INIT_DRA_COL]
+        else:
+            ppm_col = current_vol["DRA ppm"]
+            ppm_blank = ppm_col.isna()
+            if ppm_col.dtype == object:
+                ppm_blank |= ppm_col.astype(str).str.strip() == ""
+            if ppm_blank.any():
+                current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
+        dra_linefill = df_to_dra_linefill(current_vol)
+        current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
+        progress_cb = _make_solver_progress(len(hours))
+
+        with st.spinner(spinner_msg):
+            solver_result = _run_time_series_solver_cached(
+                stations_base,
+                term_data,
+                hours,
+                flow_rate=FLOW_sched,
+                plan_df=plan_df,
+                current_vol=current_vol,
+                dra_linefill=dra_linefill,
+                dra_reach_km=dra_reach_km,
+                RateDRA=RateDRA,
+                Price_HSD=Price_HSD,
+                fuel_density=st.session_state.get("Fuel_density", 820.0),
+                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                total_length=total_length,
+                sub_steps=sub_steps,
+                progress_callback=progress_cb,
+            )
+
+        error_msg = solver_result.get("error")
+        reports = list(solver_result.get("reports", []))
+        linefill_snaps = list(solver_result.get("linefill_snaps", []))
+        current_vol = solver_result.get("final_vol", current_vol)
+        plan_df = solver_result.get("final_plan", plan_df)
+        dra_linefill = solver_result.get("final_dra_linefill", dra_linefill)
+        dra_reach_km = solver_result.get("final_dra_reach", dra_reach_km)
+
+        _render_solver_feedback(
+            {"warnings": solver_result.get("warnings", [])},
+            include_warnings=True,
+            show_error=False,
+        )
+
+        hourly_errors = solver_result.get("hourly_errors", [])
+        if isinstance(hourly_errors, Sequence) and not isinstance(hourly_errors, (str, bytes)):
+            for err in hourly_errors:
+                if not isinstance(err, Mapping):
+                    continue
+                err_msg = str(err.get("message", "") or "").strip()
+                if not err_msg:
+                    continue
+                try:
+                    hour_val = int(err.get("hour", 0))
+                except (TypeError, ValueError):
+                    hour_val = 0
+                st.warning(f"{hour_val % 24:02d}:00 – {err_msg}")
+
+        if error_msg:
+            st.session_state["linefill_next_day"] = pd.DataFrame()
+            if reports:
+                last_hour = reports[-1].get("time")
+                if last_hour is not None:
+                    st.info(
+                        f"Optimization stopped early after {int(last_hour) % 24:02d}:00. "
+                        "Partial results are displayed for completed hours."
+                    )
+            else:
+                st.info("Optimization failed before any hourly result was produced.")
+            st.error(error_msg)
+
+        if solver_result.get("backtracked"):
+            warn_msg = _build_enforced_origin_warning(
+                solver_result.get("backtrack_notes"),
+                solver_result.get("enforced_origin_actions"),
+            )
+            st.warning(
+                warn_msg
+                + " Please avoid zero DRA requests at the origin when planning sequential hours."
+            )
+
+        st.session_state["linefill_next_day"] = _get_linefill_snapshot_for_hour(
+            linefill_snaps,
+            hours,
+            target_hour=6,
+        )
+
+        # Build a consolidated station-wise table with flow pattern names
+        station_tables = []
+        for rec in reports:
+            res = rec["result"]
+            hr = rec["time"]
+            df_int = build_station_table(res, stations_base)
+            # Insert human-readable pattern and time columns
+            pattern = res.get('flow_pattern_name', '')
+            df_int.insert(0, "Pattern", pattern)
+            df_int.insert(0, "Time", f"{hr:02d}:00")
+            station_tables.append(df_int)
+        if station_tables:
+            df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+        else:
+            df_day = pd.DataFrame()
+
+        # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
+        # Pandas may treat some columns as object if they contain NaN or are newly inserted.
+        df_day_numeric = df_day.copy()
+        # Identify columns eligible for numeric styling
+        non_numeric_cols = {"Time", "Station", "Pump Name", "Pattern", "DRA Profile (km@ppm)"}
+        num_cols = [c for c in df_day_numeric.columns if c not in non_numeric_cols]
+        for c in num_cols:
+            df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
+
+        # Persist results for reuse across Streamlit reruns
+        st.session_state["day_df"] = df_day_numeric
+        st.session_state["day_df_raw"] = df_day
+        st.session_state["day_reports"] = reports
+        st.session_state["day_linefill_snaps"] = linefill_snaps
+        st.session_state["day_hours"] = hours
+        st.session_state["day_stations"] = stations_base
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
         df_day_numeric = st.session_state["day_df"]
