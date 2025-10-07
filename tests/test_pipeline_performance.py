@@ -25,6 +25,8 @@ from pipeline_model import (
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
+    _max_dr_int,
+    GLOBAL_MAX_DRA_CAP,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -3947,3 +3949,76 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
 
     _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
     _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
+
+
+def test_max_dr_int_respects_user_cap() -> None:
+    assert _max_dr_int(25) == 25
+    assert _max_dr_int(40) == int(GLOBAL_MAX_DRA_CAP)
+    assert _max_dr_int(None, fallback=18) == 18
+    assert _max_dr_int(40, cap=None) == 40
+
+
+def test_cost_cap_exposed_in_results() -> None:
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1100,
+            "DOL": 1500,
+            "A": 60.0,
+            "B": 0.0,
+            "C": 190.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 6.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 4.0e-05,
+            "max_dr": 30,
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": 8.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 4.0e-05,
+            "max_dr": 0,
+        },
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 5.0}
+    linefill = [{"length_km": 14.0, "dra_ppm": 0.0}]
+
+    explicit_cap = 987.0
+
+    result = _solve_pipeline(
+        stations,
+        terminal,
+        FLOW=0.0,
+        KV_list=[3.0, 3.0],
+        rho_list=[850.0, 850.0],
+        segment_slices=[[], []],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=linefill,
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        pass_trace=[],
+        enumerate_loops=False,
+        cost_cap=explicit_cap,
+    )
+
+    assert result.get("error") is False
+    cap = result.get("cost_cap_applied")
+    assert cap is not None
+    assert cap == pytest.approx(explicit_cap)
