@@ -3100,6 +3100,7 @@ def solve_pipeline(
     pass_trace: list[str] | None = None,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
+    cost_cap: float | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -3196,6 +3197,14 @@ def solve_pipeline(
         state_cost_margin = STATE_COST_MARGIN
     if state_cost_margin < 0:
         state_cost_margin = 0.0
+
+    if cost_cap is not None:
+        try:
+            cost_cap = float(cost_cap)
+        except (TypeError, ValueError):
+            cost_cap = None
+    if cost_cap is not None and not math.isfinite(cost_cap):
+        cost_cap = None
 
     if segment_slices is None:
         segment_slices = [[] for _ in stations]
@@ -3294,6 +3303,7 @@ def solve_pipeline(
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                cost_cap=cost_cap,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -3327,10 +3337,12 @@ def solve_pipeline(
         # Generate loop-usage patterns based on per-loop diameter equality
         cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
+        best_case_cost = cost_cap
         for case in cases:
             usage = [0] * len(stations)
             for pos, val in zip(loop_positions, case):
                 usage[pos] = val
+            case_cap = best_case_cost
             res = solve_pipeline(
                 stations,
                 terminal,
@@ -3358,6 +3370,7 @@ def solve_pipeline(
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                cost_cap=case_cap,
             )
             if res.get('error'):
                 continue
@@ -3368,6 +3381,12 @@ def solve_pipeline(
                 res_with_usage = res.copy()
                 res_with_usage['loop_usage'] = usage.copy()
                 best_res = res_with_usage
+                best_val = res.get('total_cost')
+                if isinstance(best_val, (int, float)) and math.isfinite(best_val):
+                    if best_case_cost is None:
+                        best_case_cost = float(best_val)
+                    else:
+                        best_case_cost = min(best_case_cost, float(best_val))
         return best_res or {
             'error': True,
             'message': 'No feasible pump combination found for stations.',
@@ -3546,6 +3565,7 @@ def solve_pipeline(
                 state_cost_margin=state_cost_margin,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                cost_cap=cost_cap,
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -3749,6 +3769,7 @@ def solve_pipeline(
                     state_cost_margin=state_cost_margin,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    cost_cap=cost_cap,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -5214,6 +5235,8 @@ def solve_pipeline(
                     # or, when costs tie, the one with higher residual.  Carry
                     # forward the loop DRA carry value and the updated downstream queue.
                     new_cost = state['cost'] + total_cost
+                    if cost_cap is not None and new_cost - 1e-6 > cost_cap:
+                        continue
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
                     bucket = residual_next
@@ -5386,6 +5409,13 @@ def solve_pipeline(
                 if idx < state_top_k or data['cost'] <= threshold:
                     pruned[residual_key] = data
             states = pruned
+
+    if not states:
+        return {
+            'error': True,
+            'message': 'No candidate states remained within the active cost cap.',
+            'pruned_by_cost_cap': True,
+        }
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -5667,6 +5697,7 @@ def solve_pipeline_with_types(
                 # Call solve_pipeline with explicit loop usage and disable
                 # internal enumeration.  This ensures the provided directives
                 # are respected even for split stations.
+                branch_cap = best_cost if math.isfinite(best_cost) else None
                 result = solve_pipeline(
                     stn_acc,
                     terminal,
@@ -5693,6 +5724,7 @@ def solve_pipeline_with_types(
                     state_cost_margin=state_cost_margin,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    cost_cap=branch_cap,
                 )
                 if result.get("error"):
                     continue
