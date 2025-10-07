@@ -3678,6 +3678,7 @@ def _execute_time_series_solver(
     pump_shear_rate: float,
     total_length: float,
     sub_steps: int = 1,
+    progress_callback=None,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -3707,8 +3708,21 @@ def _execute_time_series_solver(
     combined_warnings: list[object] = []
     ti = 0
 
+    total_hours = len(hours)
+
     while ti < len(hours):
         hr = hours[ti]
+
+        if progress_callback is not None:
+            try:
+                progress_callback(
+                    "hour_start",
+                    hour=int(hr % 24),
+                    index=ti,
+                    total=total_hours,
+                )
+            except Exception:
+                pass
 
         if ti >= len(hour_states):
             state = {
@@ -3928,6 +3942,8 @@ def _execute_time_series_solver(
         state["linefill_snapshot"] = current_vol_local.copy()
         linefill_snaps[ti] = current_vol_local.copy()
 
+        block_cost = float(sum(power_cost_acc.values()) + sum(dra_cost_acc.values()))
+
         for k, val in power_cost_acc.items():
             res[f"power_cost_{k}"] = val
         for k, val in dra_cost_acc.items():
@@ -3942,7 +3958,39 @@ def _execute_time_series_solver(
             }
         )
 
+        if progress_callback is not None:
+            try:
+                pct = int(((ti + 1) / total_hours) * 100) if total_hours else 100
+                progress_callback(
+                    "hour_done",
+                    hour=int(hr % 24),
+                    index=ti,
+                    total=total_hours,
+                    pct=pct,
+                )
+            except Exception:
+                pass
+
         ti += 1
+
+    if progress_callback is not None:
+        try:
+            completed = len(reports)
+            summary_msg = (
+                f"Optimized {completed} of {total_hours} hours"
+                if completed < total_hours
+                else "Optimization complete"
+            )
+            if error_msg:
+                summary_msg += "; partial results available"
+            progress_callback(
+                "summary",
+                msg=summary_msg,
+                completed=completed,
+                total=total_hours,
+            )
+        except Exception:
+            pass
 
     result = {
         "reports": reports,
@@ -3968,8 +4016,14 @@ def _hash_dataframe_for_cache(df: pd.DataFrame) -> str:
 
 
 @st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _hash_dataframe_for_cache})
-def _run_time_series_solver_cached(*args, **kwargs) -> dict:
+def _run_time_series_solver_cached_core(*args, **kwargs) -> dict:
     return _execute_time_series_solver(*args, **kwargs)
+
+
+def _run_time_series_solver_cached(*args, progress_callback=None, **kwargs) -> dict:
+    if progress_callback is not None:
+        return _execute_time_series_solver(*args, progress_callback=progress_callback, **kwargs)
+    return _run_time_series_solver_cached_core(*args, **kwargs)
 
 
 def _build_enforced_origin_warning(
@@ -4345,6 +4399,37 @@ def run_all_updates():
 
 
 if not auto_batch:
+
+    def _make_solver_progress(total_hours: int):
+        total_hours = int(total_hours or 0)
+        if total_hours <= 0:
+            return None
+
+        progress_bar = st.progress(0)
+        status = st.empty()
+
+        def _callback(kind: str, **info):
+            try:
+                if kind == "hour_start":
+                    hour_val = info.get("hour")
+                    if isinstance(hour_val, int):
+                        status.write(f"Solving hour {hour_val % 24:02d}:00 …")
+                elif kind == "hour_done":
+                    pct = info.get("pct")
+                    if pct is None and total_hours > 0:
+                        idx = info.get("index", 0)
+                        pct = int(((idx or 0) + 1) / total_hours * 100)
+                    if isinstance(pct, (int, float)):
+                        pct_int = max(0, min(100, int(pct)))
+                        progress_bar.progress(pct_int)
+                elif kind == "summary":
+                    msg = info.get("msg") or "Optimization finished."
+                    status.write(str(msg))
+            except Exception:
+                pass
+
+        return _callback
+
     st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
     st.button("Start task", key="start_task", type="primary", on_click=run_all_updates)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -4428,6 +4513,8 @@ if not auto_batch:
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
+        progress_cb = _make_solver_progress(len(hours))
+
         with st.spinner(spinner_msg):
             solver_result = _run_time_series_solver_cached(
                 stations_base,
@@ -4446,6 +4533,7 @@ if not auto_batch:
                 pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                 total_length=total_length,
                 sub_steps=sub_steps,
+                progress_callback=progress_cb,
             )
 
         error_msg = solver_result.get("error")
