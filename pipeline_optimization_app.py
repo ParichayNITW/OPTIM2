@@ -3703,6 +3703,8 @@ def _execute_time_series_solver(
     enforced_actions: list[dict] = []
 
     error_msg: str | None = None
+    hourly_errors: list[dict[str, object]] = []
+    combined_warnings: list[object] = []
     ti = 0
 
     while ti < len(hours):
@@ -3772,6 +3774,11 @@ def _execute_time_series_solver(
 
             block_cost += res.get("total_cost", 0.0)
 
+            warnings_seq = res.get("warnings")
+            if isinstance(warnings_seq, Sequence) and not isinstance(warnings_seq, (str, bytes)):
+                for warning in warnings_seq:
+                    combined_warnings.append(copy.deepcopy(warning))
+
             if forced_detail and not forced_detail_used:
                 forced_detail_used = copy.deepcopy(forced_detail)
 
@@ -3808,6 +3815,8 @@ def _execute_time_series_solver(
                 origin_error = state.get("origin_error") if isinstance(state, dict) else None
                 if origin_error:
                     error_msg = origin_error
+                hourly_errors.append({"hour": hr % 24, "message": error_msg})
+                state["origin_error"] = error_msg
                 break
 
             prev_state = hour_states[ti - 1]
@@ -3884,6 +3893,8 @@ def _execute_time_series_solver(
             if not tightened:
                 if origin_error:
                     error_msg = origin_error
+                hourly_errors.append({"hour": hr % 24, "message": error_msg})
+                state["origin_error"] = error_msg
                 break
 
             backtracked = True
@@ -3944,8 +3955,21 @@ def _execute_time_series_solver(
         "backtracked": backtracked,
         "backtrack_notes": backtrack_notes,
         "enforced_origin_actions": enforced_actions,
+        "warnings": combined_warnings,
+        "hourly_errors": hourly_errors,
     }
     return result
+
+
+def _hash_dataframe_for_cache(df: pd.DataFrame) -> str:
+    if df is None:
+        return "__none__"
+    return df.to_json(date_format="iso", orient="split", double_precision=6)
+
+
+@st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _hash_dataframe_for_cache})
+def _run_time_series_solver_cached(*args, **kwargs) -> dict:
+    return _execute_time_series_solver(*args, **kwargs)
 
 
 def _build_enforced_origin_warning(
@@ -4405,7 +4429,7 @@ if not auto_batch:
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
         with st.spinner(spinner_msg):
-            solver_result = _execute_time_series_solver(
+            solver_result = _run_time_series_solver_cached(
                 stations_base,
                 term_data,
                 hours,
@@ -4424,18 +4448,46 @@ if not auto_batch:
                 sub_steps=sub_steps,
             )
 
-        error_msg = solver_result["error"]
-        reports = solver_result["reports"]
-        linefill_snaps = solver_result["linefill_snaps"]
-        current_vol = solver_result["final_vol"]
-        plan_df = solver_result["final_plan"]
-        dra_linefill = solver_result["final_dra_linefill"]
-        dra_reach_km = solver_result["final_dra_reach"]
+        error_msg = solver_result.get("error")
+        reports = list(solver_result.get("reports", []))
+        linefill_snaps = list(solver_result.get("linefill_snaps", []))
+        current_vol = solver_result.get("final_vol", current_vol)
+        plan_df = solver_result.get("final_plan", plan_df)
+        dra_linefill = solver_result.get("final_dra_linefill", dra_linefill)
+        dra_reach_km = solver_result.get("final_dra_reach", dra_reach_km)
+
+        _render_solver_feedback(
+            {"warnings": solver_result.get("warnings", [])},
+            include_warnings=True,
+            show_error=False,
+        )
+
+        hourly_errors = solver_result.get("hourly_errors", [])
+        if isinstance(hourly_errors, Sequence) and not isinstance(hourly_errors, (str, bytes)):
+            for err in hourly_errors:
+                if not isinstance(err, Mapping):
+                    continue
+                err_msg = str(err.get("message", "") or "").strip()
+                if not err_msg:
+                    continue
+                try:
+                    hour_val = int(err.get("hour", 0))
+                except (TypeError, ValueError):
+                    hour_val = 0
+                st.warning(f"{hour_val % 24:02d}:00 – {err_msg}")
 
         if error_msg:
             st.session_state["linefill_next_day"] = pd.DataFrame()
+            if reports:
+                last_hour = reports[-1].get("time")
+                if last_hour is not None:
+                    st.info(
+                        f"Optimization stopped early after {int(last_hour) % 24:02d}:00. "
+                        "Partial results are displayed for completed hours."
+                    )
+            else:
+                st.info("Optimization failed before any hourly result was produced.")
             st.error(error_msg)
-            st.stop()
 
         if solver_result.get("backtracked"):
             warn_msg = _build_enforced_origin_warning(
@@ -4464,7 +4516,10 @@ if not auto_batch:
             df_int.insert(0, "Pattern", pattern)
             df_int.insert(0, "Time", f"{hr:02d}:00")
             station_tables.append(df_int)
-        df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+        if station_tables:
+            df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+        else:
+            df_day = pd.DataFrame()
 
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
         # Pandas may treat some columns as object if they contain NaN or are newly inserted.

@@ -133,7 +133,8 @@ def _normalise_max_dr(value, *, fallback: float | None = None) -> float:
 def _max_dr_int(value, *, fallback: float | None = None) -> int:
     """Return the integer drag-reduction cap for optimisation loops."""
 
-    return int(_normalise_max_dr(value, fallback=fallback))
+    capped = min(_normalise_max_dr(value, fallback=fallback), 30.0)
+    return int(capped)
 
 
 def _extract_rpm(
@@ -5745,9 +5746,10 @@ def solve_pipeline_with_types(
 
         if stn.get('pump_types'):
             # Determine available counts for each type
-            availA = stn['pump_types'].get('A', {}).get('available', 0)
-            availB = stn['pump_types'].get('B', {}).get('available', 0)
-            combos = generate_type_combinations(availA, availB)
+            pdataA = stn['pump_types'].get('A', {})
+            pdataB = stn['pump_types'].get('B', {})
+            availA = pdataA.get('available', 0)
+            availB = pdataB.get('available', 0)
             seen_active: set[tuple[int, int]] = set()
             max_station_limit: int | None
             raw_max = stn.get('max_pumps')
@@ -5757,14 +5759,88 @@ def solve_pipeline_with_types(
                 max_station_limit = None
             raw_min = stn.get('min_pumps')
             min_station_required = int(raw_min) if isinstance(raw_min, (int, float)) and raw_min > 0 else 0
+
+            def _apply_single_type_payload(unit: dict, *, active_a: int, active_b: int) -> None:
+                unit['pump_combo'] = {'A': availA, 'B': availB}
+                unit['active_combo'] = {'A': active_a, 'B': active_b}
+                if active_a > 0 and active_b == 0:
+                    pdata = pdataA
+                elif active_b > 0 and active_a == 0:
+                    pdata = pdataB
+                else:
+                    pdata = None
+                if pdata is not None:
+                    for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
+                        unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
+                    unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
+                    unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
+                    unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
+                    unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
+                    unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
+                    unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
+                    unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                    unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
+                else:
+                    min_map: dict[str, float] = {}
+                    dol_map: dict[str, float] = {}
+                    if active_a > 0:
+                        min_map['A'] = _extract_rpm(
+                            pdataA.get('MinRPM'),
+                            default=_station_min_rpm(stn, ptype='A'),
+                            prefer='min',
+                        )
+                        dol_map['A'] = _extract_rpm(
+                            pdataA.get('DOL'),
+                            default=_station_max_rpm(stn, ptype='A'),
+                            prefer='max',
+                        )
+                    if active_b > 0:
+                        min_map['B'] = _extract_rpm(
+                            pdataB.get('MinRPM'),
+                            default=_station_min_rpm(stn, ptype='B'),
+                            prefer='min',
+                        )
+                        dol_map['B'] = _extract_rpm(
+                            pdataB.get('DOL'),
+                            default=_station_max_rpm(stn, ptype='B'),
+                            prefer='max',
+                        )
+                    unit['MinRPM'] = min_map
+                    unit['DOL'] = dol_map
+                    unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
+                    unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
+                    unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
+                    unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
+                    unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                    unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
+
+            if availA > 0 and availB <= 0:
+                max_active = availA
+                if max_station_limit is not None:
+                    max_active = min(max_active, max_station_limit)
+                for active in range(1, max_active + 1):
+                    if active < min_station_required:
+                        continue
+                    unit = copy.deepcopy(stn)
+                    _apply_single_type_payload(unit, active_a=active, active_b=0)
+                    unit['max_pumps'] = active
+                    unit['min_pumps'] = active
+                    expand_all(
+                        pos + 1,
+                        stn_acc + [unit],
+                        kv_acc + [kv],
+                        rho_acc + [rho],
+                        slices_acc + [current_slices],
+                    )
+                return
+
+            combos = generate_type_combinations(availA, availB)
             for numA, numB in combos:
                 total_units = numA + numB
                 if total_units <= 0:
                     continue
                 if max_station_limit is not None and total_units > max_station_limit:
                     continue
-                pdataA = stn['pump_types'].get('A', {})
-                pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
                         if actA + actB <= 0:
@@ -5778,58 +5854,7 @@ def solve_pipeline_with_types(
                             continue
                         seen_active.add(active_key)
                         unit = copy.deepcopy(stn)
-                        unit['pump_combo'] = {'A': availA, 'B': availB}
-                        unit['active_combo'] = {'A': actA, 'B': actB}
-                        if actA > 0 and actB == 0:
-                            pdata = pdataA
-                        elif actB > 0 and actA == 0:
-                            pdata = pdataB
-                        else:
-                            pdata = None
-                        if pdata is not None:
-                            for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
-                                unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
-                            unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
-                            unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
-                            unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
-                            unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
-                            unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
-                            unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
-                            unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                            unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
-                        else:
-                            min_map: dict[str, float] = {}
-                            dol_map: dict[str, float] = {}
-                            if actA > 0:
-                                min_map['A'] = _extract_rpm(
-                                    pdataA.get('MinRPM'),
-                                    default=_station_min_rpm(stn, ptype='A'),
-                                    prefer='min',
-                                )
-                                dol_map['A'] = _extract_rpm(
-                                    pdataA.get('DOL'),
-                                    default=_station_max_rpm(stn, ptype='A'),
-                                    prefer='max',
-                                )
-                            if actB > 0:
-                                min_map['B'] = _extract_rpm(
-                                    pdataB.get('MinRPM'),
-                                    default=_station_min_rpm(stn, ptype='B'),
-                                    prefer='min',
-                                )
-                                dol_map['B'] = _extract_rpm(
-                                    pdataB.get('DOL'),
-                                    default=_station_max_rpm(stn, ptype='B'),
-                                    prefer='max',
-                                )
-                            unit['MinRPM'] = min_map
-                            unit['DOL'] = dol_map
-                            unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
-                            unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
-                            unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
-                            unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
-                            unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                            unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
+                        _apply_single_type_payload(unit, active_a=actA, active_b=actB)
                         unit['max_pumps'] = actA + actB
                         unit['min_pumps'] = actA + actB
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
