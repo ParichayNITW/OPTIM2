@@ -139,7 +139,9 @@ def test_solve_for_hour_returns_hour_result():
     hour_result = solve_for_hour(config, 0, cfg=SchedulerConfig())
     assert isinstance(hour_result, HourResult)
     assert hour_result.feasible
-    assert hour_result.pump_settings
+    assert hour_result.rows
+    assert hour_result.cost_currency is not None
+    assert hour_result.legacy_payload.get("pump_settings")
 
 
 def test_profile_solver_reports_functions():
