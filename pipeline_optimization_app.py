@@ -249,6 +249,86 @@ def _collect_segment_floors(
     return segments
 
 
+def _format_schedule_time_label(value: object) -> str:
+    """Normalise a schedule timestamp for display in fallback messages."""
+
+    if isinstance(value, dt.datetime):
+        return value.strftime("%H:%M")
+    if isinstance(value, dt.time):
+        return value.strftime("%H:%M")
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%H:%M")
+    if isinstance(value, (int, float)):
+        total_minutes = int(round(float(value) * 60))
+        hours, minutes = divmod(total_minutes, 60)
+        return f"{hours % 24:02d}:{minutes % 60:02d}"
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned:
+            try:
+                parsed = dt.datetime.strptime(cleaned, "%H:%M")
+                return parsed.strftime("%H:%M")
+            except ValueError:
+                return cleaned
+    return "00:00"
+
+
+def _build_solver_error_message(raw_message: object, *, start_time: object = None) -> str:
+    """Return a user-facing error string for solver failures."""
+
+    if isinstance(raw_message, str) and "No feasible pump combination" in raw_message:
+        time_label = _format_schedule_time_label(start_time)
+        return f"No hydraulically feasible solution found at {time_label} Hrs"
+    return str(raw_message) if raw_message else "Optimization failed"
+
+
+def _render_solver_feedback(
+    res: Mapping[str, object] | None,
+    *,
+    start_time: object = None,
+    show_error: bool = False,
+    include_warnings: bool = True,
+) -> bool:
+    """Render solver warnings/errors in the UI.
+
+    Returns ``True`` if an error message was displayed.
+    """
+
+    if not isinstance(res, Mapping):
+        return False
+
+    if include_warnings:
+        warnings = res.get("warnings")
+        if isinstance(warnings, Sequence) and not isinstance(warnings, (str, bytes)):
+            for warning in warnings:
+                if not isinstance(warning, Mapping):
+                    continue
+                if warning.get("type") != "station_max_dr_exceeded":
+                    continue
+                message = warning.get("message")
+                if not message:
+                    station = warning.get("station", "Station")
+                    try:
+                        required = float(warning.get("required_dr", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        required = 0.0
+                    try:
+                        max_dr = float(warning.get("max_dr", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        max_dr = 0.0
+                    message = (
+                        f"{station} requires {required:.2f}% DR but is capped at {max_dr:.2f}%."
+                    )
+                st.warning(message)
+
+    if show_error and res.get("error"):
+        message = _build_solver_error_message(res.get("message"), start_time=start_time)
+        st.error(message)
+        return True
+
+    return False
+
+
 def _get_linefill_snapshot_for_hour(
     linefill_snaps: Sequence[pd.DataFrame] | None,
     hours: Sequence[int] | None,
@@ -2623,6 +2703,7 @@ def solve_pipeline(
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
             )
+        _render_solver_feedback(res, start_time=start_time)
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
             usage = res.get("loop_usage", [])
@@ -3696,7 +3777,13 @@ def _execute_time_series_solver(
 
             if res.get("error"):
                 cur_hr = (hr + sub) % 24
-                error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
+                friendly = _build_solver_error_message(res.get("message"), start_time=start_str)
+                if friendly.startswith("No hydraulically feasible solution"):
+                    error_msg = friendly
+                elif friendly == "Optimization failed":
+                    error_msg = f"Optimization failed at {cur_hr:02d}:00"
+                else:
+                    error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {friendly}"
                 break
 
             term_key = term_data["name"].lower().replace(" ", "_")
@@ -4203,11 +4290,26 @@ def run_all_updates():
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
             **search_kwargs,
         )
-    if not res or res.get("error"):
+    start_label = st.session_state.get("start_time", "00:00")
+    handled = False
+    if isinstance(res, Mapping):
+        handled = _render_solver_feedback(
+            res,
+            start_time=start_label,
+            show_error=True,
+            include_warnings=True,
+        )
+    error_flag = (not res) or (isinstance(res, Mapping) and res.get("error"))
+    if error_flag:
         if isinstance(res, dict):
             st.session_state["last_error_response"] = res
-        msg = (res.get("message") or "Optimization failed") if isinstance(res, dict) else "Optimization failed"
-        st.error(msg)
+        if not handled:
+            message = None
+            if isinstance(res, Mapping):
+                message = _build_solver_error_message(res.get("message"), start_time=start_label)
+            else:
+                message = _build_solver_error_message(None, start_time=start_label)
+            st.error(message)
         return
     st.session_state["last_res"] = copy.deepcopy(res)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
@@ -4594,7 +4696,16 @@ if not auto_batch:
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                     )
                     if res.get("error"):
-                        st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
+                        friendly = _build_solver_error_message(res.get("message"), start_time=seg_start)
+                        interval_label = _format_schedule_time_label(seg_start)
+                        if friendly.startswith("No hydraulically feasible solution"):
+                            st.error(friendly)
+                        elif friendly == "Optimization failed":
+                            st.error(f"Optimization failed for interval starting {interval_label}")
+                        else:
+                            st.error(
+                                f"Optimization failed for interval starting {interval_label} -> {friendly}"
+                            )
                         st.stop()
 
                     reports.append({"time": seg_start, "result": res})
