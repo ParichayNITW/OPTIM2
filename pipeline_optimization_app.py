@@ -59,10 +59,7 @@ if str(ROOT) not in sys.path:
 # Hide Vega action buttons globally
 alt.renderers.set_embed_options(actions=False)
 
-from dra_utils import (
-    get_ppm_for_dr,
-    DRA_CURVE_DATA,
-)
+from dra_utils import get_ppm_for_dr
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
@@ -4515,26 +4512,31 @@ if not auto_batch:
 
         progress_cb = _make_solver_progress(len(hours))
 
-        with st.spinner(spinner_msg):
-            solver_result = _run_time_series_solver_cached(
-                stations_base,
-                term_data,
-                hours,
-                flow_rate=FLOW_sched,
-                plan_df=plan_df,
-                current_vol=current_vol,
-                dra_linefill=dra_linefill,
-                dra_reach_km=dra_reach_km,
-                RateDRA=RateDRA,
-                Price_HSD=Price_HSD,
-                fuel_density=st.session_state.get("Fuel_density", 820.0),
-                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                total_length=total_length,
-                sub_steps=sub_steps,
-                progress_callback=progress_cb,
-            )
+        try:
+            with st.spinner(spinner_msg):
+                solver_result = _run_time_series_solver_cached(
+                    stations_base,
+                    term_data,
+                    hours,
+                    flow_rate=FLOW_sched,
+                    plan_df=plan_df,
+                    current_vol=current_vol,
+                    dra_linefill=dra_linefill,
+                    dra_reach_km=dra_reach_km,
+                    RateDRA=RateDRA,
+                    Price_HSD=Price_HSD,
+                    fuel_density=st.session_state.get("Fuel_density", 820.0),
+                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    total_length=total_length,
+                    sub_steps=sub_steps,
+                    progress_callback=progress_cb,
+                )
+        except Exception as exc:  # pragma: no cover - UI safeguard
+            st.session_state["linefill_next_day"] = pd.DataFrame()
+            st.error(f"Optimizer crashed unexpectedly: {exc}")
+            st.stop()
 
         error_msg = solver_result.get("error")
         reports = list(solver_result.get("reports", []))
@@ -5984,49 +5986,28 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             dr_opt = res.get(f"drag_reduction_{key}", 0.0)
             if dr_opt > 0:
                 viscosity = kv_list[idx-1]
-                cst_list = sorted(DRA_CURVE_DATA.keys())
-                if viscosity <= cst_list[0]:
-                    df_curve = DRA_CURVE_DATA[cst_list[0]]
-                    curve_label = f"{cst_list[0]} cSt curve"
-                    percent_dr = df_curve['%Drag Reduction'].values
-                    ppm_vals = df_curve['PPM'].values
-                else:
-                    lower = max([c for c in cst_list if c <= viscosity])
-                    upper = min([c for c in cst_list if c >= viscosity])
-                    df_lower = DRA_CURVE_DATA[lower]
-                    df_upper = DRA_CURVE_DATA[upper]
-                    
-                    # Defensive checks to prevent crash if data is missing or malformed
-                    if (
-                        df_lower is None or df_upper is None or
-                        '%Drag Reduction' not in df_lower or 'PPM' not in df_lower or
-                        '%Drag Reduction' not in df_upper or 'PPM' not in df_upper or
-                        df_lower['%Drag Reduction'].dropna().empty or df_lower['PPM'].dropna().empty or
-                        df_upper['%Drag Reduction'].dropna().empty or df_upper['PPM'].dropna().empty
-                    ):
-                        st.warning(f"DRA data for {lower} or {upper} cSt is missing or malformed.")
-                        continue
-                
-                    percent_dr = np.linspace(
-                        min(df_lower['%Drag Reduction'].min(), df_upper['%Drag Reduction'].min()),
-                        max(df_lower['%Drag Reduction'].max(), df_upper['%Drag Reduction'].max()),
-                        50
-                    )
-                    # Always use np.array with float dtype for interpolation
-                    xp_lower = np.array(df_lower['%Drag Reduction'], dtype=float)
-                    yp_lower = np.array(df_lower['PPM'], dtype=float)
-                    xp_upper = np.array(df_upper['%Drag Reduction'], dtype=float)
-                    yp_upper = np.array(df_upper['PPM'], dtype=float)
-                    
-                    ppm_lower = np.interp(percent_dr, xp_lower, yp_lower)
-                    ppm_upper = np.interp(percent_dr, xp_upper, yp_upper)
-                    if np.isclose(upper, lower):
-                        ppm_vals = ppm_lower
-                        curve_label = f"{lower} cSt curve"
-                    else:
-                        # Interpolate each percent_dr value for given viscosity
-                        ppm_vals = ppm_lower + (ppm_upper - ppm_lower) * ((viscosity - lower) / (upper - lower))
-                        curve_label = f"Interpolated for {viscosity:.2f} cSt"
+                try:
+                    d_inner = stn['D'] - 2*stn['t']
+                except KeyError:
+                    d_inner = stn.get('d', 0.0)
+                flow_key = f"pipeline_flow_in_{stn['name']}"
+                flow_guess = res.get(flow_key, st.session_state.get("FLOW", 0.0))
+                if flow_guess is None:
+                    flow_guess = st.session_state.get("FLOW", 0.0)
+                if d_inner <= 0 or flow_guess <= 0:
+                    st.warning(f"Insufficient data to compute DRA curve for {stn['name']}.")
+                    continue
+                velocity = (float(flow_guess) / 3600.0) / (np.pi * (d_inner**2) / 4.0)
+                if velocity <= 0:
+                    st.warning(f"Velocity is zero for {stn['name']}; cannot plot DRA curve.")
+                    continue
+                max_dr = stn.get('max_dr', 30.0) or 30.0
+                percent_dr = np.linspace(0.0, max_dr, 50)
+                ppm_vals = [
+                    get_ppm_for_dr(viscosity, dr_val, velocity, d_inner)
+                    for dr_val in percent_dr
+                ]
+                curve_label = f"Analytical curve ({viscosity:.2f} cSt)"
                 opt_ppm = res.get(f"dra_ppm_{key}", 0.0)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -6126,6 +6107,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         rate = stn.get('rate', 9.0)
         tariffs = stn.get('tariffs') or []
         g = 9.81
+        d_inner = stn['D'] - 2*stn['t']
 
         def tariff_cost(kw, hours, start_time="00:00"):
             t0 = dt.datetime.strptime(start_time, "%H:%M")
@@ -6159,7 +6141,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             pwr = (rho*q*g*h*npump)/(3600.0*eff*motor_eff*1000)
             return tariff_cost(pwr, 24.0, "00:00")
         def get_system_head(q, d):
-            d_inner = stn['D'] - 2*stn['t']
             rough = stn['rough']
             L_seg = stn['L']
             visc = kv_list[pump_idx]
@@ -6177,7 +6158,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         ppm_value = last_res.get(f"dra_ppm_{key}", 0.0)
     
         def get_total_cost(q, n, d, npump):
-            local_ppm = get_ppm_for_dr(viscosity, d)
+            velocity = 0.0
+            if q > 0 and d_inner > 0:
+                velocity = (q / 3600.0) / (np.pi * (d_inner**2) / 4.0)
+            local_ppm = get_ppm_for_dr(viscosity, d, velocity, d_inner)
             pcost = get_power_cost(q, n, d, npump)
             dracost = local_ppm * (q * 1000.0 * 24.0 / 1e6) * RateDRA
             return pcost + dracost

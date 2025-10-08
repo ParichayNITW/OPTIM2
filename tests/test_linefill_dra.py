@@ -33,6 +33,30 @@ from pipeline_optimization_app import (
 )
 
 
+def _velocity(flow_m3h: float, diameter_m: float) -> float:
+    if flow_m3h <= 0 or diameter_m <= 0:
+        return 0.0
+    return (flow_m3h / 3600.0) / (math.pi * (diameter_m ** 2) / 4.0)
+
+
+def _ppm_for_dr(kv: float, dr_percent: float, flow_m3h: float, diameter_m: float) -> float:
+    if dr_percent <= 0:
+        return 0.0
+    velocity = _velocity(flow_m3h, diameter_m)
+    if velocity <= 0:
+        return 0.0
+    return float(get_ppm_for_dr(kv, dr_percent, velocity, diameter_m))
+
+
+def _dr_for_ppm(kv: float, ppm_value: float, flow_m3h: float, diameter_m: float) -> float:
+    if ppm_value <= 0:
+        return 0.0
+    velocity = _velocity(flow_m3h, diameter_m)
+    if velocity <= 0:
+        return 0.0
+    return float(get_dr_for_ppm(kv, ppm_value, velocity, diameter_m))
+
+
 def solve_pipeline(*args, segment_slices=None, **kwargs):
     if "stations" in kwargs:
         stations = kwargs["stations"]
@@ -781,9 +805,9 @@ def test_running_pump_shears_trimmed_slug() -> None:
 
     kv = float(stn_data.get("kv", 3.0) or 3.0)
     upstream_ppm = float(initial_queue[0]["dra_ppm"])
-    upstream_dr = float(get_dr_for_ppm(kv, upstream_ppm))
+    upstream_dr = _dr_for_ppm(kv, upstream_ppm, flow_m3h, stn_data["d_inner"])
     expected_dr = upstream_dr * (1.0 - 0.25)
-    expected_ppm_float = float(get_ppm_for_dr(kv, expected_dr)) if expected_dr > 0 else 0.0
+    expected_ppm_float = _ppm_for_dr(kv, expected_dr, flow_m3h, stn_data["d_inner"])
     expected_ppm = expected_ppm_float if expected_ppm_float > 0 else 0.0
     assert dra_segments
     assert dra_segments[0][1] == pytest.approx(expected_ppm)
@@ -828,15 +852,15 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
     downstream_ppm = float(queue_after[0]["dra_ppm"])
     assert downstream_ppm > 0
 
-    upstream_dr = float(get_dr_for_ppm(kv, upstream_ppm))
-    downstream_dr = float(get_dr_for_ppm(kv, downstream_ppm))
+    upstream_dr = _dr_for_ppm(kv, upstream_ppm, flow_m3h, stn_data["d_inner"])
+    downstream_dr = _dr_for_ppm(kv, downstream_ppm, flow_m3h, stn_data["d_inner"])
     expected_dr_cont = upstream_dr * (1.0 - shear_rate)
-    expected_ppm_float = float(get_ppm_for_dr(kv, expected_dr_cont)) if expected_dr_cont > 0 else 0.0
+    expected_ppm_float = _ppm_for_dr(kv, expected_dr_cont, flow_m3h, stn_data["d_inner"])
     expected_ppm = expected_ppm_float if expected_ppm_float > 0 else 0.0
 
     assert downstream_ppm == pytest.approx(expected_ppm)
 
-    expected_dr = float(get_dr_for_ppm(kv, expected_ppm)) if expected_ppm > 0 else 0.0
+    expected_dr = _dr_for_ppm(kv, expected_ppm, flow_m3h, stn_data["d_inner"])
     assert downstream_dr == pytest.approx(expected_dr, rel=1e-6, abs=1e-6)
 
 
@@ -978,9 +1002,9 @@ def test_injected_slug_respects_shear_when_upstream() -> None:
 
     assert inj_ppm == opt["dra_ppm_main"]
     kv = float(stn_data.get("kv", 3.0) or 3.0)
-    inj_dr = float(get_dr_for_ppm(kv, float(opt["dra_ppm_main"])))
+    inj_dr = _dr_for_ppm(kv, float(opt["dra_ppm_main"]), flow_m3h, stn_data["d_inner"])
     sheared_dr = inj_dr * (1.0 - 0.2)
-    expected_ppm_float = float(get_ppm_for_dr(kv, sheared_dr)) if sheared_dr > 0 else 0.0
+    expected_ppm_float = _ppm_for_dr(kv, sheared_dr, flow_m3h, stn_data["d_inner"])
     expected_ppm = expected_ppm_float if expected_ppm_float > 0 else 0.0
     assert dra_segments
     assert dra_segments[0][1] == pytest.approx(expected_ppm)
@@ -1030,8 +1054,8 @@ def test_idle_pump_injection_reflected_in_results() -> None:
 
     assert not result.get("error"), result.get("message")
 
-    expected_ppm = float(get_ppm_for_dr(3.0, 12))
     flow_station_b = result["pipeline_flow_station_b"]
+    expected_ppm = _ppm_for_dr(3.0, 12, flow_station_b, stations[1]["d"])
     assert result["num_pumps_station_b"] == 0
     assert result["dra_ppm_station_b"] == pytest.approx(expected_ppm)
     assert result["drag_reduction_station_b"] > 0.0
@@ -1069,12 +1093,9 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
     kv = float(stn_data.get("kv", 3.0) or 3.0)
 
     def _expected_ppm(ppm_in: float) -> float:
-        dr_val = float(get_dr_for_ppm(kv, float(ppm_in)))
+        dr_val = _dr_for_ppm(kv, float(ppm_in), flow_m3h, stn_data["d_inner"])
         sheared_val = dr_val * (1.0 - shear_factor)
-        if sheared_val <= 0:
-            return 0.0
-        ppm_float = float(get_ppm_for_dr(kv, sheared_val))
-        return ppm_float if ppm_float > 0 else 0.0
+        return _ppm_for_dr(kv, sheared_val, flow_m3h, stn_data["d_inner"])
 
     expected_stage1 = _expected_ppm(initial_ppm)
     assert ppm_stage1 == pytest.approx(expected_stage1)
@@ -1095,10 +1116,10 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
     expected_stage2 = _expected_ppm(expected_stage1)
     assert ppm_stage2 == pytest.approx(expected_stage2)
 
-    base_dr = float(get_dr_for_ppm(kv, initial_ppm))
-    stage2_dr = float(get_dr_for_ppm(kv, ppm_stage2))
+    base_dr = _dr_for_ppm(kv, initial_ppm, flow_m3h, stn_data["d_inner"])
+    stage2_dr = _dr_for_ppm(kv, ppm_stage2, flow_m3h, stn_data["d_inner"])
     assert stage2_dr <= base_dr
-    expected_stage2_dr = float(get_dr_for_ppm(kv, expected_stage2)) if expected_stage2 > 0 else 0.0
+    expected_stage2_dr = _dr_for_ppm(kv, expected_stage2, flow_m3h, stn_data["d_inner"])
     assert stage2_dr == pytest.approx(expected_stage2_dr, rel=1e-6)
 
 
@@ -1495,10 +1516,10 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
             queue_after = []
         return dra_segments, queue_after, ppm, False
 
-    def fake_get_ppm(kv: float, dr: float) -> float:
+    def fake_get_ppm(kv: float, dr: float, *_args, **_kwargs) -> float:
         return float(dr) * 10.0
 
-    def fake_get_dr(kv: float, ppm: float) -> float:
+    def fake_get_dr(kv: float, ppm: float, *_args, **_kwargs) -> float:
         return float(ppm) / 10.0
 
     def fake_composite(
