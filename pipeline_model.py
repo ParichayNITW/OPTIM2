@@ -2069,6 +2069,7 @@ def compute_minimum_lacing_requirement(
     segment_slices: list[list[dict]] | None = None,
     dra_upper_bound: float = 70.0,
     min_suction_head: float = 0.0,
+    station_suction_heads: Sequence[float] | None = None,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -2098,6 +2099,17 @@ def compute_minimum_lacing_requirement(
         'example_segment': None,
     }
     result['segments'] = []
+
+    suction_heads: list[float] = []
+    if isinstance(station_suction_heads, Sequence) and not isinstance(station_suction_heads, (str, bytes)):
+        for entry in station_suction_heads:
+            try:
+                val = float(entry)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(val):
+                continue
+            suction_heads.append(max(val, 0.0))
 
     if not stations:
         return result
@@ -2389,7 +2401,12 @@ def compute_minimum_lacing_requirement(
         available_head = residual_head + max_head
         if carried_head_available > residual_head:
             available_head = max(available_head, carried_head_available)
-        suction_requirement = min_suction if stn.get('is_pump') else 0.0
+        station_suction = min_suction
+        if suction_heads and idx < len(suction_heads):
+            station_suction = suction_heads[idx]
+        if station_suction < 0.0:
+            station_suction = 0.0
+        suction_requirement = station_suction if stn.get('is_pump') else station_suction
         effective_available_head = max(available_head - suction_requirement, 0.0)
         gap = sdh_required - effective_available_head
         if gap > 1e-6 and sdh_required > 0.0:
