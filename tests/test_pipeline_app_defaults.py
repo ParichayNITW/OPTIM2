@@ -37,7 +37,7 @@ def test_collect_search_depth_kwargs_handles_missing_pipeline_constants(monkeypa
     assert defaults == {
         "rpm_step": 25,
         "dra_step": 2,
-        "coarse_multiplier": 4.0,
-        "state_top_k": 30,
-        "state_cost_margin": 3000.0,
+        "coarse_multiplier": 5.0,
+        "state_top_k": 50,
+        "state_cost_margin": 5000.0,
     }
