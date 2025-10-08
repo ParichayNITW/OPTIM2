@@ -2493,9 +2493,9 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
     dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 4.0)
-    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 30)
-    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 3000.0)
+    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
+    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
+    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
