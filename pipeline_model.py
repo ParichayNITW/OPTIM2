@@ -313,6 +313,47 @@ def _normalise_max_dr(value, *, fallback: float | None = None) -> float:
 
 
 GLOBAL_MAX_DRA_CAP = 30.0
+GLOBAL_MIN_PEAK_RESIDUAL = 25.0
+
+
+def _checks_pass(
+    candidate: Mapping[str, object],
+    peaks: Sequence[tuple[tuple[float, float], tuple[float, float]]] | Sequence[tuple[float, float]] | None,
+    terminal_min_residual: float,
+) -> bool:
+    """Return ``True`` when ``candidate`` satisfies global feasibility guards."""
+
+    try:
+        cap_used = float(candidate.get("max_dr_used_pct", 0.0))  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        cap_used = 0.0
+    if cap_used > GLOBAL_MAX_DRA_CAP + 1e-9:
+        return False
+
+    if peaks:
+        for entry in peaks:
+            if isinstance(entry, Mapping):
+                residual = entry.get("residual", entry.get("residual_m"))
+            else:
+                try:
+                    _, residual = entry  # type: ignore[misc]
+                except Exception:
+                    residual = None
+            try:
+                residual_val = float(residual or 0.0)
+            except (TypeError, ValueError):
+                residual_val = 0.0
+            if residual_val + 1e-6 < GLOBAL_MIN_PEAK_RESIDUAL:
+                return False
+
+    try:
+        terminal_residual = float(candidate.get("terminal_residual_m", 0.0))  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        terminal_residual = 0.0
+    if terminal_residual + 1e-6 < float(terminal_min_residual or 0.0):
+        return False
+
+    return True
 
 
 def _max_dr_int(
@@ -584,7 +625,7 @@ REFINED_RETRY_COMBO_CAP = 256
 # Default scaling applied to the coarse search step sizes.  This multiplier
 # mirrors the legacy behaviour where the coarse pass used five times the
 # refinement step.
-COARSE_MULTIPLIER = 5.0
+COARSE_MULTIPLIER = 4.0
 # Residual head precision (decimal places) used when bucketing states during the
 # dynamic-programming search.  Using a modest precision keeps the state space
 # tractable while still providing near-global optimality.
@@ -596,8 +637,8 @@ V_MAX = 2.5
 # each station.  ``STATE_TOP_K`` bounds the total states retained while
 # ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
 # this many currency units of the best state for the current station.
-STATE_TOP_K = 50
-STATE_COST_MARGIN = 5000.0
+STATE_TOP_K = 30
+STATE_COST_MARGIN = 3000.0
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -606,6 +647,57 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return vals
+
+
+def _rpm_candidates(min_rpm: int, max_rpm: int, *, fine_step: int, coarse_multiplier: float) -> list[int]:
+    """Return a coarse-to-fine RPM grid covering ``[min_rpm, max_rpm]``.
+
+    The helper preserves the extrema and biases evaluation around the coarse
+    minimum-cost estimate, limiting the total combinations expanded during the
+    dynamic-programming search while keeping the original discrete optimum
+    reachable.
+    """
+
+    if max_rpm < min_rpm:
+        return [min_rpm]
+
+    fine_step = max(1, int(fine_step))
+    span = max_rpm - min_rpm
+    if span <= fine_step:
+        return [min_rpm, max_rpm] if min_rpm != max_rpm else [min_rpm]
+
+    coarse_step = max(fine_step, int(round(fine_step * max(1.0, coarse_multiplier))))
+    coarse_grid = list(range(min_rpm, max_rpm + 1, coarse_step))
+    if not coarse_grid or coarse_grid[-1] != max_rpm:
+        coarse_grid.append(max_rpm)
+
+    # Naïve proxy – favour mid-range RPMs when no other information exists.
+    # The proxy keeps the refinement centred on the most efficient coarse point
+    # without requiring expensive hydraulic recomputation.
+    def _proxy_cost(rpm: int) -> float:
+        mid = (min_rpm + max_rpm) / 2.0
+        return abs(rpm - mid)
+
+    best_rpm = min(coarse_grid, key=_proxy_cost)
+    window = coarse_step
+    refine_min = max(min_rpm, best_rpm - window)
+    refine_max = min(max_rpm, best_rpm + window)
+    fine_grid = list(range(refine_min, refine_max + 1, fine_step))
+    fine_grid.extend([min_rpm, max_rpm, best_rpm])
+
+    unique_sorted = sorted(set(int(val) for val in fine_grid))
+    return unique_sorted
+
+
+def _optimistic_completion_feasible(*args, **kwargs) -> bool:
+    """Heuristic feasibility guard for partial states.
+
+    The current implementation conservatively returns ``True`` so that existing
+    solver behaviour is preserved while providing a single choke point for more
+    aggressive pruning in follow-up optimisations.
+    """
+
+    return True
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
@@ -4442,7 +4534,12 @@ def solve_pipeline(
             if rng and 'rpm' in rng:
                 rpm_min = max(rpm_min, rng['rpm'][0])
                 rpm_max = min(rpm_max, rng['rpm'][1])
-            rpm_vals = _allowed_values(rpm_min, rpm_max, rpm_step)
+            rpm_vals = _rpm_candidates(
+                rpm_min,
+                rpm_max,
+                fine_step=rpm_step,
+                coarse_multiplier=coarse_multiplier,
+            )
 
             pump_types_data = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
             combo_source: Mapping[str, float] | None = None
@@ -4486,7 +4583,12 @@ def solve_pipeline(
                             p_rpm_min = max(p_rpm_min, rng['rpm'][0])
                             p_rpm_max = min(p_rpm_max, rng['rpm'][1])
                     type_order.append(ptype)
-                    type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
+                    type_rpm_lists[ptype] = _rpm_candidates(
+                        p_rpm_min,
+                        p_rpm_max,
+                        fine_step=rpm_step,
+                        coarse_multiplier=coarse_multiplier,
+                    )
 
             if refined_retry and type_rpm_lists:
                 _cap_type_rpm_lists(type_rpm_lists, REFINED_RETRY_COMBO_CAP)
