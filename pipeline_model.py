@@ -92,6 +92,63 @@ def _segment_cache_precision(decimals: int | None):
         _segment_hydraulics_composite.cache_clear()
 
 
+def _flow_velocity_mps(flow_m3h: float, diameter_m: float) -> float:
+    """Convert ``flow_m3h`` through a pipe of ``diameter_m`` to m/s."""
+
+    try:
+        flow = float(flow_m3h or 0.0)
+    except (TypeError, ValueError):
+        flow = 0.0
+    try:
+        diameter = float(diameter_m or 0.0)
+    except (TypeError, ValueError):
+        diameter = 0.0
+    if flow <= 0.0 or diameter <= 0.0:
+        return 0.0
+    area = math.pi * (diameter ** 2) / 4.0
+    if area <= 0.0:
+        return 0.0
+    return (flow / 3600.0) / area
+
+
+def _dra_ppm_for_percent(kv: float, dr_percent: float, flow_m3h: float, diameter_m: float) -> float:
+    """Wrapper around :func:`get_ppm_for_dr` with safe guards."""
+
+    try:
+        kv_val = float(kv or 0.0)
+        dr_val = float(dr_percent or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if kv_val <= 0.0 or dr_val <= 0.0:
+        return 0.0
+    velocity = _flow_velocity_mps(flow_m3h, diameter_m)
+    if velocity <= 0.0:
+        return 0.0
+    try:
+        return float(get_ppm_for_dr(kv_val, dr_val, velocity, float(diameter_m or 0.0)))
+    except Exception:
+        return 0.0
+
+
+def _dra_percent_for_ppm(kv: float, ppm: float, flow_m3h: float, diameter_m: float) -> float:
+    """Wrapper around :func:`get_dr_for_ppm` with safe guards."""
+
+    try:
+        kv_val = float(kv or 0.0)
+        ppm_val = float(ppm or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if kv_val <= 0.0 or ppm_val <= 0.0:
+        return 0.0
+    velocity = _flow_velocity_mps(flow_m3h, diameter_m)
+    if velocity <= 0.0:
+        return 0.0
+    try:
+        return float(get_dr_for_ppm(kv_val, ppm_val, velocity, float(diameter_m or 0.0)))
+    except Exception:
+        return 0.0
+
+
 def _solve_pipeline_loop_case(args: tuple) -> tuple[list[int], dict]:
     (
         stations,
@@ -1302,6 +1359,8 @@ def _predict_effective_injection(
     dra_shear_factor: float,
     shear_injection: bool,
     injector_position: str | None,
+    flow_m3h: float,
+    diameter_m: float,
 ) -> float:
     """Return the estimated post-shear concentration for an injected slug."""
 
@@ -1340,24 +1399,19 @@ def _predict_effective_injection(
     if not pump_running or not apply_injection_shear:
         return max(inj_requested, 0.0)
 
-    inj_dr = 0.0
-    if kv_val > 0.0:
-        try:
-            inj_dr = float(get_dr_for_ppm(kv_val, inj_requested))
-        except Exception:
-            inj_dr = 0.0
+    inj_dr = _dra_percent_for_ppm(kv_val, inj_requested, flow_m3h, diameter_m)
 
     if inj_dr > 0.0:
         dr_use = inj_dr * (1.0 - shear if shear > 0 else 1.0)
         if dr_use <= 0.0:
             return 0.0
-        try:
-            return float(get_ppm_for_dr(kv_val, dr_use))
-        except Exception:
-            multiplier = 1.0 - shear if shear > 0 else 1.0
-            if multiplier < 0.0:
-                multiplier = 0.0
-            return inj_requested * multiplier
+        ppm_val = _dra_ppm_for_percent(kv_val, dr_use, flow_m3h, diameter_m)
+        if ppm_val > 0.0:
+            return ppm_val
+        multiplier = 1.0 - shear if shear > 0 else 1.0
+        if multiplier < 0.0:
+            multiplier = 0.0
+        return inj_requested * multiplier
 
     multiplier = 1.0 - shear if shear > 0 else 1.0
     if multiplier < 0.0:
@@ -1443,6 +1497,7 @@ def _update_mainline_dra(
     flow_m3h = float(flow_m3h or 0.0)
     hours = max(float(hours or 0.0), 0.0)
     d_inner = float(stn_data.get("d_inner") or stn_data.get("d") or 0.0)
+    velocity_main = _flow_velocity_mps(flow_m3h, d_inner)
 
     if precomputed is None:
         pumped_length = _km_from_volume(flow_m3h * hours, d_inner) if d_inner > 0 else 0.0
@@ -1482,10 +1537,7 @@ def _update_mainline_dra(
             except (TypeError, ValueError):
                 floor_perc = 0.0
             if floor_perc > 0.0 and kv > 0.0:
-                try:
-                    floor_ppm = float(get_ppm_for_dr(kv, floor_perc))
-                except Exception:
-                    floor_ppm = 0.0
+                floor_ppm = _dra_ppm_for_percent(kv, floor_perc, flow_m3h, d_inner)
         seg_floor_raw = segment_floor.get('segments')
         if isinstance(seg_floor_raw, Sequence):
             for seg_entry in seg_floor_raw:
@@ -1505,10 +1557,7 @@ def _update_mainline_dra(
                     except (TypeError, ValueError):
                         seg_perc = 0.0
                     if seg_perc > 0.0 and kv > 0.0:
-                        try:
-                            seg_ppm = float(get_ppm_for_dr(kv, seg_perc))
-                        except Exception:
-                            seg_ppm = 0.0
+                        seg_ppm = _dra_ppm_for_percent(kv, seg_perc, flow_m3h, d_inner)
                 if seg_length <= 0.0 or seg_ppm <= 0.0:
                     continue
                 floor_segments.append((seg_length, seg_ppm))
@@ -1521,32 +1570,18 @@ def _update_mainline_dra(
 
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
-    if inj_requested > 0:
-        if not pump_running or not apply_injection_shear:
-            inj_effective = inj_requested
-        else:
-            inj_dr = 0.0
-            if kv > 0:
-                try:
-                    inj_dr = float(get_dr_for_ppm(kv, inj_requested))
-                except Exception:
-                    inj_dr = 0.0
-            if inj_dr > 0:
-                dr_use = inj_dr * (1.0 - shear if shear > 0 else 1.0)
-                if dr_use < 0:
-                    dr_use = 0.0
-                if dr_use > 0:
-                    try:
-                        inj_effective = float(get_ppm_for_dr(kv, dr_use))
-                    except Exception:
-                        inj_effective = inj_requested * (1.0 - shear if shear > 0 else 1.0)
-                else:
-                    inj_effective = 0.0
-            else:
-                multiplier = 1.0 - shear if shear > 0 else 1.0
-                if multiplier < 0.0:
-                    multiplier = 0.0
-                inj_effective = inj_requested * multiplier
+    if inj_requested > 0.0:
+        inj_effective = _predict_effective_injection(
+            inj_requested,
+            kv,
+            pump_running=pump_running,
+            pump_shear_rate=pump_shear_rate,
+            dra_shear_factor=dra_shear_factor,
+            shear_injection=shear_injection,
+            injector_position=stn_data.get("dra_injector_position"),
+            flow_m3h=flow_m3h,
+            diameter_m=d_inner,
+        )
 
     existing_queue: list[tuple[float, float]] = []
     if queue:
@@ -1635,20 +1670,15 @@ def _update_mainline_dra(
             return 0.0
         if not pump_running or shear <= 0.0:
             return ppm_float
-        dr_value = 0.0
-        if kv > 0:
-            try:
-                dr_value = float(get_dr_for_ppm(kv, ppm_float))
-            except Exception:
-                dr_value = 0.0
+        dr_value = _dra_percent_for_ppm(kv, ppm_float, flow_m3h, d_inner)
         if dr_value > 0.0:
             dr_value *= (1.0 - shear)
             if dr_value <= 0.0:
                 return 0.0
-            try:
-                return float(get_ppm_for_dr(kv, dr_value))
-            except Exception:
-                return max(ppm_float * (1.0 - shear), 0.0)
+            ppm_val = _dra_ppm_for_percent(kv, dr_value, flow_m3h, d_inner)
+            if ppm_val > 0.0:
+                return ppm_val
+            return max(ppm_float * (1.0 - shear), 0.0)
         return max(ppm_float * (1.0 - shear), 0.0)
 
     pumped_adjusted: list[tuple[float, float]] = []
@@ -2326,13 +2356,9 @@ def compute_minimum_lacing_requirement(
                 )
                 result['enforceable'] = False
 
-            try:
-                dra_ppm_needed = (
-                    float(get_ppm_for_dr(visc_max, dr_needed))
-                    if dr_needed > 0
-                    else 0.0
-                )
-            except Exception:
+            if dr_needed > 0:
+                dra_ppm_needed = _dra_ppm_for_percent(visc_max, dr_needed, flow_segment, d_inner)
+            else:
                 dra_ppm_needed = 0.0
 
             if dr_needed > max_dra_perc:
@@ -2586,6 +2612,8 @@ def _effective_dra_response(
     dra_segments: list[tuple[float, float]] | tuple[tuple[float, float], ...],
     slices: list[dict] | tuple[dict, ...] | None,
     default_kv: float,
+    flow_m3h: float,
+    diameter_m: float,
 ) -> tuple[float, float]:
     """Return the average drag reduction and treated length for ``dra_segments``."""
 
@@ -2650,10 +2678,7 @@ def _effective_dra_response(
                 slice_queue.append((queue_remaining, queue_kv))
             take = min(remaining, queue_remaining)
             kv_use = queue_kv if queue_kv > 0 else (default_kv if default_kv > 0 else 1.0)
-            try:
-                dr_val = float(get_dr_for_ppm(kv_use, ppm_val))
-            except Exception:
-                dr_val = 0.0
+            dr_val = _dra_percent_for_ppm(kv_use, ppm_val, flow_m3h, diameter_m)
             if dr_val < 0:
                 dr_val = 0.0
             if take > 0:
@@ -4239,6 +4264,7 @@ def solve_pipeline(
 
     origin_dra_floor_ppm = 0.0
     origin_dra_floor_perc = 0.0
+    origin_floor_pending = False
     if isinstance(forced_origin_detail, Mapping):
         try:
             origin_dra_floor_ppm = max(float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0), 0.0)
@@ -4249,10 +4275,7 @@ def solve_pipeline(
         except (TypeError, ValueError):
             origin_dra_floor_perc = 0.0
         if origin_dra_floor_perc <= 0.0 and origin_dra_floor_ppm > 0.0 and KV_list:
-            try:
-                origin_dra_floor_perc = float(get_dr_for_ppm(KV_list[0], origin_dra_floor_ppm))
-            except Exception:
-                origin_dra_floor_perc = 0.0
+            origin_floor_pending = True
 
     default_t = 0.007
     default_e = 0.00004
@@ -4293,6 +4316,15 @@ def solve_pipeline(
                 origin_diameter = 0.0
             if origin_diameter < 0:
                 origin_diameter = 0.0
+            if origin_floor_pending and origin_dra_floor_ppm > 0.0:
+                origin_flow = segment_flows[0] if segment_flows else FLOW
+                origin_dra_floor_perc = _dra_percent_for_ppm(
+                    KV_list[0],
+                    origin_dra_floor_ppm,
+                    origin_flow,
+                    origin_diameter,
+                )
+                origin_floor_pending = False
         rough = stn.get('rough', default_e)
 
         # Use a default SMYS when the station provides ``None`` or omits the
@@ -4334,6 +4366,7 @@ def solve_pipeline(
                 'maop_head': maop_head_loop,
                 'maop_kgcm2': maop_kg_loop,
             }
+        loop_d_inner = loop_dict['d_inner'] if loop_dict else d_inner
 
         elev_i = stn.get('elev', 0.0)
         elev_next = terminal.get('elev', 0.0) if i == N else stations[i].get('elev', 0.0)
@@ -4364,41 +4397,26 @@ def solve_pipeline(
             floor_ppm_raw = 0.0
         if kv > 0.0:
             if floor_perc_raw > 0.0 and floor_ppm_raw <= 0.0:
-                try:
-                    floor_ppm_raw = float(get_ppm_for_dr(kv, floor_perc_raw))
-                except Exception:
-                    floor_ppm_raw = max(floor_ppm_raw, 0.0)
+                floor_ppm_raw = _dra_ppm_for_percent(kv, floor_perc_raw, flow, d_inner)
             elif floor_ppm_raw > 0.0 and floor_perc_raw <= 0.0:
-                try:
-                    floor_perc_raw = float(get_dr_for_ppm(kv, floor_ppm_raw))
-                except Exception:
-                    floor_perc_raw = max(floor_perc_raw, 0.0)
+                floor_perc_raw = _dra_percent_for_ppm(kv, floor_ppm_raw, flow, d_inner)
         floor_perc_min = 0.0
         if floor_perc_raw > 0.0:
             floor_perc_min = float(math.ceil(floor_perc_raw))
         elif floor_ppm_raw > 0.0 and kv > 0.0:
-            try:
-                perc_from_ppm = float(get_dr_for_ppm(kv, floor_ppm_raw))
-            except Exception:
-                perc_from_ppm = 0.0
+            perc_from_ppm = _dra_percent_for_ppm(kv, floor_ppm_raw, flow, d_inner)
             if perc_from_ppm > 0.0:
                 floor_perc_min = float(math.ceil(perc_from_ppm))
         if floor_perc_min < 0.0:
             floor_perc_min = 0.0
         floor_ppm_min = floor_ppm_raw if floor_ppm_raw > 0.0 else 0.0
         if floor_perc_min > 0.0 and kv > 0.0:
-            try:
-                floor_ppm_from_min = float(get_ppm_for_dr(kv, floor_perc_min))
-            except Exception:
-                floor_ppm_from_min = 0.0
+            floor_ppm_from_min = _dra_ppm_for_percent(kv, floor_perc_min, flow, d_inner)
             if floor_ppm_from_min > floor_ppm_min:
                 floor_ppm_min = floor_ppm_from_min
         floor_dr_min_float = 0.0
         if floor_ppm_min > 0.0 and kv > 0.0:
-            try:
-                floor_dr_min_float = float(get_dr_for_ppm(kv, floor_ppm_min))
-            except Exception:
-                floor_dr_min_float = 0.0
+            floor_dr_min_float = _dra_percent_for_ppm(kv, floor_ppm_min, flow, d_inner)
         floor_dr_min_int = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 0
         floor_perc_min_int = int(floor_perc_min) if floor_perc_min > 0.0 else 0
         floor_ppm_tol = max(floor_ppm_min * 1e-6, 1e-9) if floor_ppm_min > 0.0 else 1e-9
@@ -4498,10 +4516,7 @@ def solve_pipeline(
                         step_size = max(min_step, 1)
                         candidate = dr_min
                         while candidate <= dr_max:
-                            try:
-                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
-                            except Exception:
-                                ppm_candidate = 0.0
+                            ppm_candidate = _dra_ppm_for_percent(kv, candidate, flow, d_inner)
                             if ppm_candidate >= floor_ppm_min - ppm_tol:
                                 dr_min = candidate
                                 break
@@ -4519,10 +4534,7 @@ def solve_pipeline(
                         if candidate <= 0:
                             continue
                         if kv > 0.0:
-                            try:
-                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
-                            except Exception:
-                                ppm_candidate = 0.0
+                            ppm_candidate = _dra_ppm_for_percent(kv, candidate, flow, d_inner)
                             if ppm_candidate < floor_ppm_min - floor_ppm_tol:
                                 continue
                         filtered_vals.append(candidate)
@@ -4563,7 +4575,7 @@ def solve_pipeline(
                     ppm_candidates: list[tuple[int, float]] = []
                     seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
-                        ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                        ppm_main = _dra_ppm_for_percent(kv, dra_main, flow, d_inner) if dra_main > 0 else 0.0
                         if floor_ppm_min > 0.0:
                             ppm_main = max(ppm_main, floor_ppm_min)
                         if floor_ppm_min > 0.0 and ppm_main <= 0.0:
@@ -4578,10 +4590,7 @@ def solve_pipeline(
                         seen_ppm_keys.add(key)
                         dra_use = int(dra_main)
                         if ppm_main > 0.0 and kv > 0.0:
-                            try:
-                                dra_from_ppm = float(get_dr_for_ppm(kv, ppm_main))
-                            except Exception:
-                                dra_from_ppm = dra_main
+                            dra_from_ppm = _dra_percent_for_ppm(kv, ppm_main, flow, d_inner)
                             if dra_from_ppm > dra_use:
                                 dra_use = int(math.ceil(dra_from_ppm))
                         ppm_candidates.append((dra_use, ppm_main))
@@ -4589,10 +4598,7 @@ def solve_pipeline(
                         fallback_ppm = floor_ppm_min
                         dra_use = int(floor_dr_min_int or floor_perc_min_int or 0)
                         if kv > 0.0:
-                            try:
-                                dra_from_ppm = float(get_dr_for_ppm(kv, fallback_ppm))
-                            except Exception:
-                                dra_from_ppm = 0.0
+                            dra_from_ppm = _dra_percent_for_ppm(kv, fallback_ppm, flow, d_inner)
                             if dra_from_ppm > dra_use:
                                 dra_use = int(math.ceil(dra_from_ppm))
                         if dra_use <= 0:
@@ -4600,7 +4606,11 @@ def solve_pipeline(
                         ppm_candidates.append((dra_use, fallback_ppm))
                     for dra_main_use, ppm_main in ppm_candidates:
                         for dra_loop in dra_loop_vals:
-                            ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
+                            ppm_loop = (
+                                _dra_ppm_for_percent(kv, dra_loop, flow, loop_d_inner)
+                                if dra_loop > 0
+                                else 0.0
+                            )
                             inj_effective_est = _predict_effective_injection(
                                 ppm_main,
                                 kv,
@@ -4609,6 +4619,8 @@ def solve_pipeline(
                                 dra_shear_factor=station_shear_factor,
                                 shear_injection=station_shear_injection,
                                 injector_position=injector_position,
+                                flow_m3h=flow,
+                                diameter_m=d_inner,
                             )
                             if ppm_main > 0.0 and inj_effective_est <= 0.0:
                                 ppm_candidate = max(ppm_main, floor_ppm_min)
@@ -4621,6 +4633,8 @@ def solve_pipeline(
                                         dra_shear_factor=station_shear_factor,
                                         shear_injection=station_shear_injection,
                                         injector_position=injector_position,
+                                        flow_m3h=flow,
+                                        diameter_m=d_inner,
                                     )
                                 if inj_effective_est <= 0.0:
                                     continue
@@ -4682,10 +4696,7 @@ def solve_pipeline(
                         step_size = max(min_step, 1)
                         candidate = dr_min
                         while candidate <= dr_max:
-                            try:
-                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
-                            except Exception:
-                                ppm_candidate = 0.0
+                            ppm_candidate = _dra_ppm_for_percent(kv, candidate, flow, d_inner)
                             if ppm_candidate >= floor_ppm_min - ppm_tol:
                                 dr_min = candidate
                                 break
@@ -4703,16 +4714,13 @@ def solve_pipeline(
                         if candidate <= 0:
                             continue
                         if kv > 0.0:
-                            try:
-                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
-                            except Exception:
-                                ppm_candidate = 0.0
+                            ppm_candidate = _dra_ppm_for_percent(kv, candidate, flow, d_inner)
                             if ppm_candidate < floor_ppm_min - floor_ppm_tol:
                                 continue
                         filtered_vals.append(candidate)
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
-                    ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                    ppm_main = _dra_ppm_for_percent(kv, dra_main, flow, d_inner) if dra_main > 0 else 0.0
                     if floor_ppm_min > 0.0 and ppm_main > 0.0 and ppm_main < floor_ppm_min:
                         ppm_main = floor_ppm_min
                     if floor_ppm_min > 0.0 and ppm_main <= 0.0:
@@ -4721,10 +4729,7 @@ def solve_pipeline(
                         continue
                     dra_use = int(dra_main)
                     if ppm_main > 0.0 and kv > 0.0:
-                        try:
-                            dra_from_ppm = float(get_dr_for_ppm(kv, ppm_main))
-                        except Exception:
-                            dra_from_ppm = dra_main
+                        dra_from_ppm = _dra_percent_for_ppm(kv, ppm_main, flow, d_inner)
                         if dra_from_ppm > dra_use:
                             dra_use = int(math.ceil(dra_from_ppm))
                     non_pump_opts.append({
@@ -5044,6 +5049,8 @@ def solve_pipeline(
                         dra_segments,
                         stn_data.get('linefill_slices'),
                         stn_data['kv'],
+                        flow_total,
+                        stn_data['d_inner'],
                     )
                     dra_len_main = min(treated_length, stn_data['L'])
                 else:
