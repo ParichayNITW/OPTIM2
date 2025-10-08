@@ -69,11 +69,20 @@ INIT_DRA_COL = "Initial DRA (ppm)"
 DAILY_SOLVE_TIMEOUT_S = 900  # seconds
 
 
-def _progress_heartbeat(area, msg="solving…"):
-    """Write a lightweight heartbeat to keep Streamlit sessions alive."""
+def _progress_heartbeat(area, *, msg="solving…", start_time: float | None = None) -> None:
+    """Write a lightweight heartbeat to keep Streamlit sessions alive.
+
+    When ``start_time`` is provided an elapsed timer is rendered instead of the
+    wall-clock timestamp so users can tell how long the solver has been
+    running.
+    """
 
     with area:
-        st.write(f"⏱️ {msg} {time.strftime('%H:%M:%S')}")
+        if start_time is not None:
+            elapsed = max(0.0, time.time() - start_time)
+            st.write(f"⏱️ {msg} (elapsed {elapsed:,.0f}s)")
+        else:
+            st.write(f"⏱️ {msg} {time.strftime('%H:%M:%S')}")
 
 
 def ensure_initial_dra_column(
@@ -4416,7 +4425,8 @@ if not auto_batch:
         progress_bar = st.progress(0)
         status = st.empty()
         heartbeat_area = st.empty()
-        last_ping = {"t": time.time()}
+        start_time = time.time()
+        last_ping = {"t": start_time}
 
         def _callback(kind: str, **info):
             try:
@@ -4437,7 +4447,7 @@ if not auto_batch:
                     status.write(str(msg))
                 now = time.time()
                 if now - last_ping["t"] > 2.5:
-                    _progress_heartbeat(heartbeat_area)
+                    _progress_heartbeat(heartbeat_area, start_time=start_time, msg="Working…")
                     last_ping["t"] = now
             except Exception:
                 pass
@@ -4575,7 +4585,11 @@ if not auto_batch:
                         if time.time() - start_wall > DAILY_SOLVE_TIMEOUT_S:
                             timed_out = True
                             break
-                        _progress_heartbeat(heartbeat_holder)
+                        _progress_heartbeat(
+                            heartbeat_holder,
+                            start_time=start_wall,
+                            msg="Daily optimisation in progress…",
+                        )
                     except Exception as exc:  # pragma: no cover - defensive
                         solver_exc = exc
                         break
