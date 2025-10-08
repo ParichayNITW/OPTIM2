@@ -2318,7 +2318,7 @@ def build_summary_dataframe(
         if drop_cols:
             df_sum.drop(columns=drop_cols, inplace=True, errors='ignore')
     df_sum = df_sum.round(2)
-    for label in ['DRA PPM', 'Baseline Floor PPM', 'Baseline Floor %DR', 'Baseline Floor Length (km)']:
+    for label in ['DRA PPM', 'Min DRA PPM', 'Baseline Floor PPM', 'Baseline Floor %DR', 'Baseline Floor Length (km)']:
         if label in df_sum['Parameters'].values:
             idx = df_sum[df_sum['Parameters'] == label].index[0]
             for col in df_sum.columns:
@@ -2364,6 +2364,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
         base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
+        floor_ppm = _float_or_none(res.get(f"floor_min_ppm_{key}", 0.0)) or 0.0
+        floor_perc = _float_or_none(res.get(f"floor_min_perc_{key}", 0.0)) or 0.0
 
         combo = None
         if isinstance(stn, dict):
@@ -2397,6 +2399,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
 
+        dra_ppm_val = _float_or_none(res.get(f"dra_ppm_{key}", 0.0)) or 0.0
+        if floor_ppm > 0.0 and dra_ppm_val < floor_ppm - 1e-9:
+            dra_ppm_val = floor_ppm
+
         row = {
             'Station': station_display,
             'Pump Name': pump_name,
@@ -2405,8 +2411,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
-            'DRA PPM': res.get(f"dra_ppm_{key}", 0.0),
-            'Loop DRA PPM': res.get(f"dra_ppm_loop_{key}", 0.0),
+            'DRA PPM': dra_ppm_val,
+            'Min DRA PPM': float(floor_ppm),
+            'Min DRA %DR': float(floor_perc),
+            'Loop DRA PPM': _float_or_none(res.get(f"dra_ppm_loop_{key}", 0.0)) or 0.0,
             'No. of Pumps': n_pumps,
             'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
             'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
@@ -2499,8 +2507,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     num_cols = df.select_dtypes(include='number').columns
     df[num_cols] = df[num_cols].round(2)
-    if 'DRA PPM' in df.columns:
-        df['DRA PPM'] = df['DRA PPM'].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
+    for column in ['DRA PPM', 'Min DRA PPM']:
+        if column in df.columns:
+            df[column] = df[column].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
     if 'Loop DRA PPM' in df.columns:
         df['Loop DRA PPM'] = df['Loop DRA PPM'].apply(lambda x: x if float(x or 0) > 0 else 'NIL')
     return df
@@ -4889,8 +4898,8 @@ if not auto_batch:
         if st.session_state.get("run_mode") == "daily":
             elapsed = st.session_state.get("daily_solver_elapsed")
             if isinstance(elapsed, (int, float)) and elapsed > 0.0:
-                st.caption(
-                    f"Daily optimisation completed in {elapsed:,.1f} seconds."
+                st.markdown(
+                    f"**Daily optimisation completed in {elapsed:,.1f} seconds.**"
                 )
         label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
         first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
