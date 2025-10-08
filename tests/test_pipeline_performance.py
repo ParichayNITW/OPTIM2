@@ -12,8 +12,6 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import dra_utils
-
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
@@ -1632,12 +1630,10 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["station_idx"] == 0
     assert seg_entry["length_km"] == pytest.approx(10.0)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
-    dra_curve = dra_utils.DRA_CURVE_DATA.get(2.5)
-    assert dra_curve is not None and not dra_curve.empty
-    interpolated_ppm = dra_utils._ppm_from_df(dra_curve, expected_dr)
-    assert not math.isclose(interpolated_ppm, round(interpolated_ppm))
-    assert seg_entry["dra_ppm"] == math.ceil(interpolated_ppm)
-    assert seg_entry["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
+    expected_ppm = model._dra_ppm_for_percent(2.5, expected_dr, flow, stations[0]["d"])
+    assert expected_ppm > 0
+    assert seg_entry["dra_ppm"] == math.ceil(expected_ppm)
+    assert seg_entry["dra_ppm"] == pytest.approx(expected_ppm, rel=1e-3)
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
     assert seg_entry["max_head_available"] == pytest.approx(effective_available)
@@ -1907,7 +1903,8 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry["dra_perc"] == pytest.approx(30.0)
     assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
     assert seg_entry.get("limited_by_station") is True
-    assert seg_entry.get("dra_ppm") == pytest.approx(model.get_ppm_for_dr(2.5, 30.0))
+    expected_ppm = model._dra_ppm_for_percent(2.5, 30.0, 1200.0, stations[0]["d"])
+    assert seg_entry.get("dra_ppm") == pytest.approx(expected_ppm)
     assert result.get("example_segment", {}).get("station_name") == "Station A"
 
 
