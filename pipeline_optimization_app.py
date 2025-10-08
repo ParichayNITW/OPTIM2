@@ -4577,7 +4577,8 @@ if not auto_batch:
 
         heartbeat_holder.empty()
 
-        error_msg = solver_result.get("error")
+        error_raw = solver_result.get("error")
+        error_message = solver_result.get("message")
         reports = list(solver_result.get("reports", []))
         linefill_snaps = list(solver_result.get("linefill_snaps", []))
         current_vol = solver_result.get("final_vol", current_vol)
@@ -4588,9 +4589,9 @@ if not auto_batch:
         completed_hours = {
             int(rec.get("time", 0)) % 24 for rec in reports if isinstance(rec, Mapping)
         }
-        for hour_entry in hours:
-            hour_mod = int(hour_entry) % 24
-            if hour_mod not in completed_hours:
+        missing_hours = [int(h) % 24 for h in hours if int(h) % 24 not in completed_hours]
+        if missing_hours and completed_hours:
+            for hour_mod in missing_hours:
                 st.error(
                     f"No hydraulically feasible solution at {hour_mod:02d}:00 "
                     f"(≤{pipeline_model.GLOBAL_MAX_DRA_CAP}% DR enforced)."
@@ -4616,7 +4617,20 @@ if not auto_batch:
                     hour_val = 0
                 st.warning(f"{hour_val % 24:02d}:00 – {err_msg}")
 
-        if error_msg:
+        error_text: str | None = None
+        if isinstance(error_raw, str):
+            stripped = error_raw.strip()
+            if stripped:
+                error_text = stripped
+        elif error_raw:
+            if isinstance(error_message, str) and error_message.strip():
+                error_text = error_message.strip()
+            else:
+                error_text = "Optimization failed."
+        elif isinstance(error_message, str) and error_message.strip():
+            error_text = error_message.strip()
+
+        if error_text:
             st.session_state["linefill_next_day"] = pd.DataFrame()
             if reports:
                 last_hour = reports[-1].get("time")
@@ -4627,7 +4641,7 @@ if not auto_batch:
                     )
             else:
                 st.info("Optimization failed before any hourly result was produced.")
-            st.error(error_msg)
+            st.error(error_text)
 
         if solver_result.get("backtracked"):
             warn_msg = _build_enforced_origin_warning(
