@@ -9,6 +9,7 @@ import io
 import math
 import os
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from functools import lru_cache
 from itertools import product
 
@@ -32,8 +33,63 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 DEFAULT_MAX_DR = 70
 
 DEFAULT_LOOP_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
-_SEGMENT_CACHE_DECIMALS = 6
 _SEGMENT_CACHE_SIZE = 65536
+
+_CACHE_DECIMALS_ENV = os.environ.get("OPTIM_SEGMENT_CACHE_DECIMALS")
+_CACHE_DECIMALS_RAW = str(_CACHE_DECIMALS_ENV).strip().lower() if _CACHE_DECIMALS_ENV is not None else ""
+if not _CACHE_DECIMALS_RAW or _CACHE_DECIMALS_RAW == "auto":
+    _SEGMENT_CACHE_DECIMALS: int | None = 6
+elif _CACHE_DECIMALS_RAW == "none":
+    _SEGMENT_CACHE_DECIMALS = None
+else:
+    try:
+        _SEGMENT_CACHE_DECIMALS = int(_CACHE_DECIMALS_ENV)
+        if _SEGMENT_CACHE_DECIMALS < 0:
+            _SEGMENT_CACHE_DECIMALS = None
+    except (TypeError, ValueError):
+        _SEGMENT_CACHE_DECIMALS = 6
+
+_SEGMENT_CACHE_DECIMALS_ACTIVE: int | None = _SEGMENT_CACHE_DECIMALS
+
+
+def _segment_cache_quantise(value: float | int | None) -> float | None:
+    """Return a hashable cache key component for ``value`` using safe quantisation.
+
+    Values are rounded to 6 decimal places by default, striking a balance between
+    numerical fidelity and consistent cache hits.  Setting the
+    ``OPTIM_SEGMENT_CACHE_DECIMALS`` environment variable to ``none`` disables
+    rounding entirely, while any non-negative integer forces that precision.
+    """
+
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if _SEGMENT_CACHE_DECIMALS_ACTIVE is None:
+        return numeric
+    return round(numeric, _SEGMENT_CACHE_DECIMALS_ACTIVE)
+
+
+@contextmanager
+def _segment_cache_precision(decimals: int | None):
+    """Temporarily override the active cache precision for hydraulic segments."""
+
+    global _SEGMENT_CACHE_DECIMALS_ACTIVE
+    previous = _SEGMENT_CACHE_DECIMALS_ACTIVE
+    if decimals == previous:
+        yield
+        return
+    _SEGMENT_CACHE_DECIMALS_ACTIVE = decimals
+    _segment_hydraulics.cache_clear()
+    _segment_hydraulics_composite.cache_clear()
+    try:
+        yield
+    finally:
+        _SEGMENT_CACHE_DECIMALS_ACTIVE = previous
+        _segment_hydraulics.cache_clear()
+        _segment_hydraulics_composite.cache_clear()
 
 
 def _solve_pipeline_loop_case(args: tuple) -> tuple[list[int], dict]:
@@ -1885,13 +1941,13 @@ def _segment_hydraulics(
     dra_length: float | None = None,
 ) -> tuple[float, float, float, float]:
     key = (
-        round(float(flow_m3h), _SEGMENT_CACHE_DECIMALS),
-        round(float(L), _SEGMENT_CACHE_DECIMALS),
-        round(float(d_inner), _SEGMENT_CACHE_DECIMALS),
-        round(float(rough), _SEGMENT_CACHE_DECIMALS),
-        round(float(kv), _SEGMENT_CACHE_DECIMALS),
-        round(float(dra_perc), _SEGMENT_CACHE_DECIMALS),
-        None if dra_length is None else round(float(dra_length), _SEGMENT_CACHE_DECIMALS),
+        _segment_cache_quantise(flow_m3h) or 0.0,
+        _segment_cache_quantise(L) or 0.0,
+        _segment_cache_quantise(d_inner) or 0.0,
+        _segment_cache_quantise(rough) or 0.0,
+        _segment_cache_quantise(kv) or 0.0,
+        _segment_cache_quantise(dra_perc) or 0.0,
+        _segment_cache_quantise(dra_length),
     )
     return _segment_hydraulics_cached(*key)
 
@@ -2366,9 +2422,9 @@ def _normalise_slices_for_cache(
             seg_rho = 0.0
         normalised.append(
             (
-                round(seg_len, _SEGMENT_CACHE_DECIMALS),
-                round(seg_kv, _SEGMENT_CACHE_DECIMALS),
-                round(seg_rho, _SEGMENT_CACHE_DECIMALS),
+                _segment_cache_quantise(seg_len) or 0.0,
+                _segment_cache_quantise(seg_kv) or 0.0,
+                _segment_cache_quantise(seg_rho) or 0.0,
             )
         )
     return tuple(normalised)
@@ -2412,15 +2468,15 @@ def _segment_hydraulics_composite(
 ) -> tuple[float, float, float, float]:
     slices_key = _normalise_slices_for_cache(slices)
     key = (
-        round(float(flow_m3h), _SEGMENT_CACHE_DECIMALS),
-        round(float(L), _SEGMENT_CACHE_DECIMALS),
-        round(float(d_inner), _SEGMENT_CACHE_DECIMALS),
-        round(float(rough), _SEGMENT_CACHE_DECIMALS),
-        round(float(kv_default), _SEGMENT_CACHE_DECIMALS),
-        round(float(dra_perc), _SEGMENT_CACHE_DECIMALS),
-        None if dra_length is None else round(float(dra_length), _SEGMENT_CACHE_DECIMALS),
+        _segment_cache_quantise(flow_m3h) or 0.0,
+        _segment_cache_quantise(L) or 0.0,
+        _segment_cache_quantise(d_inner) or 0.0,
+        _segment_cache_quantise(rough) or 0.0,
+        _segment_cache_quantise(kv_default) or 0.0,
+        _segment_cache_quantise(dra_perc) or 0.0,
+        _segment_cache_quantise(dra_length),
         slices_key,
-        None if limit is None else round(float(limit), _SEGMENT_CACHE_DECIMALS),
+        _segment_cache_quantise(limit),
     )
     return _segment_hydraulics_composite_cached(*key)
 
@@ -3539,6 +3595,7 @@ def solve_pipeline(
         cases = _generate_loop_cases_by_flags(flags)
         best_res: dict | None = None
         best_case_cost = cost_cap
+        any_case_pruned = False
         disable_parallel = os.environ.get('OPTIM_DISABLE_LOOP_PARALLEL')
         use_parallel = (
             len(cases) > 1
@@ -3586,6 +3643,8 @@ def solve_pipeline(
                             usage, res = future.result()
                         except Exception:
                             continue
+                        if res.get('pruned_by_cost_cap'):
+                            any_case_pruned = True
                         if res.get('error'):
                             continue
                         total_cost = res.get('total_cost', float('inf'))
@@ -3608,17 +3667,17 @@ def solve_pipeline(
                     usage[pos] = val
                 case_cap = best_case_cost
                 res = solve_pipeline(
-                    stations,
-                    terminal,
+                    copy.deepcopy(stations),
+                    copy.deepcopy(terminal),
                     FLOW,
-                    KV_list,
-                    rho_list,
-                    segment_slices,
+                    list(KV_list),
+                    list(rho_list),
+                    copy.deepcopy(segment_slices),
                     RateDRA,
                     Price_HSD,
                     Fuel_density,
                     Ambient_temp,
-                    linefill,
+                    copy.deepcopy(linefill),
                     dra_reach_km,
                     mop_kgcm2,
                     hours,
@@ -3636,6 +3695,8 @@ def solve_pipeline(
                     segment_floors=segment_floors,
                     cost_cap=case_cap,
                 )
+                if res.get('pruned_by_cost_cap'):
+                    any_case_pruned = True
                 if res.get('error'):
                     continue
                 total_cost = res.get('total_cost', float('inf'))
@@ -3648,6 +3709,55 @@ def solve_pipeline(
                             best_case_cost = float(total_cost)
                         else:
                             best_case_cost = min(best_case_cost, float(total_cost))
+        if best_res is None and any_case_pruned:
+            fallback_best: dict | None = None
+            fallback_cost = float('inf')
+            with _segment_cache_precision(None):
+                for case in cases:
+                    usage = [0] * len(stations)
+                    for pos, val in zip(loop_positions, case):
+                        usage[pos] = val
+                    res = solve_pipeline(
+                        copy.deepcopy(stations),
+                        copy.deepcopy(terminal),
+                        FLOW,
+                        list(KV_list),
+                        list(rho_list),
+                        copy.deepcopy(segment_slices),
+                        RateDRA,
+                        Price_HSD,
+                        Fuel_density,
+                        Ambient_temp,
+                        copy.deepcopy(linefill),
+                        dra_reach_km,
+                        mop_kgcm2,
+                        hours,
+                        start_time,
+                        pump_shear_rate=pump_shear_rate,
+                        loop_usage_by_station=usage,
+                        enumerate_loops=False,
+                        rpm_step=rpm_step,
+                        dra_step=dra_step,
+                        coarse_multiplier=coarse_multiplier,
+                        state_top_k=state_top_k,
+                        state_cost_margin=state_cost_margin,
+                        _exhaustive_pass=_exhaustive_pass,
+                        forced_origin_detail=forced_origin_detail,
+                        segment_floors=segment_floors,
+                        cost_cap=None,
+                    )
+                    if res.get('error'):
+                        continue
+                    total_cost = res.get('total_cost', float('inf'))
+                    if not isinstance(total_cost, (int, float)) or not math.isfinite(total_cost):
+                        continue
+                    if total_cost < fallback_cost:
+                        fallback_cost = float(total_cost)
+                        res_with_usage = res.copy()
+                        res_with_usage['loop_usage'] = usage.copy()
+                        fallback_best = res_with_usage
+            if fallback_best is not None:
+                return fallback_best
         return best_res or {
             'error': True,
             'message': 'No feasible pump combination found for stations.',
