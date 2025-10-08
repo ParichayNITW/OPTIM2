@@ -1,6 +1,8 @@
 import os
 import sys
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import time
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -63,6 +65,15 @@ from dra_utils import get_ppm_for_dr
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
+
+DAILY_SOLVE_TIMEOUT_S = 900  # seconds
+
+
+def _progress_heartbeat(area, msg="solving…"):
+    """Write a lightweight heartbeat to keep Streamlit sessions alive."""
+
+    with area:
+        st.write(f"⏱️ {msg} {time.strftime('%H:%M:%S')}")
 
 
 def ensure_initial_dra_column(
@@ -4404,6 +4415,8 @@ if not auto_batch:
 
         progress_bar = st.progress(0)
         status = st.empty()
+        heartbeat_area = st.empty()
+        last_ping = {"t": time.time()}
 
         def _callback(kind: str, **info):
             try:
@@ -4422,6 +4435,10 @@ if not auto_batch:
                 elif kind == "summary":
                     msg = info.get("msg") or "Optimization finished."
                     status.write(str(msg))
+                now = time.time()
+                if now - last_ping["t"] > 2.5:
+                    _progress_heartbeat(heartbeat_area)
+                    last_ping["t"] = now
             except Exception:
                 pass
 
@@ -4510,33 +4527,78 @@ if not auto_batch:
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
-        progress_cb = _make_solver_progress(len(hours))
+        progress_cb = _make_solver_progress(len(hours)) if is_hourly else None
+        solver_result: dict | None = None
+        heartbeat_holder = st.empty()
 
-        try:
-            with st.spinner(spinner_msg):
-                solver_result = _run_time_series_solver_cached(
-                    stations_base,
-                    term_data,
-                    hours,
-                    flow_rate=FLOW_sched,
-                    plan_df=plan_df,
-                    current_vol=current_vol,
-                    dra_linefill=dra_linefill,
-                    dra_reach_km=dra_reach_km,
-                    RateDRA=RateDRA,
-                    Price_HSD=Price_HSD,
-                    fuel_density=st.session_state.get("Fuel_density", 820.0),
-                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                    total_length=total_length,
-                    sub_steps=sub_steps,
-                    progress_callback=progress_cb,
+        def _run_solver() -> dict:
+            return _run_time_series_solver_cached(
+                stations_base,
+                term_data,
+                hours,
+                flow_rate=FLOW_sched,
+                plan_df=plan_df,
+                current_vol=current_vol,
+                dra_linefill=dra_linefill,
+                dra_reach_km=dra_reach_km,
+                RateDRA=RateDRA,
+                Price_HSD=Price_HSD,
+                fuel_density=st.session_state.get("Fuel_density", 820.0),
+                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                total_length=total_length,
+                sub_steps=sub_steps,
+                progress_callback=progress_cb,
+            )
+
+        if is_hourly:
+            try:
+                with st.spinner(spinner_msg):
+                    solver_result = _run_solver()
+            except Exception as exc:  # pragma: no cover - UI safeguard
+                st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.error(f"Optimizer crashed unexpectedly: {exc}")
+                st.stop()
+        else:
+            st.success("Starting Daily Pumping Schedule optimizer…")
+            timed_out = False
+            solver_exc: Exception | None = None
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_solver)
+                start_wall = time.time()
+                while True:
+                    try:
+                        solver_result = future.result(timeout=2.5)
+                        break
+                    except TimeoutError:
+                        if time.time() - start_wall > DAILY_SOLVE_TIMEOUT_S:
+                            timed_out = True
+                            break
+                        _progress_heartbeat(heartbeat_holder)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        solver_exc = exc
+                        break
+            if timed_out:
+                future.cancel()
+                st.error(
+                    "⏳ Timed out while searching the daily schedule. "
+                    "Try loosening the Advanced search depth or run hour-by-hour."
                 )
-        except Exception as exc:  # pragma: no cover - UI safeguard
-            st.session_state["linefill_next_day"] = pd.DataFrame()
-            st.error(f"Optimizer crashed unexpectedly: {exc}")
-            st.stop()
+                solver_result = {
+                    "error": "timeout",
+                    "reports": [],
+                    "hourly_errors": [{
+                        "hour": hours[0] if hours else 0,
+                        "message": "Timed out before feasible schedule was found.",
+                    }],
+                }
+            elif solver_exc is not None:
+                st.exception(solver_exc)
+                st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.stop()
+
+        heartbeat_holder.empty()
 
         error_msg = solver_result.get("error")
         reports = list(solver_result.get("reports", []))
@@ -4545,6 +4607,17 @@ if not auto_batch:
         plan_df = solver_result.get("final_plan", plan_df)
         dra_linefill = solver_result.get("final_dra_linefill", dra_linefill)
         dra_reach_km = solver_result.get("final_dra_reach", dra_reach_km)
+
+        completed_hours = {
+            int(rec.get("time", 0)) % 24 for rec in reports if isinstance(rec, Mapping)
+        }
+        for hour_entry in hours:
+            hour_mod = int(hour_entry) % 24
+            if hour_mod not in completed_hours:
+                st.error(
+                    f"No hydraulically feasible solution at {hour_mod:02d}:00 "
+                    f"(≤{pipeline_model.GLOBAL_MAX_DRA_CAP}% DR enforced)."
+                )
 
         _render_solver_feedback(
             {"warnings": solver_result.get("warnings", [])},
