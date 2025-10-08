@@ -1653,6 +1653,51 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert example["viscosity_cst"] == pytest.approx(2.5)
 
 
+def test_compute_minimum_lacing_requirement_propagates_ceiled_ppm(monkeypatch):
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 10.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+        }
+    ]
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    monkeypatch.setattr(model, "get_ppm_for_dr", lambda _visc, _dr: 3.5)
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=2.5,
+        min_suction_head=1.0,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    assert segments[0]["dra_ppm"] == pytest.approx(3.5)
+
+
 def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     import pipeline_model as model
 
