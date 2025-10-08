@@ -5605,6 +5605,10 @@ def solve_pipeline(
                             record[f"baseline_floor_limited_{stn_data['name']}"] = True
                     floor_min_perc = float(stn_data.get('dra_floor_perc_min', 0.0) or 0.0)
                     floor_min_ppm = float(stn_data.get('dra_floor_ppm_min', 0.0) or 0.0)
+                    if floor_min_ppm > 0.0:
+                        ppm_tol = max(floor_min_ppm * 1e-6, floor_tol)
+                        if inj_ppm_main < floor_min_ppm - ppm_tol:
+                            inj_ppm_main = float(floor_min_ppm)
                     if floor_min_perc > 0.0:
                         record[f"floor_min_perc_{stn_data['name']}"] = floor_min_perc
                     if floor_min_ppm > 0.0:
@@ -5679,6 +5683,10 @@ def solve_pipeline(
                         if speed_fields:
                             record.update(speed_fields)
                     else:
+                        if floor_min_ppm > 0.0:
+                            ppm_tol = max(floor_min_ppm * 1e-6, 1e-9)
+                            if inj_ppm_main < floor_min_ppm - ppm_tol:
+                                inj_ppm_main = float(floor_min_ppm)
                         record.update({
                             f"pump_flow_{stn_data['name']}": 0.0,
                             f"num_pumps_{stn_data['name']}": 0,
