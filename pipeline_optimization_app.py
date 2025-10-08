@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -64,6 +66,9 @@ from dra_utils import get_ppm_for_dr
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
+
+DAILY_SOLVE_TIMEOUT_S = 900  # 15 minutes
+DAILY_HEARTBEAT_INTERVAL_S = 2.5
 
 def _progress_heartbeat(area, *, msg="solving…", start_time: float | None = None) -> None:
     """Write a lightweight heartbeat to keep Streamlit sessions alive.
@@ -2488,9 +2493,9 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
     dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
-    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
-    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 4.0)
+    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 30)
+    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 3000.0)
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -4567,9 +4572,36 @@ if not auto_batch:
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
         else:
+            start_ts = time.time()
+            heartbeat_last = start_ts
+            heartbeat_msg = "Daily optimisation in progress…"
             try:
                 with st.spinner(spinner_msg):
-                    solver_result = _run_solver()
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_run_solver)
+                        while True:
+                            try:
+                                solver_result = future.result(timeout=DAILY_HEARTBEAT_INTERVAL_S)
+                                break
+                            except FuturesTimeoutError:
+                                now = time.time()
+                                if now - heartbeat_last >= DAILY_HEARTBEAT_INTERVAL_S:
+                                    _progress_heartbeat(
+                                        heartbeat_holder,
+                                        msg=heartbeat_msg,
+                                        start_time=start_ts,
+                                    )
+                                    heartbeat_last = now
+                                if now - start_ts >= DAILY_SOLVE_TIMEOUT_S:
+                                    future.cancel()
+                                    raise TimeoutError("daily solver exceeded time limit")
+            except TimeoutError:
+                st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.error(
+                    "⏳ Timed out while searching the daily schedule. "
+                    "Try loosening the Advanced search depth or run hour-by-hour."
+                )
+                st.stop()
             except Exception as exc:  # pragma: no cover - UI safeguard
                 st.session_state["linefill_next_day"] = pd.DataFrame()
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
