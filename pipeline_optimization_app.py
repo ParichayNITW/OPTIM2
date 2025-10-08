@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import time
 import streamlit as st
 import altair as alt
@@ -65,9 +64,6 @@ from dra_utils import get_ppm_for_dr
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
-
-DAILY_SOLVE_TIMEOUT_S = 900  # seconds
-
 
 def _progress_heartbeat(area, *, msg="solving…", start_time: float | None = None) -> None:
     """Write a lightweight heartbeat to keep Streamlit sessions alive.
@@ -4571,45 +4567,12 @@ if not auto_batch:
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
         else:
-            st.success("Starting Daily Pumping Schedule optimizer…")
-            timed_out = False
-            solver_exc: Exception | None = None
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_solver)
-                start_wall = time.time()
-                while True:
-                    try:
-                        solver_result = future.result(timeout=2.5)
-                        break
-                    except TimeoutError:
-                        if time.time() - start_wall > DAILY_SOLVE_TIMEOUT_S:
-                            timed_out = True
-                            break
-                        _progress_heartbeat(
-                            heartbeat_holder,
-                            start_time=start_wall,
-                            msg="Daily optimisation in progress…",
-                        )
-                    except Exception as exc:  # pragma: no cover - defensive
-                        solver_exc = exc
-                        break
-            if timed_out:
-                future.cancel()
-                st.error(
-                    "⏳ Timed out while searching the daily schedule. "
-                    "Try loosening the Advanced search depth or run hour-by-hour."
-                )
-                solver_result = {
-                    "error": "timeout",
-                    "reports": [],
-                    "hourly_errors": [{
-                        "hour": hours[0] if hours else 0,
-                        "message": "Timed out before feasible schedule was found.",
-                    }],
-                }
-            elif solver_exc is not None:
-                st.exception(solver_exc)
+            try:
+                with st.spinner(spinner_msg):
+                    solver_result = _run_solver()
+            except Exception as exc:  # pragma: no cover - UI safeguard
                 st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
 
         heartbeat_holder.empty()
