@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import time
+import math
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import streamlit as st
@@ -40,11 +41,16 @@ if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
 if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
+if "station_suction_heads" not in st.session_state:
+    st.session_state["station_suction_heads"] = []
+if "daily_solver_elapsed" not in st.session_state:
+    st.session_state["daily_solver_elapsed"] = None
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from math import isclose, pi, sqrt
+import itertools
 import hashlib
 import uuid
 import json
@@ -265,6 +271,84 @@ def _collect_segment_floors(
     segments = [item[2] for item in processed]
 
     return segments
+
+
+def _normalise_station_suction_heads(raw: object) -> list[float]:
+    """Return a clean list of per-station suction heads."""
+
+    values: list[float] = []
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        for entry in raw:
+            try:
+                val = float(entry)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(val):
+                continue
+            if val < 0.0:
+                val = 0.0
+            values.append(val)
+    return values
+
+
+def _build_segment_display_rows(
+    segments: Sequence[Mapping[str, object]] | None,
+    stations: Sequence[Mapping[str, object]],
+    *,
+    suction_heads: Sequence[float] | None = None,
+) -> list[dict[str, object]]:
+    """Return per-segment rows covering all injection stations."""
+
+    display_rows: list[dict[str, object]] = []
+    seen: set[int] = set()
+
+    if isinstance(segments, Sequence):
+        for entry in segments:
+            if not isinstance(entry, Mapping):
+                continue
+            seg_copy = copy.deepcopy(entry)
+            try:
+                idx = int(seg_copy.get("station_idx", len(display_rows)))
+            except (TypeError, ValueError):
+                idx = len(display_rows)
+                seg_copy["station_idx"] = idx
+            seen.add(idx)
+            display_rows.append(seg_copy)
+
+    suction_list = _normalise_station_suction_heads(suction_heads)
+
+    for idx, stn in enumerate(stations):
+        try:
+            max_dr = float(stn.get("max_dr", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            max_dr = 0.0
+        loop = stn.get("loopline")
+        loop_dr = 0.0
+        if isinstance(loop, Mapping):
+            try:
+                loop_dr = float(loop.get("max_dr", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                loop_dr = 0.0
+        if max_dr <= 0.0 and loop_dr <= 0.0:
+            continue
+        if idx in seen:
+            continue
+        try:
+            length_val = float(stn.get("L", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        seg_entry: dict[str, object] = {
+            "station_idx": idx,
+            "length_km": length_val,
+            "dra_ppm": 0.0,
+            "dra_perc": 0.0,
+        }
+        if idx < len(suction_list):
+            seg_entry["suction_head"] = suction_list[idx]
+        display_rows.append(seg_entry)
+
+    display_rows.sort(key=lambda row: int(row.get("station_idx", 0)))
+    return display_rows
 
 
 def _format_schedule_time_label(value: object) -> str:
@@ -495,6 +579,12 @@ def restore_case_dict(loaded_data):
     st.session_state['min_laced_suction_m'] = loaded_data.get(
         'min_laced_suction_m',
         st.session_state.get('min_laced_suction_m', 0.0),
+    )
+    st.session_state['station_suction_heads'] = _normalise_station_suction_heads(
+        loaded_data.get(
+            'station_suction_heads',
+            st.session_state.get('station_suction_heads', []),
+        )
     )
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
@@ -1332,6 +1422,9 @@ def get_full_case_dict():
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
+        "station_suction_heads": _normalise_station_suction_heads(
+            st.session_state.get('station_suction_heads', [])
+        ),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -2574,6 +2667,10 @@ def solve_pipeline(
 
     baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
     baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
+    suction_heads = _normalise_station_suction_heads(
+        st.session_state.get("station_suction_heads", [])
+    )
+    st.session_state["station_suction_heads"] = suction_heads
 
     baseline_requirement: dict | None = None
     try:
@@ -2584,6 +2681,7 @@ def solve_pipeline(
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
+            station_suction_heads=suction_heads,
         )
     except Exception:
         baseline_requirement = None
@@ -2612,6 +2710,9 @@ def solve_pipeline(
         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
+    st.session_state["origin_lacing_segment_display"] = copy.deepcopy(
+        _build_segment_display_rows(baseline_segments, stations, suction_heads=suction_heads)
+    )
 
     def _combine_origin_detail(
         base_detail: dict | None,
@@ -4101,6 +4202,11 @@ def run_all_updates():
         "elev": st.session_state.get("terminal_elev", 0.0),
         "min_residual": st.session_state.get("terminal_head", 10.0),
     }
+    st.session_state["daily_solver_elapsed"] = None
+    suction_heads = _normalise_station_suction_heads(
+        st.session_state.get("station_suction_heads", [])
+    )
+    st.session_state["station_suction_heads"] = suction_heads
     linefill_df = st.session_state.get("linefill_df")
     if not isinstance(linefill_df, pd.DataFrame):
         linefill_df = pd.DataFrame()
@@ -4165,6 +4271,7 @@ def run_all_updates():
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
+            station_suction_heads=suction_heads,
         )
     except Exception:
         baseline_requirement = None
@@ -4192,6 +4299,9 @@ def run_all_updates():
         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
+    st.session_state["origin_lacing_segment_display"] = copy.deepcopy(
+        _build_segment_display_rows(baseline_segments, stations_data, suction_heads=suction_heads)
+    )
 
     def _normalise_segments_for_detail(detail_obj: Mapping[str, object] | None) -> list[dict[str, object]]:
         segments_out: list[dict[str, object]] = []
@@ -4569,12 +4679,14 @@ if not auto_batch:
                     solver_result = _run_solver()
             except Exception as exc:  # pragma: no cover - UI safeguard
                 st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.session_state["daily_solver_elapsed"] = None
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
         else:
             start_ts = time.time()
             heartbeat_last = start_ts
             heartbeat_msg = "Daily optimisation in progress…"
+            solver_elapsed: float | None = None
             try:
                 with st.spinner(spinner_msg):
                     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -4582,6 +4694,7 @@ if not auto_batch:
                         while True:
                             try:
                                 solver_result = future.result(timeout=DAILY_HEARTBEAT_INTERVAL_S)
+                                solver_elapsed = time.time() - start_ts
                                 break
                             except FuturesTimeoutError:
                                 now = time.time()
@@ -4597,6 +4710,7 @@ if not auto_batch:
                                     raise TimeoutError("daily solver exceeded time limit")
             except TimeoutError:
                 st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.session_state["daily_solver_elapsed"] = None
                 st.error(
                     "⏳ Timed out while searching the daily schedule. "
                     "Try loosening the Advanced search depth or run hour-by-hour."
@@ -4604,10 +4718,17 @@ if not auto_batch:
                 st.stop()
             except Exception as exc:  # pragma: no cover - UI safeguard
                 st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.session_state["daily_solver_elapsed"] = None
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
 
         heartbeat_holder.empty()
+
+        if not is_hourly:
+            if solver_elapsed is not None and solver_elapsed >= 0.0:
+                st.session_state["daily_solver_elapsed"] = float(solver_elapsed)
+            else:
+                st.session_state.setdefault("daily_solver_elapsed", None)
 
         error_raw = solver_result.get("error")
         error_message = solver_result.get("message")
@@ -4765,6 +4886,12 @@ if not auto_batch:
             width='stretch',
             hide_index=not transpose_view,
         )
+        if st.session_state.get("run_mode") == "daily":
+            elapsed = st.session_state.get("daily_solver_elapsed")
+            if isinstance(elapsed, (int, float)) and elapsed > 0.0:
+                st.caption(
+                    f"Daily optimisation completed in {elapsed:,.1f} seconds."
+                )
         label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
         first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
         last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
@@ -5156,13 +5283,20 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 if isinstance(segments_detail, list) and segments_detail:
                     enforced_segments = copy.deepcopy(segments_detail)
 
+            suction_heads_list = st.session_state.get("station_suction_heads", [])
             if enforced_segments:
-                segment_baseline = enforced_segments
+                segment_display = _build_segment_display_rows(
+                    enforced_segments,
+                    stations_data,
+                    suction_heads=suction_heads_list,
+                )
             else:
-                segment_baseline = st.session_state.get("origin_lacing_segment_baseline") or []
-            if segment_baseline:
+                segment_display = copy.deepcopy(
+                    st.session_state.get("origin_lacing_segment_display", [])
+                )
+            if segment_display:
                 seg_rows: list[dict[str, object]] = []
-                for entry in segment_baseline:
+                for entry in segment_display:
                     if not isinstance(entry, dict):
                         continue
                     try:
@@ -5846,18 +5980,29 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Re_vals = np.zeros_like(v_vals)
                     f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
-                n_curves = (max_dr // pipeline_model.DRA_STEP) + 1
-                color_palette = [
+                dra_values = list(
+                    range(0, max_dr + pipeline_model.DRA_STEP, pipeline_model.DRA_STEP)
+                )
+                if not dra_values:
+                    dra_values = [0]
+                base_palette = [
                     "#1565C0", "#1976D2", "#1E88E5", "#3949AB", "#8E24AA",
                     "#D81B60", "#F4511E", "#F9A825", "#43A047", "#00897B"
                 ]
-                color_idx = np.linspace(0, len(color_palette)-1, n_curves).astype(int)
+                n_curves = len(dra_values)
+                if n_curves <= len(base_palette):
+                    idx = np.linspace(0, len(base_palette) - 1, n_curves)
+                    idx = np.clip(np.round(idx).astype(int), 0, len(base_palette) - 1)
+                    palette_sequence = [base_palette[i] for i in idx]
+                else:
+                    palette_sequence = list(
+                        itertools.islice(itertools.cycle(base_palette), n_curves)
+                    )
                 fig_sys = go.Figure()
-                for j, dra in enumerate(range(0, max_dr + pipeline_model.DRA_STEP, pipeline_model.DRA_STEP)):
+                for j, dra in enumerate(dra_values):
                     DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = elev_i + DH
-                    # Fix: safe indexing for palette if only 1 curve
-                    color = color_palette[color_idx[j]] if n_curves > 1 else color_palette[0]
+                    color = palette_sequence[j] if palette_sequence else base_palette[0]
                     fig_sys.add_trace(go.Scatter(
                         x=flows, y=SDH_vals,
                         mode='lines',
