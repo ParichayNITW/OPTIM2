@@ -1607,6 +1607,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert result.get("dra_perc_uncapped") is None
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
+    assert segments[0]["suction_head"] == pytest.approx(min_suction)
 
     flow = 900.0
     head_loss, *_ = model._segment_hydraulics(
@@ -1647,6 +1648,54 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert example["sdh_gap"] == pytest.approx(expected_gap)
     assert example["flow_m3h"] == pytest.approx(flow)
     assert example["viscosity_cst"] == pytest.approx(2.5)
+
+
+def test_compute_minimum_lacing_requirement_respects_station_suction_heads():
+    import pipeline_model as model
+
+    station = {
+        "name": "Station A",
+        "is_pump": True,
+        "min_pumps": 1,
+        "max_pumps": 1,
+        "pump_type": "type1",
+        "MinRPM": 3000,
+        "DOL": 3000,
+        "A": 0.0,
+        "B": 0.0,
+        "C": 4.0,
+        "P": 0.0,
+        "Q": 0.0,
+        "R": 0.0,
+        "S": 0.0,
+        "T": 75.0,
+        "L": 10.0,
+        "d": 0.7,
+        "t": 0.007,
+        "rough": 0.00004,
+        "delivery": 0.0,
+        "supply": 0.0,
+    }
+    stations = [copy.deepcopy(station), copy.deepcopy(station)]
+    stations[1]["name"] = "Station B"
+    stations[1]["min_residual"] = 5.0
+
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+    heads = [5.0, 12.5]
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=2.5,
+        min_suction_head=0.0,
+        station_suction_heads=heads,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 2
+    assert segments[0]["suction_head"] == pytest.approx(heads[0])
+    assert segments[1]["suction_head"] == pytest.approx(heads[1])
 
 
 def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
