@@ -1775,6 +1775,66 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert example["residual_head"] == pytest.approx(residual_head)
 
 
+def test_compute_minimum_lacing_requirement_ignores_linefill_batches():
+    import pipeline_model as model
+
+    station = {
+        "name": "Station A",
+        "is_pump": True,
+        "min_pumps": 1,
+        "max_pumps": 1,
+        "pump_type": "type1",
+        "MinRPM": 3000,
+        "DOL": 3000,
+        "A": 0.0,
+        "B": 0.0,
+        "C": 4.0,
+        "P": 0.0,
+        "Q": 0.0,
+        "R": 0.0,
+        "S": 0.0,
+        "T": 75.0,
+        "L": 12.0,
+        "d": 0.7,
+        "t": 0.007,
+        "rough": 0.00004,
+        "delivery": 0.0,
+        "supply": 0.0,
+    }
+    stations = [copy.deepcopy(station), copy.deepcopy(station)]
+    stations[1]["name"] = "Station B"
+
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    segment_slices = [
+        [
+            {"length_km": 6.0, "kv": 12.0, "rho": 850.0},
+            {"length_km": 6.0, "kv": 20.0, "rho": 860.0},
+        ],
+        [
+            {"length_km": 12.0, "kv": 18.0, "rho": 855.0},
+        ],
+    ]
+
+    kwargs = dict(
+        stations=stations,
+        terminal=terminal,
+        max_flow_m3h=1400.0,
+        max_visc_cst=18.0,
+        min_suction_head=5.0,
+    )
+
+    with_slices = model.compute_minimum_lacing_requirement(
+        **kwargs, segment_slices=segment_slices
+    )
+    without_slices = model.compute_minimum_lacing_requirement(
+        **kwargs, segment_slices=None
+    )
+
+    assert with_slices.get("segments") == without_slices.get("segments")
+    assert with_slices.get("example_segment") == without_slices.get("example_segment")
+
+
 def test_compute_minimum_lacing_requirement_carries_head_between_stations():
     import pipeline_model as model
 

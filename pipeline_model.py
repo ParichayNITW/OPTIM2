@@ -2084,7 +2084,10 @@ def compute_minimum_lacing_requirement(
     with the upstream residual assumed to stay at the suction reference, which
     defaults to ``0 m`` but may be overridden with ``min_suction_head``.  The
     returned dictionary provides both the treated length (equal to the total
-    pipeline length) and the minimum concentration in PPM.  When the inputs are
+    pipeline length) and the minimum concentration in PPM.  ``segment_slices``
+    is accepted for backwards compatibility but intentionally ignored so that
+    the floor depends solely on the user-provided maxima instead of the
+    batches currently in the linefill or pumping plan.  When the inputs are
     insufficient to derive a value the helper falls back to a zero requirement.
     """
 
@@ -2306,12 +2309,11 @@ def compute_minimum_lacing_requirement(
         flows.append(prev_flow - delivery + supply)
 
     kv_list = [visc_max for _ in stations_copy]
-    if segment_slices is None:
-        slices_use: list[list[dict]] = [[] for _ in stations_copy]
-    else:
-        slices_use = [list(seg or []) for seg in segment_slices[: len(stations_copy)]]
-        if len(slices_use) < len(stations_copy):
-            slices_use.extend([[]] * (len(stations_copy) - len(slices_use)))
+    # ``segment_slices`` previously allowed the minimum-floor calculation to
+    # reflect the in-line batches.  The floor must now be derived strictly from
+    # the declared maximum flow/viscosity envelope, so we ignore those slices
+    # and always analyse each span with the worst-case viscosity.
+    slices_use: list[list[dict]] = [[] for _ in stations_copy]
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
     cumulative_min = max(terminal_min_residual, 0.0)
