@@ -5605,6 +5605,7 @@ def solve_pipeline(
                             record[f"baseline_floor_limited_{stn_data['name']}"] = True
                     floor_min_perc = float(stn_data.get('dra_floor_perc_min', 0.0) or 0.0)
                     floor_min_ppm = float(stn_data.get('dra_floor_ppm_min', 0.0) or 0.0)
+                    floor_tol = 1e-6
                     if floor_min_ppm > 0.0:
                         ppm_tol = max(floor_min_ppm * 1e-6, floor_tol)
                         if inj_ppm_main < floor_min_ppm - ppm_tol:
@@ -5616,7 +5617,6 @@ def solve_pipeline(
                     if stn_data.get('dra_floor_limited'):
                         record[f"floor_min_limited_{stn_data['name']}"] = True
                     floor_applied = False
-                    floor_tol = 1e-6
                     dra_main_selected = float(opt.get('dra_main', 0) or 0.0)
                     if floor_min_perc > 0.0 and dra_main_selected > 0.0:
                         if dra_main_selected >= floor_min_perc - floor_tol:
