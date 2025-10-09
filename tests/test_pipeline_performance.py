@@ -1494,6 +1494,38 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
     assert detail.get("floor_length_km") >= summary["length_km"]
 
 
+def test_minimum_floor_ppm_derived_from_percent():
+    import pipeline_optimization_app as app
+
+    baseline = {
+        "dra_ppm": 0.0,
+        "dra_perc": 0.0,
+        "segments": [
+            {
+                "station_idx": 0,
+                "length_km": 5.0,
+                "dra_ppm": 0.0,
+                "dra_perc": 12.5,
+            }
+        ],
+    }
+    stations = [
+        {
+            "D": 0.762,
+            "t": 0.0075,
+        }
+    ]
+
+    floor_ppm = app._minimum_floor_ppm(
+        baseline,
+        stations,
+        baseline_flow_m3h=1200.0,
+        baseline_visc_cst=6.0,
+    )
+
+    assert floor_ppm > 0.0
+
+
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
     import pipeline_optimization_app as app
 
@@ -2567,7 +2599,7 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
             assert {"length_km", "kv", "rho"} <= set(entry.keys())
 
 
-def test_solve_pipeline_skips_baseline_when_global_shear(monkeypatch):
+def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
     import pipeline_optimization_app as app
     import importlib
 
@@ -2577,6 +2609,7 @@ def test_solve_pipeline_skips_baseline_when_global_shear(monkeypatch):
         "origin_lacing_baseline",
         "origin_lacing_segment_baseline",
         "origin_lacing_segment_display",
+        "minimum_dra_floor_ppm",
     ]
     sentinel = object()
     previous = {key: session.get(key, sentinel) for key in tracked_keys}
@@ -2625,6 +2658,7 @@ def test_solve_pipeline_skips_baseline_when_global_shear(monkeypatch):
     monkeypatch.setattr(app.pipeline_model, "solve_pipeline_with_types", fake_solver)
     monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
 
+    floor_value = None
     try:
         session["pump_shear_rate"] = 1.0
         result = app.solve_pipeline(
@@ -2642,6 +2676,7 @@ def test_solve_pipeline_skips_baseline_when_global_shear(monkeypatch):
             hours=1.0,
             start_time="00:00",
         )
+        floor_value = app.st.session_state.get("minimum_dra_floor_ppm")
     finally:
         for key, value in previous.items():
             if value is sentinel:
@@ -2650,8 +2685,13 @@ def test_solve_pipeline_skips_baseline_when_global_shear(monkeypatch):
                 session[key] = value
 
     assert result["error"] is False
-    assert captured.get("segment_floors") is None
-    assert captured.get("forced_origin_detail") is None
+    floors = captured.get("segment_floors")
+    assert isinstance(floors, list) and floors, "baseline floors should be enforced"
+    assert floors[0]["dra_ppm"] == pytest.approx(8.0)
+    assert floor_value == pytest.approx(8.0)
+    forced_detail = captured.get("forced_origin_detail")
+    assert isinstance(forced_detail, dict)
+    assert forced_detail.get("dra_ppm") == pytest.approx(8.0)
 
 
 def test_merge_segment_profiles_preserves_heterogeneity():
