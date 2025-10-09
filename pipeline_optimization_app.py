@@ -5073,6 +5073,7 @@ def run_all_updates():
             24.0,
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
+            segment_floors=copy.deepcopy(baseline_segments) if baseline_segments else None,
             **search_kwargs,
         )
     start_label = st.session_state.get("start_time", "00:00")
