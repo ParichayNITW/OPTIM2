@@ -2084,7 +2084,10 @@ def compute_minimum_lacing_requirement(
     with the upstream residual assumed to stay at the suction reference, which
     defaults to ``0 m`` but may be overridden with ``min_suction_head``.  The
     returned dictionary provides both the treated length (equal to the total
-    pipeline length) and the minimum concentration in PPM.  When the inputs are
+    pipeline length) and the minimum concentration in PPM.  ``segment_slices``
+    is accepted for backwards compatibility but intentionally ignored so that
+    the floor depends solely on the user-provided maxima instead of the
+    batches currently in the linefill or pumping plan.  When the inputs are
     insufficient to derive a value the helper falls back to a zero requirement.
     """
 
@@ -2306,12 +2309,11 @@ def compute_minimum_lacing_requirement(
         flows.append(prev_flow - delivery + supply)
 
     kv_list = [visc_max for _ in stations_copy]
-    if segment_slices is None:
-        slices_use: list[list[dict]] = [[] for _ in stations_copy]
-    else:
-        slices_use = [list(seg or []) for seg in segment_slices[: len(stations_copy)]]
-        if len(slices_use) < len(stations_copy):
-            slices_use.extend([[]] * (len(stations_copy) - len(slices_use)))
+    # ``segment_slices`` previously allowed the minimum-floor calculation to
+    # reflect the in-line batches.  The floor must now be derived strictly from
+    # the declared maximum flow/viscosity envelope, so we ignore those slices
+    # and always analyse each span with the worst-case viscosity.
+    slices_use: list[list[dict]] = [[] for _ in stations_copy]
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
     cumulative_min = max(terminal_min_residual, 0.0)
@@ -5605,6 +5607,7 @@ def solve_pipeline(
                             record[f"baseline_floor_limited_{stn_data['name']}"] = True
                     floor_min_perc = float(stn_data.get('dra_floor_perc_min', 0.0) or 0.0)
                     floor_min_ppm = float(stn_data.get('dra_floor_ppm_min', 0.0) or 0.0)
+                    floor_tol = 1e-6
                     if floor_min_ppm > 0.0:
                         ppm_tol = max(floor_min_ppm * 1e-6, floor_tol)
                         if inj_ppm_main < floor_min_ppm - ppm_tol:
@@ -5616,7 +5619,6 @@ def solve_pipeline(
                     if stn_data.get('dra_floor_limited'):
                         record[f"floor_min_limited_{stn_data['name']}"] = True
                     floor_applied = False
-                    floor_tol = 1e-6
                     dra_main_selected = float(opt.get('dra_main', 0) or 0.0)
                     if floor_min_perc > 0.0 and dra_main_selected > 0.0:
                         if dra_main_selected >= floor_min_perc - floor_tol:
