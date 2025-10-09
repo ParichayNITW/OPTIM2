@@ -578,6 +578,7 @@ def _render_solver_feedback(
     if show_error and res.get("error"):
         message = _build_solver_error_message(res.get("message"), start_time=start_time)
         st.error(message)
+        _render_minimum_dra_floor_hint()
         return True
 
     return False
@@ -617,6 +618,60 @@ def _get_linefill_snapshot_for_hour(
         return pd.DataFrame()
 
     return snapshot.copy(deep=True)
+
+
+def _render_minimum_dra_floor_hint() -> None:
+    """Surface the computed DRA floors when feasibility errors arise."""
+
+    floor_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
+    if not isinstance(floor_map, Mapping) or not floor_map:
+        return
+
+    try:
+        min_floor = float(st.session_state.get("minimum_dra_floor_ppm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        min_floor = 0.0
+
+    stations = st.session_state.get("stations") or []
+    terminal_name = st.session_state.get("terminal_name", "Terminal")
+
+    segments: list[str] = []
+    for idx, ppm_value in sorted(floor_map.items()):
+        try:
+            ppm_float = float(ppm_value or 0.0)
+        except (TypeError, ValueError):
+            ppm_float = 0.0
+
+        if isinstance(idx, str):
+            try:
+                seg_idx = int(idx)
+            except (TypeError, ValueError):
+                continue
+        else:
+            seg_idx = int(idx)
+
+        if 0 <= seg_idx < len(stations):
+            start_name = stations[seg_idx].get("name") or f"Station {seg_idx + 1}"
+            if seg_idx + 1 < len(stations):
+                end_name = stations[seg_idx + 1].get("name") or f"Station {seg_idx + 2}"
+            else:
+                end_name = terminal_name
+        else:
+            start_name = f"Station {seg_idx + 1}" if seg_idx >= 0 else "Origin"
+            end_name = terminal_name
+
+        segments.append(f"{start_name} → {end_name}: {ppm_float:.2f} ppm")
+
+    if not segments:
+        return
+
+    if min_floor > 0.0:
+        header = f"Minimum DRA floor is {min_floor:.2f} ppm at origin."
+    else:
+        header = "Minimum DRA floor at origin is 0 ppm."
+
+    detail = "; ".join(segments)
+    st.info(f"{header} Required by segment – {detail}.")
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
@@ -920,9 +975,9 @@ with st.sidebar:
 
         rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
         dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-        coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
-        state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
-        state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+        coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 4.0)
+        state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 30)
+        state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 3000.0)
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
@@ -2747,9 +2802,9 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
     dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
-    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
-    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 4.0)
+    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 30)
+    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 3000.0)
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -2870,7 +2925,7 @@ def solve_pipeline(
     if segment_floor_map:
         st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
         st.session_state["minimum_dra_floor_ppm_by_segment"] = {
-            int(idx): float(val) for idx, val in segment_floor_map.items() if val > 0.0
+            int(idx): float(val) for idx, val in segment_floor_map.items()
         }
     else:
         st.session_state.pop("minimum_dra_floor_ppm", None)
@@ -4058,6 +4113,7 @@ def _execute_time_series_solver(
         error_msg = None
 
         forced_detail_used: dict | None = None
+        hydraulic_infeasibility = False
         for sub in range(sub_steps):
             pumped_tmp = flow_rate * 1.0
             future_vol, future_plan = shift_vol_linefill(
@@ -4109,6 +4165,7 @@ def _execute_time_series_solver(
                 friendly = _build_solver_error_message(res.get("message"), start_time=start_str)
                 if friendly.startswith("No hydraulically feasible solution"):
                     error_msg = friendly
+                    hydraulic_infeasibility = True
                 elif friendly == "Optimization failed":
                     error_msg = f"Optimization failed at {cur_hr:02d}:00"
                 else:
@@ -4135,6 +4192,83 @@ def _execute_time_series_solver(
         if error_msg:
             if ti == 0:
                 origin_error = state.get("origin_error") if isinstance(state, dict) else None
+                attempted_flag = "origin_enforced_first_hour_attempted"
+                should_retry = (
+                    hydraulic_infeasibility
+                    and not state.get(attempted_flag)
+                )
+                tightened = False
+                detail_note: str | None = None
+                if should_retry:
+                    state[attempted_flag] = True
+                    tightened = _enforce_minimum_origin_dra(
+                        state,
+                        total_length_km=total_length,
+                        min_ppm=max(float(pipeline_model.DRA_STEP), 2.0)
+                        if hasattr(pipeline_model, "DRA_STEP")
+                        else 2.0,
+                        baseline_requirement=st.session_state.get("origin_lacing_baseline"),
+                        hourly_flow_m3=flow_rate,
+                        step_hours=1.0 / max(float(sub_steps or 1), 1.0),
+                    )
+                    if tightened:
+                        detail = state.get("origin_enforced_detail") or {}
+                        st.session_state["origin_enforced_detail"] = copy.deepcopy(detail)
+                        segments_detail = detail.get("segments") if isinstance(detail, dict) else None
+                        if isinstance(segments_detail, list) and segments_detail:
+                            st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments_detail)
+                        detail_record = {
+                            "hour": hr % 24,
+                            "dra_ppm": float(detail.get("dra_ppm", 0.0) or 0.0),
+                            "length_km": float(detail.get("length_km", 0.0) or 0.0),
+                            "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
+                            "plan_injections": list(detail.get("plan_injections") or []),
+                            "treatable_km": float(detail.get("treatable_km", 0.0) or 0.0),
+                        }
+                        enforced_actions.append(detail_record)
+                        volume_fmt = detail_record["volume_m3"]
+                        ppm_fmt = detail_record["dra_ppm"]
+                        length_fmt = detail_record["length_km"]
+                        detail_note = (
+                            f"Origin queue updated: {volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm scheduled at "
+                            f"{hr % 24:02d}:00 to restore feasibility. This request will treat approximately "
+                            f"{length_fmt:.1f} km once pumped downstream."
+                        )
+                        injections = detail_record.get("plan_injections") or []
+                        if injections:
+                            slices = []
+                            for injection in injections:
+                                label = _format_plan_injection_label(injection)
+                                vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
+                                ppm_val = float(
+                                    injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0
+                                )
+                                slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+                            if slices:
+                                detail_note += " Scheduled plan slices: " + "; ".join(slices) + "."
+                        backtracked = True
+                        if detail_note:
+                            backtrack_notes.append(detail_note)
+                        state.pop("origin_error", None)
+                        snapshot_df = state.get("linefill_snapshot")
+                        if isinstance(snapshot_df, pd.DataFrame):
+                            linefill_snaps[ti] = snapshot_df.copy()
+                        else:
+                            vol_df_fallback = state.get("vol")
+                            if isinstance(vol_df_fallback, pd.DataFrame):
+                                linefill_snaps[ti] = vol_df_fallback.copy()
+                        vol_df = state.get("vol")
+                        if isinstance(vol_df, pd.DataFrame):
+                            current_vol_local = vol_df.copy()
+                        elif isinstance(current_vol_local, pd.DataFrame):
+                            current_vol_local = current_vol_local.copy()
+                        plan_local = state["plan"].copy() if isinstance(state.get("plan"), pd.DataFrame) else None
+                        dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
+                        dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
+                        hydraulic_infeasibility = False
+                        error_msg = None
+                        continue
+                    origin_error = state.get("origin_error")
                 if origin_error:
                     error_msg = origin_error
                 hourly_errors.append({"hour": hr % 24, "message": error_msg})
@@ -4479,14 +4613,11 @@ def run_all_updates():
         positive_floors = [value for value in segment_floor_map.values() if value > 0.0]
         min_floor_ppm = min(positive_floors) if positive_floors else 0.0
         baseline_summary["min_dra_ppm"] = float(min_floor_ppm)
-        if segment_floor_map:
-            st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
-            st.session_state["minimum_dra_floor_ppm_by_segment"] = {
-                int(idx): float(val) for idx, val in segment_floor_map.items() if val > 0.0
-            }
-        else:
-            st.session_state.pop("minimum_dra_floor_ppm", None)
-            st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
+    if segment_floor_map:
+        st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
+        st.session_state["minimum_dra_floor_ppm_by_segment"] = {
+            int(idx): float(val) for idx, val in segment_floor_map.items()
+        }
     else:
         st.session_state.pop("minimum_dra_floor_ppm", None)
         st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
