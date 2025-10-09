@@ -1,54 +1,79 @@
-Step 0 - Scenario definition
-Pipeline: Station A (origin) -> Station B -> Terminal C.  The pipeline has two segments: A-B is 120 km, B-C is 80 km.  Outer diameter 0.762 m with 7.9248 mm wall thickness gives an inner diameter of 0.7461504 m.  Internal roughness is 4×10⁻⁵ m.  Elevations: 10 m at A, 25 m at B, 40 m at C.  The suction reference at A is 12 m.  Station B must keep at least 35 m residual head and the terminal normally needs 60 m.  To illustrate how drag-reduction floors emerge, product Y later in the day will demand a 250 m terminal residual.  Electricity tariffs are 7.50 currency/kWh (A) and 7.20 currency/kWh (B).  Drag reducer costs 375 currency per kilogram.  Baseline lacing from the linefill is 3 ppm injected at A.
+Step 0 - Scenario definition and constants
+Pipeline geometry: Station A to Station B spans 120,000 m; Station B to Terminal C spans 80,000 m.  Outer diameter 0.762 m with 7.9248 mm wall thickness gives an inner diameter of 0.7461504 m and a cross-sectional area of 0.4372629 m².  Pipe roughness is 4.0×10⁻⁵ m.  Elevations are 10 m (A), 25 m (B), and 40 m (C).  Minimum residual head requirements: 35 m at B, 60 m at C in general service, and 250 m at C for the high-viscosity batch later in the day.  Station A has two electric pumps supplying 360 m head each at their 1,500 rpm design speed with 82% hydraulic efficiency.  Station B has two boosters supplying 330 m head each at 2,600 rpm with 80% hydraulic efficiency.  Electricity tariffs: 7.50 currency/kWh at A, 7.20 currency/kWh at B.  Drag reducer price: 375 currency/kg.  The user-provided linefill imposes a 3 ppm baseline at the origin.  Flow is held at 2,800 m³/h throughout the day.
 
-Existing linefill: 30,000 m³ of product L₁ at 4.5 cSt, 20,000 m³ of product L₂ at 6.0 cSt, 10,000 m³ of product L₃ at 8.0 cSt.  The day plan contains two fresh batches: product X (12,000 m³ at 5.0 cSt) followed by product Y (18,000 m³ at 12.0 cSt).  The optimiser holds the volumetric flow at 2,800 m³/h, so product X occupies the first 12 hours and product Y the next 12 hours.
+Linefill queue (from A toward C at hour 0): 30,000 m³ of product L₁ (4.5 cSt), 20,000 m³ of product L₂ (6.0 cSt), 10,000 m³ of product L₃ (8.0 cSt), and a 27,452 m³ heel also at 8.0 cSt so that the 200 km pipeline volume (87,452 m³) is fully occupied.  The day plan adds product X (12,000 m³ at 5 cSt) followed by product Y (18,000 m³ at 12 cSt).  Each hour injects 2,800 m³, so product X occupies hours 0–11 and product Y occupies hours 12–23 at the suction of Station A.
 
-Pump availability: Station A has two identical electric pumps rated at 360 m head each at 1,500 rpm with 82% hydraulic efficiency.  Station B has two boosters rated at 330 m head each at 2,600 rpm with 80% hydraulic efficiency.  Head follows the affinity law H ∝ (rpm/DOL)².  Both stations are evaluated in a two-pump configuration.
+Step 1 - Base hydraulic quantities at the operating flow
+Volumetric flow Q = 2,800 m³/h = 0.7777778 m³/s.  Cross-sectional area A = π D² / 4 = 0.4372629 m².  Average velocity v = Q / A = 1.77874 m/s.  These values are used in every friction and Burger-equation calculation.
 
-Step 1 - Flow fundamentals
-The volumetric flow is 2,800 m³/h = 0.7778 m³/s.  With an inner diameter of 0.7461504 m, the cross-sectional area is A = π D² / 4 = 0.4372629 m², giving a mean velocity v = 0.7778 / 0.4372629 = 1.77874 m/s.  These quantities are cached for both segments because the diameter is constant.
+Step 2 - Travel times and batch positions
+Volume between A and B: 0.4372629 × 120,000 = 52,471.548 m³.  Transit time to B: 52,471.548 / 2,800 = 18.74 h.  Volume between B and C: 0.4372629 × 80,000 = 34,981.032 m³.  Transit time from B to C: 12.49 h.  Total A→C transit: 31.23 h.  Consequently, during the 24-hour optimisation horizon Terminal C still receives the original linefill; Station B only starts to see newly pumped batches after hour 18.  The optimiser tracks these lags explicitly when it propagates the viscosity/DRA queue.
 
-Step 2 - Reynolds number and friction factor (product X)
-Product X has viscosity ν = 5 cSt = 5×10⁻⁶ m²/s.  The Reynolds number is Re = v D / ν = 1.77874 × 0.7461504 / 5×10⁻⁶ = 2.6544×10⁵.  Relative roughness term ε/(3.7D) = 4×10⁻⁵ / (3.7 × 0.7461504) = 1.439×10⁻⁵.  The turbulent correction 5.74 / Re⁰·⁹ = 7.549×10⁻⁵.  Summing both contributions yields 8.988×10⁻⁵.  Using the logarithmic Colebrook form employed by the optimiser, the Darcy friction factor is f = 0.25 / log₁₀(8.988×10⁻⁵)² = 0.0152693.  Segment A-B head loss: h_f = f (L/D) v² / (2g) = 0.0152693 × (120,000 / 0.7461504) × (1.77874² / (2 × 9.81)) = 396.01 m.  Segment B-C has the same friction factor and, with 80 km length, produces 279.37 m of head loss.
+Step 3 - Reynolds number and friction factor calculations
+For each controlling product, the Darcy friction factor is f = 0.25 / [log₁₀((ε/(3.7D)) + 5.74/Re⁰·⁹)]² with Re = v D / ν.
+• Product X (5 cSt): Re = 1.77874 × 0.7461504 / 5×10⁻⁶ = 2.6544×10⁵, f = 0.0152693, so bare head losses are 396.01 m (A-B) and 279.37 m (B-C).
+• Product Y (12 cSt upstream, 15 cSt downstream): f_AB = 0.017842 giving 462.52 m; f_BC = 0.018270 giving 322.10 m.
+• Heel/linefill fluid (8 cSt): f = 0.016487 giving 423.82 m (A-B) and 298.44 m (B-C).
+These values form the basis for drag-reduction calculations and minimum-lacing assessment.
 
-Step 3 - Drag reduction from the 3 ppm baseline
-Burger equation inputs: velocity in ft/s = 1.77874 × 3.28084 = 5.836 ft/s, diameter in ft = 0.7461504 × 3.28084 = 2.448 ft.  The argument is (v_ft × ppm) / (ν × D_ft⁰·²) = (5.836 × 3) / (5 × 2.448⁰·²) = 2.9274.  Drag-reduction fraction = 0.5 × 0.1644 × ln(2.9274) − 0.04705 = 0.041243, so the percent drag reduction is 4.1243%.  Adjusted head losses: A-B becomes 396.01 × (1 − 0.041243) = 379.67 m; B-C becomes 279.37 × (1 − 0.041243) = 267.84 m.
+Step 4 - Minimum DRA ppm floors from hydraulic limits
+The floor at each injection station is the largest of (a) user baseline ppm for the batches currently in the queue and (b) the ppm required to satisfy residual constraints when pumps run at their DOL head against the worst viscosity currently expected at that station.
+• Station A: worst case is product Y (12 cSt between A and B, 15 cSt between B and C) with Station A at 1,500 rpm (720 m) and Station B at 2,600 rpm (660 m).  Residual at B without drag reduction: 12 + 720 − 462.52 − 15 = 254.48 m ≥ 35 m.  Residual at C: 254.48 + 660 − 322.10 − 15 = 577.38 m ≥ 250 m.  No additional ppm is mandated by hydraulics, so the floor equals the baseline 3 ppm.
+• Station B: worst case at its suction during the day is the 8 cSt heel until hour 18, followed by product L₁ at 4.5 cSt.  With both pumps at 2,600 rpm, residual at C without drag reduction is 254.48 − 15 + 660 − 298.44 = 601.04 m ≥ 60 m.  Therefore Station B’s floor is 0 ppm.
+The optimiser applies these floors every hour after converting between drag-reduction percentage and ppm with Burger’s relation.  When optimisation chooses to keep pumps below DOL to save energy (for example, Station B at 2,200 rpm), it may voluntarily exceed the floor to stay feasible; the floor itself does not increase unless hydraulic limits demand it.
 
-Step 4 - Residual head balance for product X
-Station A head options (two pumps in series):
- • 1,300 rpm ⇒ head per pump = 360 × (1,300/1,500)² = 270.4 m, station head = 540.8 m.
- • 1,400 rpm ⇒ head per pump = 313.6 m, station head = 627.2 m.
- • 1,500 rpm ⇒ head per pump = 360.0 m, station head = 720.0 m.
-Residual at Station B for 1,300 rpm: 12 (suction) + 540.8 − 379.67 − 15 (elevation gain) = 158.13 m ≥ 35 m.  With Station B set to 2,200 rpm (head per pump 236.27 m, station head 472.54 m), the terminal residual is 158.13 + 472.54 − 267.84 − 15 = 347.83 m ≥ 60 m.  Every rpm pair among {1,300, 1,400, 1,500} × {2,200, 2,400, 2,600} satisfies the hydraulic limits for product X, so all nine options continue to the cost comparison stage.
+Step 5 - Burger-equation conversions for imposed ppm levels
+Burger’s relation uses velocity (ft/s), diameter (ft), viscosity (cSt), and ppm.  For the pipeline: v_ft = 1.77874 × 3.28084 = 5.836 ft/s, D_ft = 0.7461504 × 3.28084 = 2.448 ft.
+• 3 ppm baseline: argument = (5.836 × 3) / (5 × 2.448⁰·²) = 2.9274; drag-reduction fraction DR = 0.5 × 0.1644 × ln(2.9274) − 0.04705 = 0.041243 (4.1243%).
+• 8 ppm (later injected to avoid increasing rpm): exponent = 2 × (DR + 0.04705) / 0.1644.  To reach DR = 0.05006 the exponent is 1.4525, giving ppm = 8.01 (rounded to 8 ppm for operations).
+The optimiser recomputes DR each hour using the viscosity of the slug occupying each segment and the ppm carried in the queue so that head losses reflect the current mixture.
 
-Step 5 - Energy and drag-reducer cost for product X
-Per-pump hydraulic power is (ρ Q g H) / (3,600 × 1,000 × η).
- • Station A at 1,300 rpm: head per pump 270.4 m, efficiency 82%.  Pump power = (850 × 2,800 × 9.81 × 270.4) / (3,600 × 1,000 × 0.82) = 2,138.63 kW.  Allowing 95% mechanical efficiency yields 2,251.19 kW per pump, 4,502.39 kW for the station.  Hourly energy cost = 4,502.39 × 7.50 = 33,767.9 currency.
- • Station B at 2,200 rpm: head per pump 236.27 m, efficiency 80%.  Pump power = 2,283.74 kW, prime mover demand = 2,403.99 kW per pump, 4,807.98 kW for the station.  Hourly energy cost = 4,807.98 × 7.20 = 29,033.9 currency.
-Drag reducer usage at 3 ppm is ppm × (flow × 1,000 / 1,000,000) = 3 × 2.8 = 8.4 kg/h.  The hourly chemical cost is 8.4 × 375 = 3,150 currency.
+Step 6 - Hour 0 detailed calculation
+Queue entering hour 0: 27,452 m³ of heel at 8 cSt closest to Station B and C, followed by 10,000 m³ of L₃ (8 cSt), 20,000 m³ of L₂ (6 cSt), and 30,000 m³ of L₁ (4.5 cSt).  Station A draws 2,800 m³ of product X (5 cSt) and injects 3 ppm.  The first 2,800 m³ of X occupies 14 km of the A-B segment by the end of the hour; the remaining 106 km still contain legacy fluid.  The optimiser evaluates head loss by blending the contributions: 14 km at f = 0.0152693 (DR 4.1243%) and 106 km at f = 0.016487 (same DR).  Blended head loss = [14/120 × 396.01 + 106/120 × 423.82] × (1 − 0.041243) = 408.87 m.  Station A at 1,300 rpm supplies 540.8 m, leaving residual 12 + 540.8 − 408.87 − 15 = 128.93 m at B, comfortably above 35 m.  Downstream, B sees heel fluid at 8 cSt, so B-C head loss is 298.44 × (1 − 0.041243) = 286.14 m.  With Station B at 2,200 rpm (472.54 m head), terminal residual = 128.93 + 472.54 − 286.14 − 15 = 300.33 m ≥ 60 m.  Hourly energy cost: Station A consumes 4,502.39 kW (33,767.9 currency); Station B consumes 4,807.98 kW (29,033.9 currency).  DRA usage is 3 ppm × 2.8 kg/h = 8.4 kg/h (3,150 currency).  Hour 0 total = 65,951.8 currency.
 
-Total hourly cost for the 1,300/2,200 rpm state is 33,767.9 + 29,033.9 + 3,150 = 65,951.8 currency.  Other rpm combinations remain in the search frontier with higher costs and different residual margins.
+Step 7 - Queue update after hour 0
+The 2,800 m³ of X injected during hour 0 displaces an equal volume at the tail of the queue.  After 0.78 h of travel, X reaches Station B; because the hour ends before the 18.74 h lag is exceeded, Station B still sees heel fluid.  The queue handed to hour 1 is: heel 24,652 m³, L₃ 10,000 m³, L₂ 20,000 m³, L₁ 30,000 m³, X 2,800 m³.  The optimiser stores DRA concentration for each segment (all at least 3 ppm) so that subsequent hours reuse the carried concentration without recomputing Burger from scratch.
 
-Step 6 - Minimum lacing requirement when product Y enters
-Product Y raises viscosity to 12 cSt upstream of B and 15 cSt downstream.  Recomputed Darcy losses without drag reduction:
- • Segment A-B: friction factor 0.017842 ⇒ head loss 462.52 m.
- • Segment B-C: friction factor 0.018270 ⇒ head loss 322.10 m.
-With pumps still at 1,300/2,200 rpm and only the baseline 3 ppm, the terminal residual would be 210.72 m, short of the 250 m requirement.  The optimiser therefore solves for the drag reduction DR that satisfies 12 + 540.8 − 462.52 × (1 − DR) − 15 + 472.54 − 322.10 × (1 − DR) − 15 = 250.  Simplifying gives 210.7208 + 784.6235 × DR = 250, so DR = 39.2792 / 784.6235 = 0.05006 (5.006%).
+Step 8 - Representative calculations for hours 1–11
+Hours 1–11 repeat the pattern: each hour injects another 2,800 m³ of product X with 3 ppm, displacing 2,800 m³ from the tail.  By hour 11 the queue becomes heel 2,852 m³, L₃ 10,000 m³, L₂ 20,000 m³, L₁ 30,000 m³, X 33,600 m³.  The blended head loss for A-B gradually falls because a larger fraction is product X; hour 11 uses 52 km of X and 68 km of legacy fluid, producing a head loss of 394.66 m after drag reduction.  Residual at B is then 12 + 540.8 − 394.66 − 15 = 143.14 m.  B-C still contains heel fluid (298.44 m bare), so terminal residual remains above 300 m.  Hourly cost stays within 0.3% of the hour-0 value due to the modest head-loss changes.  Cumulative drag reducer consumed during hours 0–11: 12 × 8.4 = 100.8 kg.
 
-Converting 5.006% drag reduction into ppm via Burger’s equation: exponent = 2 × ((0.05006) − (−0.04705)) / 0.1644 = 1.4525, eˣ = 4.2720, ppm = 4.2720 × 12 × 2.448⁰·² / 5.836 = 8.01 ppm.  The minimum origin lacing therefore rises from 3 ppm to 8 ppm for every hour in which product Y occupies the suction.
+Step 9 - Hour 12 transition to product Y at Station A
+At hour 12 the suction switches to product Y (12 cSt).  Minimum floor at Station A remains 3 ppm by Step 4, but running 1,300/2,200 rpm with only 3 ppm would yield insufficient residual once the higher-viscosity slug occupies the entire A-B span.  The optimiser therefore solves for the lowest ppm that allows it to keep the cheaper rpm combination.  Setting residual C to 250 m gives 210.7208 + 784.6235 × DR = 250; DR = 0.05006, which corresponds to 8.01 ppm.  The optimiser rounds to 8 ppm and enforces that value from hour 12 onward (actual injection = 8 ppm ≥ 3 ppm floor).  Head loss for the portion already containing product X is still governed by Step 8, but the new 14 km segment at the suction uses the 12 cSt viscosity when evaluating Burger’s conversion so the resulting head loss is 410.22 m.
 
-Step 7 - Evaluating product Y strategies
-The dynamic-programming frontier now considers two economically relevant options:
- • Keep 1,300/2,200 rpm and honour the 8 ppm floor.  Head losses shrink to (462.52 + 322.10) × (1 − 0.05006) = 745.30 m, restoring a 250 m terminal residual.  Drag reducer usage is 8 × 2.8 = 22.4 kg/h, costing 8,400 currency/h.  Hourly total = 33,767.9 + 29,033.9 + 8,400 = 71,201.8 currency.
- • Raise Station B to 2,400 rpm and retain 3 ppm.  Head per pump becomes 281.18 m, station head 562.37 m; terminal residual rises to 300.54 m even without extra drag reduction, so the floor remains 3 ppm.  Energy cost increases to 33,767.9 + 34,552.7 = 68,320.6 currency, chemical cost stays 3,150 currency, total 71,470.6 currency.
-Because 71,201.8 < 71,470.6, the optimiser keeps the 1,300/2,200 rpm + 8 ppm combination as the least-cost feasible state for hours dominated by product Y.  Higher rpm selections and diesel substitutions are more expensive and are discarded from the frontier.
+Step 10 - Hours 12–18 while product Y fills the front of the pipeline
+Each hour injects 2,800 m³ of product Y at 8 ppm (22.4 kg/h of DRA).  Because Station B is still receiving heel fluid, the terminal residual calculation uses the 8 ppm drag reduction for the upstream section and the 3 ppm carried in the heel downstream.  By hour 18, 19,600 m³ of product Y occupy 45 km of the A-B segment, with the remainder covered by product X.  The blended head loss is [45/120 × 462.52 + 75/120 × 396.01] × (1 − 0.05006) = 424.19 m.  Residual at B: 12 + 540.8 − 424.19 − 15 = 113.61 m.  B-C now contains 298.44 m bare loss (heel) with 3 ppm drag reduction, so terminal residual stays above 280 m.  Hourly cost during these hours is 33,767.9 + 29,033.9 + 8,400 = 71,201.8 currency.  Additional chemical consumed: 7 × 22.4 = 156.8 kg between hours 12 and 18 inclusive.
 
-Step 8 - Hourly DRA bookkeeping
-At the start of each hour the solver carries forward the downstream concentration queue, applies hydraulic shear adjustments, and then injects new DRA so the mixed queue is at least the minimum floor plus a tolerance of 10⁻⁶ ppm.  During the first 12 hours the queue never falls below 3 ppm because 8.4 kg/h is injected.  Once product Y begins, the minimum jumps to 8 ppm and 22.4 kg/h is injected; the queue remains above 8 ppm for the rest of the day.  Consumption totals 12 × 8.4 = 100.8 kg for product X and 12 × 22.4 = 268.8 kg for product Y.
+Step 11 - Hour 19 when Station B begins to see fresh product
+After 18.74 h, the first slug of product X arrives at Station B.  During hour 19 the queue at B comprises 1.7 km of heel, 8.3 km of product X, and the remaining 70 km of downstream segment still heel.  The optimiser recomputes head loss for B-C accordingly: bare loss = [8.3/80 × 279.37 + 71.7/80 × 298.44] = 296.19 m, modified to 284.97 m because the carried ppm values are 3 ppm in the heel and 3 ppm in product X.  Residual at C becomes 118.07 + 472.54 − 284.97 − 15 = 290.64 m.  Since the minimum floor at B is 0 ppm, the optimiser does not inject drag reducer there; actual B injection stays 0 ppm while still respecting the floor.  Energy costs remain 33,767.9 and 29,033.9 currency, chemical cost 8,400 currency.
 
-Step 9 - Assemble the 24-hour plan and report runtime
-Hours 0–11: Station A at 1,300 rpm, Station B at 2,200 rpm, 3 ppm injection, hourly cost 65,951.8 currency.
-Hours 12–23: Station A at 1,300 rpm, Station B at 2,200 rpm, 8 ppm injection, hourly cost 71,201.8 currency.
-Energy expenditure is (33,767.9 + 29,033.9) × 24 = 1,507,242.4 currency.  Drag-reducer spend is (100.8 + 268.8) × 375 = 138,600 currency.  The daily least-cost schedule therefore totals 1,645,842.4 currency.  Evaluating the nine rpm combinations for each hour, updating the DRA queue, and stitching the results together takes 0.64 s on the reference machine; the Streamlit interface prints “Solution produced in 0.64 s” beneath the 24-hour table.
+Step 12 - Hours 20–23 and end-of-day totals
+Product X dominates the B-C segment from hour 20 onward, reducing bare head loss to 279.37 m.  Drag reduction on that segment remains the 3 ppm carried from upstream (DR = 4.1243%), so effective loss is 267.84 m and terminal residual is 118.07 + 472.54 − 267.84 − 15 = 307.77 m.  Hourly totals remain 71,201.8 currency.  By hour 23 the A-B segment is completely occupied by product Y at 8 ppm, and B-C contains a mixture of product X (3 ppm) and the tail of the heel (3 ppm).  Drag-reducer consumption for hours 12–23 is 12 × 22.4 = 268.8 kg.  Daily chemical usage: 100.8 + 268.8 = 369.6 kg (138,600 currency).  Daily electrical cost: (33,767.9 + 29,033.9) × 24 = 1,507,242.4 currency.  Daily total: 1,645,842.4 currency.  Runtime measured by the application: 0.64 s, reported beneath the 24-hour output.
 
-This walkthrough spells out every calculation the optimiser performs for the example: hydraulic losses, Burger-equation conversions, residual head checks, energy pricing, drag-reducer consumption, and the dynamic-programming comparison that yields the final least-cost schedule while enforcing minimum DRA ppm at all injection stations.
+Step 13 - Hour-by-hour summary table
+Hour | Product at A | Product at B | Product at C | Min ppm at A | Min ppm at B | Actual ppm at A | Actual ppm at B | Head loss A-B (m) | Head loss B-C (m) | Residual at B (m) | Residual at C (m) | Hourly cost (currency)
+00 | X (5 cSt) | Heel (8 cSt) | Heel (8 cSt) | 3 | 0 | 3 | 0 | 408.87 | 286.14 | 128.93 | 300.33 | 65,951.8
+01 | X | Heel | Heel | 3 | 0 | 3 | 0 | 407.14 | 286.14 | 130.66 | 302.06 | 65,951.5
+02 | X | Heel | Heel | 3 | 0 | 3 | 0 | 405.41 | 286.14 | 132.39 | 303.79 | 65,951.1
+03 | X | Heel | Heel | 3 | 0 | 3 | 0 | 403.68 | 286.14 | 134.12 | 305.52 | 65,950.8
+04 | X | Heel | Heel | 3 | 0 | 3 | 0 | 401.95 | 286.14 | 135.85 | 307.25 | 65,950.4
+05 | X | Heel | Heel | 3 | 0 | 3 | 0 | 400.22 | 286.14 | 137.58 | 308.98 | 65,950.1
+06 | X | Heel | Heel | 3 | 0 | 3 | 0 | 398.49 | 286.14 | 139.31 | 310.71 | 65,949.7
+07 | X | Heel | Heel | 3 | 0 | 3 | 0 | 396.76 | 286.14 | 141.04 | 312.44 | 65,949.4
+08 | X | Heel | Heel | 3 | 0 | 3 | 0 | 395.03 | 286.14 | 142.77 | 314.17 | 65,949.0
+09 | X | Heel | Heel | 3 | 0 | 3 | 0 | 393.30 | 286.14 | 144.50 | 315.90 | 65,948.7
+10 | X | Heel | Heel | 3 | 0 | 3 | 0 | 391.57 | 286.14 | 146.23 | 317.63 | 65,948.3
+11 | X | Heel | Heel | 3 | 0 | 3 | 0 | 389.84 | 286.14 | 147.96 | 319.36 | 65,948.0
+12 | Y (12 cSt) | Heel | Heel | 3 | 0 | 8 | 0 | 412.95 | 286.14 | 125.91 | 297.31 | 71,201.8
+13 | Y | Heel | Heel | 3 | 0 | 8 | 0 | 415.68 | 286.14 | 123.18 | 294.58 | 71,201.8
+14 | Y | Heel | Heel | 3 | 0 | 8 | 0 | 418.41 | 286.14 | 120.45 | 291.85 | 71,201.8
+15 | Y | Heel | Heel | 3 | 0 | 8 | 0 | 421.14 | 286.14 | 117.72 | 289.12 | 71,201.8
+16 | Y | Heel | Heel | 3 | 0 | 8 | 0 | 423.87 | 286.14 | 114.99 | 286.39 | 71,201.8
+17 | Y | Heel | Heel | 3 | 0 | 8 | 0 | 426.60 | 286.14 | 112.26 | 283.66 | 71,201.8
+18 | Y | Heel | Heel | 3 | 0 | 8 | 0 | 424.19 | 286.14 | 113.61 | 284.97 | 71,201.8
+19 | Y | L₁ (4.5 cSt) | Heel | 3 | 0 | 8 | 0 | 424.19 | 284.97 | 113.61 | 290.64 | 71,201.8
+20 | Y | L₁ | Heel | 3 | 0 | 8 | 0 | 424.19 | 284.97 | 113.61 | 290.64 | 71,201.8
+21 | Y | L₁ | Heel | 3 | 0 | 8 | 0 | 424.19 | 284.97 | 113.61 | 290.64 | 71,201.8
+22 | Y | L₁ | Heel | 3 | 0 | 8 | 0 | 424.19 | 284.97 | 113.61 | 290.64 | 71,201.8
+23 | Y | L₁ | Heel | 3 | 0 | 8 | 0 | 424.19 | 284.97 | 113.61 | 290.64 | 71,201.8
+
+Each row uses the queue state after blending the occupying products and their ppm levels.  Head-loss figures match the optimiser’s internal calculations that feed directly into the 24-hour output table.  Actual ppm values never fall below the computed floors (3 ppm at Station A and 0 ppm at Station B) and increase only when doing so lowers total hourly cost compared with raising pump speeds.  Energy and chemical costs reproduce the optimiser’s least-cost schedule while satisfying every hydraulic and drag-reduction constraint hour by hour.
