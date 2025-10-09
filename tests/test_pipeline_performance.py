@@ -1531,6 +1531,28 @@ def test_segment_floor_ppm_map_derives_from_percent():
     assert floor_map[0] == pytest.approx(expected)
 
 
+def test_segment_floor_ppm_map_handles_global_floor():
+    import pipeline_optimization_app as app
+
+    stations = [
+        {
+            "D": 0.7462,
+            "t": 0.007,
+        }
+    ]
+
+    baseline = {"dra_ppm": 13.0, "dra_perc": 0.0, "segments": []}
+
+    floor_map = app._segment_floor_ppm_map(
+        baseline,
+        stations,
+        baseline_flow_m3h=3000.0,
+        baseline_visc_cst=20.0,
+    )
+
+    assert floor_map == {0: pytest.approx(13.0)}
+
+
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
     import pipeline_optimization_app as app
 
