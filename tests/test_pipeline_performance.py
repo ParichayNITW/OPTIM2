@@ -1687,6 +1687,63 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert example["viscosity_cst"] == pytest.approx(2.5)
 
 
+def test_collect_segment_floors_respects_station_caps():
+    import importlib
+    import pipeline_optimization_app as app
+    import pipeline_model as model
+    from dra_utils import get_ppm_for_dr
+
+    importlib.reload(app)
+
+    stations = [
+        {
+            "name": "Station A",
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 18.0,
+            "delivery": 0.0,
+            "supply": 0.0,
+        }
+    ]
+    baseline_requirement = {
+        "segments": [
+            {
+                "station_idx": 0,
+                "length_km": 12.0,
+                "dra_ppm": 150.0,
+                "dra_perc": 60.0,
+            }
+        ]
+    }
+
+    flow_m3h = 1800.0
+    visc_cst = 6.0
+    floor_map = {0: 140.0}
+
+    segments = app._collect_segment_floors(
+        baseline_requirement,
+        stations,
+        baseline_flow_m3h=flow_m3h,
+        baseline_visc_cst=visc_cst,
+        min_ppm=120.0,
+        floor_map=floor_map,
+    )
+
+    assert len(segments) == 1
+    segment = segments[0]
+    assert segment["station_idx"] == 0
+    assert segment.get("limited_by_station") is True
+
+    diameter = app._station_inner_diameter(stations[0])
+    velocity = app._flow_velocity_mps(flow_m3h, diameter)
+    cap_perc = min(float(stations[0]["max_dr"]), model.GLOBAL_MAX_DRA_CAP)
+    expected_ppm = get_ppm_for_dr(visc_cst, cap_perc, velocity, diameter)
+
+    assert segment["dra_ppm"] == pytest.approx(expected_ppm, rel=1e-6)
+    assert segment.get("dra_perc") == pytest.approx(cap_perc, rel=1e-6)
+
+
 def test_compute_minimum_lacing_requirement_respects_station_suction_heads():
     import pipeline_model as model
 
