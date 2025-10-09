@@ -76,7 +76,7 @@ def _compute_drag_reduction(visc: float, ppm: float, velocity_mps: float, diamet
         return 0.0
 
     try:
-        dr_fraction = 0.5 * K1 * math.log(argument) + K2
+        dr_fraction = K1 * math.log(argument) + K2
     except (ValueError, OverflowError):
         return 0.0
     if not math.isfinite(dr_fraction):
@@ -112,7 +112,7 @@ def _ppm_for_dr_cached(visc: float, dr_percent: float, velocity_mps: float, diam
         return 0.0
 
     dr_fraction = dr_val / 100.0
-    exponent = 2.0 * (dr_fraction - K2) / K1
+    exponent = (dr_fraction - K2) / K1
     try:
         argument = math.exp(exponent)
     except OverflowError:
@@ -150,7 +150,7 @@ def _dr_for_ppm_cached(visc: float, ppm: float, velocity_mps: float, diameter_m:
         return 0.0
 
     try:
-        dr_fraction = 0.5 * K1 * math.log(argument) + K2
+        dr_fraction = K1 * math.log(argument) + K2
     except (ValueError, OverflowError):
         return 0.0
     if not math.isfinite(dr_fraction):
