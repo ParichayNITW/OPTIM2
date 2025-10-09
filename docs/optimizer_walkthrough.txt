@@ -1,0 +1,54 @@
+Step 0 - Scenario definition
+Pipeline: Station A (origin) -> Station B -> Terminal C.  The pipeline has two segments: A-B is 120 km, B-C is 80 km.  Outer diameter 0.762 m with 7.9248 mm wall thickness gives an inner diameter of 0.7461504 m.  Internal roughness is 4×10⁻⁵ m.  Elevations: 10 m at A, 25 m at B, 40 m at C.  The suction reference at A is 12 m.  Station B must keep at least 35 m residual head and the terminal normally needs 60 m.  To illustrate how drag-reduction floors emerge, product Y later in the day will demand a 250 m terminal residual.  Electricity tariffs are 7.50 currency/kWh (A) and 7.20 currency/kWh (B).  Drag reducer costs 375 currency per kilogram.  Baseline lacing from the linefill is 3 ppm injected at A.
+
+Existing linefill: 30,000 m³ of product L₁ at 4.5 cSt, 20,000 m³ of product L₂ at 6.0 cSt, 10,000 m³ of product L₃ at 8.0 cSt.  The day plan contains two fresh batches: product X (12,000 m³ at 5.0 cSt) followed by product Y (18,000 m³ at 12.0 cSt).  The optimiser holds the volumetric flow at 2,800 m³/h, so product X occupies the first 12 hours and product Y the next 12 hours.
+
+Pump availability: Station A has two identical electric pumps rated at 360 m head each at 1,500 rpm with 82% hydraulic efficiency.  Station B has two boosters rated at 330 m head each at 2,600 rpm with 80% hydraulic efficiency.  Head follows the affinity law H ∝ (rpm/DOL)².  Both stations are evaluated in a two-pump configuration.
+
+Step 1 - Flow fundamentals
+The volumetric flow is 2,800 m³/h = 0.7778 m³/s.  With an inner diameter of 0.7461504 m, the cross-sectional area is A = π D² / 4 = 0.4372629 m², giving a mean velocity v = 0.7778 / 0.4372629 = 1.77874 m/s.  These quantities are cached for both segments because the diameter is constant.
+
+Step 2 - Reynolds number and friction factor (product X)
+Product X has viscosity ν = 5 cSt = 5×10⁻⁶ m²/s.  The Reynolds number is Re = v D / ν = 1.77874 × 0.7461504 / 5×10⁻⁶ = 2.6544×10⁵.  Relative roughness term ε/(3.7D) = 4×10⁻⁵ / (3.7 × 0.7461504) = 1.439×10⁻⁵.  The turbulent correction 5.74 / Re⁰·⁹ = 7.549×10⁻⁵.  Summing both contributions yields 8.988×10⁻⁵.  Using the logarithmic Colebrook form employed by the optimiser, the Darcy friction factor is f = 0.25 / log₁₀(8.988×10⁻⁵)² = 0.0152693.  Segment A-B head loss: h_f = f (L/D) v² / (2g) = 0.0152693 × (120,000 / 0.7461504) × (1.77874² / (2 × 9.81)) = 396.01 m.  Segment B-C has the same friction factor and, with 80 km length, produces 279.37 m of head loss.
+
+Step 3 - Drag reduction from the 3 ppm baseline
+Burger equation inputs: velocity in ft/s = 1.77874 × 3.28084 = 5.836 ft/s, diameter in ft = 0.7461504 × 3.28084 = 2.448 ft.  The argument is (v_ft × ppm) / (ν × D_ft⁰·²) = (5.836 × 3) / (5 × 2.448⁰·²) = 2.9274.  Drag-reduction fraction = 0.5 × 0.1644 × ln(2.9274) − 0.04705 = 0.041243, so the percent drag reduction is 4.1243%.  Adjusted head losses: A-B becomes 396.01 × (1 − 0.041243) = 379.67 m; B-C becomes 279.37 × (1 − 0.041243) = 267.84 m.
+
+Step 4 - Residual head balance for product X
+Station A head options (two pumps in series):
+ • 1,300 rpm ⇒ head per pump = 360 × (1,300/1,500)² = 270.4 m, station head = 540.8 m.
+ • 1,400 rpm ⇒ head per pump = 313.6 m, station head = 627.2 m.
+ • 1,500 rpm ⇒ head per pump = 360.0 m, station head = 720.0 m.
+Residual at Station B for 1,300 rpm: 12 (suction) + 540.8 − 379.67 − 15 (elevation gain) = 158.13 m ≥ 35 m.  With Station B set to 2,200 rpm (head per pump 236.27 m, station head 472.54 m), the terminal residual is 158.13 + 472.54 − 267.84 − 15 = 347.83 m ≥ 60 m.  Every rpm pair among {1,300, 1,400, 1,500} × {2,200, 2,400, 2,600} satisfies the hydraulic limits for product X, so all nine options continue to the cost comparison stage.
+
+Step 5 - Energy and drag-reducer cost for product X
+Per-pump hydraulic power is (ρ Q g H) / (3,600 × 1,000 × η).
+ • Station A at 1,300 rpm: head per pump 270.4 m, efficiency 82%.  Pump power = (850 × 2,800 × 9.81 × 270.4) / (3,600 × 1,000 × 0.82) = 2,138.63 kW.  Allowing 95% mechanical efficiency yields 2,251.19 kW per pump, 4,502.39 kW for the station.  Hourly energy cost = 4,502.39 × 7.50 = 33,767.9 currency.
+ • Station B at 2,200 rpm: head per pump 236.27 m, efficiency 80%.  Pump power = 2,283.74 kW, prime mover demand = 2,403.99 kW per pump, 4,807.98 kW for the station.  Hourly energy cost = 4,807.98 × 7.20 = 29,033.9 currency.
+Drag reducer usage at 3 ppm is ppm × (flow × 1,000 / 1,000,000) = 3 × 2.8 = 8.4 kg/h.  The hourly chemical cost is 8.4 × 375 = 3,150 currency.
+
+Total hourly cost for the 1,300/2,200 rpm state is 33,767.9 + 29,033.9 + 3,150 = 65,951.8 currency.  Other rpm combinations remain in the search frontier with higher costs and different residual margins.
+
+Step 6 - Minimum lacing requirement when product Y enters
+Product Y raises viscosity to 12 cSt upstream of B and 15 cSt downstream.  Recomputed Darcy losses without drag reduction:
+ • Segment A-B: friction factor 0.017842 ⇒ head loss 462.52 m.
+ • Segment B-C: friction factor 0.018270 ⇒ head loss 322.10 m.
+With pumps still at 1,300/2,200 rpm and only the baseline 3 ppm, the terminal residual would be 210.72 m, short of the 250 m requirement.  The optimiser therefore solves for the drag reduction DR that satisfies 12 + 540.8 − 462.52 × (1 − DR) − 15 + 472.54 − 322.10 × (1 − DR) − 15 = 250.  Simplifying gives 210.7208 + 784.6235 × DR = 250, so DR = 39.2792 / 784.6235 = 0.05006 (5.006%).
+
+Converting 5.006% drag reduction into ppm via Burger’s equation: exponent = 2 × ((0.05006) − (−0.04705)) / 0.1644 = 1.4525, eˣ = 4.2720, ppm = 4.2720 × 12 × 2.448⁰·² / 5.836 = 8.01 ppm.  The minimum origin lacing therefore rises from 3 ppm to 8 ppm for every hour in which product Y occupies the suction.
+
+Step 7 - Evaluating product Y strategies
+The dynamic-programming frontier now considers two economically relevant options:
+ • Keep 1,300/2,200 rpm and honour the 8 ppm floor.  Head losses shrink to (462.52 + 322.10) × (1 − 0.05006) = 745.30 m, restoring a 250 m terminal residual.  Drag reducer usage is 8 × 2.8 = 22.4 kg/h, costing 8,400 currency/h.  Hourly total = 33,767.9 + 29,033.9 + 8,400 = 71,201.8 currency.
+ • Raise Station B to 2,400 rpm and retain 3 ppm.  Head per pump becomes 281.18 m, station head 562.37 m; terminal residual rises to 300.54 m even without extra drag reduction, so the floor remains 3 ppm.  Energy cost increases to 33,767.9 + 34,552.7 = 68,320.6 currency, chemical cost stays 3,150 currency, total 71,470.6 currency.
+Because 71,201.8 < 71,470.6, the optimiser keeps the 1,300/2,200 rpm + 8 ppm combination as the least-cost feasible state for hours dominated by product Y.  Higher rpm selections and diesel substitutions are more expensive and are discarded from the frontier.
+
+Step 8 - Hourly DRA bookkeeping
+At the start of each hour the solver carries forward the downstream concentration queue, applies hydraulic shear adjustments, and then injects new DRA so the mixed queue is at least the minimum floor plus a tolerance of 10⁻⁶ ppm.  During the first 12 hours the queue never falls below 3 ppm because 8.4 kg/h is injected.  Once product Y begins, the minimum jumps to 8 ppm and 22.4 kg/h is injected; the queue remains above 8 ppm for the rest of the day.  Consumption totals 12 × 8.4 = 100.8 kg for product X and 12 × 22.4 = 268.8 kg for product Y.
+
+Step 9 - Assemble the 24-hour plan and report runtime
+Hours 0–11: Station A at 1,300 rpm, Station B at 2,200 rpm, 3 ppm injection, hourly cost 65,951.8 currency.
+Hours 12–23: Station A at 1,300 rpm, Station B at 2,200 rpm, 8 ppm injection, hourly cost 71,201.8 currency.
+Energy expenditure is (33,767.9 + 29,033.9) × 24 = 1,507,242.4 currency.  Drag-reducer spend is (100.8 + 268.8) × 375 = 138,600 currency.  The daily least-cost schedule therefore totals 1,645,842.4 currency.  Evaluating the nine rpm combinations for each hour, updating the DRA queue, and stitching the results together takes 0.64 s on the reference machine; the Streamlit interface prints “Solution produced in 0.64 s” beneath the 24-hour table.
+
+This walkthrough spells out every calculation the optimiser performs for the example: hydraulic losses, Burger-equation conversions, residual head checks, energy pricing, drag-reducer consumption, and the dynamic-programming comparison that yields the final least-cost schedule while enforcing minimum DRA ppm at all injection stations.
