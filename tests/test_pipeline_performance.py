@@ -2567,6 +2567,93 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
             assert {"length_km", "kv", "rho"} <= set(entry.keys())
 
 
+def test_solve_pipeline_skips_baseline_when_global_shear(monkeypatch):
+    import pipeline_optimization_app as app
+    import importlib
+
+    session = app.st.session_state
+    tracked_keys = [
+        "pump_shear_rate",
+        "origin_lacing_baseline",
+        "origin_lacing_segment_baseline",
+        "origin_lacing_segment_display",
+    ]
+    sentinel = object()
+    previous = {key: session.get(key, sentinel) for key in tracked_keys}
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "pump_types": {"A": {"names": ["P1"]}},
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    kv_list = [5.0]
+    rho_list = [850.0]
+    segment_slices = [[{"length_km": 10.0, "kv": 5.0, "rho": 850.0}]]
+
+    def fake_baseline_requirement(*args, **kwargs):
+        return {
+            "dra_ppm": 8.0,
+            "dra_perc": 10.0,
+            "length_km": 10.0,
+            "warnings": [],
+            "enforceable": True,
+            "segments": [
+                {
+                    "station_idx": 0,
+                    "length_km": 10.0,
+                    "dra_ppm": 8.0,
+                    "dra_perc": 10.0,
+                }
+            ],
+        }
+
+    captured: dict[str, object] = {}
+
+    def fake_solver(*args, **kwargs):
+        captured["segment_floors"] = kwargs.get("segment_floors")
+        captured["forced_origin_detail"] = kwargs.get("forced_origin_detail")
+        return {"error": False, "message": None, "reports": [{"time": 0, "result": {}}]}
+
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+    monkeypatch.setattr(app.pipeline_model, "compute_minimum_lacing_requirement", fake_baseline_requirement)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline_with_types", fake_solver)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
+
+    try:
+        session["pump_shear_rate"] = 1.0
+        result = app.solve_pipeline(
+            stations=stations,
+            terminal=terminal,
+            FLOW=1000.0,
+            KV_list=kv_list,
+            rho_list=rho_list,
+            segment_slices=segment_slices,
+            RateDRA=5.0,
+            Price_HSD=0.0,
+            Fuel_density=820.0,
+            Ambient_temp=25.0,
+            linefill_dict=[],
+            hours=1.0,
+            start_time="00:00",
+        )
+    finally:
+        for key, value in previous.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+    assert result["error"] is False
+    assert captured.get("segment_floors") is None
+    assert captured.get("forced_origin_detail") is None
+
+
 def test_merge_segment_profiles_preserves_heterogeneity():
     import pipeline_optimization_app as app
 

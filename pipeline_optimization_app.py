@@ -2673,6 +2673,14 @@ def solve_pipeline(
 
     if pump_shear_rate is None:
         pump_shear_rate = st.session_state.get("pump_shear_rate", 0.0)
+    try:
+        shear_val = float(pump_shear_rate or 0.0)
+    except (TypeError, ValueError):
+        shear_val = 0.0
+    if not math.isfinite(shear_val):
+        shear_val = 0.0
+    shear_val = max(0.0, min(shear_val, 1.0))
+    carry_over_fraction = 1.0 - shear_val
 
     baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
     baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
@@ -2698,6 +2706,15 @@ def solve_pipeline(
     baseline_warnings: list = []
     baseline_segments: list[dict] | None = None
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+    if carry_over_fraction <= 0.0 and baseline_summary.get("has_positive_segments"):
+        st.info(
+            "Skipping baseline DRA enforcement because the global pump shear "
+            "removes all injected drag reducer (0% carry-over)."
+        )
+        baseline_requirement = None
+        baseline_enforceable = False
+        baseline_segments = None
+        baseline_summary = _summarise_baseline_requirement(None)
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
