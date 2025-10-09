@@ -2688,7 +2688,6 @@ def solve_pipeline(
             terminal,
             max_flow_m3h=float(baseline_flow),
             max_visc_cst=float(baseline_visc),
-            segment_slices=segment_slices,
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
             station_suction_heads=suction_heads,
         )
@@ -4278,7 +4277,6 @@ def run_all_updates():
             term_data,
             max_flow_m3h=float(baseline_flow),
             max_visc_cst=float(baseline_visc),
-            segment_slices=segment_slices,
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
             station_suction_heads=suction_heads,
         )
