@@ -2861,6 +2861,9 @@ def solve_pipeline(
     start_time: str = "00:00",
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
+    segment_floors: list[dict] | tuple[dict, ...] | None = None,
+    *,
+    apply_baseline_detail: bool = True,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -2912,6 +2915,61 @@ def solve_pipeline(
     baseline_enforceable = True
     baseline_warnings: list = []
     baseline_segments: list[dict] | None = None
+
+    def _sanitize_segments_for_pipeline(
+        raw_segments: object,
+    ) -> list[dict] | None:
+        if not isinstance(raw_segments, (list, tuple)):
+            return None
+        cleaned: list[dict] = []
+        positive_found = False
+        for entry in raw_segments:
+            if not isinstance(entry, Mapping):
+                continue
+            idx_val = entry.get("station_idx", entry.get("idx"))
+            try:
+                idx_int = int(idx_val)
+            except (TypeError, ValueError):
+                continue
+            if idx_int < 0 or idx_int >= len(stations):
+                continue
+            station_info = stations[idx_int] if idx_int < len(stations) else None
+            has_dra_capacity = True
+            if isinstance(station_info, Mapping):
+                max_dr_val = station_info.get("max_dr")
+                if max_dr_val is not None:
+                    try:
+                        has_dra_capacity = float(max_dr_val or 0.0) > 0.0
+                    except (TypeError, ValueError):
+                        has_dra_capacity = False
+            if not has_dra_capacity:
+                continue
+
+            cleaned_entry: dict[str, object] = {"station_idx": idx_int}
+            try:
+                cleaned_entry["length_km"] = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                cleaned_entry["length_km"] = 0.0
+            try:
+                ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            try:
+                perc_val = float(entry.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                perc_val = 0.0
+            if ppm_val > 0.0:
+                cleaned_entry["dra_ppm"] = ppm_val
+                positive_found = True
+            if perc_val > 0.0:
+                cleaned_entry["dra_perc"] = perc_val
+                positive_found = True
+            if entry.get("limited_by_station"):
+                cleaned_entry["limited_by_station"] = True
+            cleaned.append(cleaned_entry)
+        if not cleaned or not positive_found:
+            return None
+        return cleaned
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
     segment_floor_map = _segment_floor_ppm_map(
         baseline_requirement,
@@ -2944,14 +3002,19 @@ def solve_pipeline(
         )
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
+        else:
+            baseline_segments = None
         if baseline_enforceable and baseline_summary.get("has_positive_segments"):
             st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         else:
             st.session_state.pop("origin_lacing_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
+    baseline_segments_sanitized = _sanitize_segments_for_pipeline(baseline_segments)
+
     if baseline_enforceable and baseline_segments:
-        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
+        store_segments = baseline_segments_sanitized or copy.deepcopy(baseline_segments)
+        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(store_segments)
     else:
         st.session_state.pop("origin_lacing_segment_baseline", None)
     st.session_state["origin_lacing_segment_display"] = copy.deepcopy(
@@ -2968,7 +3031,7 @@ def solve_pipeline(
         user = copy.deepcopy(user_detail) if isinstance(user_detail, dict) else None
 
         if base and not user:
-            return base
+            return base if apply_baseline_detail else None
         if user and not base:
             return user if user else None
         if not base or not user:
@@ -2994,8 +3057,20 @@ def solve_pipeline(
 
         return user or None
 
+    baseline_segment_floors = (
+        copy.deepcopy(baseline_segments_sanitized)
+        if (baseline_enforceable and baseline_segments_sanitized)
+        else None
+    )
+
+    segments_for_enforcement: list[dict] | None = None
+    if segment_floors is not None:
+        segments_for_enforcement = _sanitize_segments_for_pipeline(segment_floors)
+    if segments_for_enforcement is None and baseline_segments_sanitized:
+        segments_for_enforcement = copy.deepcopy(baseline_segments_sanitized)
+
     baseline_for_enforcement: dict | None = None
-    if baseline_enforceable:
+    if baseline_enforceable and segments_for_enforcement:
         base_detail: dict[str, object] = {}
         ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
         perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
@@ -3003,18 +3078,18 @@ def solve_pipeline(
             base_detail["dra_ppm"] = ppm_floor
         if perc_floor > 0.0:
             base_detail["dra_perc"] = perc_floor
-        if baseline_segments:
-            base_detail["segments"] = copy.deepcopy(baseline_segments)
-            seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
-            if seg_total > 0.0:
-                base_detail["length_km"] = seg_total
-        if "length_km" not in base_detail:
-            length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
-            if length_floor > 0.0:
-                base_detail["length_km"] = length_floor
+        base_detail["segments"] = copy.deepcopy(segments_for_enforcement)
+        seg_total = sum(
+            float(seg.get("length_km", 0.0) or 0.0)
+            for seg in segments_for_enforcement
+            if isinstance(seg, Mapping)
+        )
+        if seg_total > 0.0:
+            base_detail["length_km"] = seg_total
         if base_detail:
             baseline_for_enforcement = base_detail
-    baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
+    if baseline_enforceable and segments_for_enforcement:
+        baseline_segment_floors = copy.deepcopy(segments_for_enforcement)
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -4059,6 +4134,150 @@ def _execute_time_series_solver(
     dra_linefill_local = copy.deepcopy(dra_linefill)
     dra_reach_local = float(dra_reach_km)
 
+    baseline_requirement = st.session_state.get("origin_lacing_baseline")
+
+    def _sanitize_segment_floors(
+        raw_segments: object,
+    ) -> list[dict] | None:
+        if not isinstance(raw_segments, list):
+            return None
+        cleaned: list[dict] = []
+        positive_found = False
+        for entry in raw_segments:
+            if not isinstance(entry, Mapping):
+                continue
+            idx_val = entry.get("station_idx", entry.get("idx"))
+            try:
+                idx_int = int(idx_val)
+            except (TypeError, ValueError):
+                continue
+            if idx_int < 0 or idx_int >= len(stations_base):
+                continue
+            station_info = stations_base[idx_int] if idx_int < len(stations_base) else None
+            has_dra_capacity = True
+            if isinstance(station_info, Mapping):
+                max_dr_val = station_info.get("max_dr")
+                if max_dr_val is not None:
+                    try:
+                        has_dra_capacity = float(max_dr_val or 0.0) > 0.0
+                    except (TypeError, ValueError):
+                        has_dra_capacity = False
+            if not has_dra_capacity:
+                continue
+            cleaned_entry: dict[str, object] = {"station_idx": idx_int}
+            try:
+                cleaned_entry["length_km"] = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                cleaned_entry["length_km"] = 0.0
+            try:
+                ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            try:
+                perc_val = float(entry.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                perc_val = 0.0
+            if ppm_val > 0.0:
+                cleaned_entry["dra_ppm"] = ppm_val
+                positive_found = True
+            if perc_val > 0.0:
+                cleaned_entry["dra_perc"] = perc_val
+                positive_found = True
+            if entry.get("limited_by_station"):
+                cleaned_entry["limited_by_station"] = True
+            cleaned.append(cleaned_entry)
+        if not cleaned or not positive_found:
+            return None
+        return cleaned
+
+    baseline_segments_raw = st.session_state.get("origin_lacing_segment_baseline")
+    baseline_segment_floors = _sanitize_segment_floors(baseline_segments_raw)
+    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+    baseline_for_enforcement: dict | None = None
+    base_detail: dict[str, object] = {}
+    try:
+        ppm_floor_val = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        ppm_floor_val = 0.0
+    if ppm_floor_val > 0.0:
+        base_detail["dra_ppm"] = ppm_floor_val
+    try:
+        perc_floor_val = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        perc_floor_val = 0.0
+    if perc_floor_val > 0.0:
+        base_detail["dra_perc"] = perc_floor_val
+    if baseline_segment_floors:
+        base_detail["segments"] = copy.deepcopy(baseline_segment_floors)
+        total_seg_length = sum(
+            float(seg.get("length_km", 0.0) or 0.0)
+            for seg in baseline_segment_floors
+            if isinstance(seg, Mapping)
+        )
+        if total_seg_length > 0.0:
+            base_detail["length_km"] = total_seg_length
+    else:
+        try:
+            length_floor_val = float(baseline_summary.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            length_floor_val = 0.0
+        if length_floor_val > 0.0:
+            base_detail["length_km"] = length_floor_val
+    if base_detail:
+        baseline_for_enforcement = base_detail
+
+    def _apply_baseline_floor(
+        base_detail_local: dict | None,
+        user_detail_local: dict | None,
+    ) -> dict | None:
+        base_local = copy.deepcopy(base_detail_local) if isinstance(base_detail_local, dict) else None
+        user_local = copy.deepcopy(user_detail_local) if isinstance(user_detail_local, dict) else None
+
+        if base_local and not user_local:
+            return None
+        if user_local and not base_local:
+            return user_local if user_local else None
+        if not base_local or not user_local:
+            return None
+
+        try:
+            ppm_floor_local = float(base_local.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_floor_local = 0.0
+        try:
+            length_floor_local = float(base_local.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            length_floor_local = 0.0
+        try:
+            perc_floor_local = float(base_local.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            perc_floor_local = 0.0
+
+        try:
+            current_ppm_local = float(user_local.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            current_ppm_local = 0.0
+        try:
+            current_length_local = float(user_local.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            current_length_local = 0.0
+        try:
+            current_perc_local = float(user_local.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            current_perc_local = 0.0
+
+        if ppm_floor_local > 0.0:
+            user_local["dra_ppm"] = max(current_ppm_local, ppm_floor_local)
+        if length_floor_local > 0.0:
+            user_local["length_km"] = max(current_length_local, length_floor_local)
+        if perc_floor_local > 0.0:
+            user_local["dra_perc"] = max(current_perc_local, perc_floor_local)
+
+        if base_local.get("segments") and "segments" not in user_local:
+            user_local["segments"] = copy.deepcopy(base_local["segments"])
+
+        return user_local or None
+
     reports: list[dict] = []
     linefill_snaps: list[pd.DataFrame] = []
     hour_states: list[dict] = []
@@ -4130,6 +4349,17 @@ def _execute_time_series_solver(
                 detail_obj = state.get("origin_enforced_detail")
                 if isinstance(detail_obj, dict):
                     forced_detail = copy.deepcopy(detail_obj)
+            forced_detail_effective = _apply_baseline_floor(
+                baseline_for_enforcement,
+                forced_detail,
+            )
+            if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
+                forced_detail_effective = None
+            segment_floor_payload = (
+                copy.deepcopy(baseline_segment_floors)
+                if baseline_segment_floors
+                else None
+            )
             res = solve_pipeline(
                 stns_run,
                 term_data,
@@ -4147,7 +4377,9 @@ def _execute_time_series_solver(
                 hours=1.0,
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
-                forced_origin_detail=forced_detail,
+                forced_origin_detail=forced_detail_effective,
+                segment_floors=segment_floor_payload,
+                apply_baseline_detail=False,
             )
 
             block_cost += res.get("total_cost", 0.0)
