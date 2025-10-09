@@ -1494,6 +1494,43 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
     assert detail.get("floor_length_km") >= summary["length_km"]
 
 
+def test_segment_floor_ppm_map_derives_from_percent():
+    import pipeline_optimization_app as app
+    from dra_utils import get_ppm_for_dr
+
+    baseline = {
+        "dra_ppm": 0.0,
+        "dra_perc": 0.0,
+        "segments": [
+            {
+                "station_idx": 0,
+                "length_km": 5.0,
+                "dra_ppm": 0.0,
+                "dra_perc": 12.5,
+            }
+        ],
+    }
+    stations = [
+        {
+            "D": 0.762,
+            "t": 0.0075,
+        }
+    ]
+
+    floor_map = app._segment_floor_ppm_map(
+        baseline,
+        stations,
+        baseline_flow_m3h=1200.0,
+        baseline_visc_cst=6.0,
+    )
+
+    assert set(floor_map) == {0}
+    inner_d = stations[0]["D"] - 2 * stations[0]["t"]
+    velocity = app._flow_velocity_mps(1200.0, inner_d)
+    expected = get_ppm_for_dr(6.0, 12.5, velocity, inner_d)
+    assert floor_map[0] == pytest.approx(expected)
+
+
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
     import pipeline_optimization_app as app
 
@@ -2565,6 +2602,106 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
         assert slices
         for entry in slices:
             assert {"length_km", "kv", "rho"} <= set(entry.keys())
+
+
+def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
+    import pipeline_optimization_app as app
+    import importlib
+
+    session = app.st.session_state
+    tracked_keys = [
+        "pump_shear_rate",
+        "origin_lacing_baseline",
+        "origin_lacing_segment_baseline",
+        "origin_lacing_segment_display",
+        "minimum_dra_floor_ppm",
+        "minimum_dra_floor_ppm_by_segment",
+    ]
+    sentinel = object()
+    previous = {key: session.get(key, sentinel) for key in tracked_keys}
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "pump_types": {"A": {"names": ["P1"]}},
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    kv_list = [5.0]
+    rho_list = [850.0]
+    segment_slices = [[{"length_km": 10.0, "kv": 5.0, "rho": 850.0}]]
+
+    def fake_baseline_requirement(*args, **kwargs):
+        return {
+            "dra_ppm": 8.0,
+            "dra_perc": 10.0,
+            "length_km": 10.0,
+            "warnings": [],
+            "enforceable": True,
+            "segments": [
+                {
+                    "station_idx": 0,
+                    "length_km": 10.0,
+                    "dra_ppm": 8.0,
+                    "dra_perc": 10.0,
+                }
+            ],
+        }
+
+    captured: dict[str, object] = {}
+
+    def fake_solver(*args, **kwargs):
+        captured["segment_floors"] = kwargs.get("segment_floors")
+        captured["forced_origin_detail"] = kwargs.get("forced_origin_detail")
+        return {"error": False, "message": None, "reports": [{"time": 0, "result": {}}]}
+
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+    monkeypatch.setattr(app.pipeline_model, "compute_minimum_lacing_requirement", fake_baseline_requirement)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline_with_types", fake_solver)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
+
+    floor_value = None
+    floor_map_value = None
+    try:
+        session["pump_shear_rate"] = 1.0
+        result = app.solve_pipeline(
+            stations=stations,
+            terminal=terminal,
+            FLOW=1000.0,
+            KV_list=kv_list,
+            rho_list=rho_list,
+            segment_slices=segment_slices,
+            RateDRA=5.0,
+            Price_HSD=0.0,
+            Fuel_density=820.0,
+            Ambient_temp=25.0,
+            linefill_dict=[],
+            hours=1.0,
+            start_time="00:00",
+        )
+        floor_value = app.st.session_state.get("minimum_dra_floor_ppm")
+        floor_map_value = app.st.session_state.get("minimum_dra_floor_ppm_by_segment")
+    finally:
+        for key, value in previous.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+    assert result["error"] is False
+    floors = captured.get("segment_floors")
+    assert isinstance(floors, list) and floors, "baseline floors should be enforced"
+    assert floors[0]["dra_ppm"] == pytest.approx(8.0)
+    assert floor_value == pytest.approx(8.0)
+    assert isinstance(floor_map_value, dict)
+    assert floor_map_value.get(0) == pytest.approx(8.0)
+    forced_detail = captured.get("forced_origin_detail")
+    assert isinstance(forced_detail, dict)
+    assert forced_detail.get("dra_ppm") == pytest.approx(8.0)
 
 
 def test_merge_segment_profiles_preserves_heterogeneity():
