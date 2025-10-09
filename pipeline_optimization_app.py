@@ -509,20 +509,20 @@ def _segment_floor_ppm_map(
     if floors:
         return floors
 
+    try:
+        global_ppm = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        global_ppm = 0.0
+    global_perc = 0.0
+    if global_ppm <= 0.0:
         try:
-            global_ppm = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+            global_perc = float(baseline_requirement.get("dra_perc", 0.0) or 0.0)
         except (TypeError, ValueError):
-            global_ppm = 0.0
-        global_perc = 0.0
-        if global_ppm <= 0.0:
-            try:
-                global_perc = float(baseline_requirement.get("dra_perc", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                global_perc = 0.0
-            if global_perc > 0.0 and stations:
-                velocity, diameter = _segment_velocity(0)
-                if velocity > 0.0 and diameter > 0.0:
-                    global_ppm = get_ppm_for_dr(visc, global_perc, velocity, diameter)
+            global_perc = 0.0
+        if global_perc > 0.0 and stations:
+            velocity, diameter = _segment_velocity(0)
+            if velocity > 0.0 and diameter > 0.0:
+                global_ppm = get_ppm_for_dr(visc, global_perc, velocity, diameter)
 
     if global_ppm > 0.0:
         floors[0] = float(global_ppm)
