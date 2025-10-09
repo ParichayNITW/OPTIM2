@@ -205,6 +205,7 @@ def _collect_segment_floors(
     baseline_requirement: Mapping[str, object] | None,
     *,
     min_ppm: float = 0.0,
+    floor_map: Mapping[int, float] | None = None,
 ) -> list[dict[str, object]]:
     """Normalise baseline segments for enforcement and display."""
 
@@ -230,18 +231,23 @@ def _collect_segment_floors(
             continue
 
         try:
+            station_idx = int(entry.get("station_idx", order_idx))
+        except (TypeError, ValueError):
+            station_idx = order_idx
+
+        try:
             baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
         except (TypeError, ValueError):
             baseline_ppm = 0.0
 
         floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
+        if floor_map and station_idx in floor_map:
+            try:
+                floor_ppm = max(floor_ppm, float(floor_map[station_idx]))
+            except (TypeError, ValueError):
+                pass
         if floor_ppm <= 0.0:
             continue
-
-        try:
-            station_idx = int(entry.get("station_idx", order_idx))
-        except (TypeError, ValueError):
-            station_idx = order_idx
 
         seg_detail: dict[str, object] = {
             "station_idx": station_idx,
@@ -317,63 +323,66 @@ def _flow_velocity_mps(flow_m3h: float, diameter_m: float) -> float:
     return (flow / 3600.0) / area
 
 
-def _minimum_floor_ppm(
+def _segment_floor_ppm_map(
     baseline_requirement: Mapping[str, object] | None,
     stations: Sequence[Mapping[str, object]] | None,
     *,
     baseline_flow_m3h: float,
     baseline_visc_cst: float,
-) -> float:
-    """Return the smallest positive PPM floor implied by ``baseline_requirement``."""
+) -> dict[int, float]:
+    """Return the minimum PPM floor for each injection segment."""
+
+    floors: dict[int, float] = {}
 
     if not isinstance(baseline_requirement, Mapping):
-        return 0.0
+        return floors
 
     try:
         visc = float(baseline_visc_cst or 0.0)
     except (TypeError, ValueError):
         visc = 0.0
     if visc <= 0.0:
-        return 0.0
+        return floors
 
     try:
         base_flow = float(baseline_flow_m3h or 0.0)
     except (TypeError, ValueError):
         base_flow = 0.0
     if base_flow <= 0.0:
-        return 0.0
+        return floors
 
-    min_ppm = math.inf
+    diameter_cache: dict[int, float] = {}
+    velocity_cache: dict[int, float] = {}
 
-    def _consider_candidate(ppm_value: float) -> None:
-        nonlocal min_ppm
-        if ppm_value > 0.0 and ppm_value < min_ppm:
-            min_ppm = ppm_value
+    def _segment_velocity(idx: int) -> tuple[float, float]:
+        if idx in velocity_cache:
+            return velocity_cache[idx], diameter_cache.get(idx, 0.0)
+        station = stations[idx] if stations and 0 <= idx < len(stations) else None
+        diameter = _station_inner_diameter(station or {}) if station else 0.0
+        diameter_cache[idx] = diameter
+        velocity = 0.0
+        if diameter > 0.0:
+            velocity = _flow_velocity_mps(base_flow, diameter)
+        velocity_cache[idx] = velocity
+        return velocity, diameter
 
-    try:
-        global_floor_ppm = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        global_floor_ppm = 0.0
-    _consider_candidate(global_floor_ppm)
-
-    try:
-        global_floor_perc = float(baseline_requirement.get("dra_perc", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        global_floor_perc = 0.0
-
-    if global_floor_perc > 0.0 and global_floor_ppm <= 0.0:
-        # Fall back to the provided drag reduction using Burger's equation.
-        station0 = stations[0] if stations else None
-        diameter = _station_inner_diameter(station0 or {}) if station0 else 0.0
-        velocity = _flow_velocity_mps(base_flow, diameter) if diameter > 0.0 else 0.0
-        if velocity > 0.0 and diameter > 0.0:
-            ppm_guess = get_ppm_for_dr(visc, global_floor_perc, velocity, diameter)
-            _consider_candidate(ppm_guess)
+    def _register_floor(idx: int, ppm_value: float) -> None:
+        if ppm_value <= 0.0:
+            return
+        current = floors.get(idx, 0.0)
+        if ppm_value > current:
+            floors[idx] = float(ppm_value)
 
     segments_raw = baseline_requirement.get("segments")
     if isinstance(segments_raw, Sequence):
         for entry in segments_raw:
             if not isinstance(entry, Mapping):
+                continue
+            try:
+                station_idx = int(entry.get("station_idx", 0))
+            except (TypeError, ValueError):
+                station_idx = 0
+            if station_idx < 0:
                 continue
             try:
                 ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
@@ -386,25 +395,34 @@ def _minimum_floor_ppm(
                     perc_val = 0.0
                 if perc_val <= 0.0:
                     continue
-                try:
-                    station_idx = int(entry.get("station_idx", 0))
-                except (TypeError, ValueError):
-                    station_idx = 0
-                station = stations[station_idx] if stations and station_idx < len(stations) else None
-                if station is None:
-                    continue
-                diameter = _station_inner_diameter(station)
-                if diameter <= 0.0:
-                    continue
-                velocity = _flow_velocity_mps(base_flow, diameter)
-                if velocity <= 0.0:
+                velocity, diameter = _segment_velocity(station_idx)
+                if velocity <= 0.0 or diameter <= 0.0:
                     continue
                 ppm_val = get_ppm_for_dr(visc, perc_val, velocity, diameter)
-            _consider_candidate(ppm_val)
+            _register_floor(station_idx, ppm_val)
 
-    if min_ppm is math.inf:
-        return 0.0
-    return float(min_ppm)
+    if floors:
+        return floors
+
+    try:
+        global_ppm = float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        global_ppm = 0.0
+    global_perc = 0.0
+    if global_ppm <= 0.0:
+        try:
+            global_perc = float(baseline_requirement.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            global_perc = 0.0
+        if global_perc > 0.0 and stations:
+            velocity, diameter = _segment_velocity(0)
+            if velocity > 0.0 and diameter > 0.0:
+                global_ppm = get_ppm_for_dr(visc, global_perc, velocity, diameter)
+
+    if global_ppm > 0.0:
+        floors[0] = float(global_ppm)
+
+    return floors
 
 
 def _normalise_station_suction_heads(raw: object) -> list[float]:
@@ -2840,17 +2858,23 @@ def solve_pipeline(
     baseline_warnings: list = []
     baseline_segments: list[dict] | None = None
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    min_floor_ppm = _minimum_floor_ppm(
+    segment_floor_map = _segment_floor_ppm_map(
         baseline_requirement,
         stations,
         baseline_flow_m3h=baseline_flow,
         baseline_visc_cst=baseline_visc,
     )
+    positive_floors = [value for value in segment_floor_map.values() if value > 0.0]
+    min_floor_ppm = min(positive_floors) if positive_floors else 0.0
     baseline_summary["min_dra_ppm"] = float(min_floor_ppm)
-    if min_floor_ppm > 0.0:
+    if segment_floor_map:
         st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
+        st.session_state["minimum_dra_floor_ppm_by_segment"] = {
+            int(idx): float(val) for idx, val in segment_floor_map.items() if val > 0.0
+        }
     else:
         st.session_state.pop("minimum_dra_floor_ppm", None)
+        st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
@@ -2858,7 +2882,11 @@ def solve_pipeline(
             if message:
                 st.warning(message)
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segment_floors = _collect_segment_floors(baseline_requirement, min_ppm=min_floor_ppm)
+        segment_floors = _collect_segment_floors(
+            baseline_requirement,
+            min_ppm=min_floor_ppm,
+            floor_map=segment_floor_map,
+        )
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
         if baseline_enforceable and baseline_summary.get("has_positive_segments"):
@@ -4439,6 +4467,30 @@ def run_all_updates():
     baseline_warnings: list = []
     baseline_segments: list[dict] | None = None
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+    segment_floor_map: dict[int, float] = {}
+    min_floor_ppm = 0.0
+    if isinstance(baseline_requirement, Mapping):
+        segment_floor_map = _segment_floor_ppm_map(
+            baseline_requirement,
+            stations_data,
+            baseline_flow_m3h=baseline_flow,
+            baseline_visc_cst=baseline_visc,
+        )
+        positive_floors = [value for value in segment_floor_map.values() if value > 0.0]
+        min_floor_ppm = min(positive_floors) if positive_floors else 0.0
+        baseline_summary["min_dra_ppm"] = float(min_floor_ppm)
+        if segment_floor_map:
+            st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
+            st.session_state["minimum_dra_floor_ppm_by_segment"] = {
+                int(idx): float(val) for idx, val in segment_floor_map.items() if val > 0.0
+            }
+        else:
+            st.session_state.pop("minimum_dra_floor_ppm", None)
+            st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
+    else:
+        st.session_state.pop("minimum_dra_floor_ppm", None)
+        st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
+
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
@@ -4446,7 +4498,11 @@ def run_all_updates():
             if message:
                 st.warning(message)
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segment_floors = _collect_segment_floors(baseline_requirement)
+        segment_floors = _collect_segment_floors(
+            baseline_requirement,
+            min_ppm=min_floor_ppm,
+            floor_map=segment_floor_map,
+        )
         if segment_floors:
             baseline_segments = copy.deepcopy(segment_floors)
         if baseline_enforceable and baseline_summary.get("has_positive_segments"):

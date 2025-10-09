@@ -1494,8 +1494,9 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
     assert detail.get("floor_length_km") >= summary["length_km"]
 
 
-def test_minimum_floor_ppm_derived_from_percent():
+def test_segment_floor_ppm_map_derives_from_percent():
     import pipeline_optimization_app as app
+    from dra_utils import get_ppm_for_dr
 
     baseline = {
         "dra_ppm": 0.0,
@@ -1516,14 +1517,18 @@ def test_minimum_floor_ppm_derived_from_percent():
         }
     ]
 
-    floor_ppm = app._minimum_floor_ppm(
+    floor_map = app._segment_floor_ppm_map(
         baseline,
         stations,
         baseline_flow_m3h=1200.0,
         baseline_visc_cst=6.0,
     )
 
-    assert floor_ppm > 0.0
+    assert set(floor_map) == {0}
+    inner_d = stations[0]["D"] - 2 * stations[0]["t"]
+    velocity = app._flow_velocity_mps(1200.0, inner_d)
+    expected = get_ppm_for_dr(6.0, 12.5, velocity, inner_d)
+    assert floor_map[0] == pytest.approx(expected)
 
 
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
@@ -2610,6 +2615,7 @@ def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
         "origin_lacing_segment_baseline",
         "origin_lacing_segment_display",
         "minimum_dra_floor_ppm",
+        "minimum_dra_floor_ppm_by_segment",
     ]
     sentinel = object()
     previous = {key: session.get(key, sentinel) for key in tracked_keys}
@@ -2659,6 +2665,7 @@ def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
     monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
 
     floor_value = None
+    floor_map_value = None
     try:
         session["pump_shear_rate"] = 1.0
         result = app.solve_pipeline(
@@ -2677,6 +2684,7 @@ def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
             start_time="00:00",
         )
         floor_value = app.st.session_state.get("minimum_dra_floor_ppm")
+        floor_map_value = app.st.session_state.get("minimum_dra_floor_ppm_by_segment")
     finally:
         for key, value in previous.items():
             if value is sentinel:
@@ -2689,6 +2697,8 @@ def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
     assert isinstance(floors, list) and floors, "baseline floors should be enforced"
     assert floors[0]["dra_ppm"] == pytest.approx(8.0)
     assert floor_value == pytest.approx(8.0)
+    assert isinstance(floor_map_value, dict)
+    assert floor_map_value.get(0) == pytest.approx(8.0)
     forced_detail = captured.get("forced_origin_detail")
     assert isinstance(forced_detail, dict)
     assert forced_detail.get("dra_ppm") == pytest.approx(8.0)
