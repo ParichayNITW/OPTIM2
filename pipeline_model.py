@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover - numba may be unavailable
             return func
         return decorator
 
-from dra_utils import get_ppm_for_dr, get_dr_for_ppm
+from dra_utils import get_ppm_for_dr, get_ppm_for_dr_exact, get_dr_for_ppm
 
 # ``DEFAULT_MAX_DR`` remains available for callers that want to expose a
 # convenient UI default (e.g. pre-populating form fields).  The solver itself
@@ -2348,9 +2348,12 @@ def compute_minimum_lacing_requirement(
 
         d_inner, _ = _station_inner_diameter(stn)
         head_loss = 0.0
+        velocity = 0.0
+        reynolds = 0.0
+        friction_factor = 0.0
         if L > 0.0 and d_inner > 0.0 and flow_segment > 0.0:
             if slices_use[idx]:
-                head_loss, *_ = _segment_hydraulics_composite(
+                head_loss, velocity, reynolds, friction_factor = _segment_hydraulics_composite(
                     flow_segment,
                     L,
                     d_inner,
@@ -2361,7 +2364,7 @@ def compute_minimum_lacing_requirement(
                     slices=slices_use[idx],
                 )
             else:
-                head_loss, *_ = _segment_hydraulics(
+                head_loss, velocity, reynolds, friction_factor = _segment_hydraulics(
                     flow_segment,
                     L,
                     d_inner,
@@ -2411,48 +2414,66 @@ def compute_minimum_lacing_requirement(
         suction_requirement = station_suction if stn.get('is_pump') else station_suction
         effective_available_head = max(available_head - suction_requirement, 0.0)
         gap = sdh_required - effective_available_head
+        station_max_dr = _normalise_max_dr(stn.get('max_dr'))
+        has_dra_facility = station_max_dr > 0.0
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
             if dr_unbounded < 0.0:
                 dr_unbounded = 0.0
             if dr_unbounded > max_dra_perc_uncapped:
                 max_dra_perc_uncapped = dr_unbounded
-
-            station_max_dr = _normalise_max_dr(stn.get('max_dr'))
             cap_limit = dra_upper
             if station_max_dr > 0.0:
                 cap_limit = min(cap_limit, station_max_dr)
                 if dr_unbounded > station_max_dr + 1e-6:
                     limited_by_station = True
-
-            dr_needed = min(dr_unbounded, cap_limit)
-            dr_needed = min(max(dr_needed, 0.0), dra_upper)
-
-            if limited_by_station:
+            if not has_dra_facility:
+                limited_by_station = True
                 station_name = stn.get('name')
                 warning_msg = (
                     f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded:.2f}% DR "
-                    f"but is capped at {station_max_dr:.2f}%."
+                    "but has no DRA injection facility."
                 )
                 result['warnings'].append(
                     {
-                        'type': 'station_max_dr_exceeded',
+                        'type': 'station_no_dra_facility',
                         'station': station_name,
                         'required_dr': dr_unbounded,
-                        'max_dr': station_max_dr,
                         'message': warning_msg,
                     }
                 )
                 result['enforceable'] = False
-
-            if dr_needed > 0:
-                dra_ppm_needed = _dra_ppm_for_percent(visc_max, dr_needed, flow_segment, d_inner)
-            else:
+                dr_needed = 0.0
                 dra_ppm_needed = 0.0
+            else:
+                dr_needed = min(dr_unbounded, cap_limit)
+                dr_needed = min(max(dr_needed, 0.0), dra_upper)
 
-            if dr_needed > max_dra_perc:
-                max_dra_perc = dr_needed
-                max_dra_ppm = dra_ppm_needed
+                if limited_by_station:
+                    station_name = stn.get('name')
+                    warning_msg = (
+                        f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded:.2f}% DR "
+                        f"but is capped at {station_max_dr:.2f}%."
+                    )
+                    result['warnings'].append(
+                        {
+                            'type': 'station_max_dr_exceeded',
+                            'station': station_name,
+                            'required_dr': dr_unbounded,
+                            'max_dr': station_max_dr,
+                            'message': warning_msg,
+                        }
+                    )
+                    result['enforceable'] = False
+
+                if dr_needed > 0:
+                    dra_ppm_needed = _dra_ppm_for_percent(visc_max, dr_needed, flow_segment, d_inner)
+                else:
+                    dra_ppm_needed = 0.0
+
+                if dr_needed > max_dra_perc:
+                    max_dra_perc = dr_needed
+                    max_dra_ppm = dra_ppm_needed
 
         segment_entry = {
             'station_idx': idx,
@@ -2466,7 +2487,16 @@ def compute_minimum_lacing_requirement(
             'available_head_before_suction': float(available_head),
             'suction_head': float(suction_requirement),
             'limited_by_station': bool(limited_by_station),
+            'velocity_mps': float(velocity),
+            'reynolds_number': float(reynolds),
+            'friction_factor': float(friction_factor),
+            'sdh_available': float(effective_available_head),
+            'sdh_gap': float(max(gap, 0.0)),
+            'has_dra_facility': bool(has_dra_facility),
         }
+        if dr_needed > 0 and dra_ppm_needed > 0.0 and has_dra_facility:
+            ppm_unrounded = get_ppm_for_dr_exact(visc_max, dr_needed, velocity, d_inner)
+            segment_entry['dra_ppm_unrounded'] = float(ppm_unrounded)
         segment_requirements.append(segment_entry)
 
         carried_head_available = effective_available_head
@@ -3593,6 +3623,8 @@ def solve_pipeline(
     if segment_floors:
         for entry in segment_floors:
             if not isinstance(entry, Mapping):
+                continue
+            if entry.get('has_dra_facility') is False:
                 continue
             idx_val = entry.get('station_idx', entry.get('idx'))
             try:

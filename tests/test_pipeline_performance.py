@@ -12,6 +12,7 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import dra_utils
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
     solve_pipeline_with_types as _solve_pipeline_with_types,
@@ -1647,6 +1648,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
             "rough": 0.00004,
             "delivery": 0.0,
             "supply": 0.0,
+            "max_dr": 70.0,
         }
     ]
     terminal = {"min_residual": 0.0, "elev": 0.0}
@@ -1669,7 +1671,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert segments[0]["suction_head"] == pytest.approx(min_suction)
 
     flow = 900.0
-    head_loss, *_ = model._segment_hydraulics(
+    head_loss, velocity_calc, reynolds_calc, friction_calc = model._segment_hydraulics(
         flow,
         stations[0]["L"],
         stations[0]["d"],
@@ -1690,13 +1692,20 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["station_idx"] == 0
     assert seg_entry["length_km"] == pytest.approx(10.0)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
+    expected_ppm_exact = dra_utils.get_ppm_for_dr_exact(2.5, expected_dr, velocity_calc, stations[0]["d"])
     expected_ppm = model._dra_ppm_for_percent(2.5, expected_dr, flow, stations[0]["d"])
     assert expected_ppm > 0
-    assert seg_entry["dra_ppm"] == math.ceil(expected_ppm)
-    assert seg_entry["dra_ppm"] == pytest.approx(expected_ppm, rel=1e-3)
+    assert seg_entry["dra_ppm_unrounded"] == pytest.approx(expected_ppm_exact, rel=1e-6, abs=1e-6)
+    assert seg_entry["dra_ppm"] == math.ceil(expected_ppm_exact)
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
     assert seg_entry["max_head_available"] == pytest.approx(effective_available)
+    assert seg_entry["sdh_available"] == pytest.approx(effective_available)
+    assert seg_entry["sdh_gap"] == pytest.approx(expected_gap)
+    assert seg_entry["velocity_mps"] == pytest.approx(velocity_calc)
+    assert seg_entry["reynolds_number"] == pytest.approx(reynolds_calc)
+    assert seg_entry["friction_factor"] == pytest.approx(friction_calc)
+    assert seg_entry["has_dra_facility"] is True
 
     explanation = result.get("explanation")
     assert isinstance(explanation, str) and "Station A" in explanation
@@ -1707,6 +1716,72 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert example["sdh_gap"] == pytest.approx(expected_gap)
     assert example["flow_m3h"] == pytest.approx(flow)
     assert example["viscosity_cst"] == pytest.approx(2.5)
+
+
+def test_compute_minimum_lacing_requirement_handles_missing_facility():
+    import importlib
+    import pipeline_model as model
+    import pipeline_optimization_app as app
+
+    importlib.reload(app)
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 10.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 0.0,
+        }
+    ]
+
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=2.5,
+        min_suction_head=1.0,
+    )
+
+    assert result.get("enforceable") is False
+    warnings = result.get("warnings") or []
+    assert any(w.get("type") == "station_no_dra_facility" for w in warnings if isinstance(w, dict))
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    seg_entry = segments[0]
+    assert seg_entry["has_dra_facility"] is False
+    assert seg_entry["dra_ppm"] == pytest.approx(0.0)
+    assert seg_entry["dra_perc"] == pytest.approx(0.0)
+    assert seg_entry["dra_perc_uncapped"] > 0.0
+
+    floors = app._collect_segment_floors(
+        result,
+        stations,
+        baseline_flow_m3h=900.0,
+        baseline_visc_cst=2.5,
+        min_ppm=0.0,
+    )
+    assert floors == []
 
 
 def test_collect_segment_floors_respects_station_caps():
