@@ -127,6 +127,38 @@ def _ppm_for_dr_cached(visc: float, dr_percent: float, velocity_mps: float, diam
 
 
 @lru_cache(maxsize=32768)
+def _ppm_for_dr_exact_cached(visc: float, dr_percent: float, velocity_mps: float, diameter_m: float) -> float:
+    if dr_percent <= 0.0:
+        return 0.0
+    try:
+        visc_val = float(visc)
+        dr_val = float(dr_percent)
+    except (TypeError, ValueError):
+        return 0.0
+    if visc_val <= 0.0:
+        return 0.0
+
+    vel_ft_s = _velocity_ft_s(velocity_mps)
+    dia_ft = _diameter_ft(diameter_m)
+    if vel_ft_s <= 0.0 or dia_ft <= 0.0:
+        return 0.0
+
+    dr_fraction = dr_val / 100.0
+    exponent = (dr_fraction - K2) / K1
+    try:
+        argument = math.exp(exponent)
+    except OverflowError:
+        argument = float("inf")
+    if not math.isfinite(argument) or argument <= 0.0:
+        return 0.0
+
+    ppm_raw = argument * visc_val * (dia_ft ** 0.2) / vel_ft_s
+    if not math.isfinite(ppm_raw):
+        return 0.0
+    return ppm_raw
+
+
+@lru_cache(maxsize=32768)
 def _dr_for_ppm_cached(visc: float, ppm: float, velocity_mps: float, diameter_m: float) -> float:
     try:
         ppm_val = float(ppm)
@@ -172,6 +204,18 @@ def get_ppm_for_dr(
     return _ppm_for_dr_cached(*key)
 
 
+def get_ppm_for_dr_exact(
+    visc: float,
+    dr_percent: float,
+    velocity_mps: float,
+    diameter_m: float,
+) -> float:
+    """Compute the unrounded PPM required for ``dr_percent`` drag reduction."""
+
+    key = _round_cache_key(visc, dr_percent, velocity_mps, diameter_m)
+    return _ppm_for_dr_exact_cached(*key)
+
+
 def get_dr_for_ppm(
     visc: float,
     ppm: float,
@@ -193,6 +237,7 @@ def compute_drag_reduction(visc: float, ppm: float, velocity_mps: float, diamete
 
 __all__ = [
     "get_ppm_for_dr",
+    "get_ppm_for_dr_exact",
     "get_dr_for_ppm",
     "compute_drag_reduction",
 ]
