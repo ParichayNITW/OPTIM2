@@ -153,6 +153,8 @@ def _summarise_baseline_requirement(
         for entry in segments_raw:
             if not isinstance(entry, Mapping):
                 continue
+            if entry.get("has_dra_facility") is False:
+                continue
             try:
                 seg_length = float(entry.get("length_km", 0.0) or 0.0)
             except (TypeError, ValueError):
@@ -226,6 +228,8 @@ def _collect_segment_floors(
     processed: list[tuple[int, dict[str, object]]] = []
     for order_idx, entry in enumerate(segments_raw):
         if not isinstance(entry, Mapping):
+            continue
+        if entry.get("has_dra_facility") is False:
             continue
 
         try:
@@ -483,6 +487,8 @@ def _segment_floor_ppm_map(
         for entry in segments_raw:
             if not isinstance(entry, Mapping):
                 continue
+            if entry.get("has_dra_facility") is False:
+                continue
             try:
                 station_idx = int(entry.get("station_idx", 0))
             except (TypeError, ValueError):
@@ -562,6 +568,8 @@ def _build_segment_display_rows(
     if isinstance(segments, Sequence):
         for entry in segments:
             if not isinstance(entry, Mapping):
+                continue
+            if entry.get("has_dra_facility") is False:
                 continue
             seg_copy = copy.deepcopy(entry)
             try:
@@ -662,7 +670,7 @@ def _render_solver_feedback(
             for warning in warnings:
                 if not isinstance(warning, Mapping):
                     continue
-                if warning.get("type") != "station_max_dr_exceeded":
+                if warning.get("type") not in {"station_max_dr_exceeded", "station_no_dra_facility"}:
                     continue
                 message = warning.get("message")
                 if not message:
@@ -671,13 +679,18 @@ def _render_solver_feedback(
                         required = float(warning.get("required_dr", 0.0) or 0.0)
                     except (TypeError, ValueError):
                         required = 0.0
-                    try:
-                        max_dr = float(warning.get("max_dr", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        max_dr = 0.0
-                    message = (
-                        f"{station} requires {required:.2f}% DR but is capped at {max_dr:.2f}%."
-                    )
+                    if warning.get("type") == "station_no_dra_facility":
+                        message = (
+                            f"{station} requires {required:.2f}% DR but has no DRA injection facility."
+                        )
+                    else:
+                        try:
+                            max_dr = float(warning.get("max_dr", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            max_dr = 0.0
+                        message = (
+                            f"{station} requires {required:.2f}% DR but is capped at {max_dr:.2f}%."
+                        )
                 st.warning(message)
 
     if show_error and res.get("error"):
@@ -3031,6 +3044,8 @@ def solve_pipeline(
         for entry in raw_segments:
             if not isinstance(entry, Mapping):
                 continue
+            if entry.get("has_dra_facility") is False:
+                continue
             idx_val = entry.get("station_idx", entry.get("idx"))
             try:
                 idx_int = int(idx_val)
@@ -3071,6 +3086,19 @@ def solve_pipeline(
                 positive_found = True
             if entry.get("limited_by_station"):
                 cleaned_entry["limited_by_station"] = True
+            for extra_key in [
+                "suction_head",
+                "velocity_mps",
+                "reynolds_number",
+                "friction_factor",
+                "sdh_required",
+                "sdh_available",
+                "sdh_gap",
+                "dra_ppm_unrounded",
+                "has_dra_facility",
+            ]:
+                if extra_key in entry:
+                    cleaned_entry[extra_key] = copy.deepcopy(entry[extra_key])
             cleaned.append(cleaned_entry)
         if not cleaned or not positive_found:
             return None
@@ -4281,6 +4309,8 @@ def _execute_time_series_solver(
         for entry in raw_segments:
             if not isinstance(entry, Mapping):
                 continue
+            if entry.get("has_dra_facility") is False:
+                continue
             idx_val = entry.get("station_idx", entry.get("idx"))
             try:
                 idx_int = int(idx_val)
@@ -4320,6 +4350,19 @@ def _execute_time_series_solver(
                 positive_found = True
             if entry.get("limited_by_station"):
                 cleaned_entry["limited_by_station"] = True
+            for extra_key in [
+                "suction_head",
+                "velocity_mps",
+                "reynolds_number",
+                "friction_factor",
+                "sdh_required",
+                "sdh_available",
+                "sdh_gap",
+                "dra_ppm_unrounded",
+                "has_dra_facility",
+            ]:
+                if extra_key in entry:
+                    cleaned_entry[extra_key] = copy.deepcopy(entry[extra_key])
             cleaned.append(cleaned_entry)
         if not cleaned or not positive_found:
             return None
@@ -6064,6 +6107,35 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         seg_suction = float(entry.get("suction_head", baseline_suction) or 0.0)
                     except (TypeError, ValueError):
                         seg_suction = baseline_suction
+                    try:
+                        seg_velocity = float(entry.get("velocity_mps", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_velocity = 0.0
+                    try:
+                        seg_reynolds = float(entry.get("reynolds_number", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_reynolds = 0.0
+                    try:
+                        seg_friction = float(entry.get("friction_factor", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_friction = 0.0
+                    try:
+                        seg_sdh_required = float(entry.get("sdh_required", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_sdh_required = 0.0
+                    try:
+                        seg_sdh_available = float(entry.get("sdh_available", entry.get("max_head_available", 0.0)) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_sdh_available = float(entry.get("max_head_available", 0.0) or 0.0)
+                    try:
+                        seg_sdh_gap = float(entry.get("sdh_gap", seg_sdh_required - seg_sdh_available) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_sdh_gap = max(seg_sdh_required - seg_sdh_available, 0.0)
+                    try:
+                        seg_ppm_raw = float(entry.get("dra_ppm_unrounded", entry.get("dra_ppm", 0.0)) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_ppm_raw = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    has_facility = bool(entry.get("has_dra_facility", True))
 
                     seg_rows.append(
                         {
@@ -6072,6 +6144,14 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             "Floor PPM": seg_ppm,
                             "Floor %DR": seg_perc,
                             "Suction head (m)": seg_suction,
+                            "Velocity (m/s)": seg_velocity,
+                            "Reynolds No.": seg_reynolds,
+                            "Friction factor": seg_friction,
+                            "SDH required (m)": seg_sdh_required,
+                            "SDH available (m)": seg_sdh_available,
+                            "SDH gap (m)": seg_sdh_gap,
+                            "Floor PPM (raw)": seg_ppm_raw,
+                            "DRA facility available": has_facility,
                         }
                     )
                 if seg_rows:
@@ -6082,6 +6162,13 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             "Floor PPM": 2,
                             "Floor %DR": 2,
                             "Suction head (m)": 2,
+                            "Velocity (m/s)": 3,
+                            "Reynolds No.": 0,
+                            "Friction factor": 5,
+                            "SDH required (m)": 2,
+                            "SDH available (m)": 2,
+                            "SDH gap (m)": 2,
+                            "Floor PPM (raw)": 3,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
