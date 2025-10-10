@@ -319,6 +319,175 @@ def compute_and_store_segment_floor_map(
     return floor_map_raw
 
 
+def _session_floor_ppm(i_from: int, i_to: int | None = None) -> float:
+    """Return the persisted segment floor PPM for ``(i_from, i_to)``."""
+
+    import streamlit as st  # local import for Streamlit state access
+
+    floor_map = st.session_state.get("dra_floor_ppm_by_seg", {}) or {}
+    if i_to is not None:
+        candidates: list[object] = [(i_from, i_to), (i_from, i_from + 1), i_from]
+    else:
+        candidates = [(i_from, i_from + 1), i_from]
+    for key in candidates:
+        if key in floor_map:
+            try:
+                value = float(floor_map[key] or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0.0:
+                return value
+    return 0.0
+
+
+def _session_segment_floor_entries(
+    stations: Sequence[Mapping[str, object]] | None,
+) -> list[dict[str, object]]:
+    """Normalise persisted floors into ``solve_pipeline`` segment payload rows."""
+
+    import streamlit as st
+
+    floor_map = st.session_state.get("dra_floor_ppm_by_seg", {}) or {}
+    if not floor_map:
+        return []
+
+    drpct_map = st.session_state.get("dra_floor_drpct_by_seg", {}) or {}
+    entries: dict[int, dict[str, object]] = {}
+
+    for key, ppm in floor_map.items():
+        if isinstance(key, tuple) and len(key) >= 2:
+            idx_raw = key[0]
+        else:
+            idx_raw = key
+        try:
+            idx_int = int(idx_raw)
+        except (TypeError, ValueError):
+            continue
+        try:
+            ppm_val = float(ppm or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val <= 0.0:
+            continue
+
+        existing = entries.get(idx_int)
+        current_ppm = float(existing.get("dra_ppm", 0.0) or 0.0) if existing else 0.0
+        if existing is not None and ppm_val <= current_ppm + 1e-9:
+            continue
+
+        seg_entry: dict[str, object] = {"station_idx": idx_int, "dra_ppm": float(ppm_val)}
+        if stations and 0 <= idx_int < len(stations):
+            try:
+                length_val = float(stations[idx_int].get("L", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            if length_val > 0.0:
+                seg_entry["length_km"] = length_val
+
+        drpct_keys: list[object] = [key]
+        if isinstance(key, tuple) and len(key) >= 2:
+            drpct_keys.append((idx_int, key[1]))
+        drpct_keys.append((idx_int, idx_int + 1))
+        for candidate in drpct_keys:
+            if candidate in drpct_map:
+                try:
+                    drpct_val = float(drpct_map[candidate] or 0.0)
+                except (TypeError, ValueError):
+                    drpct_val = 0.0
+                if drpct_val > 0.0:
+                    seg_entry["dra_perc"] = drpct_val
+                break
+
+        entries[idx_int] = seg_entry
+
+    return [entries[idx] for idx in sorted(entries)]
+
+
+def _merge_segment_floor_entries(
+    primary: Sequence[Mapping[str, object]] | None,
+    extra: Sequence[Mapping[str, object]] | None,
+) -> list[dict[str, object]]:
+    """Merge two segment-floor sequences, keeping the highest PPM per station."""
+
+    merged: dict[int, dict[str, object]] = {}
+
+    def _ingest(source: Sequence[Mapping[str, object]] | None) -> None:
+        if not isinstance(source, Sequence):
+            return
+        for entry in source:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                idx_val = int(entry.get("station_idx", 0))
+            except (TypeError, ValueError):
+                continue
+            try:
+                ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            if ppm_val <= 0.0:
+                continue
+            existing = merged.get(idx_val)
+            existing_ppm = float(existing.get("dra_ppm", 0.0) or 0.0) if existing else 0.0
+            if existing is None or ppm_val > existing_ppm + 1e-9:
+                merged[idx_val] = dict(entry)
+
+    _ingest(primary)
+    _ingest(extra)
+
+    return [merged[idx] for idx in sorted(merged)]
+
+
+# ---------------------------
+# STEP 2: Floor enforcement helpers (24h optimizer)
+# ---------------------------
+
+
+def _ppm_bounds_for_segment(i_from: int, i_to: int, *, ppm_step: int, ppm_max_lookup) -> Tuple[int, int, int]:
+    """Return the (min, max, step) PPM bounds with the floor enforced."""
+
+    floor_ppm = int(max(0, _session_floor_ppm(i_from, i_to)))
+    try:
+        ppm_max_val = ppm_max_lookup(i_from, i_to)
+    except Exception:
+        ppm_max_val = 0
+    try:
+        ppm_max = int(max(0, ppm_max_val))
+    except (TypeError, ValueError):
+        ppm_max = 0
+    try:
+        step_val = int(ppm_step)
+    except (TypeError, ValueError):
+        step_val = 1
+    if step_val <= 0:
+        step_val = 1
+    ppm_min = floor_ppm
+    if ppm_max >= 0:
+        ppm_min = min(floor_ppm, ppm_max)
+    if ppm_min < 0:
+        ppm_min = 0
+    return ppm_min, ppm_max, step_val
+
+
+def ppm_grid_for_segment(i_from: int, i_to: int, *, ppm_step: int, ppm_max_lookup):
+    """Return a numpy grid of feasible PPM values respecting the floor."""
+
+    import numpy as np
+
+    ppm_min, ppm_max, step = _ppm_bounds_for_segment(
+        i_from,
+        i_to,
+        ppm_step=ppm_step,
+        ppm_max_lookup=ppm_max_lookup,
+    )
+    if ppm_min > ppm_max:
+        return np.array([], dtype=int)
+    grid = np.arange(ppm_min, ppm_max + step, step, dtype=int)
+    if grid.size == 0 or grid[0] != ppm_min:
+        grid = np.insert(grid, 0, ppm_min)
+    return grid
+
+
 INIT_DRA_COL = "Initial DRA (ppm)"
 
 DAILY_SOLVE_TIMEOUT_S = 900  # 15 minutes
@@ -4026,19 +4195,39 @@ def _enforce_minimum_origin_dra(
     state.pop("origin_error", None)
     state.pop("origin_enforced_detail", None)
 
+    origin_floor_ppm = _session_floor_ppm(0, 1)
     queue = []
     for entry in state.get("dra_linefill") or []:
         if not isinstance(entry, dict):
             continue
-        queue.append(dict(entry))
+        copy_entry = dict(entry)
+        if origin_floor_ppm > 0.0:
+            try:
+                current_ppm = float(copy_entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                current_ppm = 0.0
+            if current_ppm < origin_floor_ppm:
+                copy_entry["dra_ppm"] = origin_floor_ppm
+        queue.append(copy_entry)
 
     try:
         floor_ppm = max(float(min_ppm or 0.0), 0.0)
     except (TypeError, ValueError):
         floor_ppm = 0.0
+    if origin_floor_ppm > 0.0:
+        floor_ppm = max(floor_ppm, origin_floor_ppm)
 
     fallback_length = 0.0
     fallback_perc = 0.0
+    session_segments = _session_segment_floor_entries(stations)
+    origin_session_segment = None
+    for seg in session_segments:
+        try:
+            if int(seg.get("station_idx", -1)) == 0:
+                origin_session_segment = seg
+                break
+        except (TypeError, ValueError):
+            continue
     if isinstance(baseline_requirement, Mapping):
         try:
             floor_ppm = max(floor_ppm, float(baseline_requirement.get("dra_ppm", 0.0) or 0.0))
@@ -4048,6 +4237,23 @@ def _enforce_minimum_origin_dra(
             fallback_length = max(fallback_length, float(baseline_requirement.get("length_km", 0.0) or 0.0))
         except (TypeError, ValueError):
             pass
+    if origin_session_segment:
+        try:
+            session_ppm = float(origin_session_segment.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            session_ppm = 0.0
+        if session_ppm > 0.0:
+            floor_ppm = max(floor_ppm, session_ppm)
+        try:
+            session_len = float(origin_session_segment.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            session_len = 0.0
+        fallback_length = max(fallback_length, session_len)
+        try:
+            session_perc = float(origin_session_segment.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            session_perc = 0.0
+        fallback_perc = max(fallback_perc, session_perc)
         try:
             fallback_perc = max(fallback_perc, float(baseline_requirement.get("dra_perc", 0.0) or 0.0))
         except (TypeError, ValueError):
@@ -4089,14 +4295,28 @@ def _enforce_minimum_origin_dra(
         if isinstance(session_stations, list):
             station_seq = session_stations
 
+    floor_map_override: dict[int, float] | None = None
+    if session_segments:
+        floor_map_override = {
+            int(seg.get("station_idx", 0)): float(seg.get("dra_ppm", 0.0) or 0.0)
+            for seg in session_segments
+            if isinstance(seg, Mapping)
+        }
+
     segments_source = _collect_segment_floors(
         baseline_requirement,
         station_seq,
         baseline_flow_m3h=baseline_flow_value,
         baseline_visc_cst=baseline_visc_value,
         min_ppm=floor_ppm,
+        floor_map=floor_map_override,
     )
     segments_to_enforce = [dict(seg) for seg in segments_source]
+    if session_segments:
+        segments_to_enforce = [
+            dict(seg)
+            for seg in _merge_segment_floor_entries(segments_to_enforce, session_segments)
+        ]
 
     if not segments_to_enforce:
         fallback_length = max(fallback_length, min_length if floor_ppm > 0.0 else 0.0)
@@ -4632,6 +4852,14 @@ def _execute_time_series_solver(
 
     baseline_segments_raw = st.session_state.get("origin_lacing_segment_baseline")
     baseline_segment_floors = _sanitize_segment_floors(baseline_segments_raw)
+    session_segment_floors = _session_segment_floor_entries(stations_base)
+    combined_segment_floors = _merge_segment_floor_entries(
+        baseline_segment_floors or [], session_segment_floors
+    )
+    if combined_segment_floors:
+        baseline_segment_floors = combined_segment_floors
+    elif not baseline_segment_floors:
+        baseline_segment_floors = []
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
     try:
         baseline_flow_for_floor = float(
@@ -4650,12 +4878,27 @@ def _execute_time_series_solver(
         ppm_floor_val = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
     except (TypeError, ValueError):
         ppm_floor_val = 0.0
+    origin_floor_session = _session_floor_ppm(0, 1)
+    if ppm_floor_val <= 0.0 and origin_floor_session > 0.0:
+        ppm_floor_val = origin_floor_session
     if ppm_floor_val > 0.0:
         base_detail["dra_ppm"] = ppm_floor_val
     try:
         perc_floor_val = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
     except (TypeError, ValueError):
         perc_floor_val = 0.0
+    if perc_floor_val <= 0.0 and session_segment_floors:
+        for seg in session_segment_floors:
+            try:
+                if int(seg.get("station_idx", -1)) != 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            try:
+                perc_floor_val = float(seg.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                perc_floor_val = 0.0
+            break
     if perc_floor_val > 0.0:
         base_detail["dra_perc"] = perc_floor_val
     if baseline_segment_floors:
@@ -4672,6 +4915,18 @@ def _execute_time_series_solver(
             length_floor_val = float(baseline_summary.get("length_km", 0.0) or 0.0)
         except (TypeError, ValueError):
             length_floor_val = 0.0
+        if length_floor_val <= 0.0 and session_segment_floors:
+            for seg in session_segment_floors:
+                try:
+                    if int(seg.get("station_idx", -1)) != 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    length_floor_val = float(seg.get("length_km", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    length_floor_val = 0.0
+                break
         if length_floor_val > 0.0:
             base_detail["length_km"] = length_floor_val
     if base_detail:
