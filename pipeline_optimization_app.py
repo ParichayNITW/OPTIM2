@@ -488,6 +488,147 @@ def ppm_grid_for_segment(i_from: int, i_to: int, *, ppm_step: int, ppm_max_looku
     return grid
 
 
+# ---------------------------
+# STEP 3: Apply floor everywhere + table wiring
+# ---------------------------
+
+
+def get_segment_floor_maps() -> Tuple[Dict[Tuple[int, int], int], Dict[Tuple[int, int], float]]:
+    """Return cached floor maps (PPM and %DR) from ``st.session_state``."""
+
+    import streamlit as st
+
+    ppm_map = st.session_state.get("dra_floor_ppm_by_seg", {}) or {}
+    drpct_map = st.session_state.get("dra_floor_drpct_by_seg", {}) or {}
+    return ppm_map, drpct_map
+
+
+def apply_floor_ppm(i_from: int, i_to: int, ppm_val: int | float) -> int:
+    """Clamp ``ppm_val`` to the stored floor for ``(i_from, i_to)``."""
+
+    ppm_map, _ = get_segment_floor_maps()
+    try:
+        numeric = float(ppm_val or 0.0)
+    except (TypeError, ValueError):
+        numeric = 0.0
+    floor_ppm = int(max(0.0, float(ppm_map.get((i_from, i_to), 0) or 0)))
+    return int(max(numeric, float(floor_ppm)))
+
+
+def floor_ppm_for(i_from: int, i_to: int) -> int:
+    """Convenience accessor for the stored floor PPM."""
+
+    ppm_map, _ = get_segment_floor_maps()
+    try:
+        return int(max(0.0, float(ppm_map.get((i_from, i_to), 0) or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def floor_drpct_for(i_from: int, i_to: int) -> float | None:
+    """Return the stored %DR floor for ``(i_from, i_to)`` if available."""
+
+    _, drpct_map = get_segment_floor_maps()
+    value = drpct_map.get((i_from, i_to))
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric
+
+
+def _clamp_segment_entries(entries: object) -> object:
+    """Clamp any ``dra_ppm`` payloads in ``entries`` to their stored floors."""
+
+    if not isinstance(entries, list):
+        return entries
+
+    mutated = False
+    clamped_entries: list = []
+
+    for entry in entries:
+        if isinstance(entry, Mapping):
+            entry_map = dict(entry)
+            seg_idx = entry_map.get("station_idx", entry_map.get("idx"))
+            try:
+                seg_idx_int = int(seg_idx)
+            except (TypeError, ValueError):
+                seg_idx_int = None
+            if seg_idx_int is not None and "dra_ppm" in entry_map:
+                entry_map["dra_ppm"] = float(
+                    apply_floor_ppm(seg_idx_int, seg_idx_int + 1, entry_map.get("dra_ppm", 0.0))
+                )
+                mutated = True
+            clamped_entries.append(entry_map)
+        else:
+            clamped_entries.append(entry)
+
+    return clamped_entries if mutated else entries
+
+
+def _apply_floor_to_hour_result(res: dict, stations_seq: Sequence[Mapping | str] | None) -> None:
+    """Normalise hourly solver results so DRA never falls below the stored floor."""
+
+    if not isinstance(res, dict):
+        return
+
+    stations_iterable = list(stations_seq or [])
+
+    for idx, station in enumerate(stations_iterable):
+        name = station.get("name") if isinstance(station, Mapping) else station
+        if not name:
+            continue
+        key = str(name).lower().replace(" ", "_")
+        ppm_floor = floor_ppm_for(idx, idx + 1)
+        dr_floor = floor_drpct_for(idx, idx + 1)
+
+        ppm_key = f"dra_ppm_{key}"
+        if ppm_key in res:
+            res[ppm_key] = float(apply_floor_ppm(idx, idx + 1, res.get(ppm_key, 0.0)))
+
+        inlet_key = f"dra_inlet_ppm_{key}"
+        if inlet_key in res:
+            res[inlet_key] = float(apply_floor_ppm(idx, idx + 1, res.get(inlet_key, 0.0)))
+
+        outlet_key = f"dra_outlet_ppm_{key}"
+        if outlet_key in res:
+            res[outlet_key] = float(apply_floor_ppm(idx, idx + 1, res.get(outlet_key, 0.0)))
+
+        profile_key = f"dra_profile_{key}"
+        profile_payload = res.get(profile_key)
+        if isinstance(profile_payload, list):
+            new_profile: list = []
+            mutated = False
+            for item in profile_payload:
+                if isinstance(item, Mapping):
+                    data = dict(item)
+                    if "dra_ppm" in data:
+                        data["dra_ppm"] = float(
+                            apply_floor_ppm(idx, idx + 1, data.get("dra_ppm", 0.0))
+                        )
+                        mutated = True
+                    new_profile.append(data)
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    data_list = list(item)
+                    data_list[1] = float(apply_floor_ppm(idx, idx + 1, data_list[1]))
+                    new_profile.append(tuple(data_list))
+                    mutated = True
+                else:
+                    new_profile.append(item)
+            if mutated:
+                res[profile_key] = new_profile
+
+        res[f"floor_min_ppm_{key}"] = float(ppm_floor)
+        if dr_floor is not None:
+            res[f"floor_min_perc_{key}"] = float(dr_floor)
+
+    for payload_key in ("linefill", "dra_linefill", "queue", "origin_queue"):
+        if payload_key in res:
+            res[payload_key] = _clamp_segment_entries(res.get(payload_key))
+
+
 INIT_DRA_COL = "Initial DRA (ppm)"
 
 DAILY_SOLVE_TIMEOUT_S = 900  # 15 minutes
@@ -3123,6 +3264,27 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         floor_ppm = _float_or_none(res.get(f"floor_min_ppm_{key}", 0.0)) or 0.0
         floor_perc = _float_or_none(res.get(f"floor_min_perc_{key}", 0.0)) or 0.0
 
+        base_name = base_stn.get('name') if isinstance(base_stn, Mapping) else station_display
+        from_idx_val: int | None = None
+        if isinstance(base_name, str):
+            lookup = base_name.strip().lower()
+            for pos, candidate in enumerate(base_stations):
+                cand_name = str(candidate.get('name', '')).strip().lower()
+                if cand_name == lookup:
+                    from_idx_val = pos
+                    break
+        if from_idx_val is None:
+            from_idx_val = idx if idx < len(base_stations) else max(len(base_stations) - 1, 0)
+        to_idx_val = from_idx_val + 1
+
+        # Ensure floor metadata reflects the persisted values
+        stored_floor_ppm = floor_ppm_for(from_idx_val, to_idx_val)
+        if stored_floor_ppm > 0:
+            floor_ppm = max(floor_ppm, float(stored_floor_ppm))
+        stored_floor_perc = floor_drpct_for(from_idx_val, to_idx_val)
+        if stored_floor_perc is not None and stored_floor_perc > 0:
+            floor_perc = max(floor_perc, float(stored_floor_perc))
+
         combo = None
         if isinstance(stn, dict):
             combo = stn.get('active_combo') or stn.get('pump_combo')
@@ -3156,8 +3318,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             station_display = origin_name
 
         dra_ppm_val = _float_or_none(res.get(f"dra_ppm_{key}", 0.0)) or 0.0
-        if floor_ppm > 0.0 and dra_ppm_val < floor_ppm - 1e-9:
-            dra_ppm_val = floor_ppm
+        dra_ppm_val = apply_floor_ppm(from_idx_val, to_idx_val, dra_ppm_val)
 
         row = {
             'Station': station_display,
@@ -3187,6 +3348,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
+            'from_idx': int(from_idx_val),
+            'to_idx': int(to_idx_val),
         }
 
         profile_entries: list[tuple[float, float]] = []
@@ -5088,6 +5251,8 @@ def _execute_time_series_solver(
                 apply_baseline_detail=False,
             )
 
+            _apply_floor_to_hour_result(res, stns_run)
+
             block_cost += res.get("total_cost", 0.0)
 
             warnings_seq = res.get("warnings")
@@ -5152,41 +5317,45 @@ def _execute_time_series_solver(
                         baseline_flow_m3h=baseline_flow_for_floor,
                         baseline_visc_cst=baseline_visc_for_floor,
                     )
-                    if tightened:
-                        detail = state.get("origin_enforced_detail") or {}
-                        st.session_state["origin_enforced_detail"] = copy.deepcopy(detail)
-                        segments_detail = detail.get("segments") if isinstance(detail, dict) else None
-                        if isinstance(segments_detail, list) and segments_detail:
-                            st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments_detail)
-                        detail_record = {
-                            "hour": hr % 24,
-                            "dra_ppm": float(detail.get("dra_ppm", 0.0) or 0.0),
-                            "length_km": float(detail.get("length_km", 0.0) or 0.0),
-                            "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
-                            "plan_injections": list(detail.get("plan_injections") or []),
-                            "treatable_km": float(detail.get("treatable_km", 0.0) or 0.0),
-                        }
-                        enforced_actions.append(detail_record)
-                        volume_fmt = detail_record["volume_m3"]
-                        ppm_fmt = detail_record["dra_ppm"]
-                        length_fmt = detail_record["length_km"]
-                        detail_note = (
-                            f"Origin queue updated: {volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm scheduled at "
-                            f"{hr % 24:02d}:00 to restore feasibility. This request will treat approximately "
-                            f"{length_fmt:.1f} km once pumped downstream."
-                        )
-                        injections = detail_record.get("plan_injections") or []
-                        if injections:
-                            slices = []
-                            for injection in injections:
-                                label = _format_plan_injection_label(injection)
-                                vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
-                                ppm_val = float(
-                                    injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0
-                                )
-                                slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
-                            if slices:
-                                detail_note += " Scheduled plan slices: " + "; ".join(slices) + "."
+                if tightened:
+                    detail = state.get("origin_enforced_detail") or {}
+                    st.session_state["origin_enforced_detail"] = copy.deepcopy(detail)
+                    segments_detail = detail.get("segments") if isinstance(detail, dict) else None
+                    if isinstance(segments_detail, list) and segments_detail:
+                        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments_detail)
+                    detail_record = {
+                        "hour": hr % 24,
+                        "dra_ppm": float(
+                            apply_floor_ppm(0, 1, detail.get("dra_ppm", 0.0) or 0.0)
+                        ),
+                        "length_km": float(detail.get("length_km", 0.0) or 0.0),
+                        "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
+                        "plan_injections": list(detail.get("plan_injections") or []),
+                        "treatable_km": float(detail.get("treatable_km", 0.0) or 0.0),
+                    }
+                    enforced_actions.append(detail_record)
+                    volume_fmt = detail_record["volume_m3"]
+                    ppm_fmt = detail_record["dra_ppm"]
+                    length_fmt = detail_record["length_km"]
+                    detail_note = (
+                        f"Origin queue updated: {volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm scheduled at "
+                        f"{hr % 24:02d}:00 to restore feasibility. This request will treat approximately "
+                        f"{length_fmt:.1f} km once pumped downstream."
+                    )
+                    injections = detail_record.get("plan_injections") or []
+                    if injections:
+                        slices = []
+                        for injection in injections:
+                            label = _format_plan_injection_label(injection)
+                            vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
+                            ppm_val = apply_floor_ppm(
+                                0,
+                                1,
+                                injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0,
+                            )
+                            slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
+                        if slices:
+                            detail_note += " Scheduled plan slices: " + "; ".join(slices) + "."
                         backtracked = True
                         if detail_note:
                             backtrack_notes.append(detail_note)
@@ -5260,7 +5429,9 @@ def _execute_time_series_solver(
                         st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments_detail)
                     detail_record = {
                         "hour": hours[ti - 1] % 24,
-                        "dra_ppm": float(detail.get("dra_ppm", 0.0) or 0.0),
+                        "dra_ppm": float(
+                            apply_floor_ppm(0, 1, detail.get("dra_ppm", 0.0) or 0.0)
+                        ),
                         "length_km": float(detail.get("length_km", 0.0) or 0.0),
                         "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
                         "plan_injections": list(detail.get("plan_injections") or []),
@@ -5282,8 +5453,10 @@ def _execute_time_series_solver(
                         for injection in injections:
                             label = _format_plan_injection_label(injection)
                             vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
-                            ppm_val = float(
-                                injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0
+                            ppm_val = apply_floor_ppm(
+                                0,
+                                1,
+                                injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0,
                             )
                             slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
                         if slices:
@@ -5441,15 +5614,17 @@ def _build_enforced_origin_warning(
             for injection in injections:
                 label = _format_plan_injection_label(injection)
                 vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
-                ppm_val = float(
-                    injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0
+                ppm_val = apply_floor_ppm(
+                    0,
+                    1,
+                    injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0,
                 )
                 detail_parts.append(
                     f"{hour_label} – Scheduled {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
                 )
         else:
             vol_val = float(entry.get("volume_m3", 0.0) or 0.0)
-            ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+            ppm_val = apply_floor_ppm(0, 1, entry.get("dra_ppm", 0.0) or 0.0)
             detail_parts.append(
                 f"{hour_label} – Scheduled origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
             )
@@ -5952,6 +6127,7 @@ if not auto_batch:
             if ppm_blank.any():
                 current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
         dra_linefill = df_to_dra_linefill(current_vol)
+        dra_linefill = _clamp_segment_entries(dra_linefill)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
         progress_cb = _make_solver_progress(len(hours)) if is_hourly else None
@@ -6133,6 +6309,77 @@ if not auto_batch:
             df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
         else:
             df_day = pd.DataFrame()
+
+        if not df_day.empty:
+            def _ppm_display_with_floor(row: pd.Series) -> int:
+                try:
+                    i_from = int(row.get("from_idx", 0))
+                except (TypeError, ValueError):
+                    i_from = 0
+                try:
+                    i_to = int(row.get("to_idx", i_from + 1))
+                except (TypeError, ValueError):
+                    i_to = i_from + 1
+                ppm_val = row.get("DRA PPM", 0)
+                return apply_floor_ppm(i_from, i_to, ppm_val)
+
+            def _floor_ppm_col(row: pd.Series) -> float:
+                try:
+                    i_from = int(row.get("from_idx", 0))
+                except (TypeError, ValueError):
+                    i_from = 0
+                try:
+                    i_to = int(row.get("to_idx", i_from + 1))
+                except (TypeError, ValueError):
+                    i_to = i_from + 1
+                return float(floor_ppm_for(i_from, i_to))
+
+            def _floor_drpct_col(row: pd.Series) -> float:
+                try:
+                    i_from = int(row.get("from_idx", 0))
+                except (TypeError, ValueError):
+                    i_from = 0
+                try:
+                    i_to = int(row.get("to_idx", i_from + 1))
+                except (TypeError, ValueError):
+                    i_to = i_from + 1
+                drpct = floor_drpct_for(i_from, i_to)
+                return float(drpct) if drpct is not None else 0.0
+
+            if "DRA PPM" in df_day.columns:
+                df_day["DRA PPM"] = df_day.apply(_ppm_display_with_floor, axis=1)
+            df_day["Min DRA PPM"] = df_day.apply(_floor_ppm_col, axis=1)
+            df_day["Min DRA %DR"] = df_day.apply(_floor_drpct_col, axis=1)
+
+            def _violations(df: pd.DataFrame) -> pd.DataFrame:
+                if not {"from_idx", "to_idx", "DRA PPM"}.issubset(df.columns):
+                    return pd.DataFrame()
+                violations: list[dict[str, object]] = []
+                for _, row in df.iterrows():
+                    try:
+                        i_from = int(row.get("from_idx", 0))
+                        i_to = int(row.get("to_idx", i_from + 1))
+                        ppm_val = int(row.get("DRA PPM", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    floor_val = floor_ppm_for(i_from, i_to)
+                    if ppm_val < floor_val:
+                        violations.append(
+                            {
+                                "Hour": row.get("Time"),
+                                "From": row.get("Station"),
+                                "Shown PPM": ppm_val,
+                                "Floor PPM": floor_val,
+                            }
+                        )
+                return pd.DataFrame(violations)
+
+            _viol_df = _violations(df_day)
+            if not _viol_df.empty:
+                st.warning(
+                    "One or more rows show DRA PPM below the enforced floor. Please share this table with the developer."
+                )
+                st.dataframe(_viol_df, width="stretch", hide_index=True)
 
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
         # Pandas may treat some columns as object if they contain NaN or are newly inserted.
