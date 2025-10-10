@@ -70,6 +70,254 @@ alt.renderers.set_embed_options(actions=False)
 
 from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 
+# ---------------------------
+# STEP 1: Segment Floor DRA
+# ---------------------------
+from typing import Dict, Tuple
+
+
+def _format_segment_name(stations, i_from: int, i_to: int) -> str:
+    """User-friendly A→B label for banners / tables."""
+
+    try:
+        start = stations[i_from]["name"] if 0 <= i_from < len(stations) else None
+    except Exception:  # pragma: no cover - defensive formatting
+        start = None
+    try:
+        end = stations[i_to]["name"] if 0 <= i_to < len(stations) else None
+    except Exception:  # pragma: no cover - defensive formatting
+        end = None
+
+    if start and end:
+        return f"{start} \u2192 {end}"
+    if start:
+        return f"{start} \u2192 {i_to}"
+    if end:
+        return f"Seg {i_from} \u2192 {end}"
+    return f"Seg {i_from}->{i_to}"
+
+
+def compute_and_store_segment_floor_map(
+    pipeline_cfg: dict | None,
+    stations: list | tuple | None,
+    segments: list | tuple | None,
+    global_inputs: dict | None,
+    *,
+    show_banner: bool = True,
+):
+    """Compute and persist segment-wise DRA floors for universal reuse."""
+
+    import streamlit as st  # local import to avoid circulars during tests
+
+    from collections.abc import Mapping, Sequence
+
+    stations_data: list = []
+    if isinstance(stations, Sequence) and not isinstance(stations, (str, bytes)):
+        stations_data = list(stations)
+    else:
+        fallback_stations = st.session_state.get("stations")
+        if isinstance(fallback_stations, Sequence) and not isinstance(
+            fallback_stations, (str, bytes)
+        ):
+            stations_data = list(fallback_stations)
+
+    global_inputs = global_inputs or {}
+    if not isinstance(global_inputs, Mapping):
+        global_inputs = {}
+
+    try:
+        baseline_flow = float(
+            next(
+                (
+                    global_inputs[key]
+                    for key in (
+                        "baseline_flow_m3h",
+                        "max_laced_flow_m3h",
+                        "flow_m3h",
+                        "flow",
+                        "FLOW",
+                    )
+                    if key in global_inputs and global_inputs[key] is not None
+                ),
+                st.session_state.get(
+                    "max_laced_flow_m3h", st.session_state.get("FLOW", 0.0)
+                ),
+            )
+        )
+    except (StopIteration, TypeError, ValueError):
+        try:
+            baseline_flow = float(
+                st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 0.0))
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            baseline_flow = 0.0
+
+    try:
+        baseline_visc = float(
+            next(
+                (
+                    global_inputs[key]
+                    for key in ("baseline_visc_cst", "max_laced_visc_cst", "visc_cst", "KV")
+                    if key in global_inputs and global_inputs[key] is not None
+                ),
+                st.session_state.get("max_laced_visc_cst", 0.0),
+            )
+        )
+    except (StopIteration, TypeError, ValueError):
+        try:
+            baseline_visc = float(st.session_state.get("max_laced_visc_cst", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            baseline_visc = 0.0
+
+    try:
+        min_suction_head = float(
+            global_inputs.get("min_suction_head", st.session_state.get("min_laced_suction_m", 0.0))
+            or 0.0
+        )
+    except (TypeError, ValueError):
+        min_suction_head = 0.0
+
+    raw_suction = global_inputs.get("suction_heads")
+    if not isinstance(raw_suction, Sequence) or isinstance(raw_suction, (str, bytes)):
+        raw_suction = st.session_state.get("station_suction_heads", [])
+    suction_heads = _normalise_station_suction_heads(raw_suction)
+
+    terminal_data = global_inputs.get("terminal")
+    if not isinstance(terminal_data, Mapping):
+        if isinstance(pipeline_cfg, Mapping):
+            terminal_data = pipeline_cfg.get("terminal")
+        if not isinstance(terminal_data, Mapping):
+            terminal_data = {
+                "name": st.session_state.get("terminal_name", "Terminal"),
+                "elev": st.session_state.get("terminal_elev", 0.0),
+                "min_residual": st.session_state.get("terminal_head", 10.0),
+            }
+
+    baseline_requirement = global_inputs.get("baseline_requirement")
+    if not isinstance(baseline_requirement, Mapping):
+        if isinstance(pipeline_cfg, Mapping) and isinstance(pipeline_cfg.get("baseline_requirement"), Mapping):
+            baseline_requirement = pipeline_cfg.get("baseline_requirement")
+        elif baseline_flow > 0.0 and baseline_visc > 0.0 and stations_data and isinstance(terminal_data, Mapping):
+            try:
+                baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+                    stations_data,
+                    terminal_data,
+                    max_flow_m3h=float(baseline_flow),
+                    max_visc_cst=float(baseline_visc),
+                    min_suction_head=float(min_suction_head),
+                    station_suction_heads=suction_heads,
+                )
+            except Exception:
+                baseline_requirement = None
+        else:
+            baseline_requirement = None
+
+    floor_map_raw: Dict[int, float] = {}
+    if (
+        isinstance(baseline_requirement, Mapping)
+        and baseline_flow > 0.0
+        and baseline_visc > 0.0
+        and stations_data
+    ):
+        floor_map_raw = _segment_floor_ppm_map(
+            baseline_requirement,
+            stations_data,
+            baseline_flow_m3h=baseline_flow,
+            baseline_visc_cst=baseline_visc,
+        )
+
+    floor_map_pairs: Dict[Tuple[int, int], float] = {}
+    for idx, ppm in (floor_map_raw or {}).items():
+        try:
+            idx_int = int(idx)
+            ppm_float = float(ppm or 0.0)
+        except (TypeError, ValueError):
+            continue
+        floor_map_pairs[(idx_int, idx_int + 1)] = ppm_float
+
+    flows_by_segment: list[float] = []
+    if baseline_flow > 0.0 and stations_data:
+        flows_by_segment = _segment_flow_profiles(stations_data, baseline_flow)
+
+    drpct_map: Dict[Tuple[int, int], float | None] = {}
+    for key, ppm in floor_map_pairs.items():
+        start_idx = key[0]
+        drpct_val: float | None = None
+        try:
+            ppm_val = float(ppm or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val > 0.0 and baseline_visc > 0.0:
+            flow_val = baseline_flow
+            if 0 <= start_idx < len(flows_by_segment):
+                flow_val = flows_by_segment[start_idx]
+            diameter = 0.0
+            station_info = stations_data[start_idx] if 0 <= start_idx < len(stations_data) else None
+            if isinstance(station_info, Mapping):
+                diameter = _station_inner_diameter(station_info)
+            if diameter > 0.0 and flow_val > 0.0:
+                velocity = _flow_velocity_mps(flow_val, diameter)
+                if velocity > 0.0:
+                    try:
+                        drpct_val = float(get_dr_for_ppm(baseline_visc, ppm_val, velocity, diameter))
+                    except Exception:
+                        drpct_val = None
+        drpct_map[key] = drpct_val
+
+    floor_map_int: Dict[Tuple[int, int], int] = {}
+    for key, ppm in floor_map_pairs.items():
+        try:
+            floor_map_int[key] = int(math.ceil(float(ppm))) if float(ppm) > 0.0 else 0
+        except (TypeError, ValueError):
+            floor_map_int[key] = 0
+
+    positive_floors = [value for value in (floor_map_raw or {}).values() if value > 0.0]
+    min_floor_ppm = min(positive_floors) if positive_floors else 0.0
+
+    if floor_map_raw:
+        st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
+        st.session_state["minimum_dra_floor_ppm_by_segment"] = {
+            int(idx): float(val) for idx, val in floor_map_raw.items()
+        }
+    else:
+        st.session_state.pop("minimum_dra_floor_ppm", None)
+        st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
+
+    if floor_map_int:
+        st.session_state["dra_floor_ppm_by_seg"] = floor_map_int
+        st.session_state["dra_floor_drpct_by_seg"] = drpct_map
+    else:
+        st.session_state["dra_floor_ppm_by_seg"] = {}
+        st.session_state["dra_floor_drpct_by_seg"] = {}
+
+    origin_key = (0, 1) if (0, 1) in floor_map_int else (min(floor_map_int) if floor_map_int else None)
+    origin_ppm = float(floor_map_int.get(origin_key, 0)) if origin_key else 0.0
+    st.session_state["dra_floor_origin_ppm"] = int(origin_ppm)
+
+    banner_parts: list[str] = []
+    if origin_ppm > 0.0:
+        banner_parts.append(f"Minimum DRA floor is {origin_ppm:.0f} ppm at origin.")
+    else:
+        banner_parts.append("Minimum DRA floor is 0 ppm at origin.")
+
+    if floor_map_int:
+        seg_summaries = []
+        for key in sorted(floor_map_int):
+            ppm_val = floor_map_int[key]
+            seg_label = _format_segment_name(stations_data, key[0], key[1])
+            seg_summaries.append(f"{seg_label}: {int(ppm_val)} ppm")
+        if seg_summaries:
+            banner_parts.append("Required by segment – " + "; ".join(seg_summaries))
+
+    banner_text = " ".join(banner_parts)
+    st.session_state["dra_floor_banner"] = banner_text
+
+    if show_banner and banner_text:
+        st.info(banner_text)
+
+    return floor_map_raw
+
 
 INIT_DRA_COL = "Initial DRA (ppm)"
 
@@ -1001,6 +1249,20 @@ if st.session_state.get("should_rerun", False):
     st.session_state["should_rerun"] = False
     st.rerun()
     st.stop()
+
+# --- Initialise / display segment DRA floors on load ---
+if "dra_floor_ppm_by_seg" not in st.session_state:
+    compute_and_store_segment_floor_map(
+        pipeline_cfg=None,
+        stations=None,
+        segments=None,
+        global_inputs={},
+        show_banner=True,
+    )
+else:
+    banner_msg = st.session_state.get("dra_floor_banner")
+    if banner_msg:
+        st.info(banner_msg)
 
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
@@ -3104,23 +3366,23 @@ def solve_pipeline(
             return None
         return cleaned
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    segment_floor_map = _segment_floor_ppm_map(
-        baseline_requirement,
-        stations,
-        baseline_flow_m3h=baseline_flow,
-        baseline_visc_cst=baseline_visc,
+    segment_floor_map = compute_and_store_segment_floor_map(
+        pipeline_cfg=baseline_requirement if isinstance(baseline_requirement, Mapping) else None,
+        stations=stations,
+        segments=baseline_requirement.get("segments") if isinstance(baseline_requirement, Mapping) else None,
+        global_inputs={
+            "baseline_requirement": baseline_requirement,
+            "baseline_flow_m3h": baseline_flow,
+            "baseline_visc_cst": baseline_visc,
+            "terminal": terminal,
+            "suction_heads": suction_heads,
+            "min_suction_head": st.session_state.get("min_laced_suction_m", 0.0),
+        },
+        show_banner=False,
     )
     positive_floors = [value for value in segment_floor_map.values() if value > 0.0]
     min_floor_ppm = min(positive_floors) if positive_floors else 0.0
     baseline_summary["min_dra_ppm"] = float(min_floor_ppm)
-    if segment_floor_map:
-        st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
-        st.session_state["minimum_dra_floor_ppm_by_segment"] = {
-            int(idx): float(val) for idx, val in segment_floor_map.items()
-        }
-    else:
-        st.session_state.pop("minimum_dra_floor_ppm", None)
-        st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
         for warning in baseline_warnings:
@@ -5028,26 +5290,23 @@ def run_all_updates():
     baseline_warnings: list = []
     baseline_segments: list[dict] | None = None
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    segment_floor_map: dict[int, float] = {}
-    min_floor_ppm = 0.0
-    if isinstance(baseline_requirement, Mapping):
-        segment_floor_map = _segment_floor_ppm_map(
-            baseline_requirement,
-            stations_data,
-            baseline_flow_m3h=baseline_flow,
-            baseline_visc_cst=baseline_visc,
-        )
-        positive_floors = [value for value in segment_floor_map.values() if value > 0.0]
-        min_floor_ppm = min(positive_floors) if positive_floors else 0.0
-        baseline_summary["min_dra_ppm"] = float(min_floor_ppm)
-    if segment_floor_map:
-        st.session_state["minimum_dra_floor_ppm"] = float(min_floor_ppm)
-        st.session_state["minimum_dra_floor_ppm_by_segment"] = {
-            int(idx): float(val) for idx, val in segment_floor_map.items()
-        }
-    else:
-        st.session_state.pop("minimum_dra_floor_ppm", None)
-        st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
+    segment_floor_map = compute_and_store_segment_floor_map(
+        pipeline_cfg=baseline_requirement if isinstance(baseline_requirement, Mapping) else None,
+        stations=stations_data,
+        segments=baseline_requirement.get("segments") if isinstance(baseline_requirement, Mapping) else None,
+        global_inputs={
+            "baseline_requirement": baseline_requirement,
+            "baseline_flow_m3h": baseline_flow,
+            "baseline_visc_cst": baseline_visc,
+            "terminal": term_data,
+            "suction_heads": suction_heads,
+            "min_suction_head": st.session_state.get("min_laced_suction_m", 0.0),
+        },
+        show_banner=True,
+    )
+    positive_floors = [value for value in segment_floor_map.values() if value > 0.0]
+    min_floor_ppm = min(positive_floors) if positive_floors else 0.0
+    baseline_summary["min_dra_ppm"] = float(min_floor_ppm)
 
     if isinstance(baseline_requirement, dict):
         baseline_warnings = baseline_requirement.get("warnings") or []
@@ -5378,6 +5637,20 @@ if not auto_batch:
                     stn['pump_name'] = names[0]
 
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+
+        compute_and_store_segment_floor_map(
+            pipeline_cfg=None,
+            stations=stations_base,
+            segments=None,
+            global_inputs={
+                "terminal": term_data,
+                "baseline_flow_m3h": st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 0.0)),
+                "baseline_visc_cst": st.session_state.get("max_laced_visc_cst", 0.0),
+                "suction_heads": st.session_state.get("station_suction_heads", []),
+                "min_suction_head": st.session_state.get("min_laced_suction_m", 0.0),
+            },
+            show_banner=True,
+        )
 
         # Prepare initial volumetric linefill
         vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
