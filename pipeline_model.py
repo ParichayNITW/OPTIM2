@@ -2406,37 +2406,15 @@ def compute_minimum_lacing_requirement(
         available_head = residual_head + max_head
         if carried_head_available > residual_head:
             available_head = max(available_head, carried_head_available)
-
         station_suction = min_suction
         if suction_heads and idx < len(suction_heads):
             station_suction = suction_heads[idx]
         if station_suction < 0.0:
             station_suction = 0.0
-
         suction_requirement = station_suction if stn.get('is_pump') else station_suction
         effective_available_head = max(available_head - suction_requirement, 0.0)
-
-        residual_delta = 0.0
-        suction_delta = 0.0
-        if suction_heads and idx < len(suction_heads):
-            if station_min_residual > downstream_residual:
-                residual_delta = station_min_residual - downstream_residual
-            if stn.get('is_pump'):
-                baseline_suction = max(min_suction, 0.0)
-                if station_suction > baseline_suction:
-                    suction_delta = station_suction - baseline_suction
-
         gap = sdh_required - effective_available_head
-        if residual_delta > 0.0:
-            gap += residual_delta
-            if suction_delta > 0.0 and station_min_residual > 0.0:
-                gap += suction_delta * (residual_delta / station_min_residual)
-        elif suction_delta > 0.0:
-            gap += suction_delta
-        if gap > sdh_required:
-            gap = sdh_required
-
-        station_max_dr = _normalise_max_dr(stn.get('max_dr'), fallback=GLOBAL_MAX_DRA_CAP)
+        station_max_dr = _normalise_max_dr(stn.get('max_dr'))
         has_dra_facility = station_max_dr > 0.0
         if gap > 1e-6 and sdh_required > 0.0:
             dr_unbounded = (gap / sdh_required) * 100.0
