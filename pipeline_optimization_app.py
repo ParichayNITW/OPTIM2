@@ -76,7 +76,13 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from typing import Dict, Tuple
 
 
-def _format_segment_name(stations, i_from: int, i_to: int) -> str:
+def _format_segment_name(
+    stations,
+    i_from: int,
+    i_to: int,
+    *,
+    terminal_name: str | None = None,
+) -> str:
     """Return a user-friendly "A → B" label for banner messaging."""
 
     try:
@@ -84,7 +90,12 @@ def _format_segment_name(stations, i_from: int, i_to: int) -> str:
     except Exception:  # pragma: no cover - defensive formatting guard
         start = None
     try:
-        end = stations[i_to]["name"] if 0 <= i_to < len(stations) else None
+        if 0 <= i_to < len(stations):
+            end = stations[i_to]["name"]
+        elif i_to == len(stations) and terminal_name:
+            end = terminal_name
+        else:
+            end = None
     except Exception:  # pragma: no cover - defensive formatting guard
         end = None
 
@@ -116,6 +127,27 @@ def compute_and_store_segment_floor_map(
         stored = st.session_state.get("stations")
         if isinstance(stored, Sequence):
             stations_seq = [s for s in stored if isinstance(s, Mapping)]
+
+    terminal_name: str | None = None
+    if isinstance(global_inputs, Mapping):
+        terminal_raw = global_inputs.get("terminal")
+        if isinstance(terminal_raw, Mapping):
+            name = terminal_raw.get("name")
+            if isinstance(name, str) and name.strip():
+                terminal_name = name.strip()
+    if terminal_name is None and isinstance(pipeline_cfg, Mapping):
+        term_cfg = pipeline_cfg.get("terminal")
+        if isinstance(term_cfg, Mapping):
+            name = term_cfg.get("name")
+            if isinstance(name, str) and name.strip():
+                terminal_name = name.strip()
+    if terminal_name is None:
+        stored_terminal = st.session_state.get("terminal_name")
+        if isinstance(stored_terminal, str) and stored_terminal.strip():
+            terminal_name = stored_terminal.strip()
+    if terminal_name is None:
+        terminal_name = "Terminal"
+    st.session_state["terminal_name"] = terminal_name
 
     if not isinstance(global_inputs, Mapping):
         global_inputs = {}
@@ -291,7 +323,12 @@ def compute_and_store_segment_floor_map(
     if floor_map_pairs:
         segments_bits: list[str] = []
         for (i_from, i_to), ppm_int in sorted(floor_map_pairs.items()):
-            seg_label = _format_segment_name(stations_seq, i_from, i_to)
+            seg_label = _format_segment_name(
+                stations_seq,
+                i_from,
+                i_to,
+                terminal_name=terminal_name,
+            )
             segments_bits.append(f"{seg_label}: {int(ppm_int)} ppm")
         if segments_bits:
             banner_parts.append("Required by segment – " + "; ".join(segments_bits))
@@ -1011,10 +1048,6 @@ def _get_linefill_snapshot_for_hour(
 def _render_minimum_dra_floor_hint() -> None:
     """Surface the computed DRA floors when feasibility errors arise."""
 
-    floor_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
-    if not isinstance(floor_map, Mapping) or not floor_map:
-        return
-
     try:
         min_floor = float(st.session_state.get("minimum_dra_floor_ppm", 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -1023,40 +1056,77 @@ def _render_minimum_dra_floor_hint() -> None:
     stations = st.session_state.get("stations") or []
     terminal_name = st.session_state.get("terminal_name", "Terminal")
 
+    segments_raw = st.session_state.get("minimum_dra_floor_segments_raw")
     segments: list[str] = []
-    for idx, ppm_value in sorted(floor_map.items()):
-        try:
-            ppm_float = float(ppm_value or 0.0)
-        except (TypeError, ValueError):
-            ppm_float = 0.0
 
-        if isinstance(idx, str):
-            try:
-                seg_idx = int(idx)
-            except (TypeError, ValueError):
+    def _format_ppm_value(ppm: float) -> str:
+        if ppm <= 0.0:
+            return "0"
+        rounded = round(ppm)
+        if abs(ppm - rounded) < 1e-6:
+            return f"{int(rounded)}"
+        return f"{ppm:.2f}".rstrip("0").rstrip(".")
+
+    if isinstance(segments_raw, Sequence):
+        ordered_entries: list[tuple[float, Mapping[str, object]]] = []
+        for entry in segments_raw:
+            if not isinstance(entry, Mapping):
                 continue
-        else:
-            seg_idx = int(idx)
+            try:
+                order = float(entry.get("segment_index", entry.get("station_idx", 0.0)))
+            except (TypeError, ValueError):
+                order = 0.0
+            ordered_entries.append((order, entry))
+        for _, entry in sorted(ordered_entries, key=lambda item: item[0]):
+            try:
+                station_idx = int(entry.get("station_idx", entry.get("segment_index", 0)))
+            except (TypeError, ValueError):
+                station_idx = 0
+            ppm_exact = entry.get("dra_ppm_exact")
+            ppm_val = entry.get("dra_ppm")
+            try:
+                ppm_display = float(ppm_exact if ppm_exact not in (None, "") else ppm_val or 0.0)
+            except (TypeError, ValueError):
+                ppm_display = 0.0
+            seg_label = _format_segment_name(
+                stations,
+                station_idx,
+                station_idx + 1,
+                terminal_name=terminal_name,
+            )
+            segments.append(f"{seg_label}: {_format_ppm_value(ppm_display)} ppm")
 
-        if 0 <= seg_idx < len(stations):
-            start_name = stations[seg_idx].get("name") or f"Station {seg_idx + 1}"
-            if seg_idx + 1 < len(stations):
-                end_name = stations[seg_idx + 1].get("name") or f"Station {seg_idx + 2}"
-            else:
-                end_name = terminal_name
-        else:
-            start_name = f"Station {seg_idx + 1}" if seg_idx >= 0 else "Origin"
-            end_name = terminal_name
-
-        segments.append(f"{start_name} → {end_name}: {ppm_float:.2f} ppm")
+    if not segments:
+        floor_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
+        if isinstance(floor_map, Mapping):
+            for idx, ppm_value in sorted(floor_map.items()):
+                try:
+                    ppm_float = float(ppm_value or 0.0)
+                except (TypeError, ValueError):
+                    ppm_float = 0.0
+                if isinstance(idx, str):
+                    try:
+                        seg_idx = int(idx)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    seg_idx = int(idx)
+                seg_label = _format_segment_name(
+                    stations,
+                    seg_idx,
+                    seg_idx + 1,
+                    terminal_name=terminal_name,
+                )
+                segments.append(f"{seg_label}: {_format_ppm_value(ppm_float)} ppm")
 
     if not segments:
         return
 
-    if min_floor > 0.0:
-        header = f"Minimum DRA floor is {min_floor:.2f} ppm at origin."
-    else:
-        header = "Minimum DRA floor at origin is 0 ppm."
+    header = (
+        f"Minimum DRA floor is {_format_ppm_value(min_floor)} ppm at origin."
+        if min_floor > 0.0
+        else "Minimum DRA floor at origin is 0 ppm."
+    )
 
     detail = "; ".join(segments)
     st.info(f"{header} Required by segment – {detail}.")
