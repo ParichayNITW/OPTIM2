@@ -1624,6 +1624,50 @@ def test_compute_and_store_segment_floor_map_preserves_segments():
     }
 
 
+def test_render_minimum_dra_floor_hint_uses_segment_details(monkeypatch):
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+    st.session_state.update(
+        {
+            "minimum_dra_floor_ppm": 26.0,
+            "minimum_dra_floor_ppm_by_segment": {0: 26.0, 1: 14.0},
+            "minimum_dra_floor_segments_raw": [
+                {
+                    "station_idx": 0,
+                    "segment_index": 0,
+                    "dra_ppm": 26.0,
+                    "dra_ppm_exact": 26.0,
+                },
+                {
+                    "station_idx": 1,
+                    "segment_index": 1,
+                    "dra_ppm": 14.0,
+                    "dra_ppm_exact": 13.74,
+                },
+            ],
+            "stations": [{"name": "Paradip"}, {"name": "Balasore"}],
+            "terminal_name": "Haldia",
+        }
+    )
+
+    messages: list[str] = []
+
+    def capture_info(message: str) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(app.st, "info", capture_info)
+
+    app._render_minimum_dra_floor_hint()
+
+    assert messages, "Expected minimum DRA floor hint to be emitted"
+    message = messages[-1]
+    assert "Minimum DRA floor is 26 ppm" in message
+    assert "Paradip → Balasore: 26 ppm" in message
+    assert "Balasore → Haldia: 13.74 ppm" in message
+
+
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
     import pipeline_optimization_app as app
 
