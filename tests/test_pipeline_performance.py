@@ -1518,18 +1518,22 @@ def test_segment_floor_ppm_map_derives_from_percent():
         }
     ]
 
-    floor_map = app._segment_floor_ppm_map(
+    floor_entries = app._segment_floor_ppm_map(
         baseline,
         stations,
         baseline_flow_m3h=1200.0,
         baseline_visc_cst=6.0,
     )
 
-    assert set(floor_map) == {0}
+    assert isinstance(floor_entries, list)
+    assert len(floor_entries) == 1
+    entry = floor_entries[0]
+    assert int(entry["station_idx"]) == 0
     inner_d = stations[0]["D"] - 2 * stations[0]["t"]
     velocity = app._flow_velocity_mps(1200.0, inner_d)
     expected = get_ppm_for_dr(6.0, 12.5, velocity, inner_d)
-    assert floor_map[0] == pytest.approx(expected)
+    assert entry["dra_ppm_exact"] == pytest.approx(expected)
+    assert entry["dra_ppm"] == pytest.approx(math.ceil(expected))
 
 
 def test_segment_floor_ppm_map_handles_global_floor():
@@ -1544,14 +1548,80 @@ def test_segment_floor_ppm_map_handles_global_floor():
 
     baseline = {"dra_ppm": 13.0, "dra_perc": 0.0, "segments": []}
 
-    floor_map = app._segment_floor_ppm_map(
+    floor_entries = app._segment_floor_ppm_map(
         baseline,
         stations,
         baseline_flow_m3h=3000.0,
         baseline_visc_cst=20.0,
     )
 
-    assert floor_map == {0: pytest.approx(13.0)}
+    assert isinstance(floor_entries, list)
+    assert len(floor_entries) == 1
+    entry = floor_entries[0]
+    assert int(entry["station_idx"]) == 0
+    assert entry["dra_ppm"] == pytest.approx(13.0)
+
+
+def test_compute_and_store_segment_floor_map_preserves_segments():
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    stations = [
+        {
+            "name": "Paradip",
+            "D": 0.762,
+            "t": 0.0079248,
+            "max_dr": 30.0,
+            "is_pump": True,
+        },
+        {
+            "name": "Balasore",
+            "D": 0.762,
+            "t": 0.0079248,
+            "max_dr": 30.0,
+            "is_pump": True,
+        },
+    ]
+
+    baseline_req = {
+        "segments": [
+            {
+                "station_idx": 0,
+                "length_km": 158.0,
+                "dra_ppm": 26.0,
+                "dra_ppm_unrounded": 25.47,
+                "has_dra_facility": True,
+            },
+            {
+                "station_idx": 1,
+                "length_km": 170.0,
+                "dra_ppm": 14.0,
+                "dra_ppm_unrounded": 13.12,
+                "has_dra_facility": True,
+            },
+        ]
+    }
+
+    floor_map = app.compute_and_store_segment_floor_map(
+        stations=stations,
+        global_inputs={
+            "baseline_requirement": baseline_req,
+            "baseline_flow_m3h": 3169.0,
+            "baseline_visc_cst": 20.0,
+        },
+        show_banner=False,
+    )
+
+    assert floor_map == {0: pytest.approx(26.0), 1: pytest.approx(14.0)}
+    assert st.session_state.get("dra_floor_ppm_by_seg") == {(0, 1): 26, (1, 2): 14}
+    assert st.session_state.get("dra_floor_origin_ppm") == 26
+    assert st.session_state.get("minimum_dra_floor_ppm") == pytest.approx(26.0)
+    assert st.session_state.get("minimum_dra_floor_ppm_by_segment") == {
+        0: pytest.approx(26.0),
+        1: pytest.approx(14.0),
+    }
 
 
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
