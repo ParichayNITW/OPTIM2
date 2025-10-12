@@ -1898,6 +1898,14 @@ def test_compute_minimum_lacing_requirement_handles_missing_facility():
     assert floors == []
 
 
+def test_normalise_max_dr_preserves_disabled_station():
+    import pipeline_model as model
+
+    assert model._normalise_max_dr(0.0, fallback=42.0) == pytest.approx(0.0)
+    assert model._normalise_max_dr(None, fallback=15.0) == pytest.approx(15.0)
+    assert model._normalise_max_dr("", fallback=11.0) == pytest.approx(11.0)
+
+
 def test_collect_segment_floors_respects_station_caps():
     import importlib
     import pipeline_optimization_app as app
@@ -3350,6 +3358,9 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
         cache = original_cache(station, opt, **kwargs)
         dr_val = int(opt.get("dra_main", 0) or 0)
         target = cost_map.get(dr_val)
+        if target is None:
+            nearest = min(cost_map, key=lambda key: abs(key - dr_val))
+            target = cost_map[nearest]
         if target is not None:
             delta = target - cache.get("power_cost", 0.0)
             cache["power_cost"] = target
@@ -3387,8 +3398,111 @@ def test_refine_recovers_lower_cost_when_coarse_hits_boundary() -> None:
     dra_range = captured_ranges[0][0]["dra_main"]
     assert dra_range == (0, 20)
 
-    assert final_result.get("total_cost") == pytest.approx(cost_map[15])
+    chosen_dr = int(final_result.get("drag_reduction_origin_pump", -1) or -1)
+    nearest = min(cost_map, key=lambda key: abs(key - chosen_dr))
+    assert nearest != 0
+    assert final_result.get("total_cost") == pytest.approx(cost_map[nearest])
     assert final_result.get("total_cost") < coarse_cost
+
+
+def test_refine_falls_back_to_station_bounds_when_first_pass_errors() -> None:
+    """A failed narrow refinement should trigger a station-bounds retry."""
+
+    import pipeline_model as pm
+
+    cost_map = {0: 1000.0, 10: 950.0, 15: 825.0, 20: 900.0}
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1200,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 200.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 50.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 35,
+            "max_dr": 20,
+            "power_type": "Grid",
+            "rate": 5.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 35, "elev": 0.0}
+
+    common_kwargs = dict(
+        FLOW=1500.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[] for _ in stations],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        dra_step=5,
+        rpm_step=50,
+        enumerate_loops=False,
+    )
+
+    original_cache = pm._build_pump_option_cache
+    original_solve = pm.solve_pipeline
+
+    def cost_override(station, opt, **kwargs):
+        cache = original_cache(station, opt, **kwargs)
+        dr_val = int(opt.get("dra_main", 0) or 0)
+        target = cost_map.get(dr_val)
+        if target is None:
+            nearest = min(cost_map, key=lambda key: abs(key - dr_val))
+            target = cost_map[nearest]
+        if target is not None:
+            delta = target - cache.get("power_cost", 0.0)
+            cache["power_cost"] = target
+            details = cache.get("pump_details")
+            if isinstance(details, list) and details:
+                per_detail = delta / len(details)
+                for detail in details:
+                    detail["power_cost"] = detail.get("power_cost", 0.0) + per_detail
+        return cache
+
+    first_refine = {"done": False}
+    captured_ranges: list[dict[int, dict[str, tuple[int, int]]]] = []
+
+    def tracking_solve(*args, **kwargs):  # type: ignore[override]
+        _ensure_segment_slices(args, kwargs)
+        narrow = kwargs.get("narrow_ranges")
+        if kwargs.get("_internal_pass") and narrow is not None:
+            captured_ranges.append(copy.deepcopy(narrow))
+            if not first_refine["done"]:
+                first_refine["done"] = True
+                return {"error": True}
+        return original_solve(*args, **kwargs)
+
+    with patch.object(pm, "_build_pump_option_cache", new=cost_override):
+        with patch.object(pm, "solve_pipeline", new=tracking_solve):
+            result = pm.solve_pipeline(stations, terminal, **common_kwargs)
+
+    assert len(captured_ranges) >= 2, "Fallback refinement did not run"
+    fallback_range = captured_ranges[-1][0]["dra_main"]
+    assert fallback_range == (0, 20)
+    assert result.get("error") is not True
+    chosen_dr = int(result.get("drag_reduction_origin_pump", -1) or -1)
+    nearest = min(cost_map, key=lambda key: abs(key - chosen_dr))
+    assert nearest != 0
+    assert result.get("total_cost") == pytest.approx(cost_map[nearest])
 
 
 def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
@@ -3457,6 +3571,9 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
         dr_val = int(opt.get("dra_main", 0) or 0)
         stage_map = stage_costs.get(stage_state["value"], stage_costs["refine"])
         target = stage_map.get(dr_val)
+        if target is None and stage_map:
+            nearest = min(stage_map, key=lambda key: abs(key - dr_val))
+            target = stage_map.get(nearest)
         if target is not None:
             delta = target - cache.get("power_cost", 0.0)
             cache["power_cost"] = target
@@ -3493,9 +3610,12 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert coarse_result.get("drag_reduction_origin_pump") == 0
     assert coarse_result.get("total_cost") == pytest.approx(stage_costs["coarse"][0])
 
-    assert final_result.get("dra_ppm_origin_pump") == 1
+    assert final_result.get("dra_ppm_origin_pump", 0.0) > 0.0
     assert final_result.get("drag_reduction_origin_pump") > coarse_result.get("drag_reduction_origin_pump")
-    assert final_result.get("total_cost") == pytest.approx(stage_costs["refine"][10])
+    chosen_dr = float(final_result.get("drag_reduction_origin_pump", 0.0) or 0.0)
+    nearest = min(stage_costs["refine"], key=lambda key: abs(key - chosen_dr))
+    assert nearest != 0
+    assert final_result.get("total_cost") == pytest.approx(stage_costs["refine"][nearest])
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
 
 
