@@ -1665,7 +1665,7 @@ def test_render_minimum_dra_floor_hint_uses_segment_details(monkeypatch):
     message = messages[-1]
     assert "Minimum DRA floor is 26 ppm" in message
     assert "Paradip → Balasore: 26 ppm" in message
-    assert "Balasore → Haldia: 13.74 ppm" in message
+    assert "Balasore → Haldia: 13.74 → 14 ppm" in message
 
 
 def test_enforce_minimum_origin_dra_preserves_segment_floors():
