@@ -67,11 +67,18 @@ def _compute_drag_reduction(visc: float, ppm: float, velocity_mps: float, diamet
     if vel_ft_s <= 0.0 or dia_ft <= 0.0:
         return 0.0
 
-    denom = visc_val * (dia_ft ** 0.2)
+    denom = visc_val * (dia_ft ** 0.4)
     if denom <= 0.0:
         return 0.0
 
-    argument = (vel_ft_s * ppm_val) / denom
+    try:
+        ratio = ppm_val / denom
+    except ZeroDivisionError:
+        return 0.0
+    if ratio <= 0.0:
+        return 0.0
+
+    argument = vel_ft_s * math.sqrt(ratio)
     if argument <= 0.0:
         return 0.0
 
@@ -120,7 +127,11 @@ def _ppm_for_dr_cached(visc: float, dr_percent: float, velocity_mps: float, diam
     if not math.isfinite(argument) or argument <= 0.0:
         return 0.0
 
-    ppm_raw = argument * visc_val * (dia_ft ** 0.2) / vel_ft_s
+    denom = vel_ft_s ** 2
+    if denom <= 0.0:
+        return 0.0
+
+    ppm_raw = argument * argument * visc_val * (dia_ft ** 0.4) / denom
     if not math.isfinite(ppm_raw):
         return 0.0
     return _round_up(ppm_raw, step)
@@ -152,7 +163,11 @@ def _ppm_for_dr_exact_cached(visc: float, dr_percent: float, velocity_mps: float
     if not math.isfinite(argument) or argument <= 0.0:
         return 0.0
 
-    ppm_raw = argument * visc_val * (dia_ft ** 0.2) / vel_ft_s
+    denom = vel_ft_s ** 2
+    if denom <= 0.0:
+        return 0.0
+
+    ppm_raw = argument * argument * visc_val * (dia_ft ** 0.4) / denom
     if not math.isfinite(ppm_raw):
         return 0.0
     return ppm_raw
@@ -173,11 +188,18 @@ def _dr_for_ppm_cached(visc: float, ppm: float, velocity_mps: float, diameter_m:
     if vel_ft_s <= 0.0 or dia_ft <= 0.0:
         return 0.0
 
-    denom = visc_val * (dia_ft ** 0.2)
+    denom = visc_val * (dia_ft ** 0.4)
     if denom <= 0.0:
         return 0.0
 
-    argument = (vel_ft_s * ppm_val) / denom
+    try:
+        ratio = ppm_val / denom
+    except ZeroDivisionError:
+        return 0.0
+    if ratio <= 0.0:
+        return 0.0
+
+    argument = vel_ft_s * math.sqrt(ratio)
     if argument <= 0.0:
         return 0.0
 
