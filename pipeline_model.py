@@ -1767,11 +1767,15 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if is_origin and inj_effective <= 0.0:
-            if pump_running:
-                zero_output = True
-            elif flow_m3h <= 0.0:
-                zero_output = True
+        if flow_m3h <= 0.0:
+            zero_output = True
+        elif (
+            is_origin
+            and inj_effective <= 0.0
+            and pump_running
+            and ppm_input <= 0.0
+        ):
+            zero_output = True
         if zero_output:
             ppm_out = 0.0
         else:
@@ -1856,7 +1860,7 @@ def _update_mainline_dra(
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and inj_effective > 0.0 and head_length > 0.0:
+    if head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
 
     combined_entries.extend(advected_portion)
@@ -5790,13 +5794,12 @@ def solve_pipeline(
                         if profile_entries
                         else 0.0
                     )
-                    if inj_ppm_main <= 0.0:
+                    if not profile_entries or all(
+                        entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                    ):
                         treated_profile_length = 0.0
-                        if not profile_entries or all(
-                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
-                        ):
-                            inlet_ppm_profile = 0.0
-                            outlet_ppm_profile = 0.0
+                        inlet_ppm_profile = 0.0
+                        outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
