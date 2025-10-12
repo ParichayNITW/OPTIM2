@@ -1059,13 +1059,29 @@ def _render_minimum_dra_floor_hint() -> None:
     segments_raw = st.session_state.get("minimum_dra_floor_segments_raw")
     segments: list[str] = []
 
-    def _format_ppm_value(ppm: float) -> str:
-        if ppm <= 0.0:
+    def _format_ppm_value(ppm_floor: float, ppm_exact: float | None = None) -> str:
+        """Render ``ppm_floor`` as a user-facing string, rounding up when needed."""
+
+        def _format_raw(value: float) -> str:
+            return f"{value:.2f}".rstrip("0").rstrip(".")
+
+        exact = ppm_exact if ppm_exact is not None and ppm_exact > 0.0 else None
+        base = ppm_floor if ppm_floor > 0.0 else (exact or 0.0)
+        if base <= 0.0:
             return "0"
-        rounded = round(ppm)
-        if abs(ppm - rounded) < 1e-6:
-            return f"{int(rounded)}"
-        return f"{ppm:.2f}".rstrip("0").rstrip(".")
+
+        ceil_source = exact if exact is not None else base
+        ceil_val = math.ceil(max(ceil_source, 0.0) - 1e-9)
+        if ceil_val <= 0:
+            return "0"
+
+        if exact is not None and not math.isclose(exact, ceil_val, abs_tol=1e-6):
+            return f"{_format_raw(exact)} → {ceil_val}"
+
+        if not math.isclose(base, ceil_val, abs_tol=1e-6):
+            return f"{_format_raw(base)} → {ceil_val}"
+
+        return f"{ceil_val}"
 
     if isinstance(segments_raw, Sequence):
         ordered_entries: list[tuple[float, Mapping[str, object]]] = []
@@ -1082,19 +1098,23 @@ def _render_minimum_dra_floor_hint() -> None:
                 station_idx = int(entry.get("station_idx", entry.get("segment_index", 0)))
             except (TypeError, ValueError):
                 station_idx = 0
-            ppm_exact = entry.get("dra_ppm_exact")
+            ppm_exact_raw = entry.get("dra_ppm_exact")
             ppm_val = entry.get("dra_ppm")
             try:
-                ppm_display = float(ppm_exact if ppm_exact not in (None, "") else ppm_val or 0.0)
+                ppm_display = float(ppm_val or 0.0)
             except (TypeError, ValueError):
                 ppm_display = 0.0
+            try:
+                ppm_exact = float(ppm_exact_raw) if ppm_exact_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                ppm_exact = None
             seg_label = _format_segment_name(
                 stations,
                 station_idx,
                 station_idx + 1,
                 terminal_name=terminal_name,
             )
-            segments.append(f"{seg_label}: {_format_ppm_value(ppm_display)} ppm")
+            segments.append(f"{seg_label}: {_format_ppm_value(ppm_display, ppm_exact)} ppm")
 
     if not segments:
         floor_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
