@@ -290,25 +290,33 @@ def _coerce_float(value, default: float = 0.0) -> float:
 def _normalise_max_dr(value, *, fallback: float | None = None) -> float:
     """Return a non-negative drag-reduction cap derived from ``value``.
 
-    ``0`` or missing values indicate that no injection facility exists.  Only
-    when ``fallback`` is provided (and positive) will a substitute be used for
-    such cases.  This keeps stations without a DRA system from injecting while
-    still letting callers opt-in to defaults in other contexts (e.g. UI forms).
+    ``0`` or negative values indicate that no injection facility exists.
+    Missing values (``None`` or non-numeric inputs) may fall back to the
+    provided ``fallback`` when positive.  This allows callers to inject default
+    limits for UI purposes without resurrecting an explicitly disabled station.
     """
 
+    explicit_value = True
     try:
         dr_value = float(value)
     except (TypeError, ValueError):
         dr_value = 0.0
+        explicit_value = False
+
     if dr_value > 0.0:
         return dr_value
-    if fallback is not None:
+
+    # ``value`` missing (``None``) or non-numeric should honour the fallback
+    # when supplied.  Explicit zeros keep returning 0 even if the caller
+    # supplies a fallback so that stations without DRA remain unavailable.
+    if not explicit_value and fallback is not None:
         try:
             fallback_val = float(fallback)
         except (TypeError, ValueError):
             fallback_val = 0.0
         if fallback_val > 0.0:
             return fallback_val
+
     return 0.0
 
 
@@ -4168,140 +4176,84 @@ def solve_pipeline(
         if coarse_failed and not exhaustive_result.get("error"):
             coarse_res = exhaustive_result
             coarse_failed = False
-        if not _internal_pass and not exhaustive_result.get("error"):
-            if coarse_res.get("error"):
-                return exhaustive_result
-
-            term_name = (
-                terminal.get("name", "terminal").strip().lower().replace(" ", "_")
-            )
-            term_req = float(terminal.get("min_residual", 0) or 0.0)
-
-            def _result_key(res: Mapping[str, object]) -> tuple[float, float]:
-                total_cost = float(res.get("total_cost", math.inf))
-                residual_val = float(
-                    res.get(f"residual_head_{term_name}", res.get("residual", term_req))
-                )
-                return (total_cost, residual_val - term_req)
-
-            return min((coarse_res, exhaustive_result), key=_result_key)
         window = max(rpm_step, coarse_rpm_step)
 
         refine_result: dict = {"error": True}
-        refinement_needed = False
-        if coarse_reduces_search and not coarse_res.get("error"):
+        if coarse_reduces_search:
             ranges: dict[int, dict[str, tuple[int, int]]] = {}
+            has_narrowing = False
+            has_ranges = False
+
+            def _normalise_bounds(value: object) -> tuple[int, int] | None:
+                if isinstance(value, (tuple, list)) and len(value) == 2:
+                    try:
+                        return (int(value[0]), int(value[1]))
+                    except (TypeError, ValueError):
+                        return None
+                return None
+
             for idx, stn in enumerate(stations):
-                name = stn["name"].strip().lower().replace(" ", "_")
+                name = stn.get("name", "").strip().lower().replace(" ", "_")
                 bounds = station_bounds[idx] if idx < len(station_bounds) else {}
-                if stn.get("is_pump", False):
-                    coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
-                    coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                    st_rpm_min, st_rpm_max = bounds.get('rpm', (0, 0))  # type: ignore[assignment]
-                    if coarse_nop == 0:
-                        rmin = rmax = 0
-                    else:
-                        coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
-                        upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
-                        rmin = max(st_rpm_min, coarse_rpm - window)
-                        rmax = min(upper_bound, coarse_rpm + window)
-                        if rmin < st_rpm_min or rmax > upper_bound:
-                            rmin = max(rmin, st_rpm_min)
-                            rmax = min(rmax, upper_bound)
-                        if rmin > st_rpm_min or rmax < upper_bound:
-                            refinement_needed = True
-                    max_dr_main = _max_dr_int(stn.get("max_dr"))
-                    if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
-                        dmin, dmax = 0, max_dr_main
-                    else:
-                        dmin = max(0, coarse_dr_main - dra_step)
-                        dmax = min(max_dr_main, coarse_dr_main + dra_step)
-                        if dmin > 0 or dmax < max_dr_main:
-                            refinement_needed = True
-                    entry: dict[str, tuple[int, int]] = {
-                        "rpm": (rmin, rmax),
-                        "dra_main": (dmin, dmax),
-                    }
-                    pump_types_rng = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
-                    combo_rng = None
-                    if isinstance(stn.get("active_combo"), Mapping):
-                        combo_rng = stn["active_combo"]  # type: ignore[index]
-                    elif isinstance(stn.get("pump_combo"), Mapping):
-                        combo_rng = stn["pump_combo"]  # type: ignore[index]
-                    elif isinstance(stn.get("combo"), Mapping):
-                        combo_rng = stn["combo"]  # type: ignore[index]
-                    if pump_types_rng and isinstance(combo_rng, Mapping):
-                        type_bounds = bounds.get('type_rpm') if isinstance(bounds.get('type_rpm'), Mapping) else {}
-                        for ptype, count in combo_rng.items():
-                            if not isinstance(count, (int, float)) or count <= 0:
-                                continue
-                            pdata = pump_types_rng.get(ptype, {})
-                            pmin_default, pmax_default = type_bounds.get(str(ptype), (st_rpm_min, st_rpm_max)) if isinstance(type_bounds, Mapping) else (st_rpm_min, st_rpm_max)
-                            p_rmin = int(_extract_rpm(pdata.get("MinRPM"), default=pmin_default, prefer='min'))
-                            p_rmax = int(_extract_rpm(pdata.get("DOL"), default=pmax_default, prefer='max'))
-                            if p_rmax <= 0 and pmax_default > 0:
-                                p_rmax = pmax_default
-                            if p_rmax < p_rmin:
-                                p_rmin, p_rmax = p_rmax, p_rmin
-                            coarse_type_rpm: int | None = None
-                            if coarse_nop > 0:
-                                suffix = _normalise_speed_suffix(ptype)
-                                coarse_key = f"speed_{name}_{suffix}"
-                                coarse_val = coarse_res.get(coarse_key)
-                                if coarse_val is not None:
-                                    coarse_type_rpm = int(round(_coerce_float(coarse_val, default=0.0)))
-                                if coarse_type_rpm is None or coarse_type_rpm <= 0:
-                                    details_key = f"pump_details_{name}"
-                                    details_val = coarse_res.get(details_key)
-                                    if isinstance(details_val, list):
-                                        for detail in details_val:
-                                            if not isinstance(detail, Mapping):
-                                                continue
-                                            detail_ptype = detail.get('ptype')
-                                            detail_str = str(detail_ptype) if detail_ptype is not None else ""
-                                            target_str = str(ptype)
-                                            detail_suffix = _normalise_speed_suffix(detail_str) if detail_str else ""
-                                            if detail_str != target_str and detail_suffix != suffix:
-                                                continue
-                                            rpm_val = detail.get('rpm')
-                                            coarse_candidate = int(round(_coerce_float(rpm_val, default=0.0)))
-                                            if coarse_candidate > 0:
-                                                coarse_type_rpm = coarse_candidate
-                                                break
-                            if coarse_type_rpm is not None and coarse_type_rpm > 0:
-                                lower_bound = max(p_rmin, coarse_type_rpm - window)
-                                upper_bound = min(p_rmax, coarse_type_rpm + window)
-                                if upper_bound >= lower_bound:
-                                    if lower_bound > p_rmin or upper_bound < p_rmax:
-                                        refinement_needed = True
-                                    p_rmin, p_rmax = lower_bound, upper_bound
-                            entry[f"rpm_{ptype}"] = (p_rmin, p_rmax)
-                    loop = stn.get("loopline") if isinstance(stn.get("loopline"), Mapping) else None
-                    if loop:
-                        coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
-                        loop_max = _max_dr_int(loop.get("max_dr"))
-                        if coarse_dr_loop <= 0 or coarse_dr_loop >= loop_max:
-                            lmin = 0
-                            lmax = loop_max
+                entry: dict[str, tuple[int, int]] = {}
+
+                rpm_bounds = bounds.get('rpm')
+                if isinstance(rpm_bounds, (tuple, list)) and len(rpm_bounds) == 2:
+                    entry['rpm'] = (int(rpm_bounds[0]), int(rpm_bounds[1]))
+
+                dra_bounds = bounds.get('dra_main')
+                if isinstance(dra_bounds, (tuple, list)) and len(dra_bounds) == 2:
+                    entry['dra_main'] = (int(dra_bounds[0]), int(dra_bounds[1]))
+
+                if not coarse_res.get("error"):
+                    if stn.get("is_pump", False):
+                        coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
+                        coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                        st_rpm_min, st_rpm_max = bounds.get('rpm', (0, 0))  # type: ignore[assignment]
+                        if coarse_nop == 0:
+                            rpm_pair = entry.get('rpm', (int(st_rpm_min), int(st_rpm_min)))
+                            entry['rpm'] = (rpm_pair[0], rpm_pair[0])
                         else:
-                            lmin = max(0, coarse_dr_loop - dra_step)
-                            lmax = min(loop_max, coarse_dr_loop + dra_step)
-                            if lmin > 0 or lmax < loop_max:
-                                refinement_needed = True
-                        entry["dra_loop"] = (lmin, lmax)
-                    ranges[idx] = entry
-                else:
-                    coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
-                    max_dr = _max_dr_int(stn.get("max_dr"))
-                    if coarse_dr_main <= 0 or coarse_dr_main >= max_dr:
-                        dmin, dmax = 0, max_dr
+                            coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
+                            upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
+                            rmin = max(st_rpm_min, coarse_rpm - window)
+                            rmax = min(upper_bound, coarse_rpm + window)
+                            entry['rpm'] = (int(max(rmin, st_rpm_min)), int(min(rmax, upper_bound)))
+
+                        max_dr_main = _max_dr_int(stn.get("max_dr"))
+                        if max_dr_main > 0:
+                            if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
+                                entry['dra_main'] = (0, int(max_dr_main))
+                            else:
+                                dmin = max(0, coarse_dr_main - dra_step)
+                                dmax = min(max_dr_main, coarse_dr_main + dra_step)
+                                entry['dra_main'] = (int(dmin), int(dmax))
                     else:
-                        dmin = max(0, coarse_dr_main - dra_step)
-                        dmax = min(max_dr, coarse_dr_main + dra_step)
-                        if dmin > 0 or dmax < max_dr:
-                            refinement_needed = True
-                    ranges[idx] = {"dra_main": (dmin, dmax)}
-            if refinement_needed:
+                        coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
+                        max_dr = _max_dr_int(stn.get("max_dr"))
+                        if max_dr > 0:
+                            if coarse_dr_main <= 0 or coarse_dr_main >= max_dr:
+                                entry['dra_main'] = (0, int(max_dr))
+                            else:
+                                dmin = max(0, coarse_dr_main - dra_step)
+                                dmax = min(max_dr, coarse_dr_main + dra_step)
+                                entry['dra_main'] = (int(dmin), int(dmax))
+
+                if entry:
+                    ranges[idx] = entry
+                    has_ranges = True
+                    original_rpm = _normalise_bounds(bounds.get('rpm'))
+                    original_dra = _normalise_bounds(bounds.get('dra_main'))
+                    if 'rpm' in entry:
+                        if original_rpm is None or tuple(entry['rpm']) != original_rpm:
+                            has_narrowing = True
+                    if 'dra_main' in entry:
+                        if original_dra is None or tuple(entry['dra_main']) != original_dra:
+                            has_narrowing = True
+
+            run_fallback = False
+
+            if has_ranges and has_narrowing:
                 refine_result = solve_pipeline(
                     stations,
                     terminal,
@@ -4334,6 +4286,57 @@ def solve_pipeline(
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
+                if refine_result.get('error'):
+                    run_fallback = True
+            elif not has_ranges:
+                run_fallback = True
+
+            if run_fallback:
+                fallback_ranges: dict[int, dict[str, tuple[int, int]]] = {}
+                for idx, bounds in enumerate(station_bounds):
+                    entry: dict[str, tuple[int, int]] = {}
+                    rpm_bounds = bounds.get('rpm')
+                    if isinstance(rpm_bounds, (tuple, list)) and len(rpm_bounds) == 2:
+                        entry['rpm'] = (int(rpm_bounds[0]), int(rpm_bounds[1]))
+                    dra_bounds = bounds.get('dra_main')
+                    if isinstance(dra_bounds, (tuple, list)) and len(dra_bounds) == 2:
+                        entry['dra_main'] = (int(dra_bounds[0]), int(dra_bounds[1]))
+                    if entry:
+                        fallback_ranges[idx] = entry
+
+                if fallback_ranges:
+                    refine_result = solve_pipeline(
+                        stations,
+                        terminal,
+                        FLOW,
+                        KV_list,
+                        rho_list,
+                        segment_slices,
+                        RateDRA,
+                        Price_HSD,
+                        Fuel_density,
+                        Ambient_temp,
+                        linefill,
+                        dra_reach_km,
+                        mop_kgcm2,
+                        hours,
+                        start_time,
+                        pump_shear_rate=pump_shear_rate,
+                        loop_usage_by_station=loop_usage_by_station,
+                        enumerate_loops=False,
+                        _internal_pass=True,
+                        rpm_step=rpm_step,
+                        dra_step=dra_step,
+                        narrow_ranges=fallback_ranges,
+                        coarse_multiplier=coarse_multiplier,
+                        state_top_k=state_top_k,
+                        state_cost_margin=state_cost_margin,
+                        forced_origin_detail=forced_origin_detail,
+                        segment_floors=segment_floors,
+                        cost_cap=followup_cost_cap,
+                    )
+                    if pass_trace is not None:
+                        pass_trace.append('refine')
 
         primary_candidate = None
         if not coarse_failed and not coarse_res.get("error"):
