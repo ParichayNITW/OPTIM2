@@ -956,21 +956,23 @@ def _segment_floor_ppm_map(
 
             ppm_display = _coerce_positive_float(entry.get("dra_ppm", 0.0))
             ppm_exact = _coerce_positive_float(entry.get("dra_ppm_unrounded", 0.0))
+            perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
+
+            velocity = 0.0
+            diameter = 0.0
+            if perc_val > 0.0:
+                velocity, diameter = _segment_velocity(station_idx)
+                if velocity > 0.0 and diameter > 0.0:
+                    ppm_exact_calc = get_ppm_for_dr(visc, perc_val, velocity, diameter)
+                    if ppm_exact_calc > 0.0:
+                        ppm_exact = ppm_exact_calc
+                        ppm_display = math.ceil(ppm_exact_calc - 1e-9)
 
             if ppm_display <= 0.0 and ppm_exact > 0.0:
                 ppm_display = math.ceil(ppm_exact)
 
-            if ppm_display <= 0.0:
-                perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
-                if perc_val > 0.0:
-                    velocity, diameter = _segment_velocity(station_idx)
-                    if velocity > 0.0 and diameter > 0.0:
-                        ppm_exact = get_ppm_for_dr(visc, perc_val, velocity, diameter)
-                        ppm_display = math.ceil(ppm_exact) if ppm_exact > 0.0 else 0.0
-                else:
-                    perc_val = 0.0
-            else:
-                perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
+            if ppm_display <= 0.0 and perc_val <= 0.0:
+                perc_val = 0.0
 
             if ppm_display <= 0.0 and ppm_exact <= 0.0:
                 continue
@@ -981,7 +983,7 @@ def _segment_floor_ppm_map(
                     "segment_index": float(order_idx),
                     "dra_ppm": float(ppm_display),
                     "dra_ppm_exact": float(ppm_exact),
-                    "dra_perc": _coerce_positive_float(entry.get("dra_perc", 0.0)),
+                    "dra_perc": float(perc_val),
                     "length_km": float(length_val),
                 }
             )
@@ -3514,23 +3516,38 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
 
 # Persisted DRA lock from the reference hourly run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
-    """Freeze per-station DRA (as %DR) based on ppm chosen at the reference hour for each station.
+    """Freeze per-station DRA (as %DR) based on ppm chosen at the reference hour.
 
-    Uses inverse interpolation to compute %DR that corresponds to the chosen PPM at the station's viscosity.
+    The helper converts the stored ppm back into an equivalent drag-reduction
+    percentage using the Burger equation so that subsequent optimisation passes
+    honour the same hydraulic effect.  When hydraulic context is unavailable the
+    station is left untouched.
     """
-    from dra_utils import get_dr_for_ppm
-    new_stations = []
+
+    new_stations: list[dict] = []
+
     for idx, stn in enumerate(stations, start=1):
         key = stn['name'].lower().replace(' ', '_')
         ppm = float(res.get(f"dra_ppm_{key}", 0.0) or 0.0)
-        stn2 = dict(stn)
+        stn_copy = dict(stn)
+
         if ppm > 0.0:
-            kv = float(kv_list[idx-1] if idx-1 < len(kv_list) else kv_list[-1])
-            dr_fixed = get_dr_for_ppm(kv, ppm)
-            stn2['fixed_dra_perc'] = float(dr_fixed)
-            # Ensure max_dr allows this value
-            stn2['max_dr'] = max(float(stn2.get('max_dr', 0.0)), float(dr_fixed))
-        new_stations.append(stn2)
+            kv = float(kv_list[idx - 1] if 0 <= idx - 1 < len(kv_list) else kv_list[-1]) if kv_list else 0.0
+            flow_val = float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0)
+            diameter = _station_inner_diameter(stn)
+            velocity = _flow_velocity_mps(flow_val, diameter) if diameter > 0.0 else 0.0
+
+            if kv > 0.0 and velocity > 0.0 and diameter > 0.0:
+                try:
+                    dr_fixed = float(get_dr_for_ppm(kv, ppm, velocity, diameter))
+                except Exception:
+                    dr_fixed = 0.0
+                if dr_fixed > 0.0:
+                    stn_copy['fixed_dra_perc'] = dr_fixed
+                    stn_copy['max_dr'] = max(float(stn_copy.get('max_dr', 0.0)), dr_fixed)
+
+        new_stations.append(stn_copy)
+
     return new_stations
 
 def fmt_pressure(res, key_m, key_kg):
