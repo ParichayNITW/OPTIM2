@@ -1794,13 +1794,10 @@ def _update_mainline_dra(
     floor_defined = bool(floor_specified and (floor_length > 0.0 or segments_defined))
     enforceable_floor = bool(
         floor_specified
-        and inj_effective > 0.0
         and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
     )
-    floor_requires_injection = bool(floor_defined and inj_effective <= 0.0)
-    if segments_defined and inj_effective <= 0.0:
-        floor_requires_injection = True
-    enforce_floor = enforceable_floor and not floor_requires_injection
+    floor_requires_injection = False
+    enforce_floor = enforceable_floor
     if enforce_floor:
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
