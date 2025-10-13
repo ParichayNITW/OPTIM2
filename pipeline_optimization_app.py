@@ -110,6 +110,134 @@ def _format_segment_name(
     return f"Seg {i_from}->{i_to}"
 
 
+def _floor_perc_lookup_from_state() -> dict[int, float]:
+    """Return a station-index to %DR map derived from session state."""
+
+    perc_map: dict[int, float] = {}
+    raw = st.session_state.get("dra_floor_drpct_by_seg")
+    if isinstance(raw, Mapping):
+        for key, value in raw.items():
+            if isinstance(key, tuple) and len(key) == 2:
+                idx = key[0]
+            else:
+                idx = key
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val_float = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val_float > 0.0:
+                perc_map[idx_int] = val_float
+    return perc_map
+
+
+def _ensure_result_dra_floor(
+    result: Mapping[str, object] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    *,
+    floor_ppm_map: Mapping[int, float] | None = None,
+    floor_perc_map: Mapping[int, float] | None = None,
+) -> None:
+    """Ensure ``result`` exposes the minimum DRA floors for display tables."""
+
+    if not isinstance(result, Mapping):
+        return
+    if not isinstance(stations, Sequence):
+        return
+
+    ppm_map = {}
+    if isinstance(floor_ppm_map, Mapping):
+        for key, value in floor_ppm_map.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                ppm_map[idx] = val
+    if not ppm_map:
+        state_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
+        if isinstance(state_map, Mapping):
+            for key, value in state_map.items():
+                try:
+                    idx = int(key)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    val = float(value or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if val > 0.0:
+                    ppm_map[idx] = val
+
+    perc_map = {}
+    if isinstance(floor_perc_map, Mapping):
+        for key, value in floor_perc_map.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                perc_map[idx] = val
+    if not perc_map:
+        perc_map = _floor_perc_lookup_from_state()
+
+    tol = 1e-9
+    for idx, stn in enumerate(stations):
+        if not isinstance(stn, Mapping):
+            continue
+        name = stn.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        key = name.lower().replace(" ", "_")
+        floor_ppm = ppm_map.get(idx)
+        if floor_ppm and floor_ppm > 0.0:
+            existing = result.get(f"floor_min_ppm_{key}")
+            try:
+                existing_val = float(existing or 0.0)
+            except (TypeError, ValueError):
+                existing_val = 0.0
+            if floor_ppm > existing_val + tol:
+                result[f"floor_min_ppm_{key}"] = float(floor_ppm)
+
+            dra_key = f"dra_ppm_{key}"
+            try:
+                dra_val = float(result.get(dra_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                dra_val = 0.0
+            if dra_val < float(floor_ppm) - tol:
+                result[dra_key] = float(floor_ppm)
+
+            inj_key = f"floor_injection_ppm_{key}"
+            if inj_key in result:
+                try:
+                    inj_val = float(result.get(inj_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    inj_val = 0.0
+                if inj_val < float(floor_ppm) - tol:
+                    result[inj_key] = float(floor_ppm)
+
+        floor_perc = perc_map.get(idx)
+        if floor_perc and floor_perc > 0.0:
+            existing_perc = result.get(f"floor_min_perc_{key}")
+            try:
+                existing_perc_val = float(existing_perc or 0.0)
+            except (TypeError, ValueError):
+                existing_perc_val = 0.0
+            if floor_perc > existing_perc_val + tol:
+                result[f"floor_min_perc_{key}"] = float(floor_perc)
+
+
 def compute_and_store_segment_floor_map(
     *,
     pipeline_cfg: Mapping[str, object] | None = None,
@@ -3724,6 +3852,11 @@ def solve_pipeline(
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
             )
+        _ensure_result_dra_floor(
+            res,
+            stations,
+            floor_ppm_map=segment_floor_map,
+        )
         _render_solver_feedback(res, start_time=start_time)
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
