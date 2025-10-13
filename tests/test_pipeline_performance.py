@@ -3017,6 +3017,51 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
     assert any(hour == 1 and ppm > 0.0 for hour, ppm in call_log)
 
 
+def test_build_station_table_uses_state_floor_when_missing():
+    import pipeline_optimization_app as app
+
+    session = app.st.session_state
+    tracked_keys = [
+        "minimum_dra_floor_ppm_by_segment",
+        "dra_floor_drpct_by_seg",
+    ]
+    sentinel = object()
+    previous = {key: session.get(key, sentinel) for key in tracked_keys}
+
+    try:
+        session["minimum_dra_floor_ppm_by_segment"] = {0: 18.0, 1: 22.0}
+        session["dra_floor_drpct_by_seg"] = {(0, 1): 24.0, (1, 2): 29.0}
+
+        base_stations = [
+            {"name": "Paradip", "is_pump": True, "L": 158.0, "D": 0.746, "t": 0.008},
+            {"name": "Balasore", "is_pump": True, "L": 170.0, "D": 0.746, "t": 0.008},
+        ]
+
+        result = {
+            "pipeline_flow_paradip": 3000.0,
+            "pipeline_flow_balasore": 3000.0,
+            "dra_ppm_paradip": 5.0,
+            "dra_ppm_balasore": 0.0,
+            "stations_used": copy.deepcopy(base_stations),
+        }
+
+        df = app.build_station_table(result, base_stations)
+
+        paradip_row = df[df["Station"] == "Paradip"].iloc[0]
+        balasore_row = df[df["Station"] == "Balasore"].iloc[0]
+
+        assert paradip_row["DRA PPM"] == 18.0
+        assert paradip_row["Min DRA PPM"] == 18.0
+        assert balasore_row["DRA PPM"] == 22.0
+        assert balasore_row["Min DRA PPM"] == 22.0
+    finally:
+        for key, value in previous.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+
 def test_time_series_solver_accepts_segment_index_segments(monkeypatch):
     import pipeline_optimization_app as app
     import streamlit as st

@@ -168,6 +168,51 @@ def _format_segment_name(
     return f"Seg {i_from}->{i_to}"
 
 
+def _floor_ppm_lookup_from_state() -> dict[int, float]:
+    """Return a station-index to floor PPM map derived from session state."""
+
+    ppm_map: dict[int, float] = {}
+
+    raw_direct = st.session_state.get("minimum_dra_floor_ppm_by_segment")
+    if isinstance(raw_direct, Mapping):
+        for key, value in raw_direct.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                ppm_map[idx] = val
+
+    if ppm_map:
+        return ppm_map
+
+    raw_pairs = st.session_state.get("dra_floor_ppm_by_seg")
+    if isinstance(raw_pairs, Mapping):
+        for key, value in raw_pairs.items():
+            if isinstance(key, (tuple, list)) and key:
+                idx = key[0]
+            else:
+                idx = key
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                existing = ppm_map.get(idx_int, 0.0)
+                if val > existing:
+                    ppm_map[idx_int] = val
+
+    return ppm_map
+
+
 def _floor_perc_lookup_from_state() -> dict[int, float]:
     """Return a station-index to %DR map derived from session state."""
 
@@ -220,19 +265,7 @@ def _ensure_result_dra_floor(
             if val > 0.0:
                 ppm_map[idx] = val
     if not ppm_map:
-        state_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
-        if isinstance(state_map, Mapping):
-            for key, value in state_map.items():
-                try:
-                    idx = int(key)
-                except (TypeError, ValueError):
-                    continue
-                try:
-                    val = float(value or 0.0)
-                except (TypeError, ValueError):
-                    continue
-                if val > 0.0:
-                    ppm_map[idx] = val
+        ppm_map = _floor_ppm_lookup_from_state()
 
     perc_map = {}
     if isinstance(floor_perc_map, Mapping):
@@ -3307,6 +3340,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         except (TypeError, ValueError):
             return None
 
+    floor_state_ppm = _floor_ppm_lookup_from_state()
+    floor_state_perc = _floor_perc_lookup_from_state()
+
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
         key = name.lower().replace(' ', '_')
@@ -3317,7 +3353,14 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
         floor_ppm = _float_or_none(res.get(f"floor_min_ppm_{key}", 0.0)) or 0.0
+        if floor_ppm <= 0.0 and idx in floor_state_ppm:
+            floor_ppm = float(floor_state_ppm[idx])
+            res.setdefault(f"floor_min_ppm_{key}", floor_ppm)
+
         floor_perc = _float_or_none(res.get(f"floor_min_perc_{key}", 0.0)) or 0.0
+        if floor_perc <= 0.0 and idx in floor_state_perc:
+            floor_perc = float(floor_state_perc[idx])
+            res.setdefault(f"floor_min_perc_{key}", floor_perc)
 
         combo = None
         if isinstance(stn, dict):
