@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import time
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import streamlit as st
@@ -21,6 +22,13 @@ if "planner_days" not in st.session_state:
     st.session_state["planner_days"] = 1.0
 if "terminal_name" not in st.session_state:
     st.session_state["terminal_name"] = "Terminal"
+# Track whether the terminal name input widget has been rendered in the current
+# script run. This lets helper utilities avoid mutating the associated session
+# state entry once Streamlit has locked it to the widget.
+st.session_state["_terminal_widget_instantiated"] = False
+pending_terminal = st.session_state.pop("_pending_terminal_name", None)
+if pending_terminal is not None:
+    st.session_state["terminal_name"] = pending_terminal
 if "terminal_elev" not in st.session_state:
     st.session_state["terminal_elev"] = 0.0
 if "terminal_head" not in st.session_state:
@@ -78,6 +86,56 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 from typing import Dict, Tuple
 
 
+_NUMERIC_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _coerce_positive_float(value: object) -> float:
+    """Return a non-negative float parsed from ``value``.
+
+    The helper tolerates strings such as ``"18 ppm"`` or ``"13.74 → 14"`` by
+    extracting all numeric tokens and returning the most relevant positive
+    entry.  When an arrow is present the final number is treated as a rounded
+    ceiling only if it lies within 1 ppm of the preceding positive token;
+    otherwise the leading positive value is returned.  If no positive token is
+    present the largest parsed number (which may be zero) is returned instead.
+    Non-numeric inputs yield ``0.0``.
+    """
+
+    if isinstance(value, (int, float)):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return numeric if math.isfinite(numeric) else 0.0
+
+    if isinstance(value, str):
+        cleaned = value.replace(",", " ")
+        matches = list(_NUMERIC_TOKEN_RE.finditer(cleaned))
+        numbers: list[tuple[float, int]] = []
+        for match in matches:
+            token = match.group(0)
+            try:
+                numeric = float(token)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(numeric):
+                numbers.append((numeric, match.start()))
+        if numbers:
+            positives = [item for item in numbers if item[0] > 0.0]
+            if positives:
+                if "→" in value:
+                    first_val = positives[0][0]
+                    last_val = positives[-1][0]
+                    ceil_first = math.ceil(first_val - 1e-9)
+                    if last_val <= max(first_val, ceil_first) + 1.0:
+                        return max(first_val, last_val)
+                    return first_val
+                return max(val for val, _ in positives)
+            return max(val for val, _ in numbers)
+
+    return 0.0
+
+
 def _format_segment_name(
     stations,
     i_from: int,
@@ -108,6 +166,151 @@ def _format_segment_name(
     if end:
         return f"Seg {i_from} \u2192 {end}"
     return f"Seg {i_from}->{i_to}"
+
+
+def _floor_perc_lookup_from_state() -> dict[int, float]:
+    """Return a station-index to %DR map derived from session state."""
+
+    perc_map: dict[int, float] = {}
+    raw = st.session_state.get("dra_floor_drpct_by_seg")
+    if isinstance(raw, Mapping):
+        for key, value in raw.items():
+            if isinstance(key, tuple) and len(key) == 2:
+                idx = key[0]
+            else:
+                idx = key
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val_float = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val_float > 0.0:
+                perc_map[idx_int] = val_float
+    return perc_map
+
+
+def _ensure_result_dra_floor(
+    result: Mapping[str, object] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    *,
+    floor_ppm_map: Mapping[int, float] | None = None,
+    floor_perc_map: Mapping[int, float] | None = None,
+) -> None:
+    """Ensure ``result`` exposes the minimum DRA floors for display tables."""
+
+    if not isinstance(result, Mapping):
+        return
+    if not isinstance(stations, Sequence):
+        return
+
+    ppm_map = {}
+    if isinstance(floor_ppm_map, Mapping):
+        for key, value in floor_ppm_map.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                ppm_map[idx] = val
+    if not ppm_map:
+        state_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
+        if isinstance(state_map, Mapping):
+            for key, value in state_map.items():
+                try:
+                    idx = int(key)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    val = float(value or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if val > 0.0:
+                    ppm_map[idx] = val
+
+    perc_map = {}
+    if isinstance(floor_perc_map, Mapping):
+        for key, value in floor_perc_map.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                perc_map[idx] = val
+    if not perc_map:
+        perc_map = _floor_perc_lookup_from_state()
+
+    tol = 1e-9
+    for idx, stn in enumerate(stations):
+        if not isinstance(stn, Mapping):
+            continue
+        name = stn.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        key = name.lower().replace(" ", "_")
+        floor_ppm = ppm_map.get(idx)
+        if floor_ppm and floor_ppm > 0.0:
+            existing = result.get(f"floor_min_ppm_{key}")
+            try:
+                existing_val = float(existing or 0.0)
+            except (TypeError, ValueError):
+                existing_val = 0.0
+            if floor_ppm > existing_val + tol:
+                result[f"floor_min_ppm_{key}"] = float(floor_ppm)
+
+            dra_key = f"dra_ppm_{key}"
+            try:
+                dra_val = float(result.get(dra_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                dra_val = 0.0
+            if dra_val < float(floor_ppm) - tol:
+                result[dra_key] = float(floor_ppm)
+
+            inj_key = f"floor_injection_ppm_{key}"
+            if inj_key in result:
+                try:
+                    inj_val = float(result.get(inj_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    inj_val = 0.0
+                if inj_val < float(floor_ppm) - tol:
+                    result[inj_key] = float(floor_ppm)
+
+        floor_perc = perc_map.get(idx)
+        if floor_perc and floor_perc > 0.0:
+            existing_perc = result.get(f"floor_min_perc_{key}")
+            try:
+                existing_perc_val = float(existing_perc or 0.0)
+            except (TypeError, ValueError):
+                existing_perc_val = 0.0
+            if floor_perc > existing_perc_val + tol:
+                result[f"floor_min_perc_{key}"] = float(floor_perc)
+
+            drag_key = f"drag_reduction_{key}"
+            try:
+                drag_val = float(result.get(drag_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                drag_val = 0.0
+            if drag_val < float(floor_perc) - tol:
+                result[drag_key] = float(floor_perc)
+
+            inj_perc_key = f"floor_injection_perc_{key}"
+            if inj_perc_key in result:
+                try:
+                    inj_perc_val = float(result.get(inj_perc_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    inj_perc_val = 0.0
+                if inj_perc_val < float(floor_perc) - tol:
+                    result[inj_perc_key] = float(floor_perc)
 
 
 def compute_and_store_segment_floor_map(
@@ -149,7 +352,15 @@ def compute_and_store_segment_floor_map(
             terminal_name = stored_terminal.strip()
     if terminal_name is None:
         terminal_name = "Terminal"
-    st.session_state["terminal_name"] = terminal_name
+
+    widget_locked = st.session_state.get("_terminal_widget_instantiated", False)
+    current_terminal = st.session_state.get("terminal_name")
+    if not widget_locked or current_terminal is None:
+        st.session_state["terminal_name"] = terminal_name
+    elif current_terminal != terminal_name:
+        # Defer the update until the next script run before the widget is
+        # instantiated to comply with Streamlit's session state rules.
+        st.session_state["_pending_terminal_name"] = terminal_name
 
     if not isinstance(global_inputs, Mapping):
         global_inputs = {}
@@ -247,10 +458,7 @@ def compute_and_store_segment_floor_map(
             idx_int = int(entry.get("station_idx", order))
         except (TypeError, ValueError):
             idx_int = order
-        try:
-            ppm_float = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            ppm_float = 0.0
+        ppm_float = _coerce_positive_float(entry.get("dra_ppm", 0.0))
         if ppm_float < 0.0:
             ppm_float = 0.0
         existing = floor_map_by_idx.get(idx_int, 0.0)
@@ -432,14 +640,9 @@ def _summarise_baseline_requirement(
                 seg_length = float(entry.get("length_km", 0.0) or 0.0)
             except (TypeError, ValueError):
                 seg_length = 0.0
-            try:
-                seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_ppm = 0.0
-            try:
-                seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_perc = 0.0
+
+            seg_ppm = _coerce_positive_float(entry.get("dra_ppm", 0.0))
+            seg_perc = _coerce_positive_float(entry.get("dra_perc", 0.0))
             if seg_ppm > summary["dra_ppm"]:
                 summary["dra_ppm"] = seg_ppm
             if seg_perc > summary["dra_perc"]:
@@ -454,7 +657,7 @@ def _summarise_baseline_requirement(
     if summary["dra_ppm"] <= 0.0:
         try:
             summary["dra_ppm"] = max(
-                summary["dra_ppm"], float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+                summary["dra_ppm"], _coerce_positive_float(baseline_requirement.get("dra_ppm", 0.0))
             )
         except (TypeError, ValueError):
             pass
@@ -505,10 +708,7 @@ def _collect_segment_floors(
         if entry.get("has_dra_facility") is False:
             continue
 
-        try:
-            seg_length = float(entry.get("length_km", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_length = 0.0
+        seg_length = _coerce_positive_float(entry.get("length_km", 0.0))
         if seg_length <= 0.0:
             continue
 
@@ -565,15 +765,12 @@ def _collect_segment_floors(
         if not has_capacity:
             continue
 
-        try:
-            baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            baseline_ppm = 0.0
+        baseline_ppm = _coerce_positive_float(entry.get("dra_ppm", 0.0))
 
         floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
         if floor_map and station_idx in floor_map:
             try:
-                floor_ppm = max(floor_ppm, float(floor_map[station_idx]))
+                floor_ppm = max(floor_ppm, _coerce_positive_float(floor_map[station_idx]))
             except (TypeError, ValueError):
                 pass
 
@@ -592,16 +789,10 @@ def _collect_segment_floors(
             "dra_ppm": float(floor_ppm),
         }
 
-        try:
-            seg_suction = float(entry.get("suction_head", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_suction = 0.0
+        seg_suction = _coerce_positive_float(entry.get("suction_head", 0.0))
         seg_detail["suction_head"] = seg_suction
 
-        try:
-            seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_perc = 0.0
+        seg_perc = _coerce_positive_float(entry.get("dra_perc", 0.0))
         if seg_perc <= 0.0 and velocity > 0.0 and diameter > 0.0:
             try:
                 seg_perc = float(get_dr_for_ppm(baseline_visc_cst, floor_ppm, velocity, diameter))
@@ -761,40 +952,27 @@ def _segment_floor_ppm_map(
                 station_idx = order_idx
             if station_idx < 0:
                 continue
-            try:
-                length_val = float(entry.get("length_km", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                length_val = 0.0
+            length_val = _coerce_positive_float(entry.get("length_km", 0.0))
 
-            try:
-                ppm_display = float(entry.get("dra_ppm", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                ppm_display = 0.0
-            try:
-                ppm_exact = float(entry.get("dra_ppm_unrounded", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                ppm_exact = 0.0
+            ppm_display = _coerce_positive_float(entry.get("dra_ppm", 0.0))
+            ppm_exact = _coerce_positive_float(entry.get("dra_ppm_unrounded", 0.0))
+            perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
+
+            velocity = 0.0
+            diameter = 0.0
+            if perc_val > 0.0:
+                velocity, diameter = _segment_velocity(station_idx)
+                if velocity > 0.0 and diameter > 0.0:
+                    ppm_exact_calc = get_ppm_for_dr(visc, perc_val, velocity, diameter)
+                    if ppm_exact_calc > 0.0:
+                        ppm_exact = ppm_exact_calc
+                        ppm_display = math.ceil(ppm_exact_calc - 1e-9)
 
             if ppm_display <= 0.0 and ppm_exact > 0.0:
                 ppm_display = math.ceil(ppm_exact)
 
-            if ppm_display <= 0.0:
-                try:
-                    perc_val = float(entry.get("dra_perc", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    perc_val = 0.0
-                if perc_val > 0.0:
-                    velocity, diameter = _segment_velocity(station_idx)
-                    if velocity > 0.0 and diameter > 0.0:
-                        ppm_exact = get_ppm_for_dr(visc, perc_val, velocity, diameter)
-                        ppm_display = math.ceil(ppm_exact) if ppm_exact > 0.0 else 0.0
-                else:
-                    perc_val = 0.0
-            else:
-                try:
-                    perc_val = float(entry.get("dra_perc", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    perc_val = 0.0
+            if ppm_display <= 0.0 and perc_val <= 0.0:
+                perc_val = 0.0
 
             if ppm_display <= 0.0 and ppm_exact <= 0.0:
                 continue
@@ -805,7 +983,7 @@ def _segment_floor_ppm_map(
                     "segment_index": float(order_idx),
                     "dra_ppm": float(ppm_display),
                     "dra_ppm_exact": float(ppm_exact),
-                    "dra_perc": float(entry.get("dra_perc", 0.0) or 0.0),
+                    "dra_perc": float(perc_val),
                     "length_km": float(length_val),
                 }
             )
@@ -2103,6 +2281,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
+st.session_state["_terminal_widget_instantiated"] = True
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
@@ -3337,23 +3516,38 @@ def display_pump_type_details(res: dict, stations: list[dict], heading: str | No
 
 # Persisted DRA lock from the reference hourly run
 def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: list[float]) -> list[dict]:
-    """Freeze per-station DRA (as %DR) based on ppm chosen at the reference hour for each station.
+    """Freeze per-station DRA (as %DR) based on ppm chosen at the reference hour.
 
-    Uses inverse interpolation to compute %DR that corresponds to the chosen PPM at the station's viscosity.
+    The helper converts the stored ppm back into an equivalent drag-reduction
+    percentage using the Burger equation so that subsequent optimisation passes
+    honour the same hydraulic effect.  When hydraulic context is unavailable the
+    station is left untouched.
     """
-    from dra_utils import get_dr_for_ppm
-    new_stations = []
+
+    new_stations: list[dict] = []
+
     for idx, stn in enumerate(stations, start=1):
         key = stn['name'].lower().replace(' ', '_')
         ppm = float(res.get(f"dra_ppm_{key}", 0.0) or 0.0)
-        stn2 = dict(stn)
+        stn_copy = dict(stn)
+
         if ppm > 0.0:
-            kv = float(kv_list[idx-1] if idx-1 < len(kv_list) else kv_list[-1])
-            dr_fixed = get_dr_for_ppm(kv, ppm)
-            stn2['fixed_dra_perc'] = float(dr_fixed)
-            # Ensure max_dr allows this value
-            stn2['max_dr'] = max(float(stn2.get('max_dr', 0.0)), float(dr_fixed))
-        new_stations.append(stn2)
+            kv = float(kv_list[idx - 1] if 0 <= idx - 1 < len(kv_list) else kv_list[-1]) if kv_list else 0.0
+            flow_val = float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0)
+            diameter = _station_inner_diameter(stn)
+            velocity = _flow_velocity_mps(flow_val, diameter) if diameter > 0.0 else 0.0
+
+            if kv > 0.0 and velocity > 0.0 and diameter > 0.0:
+                try:
+                    dr_fixed = float(get_dr_for_ppm(kv, ppm, velocity, diameter))
+                except Exception:
+                    dr_fixed = 0.0
+                if dr_fixed > 0.0:
+                    stn_copy['fixed_dra_perc'] = dr_fixed
+                    stn_copy['max_dr'] = max(float(stn_copy.get('max_dr', 0.0)), dr_fixed)
+
+        new_stations.append(stn_copy)
+
     return new_stations
 
 def fmt_pressure(res, key_m, key_kg):
@@ -3496,7 +3690,11 @@ def solve_pipeline(
                 continue
             if entry.get("has_dra_facility") is False:
                 continue
-            idx_val = entry.get("station_idx", entry.get("idx"))
+            idx_val = entry.get("station_idx")
+            if idx_val is None:
+                idx_val = entry.get("segment_index")
+            if idx_val is None:
+                idx_val = entry.get("idx")
             try:
                 idx_int = int(idx_val)
             except (TypeError, ValueError):
@@ -3724,6 +3922,11 @@ def solve_pipeline(
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
             )
+        _ensure_result_dra_floor(
+            res,
+            stations,
+            floor_ppm_map=segment_floor_map,
+        )
         _render_solver_feedback(res, start_time=start_time)
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
@@ -4758,7 +4961,11 @@ def _execute_time_series_solver(
                 continue
             if entry.get("has_dra_facility") is False:
                 continue
-            idx_val = entry.get("station_idx", entry.get("idx"))
+            idx_val = entry.get("station_idx")
+            if idx_val is None:
+                idx_val = entry.get("segment_index")
+            if idx_val is None:
+                idx_val = entry.get("idx")
             try:
                 idx_int = int(idx_val)
             except (TypeError, ValueError):
@@ -5016,6 +5223,11 @@ def _execute_time_series_solver(
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=segment_floor_payload,
                 apply_baseline_detail=False,
+            )
+
+            _ensure_result_dra_floor(
+                res,
+                stns_run,
             )
 
             block_cost += res.get("total_cost", 0.0)
@@ -5342,6 +5554,63 @@ def _run_time_series_solver_cached(*args, progress_callback=None, **kwargs) -> d
     return _run_time_series_solver_cached_core(*args, **kwargs)
 
 
+def _solve_dynamic_interval(
+    stations: Sequence[Mapping[str, object]] | None,
+    terminal: Mapping[str, object] | None,
+    flow_rate: float,
+    kv_profile: Sequence[float] | None,
+    rho_profile: Sequence[float] | None,
+    segment_slices: Sequence[Mapping[str, object]] | None,
+    rate_dra: float,
+    diesel_price: float,
+    fuel_density: float,
+    ambient_temp: float,
+    dra_linefill: Sequence[Mapping[str, object]] | None,
+    dra_reach_km: float,
+    mop_kgcm2: float | None,
+    duration_hours: float,
+    *,
+    pump_shear_rate: float = 0.0,
+    baseline_segment_floors: Sequence[Mapping[str, object]] | None = None,
+    forced_origin_detail: Mapping[str, object] | None = None,
+) -> Mapping[str, object]:
+    """Solve a dynamic-plan interval while enforcing baseline DRA floors."""
+
+    stations_payload = [copy.deepcopy(stn) for stn in stations or []]
+    terminal_payload = copy.deepcopy(terminal or {})
+    kv_payload = list(kv_profile or [])
+    rho_payload = list(rho_profile or [])
+    slice_payload = [copy.deepcopy(slc) for slc in segment_slices or []]
+    dra_linefill_payload = [copy.deepcopy(entry) for entry in dra_linefill or []]
+
+    forced_detail_payload = copy.deepcopy(forced_origin_detail) if forced_origin_detail else None
+    segment_floor_payload = (
+        [copy.deepcopy(entry) for entry in baseline_segment_floors]
+        if baseline_segment_floors
+        else None
+    )
+
+    return pipeline_model.solve_pipeline(
+        stations_payload,
+        terminal_payload,
+        float(flow_rate),
+        kv_payload,
+        rho_payload,
+        slice_payload,
+        float(rate_dra),
+        float(diesel_price),
+        float(fuel_density),
+        float(ambient_temp),
+        dra_linefill_payload,
+        float(dra_reach_km),
+        mop_kgcm2,
+        hours=float(duration_hours),
+        pump_shear_rate=float(pump_shear_rate or 0.0),
+        forced_origin_detail=forced_detail_payload,
+        segment_floors=segment_floor_payload,
+    )
+
+
 def _build_enforced_origin_warning(
     backtrack_notes: list[str] | None,
     enforced_details: list[dict] | None,
@@ -5525,6 +5794,40 @@ def run_all_updates():
     st.session_state["origin_lacing_segment_display"] = copy.deepcopy(
         _build_segment_display_rows(baseline_segments, stations_data, suction_heads=suction_heads)
     )
+
+    baseline_segment_payload = copy.deepcopy(baseline_segments) if baseline_segments else None
+    baseline_forced_detail: dict[str, object] | None = None
+    if baseline_summary:
+        base_detail: dict[str, object] = {}
+        try:
+            ppm_floor_val = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_floor_val = 0.0
+        if ppm_floor_val > 0.0:
+            base_detail["dra_ppm"] = ppm_floor_val
+        try:
+            perc_floor_val = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            perc_floor_val = 0.0
+        if perc_floor_val > 0.0:
+            base_detail["dra_perc"] = perc_floor_val
+        if baseline_segment_payload:
+            base_detail["segments"] = copy.deepcopy(baseline_segment_payload)
+            total_seg_length = sum(
+                float(seg.get("length_km", 0.0) or 0.0)
+                for seg in baseline_segment_payload
+                if isinstance(seg, Mapping)
+            )
+            if total_seg_length > 0.0:
+                base_detail["length_km"] = total_seg_length
+        try:
+            base_length = float(baseline_summary.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            base_length = 0.0
+        if base_length > 0.0:
+            base_detail.setdefault("length_km", base_length)
+        if base_detail:
+            baseline_forced_detail = base_detail
 
     def _normalise_segments_for_detail(detail_obj: Mapping[str, object] | None) -> list[dict[str, object]]:
         segments_out: list[dict[str, object]] = []
@@ -6273,7 +6576,7 @@ if not auto_batch:
                     rho_run = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
                     stns_run = copy.deepcopy(stations_base)
-                    res = solve_pipeline(
+                    res = _solve_dynamic_interval(
                         stns_run,
                         term_data,
                         flow,
@@ -6287,8 +6590,15 @@ if not auto_batch:
                         dra_linefill,
                         dra_reach_km,
                         st.session_state.get("MOP_kgcm2"),
-                        hours=duration_hr,
+                        duration_hr,
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        baseline_segment_floors=baseline_segment_payload,
+                        forced_origin_detail=baseline_forced_detail,
+                    )
+                    _ensure_result_dra_floor(
+                        res,
+                        stns_run,
+                        floor_ppm_map=segment_floor_map,
                     )
                     if res.get("error"):
                         friendly = _build_solver_error_message(res.get("message"), start_time=seg_start)
