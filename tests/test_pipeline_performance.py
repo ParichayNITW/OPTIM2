@@ -2883,6 +2883,151 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
     assert any(hour == 1 and ppm > 0.0 for hour, ppm in call_log)
 
 
+def test_time_series_solver_accepts_segment_index_segments(monkeypatch):
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+            "pump_names": ["Pump A1"],
+        },
+        {
+            "name": "Station B",
+            "is_pump": False,
+            "L": 18.0,
+            "D": 0.7,
+            "t": 0.007,
+        },
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    hours = [0]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 4000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    baseline_segments = [
+        {
+            "segment_index": 0,
+            "length_km": 20.0,
+            "dra_ppm": 14.0,
+            "has_dra_facility": True,
+        },
+        {
+            "segment_index": 1,
+            "length_km": 18.0,
+            "dra_ppm": 6.0,
+            "has_dra_facility": True,
+        },
+    ]
+
+    st.session_state.update(
+        {
+            "stations": copy.deepcopy(stations_base),
+            "FLOW": 450.0,
+            "max_laced_flow_m3h": 450.0,
+            "max_laced_visc_cst": 3.0,
+            "max_laced_density_kgm3": 830.0,
+            "min_laced_suction_m": 0.0,
+            "RateDRA": 5.0,
+            "Price_HSD": 0.0,
+            "Fuel_density": 820.0,
+            "Ambient_temp": 25.0,
+            "MOP_kgcm2": 100.0,
+            "pump_shear_rate": 0.0,
+            "origin_lacing_baseline": {
+                "segments": copy.deepcopy(baseline_segments),
+                "enforceable": True,
+                "dra_ppm": 14.0,
+            },
+            "origin_lacing_segment_baseline": copy.deepcopy(baseline_segments),
+            "minimum_dra_floor_ppm": 14.0,
+            "minimum_dra_floor_ppm_by_segment": {0: 14.0, 1: 6.0},
+        }
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        (
+            stations,
+            terminal,
+            flow,
+            kv_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            fuel_density,
+            ambient_temp,
+            dra_linefill_in,
+            dra_reach_km,
+            mop_kgcm2,
+            *_,
+        ) = solver_args
+
+        captured["segment_floors"] = solver_kwargs.get("segment_floors")
+        captured["forced_origin_detail"] = solver_kwargs.get("forced_origin_detail")
+        return {
+            "error": False,
+            "total_cost": 9.5,
+            "linefill": copy.deepcopy(dra_linefill_in),
+            "dra_front_km": float(dra_reach_km),
+            "dra_ppm_station_a": 0.0,
+            "dra_ppm_station_b": 0.0,
+            "stations_used": copy.deepcopy(stations),
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=450.0,
+        plan_df=None,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    floors = captured.get("segment_floors")
+    assert isinstance(floors, list) and floors
+    assert all("station_idx" in entry for entry in floors)
+    assert {entry["station_idx"] for entry in floors} == {0, 1}
+
+    report = result["reports"][0]["result"]
+    assert pytest.approx(report.get("floor_min_ppm_station_a", 0.0)) == 14.0
+    assert pytest.approx(report.get("dra_ppm_station_a", 0.0)) == 14.0
+
+
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
         {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
@@ -3156,6 +3301,70 @@ def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
     forced_detail = captured.get("forced_origin_detail")
     assert isinstance(forced_detail, dict)
     assert forced_detail.get("dra_ppm") == pytest.approx(8.0)
+
+
+def test_dynamic_interval_solver_forwards_segment_floors(monkeypatch):
+    import pipeline_optimization_app as app
+
+    captured: dict[str, object] = {}
+
+    def fake_solver(*args, **kwargs):
+        captured.update(kwargs)
+        return {"linefill": [], "dra_front_km": 0.0, "error": False}
+
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
+
+    stations = [
+        {
+            "name": "Station A",
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 15.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    kv_profile = [5.0]
+    rho_profile = [850.0]
+    segment_slices = [{"length_km": 10.0, "kv": 5.0, "rho": 850.0}]
+    baseline_segment_floors = [
+        {"station_idx": 0, "length_km": 10.0, "dra_ppm": 8.0, "dra_perc": 10.0}
+    ]
+    forced_detail = {
+        "dra_ppm": 8.0,
+        "dra_perc": 10.0,
+        "length_km": 10.0,
+        "segments": copy.deepcopy(baseline_segment_floors),
+    }
+
+    result = app._solve_dynamic_interval(
+        stations,
+        terminal,
+        1000.0,
+        kv_profile,
+        rho_profile,
+        segment_slices,
+        rate_dra=5.0,
+        diesel_price=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        dra_linefill=[],
+        dra_reach_km=200.0,
+        mop_kgcm2=90.0,
+        duration_hours=4.0,
+        pump_shear_rate=0.1,
+        baseline_segment_floors=baseline_segment_floors,
+        forced_origin_detail=forced_detail,
+    )
+
+    assert result.get("error") is False
+    forwarded_floors = captured.get("segment_floors")
+    assert isinstance(forwarded_floors, list) and forwarded_floors
+    assert forwarded_floors[0]["dra_ppm"] == pytest.approx(8.0)
+    assert forwarded_floors is not baseline_segment_floors
+    forwarded_detail = captured.get("forced_origin_detail")
+    assert forwarded_detail == forced_detail
+    assert forwarded_detail is not forced_detail
 
 
 def test_merge_segment_profiles_preserves_heterogeneity():
