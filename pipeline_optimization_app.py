@@ -5184,6 +5184,11 @@ def _execute_time_series_solver(
                 apply_baseline_detail=False,
             )
 
+            _ensure_result_dra_floor(
+                res,
+                stns_run,
+            )
+
             block_cost += res.get("total_cost", 0.0)
 
             warnings_seq = res.get("warnings")
@@ -6455,6 +6460,10 @@ if not auto_batch:
                         st.session_state.get("MOP_kgcm2"),
                         hours=duration_hr,
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    )
+                    _ensure_result_dra_floor(
+                        res,
+                        stns_run,
                     )
                     if res.get("error"):
                         friendly = _build_solver_error_message(res.get("message"), start_time=seg_start)
