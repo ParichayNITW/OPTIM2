@@ -1690,6 +1690,13 @@ def test_compute_and_store_segment_floor_map_accepts_string_floors():
     assert stored[1]["dra_ppm_exact"] == pytest.approx(29.174453357539754)
 
 
+def test_coerce_positive_float_handles_large_arrow_targets():
+    import pipeline_optimization_app as app
+
+    assert app._coerce_positive_float("18 ppm → 162 ppm") == pytest.approx(18.0)
+    assert app._coerce_positive_float("17.770130549595464 → 18") == pytest.approx(18.0)
+
+
 def test_render_minimum_dra_floor_hint_uses_segment_details(monkeypatch):
     import pipeline_optimization_app as app
     import streamlit as st

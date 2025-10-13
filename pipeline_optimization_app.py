@@ -93,9 +93,12 @@ def _coerce_positive_float(value: object) -> float:
     """Return a non-negative float parsed from ``value``.
 
     The helper tolerates strings such as ``"18 ppm"`` or ``"13.74 → 14"`` by
-    extracting all numeric tokens and returning the largest positive entry.  If
-    no positive token is present the largest parsed number (which may be zero)
-    is returned instead.  Non-numeric inputs yield ``0.0``.
+    extracting all numeric tokens and returning the most relevant positive
+    entry.  When an arrow is present the final number is treated as a rounded
+    ceiling only if it lies within 1 ppm of the preceding positive token;
+    otherwise the leading positive value is returned.  If no positive token is
+    present the largest parsed number (which may be zero) is returned instead.
+    Non-numeric inputs yield ``0.0``.
     """
 
     if isinstance(value, (int, float)):
@@ -106,21 +109,29 @@ def _coerce_positive_float(value: object) -> float:
         return numeric if math.isfinite(numeric) else 0.0
 
     if isinstance(value, str):
-        cleaned = value.replace(",", " ").replace("→", " ")
-        matches = _NUMERIC_TOKEN_RE.findall(cleaned)
-        numbers: list[float] = []
-        for token in matches:
+        cleaned = value.replace(",", " ")
+        matches = list(_NUMERIC_TOKEN_RE.finditer(cleaned))
+        numbers: list[tuple[float, int]] = []
+        for match in matches:
+            token = match.group(0)
             try:
                 numeric = float(token)
             except (TypeError, ValueError):
                 continue
             if math.isfinite(numeric):
-                numbers.append(numeric)
+                numbers.append((numeric, match.start()))
         if numbers:
-            positives = [num for num in numbers if num > 0.0]
+            positives = [item for item in numbers if item[0] > 0.0]
             if positives:
-                return max(positives)
-            return max(numbers)
+                if "→" in value:
+                    first_val = positives[0][0]
+                    last_val = positives[-1][0]
+                    ceil_first = math.ceil(first_val - 1e-9)
+                    if last_val <= max(first_val, ceil_first) + 1.0:
+                        return max(first_val, last_val)
+                    return first_val
+                return max(val for val, _ in positives)
+            return max(val for val, _ in numbers)
 
     return 0.0
 
