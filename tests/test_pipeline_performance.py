@@ -3158,6 +3158,70 @@ def test_solve_pipeline_enforces_baseline_with_full_shear(monkeypatch):
     assert forced_detail.get("dra_ppm") == pytest.approx(8.0)
 
 
+def test_dynamic_interval_solver_forwards_segment_floors(monkeypatch):
+    import pipeline_optimization_app as app
+
+    captured: dict[str, object] = {}
+
+    def fake_solver(*args, **kwargs):
+        captured.update(kwargs)
+        return {"linefill": [], "dra_front_km": 0.0, "error": False}
+
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", fake_solver)
+
+    stations = [
+        {
+            "name": "Station A",
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_dr": 15.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    kv_profile = [5.0]
+    rho_profile = [850.0]
+    segment_slices = [{"length_km": 10.0, "kv": 5.0, "rho": 850.0}]
+    baseline_segment_floors = [
+        {"station_idx": 0, "length_km": 10.0, "dra_ppm": 8.0, "dra_perc": 10.0}
+    ]
+    forced_detail = {
+        "dra_ppm": 8.0,
+        "dra_perc": 10.0,
+        "length_km": 10.0,
+        "segments": copy.deepcopy(baseline_segment_floors),
+    }
+
+    result = app._solve_dynamic_interval(
+        stations,
+        terminal,
+        1000.0,
+        kv_profile,
+        rho_profile,
+        segment_slices,
+        rate_dra=5.0,
+        diesel_price=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        dra_linefill=[],
+        dra_reach_km=200.0,
+        mop_kgcm2=90.0,
+        duration_hours=4.0,
+        pump_shear_rate=0.1,
+        baseline_segment_floors=baseline_segment_floors,
+        forced_origin_detail=forced_detail,
+    )
+
+    assert result.get("error") is False
+    forwarded_floors = captured.get("segment_floors")
+    assert isinstance(forwarded_floors, list) and forwarded_floors
+    assert forwarded_floors[0]["dra_ppm"] == pytest.approx(8.0)
+    assert forwarded_floors is not baseline_segment_floors
+    forwarded_detail = captured.get("forced_origin_detail")
+    assert forwarded_detail == forced_detail
+    assert forwarded_detail is not forced_detail
+
+
 def test_merge_segment_profiles_preserves_heterogeneity():
     import pipeline_optimization_app as app
 
