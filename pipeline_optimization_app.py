@@ -21,6 +21,13 @@ if "planner_days" not in st.session_state:
     st.session_state["planner_days"] = 1.0
 if "terminal_name" not in st.session_state:
     st.session_state["terminal_name"] = "Terminal"
+# Track whether the terminal name input widget has been rendered in the current
+# script run. This lets helper utilities avoid mutating the associated session
+# state entry once Streamlit has locked it to the widget.
+st.session_state["_terminal_widget_instantiated"] = False
+pending_terminal = st.session_state.pop("_pending_terminal_name", None)
+if pending_terminal is not None:
+    st.session_state["terminal_name"] = pending_terminal
 if "terminal_elev" not in st.session_state:
     st.session_state["terminal_elev"] = 0.0
 if "terminal_head" not in st.session_state:
@@ -110,6 +117,151 @@ def _format_segment_name(
     return f"Seg {i_from}->{i_to}"
 
 
+def _floor_perc_lookup_from_state() -> dict[int, float]:
+    """Return a station-index to %DR map derived from session state."""
+
+    perc_map: dict[int, float] = {}
+    raw = st.session_state.get("dra_floor_drpct_by_seg")
+    if isinstance(raw, Mapping):
+        for key, value in raw.items():
+            if isinstance(key, tuple) and len(key) == 2:
+                idx = key[0]
+            else:
+                idx = key
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val_float = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val_float > 0.0:
+                perc_map[idx_int] = val_float
+    return perc_map
+
+
+def _ensure_result_dra_floor(
+    result: Mapping[str, object] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    *,
+    floor_ppm_map: Mapping[int, float] | None = None,
+    floor_perc_map: Mapping[int, float] | None = None,
+) -> None:
+    """Ensure ``result`` exposes the minimum DRA floors for display tables."""
+
+    if not isinstance(result, Mapping):
+        return
+    if not isinstance(stations, Sequence):
+        return
+
+    ppm_map = {}
+    if isinstance(floor_ppm_map, Mapping):
+        for key, value in floor_ppm_map.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                ppm_map[idx] = val
+    if not ppm_map:
+        state_map = st.session_state.get("minimum_dra_floor_ppm_by_segment")
+        if isinstance(state_map, Mapping):
+            for key, value in state_map.items():
+                try:
+                    idx = int(key)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    val = float(value or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if val > 0.0:
+                    ppm_map[idx] = val
+
+    perc_map = {}
+    if isinstance(floor_perc_map, Mapping):
+        for key, value in floor_perc_map.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                perc_map[idx] = val
+    if not perc_map:
+        perc_map = _floor_perc_lookup_from_state()
+
+    tol = 1e-9
+    for idx, stn in enumerate(stations):
+        if not isinstance(stn, Mapping):
+            continue
+        name = stn.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        key = name.lower().replace(" ", "_")
+        floor_ppm = ppm_map.get(idx)
+        if floor_ppm and floor_ppm > 0.0:
+            existing = result.get(f"floor_min_ppm_{key}")
+            try:
+                existing_val = float(existing or 0.0)
+            except (TypeError, ValueError):
+                existing_val = 0.0
+            if floor_ppm > existing_val + tol:
+                result[f"floor_min_ppm_{key}"] = float(floor_ppm)
+
+            dra_key = f"dra_ppm_{key}"
+            try:
+                dra_val = float(result.get(dra_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                dra_val = 0.0
+            if dra_val < float(floor_ppm) - tol:
+                result[dra_key] = float(floor_ppm)
+
+            inj_key = f"floor_injection_ppm_{key}"
+            if inj_key in result:
+                try:
+                    inj_val = float(result.get(inj_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    inj_val = 0.0
+                if inj_val < float(floor_ppm) - tol:
+                    result[inj_key] = float(floor_ppm)
+
+        floor_perc = perc_map.get(idx)
+        if floor_perc and floor_perc > 0.0:
+            existing_perc = result.get(f"floor_min_perc_{key}")
+            try:
+                existing_perc_val = float(existing_perc or 0.0)
+            except (TypeError, ValueError):
+                existing_perc_val = 0.0
+            if floor_perc > existing_perc_val + tol:
+                result[f"floor_min_perc_{key}"] = float(floor_perc)
+
+            drag_key = f"drag_reduction_{key}"
+            try:
+                drag_val = float(result.get(drag_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                drag_val = 0.0
+            if drag_val < float(floor_perc) - tol:
+                result[drag_key] = float(floor_perc)
+
+            inj_perc_key = f"floor_injection_perc_{key}"
+            if inj_perc_key in result:
+                try:
+                    inj_perc_val = float(result.get(inj_perc_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    inj_perc_val = 0.0
+                if inj_perc_val < float(floor_perc) - tol:
+                    result[inj_perc_key] = float(floor_perc)
+
+
 def compute_and_store_segment_floor_map(
     *,
     pipeline_cfg: Mapping[str, object] | None = None,
@@ -149,7 +301,15 @@ def compute_and_store_segment_floor_map(
             terminal_name = stored_terminal.strip()
     if terminal_name is None:
         terminal_name = "Terminal"
-    st.session_state["terminal_name"] = terminal_name
+
+    widget_locked = st.session_state.get("_terminal_widget_instantiated", False)
+    current_terminal = st.session_state.get("terminal_name")
+    if not widget_locked or current_terminal is None:
+        st.session_state["terminal_name"] = terminal_name
+    elif current_terminal != terminal_name:
+        # Defer the update until the next script run before the widget is
+        # instantiated to comply with Streamlit's session state rules.
+        st.session_state["_pending_terminal_name"] = terminal_name
 
     if not isinstance(global_inputs, Mapping):
         global_inputs = {}
@@ -2103,6 +2263,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
+st.session_state["_terminal_widget_instantiated"] = True
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
@@ -3724,6 +3885,11 @@ def solve_pipeline(
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
             )
+        _ensure_result_dra_floor(
+            res,
+            stations,
+            floor_ppm_map=segment_floor_map,
+        )
         _render_solver_feedback(res, start_time=start_time)
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
