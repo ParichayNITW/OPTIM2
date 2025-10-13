@@ -3475,6 +3475,7 @@ def solve_pipeline(
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
             station_suction_heads=suction_heads,
             max_density_kgm3=float(st.session_state.get("max_laced_density_kgm3", 0.0)),
+            mop_kgcm2=float(st.session_state.get("MOP_kgcm2", 0.0)),
         )
     except Exception:
         baseline_requirement = None
@@ -5468,6 +5469,7 @@ def run_all_updates():
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
             station_suction_heads=suction_heads,
             max_density_kgm3=float(st.session_state.get("max_laced_density_kgm3", 0.0)),
+            mop_kgcm2=float(st.session_state.get("MOP_kgcm2", 0.0)),
         )
     except Exception:
         baseline_requirement = None

@@ -8,6 +8,7 @@ import concurrent.futures
 import io
 import math
 import os
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
@@ -274,6 +275,72 @@ def _normalise_speed_suffix(label: str) -> str:
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in label)
     cleaned = cleaned.strip("_")
     return cleaned.upper() if cleaned else "TYPE"
+
+
+def _interpolate_curve(points: Sequence[tuple[float, float]], x: float) -> float | None:
+    """Return the piecewise-linear interpolation of ``points`` at ``x``."""
+
+    if not points:
+        return None
+    sorted_points = sorted(points, key=lambda pair: pair[0])
+    xs = [p[0] for p in sorted_points]
+    ys = [p[1] for p in sorted_points]
+    if not xs:
+        return None
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    idx = bisect_left(xs, x)
+    if idx <= 0:
+        return ys[0]
+    if idx >= len(xs):
+        return ys[-1]
+    x0, y0 = xs[idx - 1], ys[idx - 1]
+    x1, y1 = xs[idx], ys[idx]
+    if math.isclose(x1, x0):
+        return y1
+    weight = (x - x0) / (x1 - x0)
+    return y0 + (y1 - y0) * weight
+
+
+def _extract_head_curve(pump_data: Mapping[str, object]) -> list[tuple[float, float]]:
+    """Return sorted ``(flow, head)`` tuples from ``pump_data`` head curve."""
+
+    raw_curve = pump_data.get("head_data")
+    if not isinstance(raw_curve, Sequence):
+        return []
+    points: list[tuple[float, float]] = []
+    flow_keys = (
+        "Flow (m³/hr)",
+        "Flow (m3/hr)",
+        "Flow (m^3/hr)",
+        "Flow (m3h)",
+        "Flow",
+        "Q",
+    )
+    head_keys = ("Head (m)", "Head", "TDH (m)", "TDH")
+    for entry in raw_curve:
+        if not isinstance(entry, Mapping):
+            continue
+        flow_val = None
+        for key in flow_keys:
+            if key in entry:
+                flow_val = _coerce_float(entry.get(key))
+                break
+        head_val = None
+        for key in head_keys:
+            if key in entry:
+                head_val = _coerce_float(entry.get(key))
+                break
+        if flow_val is None or head_val is None:
+            continue
+        if not math.isfinite(flow_val) or not math.isfinite(head_val):
+            continue
+        if flow_val < 0:
+            continue
+        points.append((flow_val, max(head_val, 0.0)))
+    return sorted(points, key=lambda pair: pair[0])
 
 
 def _coerce_float(value, default: float = 0.0) -> float:
@@ -2076,6 +2143,7 @@ def compute_minimum_lacing_requirement(
     min_suction_head: float = 0.0,
     station_suction_heads: Sequence[float] | None = None,
     max_density_kgm3: float | None = None,
+    mop_kgcm2: float | None = None,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -2089,7 +2157,8 @@ def compute_minimum_lacing_requirement(
     the frictional component is reduced.  The upstream suction reserve defaults
     to ``min_suction_head`` (rather than any per-station overrides) and the
     available discharge head is capped by the lower of the design MAOP and the
-    user-entered MOP expressed in metres via ``max_density_kgm3``.  The returned
+    user-entered MOP expressed in metres via ``max_density_kgm3`` or
+    ``mop_kgcm2``.  The returned
     dictionary provides both the treated length (equal to the total pipeline
     length) and the minimum concentration in PPM.  ``segment_slices`` is
     accepted for backwards compatibility but intentionally ignored so that the
@@ -2173,6 +2242,13 @@ def compute_minimum_lacing_requirement(
         density_override = 0.0
     if density_override <= 0.0 or math.isnan(density_override):
         density_override = None
+
+    try:
+        mop_override = float(mop_kgcm2) if mop_kgcm2 is not None else 0.0
+    except (TypeError, ValueError):
+        mop_override = 0.0
+    if mop_override <= 0.0 or math.isnan(mop_override):
+        mop_override = 0.0
 
     def _station_density(stn: Mapping[str, object]) -> float:
         rho_val = _coerce_float_local(stn.get('rho'), 0.0)
@@ -2331,6 +2407,8 @@ def compute_minimum_lacing_requirement(
         cumulative_min = max(cumulative_min, stn_min)
 
     mop_global = _collect_mop_kgcm2(terminal)
+    if mop_global <= 0.0 and mop_override > 0.0:
+        mop_global = mop_override
 
     segment_requirements: list[dict[str, float | int | bool]] = []
     example_segment: dict | None = None
@@ -2384,9 +2462,9 @@ def compute_minimum_lacing_requirement(
         residual_target = max(downstream_residual, terminal_min_residual)
 
         head_loss = max(head_loss, 0.0)
-        sdh_required = residual_target + head_loss + elev_delta
-        if sdh_required < residual_target:
-            sdh_required = residual_target
+        sdh_required_actual = residual_target + head_loss + elev_delta
+        if sdh_required_actual < residual_target:
+            sdh_required_actual = residual_target
 
         rho_val = _station_density(stn)
         mop_station = _collect_mop_kgcm2(stn)
@@ -2405,22 +2483,66 @@ def compute_minimum_lacing_requirement(
         dra_ppm_needed = 0.0
         dr_unbounded = 0.0
         limited_by_station = False
-        discharge_head = max_head + min_suction
+        discharge_head_actual = max_head + min_suction
         if head_cap > 0.0:
-            discharge_head = min(discharge_head, head_cap)
+            discharge_head_actual = min(discharge_head_actual, head_cap)
         if carried_head_available > 0.0:
-            discharge_head = max(discharge_head, carried_head_available)
+            discharge_head_actual = max(discharge_head_actual, carried_head_available)
 
-        gap = sdh_required - discharge_head
-        if gap > head_loss:
-            gap = head_loss
+        if head_loss >= 1.0:
+            head_loss_design = round(head_loss)
+        else:
+            head_loss_design = head_loss
+        sdh_required_design = residual_target + head_loss_design + elev_delta
+        if sdh_required_design < residual_target:
+            sdh_required_design = residual_target
+        if abs(sdh_required_design) >= 1.0:
+            sdh_required_design = round(sdh_required_design)
+        discharge_head_design = (
+            round(discharge_head_actual)
+            if abs(discharge_head_actual) >= 1.0
+            else discharge_head_actual
+        )
+        if discharge_head_design < 0.0 and discharge_head_actual > 0.0:
+            discharge_head_design = discharge_head_actual
+
+        head_loss_for_ratio = head_loss_design if head_loss_design > 0.0 else head_loss
+        if head_loss_for_ratio <= 0.0:
+            sdh_required_for_ratio = sdh_required_actual
+            discharge_head_for_ratio = discharge_head_actual
+        else:
+            sdh_required_for_ratio = sdh_required_design
+            discharge_head_for_ratio = discharge_head_design
+
+        gap_design = sdh_required_design - discharge_head_design
+        gap_actual = sdh_required_actual - discharge_head_actual
+        if gap_actual > head_loss:
+            gap_actual = head_loss
+        if gap_actual < 0.0:
+            gap_actual = 0.0
+
+        gap = gap_design
+        if head_loss_for_ratio > 0.0 and gap > head_loss_for_ratio:
+            gap = head_loss_for_ratio
         if gap < 0.0:
             gap = 0.0
 
+        gap_for_ratio = gap
+        if gap_for_ratio <= 1e-9 and gap_actual > 0.0:
+            alt_limit = head_loss_for_ratio if head_loss_for_ratio > 0.0 else head_loss
+            if alt_limit > 0.0:
+                gap_for_ratio = min(gap_actual, alt_limit)
+            else:
+                gap_for_ratio = gap_actual
+
         station_max_dr = _normalise_max_dr(stn.get('max_dr'), fallback=GLOBAL_MAX_DRA_CAP)
         has_dra_facility = station_max_dr > 0.0
-        if gap > 1e-6 and head_loss > 0.0 and sdh_required > 0.0:
-            dr_unbounded = (gap / head_loss) * 100.0
+        if (
+            gap_for_ratio > 1e-6
+            and head_loss_for_ratio > 0.0
+            and sdh_required_for_ratio > 0.0
+        ):
+            dr_unbounded = (gap_for_ratio / head_loss_for_ratio) * 100.0
             if dr_unbounded < 0.0:
                 dr_unbounded = 0.0
             if dr_unbounded > max_dra_perc_uncapped:
@@ -2484,27 +2606,31 @@ def compute_minimum_lacing_requirement(
             'dra_perc': float(dr_needed),
             'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
             'dra_perc_uncapped': float(dr_unbounded),
-            'sdh_required': float(sdh_required),
+            'sdh_required': float(sdh_required_design if head_loss_for_ratio > 0.0 else sdh_required_actual),
             'residual_head': float(residual_target),
-            'max_head_available': float(discharge_head),
+            'max_head_available': float(discharge_head_design if head_loss_for_ratio > 0.0 else discharge_head_actual),
             'available_head_before_suction': float(max_head + min_suction),
             'suction_head': float(min_suction),
             'limited_by_station': bool(limited_by_station),
             'velocity_mps': float(velocity),
             'reynolds_number': float(reynolds),
             'friction_factor': float(friction_factor),
-            'sdh_available': float(discharge_head),
+            'sdh_available': float(discharge_head_design if head_loss_for_ratio > 0.0 else discharge_head_actual),
             'sdh_gap': float(max(gap, 0.0)),
-            'head_loss_friction': float(head_loss),
+            'head_loss_friction': float(head_loss_design if head_loss_for_ratio > 0.0 else head_loss),
             'head_cap': float(head_cap),
             'has_dra_facility': bool(has_dra_facility),
+            'sdh_required_actual': float(sdh_required_actual),
+            'sdh_available_actual': float(discharge_head_actual),
+            'sdh_gap_actual': float(gap_actual),
+            'head_loss_friction_actual': float(head_loss),
         }
         if dr_needed > 0 and dra_ppm_needed > 0.0 and has_dra_facility:
             ppm_unrounded = get_ppm_for_dr_exact(visc_max, dr_needed, velocity, d_inner)
             segment_entry['dra_ppm_unrounded'] = float(ppm_unrounded)
         segment_requirements.append(segment_entry)
 
-        carried_head_available = discharge_head
+        carried_head_available = discharge_head_actual
 
         if example_segment is None or segment_entry['dra_perc_uncapped'] > example_segment.get('dra_perc_uncapped', 0.0):
             example_segment = {
@@ -3005,10 +3131,18 @@ def _pump_head(
             if dol <= 0:
                 dol = rpm_val
             Q_equiv = flow_m3h * dol / rpm_val if rpm_val > 0 else flow_m3h
-            A = pdata.get("A", 0.0)
-            B = pdata.get("B", 0.0)
-            C = pdata.get("C", 0.0)
-            tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
+            head_curve = None
+            if dol > 0:
+                curve_points = _extract_head_curve(pdata)
+                if curve_points:
+                    head_curve = _interpolate_curve(curve_points, Q_equiv)
+            if head_curve is None:
+                A = pdata.get("A", 0.0)
+                B = pdata.get("B", 0.0)
+                C = pdata.get("C", 0.0)
+                tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
+            else:
+                tdh_single = head_curve
             tdh_single = max(tdh_single, 0.0)
             speed_ratio_sq = (rpm_val / dol) ** 2 if dol else 0.0
             tdh_type = tdh_single * speed_ratio_sq * count
