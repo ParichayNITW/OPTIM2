@@ -21,6 +21,13 @@ if "planner_days" not in st.session_state:
     st.session_state["planner_days"] = 1.0
 if "terminal_name" not in st.session_state:
     st.session_state["terminal_name"] = "Terminal"
+# Track whether the terminal name input widget has been rendered in the current
+# script run. This lets helper utilities avoid mutating the associated session
+# state entry once Streamlit has locked it to the widget.
+st.session_state["_terminal_widget_instantiated"] = False
+pending_terminal = st.session_state.pop("_pending_terminal_name", None)
+if pending_terminal is not None:
+    st.session_state["terminal_name"] = pending_terminal
 if "terminal_elev" not in st.session_state:
     st.session_state["terminal_elev"] = 0.0
 if "terminal_head" not in st.session_state:
@@ -237,6 +244,23 @@ def _ensure_result_dra_floor(
             if floor_perc > existing_perc_val + tol:
                 result[f"floor_min_perc_{key}"] = float(floor_perc)
 
+            drag_key = f"drag_reduction_{key}"
+            try:
+                drag_val = float(result.get(drag_key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                drag_val = 0.0
+            if drag_val < float(floor_perc) - tol:
+                result[drag_key] = float(floor_perc)
+
+            inj_perc_key = f"floor_injection_perc_{key}"
+            if inj_perc_key in result:
+                try:
+                    inj_perc_val = float(result.get(inj_perc_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    inj_perc_val = 0.0
+                if inj_perc_val < float(floor_perc) - tol:
+                    result[inj_perc_key] = float(floor_perc)
+
 
 def compute_and_store_segment_floor_map(
     *,
@@ -277,7 +301,15 @@ def compute_and_store_segment_floor_map(
             terminal_name = stored_terminal.strip()
     if terminal_name is None:
         terminal_name = "Terminal"
-    st.session_state["terminal_name"] = terminal_name
+
+    widget_locked = st.session_state.get("_terminal_widget_instantiated", False)
+    current_terminal = st.session_state.get("terminal_name")
+    if not widget_locked or current_terminal is None:
+        st.session_state["terminal_name"] = terminal_name
+    elif current_terminal != terminal_name:
+        # Defer the update until the next script run before the widget is
+        # instantiated to comply with Streamlit's session state rules.
+        st.session_state["_pending_terminal_name"] = terminal_name
 
     if not isinstance(global_inputs, Mapping):
         global_inputs = {}
@@ -2231,6 +2263,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 st.markdown("---")
 st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
+st.session_state["_terminal_widget_instantiated"] = True
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
