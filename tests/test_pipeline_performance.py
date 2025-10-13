@@ -1627,6 +1627,76 @@ def test_compute_and_store_segment_floor_map_preserves_segments():
     }
 
 
+def test_compute_and_store_segment_floor_map_accepts_string_floors():
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    stations = [
+        {
+            "name": "Paradip",
+            "D": 0.762,
+            "t": 0.0079248,
+            "max_dr": 30.0,
+            "is_pump": True,
+        },
+        {
+            "name": "Balasore",
+            "D": 0.762,
+            "t": 0.0079248,
+            "max_dr": 30.0,
+            "is_pump": True,
+        },
+    ]
+
+    baseline_req = {
+        "segments": [
+            {
+                "station_idx": 0,
+                "length_km": "158 km",
+                "dra_ppm": "17.770130549595464 → 18 ppm",
+                "dra_ppm_unrounded": "17.770130549595464",
+                "dra_perc": "24.77987421383648%",
+                "has_dra_facility": True,
+            },
+            {
+                "station_idx": 1,
+                "length_km": "170 km",
+                "dra_ppm": "29.174453357539754 → 30 ppm",
+                "dra_ppm_unrounded": "29.174453357539754",
+                "dra_perc": "28.85514018691589%",
+                "has_dra_facility": True,
+            },
+        ]
+    }
+
+    floor_map = app.compute_and_store_segment_floor_map(
+        stations=stations,
+        global_inputs={
+            "baseline_requirement": baseline_req,
+            "baseline_flow_m3h": 3169.0,
+            "baseline_visc_cst": 15.0,
+        },
+        show_banner=False,
+    )
+
+    assert floor_map == {0: pytest.approx(18.0), 1: pytest.approx(30.0)}
+    stored = st.session_state.get("minimum_dra_floor_segments_raw")
+    assert isinstance(stored, list) and len(stored) == 2
+    assert stored[0]["dra_ppm"] == pytest.approx(18.0)
+    assert stored[0]["dra_ppm_exact"] == pytest.approx(17.770130549595464)
+    assert stored[1]["dra_ppm"] == pytest.approx(30.0)
+    assert stored[1]["dra_ppm_exact"] == pytest.approx(29.174453357539754)
+
+
+def test_coerce_positive_float_handles_large_arrow_targets():
+    import pipeline_optimization_app as app
+
+    assert app._coerce_positive_float("18 ppm → 162 ppm") == pytest.approx(18.0)
+    assert app._coerce_positive_float("17.770130549595464 → 18") == pytest.approx(18.0)
+
+
 def test_render_minimum_dra_floor_hint_uses_segment_details(monkeypatch):
     import pipeline_optimization_app as app
     import streamlit as st
