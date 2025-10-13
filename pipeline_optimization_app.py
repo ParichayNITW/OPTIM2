@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import time
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import streamlit as st
@@ -83,6 +84,56 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 # STEP 1: Segment Floor DRA
 # ---------------------------
 from typing import Dict, Tuple
+
+
+_NUMERIC_TOKEN_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _coerce_positive_float(value: object) -> float:
+    """Return a non-negative float parsed from ``value``.
+
+    The helper tolerates strings such as ``"18 ppm"`` or ``"13.74 → 14"`` by
+    extracting all numeric tokens and returning the most relevant positive
+    entry.  When an arrow is present the final number is treated as a rounded
+    ceiling only if it lies within 1 ppm of the preceding positive token;
+    otherwise the leading positive value is returned.  If no positive token is
+    present the largest parsed number (which may be zero) is returned instead.
+    Non-numeric inputs yield ``0.0``.
+    """
+
+    if isinstance(value, (int, float)):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return numeric if math.isfinite(numeric) else 0.0
+
+    if isinstance(value, str):
+        cleaned = value.replace(",", " ")
+        matches = list(_NUMERIC_TOKEN_RE.finditer(cleaned))
+        numbers: list[tuple[float, int]] = []
+        for match in matches:
+            token = match.group(0)
+            try:
+                numeric = float(token)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(numeric):
+                numbers.append((numeric, match.start()))
+        if numbers:
+            positives = [item for item in numbers if item[0] > 0.0]
+            if positives:
+                if "→" in value:
+                    first_val = positives[0][0]
+                    last_val = positives[-1][0]
+                    ceil_first = math.ceil(first_val - 1e-9)
+                    if last_val <= max(first_val, ceil_first) + 1.0:
+                        return max(first_val, last_val)
+                    return first_val
+                return max(val for val, _ in positives)
+            return max(val for val, _ in numbers)
+
+    return 0.0
 
 
 def _format_segment_name(
@@ -407,10 +458,7 @@ def compute_and_store_segment_floor_map(
             idx_int = int(entry.get("station_idx", order))
         except (TypeError, ValueError):
             idx_int = order
-        try:
-            ppm_float = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            ppm_float = 0.0
+        ppm_float = _coerce_positive_float(entry.get("dra_ppm", 0.0))
         if ppm_float < 0.0:
             ppm_float = 0.0
         existing = floor_map_by_idx.get(idx_int, 0.0)
@@ -592,14 +640,9 @@ def _summarise_baseline_requirement(
                 seg_length = float(entry.get("length_km", 0.0) or 0.0)
             except (TypeError, ValueError):
                 seg_length = 0.0
-            try:
-                seg_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_ppm = 0.0
-            try:
-                seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                seg_perc = 0.0
+
+            seg_ppm = _coerce_positive_float(entry.get("dra_ppm", 0.0))
+            seg_perc = _coerce_positive_float(entry.get("dra_perc", 0.0))
             if seg_ppm > summary["dra_ppm"]:
                 summary["dra_ppm"] = seg_ppm
             if seg_perc > summary["dra_perc"]:
@@ -614,7 +657,7 @@ def _summarise_baseline_requirement(
     if summary["dra_ppm"] <= 0.0:
         try:
             summary["dra_ppm"] = max(
-                summary["dra_ppm"], float(baseline_requirement.get("dra_ppm", 0.0) or 0.0)
+                summary["dra_ppm"], _coerce_positive_float(baseline_requirement.get("dra_ppm", 0.0))
             )
         except (TypeError, ValueError):
             pass
@@ -665,10 +708,7 @@ def _collect_segment_floors(
         if entry.get("has_dra_facility") is False:
             continue
 
-        try:
-            seg_length = float(entry.get("length_km", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_length = 0.0
+        seg_length = _coerce_positive_float(entry.get("length_km", 0.0))
         if seg_length <= 0.0:
             continue
 
@@ -725,15 +765,12 @@ def _collect_segment_floors(
         if not has_capacity:
             continue
 
-        try:
-            baseline_ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            baseline_ppm = 0.0
+        baseline_ppm = _coerce_positive_float(entry.get("dra_ppm", 0.0))
 
         floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
         if floor_map and station_idx in floor_map:
             try:
-                floor_ppm = max(floor_ppm, float(floor_map[station_idx]))
+                floor_ppm = max(floor_ppm, _coerce_positive_float(floor_map[station_idx]))
             except (TypeError, ValueError):
                 pass
 
@@ -752,16 +789,10 @@ def _collect_segment_floors(
             "dra_ppm": float(floor_ppm),
         }
 
-        try:
-            seg_suction = float(entry.get("suction_head", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_suction = 0.0
+        seg_suction = _coerce_positive_float(entry.get("suction_head", 0.0))
         seg_detail["suction_head"] = seg_suction
 
-        try:
-            seg_perc = float(entry.get("dra_perc", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_perc = 0.0
+        seg_perc = _coerce_positive_float(entry.get("dra_perc", 0.0))
         if seg_perc <= 0.0 and velocity > 0.0 and diameter > 0.0:
             try:
                 seg_perc = float(get_dr_for_ppm(baseline_visc_cst, floor_ppm, velocity, diameter))
@@ -921,28 +952,16 @@ def _segment_floor_ppm_map(
                 station_idx = order_idx
             if station_idx < 0:
                 continue
-            try:
-                length_val = float(entry.get("length_km", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                length_val = 0.0
+            length_val = _coerce_positive_float(entry.get("length_km", 0.0))
 
-            try:
-                ppm_display = float(entry.get("dra_ppm", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                ppm_display = 0.0
-            try:
-                ppm_exact = float(entry.get("dra_ppm_unrounded", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                ppm_exact = 0.0
+            ppm_display = _coerce_positive_float(entry.get("dra_ppm", 0.0))
+            ppm_exact = _coerce_positive_float(entry.get("dra_ppm_unrounded", 0.0))
 
             if ppm_display <= 0.0 and ppm_exact > 0.0:
                 ppm_display = math.ceil(ppm_exact)
 
             if ppm_display <= 0.0:
-                try:
-                    perc_val = float(entry.get("dra_perc", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    perc_val = 0.0
+                perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
                 if perc_val > 0.0:
                     velocity, diameter = _segment_velocity(station_idx)
                     if velocity > 0.0 and diameter > 0.0:
@@ -951,10 +970,7 @@ def _segment_floor_ppm_map(
                 else:
                     perc_val = 0.0
             else:
-                try:
-                    perc_val = float(entry.get("dra_perc", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    perc_val = 0.0
+                perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
 
             if ppm_display <= 0.0 and ppm_exact <= 0.0:
                 continue
@@ -965,7 +981,7 @@ def _segment_floor_ppm_map(
                     "segment_index": float(order_idx),
                     "dra_ppm": float(ppm_display),
                     "dra_ppm_exact": float(ppm_exact),
-                    "dra_perc": float(entry.get("dra_perc", 0.0) or 0.0),
+                    "dra_perc": _coerce_positive_float(entry.get("dra_perc", 0.0)),
                     "length_km": float(length_val),
                 }
             )
