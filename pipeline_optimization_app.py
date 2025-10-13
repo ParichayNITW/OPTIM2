@@ -3657,7 +3657,11 @@ def solve_pipeline(
                 continue
             if entry.get("has_dra_facility") is False:
                 continue
-            idx_val = entry.get("station_idx", entry.get("idx"))
+            idx_val = entry.get("station_idx")
+            if idx_val is None:
+                idx_val = entry.get("segment_index")
+            if idx_val is None:
+                idx_val = entry.get("idx")
             try:
                 idx_int = int(idx_val)
             except (TypeError, ValueError):
@@ -4924,7 +4928,11 @@ def _execute_time_series_solver(
                 continue
             if entry.get("has_dra_facility") is False:
                 continue
-            idx_val = entry.get("station_idx", entry.get("idx"))
+            idx_val = entry.get("station_idx")
+            if idx_val is None:
+                idx_val = entry.get("segment_index")
+            if idx_val is None:
+                idx_val = entry.get("idx")
             try:
                 idx_int = int(idx_val)
             except (TypeError, ValueError):
