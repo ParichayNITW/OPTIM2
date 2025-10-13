@@ -1563,6 +1563,70 @@ def test_segment_floor_ppm_map_handles_global_floor():
     entry = floor_entries[0]
     assert int(entry["station_idx"]) == 0
     assert entry["dra_ppm"] == pytest.approx(13.0)
+    assert entry["dra_ppm_exact"] == pytest.approx(13.0)
+    assert entry["length_km"] == pytest.approx(0.0)
+
+
+def test_segment_floor_ppm_map_overrides_inflated_ppm_strings():
+    import pipeline_optimization_app as app
+    from dra_utils import get_ppm_for_dr
+
+    stations = [
+        {
+            "name": "Paradip",
+            "D": 0.762,
+            "t": 0.0079248,
+            "max_dr": 30.0,
+        },
+        {
+            "name": "Balasore",
+            "D": 0.762,
+            "t": 0.0079248,
+            "max_dr": 30.0,
+        },
+    ]
+
+    baseline = {
+        "segments": [
+            {
+                "station_idx": 0,
+                "length_km": 158.0,
+                "dra_ppm": "162 ppm",
+                "dra_perc": 24.77987421383648,
+                "has_dra_facility": True,
+            },
+            {
+                "station_idx": 1,
+                "length_km": 170.0,
+                "dra_ppm": "104 ppm",
+                "dra_perc": 26.168224299065418,
+                "has_dra_facility": True,
+            },
+        ]
+    }
+
+    floor_entries = app._segment_floor_ppm_map(
+        baseline,
+        stations,
+        baseline_flow_m3h=3169.0,
+        baseline_visc_cst=15.0,
+    )
+
+    assert len(floor_entries) == 2
+
+    def _expected_ppm(seg_idx: int, perc: float) -> float:
+        diameter = stations[seg_idx]["D"] - 2 * stations[seg_idx]["t"]
+        velocity = app._flow_velocity_mps(3169.0, diameter)
+        return get_ppm_for_dr(15.0, perc, velocity, diameter)
+
+    first, second = floor_entries
+    exp_first = _expected_ppm(0, 24.77987421383648)
+    exp_second = _expected_ppm(1, 26.168224299065418)
+
+    assert first["dra_ppm_exact"] == pytest.approx(exp_first)
+    assert first["dra_ppm"] == pytest.approx(math.ceil(exp_first))
+    assert second["dra_ppm_exact"] == pytest.approx(exp_second)
+    assert second["dra_ppm"] == pytest.approx(math.ceil(exp_second))
 
 
 def test_compute_and_store_segment_floor_map_preserves_segments():
