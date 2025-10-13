@@ -127,11 +127,10 @@ def _ppm_for_dr_cached(visc: float, dr_percent: float, velocity_mps: float, diam
     if not math.isfinite(argument) or argument <= 0.0:
         return 0.0
 
-    denom = vel_ft_s ** 2
-    if denom <= 0.0:
+    if vel_ft_s <= 0.0:
         return 0.0
 
-    ppm_raw = argument * argument * visc_val * (dia_ft ** 0.4) / denom
+    ppm_raw = argument * visc_val * (dia_ft ** 0.2) / vel_ft_s
     if not math.isfinite(ppm_raw):
         return 0.0
     return _round_up(ppm_raw, step)
@@ -163,11 +162,10 @@ def _ppm_for_dr_exact_cached(visc: float, dr_percent: float, velocity_mps: float
     if not math.isfinite(argument) or argument <= 0.0:
         return 0.0
 
-    denom = vel_ft_s ** 2
-    if denom <= 0.0:
+    if vel_ft_s <= 0.0:
         return 0.0
 
-    ppm_raw = argument * argument * visc_val * (dia_ft ** 0.4) / denom
+    ppm_raw = argument * visc_val * (dia_ft ** 0.2) / vel_ft_s
     if not math.isfinite(ppm_raw):
         return 0.0
     return ppm_raw

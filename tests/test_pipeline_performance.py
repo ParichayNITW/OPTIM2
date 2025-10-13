@@ -322,7 +322,7 @@ def test_segment_floor_without_injection_short_circuits_option() -> None:
     option = {"nop": 0, "dra_ppm_main": 0.0}
     segment_floor = {"length_km": 5.0, "dra_ppm": 0.05}
 
-    _, _, inj_ppm, requires_injection = _update_mainline_dra(
+    dra_segments, _, inj_ppm, requires_injection = _update_mainline_dra(
         queue,
         station,
         option,
@@ -338,7 +338,10 @@ def test_segment_floor_without_injection_short_circuits_option() -> None:
     )
 
     assert inj_ppm == pytest.approx(0.0)
-    assert requires_injection is True
+    assert requires_injection is False
+    assert len(dra_segments) == 1
+    assert dra_segments[0][0] == pytest.approx(5.0, rel=1e-6)
+    assert dra_segments[0][1] == pytest.approx(0.05, rel=1e-6)
 
 
 def test_floor_requirement_enforces_positive_injection_and_reporting() -> None:
@@ -2390,15 +2393,16 @@ def test_segment_floors_overlay_queue_minimum():
         is_origin=True,
         segment_floor=origin_floor,
     )
-    assert requires_injection is True
+    assert requires_injection is False
 
     merged_origin = _merge_queue(
         [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_origin]
     )
-    assert not dra_segments
-    assert merged_origin == pytest.approx(
-        [(segment_lengths[0], 0.0), (segment_lengths[1], 4.0)], rel=1e-3
-    )
+    assert dra_segments
+    assert dra_segments[0][1] == pytest.approx(origin_floor["dra_ppm"], rel=1e-6)
+    assert merged_origin[0][1] == pytest.approx(origin_floor["dra_ppm"], rel=1e-6)
+    assert merged_origin[0][0] == pytest.approx(dra_segments[0][0], rel=1e-6)
+    assert merged_origin[1][1] == pytest.approx(4.0, rel=1e-6)
 
     downstream_data = {
         "idx": 1,
@@ -2427,14 +2431,15 @@ def test_segment_floors_overlay_queue_minimum():
         is_origin=False,
         segment_floor=downstream_floor,
     )
-    assert requires_injection is True
+    assert requires_injection is False
 
     merged_final = _merge_queue(
         [(entry["length_km"], entry["dra_ppm"]) for entry in queue_after_downstream]
     )
-    assert merged_final == pytest.approx(
-        [(segment_lengths[0], 0.0), (segment_lengths[1], 4.0)], rel=1e-3
-    )
+    assert len(merged_final) >= 3
+    assert merged_final[0][1] == pytest.approx(downstream_floor["dra_ppm"], rel=1e-6)
+    assert merged_final[1][1] == pytest.approx(origin_floor["dra_ppm"], rel=1e-6)
+    assert merged_final[2][1] == pytest.approx(4.0, rel=1e-6)
 
 
 def test_time_series_solver_reports_error_without_plan(monkeypatch):

@@ -1729,13 +1729,24 @@ with st.sidebar:
 
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
+    stn_name_default = f"Station {idx}"
+    stn_name = stn.get('name', stn_name_default)
+    with st.expander(f"Station {idx}: {stn_name}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
-            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
-            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+            stn['name'] = st.text_input("Name", value=stn_name, key=f"name{idx}")
+            stn['elev'] = st.number_input("Elevation (m)", value=float(stn.get('elev', 0.0) or 0.0), step=0.1, key=f"elev{idx}")
+            stn['is_pump'] = st.checkbox(
+                "Pumping Station?",
+                value=bool(stn.get('is_pump', False)),
+                key=f"pump{idx}",
+            )
+            stn['L'] = st.number_input(
+                "Length to next Station (km)",
+                value=float(stn.get('L', 0.0) or 0.0),
+                step=1.0,
+                key=f"L{idx}"
+            )
             stn['max_dr'] = st.number_input(
                 "Max achievable Drag Reduction (%)",
                 value=stn.get('max_dr', 0.0),
@@ -1744,12 +1755,35 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             if idx == 1:
                 stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         with col2:
-            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
-            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+            D_in = st.number_input(
+                "OD (in)",
+                value=float(stn.get('D', 0.0) or 0.0) / 0.0254,
+                format="%.2f",
+                step=0.01,
+                key=f"D{idx}"
+            )
+            t_in = st.number_input(
+                "Wall Thk (in)",
+                value=float(stn.get('t', 0.0) or 0.0) / 0.0254,
+                format="%.3f",
+                step=0.001,
+                key=f"t{idx}"
+            )
             stn['D'] = D_in * 0.0254
             stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
-            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.7f", step=0.0000001, key=f"rough{idx}")
+            stn['SMYS'] = st.number_input(
+                "SMYS (psi)",
+                value=float(stn.get('SMYS', 52000.0) or 0.0),
+                step=1000.0,
+                key=f"SMYS{idx}"
+            )
+            stn['rough'] = st.number_input(
+                "Pipe Roughness (m)",
+                value=float(stn.get('rough', 0.00004) or 0.0),
+                format="%.7f",
+                step=0.0000001,
+                key=f"rough{idx}"
+            )
         with col3:
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
             stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
@@ -1762,14 +1796,39 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             with lcol1:
                 loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname{idx}")
                 loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart{idx}")
-                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend{idx}")
-                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL{idx}")
+                loop['end_km'] = st.number_input(
+                    "End (km)",
+                    value=loop.get('end_km', float(stn.get('L', 0.0) or 0.0)),
+                    key=f"loopend{idx}"
+                )
+                loop['L'] = st.number_input(
+                    "Length (km)",
+                    value=float(loop.get('L', float(stn.get('L', 0.0) or 0.0)) or 0.0),
+                    key=f"loopL{idx}",
+                )
             with lcol2:
-                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD{idx}")
-                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt{idx}")
+                Dloop_in = st.number_input(
+                    "OD (in)",
+                    value=float(loop.get('D', stn.get('D', 0.0)) or 0.0) / 0.0254,
+                    format="%.2f",
+                    step=0.01,
+                    key=f"loopD{idx}"
+                )
+                tloop_in = st.number_input(
+                    "Wall Thk (in)",
+                    value=float(loop.get('t', stn.get('t', 0.0)) or 0.0) / 0.0254,
+                    format="%.3f",
+                    step=0.001,
+                    key=f"loopt{idx}"
+                )
                 loop['D'] = Dloop_in * 0.0254
                 loop['t'] = tloop_in * 0.0254
-                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS{idx}")
+                loop['SMYS'] = st.number_input(
+                    "SMYS (psi)",
+                    value=float(loop.get('SMYS', stn.get('SMYS', 52000.0)) or 0.0),
+                    step=1000.0,
+                    key=f"loopSMYS{idx}"
+                )
             with lcol3:
                 loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
                 loop['max_dr'] = st.number_input(
@@ -1782,8 +1841,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             loop_peak_key = f"loop_peak_data_{idx}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
                 st.session_state[loop_peak_key] = pd.DataFrame({
-                    "Location (km)": [loop.get('L', stn['L'])/2.0],
-                    "Elevation (m)": [loop.get('elev', stn.get('elev',0.0)) + 100.0]
+                    "Location (km)": [float(loop.get('L', stn.get('L', 0.0)) or 0.0) / 2.0],
+                    "Elevation (m)": [loop.get('elev', stn.get('elev', 0.0)) + 100.0]
                 })
             loop_peak_df = st.data_editor(
                 st.session_state[loop_peak_key],
@@ -1797,7 +1856,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 
         tabs = st.tabs(["Pump", "Peaks"])
         with tabs[0]:
-            if stn['is_pump']:
+            if stn.get('is_pump', False):
                 stn.setdefault('pump_types', {})
                 pump_tabs = st.tabs(["Type A", "Type B"])
                 for tab_idx, ptype in enumerate(['A', 'B']):
@@ -2013,7 +2072,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
         with tabs[1]:
             key_peak = f"peak_data_{idx}"
             if key_peak not in st.session_state or not isinstance(st.session_state[key_peak], pd.DataFrame):
-                st.session_state[key_peak] = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
+                st.session_state[key_peak] = pd.DataFrame({
+                    "Location (km)": [float(stn.get('L', 0.0) or 0.0) / 2.0],
+                    "Elevation (m)": [float(stn.get('elev', 0.0) or 0.0) + 100.0],
+                })
             peak_df = st.data_editor(
                 st.session_state[key_peak],
                 num_rows="dynamic",
@@ -6938,7 +7000,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 for i, stn in enumerate(stations_data):
                     rho_i = res.get(f"rho_{keys[i]}", 850.0)
                     elev_x.append(lengths[i])
-                    elev_y.append(stn['elev'] * rho_i / 10000.0)
+                    elev_y.append(float(stn.get('elev', 0.0) or 0.0) * rho_i / 10000.0)
                     if 'peaks' in stn and stn['peaks']:
                         for pk in sorted(stn['peaks'], key=lambda x: x['loc']):
                             pk_x = lengths[i] + pk['loc']
@@ -6946,7 +7008,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             elev_y.append(pk['elev'] * rho_i / 10000.0)
                 rho_term = res.get(f"rho_{keys[-1]}", 850.0)
                 elev_x.append(lengths[-1])
-                elev_y.append(terminal['elev'] * rho_term / 10000.0)
+                elev_y.append(float(terminal.get('elev', 0.0) or 0.0) * rho_term / 10000.0)
 
                 # RH and SDH at stations/terminal in kg/cm²
                 rh_list = [res.get(f"rh_kgcm2_{k}", 0.0) for k in keys]
@@ -7147,10 +7209,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 if not stn.get('is_pump', False): 
                     continue
                 key = stn['name'].lower().replace(' ','_')
-                d_inner_i = stn['D'] - 2*stn['t']
-                rough = stn['rough']
-                L_seg = stn['L']
-                elev_i = stn['elev']
+                d_inner_i = float(stn.get('D', 0.0) or 0.0) - 2 * float(stn.get('t', 0.0) or 0.0)
+                rough = float(stn.get('rough', 0.0) or 0.0)
+                L_seg = float(stn.get('L', 0.0) or 0.0)
+                elev_i = float(stn.get('elev', 0.0) or 0.0)
                 max_dr = int(stn.get('max_dr', 40))
                 kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[i-1]
@@ -7229,12 +7291,16 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             if not pump_indices:
                 st.warning("No pump stations defined in your pipeline setup.")
             else:
-                station_options = [f"{i+1}: {stations_data[i]['name']}" for i in pump_indices]
+                station_options = [
+                    f"{i+1}: {stations_data[i].get('name', f'Station {i+1}') }"
+                    for i in pump_indices
+                ]
                 st_choice = st.selectbox("Select Pump Station", station_options, key="ps_stn")
                 selected_index = station_options.index(st_choice)
                 stn_idx = pump_indices[selected_index]
                 stn = stations_data[stn_idx]
-                key = stn['name'].lower().replace(' ','_')
+                stn_name = stn.get('name', f'Station {stn_idx+1}')
+                key = stn_name.lower().replace(' ', '_')
                 is_pump = stn.get('is_pump', False)
                 max_dr = int(stn.get('max_dr', 40))
                 n_pumps = int(stn.get('max_pumps', 1))
@@ -7250,28 +7316,34 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
     
                 # -------- Downstream Pump Bypass Logic --------
                 downstream_pumps = [s for s in stations_data[stn_idx+1:] if s.get('is_pump', False)]
-                downstream_names = [f"{i+stn_idx+2}: {s['name']}" for i, s in enumerate(downstream_pumps)]
+                downstream_names = [
+                    f"{i+stn_idx+2}: {s.get('name', f'Station {i+stn_idx+2}') }"
+                    for i, s in enumerate(downstream_pumps)
+                ]
                 bypassed = []
                 if downstream_names:
                     bypassed = st.multiselect("Bypass downstream pumps (Pump-System)", downstream_names)
-                total_length = stn['L']
-                current_elev = stn['elev']
+                total_length = float(stn.get('L', 0.0) or 0.0)
+                current_elev = float(stn.get('elev', 0.0) or 0.0)
                 downstream_idx = stn_idx + 1
                 while downstream_idx < len(stations_data):
                     s = stations_data[downstream_idx]
-                    label = f"{downstream_idx+1}: {s['name']}"
-                    total_length += s['L']
-                    current_elev = s['elev']
+                    label = f"{downstream_idx+1}: {s.get('name', f'Station {downstream_idx+1}') }"
+                    total_length += float(s.get('L', 0.0) or 0.0)
+                    current_elev = float(s.get('elev', current_elev) or current_elev)
                     if s.get('is_pump', False) and label not in bypassed:
                         break
                     downstream_idx += 1
                 if downstream_idx == len(stations_data):
-                    term_elev = st.session_state["last_term_data"]["elev"]
-                    current_elev = term_elev
+                    term_elev = (
+                        st.session_state.get("last_term_data", {}).get("elev")
+                    )
+                    if term_elev is not None:
+                        current_elev = float(term_elev)
     
                 # -------- Pipe, Viscosity, Roughness --------
-                d_inner = stn['D'] - 2*stn['t']
-                rough = stn['rough']
+                d_inner = float(stn.get('D', 0.0) or 0.0) - 2 * float(stn.get('t', 0.0) or 0.0)
+                rough = float(stn.get('rough', 0.0) or 0.0)
                 linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
                 kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[stn_idx]
@@ -7416,7 +7488,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             if dr_opt > 0:
                 viscosity = kv_list[idx-1]
                 try:
-                    d_inner = stn['D'] - 2*stn['t']
+                    d_inner = float(stn.get('D', 0.0) or 0.0) - 2 * float(stn.get('t', 0.0) or 0.0)
                 except KeyError:
                     d_inner = stn.get('d', 0.0)
                 flow_key = f"pipeline_flow_in_{stn['name']}"
@@ -7536,7 +7608,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         rate = stn.get('rate', 9.0)
         tariffs = stn.get('tariffs') or []
         g = 9.81
-        d_inner = stn['D'] - 2*stn['t']
+        d_inner = float(stn.get('D', 0.0) or 0.0) - 2 * float(stn.get('t', 0.0) or 0.0)
 
         def tariff_cost(kw, hours, start_time="00:00"):
             t0 = dt.datetime.strptime(start_time, "%H:%M")
@@ -7570,8 +7642,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             pwr = (rho*q*g*h*npump)/(3600.0*eff*motor_eff*1000)
             return tariff_cost(pwr, 24.0, "00:00")
         def get_system_head(q, d):
-            rough = stn['rough']
-            L_seg = stn['L']
+            rough = float(stn.get('rough', 0.0) or 0.0)
+            L_seg = float(stn.get('L', 0.0) or 0.0)
             visc = kv_list[pump_idx]
             v = q/3600.0/(np.pi*(d_inner**2)/4)
             Re = v*d_inner/(visc*1e-6) if visc > 0 else 0
@@ -7580,7 +7652,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             else:
                 f = 0.0
             DH = f*((L_seg*1000.0)/d_inner)*(v**2/(2*g))*(1-d/100)
-            return stn['elev'] + DH
+            return float(stn.get('elev', 0.0) or 0.0) + DH
             
         dr_opt = last_res.get(f"drag_reduction_{key}", 0.0)
         viscosity = kv_list[pump_idx]
@@ -7699,7 +7771,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 
             for i, stn in enumerate(stations_phys):
                 chainages.append(chainages[-1] + stn.get('L', 0.0))
-                elevs.append(stn['elev'])
+                elevs.append(float(stn.get('elev', 0.0) or 0.0))
                 base = stn['name']
                 base_key = base.lower().replace(' ', '_')
                 if stn.get('pump_types'):
@@ -7711,14 +7783,14 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 rh.append(rh_val)
                 names.append(base)
                 mesh_x.append(chainages[i])
-                mesh_y.append(stn['elev'])
+                mesh_y.append(float(stn.get('elev', 0.0) or 0.0))
                 mesh_z.append(rh_val)
                 mesh_text.append(base)
                 mesh_color.append(rh_val)
                 if 'peaks' in stn and stn['peaks']:
                     for pk in stn['peaks']:
                         peak_x_val = chainages[i] + pk.get('loc', 0)
-                        py = pk.get('elev', stn['elev'])
+                        py = float(pk.get('elev', stn.get('elev', 0.0) or 0.0) or 0.0)
                         pz = rh_val
                         mesh_x.append(peak_x_val)
                         mesh_y.append(py)
@@ -7734,12 +7806,12 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             key_term = terminal['name'].lower().replace(' ', '_')
             rh_term = res.get(f'residual_head_{key_term}', 0.0)
             mesh_x.append(terminal_chainage)
-            mesh_y.append(terminal['elev'])
+            mesh_y.append(float(terminal.get('elev', 0.0) or 0.0))
             mesh_z.append(rh_term)
             mesh_text.append(terminal['name'])
             mesh_color.append(rh_term)
             names.append(terminal['name'])
-            elevs.append(terminal['elev'])
+            elevs.append(float(terminal.get('elev', 0.0) or 0.0))
             rh.append(rh_term)
 
             # ---- 2. 3D mesh surface using station & peak points ----
@@ -7771,13 +7843,13 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             # 2.3 Terminal: Big blue sphere, labeled
             fig3d.add_trace(go.Scatter3d(
                 x=[terminal_chainage],
-                y=[terminal["elev"]],
+                y=[float(terminal.get("elev", 0.0) or 0.0)],
                 z=[rh_term],
                 mode='markers+text',
                 marker=dict(size=11, color='#238be6', symbol='circle', line=dict(width=3, color='#103d68')),
-                text=[terminal["name"]], textposition="top center",
+                text=[terminal.get("name", "Terminal")], textposition="top center",
                 name="Terminal",
-                hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl"
+                hovertemplate="<b>%{text}</b><br>Chainage: %{x:.2f} km<br>Elevation: %{y:.1f} m<br>RH: %{z:.1f} mcl",
             ))
     
             # 2.4 Peaks: Crimson diamonds, labeled
