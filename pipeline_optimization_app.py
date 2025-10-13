@@ -5184,6 +5184,11 @@ def _execute_time_series_solver(
                 apply_baseline_detail=False,
             )
 
+            _ensure_result_dra_floor(
+                res,
+                stns_run,
+            )
+
             block_cost += res.get("total_cost", 0.0)
 
             warnings_seq = res.get("warnings")
@@ -5508,6 +5513,63 @@ def _run_time_series_solver_cached(*args, progress_callback=None, **kwargs) -> d
     return _run_time_series_solver_cached_core(*args, **kwargs)
 
 
+def _solve_dynamic_interval(
+    stations: Sequence[Mapping[str, object]] | None,
+    terminal: Mapping[str, object] | None,
+    flow_rate: float,
+    kv_profile: Sequence[float] | None,
+    rho_profile: Sequence[float] | None,
+    segment_slices: Sequence[Mapping[str, object]] | None,
+    rate_dra: float,
+    diesel_price: float,
+    fuel_density: float,
+    ambient_temp: float,
+    dra_linefill: Sequence[Mapping[str, object]] | None,
+    dra_reach_km: float,
+    mop_kgcm2: float | None,
+    duration_hours: float,
+    *,
+    pump_shear_rate: float = 0.0,
+    baseline_segment_floors: Sequence[Mapping[str, object]] | None = None,
+    forced_origin_detail: Mapping[str, object] | None = None,
+) -> Mapping[str, object]:
+    """Solve a dynamic-plan interval while enforcing baseline DRA floors."""
+
+    stations_payload = [copy.deepcopy(stn) for stn in stations or []]
+    terminal_payload = copy.deepcopy(terminal or {})
+    kv_payload = list(kv_profile or [])
+    rho_payload = list(rho_profile or [])
+    slice_payload = [copy.deepcopy(slc) for slc in segment_slices or []]
+    dra_linefill_payload = [copy.deepcopy(entry) for entry in dra_linefill or []]
+
+    forced_detail_payload = copy.deepcopy(forced_origin_detail) if forced_origin_detail else None
+    segment_floor_payload = (
+        [copy.deepcopy(entry) for entry in baseline_segment_floors]
+        if baseline_segment_floors
+        else None
+    )
+
+    return pipeline_model.solve_pipeline(
+        stations_payload,
+        terminal_payload,
+        float(flow_rate),
+        kv_payload,
+        rho_payload,
+        slice_payload,
+        float(rate_dra),
+        float(diesel_price),
+        float(fuel_density),
+        float(ambient_temp),
+        dra_linefill_payload,
+        float(dra_reach_km),
+        mop_kgcm2,
+        hours=float(duration_hours),
+        pump_shear_rate=float(pump_shear_rate or 0.0),
+        forced_origin_detail=forced_detail_payload,
+        segment_floors=segment_floor_payload,
+    )
+
+
 def _build_enforced_origin_warning(
     backtrack_notes: list[str] | None,
     enforced_details: list[dict] | None,
@@ -5691,6 +5753,40 @@ def run_all_updates():
     st.session_state["origin_lacing_segment_display"] = copy.deepcopy(
         _build_segment_display_rows(baseline_segments, stations_data, suction_heads=suction_heads)
     )
+
+    baseline_segment_payload = copy.deepcopy(baseline_segments) if baseline_segments else None
+    baseline_forced_detail: dict[str, object] | None = None
+    if baseline_summary:
+        base_detail: dict[str, object] = {}
+        try:
+            ppm_floor_val = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_floor_val = 0.0
+        if ppm_floor_val > 0.0:
+            base_detail["dra_ppm"] = ppm_floor_val
+        try:
+            perc_floor_val = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            perc_floor_val = 0.0
+        if perc_floor_val > 0.0:
+            base_detail["dra_perc"] = perc_floor_val
+        if baseline_segment_payload:
+            base_detail["segments"] = copy.deepcopy(baseline_segment_payload)
+            total_seg_length = sum(
+                float(seg.get("length_km", 0.0) or 0.0)
+                for seg in baseline_segment_payload
+                if isinstance(seg, Mapping)
+            )
+            if total_seg_length > 0.0:
+                base_detail["length_km"] = total_seg_length
+        try:
+            base_length = float(baseline_summary.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            base_length = 0.0
+        if base_length > 0.0:
+            base_detail.setdefault("length_km", base_length)
+        if base_detail:
+            baseline_forced_detail = base_detail
 
     def _normalise_segments_for_detail(detail_obj: Mapping[str, object] | None) -> list[dict[str, object]]:
         segments_out: list[dict[str, object]] = []
@@ -6439,7 +6535,7 @@ if not auto_batch:
                     rho_run = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
                     stns_run = copy.deepcopy(stations_base)
-                    res = solve_pipeline(
+                    res = _solve_dynamic_interval(
                         stns_run,
                         term_data,
                         flow,
@@ -6453,8 +6549,15 @@ if not auto_batch:
                         dra_linefill,
                         dra_reach_km,
                         st.session_state.get("MOP_kgcm2"),
-                        hours=duration_hr,
+                        duration_hr,
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        baseline_segment_floors=baseline_segment_payload,
+                        forced_origin_detail=baseline_forced_detail,
+                    )
+                    _ensure_result_dra_floor(
+                        res,
+                        stns_run,
+                        floor_ppm_map=segment_floor_map,
                     )
                     if res.get("error"):
                         friendly = _build_solver_error_message(res.get("message"), start_time=seg_start)
