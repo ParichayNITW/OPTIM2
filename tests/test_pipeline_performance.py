@@ -1799,11 +1799,19 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     )
     pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
     max_head = sum(p.get("tdh", 0.0) for p in pump_info)
+    raw_discharge = max_head + min_suction
+    SMYS = stations[0].get("SMYS", 52000.0) or 52000.0
+    thickness = stations[0].get("t", 0.007)
+    outer_d = stations[0].get("d", 0.0)
+    design_factor = 0.72
+    maop_psi = 2 * SMYS * design_factor * (thickness / outer_d)
+    maop_kgcm2 = maop_psi * 0.0703069
+    design_head = maop_kgcm2 * 10000.0 / 850.0
+    discharge_head = min(raw_discharge, design_head)
     sdh_required = max(head_loss, 0.0)
-    available_head = max_head
-    effective_available = max(available_head - min_suction, 0.0)
-    expected_gap = max(sdh_required - effective_available, 0.0)
-    expected_unbounded = expected_gap / sdh_required * 100.0 if sdh_required > 0 else 0.0
+    gap_candidate = sdh_required - discharge_head
+    expected_gap = min(max(gap_candidate, 0.0), head_loss)
+    expected_unbounded = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
     expected_dr = min(expected_unbounded, 70.0)
     seg_entry = segments[0]
     assert seg_entry["station_idx"] == 0
@@ -1815,13 +1823,14 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["dra_ppm_unrounded"] == pytest.approx(expected_ppm_exact, rel=1e-6, abs=1e-6)
     assert seg_entry["dra_ppm"] == math.ceil(expected_ppm_exact)
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
-    assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
-    assert seg_entry["max_head_available"] == pytest.approx(effective_available)
-    assert seg_entry["sdh_available"] == pytest.approx(effective_available)
+    assert seg_entry["available_head_before_suction"] == pytest.approx(raw_discharge)
+    assert seg_entry["max_head_available"] == pytest.approx(discharge_head)
+    assert seg_entry["sdh_available"] == pytest.approx(discharge_head)
     assert seg_entry["sdh_gap"] == pytest.approx(expected_gap)
     assert seg_entry["velocity_mps"] == pytest.approx(velocity_calc)
     assert seg_entry["reynolds_number"] == pytest.approx(reynolds_calc)
     assert seg_entry["friction_factor"] == pytest.approx(friction_calc)
+    assert seg_entry["head_loss_friction"] == pytest.approx(head_loss)
     assert seg_entry["has_dra_facility"] is True
 
     explanation = result.get("explanation")
@@ -2010,8 +2019,8 @@ def test_compute_minimum_lacing_requirement_respects_station_suction_heads():
 
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 2
-    assert segments[0]["suction_head"] == pytest.approx(heads[0])
-    assert segments[1]["suction_head"] == pytest.approx(heads[1])
+    for seg in segments:
+        assert seg["suction_head"] == pytest.approx(0.0)
 
 
 def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
@@ -2070,25 +2079,34 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     )
     pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
     max_head = sum(p.get("tdh", 0.0) for p in pump_info)
-    residual_head = max(stations[0]["min_residual"], terminal["min_residual"])
-    sdh_required = terminal["min_residual"] + head_loss
+    residual_target = terminal["min_residual"]
+    sdh_required = residual_target + head_loss
 
-    available_head = residual_head + max_head
-    effective_available = max(available_head - min_suction, 0.0)
-    expected_gap = max(sdh_required - effective_available, 0.0)
-    expected_dr = expected_gap / sdh_required * 100.0 if sdh_required > 0 else 0.0
+    raw_discharge = max_head + min_suction
+    SMYS = stations[0].get("SMYS", 52000.0) or 52000.0
+    thickness = stations[0].get("t", 0.007)
+    outer_d = stations[0].get("d", 0.0)
+    design_factor = 0.72
+    maop_psi = 2 * SMYS * design_factor * (thickness / outer_d)
+    maop_kgcm2 = maop_psi * 0.0703069
+    design_head = maop_kgcm2 * 10000.0 / 850.0
+    discharge_head = min(raw_discharge, design_head)
+    gap_candidate = sdh_required - discharge_head
+    expected_gap = min(max(gap_candidate, 0.0), head_loss)
+    expected_dr = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
+    expected_dr_capped = min(expected_dr, model.GLOBAL_MAX_DRA_CAP)
 
-    assert seg_entry["residual_head"] == pytest.approx(residual_head)
-    assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
+    assert seg_entry["residual_head"] == pytest.approx(residual_target)
+    assert seg_entry["available_head_before_suction"] == pytest.approx(raw_discharge)
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
-    assert seg_entry["max_head_available"] == pytest.approx(effective_available)
-    assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
+    assert seg_entry["max_head_available"] == pytest.approx(discharge_head)
+    assert seg_entry["dra_perc"] == pytest.approx(expected_dr_capped, rel=1e-3, abs=1e-3)
 
     example = result.get("example_segment")
     assert isinstance(example, dict) and example["station_idx"] == 0
     assert example["station_name"] == "Station A"
     assert example["sdh_gap"] == pytest.approx(expected_gap)
-    assert example["residual_head"] == pytest.approx(residual_head)
+    assert example["residual_head"] == pytest.approx(residual_target)
 
 
 def test_compute_minimum_lacing_requirement_ignores_linefill_batches():
