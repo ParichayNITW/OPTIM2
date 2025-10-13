@@ -39,6 +39,8 @@ if "max_laced_flow_m3h" not in st.session_state:
     st.session_state["max_laced_flow_m3h"] = st.session_state.get("FLOW", 1000.0)
 if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
+if "max_laced_density_kgm3" not in st.session_state:
+    st.session_state["max_laced_density_kgm3"] = 880.0
 if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
 if "station_suction_heads" not in st.session_state:
@@ -1261,6 +1263,10 @@ def restore_case_dict(loaded_data):
         'max_laced_visc_cst',
         st.session_state.get('max_laced_visc_cst', 10.0),
     )
+    st.session_state['max_laced_density_kgm3'] = loaded_data.get(
+        'max_laced_density_kgm3',
+        st.session_state.get('max_laced_density_kgm3', 880.0),
+    )
     st.session_state['min_laced_suction_m'] = loaded_data.get(
         'min_laced_suction_m',
         st.session_state.get('min_laced_suction_m', 0.0),
@@ -1445,6 +1451,17 @@ with st.sidebar:
             format="%.2f",
             key="max_laced_visc_cst",
             help="Viscosity reference used when evaluating DRA lacing performance.",
+        )
+        st.number_input(
+            "Maximum density (kg/m³)",
+            min_value=0.0,
+            value=float(st.session_state.get("max_laced_density_kgm3", 880.0)),
+            step=1.0,
+            key="max_laced_density_kgm3",
+            help=(
+                "Density used to convert the operating pressure limit (MOP) into metres "
+                "when evaluating the discharge head that pumps may deliver."
+            ),
         )
         st.number_input(
             "Minimum suction pressure (m)",
@@ -2176,6 +2193,7 @@ def get_full_case_dict():
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
+        "max_laced_density_kgm3": st.session_state.get('max_laced_density_kgm3', 880.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
         "station_suction_heads": _normalise_station_suction_heads(
             st.session_state.get('station_suction_heads', [])
@@ -3456,6 +3474,7 @@ def solve_pipeline(
             max_visc_cst=float(baseline_visc),
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
             station_suction_heads=suction_heads,
+            max_density_kgm3=float(st.session_state.get("max_laced_density_kgm3", 0.0)),
         )
     except Exception:
         baseline_requirement = None
@@ -5448,6 +5467,7 @@ def run_all_updates():
             max_visc_cst=float(baseline_visc),
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
             station_suction_heads=suction_heads,
+            max_density_kgm3=float(st.session_state.get("max_laced_density_kgm3", 0.0)),
         )
     except Exception:
         baseline_requirement = None
