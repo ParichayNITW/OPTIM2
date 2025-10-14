@@ -82,7 +82,7 @@ if str(ROOT) not in sys.path:
 # Hide Vega action buttons globally
 alt.renderers.set_embed_options(actions=False)
 
-from dra_utils import get_ppm_for_dr, get_dr_for_ppm
+from dra_utils import get_ppm_for_dr, get_ppm_for_dr_exact, get_dr_for_ppm
 
 # ---------------------------
 # STEP 1: Segment Floor DRA
@@ -308,7 +308,7 @@ def _ensure_result_dra_floor(
     if not isinstance(stations, Sequence):
         return
 
-    ppm_map = {}
+    ppm_map: dict[int | str, float] = {}
     if isinstance(floor_ppm_map, Mapping):
         for key, value in floor_ppm_map.items():
             try:
@@ -324,7 +324,7 @@ def _ensure_result_dra_floor(
     if not ppm_map:
         ppm_map = _floor_ppm_lookup_from_state()
 
-    perc_map = {}
+    perc_map: dict[int | str, float] = {}
     if isinstance(floor_perc_map, Mapping):
         for key, value in floor_perc_map.items():
             try:
@@ -339,6 +339,56 @@ def _ensure_result_dra_floor(
                 perc_map[idx] = val
     if not perc_map:
         perc_map = _floor_perc_lookup_from_state()
+
+    forced_detail = result.get("forced_origin_detail") if isinstance(result, Mapping) else None
+    forced_segments: list[Mapping[str, object]] = []
+    forced_ppm_global = 0.0
+    forced_perc_global = 0.0
+    if isinstance(forced_detail, Mapping):
+        try:
+            forced_ppm_global = float(
+                forced_detail.get("dra_ppm", forced_detail.get("floor_ppm", 0.0)) or 0.0
+            )
+        except (TypeError, ValueError):
+            forced_ppm_global = 0.0
+        try:
+            forced_perc_global = float(
+                forced_detail.get("dra_perc", forced_detail.get("floor_dra_perc", 0.0)) or 0.0
+            )
+        except (TypeError, ValueError):
+            forced_perc_global = 0.0
+        seg_payload = forced_detail.get("segments")
+        if isinstance(seg_payload, Sequence) and not isinstance(seg_payload, (str, bytes)):
+            forced_segments = [seg for seg in seg_payload if isinstance(seg, Mapping)]
+
+    if forced_ppm_global > 0.0:
+        ppm_map[0] = float(forced_ppm_global)
+    if forced_perc_global > 0.0:
+        perc_map[0] = float(forced_perc_global)
+
+    if forced_segments:
+        for seg in forced_segments:
+            idx_val = seg.get("station_idx")
+            try:
+                idx_int = int(idx_val)
+            except (TypeError, ValueError):
+                idx_int = None
+            forced_ppm = 0.0
+            forced_perc = 0.0
+            try:
+                forced_ppm = float(seg.get("dra_ppm", forced_ppm_global) or forced_ppm_global or 0.0)
+            except (TypeError, ValueError):
+                forced_ppm = forced_ppm_global
+            try:
+                forced_perc = float(seg.get("dra_perc", forced_perc_global) or forced_perc_global or 0.0)
+            except (TypeError, ValueError):
+                forced_perc = forced_perc_global
+
+            if idx_int is not None:
+                if forced_ppm > 0.0:
+                    ppm_map[idx_int] = float(forced_ppm)
+                if forced_perc > 0.0:
+                    perc_map[idx_int] = float(forced_perc)
 
     tol = 1e-9
 
@@ -376,6 +426,27 @@ def _ensure_result_dra_floor(
         key = _station_state_key(name)
         alt_key = _station_state_key(stn.get("orig_name")) if isinstance(stn.get("orig_name"), str) else None
 
+        suffixes: list[str] = []
+        if key:
+            suffixes.append(key)
+        if alt_key and alt_key not in suffixes:
+            suffixes.append(alt_key)
+
+        numeric_candidates: list[object] = [
+            idx,
+            stn.get("station_idx"),
+            stn.get("orig_station_idx"),
+            stn.get("orig_idx"),
+        ]
+        for candidate in numeric_candidates:
+            try:
+                cand_int = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            suffix = str(cand_int)
+            if suffix not in suffixes:
+                suffixes.append(suffix)
+
         floor_ppm = _resolve_floor(
             ppm_map,
             idx,
@@ -386,30 +457,31 @@ def _ensure_result_dra_floor(
             alt_key,
         )
         if floor_ppm and floor_ppm > 0.0:
-            existing = result.get(f"floor_min_ppm_{key}")
-            try:
-                existing_val = float(existing or 0.0)
-            except (TypeError, ValueError):
-                existing_val = 0.0
-            if floor_ppm > existing_val + tol:
-                result[f"floor_min_ppm_{key}"] = float(floor_ppm)
-
-            dra_key = f"dra_ppm_{key}"
-            try:
-                dra_val = float(result.get(dra_key, 0.0) or 0.0)
-            except (TypeError, ValueError):
-                dra_val = 0.0
-            if dra_val < float(floor_ppm) - tol:
-                result[dra_key] = float(floor_ppm)
-
-            inj_key = f"floor_injection_ppm_{key}"
-            if inj_key in result:
+            for suffix in suffixes:
+                existing = result.get(f"floor_min_ppm_{suffix}")
                 try:
-                    inj_val = float(result.get(inj_key, 0.0) or 0.0)
+                    existing_val = float(existing or 0.0)
                 except (TypeError, ValueError):
-                    inj_val = 0.0
-                if inj_val < float(floor_ppm) - tol:
-                    result[inj_key] = float(floor_ppm)
+                    existing_val = 0.0
+                if floor_ppm > existing_val + tol:
+                    result[f"floor_min_ppm_{suffix}"] = float(floor_ppm)
+
+                dra_key = f"dra_ppm_{suffix}"
+                try:
+                    dra_val = float(result.get(dra_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    dra_val = 0.0
+                if dra_val < float(floor_ppm) - tol:
+                    result[dra_key] = float(floor_ppm)
+
+                inj_key = f"floor_injection_ppm_{suffix}"
+                if inj_key in result:
+                    try:
+                        inj_val = float(result.get(inj_key, 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        inj_val = 0.0
+                    if inj_val < float(floor_ppm) - tol:
+                        result[inj_key] = float(floor_ppm)
 
         floor_perc = _resolve_floor(
             perc_map,
@@ -421,30 +493,31 @@ def _ensure_result_dra_floor(
             alt_key,
         )
         if floor_perc and floor_perc > 0.0:
-            existing_perc = result.get(f"floor_min_perc_{key}")
-            try:
-                existing_perc_val = float(existing_perc or 0.0)
-            except (TypeError, ValueError):
-                existing_perc_val = 0.0
-            if floor_perc > existing_perc_val + tol:
-                result[f"floor_min_perc_{key}"] = float(floor_perc)
-
-            drag_key = f"drag_reduction_{key}"
-            try:
-                drag_val = float(result.get(drag_key, 0.0) or 0.0)
-            except (TypeError, ValueError):
-                drag_val = 0.0
-            if drag_val < float(floor_perc) - tol:
-                result[drag_key] = float(floor_perc)
-
-            inj_perc_key = f"floor_injection_perc_{key}"
-            if inj_perc_key in result:
+            for suffix in suffixes:
+                existing_perc = result.get(f"floor_min_perc_{suffix}")
                 try:
-                    inj_perc_val = float(result.get(inj_perc_key, 0.0) or 0.0)
+                    existing_perc_val = float(existing_perc or 0.0)
                 except (TypeError, ValueError):
-                    inj_perc_val = 0.0
-                if inj_perc_val < float(floor_perc) - tol:
-                    result[inj_perc_key] = float(floor_perc)
+                    existing_perc_val = 0.0
+                if floor_perc > existing_perc_val + tol:
+                    result[f"floor_min_perc_{suffix}"] = float(floor_perc)
+
+                drag_key = f"drag_reduction_{suffix}"
+                try:
+                    drag_val = float(result.get(drag_key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    drag_val = 0.0
+                if drag_val < float(floor_perc) - tol:
+                    result[drag_key] = float(floor_perc)
+
+                inj_perc_key = f"floor_injection_perc_{suffix}"
+                if inj_perc_key in result:
+                    try:
+                        inj_perc_val = float(result.get(inj_perc_key, 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        inj_perc_val = 0.0
+                    if inj_perc_val < float(floor_perc) - tol:
+                        result[inj_perc_key] = float(floor_perc)
 
 
 def compute_and_store_segment_floor_map(
@@ -1161,8 +1234,11 @@ def _segment_floor_ppm_map(
                 continue
             length_val = _coerce_positive_float(entry.get("length_km", 0.0))
 
-            ppm_display = _coerce_positive_float(entry.get("dra_ppm", 0.0))
+            ppm_raw = entry.get("dra_ppm", 0.0)
+            ppm_from_string = isinstance(ppm_raw, str)
+            ppm_display = _coerce_positive_float(ppm_raw)
             ppm_exact = _coerce_positive_float(entry.get("dra_ppm_unrounded", 0.0))
+            has_explicit_exact = ppm_exact > 0.0
             perc_val = _coerce_positive_float(entry.get("dra_perc", 0.0))
 
             velocity = 0.0
@@ -1170,10 +1246,19 @@ def _segment_floor_ppm_map(
             if perc_val > 0.0:
                 velocity, diameter = _segment_velocity(station_idx)
                 if velocity > 0.0 and diameter > 0.0:
-                    ppm_exact_calc = get_ppm_for_dr(visc, perc_val, velocity, diameter)
-                    if ppm_exact_calc > 0.0:
-                        ppm_exact = ppm_exact_calc
-                        ppm_display = math.ceil(ppm_exact_calc - 1e-9)
+                    if has_explicit_exact:
+                        ppm_exact_calc = get_ppm_for_dr_exact(visc, perc_val, velocity, diameter)
+                        if ppm_exact <= 0.0 and ppm_exact_calc > 0.0:
+                            ppm_exact = ppm_exact_calc
+                        ceiling = math.ceil(max(ppm_exact_calc, ppm_exact) - 1e-9)
+                        if ceiling > ppm_display:
+                            ppm_display = ceiling
+                    else:
+                        ppm_exact_calc = get_ppm_for_dr(visc, perc_val, velocity, diameter)
+                        if ppm_exact_calc > 0.0:
+                            ppm_exact = ppm_exact_calc
+                            if ppm_display <= 0.0 or ppm_from_string:
+                                ppm_display = math.ceil(ppm_exact_calc - 1e-9)
 
             if ppm_display <= 0.0 and ppm_exact > 0.0:
                 ppm_display = math.ceil(ppm_exact)
@@ -1211,7 +1296,7 @@ def _segment_floor_ppm_map(
         if global_perc > 0.0 and stations:
             velocity, diameter = _segment_velocity(0)
             if velocity > 0.0 and diameter > 0.0:
-                global_ppm = get_ppm_for_dr(visc, global_perc, velocity, diameter)
+                global_ppm = get_ppm_for_dr_exact(visc, global_perc, velocity, diameter)
                 if global_ppm > 0.0:
                     global_perc = global_perc
 
@@ -3978,7 +4063,7 @@ def solve_pipeline(
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     *,
     apply_baseline_detail: bool = True,
-    reload_module: bool = True,
+    reload_module: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -5239,6 +5324,56 @@ def _enforce_minimum_origin_dra(
         "floor_length_km": float(enforced_total_length),
         "segments": detail_segments,
     }
+
+    try:
+        floor_ppm_state = dict(st.session_state.get("minimum_dra_floor_ppm_by_segment", {}))
+    except Exception:  # pragma: no cover - defensive state guard
+        floor_ppm_state = {}
+    try:
+        floor_perc_state = dict(st.session_state.get("minimum_dra_floor_drpct_by_segment", {}))
+    except Exception:  # pragma: no cover - defensive state guard
+        floor_perc_state = {}
+    try:
+        floor_name_state = dict(st.session_state.get("minimum_dra_floor_ppm_by_name", {}))
+    except Exception:  # pragma: no cover - defensive state guard
+        floor_name_state = {}
+    try:
+        floor_perc_name_state = dict(st.session_state.get("minimum_dra_floor_drpct_by_name", {}))
+    except Exception:  # pragma: no cover - defensive state guard
+        floor_perc_name_state = {}
+
+    station_names: list[str | None] = []
+    if stations is None:
+        session_stations = st.session_state.get("stations")
+        if isinstance(session_stations, Sequence):
+            station_names = [s.get("name") if isinstance(s, Mapping) else None for s in session_stations]
+    else:
+        station_names = [s.get("name") if isinstance(s, Mapping) else None for s in stations]
+
+    for seg in detail_segments:
+        idx_obj = seg.get("station_idx")
+        try:
+            idx_val = int(idx_obj)
+        except (TypeError, ValueError):
+            continue
+        ppm_val = float(seg.get("dra_ppm", 0.0) or 0.0)
+        if ppm_val > 0.0:
+            floor_ppm_state[idx_val] = ppm_val
+        perc_val = float(seg.get("dra_perc", 0.0) or 0.0)
+        if perc_val > 0.0:
+            floor_perc_state[idx_val] = perc_val
+        if 0 <= idx_val < len(station_names):
+            key = _station_state_key(station_names[idx_val])
+            if key:
+                if ppm_val > 0.0:
+                    floor_name_state[key] = ppm_val
+                if perc_val > 0.0:
+                    floor_perc_name_state[key] = perc_val
+
+    st.session_state["minimum_dra_floor_ppm_by_segment"] = floor_ppm_state
+    st.session_state["minimum_dra_floor_drpct_by_segment"] = floor_perc_state
+    st.session_state["minimum_dra_floor_ppm_by_name"] = floor_name_state
+    st.session_state["minimum_dra_floor_drpct_by_name"] = floor_perc_name_state
 
     changed = queue_modified or plan_changed or vol_changed
 
