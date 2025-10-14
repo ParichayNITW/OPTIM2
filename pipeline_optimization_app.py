@@ -3544,17 +3544,89 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     return value
         return 0.0
 
+    base_names: list[str] = [
+        base['name']
+        for base in base_stations
+        if isinstance(base, Mapping) and isinstance(base.get('name'), str) and base.get('name')
+    ]
+
+    def _append_suffix(targets: list[str], value: object) -> None:
+        """Append ``value`` to ``targets`` when it can form a valid suffix."""
+
+        if value is None:
+            return
+        if isinstance(value, (int, np.integer)):
+            candidate = str(int(value))
+        else:
+            candidate = str(value).strip()
+        if not candidate:
+            return
+        if candidate not in targets:
+            targets.append(candidate)
+
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
         key = _station_state_key(name) or name.lower().replace(' ', '_')
-        if f"pipeline_flow_{key}" not in res:
-            continue
 
         station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
-        base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
-        n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
-        floor_ppm = _float_or_none(res.get(f"floor_min_ppm_{key}", 0.0)) or 0.0
+        base_lookup_name = stn.get('orig_name', name) if isinstance(stn, dict) else name
+        base_stn = base_map.get(base_lookup_name, {})
+
+        fallback_suffixes: list[str] = []
+        if isinstance(stn, dict):
+            for candidate_key in ('station_idx', 'orig_station_idx', 'orig_idx', 'index'):
+                if candidate_key not in stn:
+                    continue
+                candidate_val = stn.get(candidate_key)
+                if isinstance(candidate_val, (int, np.integer)):
+                    fallback_suffixes.append(str(int(candidate_val)))
+                elif isinstance(candidate_val, str) and candidate_val.strip():
+                    fallback_suffixes.append(candidate_val.strip())
+
+        metric_suffixes: list[str] = []
+        _append_suffix(metric_suffixes, key)
+        _append_suffix(metric_suffixes, idx)
+        for suffix in fallback_suffixes:
+            _append_suffix(metric_suffixes, suffix)
+        if not metric_suffixes:
+            _append_suffix(metric_suffixes, idx)
+
+        def _get_metric(prefix: str, default: float | int | None = 0.0):
+            for suffix in metric_suffixes:
+                metric_name = f"{prefix}_{suffix}"
+                if metric_name in res:
+                    return res.get(metric_name, default)
+            return default
+
+        if not any(f"pipeline_flow_{suffix}" in res for suffix in metric_suffixes):
+            continue
+
+        n_pumps = int(_float_or_none(_get_metric("num_pumps", 0.0)) or 0)
+        existing_floor_metric = res.get(f"floor_min_ppm_{key}")
+        if existing_floor_metric is None:
+            existing_floor_metric = _get_metric("floor_min_ppm", 0.0)
+        floor_ppm = _float_or_none(existing_floor_metric) or 0.0
         orig_name = stn.get('orig_name') if isinstance(stn, dict) else None
+        parent_name = orig_name
+        if isinstance(stn, dict) and not parent_name:
+            parent_name = stn.get('station_name')
+        if not parent_name and isinstance(name, str):
+            for candidate in base_names:
+                if candidate == name:
+                    parent_name = candidate
+                    break
+                if name.startswith(candidate):
+                    remainder = name[len(candidate):]
+                    if not remainder or remainder[0] in {' ', '_', '-'}:
+                        parent_name = candidate
+                        break
+        if parent_name and not orig_name and isinstance(stn, dict):
+            orig_name = parent_name
+        if parent_name and station_display == name:
+            station_display = parent_name
+        if parent_name:
+            base_lookup_name = parent_name
+            base_stn = base_map.get(parent_name, base_stn)
         name_key = _station_state_key(name)
         orig_key = _station_state_key(orig_name)
         candidate_indices: list[object] = [idx]
@@ -3566,6 +3638,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             candidate_indices.append(base_index_by_key[name_key])
         if orig_key and orig_key in base_index_by_key:
             candidate_indices.append(base_index_by_key[orig_key])
+        if parent_name:
+            parent_key = _station_state_key(parent_name)
+            if parent_key and parent_key in base_index_by_key:
+                candidate_indices.append(base_index_by_key[parent_key])
         resolved_floor_ppm = 0.0
         if floor_ppm <= 0.0:
             resolved_floor_ppm = _resolve_from_state(
@@ -3578,7 +3654,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                 floor_ppm = resolved_floor_ppm
                 res.setdefault(f"floor_min_ppm_{key}", floor_ppm)
 
-        floor_perc = _float_or_none(res.get(f"floor_min_perc_{key}", 0.0)) or 0.0
+        existing_floor_perc_metric = res.get(f"floor_min_perc_{key}")
+        if existing_floor_perc_metric is None:
+            existing_floor_perc_metric = _get_metric("floor_min_perc", 0.0)
+        floor_perc = _float_or_none(existing_floor_perc_metric) or 0.0
         if floor_perc <= 0.0:
             resolved_floor_perc = _resolve_from_state(
                 floor_state_perc,
@@ -3622,38 +3701,38 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
 
-        dra_ppm_val = _float_or_none(res.get(f"dra_ppm_{key}", 0.0)) or 0.0
+        dra_ppm_val = _float_or_none(_get_metric("dra_ppm", 0.0)) or 0.0
         if floor_ppm > 0.0 and dra_ppm_val < floor_ppm - 1e-9:
             dra_ppm_val = floor_ppm
 
         row = {
             'Station': station_display,
             'Pump Name': pump_name,
-            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
-            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
-            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
-            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
-            'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
+            'Pipeline Flow (m³/hr)': float(_get_metric('pipeline_flow', 0.0) or 0.0),
+            'Loopline Flow (m³/hr)': float(_get_metric('loopline_flow', 0.0) or 0.0),
+            'Pump Flow (m³/hr)': float(_get_metric('pump_flow', 0.0) or 0.0),
+            'Power & Fuel Cost (INR)': float(_get_metric('power_cost', 0.0) or 0.0),
+            'DRA Cost (INR)': float(_get_metric('dra_cost', 0.0) or 0.0),
             'DRA PPM': dra_ppm_val,
             'Min DRA PPM': float(floor_ppm),
             'Min DRA %DR': float(floor_perc),
-            'Loop DRA PPM': _float_or_none(res.get(f"dra_ppm_loop_{key}", 0.0)) or 0.0,
+            'Loop DRA PPM': _float_or_none(_get_metric('dra_ppm_loop', 0.0)) or 0.0,
             'No. of Pumps': n_pumps,
-            'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
-            'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
-            'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
-            'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
-            'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
-            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
-            'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
-            'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
-            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
-            'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
-            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
-            'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
-            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
-            'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
-            'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
+            'Pump Eff (%)': float(_get_metric('efficiency', 0.0) or 0.0),
+            'Pump BKW (kW)': float(_get_metric('pump_bkw', 0.0) or 0.0),
+            'Motor Input (kW)': float(_get_metric('motor_kw', 0.0) or 0.0),
+            'Reynolds No.': float(_get_metric('reynolds', 0.0) or 0.0),
+            'Head Loss (m)': float(_get_metric('head_loss', 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(_get_metric('head_loss_kgcm2', 0.0) or 0.0),
+            'Vel (m/s)': float(_get_metric('velocity', 0.0) or 0.0),
+            'Residual Head (m)': float(_get_metric('residual_head', 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(_get_metric('rh_kgcm2', 0.0) or 0.0),
+            'SDH (m)': float(_get_metric('sdh', 0.0) or 0.0),
+            'SDH (kg/cm²)': float(_get_metric('sdh_kgcm2', 0.0) or 0.0),
+            'MAOP (m)': float(_get_metric('maop', 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(_get_metric('maop_kgcm2', 0.0) or 0.0),
+            'Drag Reduction (%)': float(_get_metric('drag_reduction', 0.0) or 0.0),
+            'Loop Drag Reduction (%)': float(_get_metric('drag_reduction_loop', 0.0) or 0.0),
         }
 
         profile_entries: list[tuple[float, float]] = []
