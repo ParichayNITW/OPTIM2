@@ -5493,7 +5493,7 @@ def _execute_time_series_solver(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=segment_floor_payload,
-                apply_baseline_detail=False,
+                apply_baseline_detail=bool(baseline_for_enforcement),
             )
 
             _ensure_result_dra_floor(
