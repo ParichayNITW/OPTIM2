@@ -136,6 +136,20 @@ def _coerce_positive_float(value: object) -> float:
     return 0.0
 
 
+def _station_state_key(name: object) -> str | None:
+    """Return the canonical session-state key for ``name``.
+
+    The helper mirrors Streamlit output naming by lower-casing the label and
+    replacing spaces with underscores.  ``None`` is returned when ``name`` is
+    missing or empty so callers can gracefully skip unusable identifiers.
+    """
+
+    if not isinstance(name, str):
+        return None
+    stripped = name.strip().lower().replace(" ", "_")
+    return stripped or None
+
+
 def _format_segment_name(
     stations,
     i_from: int,
@@ -168,10 +182,10 @@ def _format_segment_name(
     return f"Seg {i_from}->{i_to}"
 
 
-def _floor_ppm_lookup_from_state() -> dict[int, float]:
-    """Return a station-index to floor PPM map derived from session state."""
+def _floor_ppm_lookup_from_state() -> dict[int | str, float]:
+    """Return a station-index/name to floor PPM map derived from session state."""
 
-    ppm_map: dict[int, float] = {}
+    ppm_map: dict[int | str, float] = {}
 
     raw_direct = st.session_state.get("minimum_dra_floor_ppm_by_segment")
     if isinstance(raw_direct, Mapping):
@@ -186,6 +200,18 @@ def _floor_ppm_lookup_from_state() -> dict[int, float]:
                 continue
             if val > 0.0:
                 ppm_map[idx] = val
+
+    raw_name_map = st.session_state.get("minimum_dra_floor_ppm_by_name")
+    if isinstance(raw_name_map, Mapping):
+        for key, value in raw_name_map.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                val = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                ppm_map[key] = val
 
     if ppm_map:
         return ppm_map
@@ -213,10 +239,37 @@ def _floor_ppm_lookup_from_state() -> dict[int, float]:
     return ppm_map
 
 
-def _floor_perc_lookup_from_state() -> dict[int, float]:
-    """Return a station-index to %DR map derived from session state."""
+def _floor_perc_lookup_from_state() -> dict[int | str, float]:
+    """Return a station-index/name to %DR map derived from session state."""
 
-    perc_map: dict[int, float] = {}
+    perc_map: dict[int | str, float] = {}
+
+    raw_direct = st.session_state.get("minimum_dra_floor_drpct_by_segment")
+    if isinstance(raw_direct, Mapping):
+        for key, value in raw_direct.items():
+            try:
+                idx_int = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                val_float = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val_float > 0.0:
+                perc_map[idx_int] = val_float
+
+    raw_name_map = st.session_state.get("minimum_dra_floor_drpct_by_name")
+    if isinstance(raw_name_map, Mapping):
+        for key, value in raw_name_map.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                val_float = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val_float > 0.0:
+                perc_map[key] = val_float
+
     raw = st.session_state.get("dra_floor_drpct_by_seg")
     if isinstance(raw, Mapping):
         for key, value in raw.items():
@@ -284,14 +337,50 @@ def _ensure_result_dra_floor(
         perc_map = _floor_perc_lookup_from_state()
 
     tol = 1e-9
+
+    def _resolve_floor(mapping: Mapping[object, object], *candidates: object) -> float:
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            key_obj = candidate
+            if isinstance(candidate, float):
+                if math.isfinite(candidate) and abs(candidate - round(candidate)) < 1e-6:
+                    key_obj = int(round(candidate))
+                else:
+                    continue
+            elif isinstance(candidate, (int, np.integer)):
+                key_obj = int(candidate)
+            elif isinstance(candidate, str):
+                key_obj = candidate
+            else:
+                continue
+            if key_obj in mapping:
+                try:
+                    value = float(mapping[key_obj] or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0.0:
+                    return value
+        return 0.0
+
     for idx, stn in enumerate(stations):
         if not isinstance(stn, Mapping):
             continue
         name = stn.get("name")
         if not isinstance(name, str) or not name:
             continue
-        key = name.lower().replace(" ", "_")
-        floor_ppm = ppm_map.get(idx)
+        key = _station_state_key(name)
+        alt_key = _station_state_key(stn.get("orig_name")) if isinstance(stn.get("orig_name"), str) else None
+
+        floor_ppm = _resolve_floor(
+            ppm_map,
+            idx,
+            stn.get("station_idx"),
+            stn.get("orig_station_idx"),
+            stn.get("orig_idx"),
+            key,
+            alt_key,
+        )
         if floor_ppm and floor_ppm > 0.0:
             existing = result.get(f"floor_min_ppm_{key}")
             try:
@@ -318,7 +407,15 @@ def _ensure_result_dra_floor(
                 if inj_val < float(floor_ppm) - tol:
                     result[inj_key] = float(floor_ppm)
 
-        floor_perc = perc_map.get(idx)
+        floor_perc = _resolve_floor(
+            perc_map,
+            idx,
+            stn.get("station_idx"),
+            stn.get("orig_station_idx"),
+            stn.get("orig_idx"),
+            key,
+            alt_key,
+        )
         if floor_perc and floor_perc > 0.0:
             existing_perc = result.get(f"floor_min_perc_{key}")
             try:
@@ -486,6 +583,7 @@ def compute_and_store_segment_floor_map(
 
     floor_map_pairs: Dict[Tuple[int, int], int] = {}
     floor_map_by_idx: Dict[int, float] = {}
+    floor_perc_by_idx: Dict[int, float] = {}
     for order, entry in enumerate(segment_details):
         try:
             idx_int = int(entry.get("station_idx", order))
@@ -497,6 +595,12 @@ def compute_and_store_segment_floor_map(
         existing = floor_map_by_idx.get(idx_int, 0.0)
         if ppm_float > existing:
             floor_map_by_idx[idx_int] = ppm_float
+
+        perc_float = _coerce_positive_float(entry.get("dra_perc", 0.0))
+        if perc_float > 0.0:
+            prev_perc = floor_perc_by_idx.get(idx_int, 0.0)
+            if perc_float > prev_perc:
+                floor_perc_by_idx[idx_int] = perc_float
 
         pair_key = (idx_int, idx_int + 1)
         ppm_int = int(math.ceil(ppm_float)) if ppm_float > 0.0 else 0
@@ -526,10 +630,76 @@ def compute_and_store_segment_floor_map(
                     except Exception:
                         drpct_val = None
         drpct_map[(i_from, i_to)] = drpct_val
+        if drpct_val and drpct_val > 0.0:
+            prev = floor_perc_by_idx.get(i_from, 0.0)
+            if drpct_val > prev:
+                floor_perc_by_idx[i_from] = float(drpct_val)
+
+    floor_map_by_name: Dict[str, float] = {}
+    floor_perc_by_name: Dict[str, float] = {}
+
+    for idx, ppm_val in floor_map_by_idx.items():
+        if ppm_val <= 0.0:
+            continue
+        perc_val = floor_perc_by_idx.get(idx, 0.0)
+        if (perc_val is None or perc_val <= 0.0) and baseline_visc > 0.0:
+            flow_val = baseline_flow
+            if 0 <= idx < len(flows_by_segment):
+                flow_val = flows_by_segment[idx]
+            diameter = 0.0
+            if 0 <= idx < len(stations_seq):
+                diameter = _station_inner_diameter(stations_seq[idx])
+            if flow_val > 0.0 and diameter > 0.0:
+                velocity = _flow_velocity_mps(flow_val, diameter)
+                if velocity > 0.0:
+                    try:
+                        perc_calc = float(get_dr_for_ppm(float(baseline_visc), float(ppm_val), velocity, diameter))
+                    except Exception:
+                        perc_calc = 0.0
+                    if perc_calc > 0.0:
+                        perc_val = perc_calc
+                        floor_perc_by_idx[idx] = perc_calc
+        if 0 <= idx < len(stations_seq):
+            name_key = _station_state_key(stations_seq[idx].get("name"))
+            if name_key:
+                existing_ppm = floor_map_by_name.get(name_key, 0.0)
+                if ppm_val > existing_ppm:
+                    floor_map_by_name[name_key] = float(ppm_val)
+                if perc_val and perc_val > 0.0:
+                    existing_perc = floor_perc_by_name.get(name_key, 0.0)
+                    if perc_val > existing_perc:
+                        floor_perc_by_name[name_key] = float(perc_val)
 
     st.session_state["dra_floor_ppm_by_seg"] = floor_map_pairs
     st.session_state["dra_floor_drpct_by_seg"] = drpct_map
     st.session_state["minimum_dra_floor_segments_raw"] = segment_details
+
+    if floor_perc_by_idx:
+        st.session_state["minimum_dra_floor_drpct_by_segment"] = {
+            int(idx): float(val)
+            for idx, val in floor_perc_by_idx.items()
+            if val > 0.0
+        }
+    else:
+        st.session_state.pop("minimum_dra_floor_drpct_by_segment", None)
+
+    if floor_map_by_name:
+        st.session_state["minimum_dra_floor_ppm_by_name"] = {
+            key: float(val)
+            for key, val in floor_map_by_name.items()
+            if val > 0.0
+        }
+    else:
+        st.session_state.pop("minimum_dra_floor_ppm_by_name", None)
+
+    if floor_perc_by_name:
+        st.session_state["minimum_dra_floor_drpct_by_name"] = {
+            key: float(val)
+            for key, val in floor_perc_by_name.items()
+            if val > 0.0
+        }
+    else:
+        st.session_state.pop("minimum_dra_floor_drpct_by_name", None)
 
     origin_key: Tuple[int, int] | None = None
     if (0, 1) in floor_map_pairs:
@@ -3343,9 +3513,40 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     floor_state_ppm = _floor_ppm_lookup_from_state()
     floor_state_perc = _floor_perc_lookup_from_state()
 
+    base_index_by_key: dict[str, int] = {}
+    for base_idx, base in enumerate(base_stations):
+        key = _station_state_key(base.get('name')) if isinstance(base, dict) else None
+        if key is not None and key not in base_index_by_key:
+            base_index_by_key[key] = base_idx
+
+    def _resolve_from_state(mapping: Mapping[object, object], *candidates: object) -> float:
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            key_obj = candidate
+            if isinstance(candidate, float):
+                if math.isfinite(candidate) and abs(candidate - round(candidate)) < 1e-6:
+                    key_obj = int(round(candidate))
+                else:
+                    continue
+            elif isinstance(candidate, (int, np.integer)):
+                key_obj = int(candidate)
+            elif isinstance(candidate, str):
+                key_obj = candidate
+            else:
+                continue
+            if key_obj in mapping:
+                try:
+                    value = float(mapping[key_obj] or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0.0:
+                    return value
+        return 0.0
+
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
-        key = name.lower().replace(' ', '_')
+        key = _station_state_key(name) or name.lower().replace(' ', '_')
         if f"pipeline_flow_{key}" not in res:
             continue
 
@@ -3353,14 +3554,41 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         base_stn = base_map.get(stn.get('orig_name', name) if isinstance(stn, dict) else name, {})
         n_pumps = int(res.get(f"num_pumps_{key}", 0) or 0)
         floor_ppm = _float_or_none(res.get(f"floor_min_ppm_{key}", 0.0)) or 0.0
-        if floor_ppm <= 0.0 and idx in floor_state_ppm:
-            floor_ppm = float(floor_state_ppm[idx])
-            res.setdefault(f"floor_min_ppm_{key}", floor_ppm)
+        orig_name = stn.get('orig_name') if isinstance(stn, dict) else None
+        name_key = _station_state_key(name)
+        orig_key = _station_state_key(orig_name)
+        candidate_indices: list[object] = [idx]
+        if isinstance(stn, dict):
+            for candidate_key in ('station_idx', 'orig_station_idx', 'orig_idx', 'index'):
+                if candidate_key in stn:
+                    candidate_indices.append(stn.get(candidate_key))
+        if name_key and name_key in base_index_by_key:
+            candidate_indices.append(base_index_by_key[name_key])
+        if orig_key and orig_key in base_index_by_key:
+            candidate_indices.append(base_index_by_key[orig_key])
+        resolved_floor_ppm = 0.0
+        if floor_ppm <= 0.0:
+            resolved_floor_ppm = _resolve_from_state(
+                floor_state_ppm,
+                *candidate_indices,
+                name_key,
+                orig_key,
+            )
+            if resolved_floor_ppm > 0.0:
+                floor_ppm = resolved_floor_ppm
+                res.setdefault(f"floor_min_ppm_{key}", floor_ppm)
 
         floor_perc = _float_or_none(res.get(f"floor_min_perc_{key}", 0.0)) or 0.0
-        if floor_perc <= 0.0 and idx in floor_state_perc:
-            floor_perc = float(floor_state_perc[idx])
-            res.setdefault(f"floor_min_perc_{key}", floor_perc)
+        if floor_perc <= 0.0:
+            resolved_floor_perc = _resolve_from_state(
+                floor_state_perc,
+                *candidate_indices,
+                name_key,
+                orig_key,
+            )
+            if resolved_floor_perc > 0.0:
+                floor_perc = resolved_floor_perc
+                res.setdefault(f"floor_min_perc_{key}", floor_perc)
 
         combo = None
         if isinstance(stn, dict):
