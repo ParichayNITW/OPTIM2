@@ -6,6 +6,10 @@ import math
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+# Avoid exhausting inotify watchers on constrained systems by falling back to
+# Streamlit's polling-based file watcher before importing Streamlit itself.
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "poll")
+
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -3974,6 +3978,7 @@ def solve_pipeline(
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     *,
     apply_baseline_detail: bool = True,
+    reload_module: bool = True,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -3981,7 +3986,9 @@ def solve_pipeline(
     import importlib
     import copy
 
-    importlib.reload(pipeline_model)
+    pipeline_mod = pipeline_model
+    if reload_module:
+        pipeline_mod = importlib.reload(pipeline_model)
 
     stations = copy.deepcopy(stations)
     first_pump = next((s for s in stations if s.get('is_pump')), None)
@@ -4011,7 +4018,7 @@ def solve_pipeline(
 
     baseline_requirement: dict | None = None
     try:
-        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+        baseline_requirement = pipeline_mod.compute_minimum_lacing_requirement(
             stations,
             terminal,
             max_flow_m3h=float(baseline_flow),
@@ -4229,7 +4236,7 @@ def solve_pipeline(
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
         if any(s.get('pump_types') for s in stations):
-            res = pipeline_model.solve_pipeline_with_types(
+            res = pipeline_mod.solve_pipeline_with_types(
                 stations,
                 terminal,
                 FLOW,
@@ -4251,7 +4258,7 @@ def solve_pipeline(
                 **search_kwargs,
             )
         else:
-            res = pipeline_model.solve_pipeline(
+            res = pipeline_mod.solve_pipeline(
                 stations,
                 terminal,
                 FLOW,
@@ -4416,6 +4423,7 @@ if auto_batch:
                         st.session_state.get("Ambient_temp", 25.0),
                         {},
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        reload_module=False,
                     )
                     row = {"Scenario": f"100% {product_table.iloc[0]['Product']}, 0% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
@@ -4450,6 +4458,7 @@ if auto_batch:
                         st.session_state.get("Ambient_temp", 25.0),
                         {},
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        reload_module=False,
                     )
                     row = {"Scenario": f"0% {product_table.iloc[0]['Product']}, 100% {product_table.iloc[1]['Product']}"}
                     for idx, stn in enumerate(stations_data, start=1):
@@ -4495,6 +4504,7 @@ if auto_batch:
                             st.session_state.get("Ambient_temp", 25.0),
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                            reload_module=False,
                         )
                         row = {"Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}"}
                         for idx, stn in enumerate(stations_data, start=1):
@@ -4534,6 +4544,7 @@ if auto_batch:
                             st.session_state.get("Ambient_temp", 25.0),
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                            reload_module=False,
                         )
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
@@ -4586,6 +4597,7 @@ if auto_batch:
                             st.session_state.get("Ambient_temp", 25.0),
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                            reload_module=False,
                         )
                         for idx, stn in enumerate(stations_data, start=1):
                             key = stn['name'].lower().replace(' ', '_')
@@ -5573,6 +5585,7 @@ def _execute_time_series_solver(
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=segment_floor_payload,
                 apply_baseline_detail=bool(baseline_for_enforcement),
+                reload_module=False,
             )
 
             _ensure_result_dra_floor(
@@ -8686,6 +8699,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         st.session_state.get("Ambient_temp", 25.0),
                         this_linefill_df.to_dict(),
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        reload_module=False,
                     )
                     total_cost = power_cost = dra_cost = rh = eff = 0
                     for idx, stn in enumerate(stations_data):
@@ -8828,6 +8842,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     st.session_state.get("Ambient_temp", 25.0),
                     linefill_df.to_dict(),
                     pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    reload_module=False,
                 )
                 total_cost, new_cost = 0, 0
                 for idx, stn in enumerate(stations_data):
