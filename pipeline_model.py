@@ -2153,7 +2153,7 @@ def compute_minimum_lacing_requirement(
     discharge head (SDH) at design flow, and compares that against the head the
     station can produce when all pump combinations operate at their DOL speed.
     Whenever the available head is insufficient the required drag reduction is
-    computed from ``%DR = 100 * (\Delta SDH / head_loss_friction)`` so that only
+    computed from ``%DR = 100 * (Δ SDH / head_loss_friction)`` so that only
     the frictional component is reduced.  The upstream suction reserve defaults
     to ``min_suction_head`` (rather than any per-station overrides) and the
     available discharge head is capped by the lower of the design MAOP and the
