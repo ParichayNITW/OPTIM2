@@ -3131,6 +3131,46 @@ def test_build_station_table_handles_numeric_suffix_only():
     assert balasore_row["Min DRA PPM"] == 22.0
 
 
+def test_build_station_table_matches_parent_name_prefix():
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    st.session_state.update(
+        {
+            "minimum_dra_floor_ppm_by_segment": {0: 18.0, 1: 22.0},
+            "minimum_dra_floor_drpct_by_segment": {0: 24.0, 1: 29.0},
+        }
+    )
+
+    base_stations = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "pump_names": ["Pump A"]},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "pump_names": ["Pump B"]},
+    ]
+
+    result = {
+        "stations_used": [
+            {"name": "Paradip", "station_idx": 0},
+            {"name": "Balasore Pump B 1", "station_idx": 1},
+        ],
+        "pipeline_flow_paradip": 3000.0,
+        "pipeline_flow_balasore_pump_b_1": 3000.0,
+        "dra_ppm_paradip": 18.0,
+        "dra_ppm_balasore_pump_b_1": 0.0,
+        "num_pumps_paradip": 1,
+        "num_pumps_balasore_pump_b_1": 1,
+    }
+
+    df = app.build_station_table(result, base_stations)
+
+    # Balasore entry should inherit the parent's floor even though the solver row
+    # only exposed a pump-prefixed name without an ``orig_name`` key.
+    balasore_row = df[df["Station"] == "Balasore"].iloc[0]
+    assert balasore_row["DRA PPM"] == 22.0
+    assert balasore_row["Min DRA PPM"] == 22.0
+
+
 def test_build_station_table_uses_name_lookup_when_index_shifts():
     import pipeline_optimization_app as app
     import streamlit as st
