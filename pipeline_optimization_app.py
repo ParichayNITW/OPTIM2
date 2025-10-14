@@ -6,6 +6,10 @@ import math
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+# Avoid exhausting inotify watchers on constrained systems by falling back to
+# Streamlit's polling-based file watcher before importing Streamlit itself.
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "poll")
+
 import streamlit as st
 import altair as alt
 import pipeline_model

@@ -2,6 +2,7 @@ import contextlib
 import copy
 import json
 import math
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -74,6 +75,21 @@ def solve_pipeline_with_types(*args, segment_slices=None, **kwargs):
     elif segment_slices is not None and "segment_slices" not in kwargs:
         kwargs["segment_slices"] = segment_slices
     return _solve_pipeline_with_types(*args, **kwargs)
+
+
+def test_app_sets_streamlit_file_watcher_to_poll(monkeypatch):
+    import importlib
+    import sys
+
+    monkeypatch.delenv("STREAMLIT_SERVER_FILE_WATCHER_TYPE", raising=False)
+    sys.modules.pop("pipeline_optimization_app", None)
+
+    import pipeline_optimization_app  # noqa: F401
+
+    assert os.environ.get("STREAMLIT_SERVER_FILE_WATCHER_TYPE") == "poll"
+
+    importlib.reload(pipeline_optimization_app)
+    assert os.environ.get("STREAMLIT_SERVER_FILE_WATCHER_TYPE") == "poll"
 
 
 def test_segment_hydraulics_cache_hits():
