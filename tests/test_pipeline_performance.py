@@ -3082,6 +3082,55 @@ def test_build_station_table_uses_state_floor_when_missing():
                 session[key] = value
 
 
+def test_build_station_table_handles_numeric_suffix_only():
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    st.session_state.update(
+        {
+            "minimum_dra_floor_ppm_by_segment": {0: 18.0, 1: 22.0},
+            "minimum_dra_floor_drpct_by_segment": {0: 24.0, 1: 29.0},
+        }
+    )
+
+    base_stations = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "pump_names": ["Pump A"]},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "pump_names": ["Pump B"]},
+    ]
+
+    stations_used = [
+        {"name": "Paradip", "station_idx": 0},
+        {"name": "Balasore", "station_idx": 1},
+    ]
+
+    result = {
+        "stations_used": copy.deepcopy(stations_used),
+        "pipeline_flow_0": 3000.0,
+        "pipeline_flow_1": 3000.0,
+        "num_pumps_0": 1,
+        "num_pumps_1": 1,
+        "dra_ppm_0": 0.0,
+        "dra_ppm_1": 0.0,
+        "floor_min_ppm_0": 18.0,
+        "floor_min_ppm_1": 22.0,
+        "floor_min_perc_0": 24.0,
+        "floor_min_perc_1": 29.0,
+    }
+
+    df = app.build_station_table(result, base_stations)
+
+    assert list(df["Station"]) == ["Paradip", "Balasore"]
+    paradip_row = df[df["Station"] == "Paradip"].iloc[0]
+    balasore_row = df[df["Station"] == "Balasore"].iloc[0]
+
+    assert paradip_row["DRA PPM"] == 18.0
+    assert paradip_row["Min DRA PPM"] == 18.0
+    assert balasore_row["DRA PPM"] == 22.0
+    assert balasore_row["Min DRA PPM"] == 22.0
+
+
 def test_build_station_table_uses_name_lookup_when_index_shifts():
     import pipeline_optimization_app as app
     import streamlit as st
@@ -3148,6 +3197,37 @@ def test_build_station_table_uses_name_lookup_when_index_shifts():
     assert paradip_row["Min DRA PPM"] == pytest.approx(18.0)
     assert paradip_row["DRA PPM"] == pytest.approx(18.0)
     assert paradip_row["Min DRA %DR"] == pytest.approx(24.0)
+
+
+def test_ensure_result_dra_floor_populates_numeric_and_name_suffixes():
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+    st.session_state.update(
+        {
+            "minimum_dra_floor_ppm_by_segment": {0: 18.0},
+            "minimum_dra_floor_ppm_by_name": {"paradip": 18.0},
+            "minimum_dra_floor_drpct_by_segment": {0: 24.0},
+            "minimum_dra_floor_drpct_by_name": {"paradip": 24.0},
+        }
+    )
+
+    result: dict[str, object] = {}
+    stations = [
+        {"name": "Paradip", "station_idx": 0, "orig_name": "Paradip"},
+    ]
+
+    app._ensure_result_dra_floor(result, stations)
+
+    assert result["floor_min_ppm_0"] == 18.0
+    assert result["floor_min_ppm_paradip"] == 18.0
+    assert result["dra_ppm_0"] == 18.0
+    assert result["dra_ppm_paradip"] == 18.0
+    assert result["floor_min_perc_0"] == 24.0
+    assert result["floor_min_perc_paradip"] == 24.0
+    assert result["drag_reduction_0"] == 24.0
+    assert result["drag_reduction_paradip"] == 24.0
 
 
 def test_time_series_solver_accepts_segment_index_segments(monkeypatch):
