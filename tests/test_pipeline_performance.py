@@ -3375,6 +3375,129 @@ def test_time_series_solver_accepts_segment_index_segments(monkeypatch):
     assert pytest.approx(report.get("dra_ppm_station_a", 0.0)) == 14.0
 
 
+def test_time_series_solver_applies_baseline_detail(monkeypatch):
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+            "pump_names": ["Pump A1"],
+        }
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    hours = [0]
+
+    baseline_segments = [
+        {
+            "station_idx": 0,
+            "length_km": 5.0,
+            "dra_ppm": 14.0,
+            "has_dra_facility": True,
+        }
+    ]
+
+    st.session_state.update(
+        {
+            "origin_lacing_baseline": {
+                "dra_ppm": 18.0,
+                "dra_perc": 22.0,
+                "length_km": 5.0,
+                "segments": copy.deepcopy(baseline_segments),
+                "enforceable": True,
+            },
+            "origin_lacing_segment_baseline": copy.deepcopy(baseline_segments),
+            "FLOW": 500.0,
+            "max_laced_flow_m3h": 500.0,
+            "max_laced_visc_cst": 3.0,
+            "max_laced_density_kgm3": 830.0,
+            "min_laced_suction_m": 0.0,
+            "RateDRA": 5.0,
+            "Price_HSD": 0.0,
+            "Fuel_density": 820.0,
+            "Ambient_temp": 25.0,
+            "pump_shear_rate": 0.0,
+            "MOP_kgcm2": 100.0,
+        }
+    )
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 4000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    captured: dict[str, object] = {}
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        (
+            stations,
+            terminal,
+            flow,
+            kv_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            fuel_density,
+            ambient_temp,
+            dra_linefill_in,
+            dra_reach_km,
+            mop_kgcm2,
+            *_,
+        ) = solver_args
+
+        captured["apply_baseline_detail"] = solver_kwargs.get("apply_baseline_detail")
+
+        return {
+            "error": False,
+            "total_cost": 0.0,
+            "linefill": copy.deepcopy(dra_linefill_in),
+            "dra_front_km": float(dra_reach_km),
+            "stations_used": copy.deepcopy(stations),
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=500.0,
+        plan_df=None,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    assert not result.get("error")
+    assert captured.get("apply_baseline_detail") is True
+
+
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
         {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
