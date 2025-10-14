@@ -1870,35 +1870,120 @@ def _update_mainline_dra(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
             sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
         )
-        if segments_defined:
-            targets = []
-            for seg_length, seg_ppm in floor_segments:
-                if seg_length > 0.0 and seg_ppm > 0.0:
-                    targets.append((min(seg_length, available_length), seg_ppm))
-            if targets:
-                applied_segment = False
-                remaining_length = available_length
-                for seg_length, seg_ppm in targets:
-                    if remaining_length <= 0.0:
-                        break
-                    target_length = min(seg_length, remaining_length)
-                    if target_length <= 0.0:
+
+        base_profile = tuple(
+            (float(length or 0.0), max(float(ppm or 0.0), 0.0))
+            for length, ppm in pumped_adjusted
+            if float(length or 0.0) > 0.0
+        )
+
+        def _min_ppm_over(entries: tuple[tuple[float, float], ...], length_needed: float) -> float:
+            remaining_len = max(float(length_needed or 0.0), 0.0)
+            if remaining_len <= 1e-9:
+                return float("inf")
+            min_ppm_val = float("inf")
+            for seg_len, seg_ppm in entries:
+                seg_length = float(seg_len or 0.0)
+                if seg_length <= 0.0:
+                    continue
+                take = min(seg_length, remaining_len)
+                if take > 1e-9:
+                    ppm_val = max(float(seg_ppm or 0.0), 0.0)
+                    if ppm_val < min_ppm_val:
+                        min_ppm_val = ppm_val
+                    remaining_len -= take
+                if remaining_len <= 1e-9:
+                    break
+            if remaining_len > 1e-9:
+                return 0.0
+            if math.isinf(min_ppm_val):
+                return 0.0
+            return min_ppm_val
+
+        def _needs_floor_enforcement(
+            profile_entries: tuple[tuple[float, float], ...],
+            avail_length: float,
+        ) -> bool:
+            if (floor_ppm > 0.0 or segments_defined) and (avail_length <= 0.0 or not profile_entries):
+                return True
+            if avail_length <= 0.0 or not profile_entries:
+                return False
+            if segments_defined:
+                remaining_length = avail_length
+                profile_cursor = profile_entries
+                targets: list[tuple[float, float]] = []
+                for seg_length, seg_ppm in floor_segments:
+                    seg_len = max(float(seg_length or 0.0), 0.0)
+                    seg_ppm_val = max(float(seg_ppm or 0.0), 0.0)
+                    if seg_len <= 0.0 or seg_ppm_val <= 0.0 or remaining_length <= 0.0:
                         continue
-                    pumped_portion = _overlay_queue_floor(pumped_portion, target_length, seg_ppm)
-                    pumped_adjusted = _overlay_queue_floor(pumped_adjusted, target_length, seg_ppm)
+                    target_length = min(seg_len, remaining_length)
+                    targets.append((target_length, seg_ppm_val))
                     remaining_length -= target_length
-                    applied_segment = True
-                if not pumped_differs and applied_segment:
-                    pumped_differs = True
-        else:
-            floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
-            if floor_target > 0.0:
-                updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
-                updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
-                if not pumped_differs and updated_adjusted != pumped_adjusted:
-                    pumped_differs = True
-                pumped_portion = updated_portion
-                pumped_adjusted = updated_adjusted
+                for target_length, target_ppm in targets:
+                    if not profile_cursor:
+                        return True
+                    min_ppm_val = _min_ppm_over(profile_cursor, target_length)
+                    if min_ppm_val + 1e-9 < target_ppm:
+                        return True
+                    profile_cursor = _trim_queue_front(profile_cursor, target_length)
+                return False
+            target_length = min(max(float(floor_length or 0.0), 0.0), avail_length)
+            if target_length > 0.0 and floor_ppm > 0.0:
+                min_ppm_val = _min_ppm_over(profile_entries, target_length)
+                if min_ppm_val + 1e-9 < floor_ppm:
+                    return True
+            return False
+
+        needs_enforcement = _needs_floor_enforcement(base_profile, available_length)
+
+        if needs_enforcement:
+            if segments_defined:
+                targets = []
+                remaining_length = available_length
+                for seg_length, seg_ppm in floor_segments:
+                    seg_len = max(float(seg_length or 0.0), 0.0)
+                    seg_ppm_val = max(float(seg_ppm or 0.0), 0.0)
+                    if seg_len <= 0.0 or seg_ppm_val <= 0.0 or remaining_length <= 0.0:
+                        continue
+                    target_length = min(seg_len, remaining_length)
+                    targets.append((target_length, seg_ppm_val))
+                    remaining_length -= target_length
+                if targets:
+                    applied_segment = False
+                    remaining_length = available_length
+                    for seg_length, seg_ppm in targets:
+                        if remaining_length <= 0.0:
+                            break
+                        target_length = min(seg_length, remaining_length)
+                        if target_length <= 0.0:
+                            continue
+                        pumped_portion = _overlay_queue_floor(pumped_portion, target_length, seg_ppm)
+                        pumped_adjusted = _overlay_queue_floor(pumped_adjusted, target_length, seg_ppm)
+                        remaining_length -= target_length
+                        applied_segment = True
+                    if not pumped_differs and applied_segment:
+                        pumped_differs = True
+            else:
+                floor_target = min(max(float(floor_length or 0.0), 0.0), available_length)
+                if floor_target > 0.0 and floor_ppm > 0.0:
+                    updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
+                    updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
+                    if not pumped_differs and updated_adjusted != pumped_adjusted:
+                        pumped_differs = True
+                    pumped_portion = updated_portion
+                    pumped_adjusted = updated_adjusted
+
+            available_length = max(
+                sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+                sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+            )
+            updated_profile = tuple(
+                (float(length or 0.0), max(float(ppm or 0.0), 0.0))
+                for length, ppm in pumped_adjusted
+                if float(length or 0.0) > 0.0
+            )
+            floor_requires_injection = _needs_floor_enforcement(updated_profile, available_length)
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -4107,6 +4192,7 @@ def solve_pipeline(
         pass_trace = []
 
     followup_cost_cap = cost_cap
+    cap_explicit = cost_cap is not None
 
     def _with_cost_cap(result: Mapping[str, object]) -> dict:
         if followup_cost_cap is None:
@@ -4247,7 +4333,7 @@ def solve_pipeline(
                 if math.isfinite(coarse_cost):
                     if followup_cost_cap is None:
                         followup_cost_cap = coarse_cost
-                    else:
+                    elif not cap_explicit:
                         followup_cost_cap = min(followup_cost_cap, coarse_cost)
         exhaustive_result = solve_pipeline(
             stations,
