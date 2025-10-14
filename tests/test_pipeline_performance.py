@@ -1689,6 +1689,26 @@ def test_compute_and_store_segment_floor_map_preserves_segments():
         0: pytest.approx(26.0),
         1: pytest.approx(14.0),
     }
+    assert st.session_state.get("minimum_dra_floor_ppm_by_name") == {
+        "paradip": pytest.approx(26.0),
+        "balasore": pytest.approx(14.0),
+    }
+
+    diameter_paradip = stations[0]["D"] - 2 * stations[0]["t"]
+    diameter_balasore = stations[1]["D"] - 2 * stations[1]["t"]
+    velocity_paradip = app._flow_velocity_mps(3169.0, diameter_paradip)
+    velocity_balasore = app._flow_velocity_mps(3169.0, diameter_balasore)
+    expected_perc_paradip = dra_utils.get_dr_for_ppm(20.0, 26.0, velocity_paradip, diameter_paradip)
+    expected_perc_balasore = dra_utils.get_dr_for_ppm(20.0, 14.0, velocity_balasore, diameter_balasore)
+
+    assert st.session_state.get("minimum_dra_floor_drpct_by_segment") == {
+        0: pytest.approx(expected_perc_paradip),
+        1: pytest.approx(expected_perc_balasore),
+    }
+    assert st.session_state.get("minimum_dra_floor_drpct_by_name") == {
+        "paradip": pytest.approx(expected_perc_paradip),
+        "balasore": pytest.approx(expected_perc_balasore),
+    }
 
 
 def test_compute_and_store_segment_floor_map_accepts_string_floors():
@@ -3060,6 +3080,74 @@ def test_build_station_table_uses_state_floor_when_missing():
                 session.pop(key, None)
             else:
                 session[key] = value
+
+
+def test_build_station_table_uses_name_lookup_when_index_shifts():
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    st.session_state.clear()
+
+    st.session_state.update(
+        {
+            "minimum_dra_floor_ppm_by_segment": {0: 18.0},
+            "minimum_dra_floor_ppm_by_name": {"paradip": 18.0},
+            "minimum_dra_floor_drpct_by_segment": {0: 24.0},
+            "minimum_dra_floor_drpct_by_name": {"paradip": 24.0},
+        }
+    )
+
+    base_stations = [
+        {"name": "Paradip", "is_pump": True, "pump_names": ["Pump A"]},
+        {"name": "Balasore", "is_pump": True, "pump_names": ["Pump B"]},
+    ]
+
+    def _seed_metrics(store: dict, key: str) -> None:
+        prefixes = [
+            "pipeline_flow",
+            "loopline_flow",
+            "pump_flow",
+            "power_cost",
+            "dra_cost",
+            "dra_ppm",
+            "dra_ppm_loop",
+            "efficiency",
+            "pump_bkw",
+            "motor_kw",
+            "reynolds",
+            "head_loss",
+            "head_loss_kgcm2",
+            "velocity",
+            "residual_head",
+            "rh_kgcm2",
+            "sdh",
+            "sdh_kgcm2",
+            "maop",
+            "maop_kgcm2",
+            "drag_reduction",
+            "drag_reduction_loop",
+        ]
+        for prefix in prefixes:
+            store[f"{prefix}_{key}"] = 0.0
+        store[f"num_pumps_{key}"] = 0
+
+    result = {
+        "stations_used": [
+            {"name": "Paradip Pump A 1", "orig_name": "Paradip", "station_idx": 0},
+            {"name": "Paradip", "station_idx": 0},
+            {"name": "Balasore", "station_idx": 1},
+        ]
+    }
+
+    _seed_metrics(result, "paradip")
+    _seed_metrics(result, "balasore")
+
+    df = app.build_station_table(result, base_stations)
+    paradip_row = df[df["Station"] == "Paradip"].iloc[0]
+
+    assert paradip_row["Min DRA PPM"] == pytest.approx(18.0)
+    assert paradip_row["DRA PPM"] == pytest.approx(18.0)
+    assert paradip_row["Min DRA %DR"] == pytest.approx(24.0)
 
 
 def test_time_series_solver_accepts_segment_index_segments(monkeypatch):
