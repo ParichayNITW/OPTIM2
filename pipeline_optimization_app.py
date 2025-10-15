@@ -6615,6 +6615,8 @@ if not auto_batch:
         last_ping = {"t": start_time}
 
         def _callback(kind: str, **info):
+            if not _streamlit_session_is_active():
+                return
             try:
                 if kind == "hour_start":
                     hour_val = info.get("hour")
@@ -6797,8 +6799,13 @@ if not auto_batch:
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
 
-        if _streamlit_session_is_active():
+        session_active = _streamlit_session_is_active()
+        if session_active:
             heartbeat_holder.empty()
+        else:
+            st.session_state["linefill_next_day"] = pd.DataFrame()
+            st.session_state["daily_solver_elapsed"] = None
+            st.stop()
 
         if not is_hourly:
             if solver_elapsed is not None and solver_elapsed >= 0.0:
