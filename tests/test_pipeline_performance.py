@@ -2041,13 +2041,13 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     maop_kgcm2 = maop_psi * 0.0703069
     design_head = maop_kgcm2 * 10000.0 / 850.0
     discharge_head = min(raw_discharge, design_head)
-    sdh_required = max(head_loss, 0.0)
+    residual_target = max(model.MIN_LACING_RESIDUAL_HEAD, terminal["min_residual"])
+    sdh_required = residual_target + max(head_loss, 0.0)
     gap_candidate = sdh_required - discharge_head
     expected_gap = min(max(gap_candidate, 0.0), head_loss)
     expected_unbounded = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
     expected_dr = min(expected_unbounded, 70.0)
 
-    residual_target = terminal["min_residual"]
     head_loss_design = round(head_loss) if head_loss >= 1.0 else head_loss
     sdh_required_design = residual_target + head_loss_design
     if abs(sdh_required_design) >= 1.0:
@@ -2453,7 +2453,7 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     )
     pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
     max_head = sum(p.get("tdh", 0.0) for p in pump_info)
-    residual_target = terminal["min_residual"]
+    residual_target = max(model.MIN_LACING_RESIDUAL_HEAD, terminal["min_residual"])
     sdh_required = residual_target + head_loss
 
     raw_discharge = max_head + min_suction
