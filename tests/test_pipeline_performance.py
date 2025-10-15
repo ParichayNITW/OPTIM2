@@ -265,6 +265,69 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def test_solver_progress_callback_ignores_inactive_session(monkeypatch):
+    import pipeline_optimization_app as app
+
+    active = {"value": True}
+
+    class DummyPlaceholder:
+        def __init__(self, name: str):
+            self.name = name
+            self.calls: list[tuple[str, object | None]] = []
+
+        def write(self, message):
+            self.calls.append(("write", message))
+
+        def progress(self, value):
+            self.calls.append(("progress", value))
+
+        def empty(self):
+            self.calls.append(("empty", None))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    progress_placeholder = DummyPlaceholder("progress")
+    placeholders: list[DummyPlaceholder] = []
+
+    def fake_progress(initial):
+        assert initial == 0
+        return progress_placeholder
+
+    def fake_empty():
+        placeholder = DummyPlaceholder(f"empty_{len(placeholders)}")
+        placeholders.append(placeholder)
+        return placeholder
+
+    heartbeat_calls: list[tuple[tuple, dict]] = []
+
+    def fake_heartbeat(*args, **kwargs):
+        heartbeat_calls.append((args, kwargs))
+        return None
+
+    def fake_is_active():
+        return active["value"]
+
+    monkeypatch.setattr(app.st, "progress", fake_progress)
+    monkeypatch.setattr(app.st, "empty", fake_empty)
+    monkeypatch.setattr(app, "_progress_heartbeat", fake_heartbeat)
+    monkeypatch.setattr(app, "_streamlit_session_is_active", fake_is_active)
+
+    callback = app._make_solver_progress(4)
+    assert callback is not None
+
+    active["value"] = False
+    callback("hour_done", pct=25, index=0)
+
+    assert progress_placeholder.calls == []
+    for placeholder in placeholders:
+        assert placeholder.calls == []
+    assert heartbeat_calls == []
+
+
 def test_segment_floor_without_injection_is_infeasible():
     stations = [
         {
