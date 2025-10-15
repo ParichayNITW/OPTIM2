@@ -72,18 +72,12 @@ import copy
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from plotly.colors import qualitative
-from contextlib import suppress
-
 try:  # pragma: no cover - best-effort import for Streamlit internals
     import streamlit.runtime as _st_runtime
     from streamlit.runtime.scriptrunner import get_script_run_ctx as _st_get_ctx
-    from streamlit.runtime.scriptrunner_utils.script_requests import (
-        ScriptRequestType as _StScriptRequestType,
-    )
 except Exception:  # pragma: no cover - fall back when internals unavailable
     _st_runtime = None
     _st_get_ctx = None
-    _StScriptRequestType = None
 
 # Ensure local modules are importable when the app is run from an arbitrary
 # working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
@@ -178,19 +172,27 @@ def _streamlit_session_is_active() -> bool:
     except Exception:  # pragma: no cover - defensive guard around internals
         return True
 
-    with suppress(Exception):
+    try:
         ctx = _st_get_ctx()
-        if ctx is None:
-            return True
-        requests = getattr(ctx, "script_requests", None)
-        if requests is None:
-            return True
-        state = getattr(requests, "_state", None)
-        stop_state = getattr(_StScriptRequestType, "STOP", None)
-        if stop_state is not None and state == stop_state:
-            return False
+    except Exception:  # pragma: no cover - best effort
+        return True
 
-    return True
+    if ctx is None:
+        return True
+
+    session_id = getattr(ctx, "session_id", None)
+    if not session_id:
+        return True
+
+    try:
+        runtime = _st_runtime.get_instance()
+    except Exception:  # pragma: no cover - runtime unavailable
+        return True
+
+    try:
+        return bool(runtime.is_active_session(session_id))
+    except Exception:  # pragma: no cover - treat unknown states as active
+        return True
 
 
 def _format_segment_name(
