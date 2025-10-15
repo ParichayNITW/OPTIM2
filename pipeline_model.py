@@ -35,6 +35,12 @@ from dra_utils import get_ppm_for_dr, get_ppm_for_dr_exact, get_dr_for_ppm
 DEFAULT_MAX_DR = 70
 
 DEFAULT_LOOP_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
+# Minimum residual head (m) that every segment must sustain when deriving the
+# baseline lacing requirement.  The scheduling walkthrough provided by the
+# operators enforces a 50 m column at every downstream reference regardless of
+# the station-level configuration, so the floor calculation mirrors that
+# expectation.
+MIN_LACING_RESIDUAL_HEAD = 50.0
 # Upper bound on how long we wait for background loop evaluations before
 # falling back to the sequential path.  Streamlit deployments on constrained
 # infrastructure occasionally starve the process pool, so a bounded wait keeps
@@ -2369,10 +2375,13 @@ def compute_minimum_lacing_requirement(
     station can produce when all pump combinations operate at their DOL speed.
     Whenever the available head is insufficient the required drag reduction is
     computed from ``%DR = 100 * (Δ SDH / head_loss_friction)`` so that only
-    the frictional component is reduced.  The upstream suction reserve defaults
-    to ``min_suction_head`` (rather than any per-station overrides) and the
-    available discharge head is capped by the lower of the design MAOP and the
-    user-entered MOP expressed in metres via ``max_density_kgm3`` or
+    the frictional component is reduced.  A constant 50 m residual head is
+    enforced at every downstream reference, matching the operational walkthrough
+    used for floor calculations, and peak constraints are honoured by ensuring
+    at least 25 m at each intermediate crest.  The upstream suction reserve
+    defaults to ``min_suction_head`` (rather than any per-station overrides) and
+    the available discharge head is capped by the lower of the design MAOP and
+    the user-entered MOP expressed in metres via ``max_density_kgm3`` or
     ``mop_kgcm2``.  The returned
     dictionary provides both the treated length (equal to the total pipeline
     length) and the minimum concentration in PPM.  ``segment_slices`` is
@@ -2436,6 +2445,9 @@ def compute_minimum_lacing_requirement(
         terminal_min_residual = float(terminal.get('min_residual', 0.0) or 0.0)
     except (TypeError, ValueError):
         terminal_min_residual = 0.0
+    residual_floor = max(MIN_LACING_RESIDUAL_HEAD, 0.0)
+    if terminal_min_residual < residual_floor:
+        terminal_min_residual = residual_floor
 
     def _coerce_float_local(value, default=0.0) -> float:
         try:
@@ -2611,15 +2623,15 @@ def compute_minimum_lacing_requirement(
     # and always analyse each span with the worst-case viscosity.
     slices_use: list[list[dict]] = [[] for _ in stations_copy]
 
-    downstream_requirements: list[float] = [0.0] * len(stations_copy)
-    cumulative_min = max(terminal_min_residual, 0.0)
+    downstream_requirements: list[float] = [residual_floor] * len(stations_copy)
+    cumulative_min = max(terminal_min_residual, residual_floor, 0.0)
     for idx in range(len(stations_copy) - 1, -1, -1):
         downstream_requirements[idx] = cumulative_min
         try:
             stn_min = float(stations_copy[idx].get('min_residual', 0.0) or 0.0)
         except (TypeError, ValueError):
             stn_min = 0.0
-        cumulative_min = max(cumulative_min, stn_min)
+        cumulative_min = max(cumulative_min, stn_min, residual_floor)
 
     mop_global = _collect_mop_kgcm2(terminal)
     if mop_global <= 0.0 and mop_override > 0.0:
@@ -2672,9 +2684,11 @@ def compute_minimum_lacing_requirement(
                     0.0,
                 )
 
-        downstream_residual = downstream_requirements[idx] if idx < len(downstream_requirements) else terminal_min_residual
-        downstream_residual = max(downstream_residual, 0.0)
-        residual_target = max(downstream_residual, terminal_min_residual)
+        downstream_residual = (
+            downstream_requirements[idx] if idx < len(downstream_requirements) else terminal_min_residual
+        )
+        downstream_residual = max(downstream_residual, residual_floor, 0.0)
+        residual_target = max(downstream_residual, terminal_min_residual, residual_floor)
 
         head_loss = max(head_loss, 0.0)
         sdh_required_actual = residual_target + head_loss + elev_delta
