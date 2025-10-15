@@ -1025,6 +1025,18 @@ def _collect_segment_floors(
 
     flows_by_segment = _segment_flow_profiles(stations, baseline_flow_m3h)
 
+    dra_ppm_for_percent = getattr(pipeline_model, "_dra_ppm_for_percent", None)
+    dra_percent_for_ppm = getattr(pipeline_model, "_dra_percent_for_ppm", None)
+
+    def _coerce_float(value: object) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if math.isnan(numeric):
+            return 0.0
+        return numeric
+
     processed: list[tuple[int, dict[str, object]]] = []
     for order_idx, entry in enumerate(segments_raw):
         if not isinstance(entry, Mapping):
@@ -1076,13 +1088,26 @@ def _collect_segment_floors(
                 if global_cap > 0.0:
                     max_dr_val = min(max_dr_val, global_cap)
                 if velocity > 0.0 and diameter > 0.0:
-                    try:
-                        station_cap_ppm = float(
-                            get_ppm_for_dr(baseline_visc_cst, max_dr_val, velocity, diameter)
+                    ppm_calc = 0.0
+                    if callable(dra_ppm_for_percent):
+                        ppm_calc = float(
+                            dra_ppm_for_percent(
+                                baseline_visc_cst,
+                                max_dr_val,
+                                flow_val,
+                                diameter,
+                            )
                         )
+                    if ppm_calc <= 0.0:
+                        try:
+                            ppm_calc = float(
+                                get_ppm_for_dr(baseline_visc_cst, max_dr_val, velocity, diameter)
+                            )
+                        except Exception:
+                            ppm_calc = 0.0
+                    if ppm_calc > 0.0:
+                        station_cap_ppm = ppm_calc
                         station_cap_perc = max_dr_val
-                    except Exception:
-                        station_cap_ppm = 0.0
         else:
             has_capacity = False
 
@@ -1090,6 +1115,7 @@ def _collect_segment_floors(
             continue
 
         baseline_ppm = _coerce_positive_float(entry.get("dra_ppm", 0.0))
+        ppm_unrounded = _coerce_positive_float(entry.get("dra_ppm_unrounded", 0.0))
 
         floor_ppm = max(float(min_ppm or 0.0), baseline_ppm, 0.0)
         if floor_map and station_idx in floor_map:
@@ -1117,19 +1143,93 @@ def _collect_segment_floors(
         seg_detail["suction_head"] = seg_suction
 
         seg_perc = _coerce_positive_float(entry.get("dra_perc", 0.0))
-        if seg_perc <= 0.0 and velocity > 0.0 and diameter > 0.0:
-            try:
-                seg_perc = float(get_dr_for_ppm(baseline_visc_cst, floor_ppm, velocity, diameter))
-            except Exception:
-                seg_perc = 0.0
+        seg_perc_uncapped = _coerce_positive_float(entry.get("dra_perc_uncapped", seg_perc))
+        if seg_perc <= 0.0:
+            friction_design = _coerce_float(entry.get("head_loss_friction", 0.0))
+            friction_actual = _coerce_float(entry.get("head_loss_friction_actual", 0.0))
+            friction_basis = friction_design if friction_design > 0.0 else friction_actual
+            gap_design = _coerce_float(entry.get("sdh_gap", 0.0))
+            gap_actual = _coerce_float(entry.get("sdh_gap_actual", 0.0))
+            req = _coerce_float(entry.get("sdh_required", 0.0))
+            avail = _coerce_float(entry.get("sdh_available", 0.0))
+            diff_design = req - avail if req > 0.0 and avail >= 0.0 else 0.0
+            req_act = _coerce_float(entry.get("sdh_required_actual", 0.0))
+            avail_act = _coerce_float(entry.get("sdh_available_actual", 0.0))
+            diff_actual = req_act - avail_act if req_act > 0.0 and avail_act >= 0.0 else 0.0
+            gap_candidates = [gap_design, gap_actual, diff_design, diff_actual]
+            gap_basis = max([val for val in gap_candidates if val and val > 0.0], default=0.0)
+            if friction_basis > 0.0 and gap_basis > 0.0:
+                seg_perc = (gap_basis / friction_basis) * 100.0
+                if seg_perc_uncapped <= 0.0:
+                    seg_perc_uncapped = seg_perc
+        if seg_perc > 0.0 and floor_ppm <= 0.0 and velocity > 0.0 and diameter > 0.0:
+            ppm_calc = 0.0
+            if callable(dra_ppm_for_percent):
+                ppm_calc = float(dra_ppm_for_percent(baseline_visc_cst, seg_perc, flow_val, diameter))
+            if ppm_calc <= 0.0:
+                try:
+                    ppm_calc = float(get_ppm_for_dr(baseline_visc_cst, seg_perc, velocity, diameter))
+                except Exception:
+                    ppm_calc = 0.0
+            if ppm_calc > 0.0:
+                floor_ppm = max(floor_ppm, ppm_calc)
+                seg_detail["dra_ppm"] = float(floor_ppm)
+                ppm_unrounded = max(ppm_unrounded, ppm_calc)
         if station_cap_perc > 0.0 and seg_perc > station_cap_perc + 1e-9:
             seg_perc = station_cap_perc
             limited_by_station = True
+        if seg_perc <= 0.0 and floor_ppm > 0.0 and velocity > 0.0 and diameter > 0.0:
+            perc_calc = 0.0
+            if callable(dra_percent_for_ppm):
+                perc_calc = float(dra_percent_for_ppm(baseline_visc_cst, floor_ppm, flow_val, diameter))
+            if perc_calc <= 0.0:
+                try:
+                    perc_calc = float(get_dr_for_ppm(baseline_visc_cst, floor_ppm, velocity, diameter))
+                except Exception:
+                    perc_calc = 0.0
+            if perc_calc > 0.0:
+                seg_perc = perc_calc
         if seg_perc > 0.0:
             seg_detail["dra_perc"] = seg_perc
+        if seg_perc_uncapped > 0.0:
+            seg_detail["dra_perc_uncapped"] = seg_perc_uncapped
 
         if limited_by_station:
             seg_detail["limited_by_station"] = True
+
+        if ppm_unrounded > 0.0:
+            seg_detail["dra_ppm_unrounded"] = float(ppm_unrounded)
+
+        seg_detail["flow_m3h"] = float(flow_val)
+        seg_detail["diameter_m"] = float(diameter)
+
+        float_fields = (
+            "velocity_mps",
+            "reynolds_number",
+            "friction_factor",
+            "sdh_required",
+            "sdh_available",
+            "sdh_gap",
+            "sdh_required_actual",
+            "sdh_available_actual",
+            "sdh_gap_actual",
+            "head_loss_friction",
+            "head_loss_friction_actual",
+            "available_head_before_suction",
+            "max_head_available",
+            "residual_head",
+            "head_cap",
+        )
+        for field in float_fields:
+            if field in entry:
+                seg_detail[field] = _coerce_float(entry.get(field, 0.0))
+
+        bool_fields = ("has_dra_facility",)
+        for field in bool_fields:
+            if field in entry:
+                seg_detail[field] = bool(entry.get(field))
+
+        seg_detail["dra_ppm"] = float(floor_ppm)
 
         processed.append((station_idx, order_idx, seg_detail))
 
