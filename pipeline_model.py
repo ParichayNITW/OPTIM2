@@ -1956,6 +1956,21 @@ def _update_mainline_dra(
 
         needs_enforcement = _needs_floor_enforcement(base_profile, available_length)
 
+        if (
+            needs_enforcement
+            and available_length <= 0.0
+            and existing_profile_length > 0.0
+        ):
+            fallback_length = existing_profile_length
+            if segment_length > 0.0:
+                fallback_length = min(fallback_length, float(segment_length))
+            fallback_entries = existing_profile_full
+            if fallback_entries and not _needs_floor_enforcement(
+                fallback_entries,
+                fallback_length,
+            ):
+                needs_enforcement = False
+
         def _collect_floor_targets() -> list[tuple[float, float]]:
             if not segments_defined:
                 return []
