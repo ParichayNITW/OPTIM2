@@ -5464,6 +5464,53 @@ def test_bypassed_station_respects_segment_floor() -> None:
     assert requires_injection is True
 
 
+def test_idle_station_with_floor_accepts_existing_queue() -> None:
+    """Existing upstream coverage should satisfy floors when no new volume moves."""
+
+    diameter = 0.7
+    segment_length = 6.0
+    hours = 1.0
+    flow_m3h = 0.0
+
+    initial_queue = [
+        {"length_km": segment_length, "dra_ppm": 60.0},
+        {"length_km": 2.0, "dra_ppm": 45.0},
+    ]
+
+    station = {
+        "idx": 1,
+        "is_pump": False,
+        "d_inner": diameter,
+        "kv": 3.0,
+        "L": segment_length,
+    }
+    option = {"nop": 0, "dra_ppm_main": 0.0}
+    segment_floor = {"length_km": segment_length, "dra_ppm": 50.0}
+
+    dra_segments, queue_after, inj_ppm, requires_injection = _update_mainline_dra(
+        initial_queue,
+        station,
+        option,
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=False,
+        pump_shear_rate=0.0,
+        dra_shear_factor=0.0,
+        shear_injection=False,
+        is_origin=False,
+        segment_floor=segment_floor,
+    )
+
+    assert inj_ppm == pytest.approx(0.0)
+    assert dra_segments
+    assert sum(length for length, _ppm in dra_segments) == pytest.approx(segment_length, rel=1e-6)
+    min_ppm = min(ppm for _length, ppm in dra_segments)
+    assert min_ppm >= 50.0 - 1e-6
+    assert queue_after
+    assert requires_injection is False
+
+
 def test_dra_profile_reflects_hourly_push_examples() -> None:
     """Profiles at successive stations should mirror the user's worked examples."""
 
