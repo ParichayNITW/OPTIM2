@@ -72,6 +72,18 @@ import copy
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from plotly.colors import qualitative
+from contextlib import suppress
+
+try:  # pragma: no cover - best-effort import for Streamlit internals
+    import streamlit.runtime as _st_runtime
+    from streamlit.runtime.scriptrunner import get_script_run_ctx as _st_get_ctx
+    from streamlit.runtime.scriptrunner_utils.script_requests import (
+        ScriptRequestType as _StScriptRequestType,
+    )
+except Exception:  # pragma: no cover - fall back when internals unavailable
+    _st_runtime = None
+    _st_get_ctx = None
+    _StScriptRequestType = None
 
 # Ensure local modules are importable when the app is run from an arbitrary
 # working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
@@ -152,6 +164,33 @@ def _station_state_key(name: object) -> str | None:
         return None
     stripped = name.strip().lower().replace(" ", "_")
     return stripped or None
+
+
+def _streamlit_session_is_active() -> bool:
+    """Return ``True`` when Streamlit still has an attached client session."""
+
+    if _st_runtime is None or _st_get_ctx is None:
+        return True
+
+    try:
+        if not _st_runtime.exists():
+            return True
+    except Exception:  # pragma: no cover - defensive guard around internals
+        return True
+
+    with suppress(Exception):
+        ctx = _st_get_ctx()
+        if ctx is None:
+            return True
+        requests = getattr(ctx, "script_requests", None)
+        if requests is None:
+            return True
+        state = getattr(requests, "_state", None)
+        stop_state = getattr(_StScriptRequestType, "STOP", None)
+        if stop_state is not None and state == stop_state:
+            return False
+
+    return True
 
 
 def _format_segment_name(
@@ -844,6 +883,9 @@ def _progress_heartbeat(area, *, msg="solving…", start_time: float | None = No
     wall-clock timestamp so users can tell how long the solver has been
     running.
     """
+
+    if not _streamlit_session_is_active():
+        return
 
     with area:
         if start_time is not None:
@@ -6753,7 +6795,8 @@ if not auto_batch:
                 st.error(f"Optimizer crashed unexpectedly: {exc}")
                 st.stop()
 
-        heartbeat_holder.empty()
+        if _streamlit_session_is_active():
+            heartbeat_holder.empty()
 
         if not is_hourly:
             if solver_elapsed is not None and solver_elapsed >= 0.0:
