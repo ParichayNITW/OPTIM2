@@ -5574,7 +5574,13 @@ def _execute_time_series_solver(
         user_local = copy.deepcopy(user_detail_local) if isinstance(user_detail_local, dict) else None
 
         if base_local and not user_local:
-            return None
+            # When only a baseline requirement exists we should honour it
+            # instead of silently dropping the floor.  Returning ``None`` here
+            # allows zero DRA slugs to be dispatched which in turn causes the
+            # sequential optimiser to backtrack with "no hydraulically
+            # feasible solution" errors.  By propagating the baseline detail
+            # we guarantee that a minimum slug is always requested.
+            return base_local if base_local else None
         if user_local and not base_local:
             return user_local if user_local else None
         if not base_local or not user_local:
