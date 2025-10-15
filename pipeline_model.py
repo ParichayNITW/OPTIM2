@@ -7,6 +7,7 @@ import datetime as dt
 import concurrent.futures
 import io
 import math
+import time
 import os
 from bisect import bisect_left
 from collections.abc import Mapping, Sequence
@@ -34,6 +35,15 @@ from dra_utils import get_ppm_for_dr, get_ppm_for_dr_exact, get_dr_for_ppm
 DEFAULT_MAX_DR = 70
 
 DEFAULT_LOOP_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
+# Upper bound on how long we wait for background loop evaluations before
+# falling back to the sequential path.  Streamlit deployments on constrained
+# infrastructure occasionally starve the process pool, so a bounded wait keeps
+# the UI responsive while still leveraging parallelism when it behaves.
+LOOP_PARALLEL_TIMEOUT_S = 20.0
+# Maximum wall-clock seconds allotted to a single ``solve_pipeline`` call on
+# the coarse/exhaustive refinement path.  The solver returns the best solution
+# found so far once the budget is exhausted so the UI doesn't spin endlessly.
+PIPELINE_SOLVE_BUDGET_S = 2.0
 _SEGMENT_CACHE_SIZE = 65536
 
 _CACHE_DECIMALS_ENV = os.environ.get("OPTIM_SEGMENT_CACHE_DECIMALS")
@@ -177,6 +187,7 @@ def _solve_pipeline_loop_case(args: tuple) -> tuple[list[int], dict]:
         forced_origin_detail,
         segment_floors,
         cost_cap,
+        solve_deadline,
     ) = args
 
     result = solve_pipeline(
@@ -206,6 +217,7 @@ def _solve_pipeline_loop_case(args: tuple) -> tuple[list[int], dict]:
         forced_origin_detail=forced_origin_detail,
         segment_floors=segment_floors,
         cost_cap=cost_cap,
+        solve_deadline=solve_deadline,
     )
     return usage, result
 
@@ -712,8 +724,8 @@ V_MAX = 2.5
 # each station.  ``STATE_TOP_K`` bounds the total states retained while
 # ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
 # this many currency units of the best state for the current station.
-STATE_TOP_K = 50
-STATE_COST_MARGIN = 5000.0
+STATE_TOP_K = 24
+STATE_COST_MARGIN = 2500.0
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -1746,6 +1758,13 @@ def _update_mainline_dra(
     existing_queue = _merge_queue(existing_queue)
     existing_total = _queue_total_length(existing_queue)
 
+    existing_profile_full = tuple(
+        (float(length or 0.0), max(float(ppm or 0.0), 0.0))
+        for length, ppm in existing_queue
+        if float(length or 0.0) > 0.0
+    )
+    existing_profile_length = sum(length for length, _ppm in existing_profile_full)
+
     if existing_total > 0:
         target_length = existing_total
     elif segment_length > 0:
@@ -1937,53 +1956,149 @@ def _update_mainline_dra(
 
         needs_enforcement = _needs_floor_enforcement(base_profile, available_length)
 
-        if needs_enforcement:
-            if segments_defined:
-                targets = []
-                remaining_length = available_length
-                for seg_length, seg_ppm in floor_segments:
-                    seg_len = max(float(seg_length or 0.0), 0.0)
-                    seg_ppm_val = max(float(seg_ppm or 0.0), 0.0)
-                    if seg_len <= 0.0 or seg_ppm_val <= 0.0 or remaining_length <= 0.0:
-                        continue
-                    target_length = min(seg_len, remaining_length)
-                    targets.append((target_length, seg_ppm_val))
-                    remaining_length -= target_length
-                if targets:
-                    applied_segment = False
-                    remaining_length = available_length
-                    for seg_length, seg_ppm in targets:
-                        if remaining_length <= 0.0:
-                            break
-                        target_length = min(seg_length, remaining_length)
-                        if target_length <= 0.0:
-                            continue
-                        pumped_portion = _overlay_queue_floor(pumped_portion, target_length, seg_ppm)
-                        pumped_adjusted = _overlay_queue_floor(pumped_adjusted, target_length, seg_ppm)
-                        remaining_length -= target_length
-                        applied_segment = True
-                    if not pumped_differs and applied_segment:
-                        pumped_differs = True
-            else:
-                floor_target = min(max(float(floor_length or 0.0), 0.0), available_length)
-                if floor_target > 0.0 and floor_ppm > 0.0:
-                    updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
-                    updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
-                    if not pumped_differs and updated_adjusted != pumped_adjusted:
-                        pumped_differs = True
-                    pumped_portion = updated_portion
-                    pumped_adjusted = updated_adjusted
+        def _collect_floor_targets() -> list[tuple[float, float]]:
+            if not segments_defined:
+                return []
+            targets: list[tuple[float, float]] = []
+            remaining_length_local = available_length
+            for seg_length, seg_ppm in floor_segments:
+                seg_len = max(float(seg_length or 0.0), 0.0)
+                seg_ppm_val = max(float(seg_ppm or 0.0), 0.0)
+                if seg_len <= 0.0 or seg_ppm_val <= 0.0 or remaining_length_local <= 0.0:
+                    continue
+                target_length = min(seg_len, remaining_length_local)
+                targets.append((target_length, seg_ppm_val))
+                remaining_length_local -= target_length
+            return targets
 
-            available_length = max(
-                sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
-                sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
-            )
-            updated_profile = tuple(
-                (float(length or 0.0), max(float(ppm or 0.0), 0.0))
-                for length, ppm in pumped_adjusted
-                if float(length or 0.0) > 0.0
-            )
-            floor_requires_injection = _needs_floor_enforcement(updated_profile, available_length)
+        def _apply_floor_overlay_targets(
+            targets: list[tuple[float, float]] | None = None,
+            floor_target_len: float | None = None,
+            floor_target_ppm: float | None = None,
+        ) -> bool:
+            nonlocal pumped_portion, pumped_adjusted, pumped_differs, available_length, floor_requires_injection
+            changed = False
+            if targets:
+                remaining_length_local = available_length
+                for seg_length, seg_ppm in targets:
+                    if remaining_length_local <= 0.0:
+                        break
+                    target_length = min(max(float(seg_length or 0.0), 0.0), remaining_length_local)
+                    if target_length <= 0.0:
+                        continue
+                    previous_portion = list(pumped_portion)
+                    previous_adjusted = list(pumped_adjusted)
+                    pumped_portion = _overlay_queue_floor(pumped_portion, target_length, seg_ppm)
+                    pumped_adjusted = _overlay_queue_floor(pumped_adjusted, target_length, seg_ppm)
+                    if (
+                        pumped_portion != previous_portion
+                        or pumped_adjusted != previous_adjusted
+                    ):
+                        changed = True
+                    remaining_length_local -= target_length
+            else:
+                target_length = min(
+                    max(float(floor_target_len or 0.0), 0.0),
+                    available_length,
+                )
+                target_ppm = max(float(floor_target_ppm or 0.0), 0.0)
+                if target_length > 0.0 and target_ppm > 0.0:
+                    previous_portion = list(pumped_portion)
+                    previous_adjusted = list(pumped_adjusted)
+                    updated_portion = _overlay_queue_floor(
+                        pumped_portion, target_length, target_ppm
+                    )
+                    updated_adjusted = _overlay_queue_floor(
+                        pumped_adjusted, target_length, target_ppm
+                    )
+                    if (
+                        updated_portion != pumped_portion
+                        or updated_adjusted != pumped_adjusted
+                    ):
+                        changed = True
+                        pumped_portion = updated_portion
+                        pumped_adjusted = updated_adjusted
+            if changed:
+                available_length = max(
+                    sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+                    sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+                )
+                updated_profile = tuple(
+                    (float(length or 0.0), max(float(ppm or 0.0), 0.0))
+                    for length, ppm in pumped_adjusted
+                    if float(length or 0.0) > 0.0
+                )
+                floor_requires_injection = _needs_floor_enforcement(
+                    updated_profile, available_length
+                )
+                if not pumped_differs:
+                    pumped_differs = True
+            return changed
+
+        if needs_enforcement:
+            can_overlay = pump_running and (inj_effective > 0.0)
+            if can_overlay:
+                if segments_defined:
+                    targets = _collect_floor_targets()
+                    if targets:
+                        _apply_floor_overlay_targets(targets=targets)
+                else:
+                    _apply_floor_overlay_targets(
+                        floor_target_len=floor_length,
+                        floor_target_ppm=floor_ppm,
+                    )
+            else:
+                queue_meets_floor = False
+                if existing_profile_length > 0.0:
+                    queue_meets_floor = not _needs_floor_enforcement(
+                        existing_profile_full,
+                        existing_profile_length,
+                    )
+                if queue_meets_floor:
+                    floor_requires_injection = False
+                    if available_length > 0.0:
+                        if segments_defined:
+                            targets = _collect_floor_targets()
+                            if targets:
+                                _apply_floor_overlay_targets(targets=targets)
+                        else:
+                            _apply_floor_overlay_targets(
+                                floor_target_len=floor_length,
+                                floor_target_ppm=floor_ppm,
+                            )
+                elif available_length > 0.0:
+                    existing_max = 0.0
+                    if existing_profile_full:
+                        for _length, ppm_val in existing_profile_full:
+                            ppm_float = max(float(ppm_val or 0.0), 0.0)
+                            if ppm_float > existing_max:
+                                existing_max = ppm_float
+                    target_max = 0.0
+                    if segments_defined:
+                        for seg_length, seg_ppm in floor_segments:
+                            seg_ppm_val = max(float(seg_ppm or 0.0), 0.0)
+                            if seg_ppm_val > target_max:
+                                target_max = seg_ppm_val
+                    else:
+                        target_max = max(float(floor_ppm or 0.0), 0.0)
+                    allow_overlay = target_max > 0.0 and target_max >= existing_max - 1e-9
+                    if allow_overlay:
+                        changed = False
+                        if segments_defined:
+                            targets = _collect_floor_targets()
+                            if targets:
+                                changed = _apply_floor_overlay_targets(targets=targets)
+                        else:
+                            changed = _apply_floor_overlay_targets(
+                                floor_target_len=floor_length,
+                                floor_target_ppm=floor_ppm,
+                            )
+                        if not changed:
+                            floor_requires_injection = True
+                    else:
+                        floor_requires_injection = True
+                else:
+                    floor_requires_injection = True
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -3728,6 +3843,7 @@ def solve_pipeline(
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     cost_cap: float | None = None,
+    solve_deadline: float | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -3933,6 +4049,7 @@ def solve_pipeline(
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
                 cost_cap=cost_cap,
+                solve_deadline=solve_deadline,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -3974,8 +4091,9 @@ def solve_pipeline(
             and DEFAULT_LOOP_WORKERS > 1
             and not disable_parallel
         )
+        processed_cases: set[tuple[int, ...]] = set()
         if use_parallel:
-            tasks: list[concurrent.futures.Future] = []
+            task_map: dict[concurrent.futures.Future, tuple[int, ...]] = {}
             try:
                 with concurrent.futures.ProcessPoolExecutor(max_workers=DEFAULT_LOOP_WORKERS) as executor:
                     for case in cases:
@@ -4008,9 +4126,19 @@ def solve_pipeline(
                             forced_origin_detail,
                             segment_floors,
                             best_case_cost,
+                            solve_deadline,
                         )
-                        tasks.append(executor.submit(_solve_pipeline_loop_case, case_args))
-                    for future in concurrent.futures.as_completed(tasks):
+                        future = executor.submit(_solve_pipeline_loop_case, case_args)
+                        task_map[future] = tuple(case)
+                    done, pending = concurrent.futures.wait(
+                        task_map.keys(),
+                        timeout=LOOP_PARALLEL_TIMEOUT_S,
+                        return_when=concurrent.futures.ALL_COMPLETED,
+                    )
+                    for future in done:
+                        case_key = task_map.get(future)
+                        if case_key is not None:
+                            processed_cases.add(case_key)
                         try:
                             usage, res = future.result()
                         except Exception:
@@ -4029,11 +4157,21 @@ def solve_pipeline(
                                     best_case_cost = float(total_cost)
                                 else:
                                     best_case_cost = min(best_case_cost, float(total_cost))
+                    if pending:
+                        for future in pending:
+                            future.cancel()
+                        use_parallel = False
+                    else:
+                        processed_cases = {tuple(case) for case in cases}
             except Exception:
                 use_parallel = False
+                processed_cases.clear()
 
         if not use_parallel:
             for case in cases:
+                case_key = tuple(case)
+                if processed_cases and case_key in processed_cases:
+                    continue
                 usage = [0] * len(stations)
                 for pos, val in zip(loop_positions, case):
                     usage[pos] = val
@@ -4066,6 +4204,7 @@ def solve_pipeline(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     cost_cap=case_cap,
+                    solve_deadline=solve_deadline,
                 )
                 if res.get('pruned_by_cost_cap'):
                     any_case_pruned = True
@@ -4117,6 +4256,7 @@ def solve_pipeline(
                         forced_origin_detail=forced_origin_detail,
                         segment_floors=segment_floors,
                         cost_cap=None,
+                        solve_deadline=solve_deadline,
                     )
                     if res.get('error'):
                         continue
@@ -4178,6 +4318,25 @@ def solve_pipeline(
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
+    def _runtime_capped_result() -> dict:
+        base_linefill = [
+            {
+                'volume': float(entry.get('volume', 0.0) or 0.0),
+                'dra_ppm': float(entry.get('dra_ppm', 0.0) or 0.0),
+            }
+            for entry in linefill_state
+        ]
+        return {
+            'error': False,
+            'runtime_capped': True,
+            'linefill': base_linefill,
+            'dra_front_km': float(dra_reach_km),
+            'total_cost': float('inf'),
+        }
+
+    if solve_deadline is not None and time.perf_counter() >= solve_deadline:
+        return _runtime_capped_result()
+
     N = len(stations)
 
     # ------------------------------------------------------------------
@@ -4188,8 +4347,11 @@ def solve_pipeline(
     # ------------------------------------------------------------------
     if _internal_pass:
         pass_trace = None
-    elif pass_trace is None:
-        pass_trace = []
+    else:
+        if pass_trace is None:
+            pass_trace = []
+        if solve_deadline is None:
+            solve_deadline = time.perf_counter() + PIPELINE_SOLVE_BUDGET_S
 
     followup_cost_cap = cost_cap
     cap_explicit = cost_cap is not None
@@ -4324,6 +4486,7 @@ def solve_pipeline(
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
                 cost_cap=cost_cap,
+                solve_deadline=solve_deadline,
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -4335,6 +4498,10 @@ def solve_pipeline(
                         followup_cost_cap = coarse_cost
                     elif not cap_explicit:
                         followup_cost_cap = min(followup_cost_cap, coarse_cost)
+                if solve_deadline is not None and time.perf_counter() >= solve_deadline:
+                    result = _with_cost_cap(coarse_res)
+                    result['runtime_capped'] = True
+                    return result
         exhaustive_result = solve_pipeline(
             stations,
             terminal,
@@ -4367,12 +4534,21 @@ def solve_pipeline(
             forced_origin_detail=forced_origin_detail,
             segment_floors=segment_floors,
             cost_cap=followup_cost_cap,
+            solve_deadline=solve_deadline,
         )
         if pass_trace is not None:
             pass_trace.append('exhaustive')
         if coarse_failed and not exhaustive_result.get("error"):
             coarse_res = exhaustive_result
             coarse_failed = False
+        if (
+            solve_deadline is not None
+            and not exhaustive_result.get("error")
+            and time.perf_counter() >= solve_deadline
+        ):
+            result = _with_cost_cap(exhaustive_result)
+            result['runtime_capped'] = True
+            return result
         window = max(rpm_step, coarse_rpm_step)
 
         refine_result: dict = {"error": True}
@@ -4480,9 +4656,15 @@ def solve_pipeline(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     cost_cap=followup_cost_cap,
+                    solve_deadline=solve_deadline,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
+                if not refine_result.get('error'):
+                    if solve_deadline is not None and time.perf_counter() >= solve_deadline:
+                        result = _with_cost_cap(refine_result)
+                        result['runtime_capped'] = True
+                        return result
                 if refine_result.get('error'):
                     run_fallback = True
             elif not has_ranges:
@@ -4531,9 +4713,15 @@ def solve_pipeline(
                         forced_origin_detail=forced_origin_detail,
                         segment_floors=segment_floors,
                         cost_cap=followup_cost_cap,
+                        solve_deadline=solve_deadline,
                     )
                     if pass_trace is not None:
                         pass_trace.append('refine')
+                    if not refine_result.get('error') and solve_deadline is not None:
+                        if time.perf_counter() >= solve_deadline:
+                            result = _with_cost_cap(refine_result)
+                            result['runtime_capped'] = True
+                            return result
 
         primary_candidate = None
         if not coarse_failed and not coarse_res.get("error"):
@@ -5305,6 +5493,8 @@ def solve_pipeline(
     }
 
     for stn_data in station_opts:
+        if solve_deadline is not None and time.perf_counter() >= solve_deadline:
+            return _runtime_capped_result()
         new_states: dict[object, dict] = {}
         best_by_residual: dict[int, object] = {}
         protected_counter = 0
@@ -5333,6 +5523,8 @@ def solve_pipeline(
                 d_inner_state,
             )
             for opt in stn_data['options']:
+                if solve_deadline is not None and time.perf_counter() >= solve_deadline:
+                    return _runtime_capped_result()
                 # -----------------------------------------------------------------
                 # Enforce bypass rules on loopline injection:
                 # if the previous station operated in bypass mode (Case‑G)
