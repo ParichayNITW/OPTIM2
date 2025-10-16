@@ -2763,54 +2763,16 @@ def compute_minimum_lacing_requirement(
             discharge_head_actual = min(discharge_head_actual, head_cap)
         if carried_head_available > 0.0:
             discharge_head_actual = max(discharge_head_actual, carried_head_available)
+        discharge_head_actual = max(discharge_head_actual, 0.0)
 
-        if head_loss >= 1.0:
-            head_loss_design = round(head_loss)
-        else:
-            head_loss_design = head_loss
-        sdh_required_design = residual_target + head_loss_design + elev_delta
-        if peak_requirement > 0.0:
-            sdh_required_design = max(sdh_required_design, peak_requirement)
-        if sdh_required_design < residual_target:
-            sdh_required_design = residual_target
-        if abs(sdh_required_design) >= 1.0:
-            sdh_required_design = round(sdh_required_design)
-        discharge_head_design = (
-            round(discharge_head_actual)
-            if abs(discharge_head_actual) >= 1.0
-            else discharge_head_actual
-        )
-        if discharge_head_design < 0.0 and discharge_head_actual > 0.0:
-            discharge_head_design = discharge_head_actual
+        sdh_required_for_ratio = sdh_required_actual
 
-        head_loss_for_ratio = head_loss_design if head_loss_design > 0.0 else head_loss
-        if head_loss_for_ratio <= 0.0:
-            sdh_required_for_ratio = sdh_required_actual
-            discharge_head_for_ratio = discharge_head_actual
-        else:
-            sdh_required_for_ratio = sdh_required_design
-            discharge_head_for_ratio = discharge_head_design
-
-        gap_design = sdh_required_design - discharge_head_design
         gap_actual = sdh_required_actual - discharge_head_actual
-        if gap_actual > head_loss:
-            gap_actual = head_loss
         if gap_actual < 0.0:
             gap_actual = 0.0
 
-        gap = gap_design
-        if head_loss_for_ratio > 0.0 and gap > head_loss_for_ratio:
-            gap = head_loss_for_ratio
-        if gap < 0.0:
-            gap = 0.0
-
-        gap_for_ratio = gap
-        if gap_for_ratio <= 1e-9 and gap_actual > 0.0:
-            alt_limit = head_loss_for_ratio if head_loss_for_ratio > 0.0 else head_loss
-            if alt_limit > 0.0:
-                gap_for_ratio = min(gap_actual, alt_limit)
-            else:
-                gap_for_ratio = gap_actual
+        head_loss_for_ratio = head_loss
+        gap_for_ratio = gap_actual
 
         station_max_dr = _normalise_max_dr(stn.get('max_dr'), fallback=GLOBAL_MAX_DRA_CAP)
         has_dra_facility = station_max_dr > 0.0
@@ -2883,18 +2845,18 @@ def compute_minimum_lacing_requirement(
             'dra_perc': float(dr_needed),
             'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
             'dra_perc_uncapped': float(dr_unbounded),
-            'sdh_required': float(sdh_required_design if head_loss_for_ratio > 0.0 else sdh_required_actual),
+            'sdh_required': float(sdh_required_actual),
             'residual_head': float(residual_target),
-            'max_head_available': float(discharge_head_design if head_loss_for_ratio > 0.0 else discharge_head_actual),
+            'max_head_available': float(discharge_head_actual),
             'available_head_before_suction': float(max_head + min_suction),
             'suction_head': float(min_suction),
             'limited_by_station': bool(limited_by_station),
             'velocity_mps': float(velocity),
             'reynolds_number': float(reynolds),
             'friction_factor': float(friction_factor),
-            'sdh_available': float(discharge_head_design if head_loss_for_ratio > 0.0 else discharge_head_actual),
-            'sdh_gap': float(max(gap, 0.0)),
-            'head_loss_friction': float(head_loss_design if head_loss_for_ratio > 0.0 else head_loss),
+            'sdh_available': float(discharge_head_actual),
+            'sdh_gap': float(gap_actual),
+            'head_loss_friction': float(head_loss),
             'head_cap': float(head_cap),
             'has_dra_facility': bool(has_dra_facility),
             'sdh_required_actual': float(sdh_required_actual),
@@ -2919,7 +2881,7 @@ def compute_minimum_lacing_requirement(
             example_segment = {
                 **segment_entry,
                 'station_name': stn.get('name') or f'Station {idx + 1}',
-                'sdh_gap': float(max(gap, 0.0)),
+                'sdh_gap': float(gap_actual),
                 'flow_m3h': float(max_flow),
                 'viscosity_cst': float(visc_max),
             }
