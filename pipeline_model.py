@@ -5033,6 +5033,11 @@ def solve_pipeline(
             floor_dr_min_float = _dra_percent_for_ppm(kv, floor_ppm_min, flow, d_inner)
         floor_dr_min_int = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 0
         floor_perc_min_int = int(floor_perc_min) if floor_perc_min > 0.0 else 0
+        floor_perc_min_display = floor_perc_min_int
+        # Floor enforcement is handled through the injection requirement expressed
+        # in PPM.  The %DR counterpart is shown for context but should not
+        # constrain the optimisation search.
+        floor_perc_min_int = 0
         floor_ppm_tol = max(floor_ppm_min * 1e-6, 1e-9) if floor_ppm_min > 0.0 else 1e-9
 
         opts = []
@@ -5119,16 +5124,14 @@ def solve_pipeline(
             max_dr_main = _max_dr_int(stn.get('max_dr'))
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
-                if floor_perc_min_int > 0:
-                    fixed_val = max(fixed_val, floor_perc_min_int)
+                if floor_dr_min_int > 0:
+                    fixed_val = max(fixed_val, floor_dr_min_int)
                 dra_main_vals = [fixed_val]
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
-                if floor_perc_min_int > 0:
-                    dr_min = max(dr_min, floor_perc_min_int)
                 if floor_dr_min_int > 0:
                     dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
@@ -5220,7 +5223,7 @@ def solve_pipeline(
                         ppm_candidates.append((dra_use, ppm_main))
                     if not ppm_candidates and floor_ppm_min > 0.0 and dra_main_vals:
                         fallback_ppm = floor_ppm_min
-                        dra_use = int(floor_dr_min_int or floor_perc_min_int or 0)
+                        dra_use = int(floor_dr_min_int or 0)
                         if kv > 0.0:
                             dra_from_ppm = _dra_percent_for_ppm(kv, fallback_ppm, flow, d_inner)
                             if dra_from_ppm > dra_use:
@@ -5275,12 +5278,12 @@ def solve_pipeline(
                                 opt_entry['rpm_map'] = rpm_map_choice.copy()
                                 for ptype, rpm_val in rpm_map_choice.items():
                                     opt_entry[f'rpm_{ptype}'] = rpm_val
-                            opt_entry['dra_floor_perc_min'] = float(floor_perc_min_int)
+                            opt_entry['dra_floor_perc_min'] = float(floor_perc_min_display)
                             opt_entry['dra_floor_ppm_min'] = float(floor_ppm_min)
                             if floor_limited:
                                 opt_entry['dra_floor_limited'] = True
                             opts.append(opt_entry)
-            allow_zero_option = not floor_limited and floor_perc_min_int <= 0 and floor_ppm_min <= 0.0
+            allow_zero_option = not floor_limited and floor_ppm_min <= 0.0
             if i == 1:
                 allow_zero_option = False
             if allow_zero_option and not any(o['nop'] == 0 for o in opts):
@@ -5291,7 +5294,7 @@ def solve_pipeline(
                     'dra_loop': 0,
                     'dra_ppm_main': 0,
                     'dra_ppm_loop': 0,
-                    'dra_floor_perc_min': float(floor_perc_min_int),
+                    'dra_floor_perc_min': float(floor_perc_min_display),
                     'dra_floor_ppm_min': float(floor_ppm_min),
                     'dra_floor_limited': bool(floor_limited),
                 })
@@ -5307,8 +5310,6 @@ def solve_pipeline(
                 if rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
-                if floor_perc_min_int > 0:
-                    dr_min = max(dr_min, floor_perc_min_int)
                 if floor_dr_min_int > 0:
                     dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
@@ -5363,7 +5364,7 @@ def solve_pipeline(
                         'dra_loop': 0,
                         'dra_ppm_main': ppm_main,
                         'dra_ppm_loop': 0,
-                        'dra_floor_perc_min': float(floor_perc_min_int),
+                        'dra_floor_perc_min': float(floor_perc_min_display),
                         'dra_floor_ppm_min': float(floor_ppm_min),
                         'dra_floor_limited': bool(floor_limited),
                     })
@@ -5375,7 +5376,7 @@ def solve_pipeline(
                     'dra_loop': 0,
                     'dra_ppm_main': 0,
                     'dra_ppm_loop': 0,
-                    'dra_floor_perc_min': float(floor_perc_min_int),
+                    'dra_floor_perc_min': float(floor_perc_min_display),
                     'dra_floor_ppm_min': float(floor_ppm_min),
                     'dra_floor_limited': bool(floor_limited),
                 })
@@ -5415,7 +5416,7 @@ def solve_pipeline(
             'baseline_floor': segment_floor_lookup.get(i - 1),
             'min_rpm': station_rpm_min,
             'dol': station_rpm_max,
-            'dra_floor_perc_min': float(floor_perc_min_int),
+            'dra_floor_perc_min': float(floor_perc_min_display),
             'dra_floor_ppm_min': float(floor_ppm_min),
             'dra_floor_limited': bool(floor_limited),
             'power_type': stn.get('power_type', 'Grid'),
