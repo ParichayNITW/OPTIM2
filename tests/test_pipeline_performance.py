@@ -2277,8 +2277,6 @@ def test_compute_minimum_lacing_requirement_handles_missing_facility():
     floors = app._collect_segment_floors(
         result,
         stations,
-        baseline_flow_m3h=900.0,
-        baseline_visc_cst=2.5,
         min_ppm=0.0,
     )
     assert floors == []
@@ -2311,6 +2309,10 @@ def test_collect_segment_floors_respects_station_caps():
             "supply": 0.0,
         }
     ]
+    flow_m3h = 1800.0
+    visc_cst = 6.0
+    floor_map = {0: 140.0}
+
     baseline_requirement = {
         "segments": [
             {
@@ -2318,19 +2320,20 @@ def test_collect_segment_floors_respects_station_caps():
                 "length_km": 12.0,
                 "dra_ppm": 150.0,
                 "dra_perc": 60.0,
+                "flow_m3h": flow_m3h,
+                "diameter_m": stations[0]["D"] - 2 * stations[0]["t"],
+                "viscosity_cst": visc_cst,
+                "velocity_mps": app._flow_velocity_mps(
+                    flow_m3h,
+                    stations[0]["D"] - 2 * stations[0]["t"],
+                ),
             }
         ]
     }
 
-    flow_m3h = 1800.0
-    visc_cst = 6.0
-    floor_map = {0: 140.0}
-
     segments = app._collect_segment_floors(
         baseline_requirement,
         stations,
-        baseline_flow_m3h=flow_m3h,
-        baseline_visc_cst=visc_cst,
         min_ppm=120.0,
         floor_map=floor_map,
     )
