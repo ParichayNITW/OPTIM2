@@ -2044,21 +2044,9 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     residual_target = max(model.MIN_LACING_RESIDUAL_HEAD, terminal["min_residual"])
     sdh_required = residual_target + max(head_loss, 0.0)
     gap_candidate = sdh_required - discharge_head
-    expected_gap = min(max(gap_candidate, 0.0), head_loss)
+    expected_gap = max(gap_candidate, 0.0)
     expected_unbounded = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
     expected_dr = min(expected_unbounded, 70.0)
-
-    head_loss_design = round(head_loss) if head_loss >= 1.0 else head_loss
-    sdh_required_design = residual_target + head_loss_design
-    if abs(sdh_required_design) >= 1.0:
-        sdh_required_design = round(sdh_required_design)
-    discharge_design = round(discharge_head) if abs(discharge_head) >= 1.0 else discharge_head
-    head_loss_for_ratio = head_loss_design if head_loss_design > 0 else head_loss
-    gap_design = max(min(sdh_required_design - discharge_design, head_loss_for_ratio), 0.0)
-    expected_dr_design = (
-        (gap_design / head_loss_for_ratio) * 100.0 if head_loss_for_ratio > 0 else 0.0
-    )
-    expected_dr_capped = min(expected_dr_design, 70.0)
     seg_entry = segments[0]
     assert seg_entry["station_idx"] == 0
     assert seg_entry["length_km"] == pytest.approx(10.0)
@@ -2070,15 +2058,15 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["dra_ppm"] == math.ceil(expected_ppm_exact)
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
     assert seg_entry["available_head_before_suction"] == pytest.approx(raw_discharge)
-    assert seg_entry["max_head_available"] == pytest.approx(discharge_design)
-    assert seg_entry["sdh_available"] == pytest.approx(discharge_design)
-    assert seg_entry["sdh_gap"] == pytest.approx(gap_design)
+    assert seg_entry["max_head_available"] == pytest.approx(discharge_head)
+    assert seg_entry["sdh_available"] == pytest.approx(discharge_head)
+    assert seg_entry["sdh_gap"] == pytest.approx(expected_gap)
     assert seg_entry["velocity_mps"] == pytest.approx(velocity_calc)
     assert seg_entry["reynolds_number"] == pytest.approx(reynolds_calc)
     assert seg_entry["friction_factor"] == pytest.approx(friction_calc)
-    assert seg_entry["head_loss_friction"] == pytest.approx(head_loss_design)
+    assert seg_entry["head_loss_friction"] == pytest.approx(head_loss)
     assert seg_entry["head_loss_friction_actual"] == pytest.approx(head_loss)
-    assert seg_entry["sdh_required"] == pytest.approx(sdh_required_design)
+    assert seg_entry["sdh_required"] == pytest.approx(sdh_required)
     assert seg_entry["sdh_required_actual"] == pytest.approx(sdh_required)
     assert seg_entry["sdh_available_actual"] == pytest.approx(discharge_head)
     assert seg_entry["sdh_gap_actual"] == pytest.approx(expected_gap)
@@ -2090,7 +2078,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert isinstance(example, dict)
     assert example["station_idx"] == 0
     assert example["station_name"] == "Station A"
-    assert example["sdh_gap"] == pytest.approx(gap_design)
+    assert example["sdh_gap"] == pytest.approx(expected_gap)
     assert example["flow_m3h"] == pytest.approx(flow)
     assert example["viscosity_cst"] == pytest.approx(2.5)
 
@@ -2191,30 +2179,30 @@ def test_compute_minimum_lacing_requirement_matches_user_walkthrough():
 
     paradip, balasore = segments
 
-    assert paradip["sdh_required"] == pytest.approx(847.0)
-    assert paradip["sdh_available"] == pytest.approx(650.0)
-    assert paradip["sdh_gap"] == pytest.approx(197.0)
-    assert paradip["dra_perc"] == pytest.approx(24.77987421383648, rel=1e-9, abs=1e-9)
+    assert paradip["sdh_required"] == pytest.approx(847.224747998082)
+    assert paradip["sdh_available"] == pytest.approx(649.9461774563414)
+    assert paradip["sdh_gap"] == pytest.approx(197.27857054174058)
+    assert paradip["dra_perc"] == pytest.approx(24.807901293109204, rel=1e-9, abs=1e-9)
     assert paradip["dra_ppm_unrounded"] == pytest.approx(
-        17.770130549595464, rel=1e-9, abs=1e-9
+        17.8308231872926, rel=1e-9, abs=1e-9
     )
     assert paradip["dra_ppm"] == pytest.approx(18.0)
 
-    assert balasore["sdh_required"] == pytest.approx(906.0)
-    assert balasore["sdh_available"] == pytest.approx(659.0)
-    assert balasore["sdh_gap"] == pytest.approx(247.0)
+    assert balasore["sdh_required"] == pytest.approx(905.6215643017339)
+    assert balasore["sdh_available"] == pytest.approx(659.0909090909091)
+    assert balasore["sdh_gap"] == pytest.approx(246.53065521082476)
     assert balasore["head_cap"] == pytest.approx(659.0909090909091)
-    assert balasore["dra_perc"] == pytest.approx(28.85514018691589, rel=1e-9, abs=1e-9)
+    assert balasore["dra_perc"] == pytest.approx(28.813048372853544, rel=1e-9, abs=1e-9)
     assert balasore["dra_ppm_unrounded"] == pytest.approx(
-        29.174453357539754, rel=1e-9, abs=1e-9
+        29.025442125926634, rel=1e-9, abs=1e-9
     )
     assert balasore["dra_ppm"] == pytest.approx(30.0)
 
     example = result.get("example_segment")
     assert example is not None and example["station_idx"] == 1
-    assert example["sdh_gap"] == pytest.approx(247.0)
+    assert example["sdh_gap"] == pytest.approx(246.53065521082476)
     assert example["dra_ppm_unrounded"] == pytest.approx(
-        29.174453357539754, rel=1e-9, abs=1e-9
+        29.025442125926634, rel=1e-9, abs=1e-9
     )
 
 
@@ -2469,34 +2457,22 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     design_head = maop_kgcm2 * 10000.0 / 850.0
     discharge_head = min(raw_discharge, design_head)
     gap_candidate = sdh_required - discharge_head
-    expected_gap = min(max(gap_candidate, 0.0), head_loss)
+    expected_gap = max(gap_candidate, 0.0)
     expected_dr = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
     expected_dr_capped = min(expected_dr, model.GLOBAL_MAX_DRA_CAP)
-
-    head_loss_design = round(head_loss) if head_loss >= 1.0 else head_loss
-    sdh_required_design = residual_target + head_loss_design
-    if abs(sdh_required_design) >= 1.0:
-        sdh_required_design = round(sdh_required_design)
-    discharge_design = round(discharge_head) if abs(discharge_head) >= 1.0 else discharge_head
-    head_loss_for_ratio = head_loss_design if head_loss_design > 0 else head_loss
-    gap_design = max(min(sdh_required_design - discharge_design, head_loss_for_ratio), 0.0)
-    expected_dr_design = (
-        (gap_design / head_loss_for_ratio) * 100.0 if head_loss_for_ratio > 0 else 0.0
-    )
-    expected_dr_design = min(expected_dr_design, model.GLOBAL_MAX_DRA_CAP)
 
     assert seg_entry["residual_head"] == pytest.approx(residual_target)
     assert seg_entry["available_head_before_suction"] == pytest.approx(raw_discharge)
     assert seg_entry["suction_head"] == pytest.approx(min_suction)
-    assert seg_entry["max_head_available"] == pytest.approx(discharge_design)
-    assert seg_entry["dra_perc"] == pytest.approx(expected_dr_design, rel=1e-3, abs=1e-3)
-    assert seg_entry["sdh_gap"] == pytest.approx(gap_design)
+    assert seg_entry["max_head_available"] == pytest.approx(discharge_head)
+    assert seg_entry["dra_perc"] == pytest.approx(expected_dr_capped, rel=1e-3, abs=1e-3)
+    assert seg_entry["sdh_gap"] == pytest.approx(expected_gap)
     assert seg_entry["sdh_gap_actual"] == pytest.approx(expected_gap)
 
     example = result.get("example_segment")
     assert isinstance(example, dict) and example["station_idx"] == 0
     assert example["station_name"] == "Station A"
-    assert example["sdh_gap"] == pytest.approx(gap_design)
+    assert example["sdh_gap"] == pytest.approx(expected_gap)
     assert example["residual_head"] == pytest.approx(residual_target)
 
 
