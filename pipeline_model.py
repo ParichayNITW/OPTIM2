@@ -1601,6 +1601,7 @@ def _update_mainline_dra(
         tuple[tuple[float, float], ...],
     ] | None = None,
     segment_floor: Mapping[str, object] | None = None,
+    segment_floor_lookup: Mapping[int, Mapping[str, object] | float] | None = None,
 ) -> tuple[
     list[tuple[float, float]],
     tuple[tuple[float, float], ...],
@@ -1637,6 +1638,11 @@ def _update_mainline_dra(
     is_origin:
         ``True`` when handling the origin station.  A running origin pump with
         no injection outputs untreated fluid.
+    segment_floor_lookup:
+        Optional mapping from segment indices to minimum floor specifications
+        (typically dictionaries with ``dra_ppm`` entries).  When supplied the
+        upstream queue is lifted to the specified PPM before pumping so that
+        shear does not erode the computed floor.
 
     Returns
     -------
@@ -1762,6 +1768,42 @@ def _update_mainline_dra(
             existing_queue.append((length, ppm_val))
 
     existing_queue = _merge_queue(existing_queue)
+    if segment_floor_lookup:
+        idx_val = stn_data.get('idx')
+        try:
+            idx_int = int(idx_val)
+        except (TypeError, ValueError):
+            idx_int = None
+        required_floor = 0.0
+        if idx_int is not None:
+            floor_entry = segment_floor_lookup.get(idx_int)
+            if isinstance(floor_entry, Mapping):
+                try:
+                    required_floor = float(floor_entry.get('dra_ppm', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    required_floor = 0.0
+            elif isinstance(floor_entry, (int, float)):
+                required_floor = float(floor_entry or 0.0)
+        if required_floor > 0.0 and existing_queue:
+            total_length_existing = sum(
+                float(length or 0.0)
+                for length, _ppm in existing_queue
+                if float(length or 0.0) > 0.0
+            )
+            if total_length_existing > 0.0:
+                weighted_ppm = sum(
+                    float(length or 0.0) * max(float(ppm or 0.0), 0.0)
+                    for length, ppm in existing_queue
+                    if float(length or 0.0) > 0.0
+                )
+                current_ppm = weighted_ppm / total_length_existing
+                if current_ppm + 1e-9 < required_floor:
+                    existing_queue = _overlay_queue_floor(
+                        existing_queue,
+                        total_length_existing,
+                        required_floor,
+                    )
+                    existing_queue = _merge_queue(existing_queue)
     existing_total = _queue_total_length(existing_queue)
 
     existing_profile_full = tuple(
@@ -2353,7 +2395,7 @@ _segment_hydraulics.cache_clear = _segment_hydraulics_cache_clear  # type: ignor
 _segment_hydraulics.cache_info = _segment_hydraulics_cached.cache_info  # type: ignore[attr-defined]
 
 
-def compute_minimum_lacing_requirement(
+def _legacy_compute_minimum_lacing_requirement(
     stations: list[dict],
     terminal: dict,
     *,
@@ -3295,6 +3337,176 @@ def _split_flow_two_segments(
         else:
             hi = q_loop
     return best
+
+
+def compute_minimum_lacing_requirement(
+    model,
+    pump_station_map=None,
+    pipeline_data=None,
+    dra_inputs=None,
+    **legacy_kwargs,
+):
+    """Compute minimum DRA lacing floors for each pipeline segment.
+
+    When invoked with the legacy keyword-only signature the original
+    implementation is used to preserve backwards compatibility with the
+    existing UI and tests.  Callers of the new API should provide a model
+    object exposing ``compute_friction_loss`` and ``max_pump_head_at_flow``
+    helpers alongside ``dra_utils`` for Burger conversions.
+    """
+
+    # ------------------------------------------------------------------
+    # Backwards compatibility shim.  Older callers pass a list of station
+    # dictionaries as the first argument along with keyword-only options such
+    # as ``max_flow_m3h`` and ``max_visc_cst``.  When that pattern is
+    # detected the legacy helper is delegated to immediately.
+    # ------------------------------------------------------------------
+    if not isinstance(dra_inputs, Mapping) or not isinstance(pipeline_data, Mapping):
+        legacy_kwargs = dict(legacy_kwargs)
+        if pipeline_data is not None and "segment_slices" not in legacy_kwargs:
+            legacy_kwargs["segment_slices"] = pipeline_data
+        return _legacy_compute_minimum_lacing_requirement(
+            model,
+            pump_station_map,
+            **legacy_kwargs,
+        )
+
+    if not hasattr(model, "compute_friction_loss") or not hasattr(model, "max_pump_head_at_flow"):
+        legacy_kwargs = dict(legacy_kwargs)
+        if pipeline_data is not None and "segment_slices" not in legacy_kwargs:
+            legacy_kwargs["segment_slices"] = pipeline_data
+        return _legacy_compute_minimum_lacing_requirement(
+            model,
+            pump_station_map,
+            **legacy_kwargs,
+        )
+
+    max_flow = float(dra_inputs.get("target_laced_flow", 0.0) or 0.0)
+    max_visc = float(dra_inputs.get("target_laced_viscosity", 0.0) or 0.0)
+    max_density = float(dra_inputs.get("target_laced_density", 0.0) or 0.0)
+    min_suction = float(dra_inputs.get("min_suction_head", 0.0) or 0.0)
+    mop_kgcm = float(pipeline_data.get("mop", 0.0) or 0.0)
+
+    station_elevation = pipeline_data.get("station_elevation", {}) or {}
+    segments_input = pipeline_data.get("segments", []) or []
+
+    dra_utils_module = getattr(model, "dra_utils", None)
+    dra_ppm_converter = None
+    if dra_utils_module is not None:
+        dra_ppm_converter = getattr(dra_utils_module, "dra_ppm_for_percent", None)
+    if dra_ppm_converter is None and hasattr(model, "_dra_ppm_for_percent"):
+        def _fallback_ppm(percent, viscosity, flow, diameter):
+            return model._dra_ppm_for_percent(viscosity, percent * 100.0, flow, diameter)
+
+        dra_ppm_converter = _fallback_ppm
+
+    segments: list[dict[str, float]] = []
+
+    for seg_idx, segment in enumerate(segments_input):
+        if not isinstance(segment, Mapping):
+            continue
+
+        up_station = segment.get("upstation")
+        down_station = segment.get("downstation")
+        if up_station is None or down_station is None:
+            continue
+
+        try:
+            friction_loss = float(
+                model.compute_friction_loss(
+                    up_station,
+                    down_station,
+                    flow=max_flow,
+                    viscosity=max_visc,
+                    dra_reduction_percent=0.0,
+                )
+                or 0.0
+            )
+        except Exception:
+            friction_loss = 0.0
+
+        elev_up = float(station_elevation.get(up_station, 0.0) or 0.0)
+        elev_down = float(station_elevation.get(down_station, 0.0) or 0.0)
+        elev_diff = elev_down - elev_up
+
+        sdh_req = friction_loss + elev_diff + 50.0
+
+        peak_points = segment.get("peak_points")
+        if isinstance(peak_points, Sequence):
+            for peak in peak_points:
+                if not isinstance(peak, Mapping):
+                    continue
+                peak_station = peak.get("station")
+                if peak_station is None:
+                    continue
+                peak_elev = float(peak.get("elevation", elev_up) or 0.0)
+                try:
+                    friction_to_peak = float(
+                        model.compute_friction_loss(
+                            up_station,
+                            peak_station,
+                            flow=max_flow,
+                            viscosity=max_visc,
+                            dra_reduction_percent=0.0,
+                        )
+                        or 0.0
+                    )
+                except Exception:
+                    friction_to_peak = 0.0
+                head_req_at_peak = friction_to_peak + (peak_elev - elev_up) + 25.0
+                sdh_req = max(sdh_req, head_req_at_peak)
+
+        try:
+            max_head_dol = float(
+                model.max_pump_head_at_flow(
+                    station=up_station,
+                    flow=max_flow,
+                    pump_station_map=pump_station_map,
+                )
+                or 0.0
+            )
+        except Exception:
+            max_head_dol = 0.0
+        sdh_avail = max_head_dol + min_suction
+
+        mop_in_m = 0.0
+        if max_density > 0.0:
+            mop_in_m = mop_kgcm * 1.0e4 / max_density if mop_kgcm > 0.0 else 0.0
+        sdh_avail = min(sdh_avail, mop_in_m) if mop_in_m > 0.0 else sdh_avail
+
+        head_deficit = sdh_req - sdh_avail
+
+        if head_deficit <= 0.0 or friction_loss <= 0.0:
+            dra_perc = 0.0
+            dra_ppm = 0.0
+        else:
+            dra_perc = head_deficit / friction_loss
+            if dra_ppm_converter is not None:
+                dra_ppm = float(
+                    dra_ppm_converter(
+                        percent=dra_perc,
+                        viscosity=max_visc,
+                        flow=max_flow,
+                        diameter=segment.get("diameter", 0.0),
+                    )
+                )
+            else:
+                dra_ppm = 0.0
+
+        segments.append(
+            {
+                "upstation": up_station,
+                "downstation": down_station,
+                "dra_perc": dra_perc,
+                "dra_ppm": dra_ppm,
+                "dra_perc_uncapped": dra_perc,
+                "friction_loss": friction_loss,
+                "sdh_req": sdh_req,
+                "sdh_avail": sdh_avail,
+            }
+        )
+
+    return {"segments": segments}
 
 
 def _pump_head(
@@ -5606,6 +5818,7 @@ def solve_pipeline(
                     is_origin=stn_data['idx'] == 0,
                     precomputed=precomputed_queue,
                     segment_floor=stn_data.get('baseline_floor'),
+                    segment_floor_lookup=segment_floor_lookup,
                 )
                 if floor_requires_injection:
                     continue
