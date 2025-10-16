@@ -1700,13 +1700,6 @@ def _update_mainline_dra(
             floor_ppm = float(segment_floor.get('dra_ppm', 0.0) or 0.0)
         except (TypeError, ValueError):
             floor_ppm = 0.0
-        if floor_ppm <= 0.0:
-            try:
-                floor_perc = float(segment_floor.get('dra_perc', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                floor_perc = 0.0
-            if floor_perc > 0.0 and kv > 0.0:
-                floor_ppm = _dra_ppm_for_percent(kv, floor_perc, flow_m3h, d_inner)
         seg_floor_raw = segment_floor.get('segments')
         if isinstance(seg_floor_raw, Sequence):
             for seg_entry in seg_floor_raw:
@@ -1720,13 +1713,6 @@ def _update_mainline_dra(
                     seg_ppm = float(seg_entry.get('dra_ppm', 0.0) or 0.0)
                 except (TypeError, ValueError):
                     seg_ppm = 0.0
-                if seg_ppm <= 0.0:
-                    try:
-                        seg_perc = float(seg_entry.get('dra_perc', 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        seg_perc = 0.0
-                    if seg_perc > 0.0 and kv > 0.0:
-                        seg_ppm = _dra_ppm_for_percent(kv, seg_perc, flow_m3h, d_inner)
                 if seg_length <= 0.0 or seg_ppm <= 0.0:
                     continue
                 floor_segments.append((seg_length, seg_ppm))
@@ -5051,18 +5037,13 @@ def solve_pipeline(
         segment_flows.append(prev_flow - delivery + supply)
 
     origin_dra_floor_ppm = 0.0
-    origin_dra_floor_perc = 0.0
     origin_floor_pending = False
     if isinstance(forced_origin_detail, Mapping):
         try:
             origin_dra_floor_ppm = max(float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0), 0.0)
         except (TypeError, ValueError):
             origin_dra_floor_ppm = 0.0
-        try:
-            origin_dra_floor_perc = max(float(forced_origin_detail.get('dra_perc', 0.0) or 0.0), 0.0)
-        except (TypeError, ValueError):
-            origin_dra_floor_perc = 0.0
-        if origin_dra_floor_perc <= 0.0 and origin_dra_floor_ppm > 0.0 and KV_list:
+        if origin_dra_floor_ppm > 0.0 and KV_list:
             origin_floor_pending = True
 
     default_t = 0.007
@@ -5105,13 +5086,6 @@ def solve_pipeline(
             if origin_diameter < 0:
                 origin_diameter = 0.0
             if origin_floor_pending and origin_dra_floor_ppm > 0.0:
-                origin_flow = segment_flows[0] if segment_flows else FLOW
-                origin_dra_floor_perc = _dra_percent_for_ppm(
-                    KV_list[0],
-                    origin_dra_floor_ppm,
-                    origin_flow,
-                    origin_diameter,
-                )
                 origin_floor_pending = False
         rough = stn.get('rough', default_e)
 
@@ -5162,56 +5136,23 @@ def solve_pipeline(
 
         floor_entry = segment_floor_lookup.get(i - 1)
         floor_limited = False
-        floor_perc_raw = 0.0
         floor_ppm_raw = 0.0
         if isinstance(floor_entry, Mapping):
-            try:
-                floor_perc_raw = float(floor_entry.get('dra_perc', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                floor_perc_raw = 0.0
             try:
                 floor_ppm_raw = float(floor_entry.get('dra_ppm', 0.0) or 0.0)
             except (TypeError, ValueError):
                 floor_ppm_raw = 0.0
             floor_limited = bool(floor_entry.get('limited_by_station', False))
-        if i == 1:
-            if origin_dra_floor_perc > 0.0:
-                floor_perc_raw = max(floor_perc_raw, origin_dra_floor_perc)
-            if origin_dra_floor_ppm > 0.0:
-                floor_ppm_raw = max(floor_ppm_raw, origin_dra_floor_ppm)
-        if floor_perc_raw < 0.0:
-            floor_perc_raw = 0.0
+        if i == 1 and origin_dra_floor_ppm > 0.0:
+            floor_ppm_raw = max(floor_ppm_raw, origin_dra_floor_ppm)
         if floor_ppm_raw < 0.0:
             floor_ppm_raw = 0.0
-        if kv > 0.0:
-            if floor_perc_raw > 0.0 and floor_ppm_raw <= 0.0:
-                floor_ppm_raw = _dra_ppm_for_percent(kv, floor_perc_raw, flow, d_inner)
-            elif floor_ppm_raw > 0.0 and floor_perc_raw <= 0.0:
-                floor_perc_raw = _dra_percent_for_ppm(kv, floor_ppm_raw, flow, d_inner)
-        floor_perc_min = 0.0
-        if floor_perc_raw > 0.0:
-            floor_perc_min = float(math.ceil(floor_perc_raw))
-        elif floor_ppm_raw > 0.0 and kv > 0.0:
-            perc_from_ppm = _dra_percent_for_ppm(kv, floor_ppm_raw, flow, d_inner)
-            if perc_from_ppm > 0.0:
-                floor_perc_min = float(math.ceil(perc_from_ppm))
-        if floor_perc_min < 0.0:
-            floor_perc_min = 0.0
         floor_ppm_min = floor_ppm_raw if floor_ppm_raw > 0.0 else 0.0
-        if floor_perc_min > 0.0 and kv > 0.0:
-            floor_ppm_from_min = _dra_ppm_for_percent(kv, floor_perc_min, flow, d_inner)
-            if floor_ppm_from_min > floor_ppm_min:
-                floor_ppm_min = floor_ppm_from_min
         floor_dr_min_float = 0.0
         if floor_ppm_min > 0.0 and kv > 0.0:
             floor_dr_min_float = _dra_percent_for_ppm(kv, floor_ppm_min, flow, d_inner)
         floor_dr_min_int = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 0
-        floor_perc_min_int = int(floor_perc_min) if floor_perc_min > 0.0 else 0
-        floor_perc_min_display = floor_perc_min_int
-        # Floor enforcement is handled through the injection requirement expressed
-        # in PPM.  The %DR counterpart is shown for context but should not
-        # constrain the optimisation search.
-        floor_perc_min_int = 0
+        floor_perc_min_display = 0
         floor_ppm_tol = max(floor_ppm_min * 1e-6, 1e-9) if floor_ppm_min > 0.0 else 1e-9
 
         opts = []
