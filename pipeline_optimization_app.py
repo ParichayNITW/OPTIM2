@@ -1007,8 +1007,6 @@ def _collect_segment_floors(
     baseline_requirement: Mapping[str, object] | None,
     stations: Sequence[Mapping[str, object]] | None,
     *,
-    baseline_flow_m3h: float,
-    baseline_visc_cst: float,
     min_ppm: float = 0.0,
     floor_map: Mapping[int, float] | None = None,
 ) -> list[dict[str, object]]:
@@ -1022,8 +1020,6 @@ def _collect_segment_floors(
     segments_raw = baseline_requirement.get("segments")
     if not isinstance(segments_raw, Sequence):
         return segments
-
-    flows_by_segment = _segment_flow_profiles(stations, baseline_flow_m3h)
 
     dra_ppm_for_percent = getattr(pipeline_model, "_dra_ppm_for_percent", None)
     dra_percent_for_ppm = getattr(pipeline_model, "_dra_percent_for_ppm", None)
@@ -1055,13 +1051,19 @@ def _collect_segment_floors(
 
         station_info = stations[station_idx] if stations and 0 <= station_idx < len(stations) else None
 
-        flow_val = baseline_flow_m3h
-        if 0 <= station_idx < len(flows_by_segment):
-            flow_val = flows_by_segment[station_idx]
-        diameter = _station_inner_diameter(station_info or {}) if station_info else 0.0
-        velocity = 0.0
-        if diameter > 0.0 and flow_val > 0.0:
+        flow_val = _coerce_positive_float(entry.get("flow_m3h", entry.get("flow", 0.0)))
+        diameter_entry = _coerce_positive_float(entry.get("diameter_m", 0.0))
+        diameter = diameter_entry if diameter_entry > 0.0 else (
+            _station_inner_diameter(station_info or {}) if station_info else 0.0
+        )
+        velocity_entry = _coerce_positive_float(entry.get("velocity_mps", 0.0))
+        velocity = velocity_entry
+        if velocity <= 0.0 and flow_val > 0.0 and diameter > 0.0:
             velocity = _flow_velocity_mps(flow_val, diameter)
+
+        visc_ref = _coerce_positive_float(entry.get("viscosity_cst", entry.get("kv", 0.0)))
+        if visc_ref <= 0.0:
+            visc_ref = 0.0
 
         has_capacity = True
         station_cap_ppm = 0.0
@@ -1089,22 +1091,23 @@ def _collect_segment_floors(
                     max_dr_val = min(max_dr_val, global_cap)
                 if velocity > 0.0 and diameter > 0.0:
                     ppm_calc = 0.0
-                    if callable(dra_ppm_for_percent):
-                        ppm_calc = float(
-                            dra_ppm_for_percent(
-                                baseline_visc_cst,
-                                max_dr_val,
-                                flow_val,
-                                diameter,
-                            )
-                        )
-                    if ppm_calc <= 0.0:
-                        try:
+                    if visc_ref > 0.0 and velocity > 0.0 and diameter > 0.0:
+                        if callable(dra_ppm_for_percent):
                             ppm_calc = float(
-                                get_ppm_for_dr(baseline_visc_cst, max_dr_val, velocity, diameter)
+                                dra_ppm_for_percent(
+                                    visc_ref,
+                                    max_dr_val,
+                                    flow_val,
+                                    diameter,
+                                )
                             )
-                        except Exception:
-                            ppm_calc = 0.0
+                        if ppm_calc <= 0.0:
+                            try:
+                                ppm_calc = float(
+                                    get_ppm_for_dr(visc_ref, max_dr_val, velocity, diameter)
+                                )
+                            except Exception:
+                                ppm_calc = 0.0
                     if ppm_calc > 0.0:
                         station_cap_ppm = ppm_calc
                         station_cap_perc = max_dr_val
@@ -1162,13 +1165,13 @@ def _collect_segment_floors(
                 seg_perc = (gap_basis / friction_basis) * 100.0
                 if seg_perc_uncapped <= 0.0:
                     seg_perc_uncapped = seg_perc
-        if seg_perc > 0.0 and floor_ppm <= 0.0 and velocity > 0.0 and diameter > 0.0:
+        if seg_perc > 0.0 and floor_ppm <= 0.0 and velocity > 0.0 and diameter > 0.0 and visc_ref > 0.0:
             ppm_calc = 0.0
             if callable(dra_ppm_for_percent):
-                ppm_calc = float(dra_ppm_for_percent(baseline_visc_cst, seg_perc, flow_val, diameter))
+                ppm_calc = float(dra_ppm_for_percent(visc_ref, seg_perc, flow_val, diameter))
             if ppm_calc <= 0.0:
                 try:
-                    ppm_calc = float(get_ppm_for_dr(baseline_visc_cst, seg_perc, velocity, diameter))
+                    ppm_calc = float(get_ppm_for_dr(visc_ref, seg_perc, velocity, diameter))
                 except Exception:
                     ppm_calc = 0.0
             if ppm_calc > 0.0:
@@ -1178,13 +1181,13 @@ def _collect_segment_floors(
         if station_cap_perc > 0.0 and seg_perc > station_cap_perc + 1e-9:
             seg_perc = station_cap_perc
             limited_by_station = True
-        if seg_perc <= 0.0 and floor_ppm > 0.0 and velocity > 0.0 and diameter > 0.0:
+        if seg_perc <= 0.0 and floor_ppm > 0.0 and velocity > 0.0 and diameter > 0.0 and visc_ref > 0.0:
             perc_calc = 0.0
             if callable(dra_percent_for_ppm):
-                perc_calc = float(dra_percent_for_ppm(baseline_visc_cst, floor_ppm, flow_val, diameter))
+                perc_calc = float(dra_percent_for_ppm(visc_ref, floor_ppm, flow_val, diameter))
             if perc_calc <= 0.0:
                 try:
-                    perc_calc = float(get_dr_for_ppm(baseline_visc_cst, floor_ppm, velocity, diameter))
+                    perc_calc = float(get_dr_for_ppm(visc_ref, floor_ppm, velocity, diameter))
                 except Exception:
                     perc_calc = 0.0
             if perc_calc > 0.0:
@@ -1200,8 +1203,12 @@ def _collect_segment_floors(
         if ppm_unrounded > 0.0:
             seg_detail["dra_ppm_unrounded"] = float(ppm_unrounded)
 
-        seg_detail["flow_m3h"] = float(flow_val)
-        seg_detail["diameter_m"] = float(diameter)
+        if flow_val > 0.0:
+            seg_detail["flow_m3h"] = float(flow_val)
+        if diameter > 0.0:
+            seg_detail["diameter_m"] = float(diameter)
+        if visc_ref > 0.0:
+            seg_detail["viscosity_cst"] = float(visc_ref)
 
         float_fields = (
             "velocity_mps",
@@ -4362,8 +4369,6 @@ def solve_pipeline(
         segment_floors = _collect_segment_floors(
             baseline_requirement,
             stations,
-            baseline_flow_m3h=baseline_flow,
-            baseline_visc_cst=baseline_visc,
             min_ppm=min_floor_ppm,
             floor_map=segment_floor_map,
         )
@@ -4989,8 +4994,6 @@ def _enforce_minimum_origin_dra(
     hourly_flow_m3: float | None = None,
     step_hours: float = 1.0,
     stations: Sequence[Mapping[str, object]] | None = None,
-    baseline_flow_m3h: float | None = None,
-    baseline_visc_cst: float | None = None,
 ) -> bool:
     """Ensure the upstream queue carries a non-zero DRA slug.
 
@@ -5050,18 +5053,6 @@ def _enforce_minimum_origin_dra(
     else:
         min_length = max(min_length, 1.0)
 
-    if baseline_flow_m3h is None:
-        baseline_flow_m3h = st.session_state.get("max_laced_flow_m3h", hourly_flow_m3)
-    if baseline_visc_cst is None:
-        baseline_visc_cst = st.session_state.get("max_laced_visc_cst", 0.0)
-    try:
-        baseline_flow_value = float(baseline_flow_m3h or 0.0)
-    except (TypeError, ValueError):
-        baseline_flow_value = 0.0
-    try:
-        baseline_visc_value = float(baseline_visc_cst or 0.0)
-    except (TypeError, ValueError):
-        baseline_visc_value = 0.0
     station_seq = stations
     if station_seq is None:
         session_stations = st.session_state.get("stations")
@@ -5071,8 +5062,6 @@ def _enforce_minimum_origin_dra(
     segments_source = _collect_segment_floors(
         baseline_requirement,
         station_seq,
-        baseline_flow_m3h=baseline_flow_value,
-        baseline_visc_cst=baseline_visc_value,
         min_ppm=floor_ppm,
     )
     segments_to_enforce = [dict(seg) for seg in segments_source]
@@ -5666,17 +5655,6 @@ def _execute_time_series_solver(
     baseline_segments_raw = st.session_state.get("origin_lacing_segment_baseline")
     baseline_segment_floors = _sanitize_segment_floors(baseline_segments_raw)
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    try:
-        baseline_flow_for_floor = float(
-            st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", flow_rate))
-            or flow_rate
-        )
-    except (TypeError, ValueError):
-        baseline_flow_for_floor = float(flow_rate or 0.0)
-    try:
-        baseline_visc_for_floor = float(st.session_state.get("max_laced_visc_cst", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        baseline_visc_for_floor = 0.0
     baseline_for_enforcement: dict | None = None
     base_detail: dict[str, object] = {}
     try:
@@ -5939,8 +5917,6 @@ def _execute_time_series_solver(
                         hourly_flow_m3=flow_rate,
                         step_hours=1.0 / max(float(sub_steps or 1), 1.0),
                         stations=stations_base,
-                        baseline_flow_m3h=baseline_flow_for_floor,
-                        baseline_visc_cst=baseline_visc_for_floor,
                     )
                     if tightened:
                         detail = state.get("origin_enforced_detail") or {}
@@ -6039,8 +6015,6 @@ def _execute_time_series_solver(
                     hourly_flow_m3=flow_rate,
                     step_hours=1.0 / max(float(sub_steps or 1), 1.0),
                     stations=stations_base,
-                    baseline_flow_m3h=baseline_flow_for_floor,
-                    baseline_visc_cst=baseline_visc_for_floor,
                 )
                 if tightened:
                     detail = prev_state.get("origin_enforced_detail") or {}
@@ -6422,8 +6396,6 @@ def run_all_updates():
         segment_floors = _collect_segment_floors(
             baseline_requirement,
             stations_data,
-            baseline_flow_m3h=baseline_flow,
-            baseline_visc_cst=baseline_visc,
             min_ppm=min_floor_ppm,
             floor_map=segment_floor_map,
         )

@@ -2691,9 +2691,55 @@ def compute_minimum_lacing_requirement(
         residual_target = max(downstream_residual, terminal_min_residual, residual_floor)
 
         head_loss = max(head_loss, 0.0)
+
+        peak_requirement = 0.0
+        peaks = stn.get('peaks') if isinstance(stn.get('peaks'), Sequence) else None
+        if peaks and L > 0.0 and d_inner > 0.0 and flow_segment > 0.0:
+            for peak in peaks:
+                if not isinstance(peak, Mapping):
+                    continue
+                location_raw = (
+                    peak.get('loc')
+                    or peak.get('Location (km)')
+                    or peak.get('Location')
+                )
+                elev_raw = (
+                    peak.get('elev')
+                    or peak.get('Elevation (m)')
+                    or peak.get('Elevation')
+                )
+                try:
+                    peak_loc = float(location_raw)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    peak_elev = float(elev_raw)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(peak_loc) or not math.isfinite(peak_elev):
+                    continue
+                if peak_loc <= 0.0:
+                    continue
+                head_to_peak, *_ = _segment_hydraulics_composite(
+                    flow_segment,
+                    L,
+                    d_inner,
+                    rough,
+                    kv,
+                    0.0,
+                    slices=slices_use[idx] if slices_use else None,
+                    limit=peak_loc,
+                )
+                head_to_peak = max(head_to_peak, 0.0)
+                requirement = head_to_peak + (peak_elev - elev_current) + GLOBAL_MIN_PEAK_RESIDUAL
+                if requirement > peak_requirement:
+                    peak_requirement = requirement
+
         sdh_required_actual = residual_target + head_loss + elev_delta
         if sdh_required_actual < residual_target:
             sdh_required_actual = residual_target
+        if peak_requirement > 0.0:
+            sdh_required_actual = max(sdh_required_actual, peak_requirement)
 
         rho_val = _station_density(stn)
         mop_station = _collect_mop_kgcm2(stn)
@@ -2723,6 +2769,8 @@ def compute_minimum_lacing_requirement(
         else:
             head_loss_design = head_loss
         sdh_required_design = residual_target + head_loss_design + elev_delta
+        if peak_requirement > 0.0:
+            sdh_required_design = max(sdh_required_design, peak_requirement)
         if sdh_required_design < residual_target:
             sdh_required_design = residual_target
         if abs(sdh_required_design) >= 1.0:
@@ -2853,10 +2901,16 @@ def compute_minimum_lacing_requirement(
             'sdh_available_actual': float(discharge_head_actual),
             'sdh_gap_actual': float(gap_actual),
             'head_loss_friction_actual': float(head_loss),
+            'flow_m3h': float(flow_segment),
+            'diameter_m': float(d_inner),
+            'viscosity_cst': float(kv),
+            'roughness_m': float(rough),
         }
         if dr_needed > 0 and dra_ppm_needed > 0.0 and has_dra_facility:
             ppm_unrounded = get_ppm_for_dr_exact(visc_max, dr_needed, velocity, d_inner)
             segment_entry['dra_ppm_unrounded'] = float(ppm_unrounded)
+        if peak_requirement > 0.0:
+            segment_entry['sdh_required_peak'] = float(peak_requirement)
         segment_requirements.append(segment_entry)
 
         carried_head_available = discharge_head_actual
