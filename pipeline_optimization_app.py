@@ -872,6 +872,201 @@ def compute_and_store_segment_floor_map(
 
     return {int(idx): float(val) for idx, val in floor_map_by_idx.items()}
 
+# ---------------------------
+# STEP 1: Segment Floor DRA
+# ---------------------------
+from typing import Dict, Tuple
+
+
+def _format_segment_name(stations, i_from: int, i_to: int) -> str:
+    """Return a user-friendly "A → B" label for banner messaging."""
+
+    try:
+        start = stations[i_from]["name"] if 0 <= i_from < len(stations) else None
+    except Exception:  # pragma: no cover - defensive formatting guard
+        start = None
+    try:
+        end = stations[i_to]["name"] if 0 <= i_to < len(stations) else None
+    except Exception:  # pragma: no cover - defensive formatting guard
+        end = None
+
+    if start and end:
+        return f"{start} \u2192 {end}"
+    if start:
+        return f"{start} \u2192 {i_to}"
+    if end:
+        return f"Seg {i_from} \u2192 {end}"
+    return f"Seg {i_from}->{i_to}"
+
+
+def compute_and_store_segment_floor_map(
+    *,
+    pipeline_cfg: Mapping[str, object] | None = None,
+    stations: Sequence[Mapping[str, object]] | None = None,
+    segments: Sequence[Mapping[str, object]] | None = None,
+    global_inputs: Mapping[str, object] | None = None,
+    show_banner: bool = True,
+) -> Dict[int, float]:
+    """Compute segment-wise DRA floors, cache them, and return the raw map."""
+
+    import streamlit as st
+
+    floor_map_raw: Dict[int, float] = {}
+
+    stations_seq: list[Mapping[str, object]] = []
+    if isinstance(stations, Sequence):
+        stations_seq = [s for s in stations if isinstance(s, Mapping)]
+    if not stations_seq:
+        stored = st.session_state.get("stations")
+        if isinstance(stored, Sequence):
+            stations_seq = [s for s in stored if isinstance(s, Mapping)]
+
+    if not isinstance(global_inputs, Mapping):
+        global_inputs = {}
+
+    baseline_req: Mapping[str, object] | None = None
+    if isinstance(global_inputs.get("baseline_requirement"), Mapping):
+        baseline_req = global_inputs.get("baseline_requirement")
+    elif isinstance(pipeline_cfg, Mapping):
+        if isinstance(pipeline_cfg.get("baseline_requirement"), Mapping):
+            baseline_req = pipeline_cfg.get("baseline_requirement")
+        elif pipeline_cfg.get("segments"):
+            baseline_req = pipeline_cfg
+    if baseline_req is None and isinstance(segments, Sequence):
+        baseline_req = {"segments": [seg for seg in segments if isinstance(seg, Mapping)]}
+
+    def _first_present(mapping: Mapping[str, object], *keys: str) -> float:
+        for key in keys:
+            if key in mapping and mapping[key] is not None:
+                try:
+                    return float(mapping[key])
+                except (TypeError, ValueError):
+                    continue
+        raise KeyError
+
+    baseline_flow = 0.0
+    try:
+        baseline_flow = _first_present(
+            global_inputs,
+            "baseline_flow_m3h",
+            "max_laced_flow_m3h",
+            "flow_m3h",
+            "flow",
+            "FLOW",
+        )
+    except KeyError:
+        try:
+            baseline_flow = float(
+                st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 0.0))
+            )
+        except (TypeError, ValueError):
+            baseline_flow = 0.0
+
+    baseline_visc = 0.0
+    try:
+        baseline_visc = _first_present(
+            global_inputs,
+            "baseline_visc_cst",
+            "max_laced_visc_cst",
+            "visc_cst",
+            "KV",
+        )
+    except KeyError:
+        try:
+            baseline_visc = float(st.session_state.get("max_laced_visc_cst", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            baseline_visc = 0.0
+
+    if baseline_req:
+        try:
+            floor_map_raw = _segment_floor_ppm_map(
+                baseline_req,
+                stations_seq,
+                baseline_flow_m3h=float(baseline_flow),
+                baseline_visc_cst=float(baseline_visc),
+            )
+        except NameError as exc:  # pragma: no cover - developer wiring issue
+            raise RuntimeError(
+                "Missing `_segment_floor_ppm_map` helper. Ensure it is available before "
+                "calling compute_and_store_segment_floor_map."
+            ) from exc
+        except Exception:
+            floor_map_raw = {}
+
+    floor_map_pairs: Dict[Tuple[int, int], int] = {}
+    for seg_idx, ppm_val in (floor_map_raw or {}).items():
+        try:
+            idx_int = int(seg_idx)
+        except (TypeError, ValueError):
+            continue
+        try:
+            ppm_float = float(ppm_val or 0.0)
+        except (TypeError, ValueError):
+            ppm_float = 0.0
+        floor_map_pairs[(idx_int, idx_int + 1)] = int(math.ceil(ppm_float)) if ppm_float > 0 else 0
+
+    drpct_map: Dict[Tuple[int, int], float | None] = {}
+    flows_by_segment = _segment_flow_profiles(stations_seq, baseline_flow)
+    for (i_from, i_to), ppm_int in floor_map_pairs.items():
+        drpct_val: float | None = None
+        if ppm_int > 0 and baseline_visc > 0:
+            flow_val = baseline_flow
+            if 0 <= i_from < len(flows_by_segment):
+                flow_val = flows_by_segment[i_from]
+            diameter = 0.0
+            if 0 <= i_from < len(stations_seq):
+                diameter = _station_inner_diameter(stations_seq[i_from])
+            if flow_val > 0 and diameter > 0:
+                velocity = _flow_velocity_mps(flow_val, diameter)
+                if velocity > 0:
+                    try:
+                        drpct_val = float(
+                            get_dr_for_ppm(float(baseline_visc), float(ppm_int), velocity, diameter)
+                        )
+                    except Exception:
+                        drpct_val = None
+        drpct_map[(i_from, i_to)] = drpct_val
+
+    st.session_state["dra_floor_ppm_by_seg"] = floor_map_pairs
+    st.session_state["dra_floor_drpct_by_seg"] = drpct_map
+
+    origin_key = (0, 1) if (0, 1) in floor_map_pairs else next(iter(floor_map_pairs), None)
+    origin_ppm = floor_map_pairs.get(origin_key, 0) if origin_key else 0
+    st.session_state["dra_floor_origin_ppm"] = int(origin_ppm)
+
+    positive_values = [val for val in (floor_map_raw or {}).values() if val > 0]
+    min_floor = min(positive_values) if positive_values else 0.0
+    if floor_map_raw:
+        st.session_state["minimum_dra_floor_ppm"] = float(min_floor)
+        st.session_state["minimum_dra_floor_ppm_by_segment"] = {
+            int(idx): float(val) for idx, val in floor_map_raw.items()
+        }
+    else:
+        st.session_state.pop("minimum_dra_floor_ppm", None)
+        st.session_state.pop("minimum_dra_floor_ppm_by_segment", None)
+
+    banner_parts: list[str] = []
+    if origin_ppm > 0:
+        banner_parts.append(f"Minimum DRA floor is {origin_ppm:.0f} ppm at origin.")
+    else:
+        banner_parts.append("Minimum DRA floor is 0 ppm at origin.")
+
+    if floor_map_pairs:
+        segments_bits: list[str] = []
+        for (i_from, i_to), ppm_int in sorted(floor_map_pairs.items()):
+            seg_label = _format_segment_name(stations_seq, i_from, i_to)
+            segments_bits.append(f"{seg_label}: {int(ppm_int)} ppm")
+        if segments_bits:
+            banner_parts.append("Required by segment – " + "; ".join(segments_bits))
+
+    banner_msg = " ".join(banner_parts)
+    st.session_state["dra_floor_banner"] = banner_msg
+
+    if show_banner and banner_msg:
+        st.info(banner_msg)
+
+    return floor_map_raw or {}
+
 
 INIT_DRA_COL = "Initial DRA (ppm)"
 
