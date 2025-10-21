@@ -512,7 +512,10 @@ def _station_min_rpm(
 ) -> float:
     """Return the minimum permissible RPM for ``stn`` (optionally per type)."""
 
-    return _extract_rpm(stn.get('MinRPM'), ptype=ptype, default=default, prefer='min')
+    value = stn.get('MinRPM')
+    if value is None:
+        value = stn.get('min_rpm')
+    return _extract_rpm(value, ptype=ptype, default=default, prefer='min')
 
 
 def _station_max_rpm(
@@ -522,7 +525,10 @@ def _station_max_rpm(
 ) -> float:
     """Return the maximum permissible RPM for ``stn`` (optionally per type)."""
 
-    return _extract_rpm(stn.get('DOL'), ptype=ptype, default=default, prefer='max')
+    value = stn.get('DOL')
+    if value is None:
+        value = stn.get('dol')
+    return _extract_rpm(value, ptype=ptype, default=default, prefer='max')
 
 # ---------------------------------------------------------------------------
 # Loop enumeration utilities
@@ -3724,16 +3730,27 @@ def _build_pump_option_cache(
     if nop <= 0 or flow_total <= 0:
         return cache
 
+    def _coeff(key: str, legacy_key: str | None = None) -> float:
+        """Return a pump coefficient supporting legacy and UI key forms."""
+
+        primary = stn_data.get(key)
+        if primary is None and legacy_key is not None:
+            primary = stn_data.get(legacy_key)
+        try:
+            return float(primary) if primary is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
     pump_def = {
-        'A': stn_data.get('coef_A', 0.0),
-        'B': stn_data.get('coef_B', 0.0),
-        'C': stn_data.get('coef_C', 0.0),
-        'P': stn_data.get('coef_P', 0.0),
-        'Q': stn_data.get('coef_Q', 0.0),
-        'R': stn_data.get('coef_R', 0.0),
-        'S': stn_data.get('coef_S', 0.0),
-        'T': stn_data.get('coef_T', 0.0),
-        'DOL': stn_data.get('dol', 0.0),
+        'A': _coeff('A', 'coef_A'),
+        'B': _coeff('B', 'coef_B'),
+        'C': _coeff('C', 'coef_C'),
+        'P': _coeff('P', 'coef_P'),
+        'Q': _coeff('Q', 'coef_Q'),
+        'R': _coeff('R', 'coef_R'),
+        'S': _coeff('S', 'coef_S'),
+        'T': _coeff('T', 'coef_T'),
+        'DOL': _coeff('DOL', 'dol'),
         'combo': stn_data.get('pump_combo'),
         'pump_types': stn_data.get('pump_types'),
         'active_combo': stn_data.get('active_combo'),
