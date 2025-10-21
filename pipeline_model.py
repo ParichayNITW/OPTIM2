@@ -3326,7 +3326,7 @@ def _split_flow_two_segments(
 
 
 def compute_minimum_lacing_requirement(
-    model,
+    model=None,
     pump_station_map=None,
     pipeline_data=None,
     dra_inputs=None,
@@ -3347,24 +3347,36 @@ def compute_minimum_lacing_requirement(
     # as ``max_flow_m3h`` and ``max_visc_cst``.  When that pattern is
     # detected the legacy helper is delegated to immediately.
     # ------------------------------------------------------------------
+    def _pop_legacy_inputs():
+        legacy = dict(legacy_kwargs)
+        stations_arg = legacy.pop("stations", None)
+        terminal_arg = legacy.pop("terminal", None)
+
+        if stations_arg is None and isinstance(model, Sequence) and not isinstance(model, (str, bytes)):
+            stations_arg = model
+        if terminal_arg is None and isinstance(pump_station_map, Mapping):
+            terminal_arg = pump_station_map
+
+        return stations_arg, terminal_arg, legacy
+
     if not isinstance(dra_inputs, Mapping) or not isinstance(pipeline_data, Mapping):
-        legacy_kwargs = dict(legacy_kwargs)
-        if pipeline_data is not None and "segment_slices" not in legacy_kwargs:
-            legacy_kwargs["segment_slices"] = pipeline_data
+        stations_arg, terminal_arg, legacy = _pop_legacy_inputs()
+        if pipeline_data is not None and "segment_slices" not in legacy:
+            legacy["segment_slices"] = pipeline_data
         return _legacy_compute_minimum_lacing_requirement(
-            model,
-            pump_station_map,
-            **legacy_kwargs,
+            stations_arg,
+            terminal_arg,
+            **legacy,
         )
 
     if not hasattr(model, "compute_friction_loss") or not hasattr(model, "max_pump_head_at_flow"):
-        legacy_kwargs = dict(legacy_kwargs)
-        if pipeline_data is not None and "segment_slices" not in legacy_kwargs:
-            legacy_kwargs["segment_slices"] = pipeline_data
+        stations_arg, terminal_arg, legacy = _pop_legacy_inputs()
+        if pipeline_data is not None and "segment_slices" not in legacy:
+            legacy["segment_slices"] = pipeline_data
         return _legacy_compute_minimum_lacing_requirement(
-            model,
-            pump_station_map,
-            **legacy_kwargs,
+            stations_arg,
+            terminal_arg,
+            **legacy,
         )
 
     max_flow = float(dra_inputs.get("target_laced_flow", 0.0) or 0.0)
@@ -5740,6 +5752,18 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
+                update_kwargs = {
+                    'pump_running': pump_running,
+                    'pump_shear_rate': pump_shear_rate,
+                    'dra_shear_factor': stn_data.get('dra_shear_factor', 0.0),
+                    'shear_injection': bool(stn_data.get('shear_injection', False)),
+                    'is_origin': stn_data['idx'] == 0,
+                    'precomputed': precomputed_queue,
+                    'segment_floor': stn_data.get('baseline_floor'),
+                }
+                if segment_floor_lookup:
+                    update_kwargs['segment_floor_lookup'] = segment_floor_lookup
+
                 (
                     dra_segments,
                     queue_after_list,
@@ -5752,14 +5776,7 @@ def solve_pipeline(
                     stn_data['L'],
                     flow_total,
                     hours,
-                    pump_running=pump_running,
-                    pump_shear_rate=pump_shear_rate,
-                    dra_shear_factor=stn_data.get('dra_shear_factor', 0.0),
-                    shear_injection=bool(stn_data.get('shear_injection', False)),
-                    is_origin=stn_data['idx'] == 0,
-                    precomputed=precomputed_queue,
-                    segment_floor=stn_data.get('baseline_floor'),
-                    segment_floor_lookup=segment_floor_lookup,
+                    **update_kwargs,
                 )
                 if floor_requires_injection:
                     continue
