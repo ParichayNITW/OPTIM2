@@ -1,263 +1,253 @@
-"""Drag reducer (DRA) helper utilities based on the Burger equation."""
+
+"""Drag reducer (DRA) helper utilities.
+
+Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
+"""
 
 from __future__ import annotations
 
-import math
-from functools import lru_cache
-from typing import Tuple
+import os
+from typing import Dict, Tuple
 
-K1 = 0.1644
-K2 = -0.04705
-FT_PER_M = 3.28083989501312
+import numpy as np
+import pandas as pd
+
+# Mapping of viscosity (cSt) to CSV file name
+DRA_CSV_FILES: Dict[float, str] = {
+    1: "1 cst.csv",
+    2: "2 cst.csv",
+    2.5: "2.5 cst.csv",
+    3: "3 cst.csv",
+    3.5: "3.5 cst.csv",
+    4: "4 cst.csv",
+    4.5: "4.5 cst.csv",
+    10: "10 cst.csv",
+    15: "15 cst.csv",
+    20: "20 cst.csv",
+    25: "25 cst.csv",
+    30: "30 cst.csv",
+    35: "35 cst.csv",
+    40: "40 cst.csv",
+}
+
+# Load the drag-reducer curves lazily at import time
+DRA_CURVE_DATA: Dict[float, pd.DataFrame | None] = {}
+for cst, fname in DRA_CSV_FILES.items():
+    if os.path.exists(fname):
+        try:
+            df = pd.read_csv(fname)
+            # Ensure required columns exist
+            if "%Drag Reduction" in df.columns and "PPM" in df.columns:
+                df = df[["%Drag Reduction", "PPM"]].dropna().sort_values("%Drag Reduction")
+                DRA_CURVE_DATA[cst] = df.reset_index(drop=True)
+            else:
+                DRA_CURVE_DATA[cst] = None
+        except Exception:
+            DRA_CURVE_DATA[cst] = None
+    else:
+        DRA_CURVE_DATA[cst] = None
 
 
-def _normalise_rounding_step(step: float | None) -> float:
-    """Return a validated rounding increment for PPM requirements."""
+def _ppm_from_df(df: pd.DataFrame, dr: float) -> float:
+    """Return the PPM value for ``dr`` using breakpoints in ``df``."""
+    x = df['%Drag Reduction'].values.astype(float)
+    y = df['PPM'].values.astype(float)
+    if dr <= x[0]:
+        return float(y[0])
+    if dr >= x[-1]:
+        return float(y[-1])
+    return float(np.interp(dr, x, y))
 
-    try:
-        step_value = 1.0 if step is None else float(step)
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        step_value = 1.0
-    if step_value <= 0.0:
-        step_value = 1.0
-    return step_value
+
+def _dr_from_df(df: pd.DataFrame, ppm: float) -> float:
+    """Return %Drag Reduction for a given ``ppm`` by inverse interpolation of ``df``."""
+    x = df['%Drag Reduction'].values.astype(float)
+    y = df['PPM'].values.astype(float)
+    if ppm <= y[0]:
+        return float(x[0])
+    if ppm >= y[-1]:
+        return float(x[-1])
+    # Interpolate inverse: x(y)
+    return float(np.interp(ppm, y, x))
 
 
-def _round_cache_key(*values: float, precision: int = 6) -> Tuple[float, ...]:
+def _nearest_bounds(visc: float, data: Dict[float, pd.DataFrame | None]) -> Tuple[float, float]:
+    cst_list = sorted([c for c in data.keys() if data[c] is not None])
+    if not cst_list:
+        return (visc, visc)
+    if visc <= cst_list[0]:
+        return (cst_list[0], cst_list[0])
+    if visc >= cst_list[-1]:
+        return (cst_list[-1], cst_list[-1])
+    lower = max(c for c in cst_list if c <= visc)
+    upper = min(c for c in cst_list if c >= visc)
+    return (lower, upper)
+
+
+_DEFAULT_CURVE_SENTINEL = object()
+_PPM_CACHE: Dict[tuple[float, ...], float] = {}
+_DR_CACHE: Dict[tuple[float, ...], float] = {}
+_PPM_BOUND_CACHE: Dict[tuple[float, ...], tuple[float, float]] = {}
+
+
+def get_ppm_bounds(
+    visc: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
+) -> tuple[float, float]:
+    """Return the minimum and maximum PPM supported by available curves."""
+
+    use_global = False
+    if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
+        dra_curve_data = DRA_CURVE_DATA
+        use_global = True
+
+    visc = float(visc)
+    cache_key = _round_cache_key(visc)
+    if use_global:
+        cached = _PPM_BOUND_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+
+    def _bounds_for(df: pd.DataFrame | None) -> tuple[float, float]:
+        if df is None or df.empty:
+            return (0.0, 0.0)
+        ppm_vals = df["PPM"].values.astype(float)
+        if ppm_vals.size == 0:
+            return (0.0, 0.0)
+        return (float(np.nanmin(ppm_vals)), float(np.nanmax(ppm_vals)))
+
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
+        return (0.0, 0.0)
+
+    lower_bounds = _bounds_for(dra_curve_data[lower])
+    if lower == upper:
+        return lower_bounds
+
+    upper_bounds = _bounds_for(dra_curve_data.get(upper))
+    min_ppm = lower_bounds[0] if upper_bounds[0] == 0.0 else min(lower_bounds[0], upper_bounds[0])
+    max_ppm = max(lower_bounds[1], upper_bounds[1])
+    result = (min_ppm, max_ppm)
+    if use_global:
+        if len(_PPM_BOUND_CACHE) > 8192:
+            _PPM_BOUND_CACHE.clear()
+        _PPM_BOUND_CACHE[cache_key] = result
+    return result
+
+
+def _round_cache_key(*values: float, precision: int = 2) -> tuple[float, ...]:
     """Return a tuple suitable for memoisation keyed by rounded ``values``."""
 
-    rounded = []
-    for val in values:
-        try:
-            rounded.append(round(float(val), precision))
-        except (TypeError, ValueError):
-            rounded.append(0.0)
-    return tuple(rounded)
+    return tuple(round(float(val), precision) for val in values)
 
 
-def _velocity_ft_s(velocity_mps: float) -> float:
-    try:
-        vel = float(velocity_mps)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(vel, 0.0) * FT_PER_M
+def _compute_ppm_for_dr(
+    visc: float,
+    dr: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None],
+) -> float:
+    """Internal helper implementing :func:`get_ppm_for_dr` without caching."""
 
-
-def _diameter_ft(diameter_m: float) -> float:
-    try:
-        dia = float(diameter_m)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(dia, 0.0) * FT_PER_M
-
-
-def _compute_drag_reduction(visc: float, ppm: float, velocity_mps: float, diameter_m: float) -> float:
-    """Return % drag reduction using the Burger equation."""
-
-    try:
-        visc_val = float(visc)
-        ppm_val = float(ppm)
-    except (TypeError, ValueError):
-        return 0.0
-    if visc_val <= 0.0 or ppm_val <= 0.0:
+    visc = float(visc)
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
         return 0.0
 
-    vel_ft_s = _velocity_ft_s(velocity_mps)
-    dia_ft = _diameter_ft(diameter_m)
-    if vel_ft_s <= 0.0 or dia_ft <= 0.0:
-        return 0.0
+    def round_ppm(val: float, step: float = 0.5) -> float:
+        return round(val / step) * step
 
-    denom = visc_val * (dia_ft ** 0.4)
-    if denom <= 0.0:
-        return 0.0
+    if lower == upper:
+        return round_ppm(_ppm_from_df(dra_curve_data[lower], dr))
 
-    try:
-        ratio = ppm_val / denom
-    except ZeroDivisionError:
-        return 0.0
-    if ratio <= 0.0:
-        return 0.0
-
-    argument = vel_ft_s * math.sqrt(ratio)
-    if argument <= 0.0:
-        return 0.0
-
-    try:
-        dr_fraction = K1 * math.log(argument) + K2
-    except (ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(dr_fraction):
-        return 0.0
-    return max(dr_fraction * 100.0, 0.0)
-
-
-def _round_up(value: float, step: float) -> float:
-    if value <= 0.0:
-        return 0.0
-    quotient = value / step
-    nearest = round(quotient)
-    if math.isclose(quotient, nearest, rel_tol=1e-9, abs_tol=1e-9):
-        return nearest * step
-    return math.ceil(quotient) * step
-
-
-@lru_cache(maxsize=32768)
-def _ppm_for_dr_cached(visc: float, dr_percent: float, velocity_mps: float, diameter_m: float, step: float) -> float:
-    if dr_percent <= 0.0:
-        return 0.0
-    try:
-        visc_val = float(visc)
-        dr_val = float(dr_percent)
-    except (TypeError, ValueError):
-        return 0.0
-    if visc_val <= 0.0:
-        return 0.0
-
-    vel_ft_s = _velocity_ft_s(velocity_mps)
-    dia_ft = _diameter_ft(diameter_m)
-    if vel_ft_s <= 0.0 or dia_ft <= 0.0:
-        return 0.0
-
-    dr_fraction = dr_val / 100.0
-    exponent = (dr_fraction - K2) / K1
-    try:
-        argument = math.exp(exponent)
-    except OverflowError:
-        argument = float('inf')
-    if not math.isfinite(argument) or argument <= 0.0:
-        return 0.0
-
-    if vel_ft_s <= 0.0:
-        return 0.0
-
-    ppm_raw = visc_val * (dia_ft ** 0.4) * (argument ** 2) / (vel_ft_s ** 2)
-    if not math.isfinite(ppm_raw):
-        return 0.0
-    return _round_up(ppm_raw, step)
-
-
-@lru_cache(maxsize=32768)
-def _ppm_for_dr_exact_cached(visc: float, dr_percent: float, velocity_mps: float, diameter_m: float) -> float:
-    if dr_percent <= 0.0:
-        return 0.0
-    try:
-        visc_val = float(visc)
-        dr_val = float(dr_percent)
-    except (TypeError, ValueError):
-        return 0.0
-    if visc_val <= 0.0:
-        return 0.0
-
-    vel_ft_s = _velocity_ft_s(velocity_mps)
-    dia_ft = _diameter_ft(diameter_m)
-    if vel_ft_s <= 0.0 or dia_ft <= 0.0:
-        return 0.0
-
-    dr_fraction = dr_val / 100.0
-    exponent = (dr_fraction - K2) / K1
-    try:
-        argument = math.exp(exponent)
-    except OverflowError:
-        argument = float("inf")
-    if not math.isfinite(argument) or argument <= 0.0:
-        return 0.0
-
-    if vel_ft_s <= 0.0:
-        return 0.0
-
-    ppm_raw = visc_val * (dia_ft ** 0.4) * (argument ** 2) / (vel_ft_s ** 2)
-    if not math.isfinite(ppm_raw):
-        return 0.0
-    return ppm_raw
-
-
-@lru_cache(maxsize=32768)
-def _dr_for_ppm_cached(visc: float, ppm: float, velocity_mps: float, diameter_m: float) -> float:
-    try:
-        ppm_val = float(ppm)
-        visc_val = float(visc)
-    except (TypeError, ValueError):
-        return 0.0
-    if ppm_val <= 0.0 or visc_val <= 0.0:
-        return 0.0
-
-    vel_ft_s = _velocity_ft_s(velocity_mps)
-    dia_ft = _diameter_ft(diameter_m)
-    if vel_ft_s <= 0.0 or dia_ft <= 0.0:
-        return 0.0
-
-    denom = visc_val * (dia_ft ** 0.4)
-    if denom <= 0.0:
-        return 0.0
-
-    try:
-        ratio = ppm_val / denom
-    except ZeroDivisionError:
-        return 0.0
-    if ratio <= 0.0:
-        return 0.0
-
-    argument = vel_ft_s * math.sqrt(ratio)
-    if argument <= 0.0:
-        return 0.0
-
-    try:
-        dr_fraction = K1 * math.log(argument) + K2
-    except (ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(dr_fraction):
-        return 0.0
-    return max(dr_fraction * 100.0, 0.0)
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
+    ppm_lower = _ppm_from_df(df_lower, dr)
+    ppm_upper = _ppm_from_df(df_upper, dr)
+    ppm_interp = np.interp(visc, [lower, upper], [ppm_lower, ppm_upper])
+    return round_ppm(float(ppm_interp))
 
 
 def get_ppm_for_dr(
     visc: float,
-    dr_percent: float,
-    velocity_mps: float,
-    diameter_m: float,
-    rounding_step: float | None = None,
+    dr: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
 ) -> float:
-    """Compute the PPM required for ``dr_percent`` drag reduction."""
+    """Interpolate PPM for a given drag reduction and viscosity.
 
-    step_value = _normalise_rounding_step(rounding_step)
-    key = _round_cache_key(visc, dr_percent, velocity_mps, diameter_m, step_value)
-    return _ppm_for_dr_cached(*key)
+    Returns the PPM value rounded to the nearest 0.5.
+    """
+
+    if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
+        dra_curve_data = DRA_CURVE_DATA
+        key = _round_cache_key(visc, dr)
+        cached = _PPM_CACHE.get(key)
+        if cached is not None:
+            return cached
+        result = _compute_ppm_for_dr(visc, dr, dra_curve_data)
+        if len(_PPM_CACHE) > 8192:
+            _PPM_CACHE.clear()
+        _PPM_CACHE[key] = result
+        return result
+
+    return _compute_ppm_for_dr(visc, dr, dra_curve_data)
 
 
-def get_ppm_for_dr_exact(
+def _compute_dr_for_ppm(
     visc: float,
-    dr_percent: float,
-    velocity_mps: float,
-    diameter_m: float,
+    ppm: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None],
 ) -> float:
-    """Compute the unrounded PPM required for ``dr_percent`` drag reduction."""
+    """Internal helper implementing :func:`get_dr_for_ppm` without caching."""
 
-    key = _round_cache_key(visc, dr_percent, velocity_mps, diameter_m)
-    return _ppm_for_dr_exact_cached(*key)
+    visc = float(visc)
+    lower, upper = _nearest_bounds(visc, dra_curve_data)
+    if lower not in dra_curve_data or dra_curve_data[lower] is None:
+        return 0.0
+
+    if lower == upper:
+        return _dr_from_df(dra_curve_data[lower], ppm)
+
+    df_lower = dra_curve_data[lower]
+    df_upper = dra_curve_data[upper]
+    dr_lower = _dr_from_df(df_lower, ppm)
+    dr_upper = _dr_from_df(df_upper, ppm)
+    dr_interp = np.interp(visc, [lower, upper], [dr_lower, dr_upper])
+    return float(dr_interp)
 
 
 def get_dr_for_ppm(
     visc: float,
     ppm: float,
-    velocity_mps: float,
-    diameter_m: float,
+    dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
 ) -> float:
-    """Compute % drag reduction delivered by ``ppm``."""
+    """Inverse: interpolate %Drag Reduction for a given PPM and viscosity."""
 
-    key = _round_cache_key(visc, ppm, velocity_mps, diameter_m)
-    return _dr_for_ppm_cached(*key)
+    if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
+        dra_curve_data = DRA_CURVE_DATA
+        key = _round_cache_key(visc, ppm)
+        cached = _DR_CACHE.get(key)
+        if cached is not None:
+            return cached
+        result = _compute_dr_for_ppm(visc, ppm, dra_curve_data)
+        if len(_DR_CACHE) > 8192:
+            _DR_CACHE.clear()
+        _DR_CACHE[key] = result
+        return result
+
+    return _compute_dr_for_ppm(visc, ppm, dra_curve_data)
 
 
-def compute_drag_reduction(visc: float, ppm: float, velocity_mps: float, diameter_m: float) -> float:
+def compute_drag_reduction(visc: float, ppm: float) -> float:
     """Return effective % drag reduction for ``ppm`` at viscosity ``visc``."""
-
-    key = _round_cache_key(visc, ppm, velocity_mps, diameter_m)
-    return _dr_for_ppm_cached(*key)
+    if ppm <= 0:
+        return 0.0
+    return get_dr_for_ppm(visc, ppm)
 
 
 __all__ = [
+    "DRA_CSV_FILES",
+    "DRA_CURVE_DATA",
     "get_ppm_for_dr",
-    "get_ppm_for_dr_exact",
     "get_dr_for_ppm",
     "compute_drag_reduction",
 ]
