@@ -77,6 +77,70 @@ def solve_pipeline_with_types(*args, segment_slices=None, **kwargs):
     return _solve_pipeline_with_types(*args, **kwargs)
 
 
+def test_build_pump_option_cache_respects_active_combo():
+    """When only one combo type runs, the cache should use that type."""
+
+    import pipeline_model as pm
+
+    station = {
+        "name": "Origin",
+        "pump_combo": {"A": 1, "B": 2},
+        "active_combo": {"A": 0, "B": 2},
+        "pump_types": {
+            "A": {
+                "names": ["PA"],
+                "available": 1,
+                "MinRPM": 1000,
+                "DOL": 1500,
+                "A": -1.0e-6,
+                "B": 0.01,
+                "C": 200.0,
+                "P": 0.0,
+                "Q": 0.0,
+                "R": 0.0,
+                "S": 0.0,
+                "T": 60.0,
+            },
+            "B": {
+                "names": ["PB"],
+                "available": 2,
+                "MinRPM": 1800,
+                "DOL": 2800,
+                "A": -2.0e-6,
+                "B": 0.02,
+                "C": 320.0,
+                "P": 0.0,
+                "Q": 0.0,
+                "R": 0.0,
+                "S": 0.0,
+                "T": 75.0,
+            },
+        },
+        "rho": 830.0,
+        "power_type": "Grid",
+        "tariffs": [],
+        "sfc_mode": "none",
+        "sfc": 0.0,
+        "engine_params": {},
+    }
+
+    opt = {"nop": 2, "rpm": 2500}
+    cache = pm._build_pump_option_cache(
+        station,
+        opt,
+        flow_total=2500.0,
+        hours=1.0,
+        start_time="07:00",
+        ambient_temp=25.0,
+        fuel_density=820.0,
+        price_hsd=70.0,
+    )
+
+    details = cache.get("pump_details") or []
+    assert details, "Expected pump details to be produced"
+    assert {item.get("ptype") for item in details} == {"B"}
+
+
 def test_app_sets_streamlit_file_watcher_to_poll(monkeypatch):
     import importlib
     import sys
