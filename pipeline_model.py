@@ -3741,23 +3741,87 @@ def _build_pump_option_cache(
         except (TypeError, ValueError):
             return 0.0
 
+    pump_types_map = stn_data.get('pump_types')
+    selected_type = stn_data.get('pump_type')
+    if not selected_type and isinstance(pump_types_map, Mapping):
+        active_combo = stn_data.get('active_combo')
+        if isinstance(active_combo, Mapping):
+            positive = [
+                ptype
+                for ptype, count in active_combo.items()
+                if isinstance(count, (int, float)) and count > 0
+            ]
+            if len(positive) == 1:
+                selected_type = positive[0]
+        pump_name = stn_data.get('pump_name')
+        if pump_name:
+            for ptype, pdata in pump_types_map.items():
+                names = pdata.get('names') if isinstance(pdata, Mapping) else None
+                if isinstance(names, Sequence) and pump_name in names:
+                    selected_type = ptype
+                    break
+        if not selected_type:
+            # Prefer a pump type with available units; fall back to the first key.
+            for ptype, pdata in pump_types_map.items():
+                if not isinstance(pdata, Mapping):
+                    continue
+                avail = pdata.get('available')
+                if isinstance(avail, (int, float)) and avail > 0:
+                    selected_type = ptype
+                    break
+            if not selected_type:
+                selected_type = next(iter(pump_types_map), None)
+
+    def _type_coeff(key: str, legacy_key: str | None = None) -> float:
+        """Return a coefficient using station or selected pump-type data."""
+
+        primary = stn_data.get(key)
+        if primary is None and legacy_key is not None:
+            primary = stn_data.get(legacy_key)
+        if primary is None and isinstance(pump_types_map, Mapping) and selected_type:
+            pdata = pump_types_map.get(selected_type, {})
+            if isinstance(pdata, Mapping):
+                primary = pdata.get(key)
+                if primary is None and legacy_key is not None:
+                    primary = pdata.get(legacy_key)
+        try:
+            return float(primary) if primary is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _type_value(key: str, *, default=None):
+        value = stn_data.get(key, default)
+        if value is None and isinstance(pump_types_map, Mapping) and selected_type:
+            pdata = pump_types_map.get(selected_type, {})
+            if isinstance(pdata, Mapping):
+                value = pdata.get(key, default)
+        return value
+
+    selected_name = stn_data.get('pump_name')
+    if isinstance(pump_types_map, Mapping) and selected_type:
+        pdata = pump_types_map.get(selected_type)
+        if isinstance(pdata, Mapping) and not selected_name:
+            selected_name = pdata.get('name') or pdata.get('pump_name')
+
     pump_def = {
-        'A': _coeff('A', 'coef_A'),
-        'B': _coeff('B', 'coef_B'),
-        'C': _coeff('C', 'coef_C'),
-        'P': _coeff('P', 'coef_P'),
-        'Q': _coeff('Q', 'coef_Q'),
-        'R': _coeff('R', 'coef_R'),
-        'S': _coeff('S', 'coef_S'),
-        'T': _coeff('T', 'coef_T'),
-        'DOL': _coeff('DOL', 'dol'),
+        'A': _type_coeff('A', 'coef_A'),
+        'B': _type_coeff('B', 'coef_B'),
+        'C': _type_coeff('C', 'coef_C'),
+        'P': _type_coeff('P', 'coef_P'),
+        'Q': _type_coeff('Q', 'coef_Q'),
+        'R': _type_coeff('R', 'coef_R'),
+        'S': _type_coeff('S', 'coef_S'),
+        'T': _type_coeff('T', 'coef_T'),
+        'DOL': _type_coeff('DOL', 'dol'),
         'combo': stn_data.get('pump_combo'),
-        'pump_types': stn_data.get('pump_types'),
+        'pump_types': pump_types_map,
         'active_combo': stn_data.get('active_combo'),
-        'power_type': stn_data.get('power_type'),
-        'sfc_mode': stn_data.get('sfc_mode'),
-        'sfc': stn_data.get('sfc'),
-        'engine_params': stn_data.get('engine_params', {}),
+        'power_type': _type_value('power_type'),
+        'sfc_mode': _type_value('sfc_mode'),
+        'sfc': _type_value('sfc'),
+        'engine_params': _type_value('engine_params', default={}) or {},
+        'pump_type': selected_type,
+        'pump_name': selected_name or _type_value('pump_name'),
     }
     rpm_map_local: dict[str, float | int] = {}
     for source in (pump_def.get('rpm_map'), opt.get('rpm_map')):
