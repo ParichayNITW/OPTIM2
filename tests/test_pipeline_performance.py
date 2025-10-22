@@ -141,6 +141,47 @@ def test_build_pump_option_cache_respects_active_combo():
     assert {item.get("ptype") for item in details} == {"B"}
 
 
+def test_build_pump_option_cache_handles_missing_pump_types():
+    """Stations without ``pump_types`` should not crash the cache builder."""
+
+    import pipeline_model as pm
+
+    station = {
+        "name": "Simple",  # Single-type legacy station definition
+        "A": -2.5e-6,
+        "B": 0.012,
+        "C": 210.0,
+        "P": 0.0,
+        "Q": 0.0,
+        "R": 0.0,
+        "S": 0.1,
+        "T": 55.0,
+        "MinRPM": 1500.0,
+        "DOL": 1800.0,
+        "rho": 825.0,
+        "power_type": "Grid",
+        "tariffs": [],
+        "sfc_mode": "none",
+        "sfc": 0.0,
+        "engine_params": {},
+    }
+
+    opt = {"nop": 1, "rpm": 1700}
+    cache = pm._build_pump_option_cache(
+        station,
+        opt,
+        flow_total=1500.0,
+        hours=1.0,
+        start_time="07:00",
+        ambient_temp=25.0,
+        fuel_density=820.0,
+        price_hsd=70.0,
+    )
+
+    assert cache["pump_details"], "Expected legacy pump definition to compute details"
+    assert cache["tdh"] > 0.0
+
+
 def test_app_sets_streamlit_file_watcher_to_poll(monkeypatch):
     import importlib
     import sys

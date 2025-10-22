@@ -3741,7 +3741,8 @@ def _build_pump_option_cache(
         except (TypeError, ValueError):
             return 0.0
 
-    pump_types_map = stn_data.get('pump_types')
+    pump_types_raw = stn_data.get('pump_types')
+    pump_types_map = pump_types_raw if isinstance(pump_types_raw, Mapping) else {}
     selected_type = stn_data.get('pump_type')
     if not selected_type and isinstance(pump_types_map, Mapping):
         active_combo = stn_data.get('active_combo')
@@ -3754,23 +3755,26 @@ def _build_pump_option_cache(
             if len(positive) == 1:
                 selected_type = positive[0]
         pump_name = stn_data.get('pump_name')
-        if pump_name:
-            for ptype, pdata in pump_types_map.items():
-                names = pdata.get('names') if isinstance(pdata, Mapping) else None
-                if isinstance(names, Sequence) and pump_name in names:
-                    selected_type = ptype
-                    break
+    if pump_name and pump_types_map:
+        for ptype, pdata in pump_types_map.items():
+            names = pdata.get('names') if isinstance(pdata, Mapping) else None
+            if isinstance(names, Sequence) and pump_name in names:
+                selected_type = ptype
+                break
+    if not selected_type and pump_types_map:
+        # Prefer a pump type with available units; fall back to the first key.
+        for ptype, pdata in pump_types_map.items():
+            if not isinstance(pdata, Mapping):
+                continue
+            avail = pdata.get('available')
+            if isinstance(avail, (int, float)) and avail > 0:
+                selected_type = ptype
+                break
         if not selected_type:
-            # Prefer a pump type with available units; fall back to the first key.
-            for ptype, pdata in pump_types_map.items():
-                if not isinstance(pdata, Mapping):
-                    continue
-                avail = pdata.get('available')
-                if isinstance(avail, (int, float)) and avail > 0:
-                    selected_type = ptype
-                    break
-            if not selected_type:
-                selected_type = next(iter(pump_types_map), None)
+            try:
+                selected_type = next(iter(pump_types_map))
+            except StopIteration:
+                selected_type = None
 
     def _type_coeff(key: str, legacy_key: str | None = None) -> float:
         """Return a coefficient using station or selected pump-type data."""
@@ -3778,7 +3782,7 @@ def _build_pump_option_cache(
         primary = stn_data.get(key)
         if primary is None and legacy_key is not None:
             primary = stn_data.get(legacy_key)
-        if primary is None and isinstance(pump_types_map, Mapping) and selected_type:
+        if primary is None and selected_type and pump_types_map:
             pdata = pump_types_map.get(selected_type, {})
             if isinstance(pdata, Mapping):
                 primary = pdata.get(key)
@@ -3791,14 +3795,14 @@ def _build_pump_option_cache(
 
     def _type_value(key: str, *, default=None):
         value = stn_data.get(key, default)
-        if value is None and isinstance(pump_types_map, Mapping) and selected_type:
+        if value is None and selected_type and pump_types_map:
             pdata = pump_types_map.get(selected_type, {})
             if isinstance(pdata, Mapping):
                 value = pdata.get(key, default)
         return value
 
     selected_name = stn_data.get('pump_name')
-    if isinstance(pump_types_map, Mapping) and selected_type:
+    if pump_types_map and selected_type:
         pdata = pump_types_map.get(selected_type)
         if isinstance(pdata, Mapping) and not selected_name:
             selected_name = pdata.get('name') or pdata.get('pump_name')
@@ -3814,7 +3818,7 @@ def _build_pump_option_cache(
         'T': _type_coeff('T', 'coef_T'),
         'DOL': _type_coeff('DOL', 'dol'),
         'combo': stn_data.get('pump_combo'),
-        'pump_types': pump_types_map,
+        'pump_types': pump_types_raw if isinstance(pump_types_raw, Mapping) else pump_types_map,
         'active_combo': stn_data.get('active_combo'),
         'power_type': _type_value('power_type'),
         'sfc_mode': _type_value('sfc_mode'),
