@@ -933,6 +933,7 @@ def _update_mainline_dra(
 
     pumped_portion: list[tuple[float, float]] = []
     remaining_queue: list[tuple[float, float]] = []
+    consumption_missing = False
     if precomputed is not None and len(precomputed) >= 3:
         pumped_portion = [
             (float(length or 0.0), float(ppm or 0.0))
@@ -944,7 +945,10 @@ def _update_mainline_dra(
             for length, ppm in precomputed[2]
             if float(length or 0.0) > 0.0
         ]
-    else:
+    if not pumped_portion and not remaining_queue and existing_queue:
+        consumption_missing = True
+        pumped_portion = []
+        remaining_queue = []
         pumped_remaining = max(pumped_length, 0.0)
         for length, ppm_val in existing_queue:
             length_float = float(length or 0.0)
@@ -994,6 +998,13 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         if is_origin and pump_running and inj_effective <= 0.0:
+            ppm_out = 0.0
+        elif (
+            consumption_missing
+            and is_origin
+            and (not pump_running)
+            and inj_effective <= 0.0
+        ):
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
