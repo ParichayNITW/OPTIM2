@@ -3266,7 +3266,10 @@ if not auto_batch:
             }
             for rec in reports
         ]
-        df_cost = pd.DataFrame(cost_rows)
+        df_cost = pd.DataFrame(
+            cost_rows,
+            columns=["Time", "Pattern", "Total Cost (INR)"],
+        )
         df_cost["Total Cost (INR)"] = pd.to_numeric(
             df_cost["Total Cost (INR)"], errors="coerce",
         )
