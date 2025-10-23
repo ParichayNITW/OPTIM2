@@ -259,7 +259,7 @@ def test_queue_preserves_length_and_zero_front_progression() -> None:
         )
         pumped_length, _, _ = precomputed
         pumped_lengths.append(pumped_length)
-        _, queue_after, _ = _update_mainline_dra(
+        _, queue_after, _, _ = _update_mainline_dra(
             queue_state,
             stn_data,
             opt,
@@ -312,7 +312,7 @@ def test_zero_injection_advances_profile_by_appending_fresh_front() -> None:
     opt = {"dra_ppm_main": 0.0, "nop": 0}
 
     pumped_length = 6.53
-    dra_segments, queue_after, inj_ppm = _update_mainline_dra(
+    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
         queue_state,
         stn_data,
         opt,
