@@ -6,6 +6,7 @@ Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict, Tuple
 
@@ -90,6 +91,18 @@ _DR_CACHE: Dict[tuple[float, ...], float] = {}
 _PPM_BOUND_CACHE: Dict[tuple[float, ...], tuple[float, float]] = {}
 
 
+def _normalise_rounding_step(step: float | None) -> float:
+    """Return a validated rounding increment for PPM requirements."""
+
+    try:
+        step_value = 1.0 if step is None else float(step)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        step_value = 1.0
+    if step_value <= 0.0:
+        step_value = 1.0
+    return step_value
+
+
 def get_ppm_bounds(
     visc: float,
     dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
@@ -135,7 +148,7 @@ def get_ppm_bounds(
     return result
 
 
-def _round_cache_key(*values: float, precision: int = 2) -> tuple[float, ...]:
+def _round_cache_key(*values: float, precision: int = 6) -> tuple[float, ...]:
     """Return a tuple suitable for memoisation keyed by rounded ``values``."""
 
     return tuple(round(float(val), precision) for val in values)
@@ -145,6 +158,7 @@ def _compute_ppm_for_dr(
     visc: float,
     dr: float,
     dra_curve_data: Dict[float, pd.DataFrame | None],
+    rounding_step: float | None = None,
 ) -> float:
     """Internal helper implementing :func:`get_ppm_for_dr` without caching."""
 
@@ -153,8 +167,18 @@ def _compute_ppm_for_dr(
     if lower not in dra_curve_data or dra_curve_data[lower] is None:
         return 0.0
 
-    def round_ppm(val: float, step: float = 0.5) -> float:
-        return round(val / step) * step
+    step_value = _normalise_rounding_step(rounding_step)
+
+    def round_ppm(val: float) -> float:
+        """Round ``val`` up to the next multiple of ``step_value``."""
+
+        if val <= 0.0:
+            return 0.0
+        quotient = val / step_value
+        nearest = round(quotient)
+        if math.isclose(quotient, nearest, rel_tol=1e-9, abs_tol=1e-9):
+            return nearest * step_value
+        return math.ceil(quotient) * step_value
 
     if lower == upper:
         return round_ppm(_ppm_from_df(dra_curve_data[lower], dr))
@@ -171,25 +195,29 @@ def get_ppm_for_dr(
     visc: float,
     dr: float,
     dra_curve_data: Dict[float, pd.DataFrame | None] = _DEFAULT_CURVE_SENTINEL,
+    rounding_step: float | None = None,
 ) -> float:
     """Interpolate PPM for a given drag reduction and viscosity.
 
-    Returns the PPM value rounded to the nearest 0.5.
+    Returns the PPM value rounded up to the next whole PPM (or custom
+    increment).
     """
+
+    step_value = _normalise_rounding_step(rounding_step)
 
     if dra_curve_data is _DEFAULT_CURVE_SENTINEL or dra_curve_data is DRA_CURVE_DATA:
         dra_curve_data = DRA_CURVE_DATA
-        key = _round_cache_key(visc, dr)
+        key = _round_cache_key(visc, dr, step_value)
         cached = _PPM_CACHE.get(key)
         if cached is not None:
             return cached
-        result = _compute_ppm_for_dr(visc, dr, dra_curve_data)
+        result = _compute_ppm_for_dr(visc, dr, dra_curve_data, step_value)
         if len(_PPM_CACHE) > 8192:
             _PPM_CACHE.clear()
         _PPM_CACHE[key] = result
         return result
 
-    return _compute_ppm_for_dr(visc, dr, dra_curve_data)
+    return _compute_ppm_for_dr(visc, dr, dra_curve_data, step_value)
 
 
 def _compute_dr_for_ppm(
