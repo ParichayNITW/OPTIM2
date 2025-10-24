@@ -545,6 +545,7 @@ def _prepare_dra_queue_consumption(
 
     current_queue: list[tuple[float, float]] = []
     key_entries: list[tuple[float, float]] = []
+
     if queue:
         for raw in queue:
             if isinstance(raw, Mapping):
@@ -1347,6 +1348,12 @@ def _update_mainline_dra(
     apply_injection_shear = pump_running and injector_pos == "upstream"
     kv = float(stn_data.get("kv", 3.0) or 3.0)
 
+    fallback_ppm = 0.0
+    if isinstance(stn_data, Mapping):
+        fallback_raw = stn_data.get('fallback_dra_ppm')
+        if isinstance(fallback_raw, (int, float)):
+            fallback_ppm = float(fallback_raw or 0.0)
+
     floor_length = 0.0
     floor_ppm = 0.0
     floor_segments: list[tuple[float, float]] = []
@@ -1730,6 +1737,42 @@ def _update_mainline_dra(
             if float(length or 0.0) > 0.0
         )
 
+    if fallback_ppm > 0.0:
+        fallback_length = target_length if target_length > 0 else segment_length
+        if fallback_length > 0.0 and merged_queue:
+            merged_with_fallback = _ensure_queue_floor(
+                merged_queue,
+                fallback_length,
+                fallback_ppm,
+                None,
+            )
+            merged_queue = tuple(
+                (float(length), float(ppm))
+                for length, ppm in merged_with_fallback
+                if float(length or 0.0) > 0.0
+            )
+        elif fallback_length > 0.0 and not merged_queue:
+            merged_queue = ((float(fallback_length), float(fallback_ppm)),)
+    elif inj_effective > 0.0:
+        inferred_ppm = 0.0
+        for _len_existing, ppm_existing in reversed(existing_queue):
+            if ppm_existing > 0.0:
+                inferred_ppm = ppm_existing
+                break
+        inferred_length = target_length if target_length > 0 else segment_length
+        if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
+            merged_with_inferred = _ensure_queue_floor(
+                merged_queue,
+                inferred_length,
+                inferred_ppm,
+                None,
+            )
+            merged_queue = tuple(
+                (float(length), float(ppm))
+                for length, ppm in merged_with_inferred
+                if float(length or 0.0) > 0.0
+            )
+
     queue_after = [
         {'length_km': float(length), 'dra_ppm': float(ppm)}
         for length, ppm in merged_queue
@@ -1754,6 +1797,8 @@ def _update_mainline_dra(
                 if ppm_existing > 0.0:
                     zero_fill_ppm = ppm_existing
                     break
+        if zero_fill_ppm <= 0.0 and fallback_ppm > 0.0:
+            zero_fill_ppm = fallback_ppm
 
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
@@ -3574,7 +3619,14 @@ def solve_pipeline(
     if linefill:
         if isinstance(linefill, dict):
             vols = linefill.get('volume') or linefill.get('Volume (m³)') or linefill.get('Volume')
-            ppms = linefill.get('dra_ppm') or linefill.get('DRA ppm') or {}
+            ppms = (
+                linefill.get('dra_ppm')
+                or linefill.get('DRA ppm')
+                or linefill.get('Initial DRA (ppm)')
+                or linefill.get('Initial DRA ppm')
+                or linefill.get('initial_dra_ppm')
+                or {}
+            )
             if vols is not None:
                 items = vols.items() if isinstance(vols, dict) else enumerate(vols)
                 for idx, v in items:
@@ -3604,7 +3656,14 @@ def solve_pipeline(
                 if vol <= 0:
                     continue
                 try:
-                    ppm = float(ent.get('dra_ppm') or ent.get('DRA ppm') or 0.0)
+                    ppm = float(
+                        ent.get('dra_ppm')
+                        or ent.get('DRA ppm')
+                        or ent.get('Initial DRA (ppm)')
+                        or ent.get('Initial DRA ppm')
+                        or ent.get('initial_dra_ppm')
+                        or 0.0
+                    )
                 except Exception:
                     ppm = 0.0
                 linefill_state.append({'volume': vol, 'dra_ppm': ppm})
@@ -4774,6 +4833,41 @@ def solve_pipeline(
         for length, ppm_val in initial_queue_entries
         if float(length) > 0
     )
+
+    fallback_by_segment: list[float] = []
+    if initial_queue:
+        base_queue_tuple = tuple(initial_queue)
+        offset = 0.0
+        for stn in stations:
+            seg_length = float(stn.get('L', 0.0) or 0.0)
+            fallback_val = 0.0
+            if seg_length > 0.0:
+                profile = _segment_profile_from_queue(base_queue_tuple, offset, seg_length)
+                if profile:
+                    for entry in reversed(profile):
+                        if not entry:
+                            continue
+                        length_entry = float(entry[0]) if len(entry) > 0 else 0.0
+                        if length_entry <= 0.0:
+                            continue
+                        ppm_entry = float(entry[1]) if len(entry) > 1 else 0.0
+                        if ppm_entry > 0.0:
+                            fallback_val = ppm_entry
+                            break
+            fallback_by_segment.append(fallback_val)
+            offset += seg_length
+    else:
+        fallback_by_segment = [0.0 for _ in stations]
+
+    if station_opts:
+        for entry in station_opts:
+            idx_val = entry.get('idx')
+            fallback_val = 0.0
+            if isinstance(idx_val, (int, float)):
+                idx_int = int(idx_val)
+                if 0 <= idx_int < len(fallback_by_segment):
+                    fallback_val = fallback_by_segment[idx_int]
+            entry['fallback_dra_ppm'] = fallback_val
 
     baseline_floor: dict | None = None
     enforce_queue_floor = True
