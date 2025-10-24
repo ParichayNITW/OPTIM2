@@ -978,11 +978,75 @@ with st.sidebar:
                     message = warning.get("message") if isinstance(warning, Mapping) else None
                     if message:
                         st.warning(message)
+            segments_detail = st.session_state.get("origin_lacing_segment_baseline") if enforceable else None
             if enforceable and baseline_summary.get("has_positive_segments"):
                 floor_ppm = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
                 st.success(
                     f"Baseline DRA floors updated. Minimum enforced origin injection is {floor_ppm:.2f} ppm."
                 )
+                segment_rows: list[dict[str, object]] = []
+                if isinstance(segments_detail, Sequence):
+                    terminal_name = term_ctx.get("name") if isinstance(term_ctx, Mapping) else "Terminal"
+                    for seg in segments_detail:
+                        if not isinstance(seg, Mapping):
+                            continue
+                        try:
+                            station_idx = int(seg.get("station_idx", 0))
+                        except (TypeError, ValueError):
+                            station_idx = 0
+                        start_name = ""
+                        end_name = terminal_name
+                        if 0 <= station_idx < len(stations_ctx):
+                            start_name = stations_ctx[station_idx].get("name", f"Station {station_idx + 1}")
+                            if station_idx + 1 < len(stations_ctx):
+                                end_name = stations_ctx[station_idx + 1].get(
+                                    "name", f"Station {station_idx + 2}"
+                                )
+                        elif station_idx >= len(stations_ctx):
+                            start_name = stations_ctx[-1].get("name", f"Station {len(stations_ctx)}")
+                        segment_label = (
+                            f"{start_name} → {end_name}"
+                            if start_name and end_name
+                            else start_name or end_name
+                        )
+                        try:
+                            seg_length = float(seg.get("length_km", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_length = 0.0
+                        try:
+                            seg_ppm = float(seg.get("dra_ppm", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_ppm = 0.0
+                        try:
+                            seg_perc = float(seg.get("dra_perc", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_perc = 0.0
+                        try:
+                            seg_suction = float(seg.get("suction_head", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_suction = 0.0
+                        segment_rows.append(
+                            {
+                                "Segment": segment_label,
+                                "Length (km)": seg_length,
+                                "Baseline PPM": seg_ppm,
+                                "Baseline %DR": seg_perc,
+                                "Suction head (m)": seg_suction,
+                            }
+                        )
+                if segment_rows:
+                    seg_df = pd.DataFrame(segment_rows)
+                    seg_df = seg_df.round(
+                        {
+                            "Length (km)": 2,
+                            "Baseline PPM": 2,
+                            "Baseline %DR": 2,
+                            "Suction head (m)": 2,
+                        }
+                    )
+                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No segment-level floors were generated.")
             else:
                 st.info("Baseline DRA floors cleared. No minimum injection will be enforced.")
 
