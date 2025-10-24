@@ -4115,6 +4115,60 @@ def test_dra_profile_preserves_baseline_after_injection() -> None:
     assert dra_segments_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
 
 
+def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
+    """Fallback ppm should repopulate baseline when the queue is empty."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    station = {
+        "idx": 0,
+        "is_pump": True,
+        "d_inner": diameter_inner,
+        "fallback_dra_ppm": 4.0,
+    }
+
+    dra_segments_inj, queue_after_inj, _, _ = _update_mainline_dra(
+        [],
+        station,
+        {"nop": 1, "dra_ppm_main": 10.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert dra_segments_inj[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_inj[0][1] == pytest.approx(10.0, rel=1e-6)
+    assert dra_segments_inj[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert dra_segments_inj[1][1] == pytest.approx(4.0, rel=1e-6)
+    assert any(
+        entry["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+        for entry in queue_after_inj
+        if entry["length_km"] > 0.0
+    )
+
+    dra_segments_baseline, queue_after_baseline, _, _ = _update_mainline_dra(
+        [],
+        station,
+        {"nop": 1, "dra_ppm_main": 0.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert len(dra_segments_baseline) == 1
+    assert dra_segments_baseline[0][0] == pytest.approx(segment_length, rel=1e-6)
+    assert dra_segments_baseline[0][1] == pytest.approx(4.0, rel=1e-6)
+    assert queue_after_baseline and queue_after_baseline[0]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+
+
 def test_time_series_solver_uses_cached_baseline(monkeypatch):
     import copy
 
