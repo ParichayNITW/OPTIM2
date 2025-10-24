@@ -2541,7 +2541,7 @@ def _split_flow_two_segments(
 
 
 def _pump_curve_lookup(
-    entries: Sequence[Mapping[str, object]] | None,
+    entries: Sequence[Mapping[str, object]] | Mapping[str, object] | object | None,
     flow_m3h: float,
     value_key: str,
 ) -> float | None:
@@ -2552,12 +2552,30 @@ def _pump_curve_lookup(
     variants and returns ``None`` when interpolation is impossible.
     """
 
-    if not entries:
+    if entries is None:
+        return None
+
+    if hasattr(entries, "to_dict") and hasattr(entries, "columns"):
+        try:
+            entries_seq = entries.to_dict("records")  # type: ignore[arg-type]
+        except Exception:
+            entries_seq = entries.to_dict()  # type: ignore[arg-type]
+    else:
+        entries_seq = entries
+
+    if isinstance(entries_seq, Mapping):
+        iterable_entries: list[Mapping[str, object]] = [entries_seq]
+    elif isinstance(entries_seq, Sequence) and not isinstance(entries_seq, (str, bytes)):
+        iterable_entries = list(entries_seq)  # type: ignore[list-item]
+    else:
+        iterable_entries = [entries_seq]  # type: ignore[list-item]
+
+    if not iterable_entries:
         return None
 
     flow_vals: list[float] = []
     target_vals: list[float] = []
-    for entry in entries:
+    for entry in iterable_entries:
         if not isinstance(entry, Mapping):
             continue
         flow_keys = (
