@@ -270,8 +270,11 @@ def _prepare_pipeline_context():
     vol_linefill = st.session_state.get("linefill_vol_df")
     if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
         vol_linefill = ensure_initial_dra_column(vol_linefill, default=0.0, fill_blanks=True)
-        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(vol_linefill, stations_data)
-        linefill_df = vol_linefill
+        try:
+            kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(vol_linefill, stations_data)
+            linefill_df = vol_linefill
+        except Exception:
+            kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
     else:
         kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
 
@@ -1614,7 +1617,7 @@ def pipe_cross_section_area_m2(stations: list[dict]) -> float:
     return float((pi * d_inner**2) / 4.0)
 
 def map_vol_linefill_to_segments(
-    vol_table: pd.DataFrame, stations: list[dict]
+    vol_table: pd.DataFrame | None, stations: list[dict]
 ) -> tuple[list[float], list[float], list[list[dict]]]:
     """Convert a volumetric linefill table to per-segment fluid properties.
 
@@ -1640,29 +1643,66 @@ def map_vol_linefill_to_segments(
     Assumes uniform diameter along the pipeline (uses first station ``D``/``t``)
     to convert volumes to kilometres.
     """
-    A = pipe_cross_section_area_m2(stations)
-    if A <= 0:
-        raise ValueError("Invalid pipe area (check D and t).")
-    d_inner = sqrt((4.0 * A) / pi)
-    km_from_volume = pipeline_model._km_from_volume
+    if not isinstance(vol_table, pd.DataFrame):
+        return derive_segment_profiles(pd.DataFrame(), stations)
+
+    if not stations:
+        return [], [], []
 
     # Compute lengths occupied by each batch
     # Expected columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³)
-    batches = []
+    batches: list[dict[str, float]] = []
     for _, r in vol_table.iterrows():
-        vol = float(r.get("Volume (m³)", 0.0) or r.get("Volume", 0.0) or 0.0)
-        if vol <= 0:
+        try:
+            vol_raw = r.get("Volume (m³)")
+        except AttributeError:
+            vol_raw = None
+        if vol_raw in (None, ""):
+            vol_raw = r.get("Volume")
+        try:
+            vol = float(vol_raw)
+        except (TypeError, ValueError):
+            vol = 0.0
+        if vol <= 0.0:
             continue
-        length_km = km_from_volume(vol, d_inner)
-        visc = float(r.get("Viscosity (cSt)", 0.0))
-        dens = float(r.get("Density (kg/m³)", 0.0))
-        batches.append({"len_km": length_km, "kv": visc, "rho": dens})
+
+        try:
+            visc = float(r.get("Viscosity (cSt)", 0.0))
+        except (TypeError, ValueError):
+            visc = 0.0
+        try:
+            dens = float(r.get("Density (kg/m³)", 0.0))
+        except (TypeError, ValueError):
+            dens = 0.0
+
+        batches.append({"volume_m3": vol, "kv": visc, "rho": dens})
+
+    if not batches:
+        fallback_kv = 1.0
+        fallback_rho = 850.0
+        kv_list = [fallback_kv] * len(stations)
+        rho_list = [fallback_rho] * len(stations)
+        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
+
+    A = pipe_cross_section_area_m2(stations)
+    if A <= 0:
+        fallback_kv = batches[0]["kv"] if batches else 1.0
+        fallback_rho = batches[0]["rho"] if batches else 850.0
+        kv_list = [fallback_kv] * len(stations)
+        rho_list = [fallback_rho] * len(stations)
+        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
+
+    d_inner = sqrt((4.0 * A) / pi)
+    km_from_volume = pipeline_model._km_from_volume
+
+    for entry in batches:
+        entry["len_km"] = km_from_volume(entry["volume_m3"], d_inner)
 
     # Map to segments (each station defines a segment length L)
     seg_kv: list[float] = []
     seg_rho: list[float] = []
     seg_slices: list[list[dict]] = []
-    seg_lengths = [s.get("L", 0.0) for s in stations]
+    seg_lengths = [float(s.get("L", 0.0) or 0.0) for s in stations]
     i_batch = 0
     remaining = batches[0]["len_km"] if batches else 0.0
     kv_cur = batches[0]["kv"] if batches else 1.0
