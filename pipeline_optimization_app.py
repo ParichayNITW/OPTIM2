@@ -255,6 +255,66 @@ def map_vol_linefill_to_segments(
     for entry in batches:
         entry["len_km"] = km_from_volume(entry["volume_m3"], d_inner)
 
+    # Map the volumetric batches onto each pipeline segment.
+    seg_kv: list[float] = []
+    seg_rho: list[float] = []
+    seg_slices: list[list[dict]] = []
+    seg_lengths = [float(s.get("L", 0.0) or 0.0) for s in stations]
+
+    i_batch = 0
+    remaining = batches[0]["len_km"] if batches else 0.0
+    kv_cur = batches[0]["kv"] if batches else 1.0
+    rho_cur = batches[0]["rho"] if batches else 850.0
+
+    for L in seg_lengths:
+        need = L
+        if L <= 0:
+            seg_kv.append(kv_cur)
+            seg_rho.append(rho_cur)
+            seg_slices.append([])
+            continue
+
+        segment_entries: list[dict] = []
+        # Consume from batches until this segment is filled from upstream to downstream
+        while need > 1e-9:
+            if remaining <= 1e-9:
+                i_batch += 1
+                if i_batch >= len(batches):
+                    # No more batches: extend with last known properties
+                    segment_entries.append(
+                        {"length_km": need, "kv": kv_cur, "rho": rho_cur}
+                    )
+                    need = 0.0
+                    break
+                remaining = batches[i_batch]["len_km"]
+                kv_cur = batches[i_batch]["kv"]
+                rho_cur = batches[i_batch]["rho"]
+                if remaining <= 1e-9:
+                    continue
+
+            take = min(need, remaining)
+            if take <= 0:
+                break
+
+            segment_entries.append(
+                {"length_km": take, "kv": kv_cur, "rho": rho_cur}
+            )
+            need -= take
+            remaining -= take
+
+        if not segment_entries:
+            segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur})
+
+        seg_slices.append(segment_entries)
+        seg_kv.append(segment_entries[0]["kv"])
+        if L > 0:
+            avg_rho = sum(entry["length_km"] * entry["rho"] for entry in segment_entries) / L
+        else:
+            avg_rho = segment_entries[0]["rho"]
+        seg_rho.append(avg_rho)
+
+    return seg_kv, seg_rho, seg_slices
+
 def _summarise_baseline_requirement(
     baseline_requirement: Mapping[str, object] | None,
 ) -> dict[str, float | bool]:
@@ -1657,69 +1717,6 @@ st.sidebar.download_button(
     file_name="pipeline_case.json",
     mime="application/json"
 )
-
-    # Map to segments (each station defines a segment length L)
-    seg_kv: list[float] = []
-    seg_rho: list[float] = []
-    seg_slices: list[list[dict]] = []
-    seg_lengths = [float(s.get("L", 0.0) or 0.0) for s in stations]
-    i_batch = 0
-    remaining = batches[0]["len_km"] if batches else 0.0
-    kv_cur = batches[0]["kv"] if batches else 1.0
-    rho_cur = batches[0]["rho"] if batches else 850.0
-
-    for L in seg_lengths:
-        need = L
-        if L <= 0:
-            seg_kv.append(kv_cur)
-            seg_rho.append(rho_cur)
-            seg_slices.append([])
-            continue
-        segment_entries: list[dict] = []
-        # Consume from batches until we cover this segment upstream-to-downstream
-        while need > 1e-9:
-            if remaining <= 1e-9:
-                i_batch += 1
-                if i_batch >= len(batches):
-                    # If we ran out, extend with last known properties
-                    segment_entries.append({
-                        "length_km": need,
-                        "kv": kv_cur,
-                        "rho": rho_cur,
-                    })
-                    need = 0.0
-                    break
-                else:
-                    remaining = batches[i_batch]["len_km"]
-                    kv_cur = batches[i_batch]["kv"]
-                    rho_cur = batches[i_batch]["rho"]
-                    if remaining <= 1e-9:
-                        continue
-            take = min(need, remaining)
-            if take <= 0:
-                break
-            segment_entries.append({
-                "length_km": take,
-                "kv": kv_cur,
-                "rho": rho_cur,
-            })
-            need -= take
-            remaining -= take
-        if not segment_entries:
-            segment_entries.append({
-                "length_km": L,
-                "kv": kv_cur,
-                "rho": rho_cur,
-            })
-        seg_slices.append(segment_entries)
-        seg_kv.append(segment_entries[0]["kv"])
-        if L > 0:
-            avg_rho = sum(entry["length_km"] * entry["rho"] for entry in segment_entries) / L
-        else:
-            avg_rho = segment_entries[0]["rho"]
-        seg_rho.append(avg_rho)
-
-    return seg_kv, seg_rho, seg_slices
 
 
 def _normalise_segment_entries(
