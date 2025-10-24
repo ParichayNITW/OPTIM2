@@ -4186,3 +4186,88 @@ def test_time_series_solver_uses_cached_baseline(monkeypatch):
         "origin_lacing_baseline_warnings",
     ]:
         st.session_state.pop(key, None)
+
+
+def test_solve_pipeline_rebuilds_segment_floors_when_cache_missing(monkeypatch):
+    import importlib as importlib_module
+
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    baseline_requirement = {
+        "dra_ppm": 6.0,
+        "dra_perc": 15.0,
+        "length_km": 100.0,
+        "enforceable": True,
+        "segments": [
+            {"station_idx": 0, "length_km": 40.0, "dra_ppm": 4.0},
+            {"station_idx": 1, "length_km": 60.0, "dra_ppm": 6.0},
+        ],
+    }
+
+    summary = app._summarise_baseline_requirement(baseline_requirement)
+    expected_segments = app._collect_segment_floors(baseline_requirement)
+
+    st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+    st.session_state["origin_lacing_baseline_summary"] = copy.deepcopy(summary)
+    st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    captured: dict[str, object] = {}
+
+    def fake_reload(module):
+        return module
+
+    def stub_solver(*args, **kwargs):
+        captured["floors"] = copy.deepcopy(kwargs.get("segment_floors"))
+        return {"error": False, "linefill": [], "total_cost": 0.0}
+
+    monkeypatch.setattr(importlib_module, "reload", fake_reload)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", stub_solver)
+
+    stations = [
+        {"name": "A", "is_pump": True, "L": 40.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+        {"name": "B", "is_pump": True, "L": 60.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+
+    app.solve_pipeline(
+        stations,
+        terminal,
+        1000.0,
+        [5.0, 5.0],
+        [820.0, 820.0],
+        None,
+        5.0,
+        0.0,
+        820.0,
+        25.0,
+        [],
+        pump_shear_rate=0.0,
+    )
+
+    assert isinstance(captured.get("floors"), list)
+    assert captured["floors"] == expected_segments
+
+    for key in [
+        "origin_lacing_baseline",
+        "origin_lacing_baseline_summary",
+        "origin_lacing_segment_baseline",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def test_get_speed_display_map_skips_multi_type_aggregation():
+    import pipeline_optimization_app as app
+
+    station = {"name": "Paradip", "pump_types": {"A": {}, "B": {}}}
+    res = {
+        "speed_paradip": 1450.0,
+        "speed_paradip_a": 1450.0,
+        # No entry for pump type B
+    }
+
+    speed_map = app.get_speed_display_map(res, "paradip", station)
+
+    assert list(speed_map.keys()) == ["A", "B"]
+    assert speed_map["A"] == 1450.0
+    assert math.isnan(speed_map["B"])
