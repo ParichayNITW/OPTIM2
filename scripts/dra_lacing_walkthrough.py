@@ -18,6 +18,7 @@ from pipeline_model import (
     _take_queue_front,
     _trim_queue_front,
     _update_mainline_dra,
+    _volume_from_km,
 )
 
 
@@ -60,7 +61,7 @@ def _format_profile(
         display = parts[:limit] + [f"… (+{remaining} more)"]
     else:
         display = parts
-    return "<br>".join(display)
+    return "; ".join(display)
 
 
 def main() -> None:
@@ -90,9 +91,12 @@ def main() -> None:
 
     header = (
         "| Hour | A injection (ppm) | B injection (ppm) | A→B treated profile | "
-        "B→C treated profile | Downstream queue after B |"
+        "B→C treated profile | Downstream queue after B | Treated length (km) | "
+        "Linefill volume (m³) |"
     )
-    separator = "| ---: | ---: | ---: | --- | --- | --- |"
+    separator = (
+        "| ---: | ---: | ---: | --- | --- | --- | ---: | ---: |"
+    )
     print(header)
     print(separator)
 
@@ -154,9 +158,19 @@ def main() -> None:
         a_profile_summary = _format_profile(profile_a, limit=4)
         b_profile_summary = _format_profile(profile_b, limit=4)
 
+        treated_length = sum(
+            float(length)
+            for length, ppm in queue_after_full_b
+            if float(ppm) > 1e-9
+        )
+        linefill_volume = _volume_from_km(
+            _queue_total_length(queue_after_full_b), stn_a["d_inner"]
+        )
+
         print(
             f"| {hour:>4} | {inj_a:>7.2f} | {inj_b:>7.2f} | {a_profile_summary} | "
-            f"{b_profile_summary} | {linefill_summary} |"
+            f"{b_profile_summary} | {linefill_summary} | {treated_length:>6.1f} | "
+            f"{linefill_volume:>10.1f} |"
         )
 
         queue_full = queue_after_full_b
