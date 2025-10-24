@@ -1597,15 +1597,14 @@ def _update_mainline_dra(
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
+        advected_portion = [
+            (float(length), float(ppm))
+            for length, ppm in pumped_adjusted
+            if float(length or 0.0) > 0.0
+        ]
         if inj_effective > 0.0:
-            advected_portion = [
-                (float(length), float(ppm))
-                for length, ppm in pumped_portion
-                if float(length or 0.0) > 0.0
-            ]
             tail_queue = list(remaining_queue)
         else:
-            advected_portion = pumped_adjusted
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
