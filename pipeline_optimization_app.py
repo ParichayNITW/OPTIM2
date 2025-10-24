@@ -2252,7 +2252,8 @@ def get_speed_display_map(
         else:
             values.setdefault(norm, np.nan)
     elif aggregated_val is not None:
-        for norm in suffixes:
+        if len(suffixes) == 1:
+            norm = suffixes[0]
             current = values.get(norm)
             if current is None or (isinstance(current, float) and np.isnan(current)):
                 values[norm] = aggregated_val
@@ -2739,14 +2740,24 @@ def solve_pipeline(
     baseline_summary = st.session_state.get("origin_lacing_baseline_summary")
     if not isinstance(baseline_summary, Mapping):
         baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+        if isinstance(baseline_summary, Mapping):
+            st.session_state["origin_lacing_baseline_summary"] = baseline_summary
 
     baseline_enforceable = False
     if isinstance(baseline_requirement, Mapping) and baseline_summary.get("has_positive_segments"):
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
 
     baseline_segments: list[dict] | None = None
-    if baseline_enforceable and isinstance(baseline_segments_state, Sequence):
-        baseline_segments = [copy.deepcopy(seg) for seg in baseline_segments_state]
+    if baseline_enforceable:
+        if isinstance(baseline_segments_state, Sequence) and baseline_segments_state:
+            baseline_segments = [copy.deepcopy(seg) for seg in baseline_segments_state]
+        else:
+            computed_segments = _collect_segment_floors(baseline_requirement)
+            if computed_segments:
+                baseline_segments = computed_segments
+                st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(computed_segments)
+            else:
+                baseline_enforceable = False
 
     def _combine_origin_detail(
         base_detail: dict | None,
