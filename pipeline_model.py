@@ -2540,6 +2540,77 @@ def _split_flow_two_segments(
     return best
 
 
+def _pump_curve_lookup(
+    entries: Sequence[Mapping[str, object]] | None,
+    flow_m3h: float,
+    value_key: str,
+) -> float | None:
+    """Interpolate ``value_key`` from ``entries`` at ``flow_m3h``.
+
+    ``entries`` are dictionaries containing flow/value pairs extracted from the
+    uploaded pump-curve CSV.  The helper tolerates common column naming
+    variants and returns ``None`` when interpolation is impossible.
+    """
+
+    if not entries:
+        return None
+
+    flow_vals: list[float] = []
+    target_vals: list[float] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        flow_keys = (
+            "Flow (m³/hr)",
+            "Flow (m3/hr)",
+            "Flow (m3ph)",
+            "Flow",
+            "flow",
+        )
+        val_keys = (
+            value_key,
+            value_key.replace("(m)", "(M)"),
+            value_key.replace("(%)", " (%)"),
+            value_key.replace("(%)", "(Percent)"),
+            value_key.replace("(m)", ""),
+            value_key.replace("(%)", ""),
+        )
+        flow_val = None
+        for key in flow_keys:
+            if key in entry:
+                try:
+                    flow_val = float(entry[key])
+                except (TypeError, ValueError):
+                    flow_val = None
+                break
+        if flow_val is None or math.isnan(flow_val):
+            continue
+        target_val = None
+        for key in val_keys:
+            if key in entry:
+                try:
+                    target_val = float(entry[key])
+                except (TypeError, ValueError):
+                    target_val = None
+                break
+        if target_val is None or math.isnan(target_val):
+            continue
+        flow_vals.append(flow_val)
+        target_vals.append(target_val)
+
+    if len(flow_vals) < 2:
+        return None
+
+    order = np.argsort(flow_vals)
+    flows_sorted = np.asarray(flow_vals, dtype=float)[order]
+    values_sorted = np.asarray(target_vals, dtype=float)[order]
+    try:
+        result = float(np.interp(flow_m3h, flows_sorted, values_sorted))
+    except Exception:
+        return None
+    return result
+
+
 def _pump_head(
     stn: dict,
     flow_m3h: float,
@@ -2622,23 +2693,30 @@ def _pump_head(
             A = pdata.get("A", 0.0)
             B = pdata.get("B", 0.0)
             C = pdata.get("C", 0.0)
-            tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
-            tdh_single = max(tdh_single, 0.0)
+            head_curve = _pump_curve_lookup(pdata.get("head_data"), Q_equiv, "Head (m)")
+            if head_curve is None:
+                A = pdata.get("A", 0.0)
+                B = pdata.get("B", 0.0)
+                C = pdata.get("C", 0.0)
+                head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
+            tdh_single = max(float(head_curve or 0.0), 0.0)
             speed_ratio_sq = (rpm_val / dol) ** 2 if dol else 0.0
             tdh_type = tdh_single * speed_ratio_sq * count
-            P = pdata.get("P", 0.0)
-            Qc = pdata.get("Q", 0.0)
-            R = pdata.get("R", 0.0)
-            S = pdata.get("S", 0.0)
-            T = pdata.get("T", 0.0)
-            eff_single = (
-                P * Q_equiv ** 4
-                + Qc * Q_equiv ** 3
-                + R * Q_equiv ** 2
-                + S * Q_equiv
-                + T
-            )
-            eff_single = min(max(eff_single, 0.0), 100.0)
+            eff_curve = _pump_curve_lookup(pdata.get("eff_data"), Q_equiv, "Efficiency (%)")
+            if eff_curve is None:
+                P = pdata.get("P", 0.0)
+                Qc = pdata.get("Q", 0.0)
+                R = pdata.get("R", 0.0)
+                S = pdata.get("S", 0.0)
+                T = pdata.get("T", 0.0)
+                eff_curve = (
+                    P * Q_equiv ** 4
+                    + Qc * Q_equiv ** 3
+                    + R * Q_equiv ** 2
+                    + S * Q_equiv
+                    + T
+                )
+            eff_single = min(max(float(eff_curve or 0.0), 0.0), 100.0)
             results.append(
                 {
                     "tdh": tdh_type,
@@ -2660,20 +2738,24 @@ def _pump_head(
     if dol <= 0:
         dol = rpm_single if rpm_single > 0 else default_rpm
     Q_equiv = flow_m3h * dol / rpm_single if rpm_single > 0 else flow_m3h
-    A = stn.get("A", 0.0)
-    B = stn.get("B", 0.0)
-    C = stn.get("C", 0.0)
-    tdh_single = A * Q_equiv ** 2 + B * Q_equiv + C
-    tdh_single = max(tdh_single, 0.0)
+    head_curve = _pump_curve_lookup(stn.get("head_data"), Q_equiv, "Head (m)")
+    if head_curve is None:
+        A = stn.get("A", 0.0)
+        B = stn.get("B", 0.0)
+        C = stn.get("C", 0.0)
+        head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
+    tdh_single = max(float(head_curve or 0.0), 0.0)
     speed_ratio_sq = (rpm_single / dol) ** 2 if dol else 0.0
     tdh = tdh_single * speed_ratio_sq * nop
-    P = stn.get("P", 0.0)
-    Q = stn.get("Q", 0.0)
-    R = stn.get("R", 0.0)
-    S = stn.get("S", 0.0)
-    T = stn.get("T", 0.0)
-    eff = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
-    eff = min(max(eff, 0.0), 100.0)
+    eff_curve = _pump_curve_lookup(stn.get("eff_data"), Q_equiv, "Efficiency (%)")
+    if eff_curve is None:
+        P = stn.get("P", 0.0)
+        Q = stn.get("Q", 0.0)
+        R = stn.get("R", 0.0)
+        S = stn.get("S", 0.0)
+        T = stn.get("T", 0.0)
+        eff_curve = P * Q_equiv ** 4 + Q * Q_equiv ** 3 + R * Q_equiv ** 2 + S * Q_equiv + T
+    eff = min(max(float(eff_curve or 0.0), 0.0), 100.0)
     results.append(
         {
             "tdh": tdh,
@@ -5222,6 +5304,12 @@ def solve_pipeline(
                                 speed_display = max(rpm_values)
                         speed_fields: dict[str, float] = {}
                         for pinfo in pump_details:
+                            try:
+                                count_val = float(pinfo.get('count', 0))
+                            except (TypeError, ValueError):
+                                count_val = 0.0
+                            if count_val <= 0.0:
+                                continue
                             suffix = _normalise_speed_suffix(pinfo.get('ptype', ''))
                             rpm_val = pinfo.get('rpm')
                             if isinstance(rpm_val, (int, float)):
