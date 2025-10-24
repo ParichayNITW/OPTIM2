@@ -435,6 +435,7 @@ def _collect_segment_floors(
             "station_idx": station_idx,
             "length_km": float(seg_length),
             "dra_ppm": float(floor_ppm),
+            "enforce_queue": False,
         }
 
         try:
@@ -2781,6 +2782,9 @@ def solve_pipeline(
         if base.get("segments") and "segments" not in user:
             user["segments"] = copy.deepcopy(base["segments"])
 
+        if "enforce_queue" not in user and "enforce_queue" in base:
+            user["enforce_queue"] = base["enforce_queue"]
+
         return user or None
 
     baseline_for_enforcement: dict | None = None
@@ -2802,6 +2806,7 @@ def solve_pipeline(
             if length_floor > 0.0:
                 base_detail["length_km"] = length_floor
         if base_detail:
+            base_detail["enforce_queue"] = False
             baseline_for_enforcement = base_detail
     baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
