@@ -2048,12 +2048,7 @@ def compute_minimum_lacing_requirement(
         flows.append(prev_flow - delivery + supply)
 
     kv_list = [visc_max for _ in stations_copy]
-    if segment_slices is None:
-        slices_use: list[list[dict]] = [[] for _ in stations_copy]
-    else:
-        slices_use = [list(seg or []) for seg in segment_slices[: len(stations_copy)]]
-        if len(slices_use) < len(stations_copy):
-            slices_use.extend([[]] * (len(stations_copy) - len(slices_use)))
+    slices_use: list[list[dict]] = [[] for _ in stations_copy]
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
     cumulative_min = max(terminal_min_residual, 0.0)
