@@ -1351,6 +1351,11 @@ def _update_mainline_dra(
     floor_ppm = 0.0
     floor_segments: list[tuple[float, float]] = []
     floor_specified = isinstance(segment_floor, Mapping)
+    enforce_queue_floor = True
+    if floor_specified:
+        enforce_queue_floor = bool(segment_floor.get('enforce_queue', True))
+        if not enforce_queue_floor:
+            floor_specified = False
     if floor_specified:
         try:
             floor_length = float(segment_floor.get('length_km', segment_length) or 0.0)
@@ -1570,11 +1575,12 @@ def _update_mainline_dra(
     floor_defined = bool(floor_specified and (floor_length > 0.0 or segments_defined))
     enforceable_floor = bool(
         floor_specified
+        and enforce_queue_floor
         and inj_effective > 0.0
         and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
     )
-    floor_requires_injection = bool(floor_defined and inj_effective <= 0.0)
-    if segments_defined and inj_effective <= 0.0:
+    floor_requires_injection = bool(floor_defined and enforce_queue_floor and inj_effective <= 0.0)
+    if segments_defined and enforce_queue_floor and inj_effective <= 0.0:
         floor_requires_injection = True
     enforce_floor = enforceable_floor and not floor_requires_injection
     if enforce_floor:
@@ -1705,6 +1711,24 @@ def _update_mainline_dra(
                 adjusted_entries.append((target_zero_length, 0.0))
             adjusted_entries.extend(trimmed_rest)
             merged_queue = _merge_queue(adjusted_entries)
+
+    if enforce_queue_floor and (floor_defined or segments_defined):
+        segment_requirements: list[dict[str, float]] = []
+        if floor_segments:
+            for seg_length, seg_ppm in floor_segments:
+                if seg_length > 0.0 and seg_ppm > 0.0:
+                    segment_requirements.append({'length_km': seg_length, 'dra_ppm': seg_ppm})
+        merged_with_floor = _ensure_queue_floor(
+            merged_queue,
+            floor_length if floor_length > 0.0 else segment_length,
+            floor_ppm,
+            segment_requirements,
+        )
+        merged_queue = tuple(
+            (float(length), float(ppm))
+            for length, ppm in merged_with_floor
+            if float(length or 0.0) > 0.0
+        )
 
     queue_after = [
         {'length_km': float(length), 'dra_ppm': float(ppm)}
@@ -3390,6 +3414,10 @@ def solve_pipeline(
             }
             if limited_flag or existing.get('limited_by_station'):
                 combined['limited_by_station'] = True
+            enforce_queue = entry.get('enforce_queue')
+            if enforce_queue is None:
+                enforce_queue = existing.get('enforce_queue', True)
+            combined['enforce_queue'] = bool(enforce_queue)
             segment_floor_lookup[idx_int] = combined  # type: ignore[assignment]
 
     # When requested, perform an outer enumeration over loop usage patterns.
@@ -3688,7 +3716,9 @@ def solve_pipeline(
             if pass_trace is not None:
                 pass_trace.append('coarse')
         exhaustive_result: dict = {"error": True}
-        run_exhaustive = coarse_failed or not coarse_reduces_search
+        run_exhaustive = True
+        if _internal_pass:
+            run_exhaustive = coarse_failed or not coarse_reduces_search
         if run_exhaustive:
             exhaustive_result = solve_pipeline(
                 stations,
@@ -4672,9 +4702,11 @@ def solve_pipeline(
     )
 
     baseline_floor: dict | None = None
+    enforce_queue_floor = True
     if isinstance(forced_origin_detail, Mapping):
         ppm_floor = float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0)
         length_floor = float(forced_origin_detail.get('length_km', 0.0) or 0.0)
+        enforce_queue_floor = bool(forced_origin_detail.get('enforce_queue', True))
 
         segment_floor_raw = forced_origin_detail.get('segments')
         segment_floor_norm: list[dict[str, float]] = []
@@ -4703,11 +4735,12 @@ def solve_pipeline(
             baseline_floor = {
                 'dra_ppm': max(ppm_floor, 0.0),
                 'length_km': max(length_floor, 0.0),
+                'enforce_queue': bool(enforce_queue_floor),
             }
             if segment_floor_norm:
                 baseline_floor['segments'] = segment_floor_norm
 
-    if baseline_floor:
+    if baseline_floor and baseline_floor.get('enforce_queue', True):
         initial_queue = _ensure_queue_floor(
             initial_queue,
             baseline_floor.get('length_km', 0.0),
