@@ -168,6 +168,23 @@ def _extract_rpm(
     return _coerce_float(value, default)
 
 
+def _station_allows_mixed_pump_types(stn: Mapping[str, object]) -> bool:
+    """Return ``True`` when the station permits mixing pump types in series."""
+
+    flag = stn.get('allow_mixed_pump_types')
+    if isinstance(flag, bool):
+        return flag
+    if isinstance(flag, (int, float)):
+        return bool(flag)
+    if isinstance(flag, str):
+        value = flag.strip().lower()
+        if value in {'1', 'true', 'yes', 'y', 'on'}:
+            return True
+        if value in {'0', 'false', 'no', 'n', 'off'}:
+            return False
+    return False
+
+
 def _station_min_rpm(
     stn: Mapping[str, object],
     ptype: str | None = None,
@@ -1956,6 +1973,7 @@ def compute_minimum_lacing_requirement(
 
         pump_types = stn.get('pump_types') if isinstance(stn.get('pump_types'), Mapping) else None
         base_combo = stn.get('pump_combo') if isinstance(stn.get('pump_combo'), Mapping) else None
+        allow_mixed_types = _station_allows_mixed_pump_types(stn)
         if pump_types:
             availA = int(_coerce_float_local(pump_types.get('A', {}).get('available', 0), 0.0))
             availB = int(_coerce_float_local(pump_types.get('B', {}).get('available', 0), 0.0))
@@ -1967,6 +1985,8 @@ def compute_minimum_lacing_requirement(
                 if total_units <= 0:
                     continue
                 if max_pumps_limit and total_units > max_pumps_limit:
+                    continue
+                if not allow_mixed_types and numA > 0 and numB > 0:
                     continue
                 if min_pumps and total_units < min_pumps:
                     continue
@@ -5923,11 +5943,14 @@ def solve_pipeline_with_types(
                 max_station_limit = None
             raw_min = stn.get('min_pumps')
             min_station_required = int(raw_min) if isinstance(raw_min, (int, float)) and raw_min > 0 else 0
+            allow_mixed_types = _station_allows_mixed_pump_types(stn)
             for numA, numB in combos:
                 total_units = numA + numB
                 if total_units <= 0:
                     continue
                 if max_station_limit is not None and total_units > max_station_limit:
+                    continue
+                if not allow_mixed_types and numA > 0 and numB > 0:
                     continue
                 pdataA = stn['pump_types'].get('A', {})
                 pdataB = stn['pump_types'].get('B', {})
@@ -5943,6 +5966,8 @@ def solve_pipeline_with_types(
                         if active_key in seen_active:
                             continue
                         seen_active.add(active_key)
+                        if not allow_mixed_types and actA > 0 and actB > 0:
+                            continue
                         unit = copy.deepcopy(stn)
                         unit['pump_combo'] = {'A': availA, 'B': availB}
                         unit['active_combo'] = {'A': actA, 'B': actB}
