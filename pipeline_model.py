@@ -1712,7 +1712,7 @@ def _update_mainline_dra(
             adjusted_entries.extend(trimmed_rest)
             merged_queue = _merge_queue(adjusted_entries)
 
-    if enforce_queue_floor and (floor_defined or segments_defined):
+    if enforce_floor and (floor_defined or segments_defined):
         segment_requirements: list[dict[str, float]] = []
         if floor_segments:
             for seg_length, seg_ppm in floor_segments:
@@ -1741,21 +1741,50 @@ def _update_mainline_dra(
     else:
         profile_source = tuple()
 
+    zero_fill_ppm = 0.0
+    if not floor_requires_injection:
+        if floor_segments:
+            for _seg_length, seg_ppm in floor_segments:
+                if seg_ppm > zero_fill_ppm:
+                    zero_fill_ppm = seg_ppm
+        if zero_fill_ppm <= 0.0 and floor_ppm > 0.0:
+            zero_fill_ppm = floor_ppm
+        if zero_fill_ppm <= 0.0 and existing_queue:
+            for _length_existing, ppm_existing in reversed(existing_queue):
+                if ppm_existing > 0.0:
+                    zero_fill_ppm = ppm_existing
+                    break
+
     dra_segments: list[tuple[float, float]] = []
+    profile_total = 0.0
     for entry in profile_source:
         if not entry:
             continue
         length = float(entry[0])
         if length <= 0:
             continue
+        profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
-        if ppm_val <= 0:
+        if ppm_val <= 0.0 and zero_fill_ppm > 0.0:
+            ppm_val = zero_fill_ppm
+        if ppm_val <= 0.0:
             continue
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
         else:
             dra_segments.append((length, ppm_val))
+
+    remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
+    if remaining_length > 1e-9 and zero_fill_ppm > 0.0:
+        if dra_segments and abs(dra_segments[-1][1] - zero_fill_ppm) <= 1e-9:
+            prev_len, _ = dra_segments[-1]
+            dra_segments[-1] = (prev_len + remaining_length, zero_fill_ppm)
+        else:
+            dra_segments.append((remaining_length, zero_fill_ppm))
+
+    if floor_requires_injection and inj_effective <= 0.0:
+        dra_segments = []
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
 @njit(cache=True, fastmath=True)

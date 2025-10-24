@@ -4063,6 +4063,58 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
 
 
+def test_dra_profile_preserves_baseline_after_injection() -> None:
+    """Injected slugs should overlay a pre-laced baseline across the segment."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length, "dra_ppm": 4.0}]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter_inner}
+    segment_floor = {"length_km": segment_length, "dra_ppm": 4.0}
+
+    dra_segments_hour1, queue_after_hour1, _, _ = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 5.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        segment_floor=segment_floor,
+        is_origin=True,
+    )
+
+    assert dra_segments_hour1
+    assert dra_segments_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour1[0][1] == pytest.approx(5.0, rel=1e-6)
+    assert dra_segments_hour1[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert dra_segments_hour1[1][1] == pytest.approx(4.0, rel=1e-6)
+
+    dra_segments_hour2, _, _, _ = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        {"nop": 1, "dra_ppm_main": 9.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        segment_floor=segment_floor,
+        is_origin=True,
+    )
+
+    assert dra_segments_hour2
+    assert dra_segments_hour2[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour2[0][1] == pytest.approx(9.0, rel=1e-6)
+    assert dra_segments_hour2[1][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
+    assert dra_segments_hour2[2][0] == pytest.approx(segment_length - pumped_length * 2.0, rel=1e-6)
+    assert dra_segments_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
+
+
 def test_time_series_solver_uses_cached_baseline(monkeypatch):
     import copy
 
