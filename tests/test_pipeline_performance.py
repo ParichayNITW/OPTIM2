@@ -1714,6 +1714,85 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry.get("dra_ppm") == pytest.approx(rounded_ppm)
 
 
+def test_compute_minimum_lacing_requirement_respects_single_type_series():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Blend Pump",
+            "is_pump": True,
+            "max_pumps": 3,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "DOL": 3000,
+                    "MinRPM": 3000,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 120.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 110.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 100.0},
+                    ],
+                    "eff_data": [
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 80.0},
+                    ],
+                },
+                "B": {
+                    "available": 2,
+                    "DOL": 3000,
+                    "MinRPM": 3000,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 210.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
+                    ],
+                    "eff_data": [
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 80.0},
+                    ],
+                },
+            },
+            "L": 12.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+        }
+    ]
+
+    terminal = {"name": "Terminal", "min_residual": 40.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=3.5,
+        min_suction_head=10.0,
+        fluid_density=850.0,
+        mop_kgcm2=75.0,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    entry = segments[0]
+    assert entry["available_head_before_suction"] == pytest.approx(444.0, rel=1e-3)
+
+    stations[0]["allow_mixed_pump_types"] = True
+    mixed = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=3.5,
+        min_suction_head=10.0,
+        fluid_density=850.0,
+        mop_kgcm2=75.0,
+    )
+    mixed_entry = mixed["segments"][0]
+    assert mixed_entry["available_head_before_suction"] > entry["available_head_before_suction"]
+
+
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
     import pipeline_model as model
 
