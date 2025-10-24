@@ -395,6 +395,12 @@ V_MAX = 2.5
 # this many currency units of the best state for the current station.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
+# Limit refinement passes to a smaller state budget so the narrowed search
+# completes quickly even when invoked repeatedly (e.g. within scheduling
+# loops).  The coarse and exhaustive passes retain the broader defaults.
+REFINE_STATE_TOP_K = 30
+REFINE_STATE_COST_MARGIN = 2000.0
+REFINE_MAX_DRA_VALUES = 15
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     if min_val > max_val:
@@ -3516,44 +3522,51 @@ def solve_pipeline(
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
                 pass_trace.append('coarse')
-        exhaustive_result = solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            segment_slices,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-            start_time,
-            pump_shear_rate=pump_shear_rate,
-            loop_usage_by_station=loop_usage_by_station,
-            enumerate_loops=False,
-            _internal_pass=True,
-            rpm_step=rpm_step,
-            dra_step=dra_step,
-            narrow_ranges=None,
-            coarse_multiplier=coarse_multiplier,
-            state_top_k=state_top_k,
-            state_cost_margin=state_cost_margin,
-            _exhaustive_pass=True,
-            refined_retry=coarse_failed,
-            pass_trace=None,
-            forced_origin_detail=forced_origin_detail,
-            segment_floors=segment_floors,
-        )
-        if pass_trace is not None:
-            pass_trace.append('exhaustive')
-        if coarse_failed and not exhaustive_result.get("error"):
-            coarse_res = exhaustive_result
-            coarse_failed = False
-        if not _internal_pass and not exhaustive_result.get("error"):
+        exhaustive_result: dict = {"error": True}
+        run_exhaustive = coarse_failed or not coarse_reduces_search
+        if run_exhaustive:
+            exhaustive_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=True,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=None,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=state_top_k,
+                state_cost_margin=state_cost_margin,
+                _exhaustive_pass=True,
+                refined_retry=coarse_failed,
+                pass_trace=None,
+                forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
+            )
+            if pass_trace is not None:
+                pass_trace.append('exhaustive')
+            if coarse_failed and not exhaustive_result.get("error"):
+                coarse_res = exhaustive_result
+                coarse_failed = False
+        if (
+            not _internal_pass
+            and not exhaustive_result.get("error")
+            and (run_exhaustive or coarse_res.get("error"))
+        ):
             if coarse_res.get("error"):
                 return exhaustive_result
 
@@ -3583,11 +3596,11 @@ def solve_pipeline(
                     coarse_nop = int(coarse_res.get(f"num_pumps_{name}", 0))
                     coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
                     st_rpm_min, st_rpm_max = bounds.get('rpm', (0, 0))  # type: ignore[assignment]
+                    upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
                     if coarse_nop == 0:
                         rmin = rmax = 0
                     else:
                         coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
-                        upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
                         rmin = max(st_rpm_min, coarse_rpm - window)
                         rmax = min(upper_bound, coarse_rpm + window)
                         if rmin < st_rpm_min or rmax > upper_bound:
@@ -3596,11 +3609,28 @@ def solve_pipeline(
                         if rmin > st_rpm_min or rmax < upper_bound:
                             refinement_needed = True
                     max_dr_main = _max_dr_int(stn.get("max_dr"))
-                    if coarse_dr_main <= 0 or coarse_dr_main >= max_dr_main:
+                    if max_dr_main <= 0:
+                        dmin = dmax = 0
+                    elif coarse_dr_main <= 0:
                         dmin, dmax = 0, max_dr_main
+                        if coarse_nop > 0 and max_dr_main > 0:
+                            if rmin != st_rpm_min:
+                                rmin = st_rpm_min
+                                refinement_needed = True
+                        refinement_needed = True
+                    elif coarse_dr_main >= max_dr_main:
+                        span = max(dra_step, coarse_dra_step)
+                        dmin = max(0, max_dr_main - span)
+                        dmax = max_dr_main
+                        if coarse_nop > 0 and max_dr_main > 0:
+                            if rmax != upper_bound:
+                                rmax = upper_bound
+                                refinement_needed = True
+                        refinement_needed = True
                     else:
-                        dmin = max(0, coarse_dr_main - dra_step)
-                        dmax = min(max_dr_main, coarse_dr_main + dra_step)
+                        span = max(dra_step, 1)
+                        dmin = max(0, coarse_dr_main - span)
+                        dmax = min(max_dr_main, coarse_dr_main + span)
                         if dmin > 0 or dmax < max_dr_main:
                             refinement_needed = True
                     entry: dict[str, tuple[int, int]] = {
@@ -3616,12 +3646,16 @@ def solve_pipeline(
                     elif isinstance(stn.get("combo"), Mapping):
                         combo_rng = stn["combo"]  # type: ignore[index]
                     if pump_types_rng and isinstance(combo_rng, Mapping):
-                        type_bounds = bounds.get('type_rpm') if isinstance(bounds.get('type_rpm'), Mapping) else {}
+                        type_bounds_map = (
+                            bounds.get('type_rpm') if isinstance(bounds.get('type_rpm'), Mapping) else {}
+                        )
                         for ptype, count in combo_rng.items():
                             if not isinstance(count, (int, float)) or count <= 0:
                                 continue
                             pdata = pump_types_rng.get(ptype, {})
-                            pmin_default, pmax_default = type_bounds.get(str(ptype), (st_rpm_min, st_rpm_max)) if isinstance(type_bounds, Mapping) else (st_rpm_min, st_rpm_max)
+                            pmin_default, pmax_default = type_bounds_map.get(
+                                str(ptype), (st_rpm_min, st_rpm_max)
+                            )
                             p_rmin = int(_extract_rpm(pdata.get("MinRPM"), default=pmin_default, prefer='min'))
                             p_rmax = int(_extract_rpm(pdata.get("DOL"), default=pmax_default, prefer='max'))
                             if p_rmax <= 0 and pmax_default > 0:
@@ -3665,12 +3699,20 @@ def solve_pipeline(
                     if loop:
                         coarse_dr_loop = int(coarse_res.get(f"drag_reduction_loop_{name}", 0))
                         loop_max = _max_dr_int(loop.get("max_dr"))
-                        if coarse_dr_loop <= 0 or coarse_dr_loop >= loop_max:
-                            lmin = 0
+                        if loop_max <= 0:
+                            lmin = lmax = 0
+                        elif coarse_dr_loop <= 0:
+                            lmin, lmax = 0, loop_max
+                            refinement_needed = True
+                        elif coarse_dr_loop >= loop_max:
+                            span = max(dra_step, coarse_dra_step)
+                            lmin = max(0, loop_max - span)
                             lmax = loop_max
+                            refinement_needed = True
                         else:
-                            lmin = max(0, coarse_dr_loop - dra_step)
-                            lmax = min(loop_max, coarse_dr_loop + dra_step)
+                            span = max(dra_step, 1)
+                            lmin = max(0, coarse_dr_loop - span)
+                            lmax = min(loop_max, coarse_dr_loop + span)
                             if lmin > 0 or lmax < loop_max:
                                 refinement_needed = True
                         entry["dra_loop"] = (lmin, lmax)
@@ -3678,15 +3720,24 @@ def solve_pipeline(
                 else:
                     coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
                     max_dr = _max_dr_int(stn.get("max_dr"))
-                    if coarse_dr_main <= 0 or coarse_dr_main >= max_dr:
+                    if max_dr <= 0:
+                        dmin = dmax = 0
+                    elif coarse_dr_main <= 0:
                         dmin, dmax = 0, max_dr
+                        refinement_needed = True
+                    elif coarse_dr_main >= max_dr:
+                        span = max(dra_step, coarse_dra_step)
+                        dmin = max(0, max_dr - span)
+                        dmax = max_dr
+                        refinement_needed = True
                     else:
-                        dmin = max(0, coarse_dr_main - dra_step)
-                        dmax = min(max_dr, coarse_dr_main + dra_step)
+                        span = max(dra_step, 1)
+                        dmin = max(0, coarse_dr_main - span)
+                        dmax = min(max_dr, coarse_dr_main + span)
                         if dmin > 0 or dmax < max_dr:
                             refinement_needed = True
                     ranges[idx] = {"dra_main": (dmin, dmax)}
-            if refinement_needed:
+            if refinement_needed and ranges:
                 refine_result = solve_pipeline(
                     stations,
                     terminal,
@@ -3711,8 +3762,8 @@ def solve_pipeline(
                     dra_step=dra_step,
                     narrow_ranges=ranges,
                     coarse_multiplier=coarse_multiplier,
-                    state_top_k=state_top_k,
-                    state_cost_margin=state_cost_margin,
+                    state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
+                    state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
@@ -4054,8 +4105,13 @@ def solve_pipeline(
                 if dr_min > dr_max:
                     dr_min = dr_max
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
+                dra_grid_min = dra_main_vals[0] if dra_main_vals else dr_min
+                dra_grid_max = dra_main_vals[-1] if dra_main_vals else dr_max
                 if not dra_main_vals and dr_max >= 0:
                     dra_main_vals = [dr_max]
+                    dra_grid_min = dra_grid_max = dr_max
+                if narrow_ranges is not None and len(dra_main_vals) > REFINE_MAX_DRA_VALUES:
+                    dra_main_vals = _downsample_evenly(dra_main_vals, REFINE_MAX_DRA_VALUES)
                 if floor_ppm_min > 0.0 and not floor_limited and dra_main_vals:
                     filtered_vals: list[int] = []
                     for candidate in dra_main_vals:
@@ -4120,6 +4176,7 @@ def solve_pipeline(
                             continue
                         seen_ppm_keys.add(key)
                         dra_use = int(dra_main)
+                        required_dr = dra_use
                         if ppm_main > 0.0 and kv > 0.0:
                             try:
                                 dra_from_ppm = float(get_dr_for_ppm(kv, ppm_main))
@@ -4127,6 +4184,23 @@ def solve_pipeline(
                                 dra_from_ppm = dra_main
                             if dra_from_ppm > dra_use:
                                 dra_use = int(math.ceil(dra_from_ppm))
+                                required_dr = int(math.ceil(dra_from_ppm))
+                            else:
+                                required_dr = int(math.ceil(dra_from_ppm)) if dra_from_ppm > 0 else dra_use
+                        if dra_step > 0 and dra_main_vals:
+                            if dra_use < dra_grid_min:
+                                dra_use = dra_grid_min
+                            offset = (dra_use - dra_grid_min) % dra_step
+                            if offset:
+                                dra_use -= offset
+                                if dra_use < dra_grid_min:
+                                    dra_use = dra_grid_min
+                            if dra_use < required_dr:
+                                deficit = required_dr - dra_use
+                                steps_needed = int(math.ceil(deficit / dra_step))
+                                dra_use = min(dra_use + steps_needed * dra_step, dra_grid_max)
+                        if dra_use > dra_grid_max:
+                            dra_use = dra_grid_max
                         ppm_candidates.append((dra_use, ppm_main))
                     if not ppm_candidates and floor_ppm_min > 0.0 and dra_main_vals:
                         fallback_ppm = floor_ppm_min
@@ -4240,6 +4314,8 @@ def solve_pipeline(
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 if not dra_vals and dr_max >= 0:
                     dra_vals = [dr_max]
+                if narrow_ranges is not None and len(dra_vals) > REFINE_MAX_DRA_VALUES:
+                    dra_vals = _downsample_evenly(dra_vals, REFINE_MAX_DRA_VALUES)
                 if floor_ppm_min > 0.0 and not floor_limited and dra_vals:
                     filtered_vals = []
                     for candidate in dra_vals:
