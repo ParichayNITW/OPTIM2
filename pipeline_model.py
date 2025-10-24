@@ -5470,6 +5470,8 @@ def solve_pipeline(
                             ppm_f = 0.0
                         if length_f <= 0.0:
                             continue
+                        if ppm_f <= 0.0:
+                            continue
                         profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
 
                     treated_profile_length = sum(
