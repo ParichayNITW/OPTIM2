@@ -1163,7 +1163,12 @@ def _predict_effective_injection(
     shear_injection: bool,
     injector_position: str | None,
 ) -> float:
-    """Return the estimated post-shear concentration for an injected slug."""
+    """Return the estimated post-shear concentration for an injected slug.
+
+    Injection is assumed to occur downstream of the active pumps, so the
+    ``shear_injection`` flag is ignored unless ``injector_position`` explicitly
+    identifies the injector as ``"upstream"``.
+    """
 
     try:
         inj_requested = float(ppm_requested or 0.0)
@@ -1196,7 +1201,7 @@ def _predict_effective_injection(
     shear = max(0.0, min(shear, 1.0))
 
     injector_pos = str(injector_position or "").lower()
-    apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
+    apply_injection_shear = pump_running and injector_pos == "upstream"
     if not pump_running or not apply_injection_shear:
         return max(inj_requested, 0.0)
 
@@ -1275,8 +1280,10 @@ def _update_mainline_dra(
         Fractional reduction applied to upstream drag reduction when pumps are
         running.  Values are clamped to ``[0, 1]``.
     shear_injection:
-        When ``True`` the injected slug experiences the same shear as the
-        upstream fluid regardless of injector position.
+        Deprecated flag retained for backward compatibility.  Injection is
+        assumed to occur downstream of the active pumps so the flag is ignored
+        unless ``injector_position`` explicitly marks the injector as
+        "upstream".
     is_origin:
         ``True`` when handling the origin station.  A running origin pump with
         no injection outputs untreated fluid.
@@ -1320,7 +1327,7 @@ def _update_mainline_dra(
         shear = local_shear
     shear = max(0.0, min(shear, 1.0))
     injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
-    apply_injection_shear = pump_running and (shear_injection or injector_pos == "upstream")
+    apply_injection_shear = pump_running and injector_pos == "upstream"
     kv = float(stn_data.get("kv", 3.0) or 3.0)
 
     floor_length = 0.0
