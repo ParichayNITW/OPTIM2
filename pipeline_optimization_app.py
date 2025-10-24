@@ -105,6 +105,156 @@ def ensure_initial_dra_column(
     return df
 
 
+def _default_segment_slices(
+    stations: list[dict], kv_list: list[float], rho_list: list[float]
+) -> list[list[dict]]:
+    """Return single-slice segment profiles for legacy distance tables."""
+
+    if not stations:
+        return []
+
+    fallback_kv = kv_list[0] if kv_list else 1.0
+    fallback_rho = rho_list[0] if rho_list else 850.0
+    slices: list[list[dict]] = []
+    for idx, stn in enumerate(stations):
+        length = float(stn.get("L", 0.0) or 0.0)
+        kv = kv_list[idx] if idx < len(kv_list) else fallback_kv
+        rho = rho_list[idx] if idx < len(rho_list) else fallback_rho
+        slices.append(
+            [
+                {
+                    "length_km": length,
+                    "kv": float(kv),
+                    "rho": float(rho),
+                }
+            ]
+        )
+    return slices
+
+
+def derive_segment_profiles(
+    linefill_df: pd.DataFrame | None, stations: list[dict]
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return per-segment viscosity/density lists and batch slices."""
+
+    kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill_df, stations)
+    return kv_list, rho_list, segment_slices
+
+
+def map_linefill_to_segments(
+    linefill_df, stations
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Map linefill properties onto each pipeline segment."""
+
+    if linefill_df is None or len(linefill_df) == 0:
+        kv_list = [1.0] * len(stations)
+        rho_list = [850.0] * len(stations)
+        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+        return kv_list, rho_list, segment_slices
+
+    cols = set(linefill_df.columns)
+
+    if "Start (km)" not in cols or "End (km)" not in cols:
+        if "Volume (m³)" in cols or "Volume" in cols:
+            return map_vol_linefill_to_segments(linefill_df, stations)
+        kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
+        rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
+        kv_list = [kv] * len(stations)
+        rho_list = [rho] * len(stations)
+        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+        return kv_list, rho_list, segment_slices
+
+    cumlen = [0]
+    for stn in stations:
+        cumlen.append(cumlen[-1] + stn["L"])
+    viscs = []
+    dens = []
+    for i in range(len(stations)):
+        seg_start = cumlen[i]
+        seg_end = cumlen[i + 1]
+        found = False
+        for _, row in linefill_df.iterrows():
+            if row["Start (km)"] <= seg_start < row["End (km)"]:
+                viscs.append(row["Viscosity (cSt)"])
+                dens.append(row["Density (kg/m³)"])
+                found = True
+                break
+        if not found:
+            viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
+            dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
+    segment_slices = _default_segment_slices(stations, viscs, dens)
+    return viscs, dens, segment_slices
+
+
+def pipe_cross_section_area_m2(stations: list[dict]) -> float:
+    """Return pipe internal cross-sectional area (m²) using the first station."""
+
+    if not stations:
+        return 0.0
+    D = float(stations[0].get("D", 0.711))
+    t = float(stations[0].get("t", 0.007))
+    d_inner = max(D - 2.0 * t, 0.0)
+    return float((pi * d_inner**2) / 4.0)
+
+
+def map_vol_linefill_to_segments(
+    vol_table: pd.DataFrame | None, stations: list[dict]
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Convert a volumetric linefill table to per-segment fluid properties."""
+
+    if not isinstance(vol_table, pd.DataFrame):
+        return derive_segment_profiles(pd.DataFrame(), stations)
+
+    if not stations:
+        return [], [], []
+
+    batches: list[dict[str, float]] = []
+    for _, r in vol_table.iterrows():
+        try:
+            vol_raw = r.get("Volume (m³)")
+        except AttributeError:
+            vol_raw = None
+        if vol_raw in (None, ""):
+            vol_raw = r.get("Volume")
+        try:
+            vol = float(vol_raw)
+        except (TypeError, ValueError):
+            vol = 0.0
+        if vol <= 0.0:
+            continue
+
+        try:
+            visc = float(r.get("Viscosity (cSt)", 0.0))
+        except (TypeError, ValueError):
+            visc = 0.0
+        try:
+            dens = float(r.get("Density (kg/m³)", 0.0))
+        except (TypeError, ValueError):
+            dens = 0.0
+
+        batches.append({"volume_m3": vol, "kv": visc, "rho": dens})
+
+    if not batches:
+        fallback_kv = 1.0
+        fallback_rho = 850.0
+        kv_list = [fallback_kv] * len(stations)
+        rho_list = [fallback_rho] * len(stations)
+        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
+
+    A = pipe_cross_section_area_m2(stations)
+    if A <= 0:
+        fallback_kv = batches[0]["kv"] if batches else 1.0
+        fallback_rho = batches[0]["rho"] if batches else 850.0
+        kv_list = [fallback_kv] * len(stations)
+        rho_list = [fallback_rho] * len(stations)
+        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
+
+    d_inner = sqrt((4.0 * A) / pi)
+    km_from_volume = pipeline_model._km_from_volume
+
+    for entry in batches:
+        entry["len_km"] = km_from_volume(entry["volume_m3"], d_inner)
+
 def _summarise_baseline_requirement(
     baseline_requirement: Mapping[str, object] | None,
 ) -> dict[str, float | bool]:
@@ -1507,196 +1657,6 @@ st.sidebar.download_button(
     file_name="pipeline_case.json",
     mime="application/json"
 )
-
-def _default_segment_slices(
-    stations: list[dict], kv_list: list[float], rho_list: list[float]
-) -> list[list[dict]]:
-    """Return single-slice segment profiles for legacy distance tables.
-
-    Each station (segment) receives a single ``{"length_km", "kv", "rho"}``
-    dictionary so downstream consumers such as the hydraulic solver receive a
-    well-formed slice list even when only aggregate properties are available.
-    """
-
-    if not stations:
-        return []
-
-    fallback_kv = kv_list[0] if kv_list else 1.0
-    fallback_rho = rho_list[0] if rho_list else 850.0
-    slices: list[list[dict]] = []
-    for idx, stn in enumerate(stations):
-        length = float(stn.get("L", 0.0) or 0.0)
-        kv = kv_list[idx] if idx < len(kv_list) else fallback_kv
-        rho = rho_list[idx] if idx < len(rho_list) else fallback_rho
-        slices.append(
-            [
-                {
-                    "length_km": length,
-                    "kv": float(kv),
-                    "rho": float(rho),
-                }
-            ]
-        )
-    return slices
-
-
-def derive_segment_profiles(
-    linefill_df: pd.DataFrame | None, stations: list[dict]
-) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Return per-segment viscosity/density lists and batch slices."""
-
-    kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill_df, stations)
-    return kv_list, rho_list, segment_slices
-
-
-def map_linefill_to_segments(
-    linefill_df, stations
-) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Map linefill properties onto each pipeline segment.
-
-    Accepts either a tabular linefill with "Start/End (km)" columns or a
-    volumetric table containing "Volume (m³)" information. In the latter case,
-    :func:`map_vol_linefill_to_segments` is used to derive segment properties.
-    """
-
-    if linefill_df is None or len(linefill_df) == 0:
-        # When no linefill information is provided, return conservative defaults
-        # rather than zeros.  Zero viscosities and densities result in
-        # non-physical conditions that cause the optimiser to reject all
-        # scenarios.  Here we assume a light refined product of 1.0 cSt and
-        # density 850 kg/m³ across all segments.
-        kv_list = [1.0] * len(stations)
-        rho_list = [850.0] * len(stations)
-        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
-        return kv_list, rho_list, segment_slices
-
-    cols = set(linefill_df.columns)
-
-    # If Start/End columns are missing but volumetric info is present,
-    # delegate to volumetric mapper and return directly.
-    if "Start (km)" not in cols or "End (km)" not in cols:
-        if "Volume (m³)" in cols or "Volume" in cols:
-            return map_vol_linefill_to_segments(linefill_df, stations)
-        # Fallback: assume uniform properties from the last row
-        kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
-        rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
-        kv_list = [kv] * len(stations)
-        rho_list = [rho] * len(stations)
-        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
-        return kv_list, rho_list, segment_slices
-
-    cumlen = [0]
-    for stn in stations:
-        cumlen.append(cumlen[-1] + stn["L"])
-    viscs = []
-    dens = []
-    for i in range(len(stations)):
-        seg_start = cumlen[i]
-        seg_end = cumlen[i + 1]
-        found = False
-        for _, row in linefill_df.iterrows():
-            if row["Start (km)"] <= seg_start < row["End (km)"]:
-                viscs.append(row["Viscosity (cSt)"])
-                dens.append(row["Density (kg/m³)"])
-                found = True
-                break
-        if not found:
-            viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
-            dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
-    segment_slices = _default_segment_slices(stations, viscs, dens)
-    return viscs, dens, segment_slices
-
-# ==== NEW: Volumetric linefill helpers ====
-def pipe_cross_section_area_m2(stations: list[dict]) -> float:
-    """Return pipe internal cross-sectional area (m²) using the first station's D/t."""
-    if not stations:
-        return 0.0
-    D = float(stations[0].get("D", 0.711))
-    t = float(stations[0].get("t", 0.007))
-    d_inner = max(D - 2.0*t, 0.0)
-    return float((pi * d_inner**2) / 4.0)
-
-def map_vol_linefill_to_segments(
-    vol_table: pd.DataFrame | None, stations: list[dict]
-) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Convert a volumetric linefill table to per-segment fluid properties.
-
-    The returned tuple contains three parallel sequences with one entry per
-    segment (station):
-
-    ``kv_list``
-        The viscosity of the upstream-most batch touching the segment.  This
-        preserves the historical behaviour used by DRA lookups and other UI
-        features that expect a single representative viscosity per segment.
-
-    ``rho_list``
-        A length-weighted average density across the batches occupying the
-        segment.  This is used when converting heads to pressures.
-
-    ``segment_slices``
-        A list of ``{"length_km", "kv", "rho"}`` dictionaries describing the
-        sequence of batches that span the segment.  These slices are later fed
-        into the hydraulic solver so Darcy–Weisbach losses can be accumulated
-        over the heterogeneous fluid profile instead of assuming a single
-        viscosity.
-
-    Assumes uniform diameter along the pipeline (uses first station ``D``/``t``)
-    to convert volumes to kilometres.
-    """
-    if not isinstance(vol_table, pd.DataFrame):
-        return derive_segment_profiles(pd.DataFrame(), stations)
-
-    if not stations:
-        return [], [], []
-
-    # Compute lengths occupied by each batch
-    # Expected columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³)
-    batches: list[dict[str, float]] = []
-    for _, r in vol_table.iterrows():
-        try:
-            vol_raw = r.get("Volume (m³)")
-        except AttributeError:
-            vol_raw = None
-        if vol_raw in (None, ""):
-            vol_raw = r.get("Volume")
-        try:
-            vol = float(vol_raw)
-        except (TypeError, ValueError):
-            vol = 0.0
-        if vol <= 0.0:
-            continue
-
-        try:
-            visc = float(r.get("Viscosity (cSt)", 0.0))
-        except (TypeError, ValueError):
-            visc = 0.0
-        try:
-            dens = float(r.get("Density (kg/m³)", 0.0))
-        except (TypeError, ValueError):
-            dens = 0.0
-
-        batches.append({"volume_m3": vol, "kv": visc, "rho": dens})
-
-    if not batches:
-        fallback_kv = 1.0
-        fallback_rho = 850.0
-        kv_list = [fallback_kv] * len(stations)
-        rho_list = [fallback_rho] * len(stations)
-        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
-
-    A = pipe_cross_section_area_m2(stations)
-    if A <= 0:
-        fallback_kv = batches[0]["kv"] if batches else 1.0
-        fallback_rho = batches[0]["rho"] if batches else 850.0
-        kv_list = [fallback_kv] * len(stations)
-        rho_list = [fallback_rho] * len(stations)
-        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
-
-    d_inner = sqrt((4.0 * A) / pi)
-    km_from_volume = pipeline_model._km_from_volume
-
-    for entry in batches:
-        entry["len_km"] = km_from_volume(entry["volume_m3"], d_inner)
 
     # Map to segments (each station defines a segment length L)
     seg_kv: list[float] = []
