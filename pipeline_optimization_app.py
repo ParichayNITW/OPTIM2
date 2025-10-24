@@ -37,6 +37,8 @@ if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
 if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
+if "laced_density_kgm3" not in st.session_state:
+    st.session_state["laced_density_kgm3"] = st.session_state.get("Fuel_density", 820.0)
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -398,6 +400,10 @@ def restore_case_dict(loaded_data):
         'min_laced_suction_m',
         st.session_state.get('min_laced_suction_m', 0.0),
     )
+    st.session_state['laced_density_kgm3'] = loaded_data.get(
+        'laced_density_kgm3',
+        st.session_state.get('laced_density_kgm3', st.session_state.get('Fuel_density', 820.0)),
+    )
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
         ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
@@ -575,6 +581,17 @@ with st.sidebar:
             help=(
                 "Headroom to reserve at the suction reference when enforcing downstream"
                 " SDH requirements."
+            ),
+        )
+        st.number_input(
+            "Fluid density for lacing (kg/m³)",
+            min_value=0.0,
+            value=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))),
+            step=1.0,
+            key="laced_density_kgm3",
+            help=(
+                "Density used to convert MOP/MAOP limits from kg/cm² to metres when "
+                "evaluating baseline lacing floors."
             ),
         )
 
@@ -1234,6 +1251,7 @@ def get_full_case_dict():
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
+        "laced_density_kgm3": st.session_state.get('laced_density_kgm3', st.session_state.get('Fuel_density', 820.0)),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -2486,6 +2504,8 @@ def solve_pipeline(
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
+            fluid_density=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0),
+            mop_kgcm2=float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0),
         )
     except Exception:
         baseline_requirement = None
@@ -3982,6 +4002,8 @@ def run_all_updates():
             max_visc_cst=float(baseline_visc),
             segment_slices=segment_slices,
             min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
+            fluid_density=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0),
+            mop_kgcm2=float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0),
         )
     except Exception:
         baseline_requirement = None
@@ -5477,7 +5499,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 rough = stn['rough']
                 L_seg = stn['L']
                 elev_i = stn['elev']
-                max_dr = int(stn.get('max_dr', 40))
+                max_dr = max(int(stn.get('max_dr', 40)), 0)
                 kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[i-1]
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
@@ -5491,18 +5513,28 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Re_vals = np.zeros_like(v_vals)
                     f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
-                n_curves = (max_dr // pipeline_model.DRA_STEP) + 1
+                dra_step = max(getattr(pipeline_model, "DRA_STEP", 2), 1)
+                dra_levels = list(range(0, max_dr + dra_step, dra_step))
+                if not dra_levels:
+                    dra_levels = [0]
+                n_curves = len(dra_levels)
                 color_palette = [
                     "#1565C0", "#1976D2", "#1E88E5", "#3949AB", "#8E24AA",
                     "#D81B60", "#F4511E", "#F9A825", "#43A047", "#00897B"
                 ]
-                color_idx = np.linspace(0, len(color_palette)-1, n_curves).astype(int)
+                if n_curves <= 0:
+                    color_idx = np.array([0])
+                    n_curves = 1
+                else:
+                    color_idx = np.linspace(0, len(color_palette) - 1, n_curves).astype(int)
                 fig_sys = go.Figure()
-                for j, dra in enumerate(range(0, max_dr + pipeline_model.DRA_STEP, pipeline_model.DRA_STEP)):
+                for j, dra in enumerate(dra_levels):
                     DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = elev_i + DH
                     # Fix: safe indexing for palette if only 1 curve
-                    color = color_palette[color_idx[j]] if n_curves > 1 else color_palette[0]
+                    palette_idx = color_idx[j] if n_curves > 1 else color_idx[0]
+                    palette_idx = min(max(int(palette_idx), 0), len(color_palette) - 1)
+                    color = color_palette[palette_idx]
                     fig_sys.add_trace(go.Scatter(
                         x=flows, y=SDH_vals,
                         mode='lines',
