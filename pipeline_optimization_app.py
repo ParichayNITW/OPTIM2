@@ -595,6 +595,43 @@ with st.sidebar:
             ),
         )
 
+        if st.button("Calculate baseline DRA PPM", key="compute_baseline_dra", type="primary"):
+            (
+                stations_ctx,
+                term_ctx,
+                linefill_ctx,
+                kv_ctx,
+                rho_ctx,
+                segment_ctx,
+            ) = _prepare_pipeline_context()
+            (
+                _,
+                baseline_summary,
+                baseline_warnings,
+                enforceable,
+                _,
+            ) = _compute_and_store_baseline_requirement(
+                stations_ctx,
+                term_ctx,
+                kv_ctx,
+                rho_ctx,
+                segment_ctx,
+            )
+            if isinstance(linefill_ctx, pd.DataFrame):
+                st.session_state["linefill_df"] = linefill_ctx
+            if baseline_warnings:
+                for warning in baseline_warnings:
+                    message = warning.get("message") if isinstance(warning, Mapping) else None
+                    if message:
+                        st.warning(message)
+            if enforceable and baseline_summary.get("has_positive_segments"):
+                floor_ppm = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+                st.success(
+                    f"Baseline DRA floors updated. Minimum enforced origin injection is {floor_ppm:.2f} ppm."
+                )
+            else:
+                st.info("Baseline DRA floors cleared. No minimum injection will be enforced.")
+
         rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
         dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
         coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
@@ -2454,6 +2491,136 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
         "state_cost_margin": state_cost_margin,
     }
 
+
+def _prepare_pipeline_context():
+    """Build station, terminal, and linefill data for optimisation helpers."""
+
+    stations_data = copy.deepcopy(st.session_state.get("stations", []))
+    term_data = {
+        "name": st.session_state.get("terminal_name", "Terminal"),
+        "elev": st.session_state.get("terminal_elev", 0.0),
+        "min_residual": st.session_state.get("terminal_head", 10.0),
+    }
+
+    linefill_df = st.session_state.get("linefill_df")
+    if isinstance(linefill_df, pd.DataFrame):
+        linefill_df = ensure_initial_dra_column(linefill_df, default=0.0, fill_blanks=True)
+    else:
+        linefill_df = pd.DataFrame()
+
+    vol_linefill = st.session_state.get("linefill_vol_df")
+    if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
+        vol_linefill = ensure_initial_dra_column(vol_linefill, default=0.0, fill_blanks=True)
+        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(vol_linefill, stations_data)
+        linefill_df = vol_linefill
+    else:
+        kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
+
+    for idx, stn in enumerate(stations_data, start=1):
+        if not stn.get("is_pump", False):
+            continue
+
+        if stn.get("pump_types"):
+            for ptype, pdata in stn["pump_types"].items():
+                if not isinstance(pdata, Mapping):
+                    continue
+                if int(pdata.get("available", 0)) <= 0:
+                    continue
+                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                pdata["head_data"] = dfh
+                pdata["eff_data"] = dfe
+        else:
+            dfh = st.session_state.get(f"head_data_{idx}")
+            dfe = st.session_state.get(f"eff_data_{idx}")
+            if dfh is None and "head_data" in stn:
+                dfh = pd.DataFrame(stn["head_data"])
+            if dfe is None and "eff_data" in stn:
+                dfe = pd.DataFrame(stn["eff_data"])
+            if dfh is not None and len(dfh) >= 3:
+                Qh = dfh.iloc[:, 0].values
+                Hh = dfh.iloc[:, 1].values
+                coeff = np.polyfit(Qh, Hh, 2)
+                stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+            if dfe is not None and len(dfe) >= 5:
+                Qe = dfe.iloc[:, 0].values
+                Ee = dfe.iloc[:, 1].values
+                coeff_e = np.polyfit(Qe, Ee, 4)
+                stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
+
+    return stations_data, term_data, linefill_df, kv_list, rho_list, segment_slices
+
+
+def _compute_and_store_baseline_requirement(
+    stations_data,
+    term_data,
+    kv_list,
+    rho_list,
+    segment_slices,
+):
+    """Recompute the DRA baseline using the current lacing inputs."""
+
+    baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
+    baseline_visc_raw = st.session_state.get("max_laced_visc_cst", 0.0)
+    try:
+        baseline_visc = float(baseline_visc_raw)
+    except (TypeError, ValueError):
+        baseline_visc = 0.0
+    if baseline_visc <= 0.0:
+        try:
+            baseline_visc = float(max(kv_list or [1.0]))
+        except (TypeError, ValueError):
+            baseline_visc = 1.0
+
+    min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
+    fluid_density = float(
+        st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0
+    )
+    mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
+
+    baseline_requirement: dict | None = None
+    warnings: list = []
+    try:
+        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+            stations_data,
+            term_data,
+            max_flow_m3h=baseline_flow,
+            max_visc_cst=baseline_visc,
+            segment_slices=segment_slices,
+            min_suction_head=min_suction,
+            fluid_density=fluid_density,
+            mop_kgcm2=mop_kgcm2,
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        st.error(f"Failed to compute baseline DRA floors: {exc}")
+        baseline_requirement = None
+
+    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+    enforceable = False
+    segments: list[dict[str, object]] | None = None
+    if isinstance(baseline_requirement, Mapping):
+        warnings = list(baseline_requirement.get("warnings") or [])
+        enforceable = bool(baseline_requirement.get("enforceable", True))
+        segments = _collect_segment_floors(baseline_requirement)
+        if not baseline_summary.get("has_positive_segments"):
+            enforceable = False
+
+    st.session_state["origin_lacing_baseline_warnings"] = copy.deepcopy(warnings)
+    st.session_state["origin_lacing_baseline_summary"] = baseline_summary
+
+    if enforceable and baseline_summary.get("has_positive_segments"):
+        st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+        if segments:
+            st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments)
+        else:
+            st.session_state.pop("origin_lacing_segment_baseline", None)
+    else:
+        st.session_state.pop("origin_lacing_baseline", None)
+        st.session_state.pop("origin_lacing_segment_baseline", None)
+        enforceable = False
+
+    return baseline_requirement, baseline_summary, warnings, enforceable, segments
+
 def solve_pipeline(
     stations,
     terminal,
@@ -2492,48 +2659,19 @@ def solve_pipeline(
     if pump_shear_rate is None:
         pump_shear_rate = st.session_state.get("pump_shear_rate", 0.0)
 
-    baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
-    baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
+    baseline_requirement = copy.deepcopy(st.session_state.get("origin_lacing_baseline"))
+    baseline_segments_state = st.session_state.get("origin_lacing_segment_baseline")
+    baseline_summary = st.session_state.get("origin_lacing_baseline_summary")
+    if not isinstance(baseline_summary, Mapping):
+        baseline_summary = _summarise_baseline_requirement(baseline_requirement)
 
-    baseline_requirement: dict | None = None
-    try:
-        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
-            stations,
-            terminal,
-            max_flow_m3h=float(baseline_flow),
-            max_visc_cst=float(baseline_visc),
-            segment_slices=segment_slices,
-            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
-            fluid_density=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0),
-            mop_kgcm2=float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0),
-        )
-    except Exception:
-        baseline_requirement = None
-
-    baseline_enforceable = True
-    baseline_warnings: list = []
-    baseline_segments: list[dict] | None = None
-    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    if isinstance(baseline_requirement, dict):
-        baseline_warnings = baseline_requirement.get("warnings") or []
-        for warning in baseline_warnings:
-            message = warning.get("message") if isinstance(warning, dict) else None
-            if message:
-                st.warning(message)
+    baseline_enforceable = False
+    if isinstance(baseline_requirement, Mapping) and baseline_summary.get("has_positive_segments"):
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segment_floors = _collect_segment_floors(baseline_requirement)
-        if segment_floors:
-            baseline_segments = copy.deepcopy(segment_floors)
-        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
-            st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
-        else:
-            st.session_state.pop("origin_lacing_baseline", None)
-    else:
-        st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_enforceable and baseline_segments:
-        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
-    else:
-        st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    baseline_segments: list[dict] | None = None
+    if baseline_enforceable and isinstance(baseline_segments_state, Sequence):
+        baseline_segments = [copy.deepcopy(seg) for seg in baseline_segments_state]
 
     def _combine_origin_detail(
         base_detail: dict | None,
@@ -3932,105 +4070,42 @@ def _build_enforced_origin_warning(
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
     invalidate_results()
-    stations_data = st.session_state.stations
-    term_data = {
-        "name": st.session_state.get("terminal_name", "Terminal"),
-        "elev": st.session_state.get("terminal_elev", 0.0),
-        "min_residual": st.session_state.get("terminal_head", 10.0),
-    }
-    linefill_df = st.session_state.get("linefill_df")
-    if not isinstance(linefill_df, pd.DataFrame):
-        linefill_df = pd.DataFrame()
-    else:
-        linefill_df = ensure_initial_dra_column(linefill_df, default=0.0, fill_blanks=True)
-
-    vol_linefill = st.session_state.get("linefill_vol_df")
-    if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
-        vol_linefill = ensure_initial_dra_column(vol_linefill, default=0.0, fill_blanks=True)
-        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(
-            vol_linefill, stations_data
-        )
-        linefill_df = vol_linefill
-    else:
-        kv_list, rho_list, segment_slices = derive_segment_profiles(
-            linefill_df, stations_data
-        )
-
-    for idx, stn in enumerate(stations_data, start=1):
-        if stn.get("is_pump", False):
-            if "pump_types" in stn:
-                for ptype in ["A", "B"]:
-                    if ptype not in stn["pump_types"]:
-                        continue
-                    if stn["pump_types"][ptype].get("available", 0) == 0:
-                        continue
-                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
-                    stn["pump_types"][ptype]["head_data"] = dfh
-                    stn["pump_types"][ptype]["eff_data"] = dfe
-            else:
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
-                if dfh is None and "head_data" in stn:
-                    dfh = pd.DataFrame(stn["head_data"])
-                if dfe is None and "eff_data" in stn:
-                    dfe = pd.DataFrame(stn["eff_data"])
-                if dfh is not None and len(dfh) >= 3:
-                    Qh = dfh.iloc[:, 0].values
-                    Hh = dfh.iloc[:, 1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                if dfe is not None and len(dfe) >= 5:
-                    Qe = dfe.iloc[:, 0].values
-                    Ee = dfe.iloc[:, 1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
+    (
+        stations_data,
+        term_data,
+        linefill_df,
+        kv_list,
+        rho_list,
+        segment_slices,
+    ) = _prepare_pipeline_context()
+    if isinstance(linefill_df, pd.DataFrame):
+        st.session_state["linefill_df"] = linefill_df
 
     search_kwargs = _collect_search_depth_kwargs()
     forced_detail = st.session_state.get("origin_enforced_detail")
     if not isinstance(forced_detail, dict):
         forced_detail = None
 
-    baseline_flow = st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))
-    baseline_visc = st.session_state.get("max_laced_visc_cst", max(kv_list or [1.0]))
-    baseline_requirement = None
-    try:
-        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
-            stations_data,
-            term_data,
-            max_flow_m3h=float(baseline_flow),
-            max_visc_cst=float(baseline_visc),
-            segment_slices=segment_slices,
-            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
-            fluid_density=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0),
-            mop_kgcm2=float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0),
-        )
-    except Exception:
-        baseline_requirement = None
-    baseline_enforceable = True
-    baseline_warnings: list = []
-    baseline_segments: list[dict] | None = None
-    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    if isinstance(baseline_requirement, dict):
-        baseline_warnings = baseline_requirement.get("warnings") or []
+    baseline_requirement = st.session_state.get("origin_lacing_baseline")
+    baseline_summary = st.session_state.get("origin_lacing_baseline_summary")
+    if not isinstance(baseline_summary, Mapping):
+        baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+        st.session_state["origin_lacing_baseline_summary"] = baseline_summary
+    baseline_warnings = st.session_state.get("origin_lacing_baseline_warnings", [])
+    if baseline_warnings:
         for warning in baseline_warnings:
-            message = warning.get("message") if isinstance(warning, dict) else None
+            message = warning.get("message") if isinstance(warning, Mapping) else None
             if message:
                 st.warning(message)
+
+    baseline_enforceable = False
+    if isinstance(baseline_requirement, Mapping) and baseline_summary.get("has_positive_segments"):
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segment_floors = _collect_segment_floors(baseline_requirement)
-        if segment_floors:
-            baseline_segments = copy.deepcopy(segment_floors)
-        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
-            st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
-        else:
-            st.session_state.pop("origin_lacing_baseline", None)
-    else:
-        st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_enforceable and baseline_segments:
-        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
-    else:
-        st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    baseline_segments_state = st.session_state.get("origin_lacing_segment_baseline")
+    baseline_segments: list[dict[str, object]] | None = None
+    if baseline_enforceable and isinstance(baseline_segments_state, Sequence):
+        baseline_segments = [copy.deepcopy(seg) for seg in baseline_segments_state]
 
     def _normalise_segments_for_detail(detail_obj: Mapping[str, object] | None) -> list[dict[str, object]]:
         segments_out: list[dict[str, object]] = []
