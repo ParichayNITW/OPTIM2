@@ -1597,15 +1597,14 @@ def _update_mainline_dra(
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
+        advected_portion = [
+            (float(length), float(ppm))
+            for length, ppm in pumped_adjusted
+            if float(length or 0.0) > 0.0
+        ]
         if inj_effective > 0.0:
-            advected_portion = [
-                (float(length), float(ppm))
-                for length, ppm in pumped_portion
-                if float(length or 0.0) > 0.0
-            ]
             tail_queue = list(remaining_queue)
         else:
-            advected_portion = pumped_adjusted
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
@@ -1793,6 +1792,8 @@ def compute_minimum_lacing_requirement(
     segment_slices: list[list[dict]] | None = None,
     dra_upper_bound: float = 70.0,
     min_suction_head: float = 0.0,
+    fluid_density: float | None = None,
+    mop_kgcm2: float | None = None,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -1809,6 +1810,11 @@ def compute_minimum_lacing_requirement(
     returned dictionary provides both the treated length (equal to the total
     pipeline length) and the minimum concentration in PPM.  When the inputs are
     insufficient to derive a value the helper falls back to a zero requirement.
+
+    ``fluid_density`` may be supplied to convert MAOP/MOP limits from kg/cm² to
+    metres using the operator-provided value instead of per-station defaults.
+    ``mop_kgcm2`` lets callers impose a global operating pressure limit when an
+    explicit value is not stored on the station or terminal records.
     """
 
     result = {
@@ -1867,7 +1873,13 @@ def compute_minimum_lacing_requirement(
         min_suction = 0.0
     result['suction_head'] = float(min_suction)
 
+    default_rho = _coerce_float_local(fluid_density, 0.0)
+    if default_rho <= 0.0:
+        default_rho = 0.0
+
     def _station_density(stn: Mapping[str, object]) -> float:
+        if default_rho > 0.0:
+            return default_rho
         rho_val = _coerce_float_local(stn.get('rho'), 0.0)
         if rho_val <= 0.0:
             rho_val = 850.0
@@ -2033,7 +2045,9 @@ def compute_minimum_lacing_requirement(
             stn_min = 0.0
         cumulative_min = max(cumulative_min, stn_min)
 
-    mop_global = _collect_mop_kgcm2(terminal)
+    mop_global = _coerce_float_local(mop_kgcm2, 0.0)
+    if mop_global <= 0.0:
+        mop_global = _collect_mop_kgcm2(terminal)
 
     segment_requirements: list[dict[str, float | int]] = []
     max_dra_perc = 0.0
@@ -2090,38 +2104,45 @@ def compute_minimum_lacing_requirement(
         if sdh_required < downstream_residual:
             sdh_required = downstream_residual
 
-        rho_val = _station_density(stn)
-        mop_station = _collect_mop_kgcm2(stn)
-        mop_use = mop_station if mop_station > 0.0 else mop_global
-        maop_head = _station_maop_head(stn, rho_val, mop_use)
-        if maop_head > 0.0:
-            sdh_required = min(sdh_required, maop_head)
-
         sdh_required = max(sdh_required, 0.0)
         if sdh_required <= 0.0:
             continue
+
+        station_max_dr_cap = _normalise_max_dr(stn.get('max_dr'))
+        has_injection = station_max_dr_cap > 0.0
 
         max_head = _max_head_at_dol(stn, flow_segment)
         dr_needed = 0.0
         dra_ppm_needed = 0.0
         dr_unbounded = 0.0
         limited_by_station = False
-        available_head = residual_head + max_head
         suction_requirement = min_suction if stn.get('is_pump') else 0.0
-        effective_available_head = max(available_head - suction_requirement, 0.0)
-        gap = sdh_required - effective_available_head
-        if gap > 1e-6 and sdh_required > 0.0:
-            dr_unbounded = (gap / sdh_required) * 100.0
+        suction_head = residual_head
+        if stn.get('is_pump'):
+            suction_head = max(residual_head, suction_requirement)
+        available_head_before_limit = max_head + suction_head
+        maop_head = 0.0
+        rho_val = _station_density(stn)
+        mop_station = _collect_mop_kgcm2(stn)
+        mop_use = mop_station if mop_station > 0.0 else mop_global
+        if mop_use > 0.0 and rho_val > 0.0:
+            maop_head = _station_maop_head(stn, rho_val, mop_use)
+        available_head = available_head_before_limit
+        if maop_head > 0.0:
+            available_head = min(available_head, maop_head)
+
+        gap = sdh_required - available_head
+        if gap > 1e-6 and head_loss > 0.0:
+            dr_unbounded = (gap / head_loss) * 100.0
             if dr_unbounded < 0.0:
                 dr_unbounded = 0.0
             if dr_unbounded > max_dra_perc_uncapped:
                 max_dra_perc_uncapped = dr_unbounded
 
-            station_max_dr = _normalise_max_dr(stn.get('max_dr'))
             cap_limit = dra_upper
-            if station_max_dr > 0.0:
-                cap_limit = min(cap_limit, station_max_dr)
-                if dr_unbounded > station_max_dr + 1e-6:
+            if station_max_dr_cap > 0.0:
+                cap_limit = min(cap_limit, station_max_dr_cap)
+                if dr_unbounded > station_max_dr_cap + 1e-6:
                     limited_by_station = True
 
             dr_needed = min(dr_unbounded, cap_limit)
@@ -2131,14 +2152,14 @@ def compute_minimum_lacing_requirement(
                 station_name = stn.get('name')
                 warning_msg = (
                     f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded:.2f}% DR "
-                    f"but is capped at {station_max_dr:.2f}%."
+                    f"but is capped at {station_max_dr_cap:.2f}%."
                 )
                 result['warnings'].append(
                     {
                         'type': 'station_max_dr_exceeded',
                         'station': station_name,
                         'required_dr': dr_unbounded,
-                        'max_dr': station_max_dr,
+                        'max_dr': station_max_dr_cap,
                         'message': warning_msg,
                     }
                 )
@@ -2153,9 +2174,30 @@ def compute_minimum_lacing_requirement(
             except Exception:
                 dra_ppm_needed = 0.0
 
-            if dr_needed > max_dra_perc:
+            if dr_needed > max_dra_perc and has_injection:
                 max_dra_perc = dr_needed
                 max_dra_ppm = dra_ppm_needed
+
+        if not has_injection and gap > 1e-6 and head_loss > 0.0:
+            station_name = stn.get('name') or f'Station {idx + 1}'
+            result['warnings'].append(
+                {
+                    'type': 'dra_injection_missing',
+                    'station': station_name,
+                    'required_dr': dr_unbounded,
+                    'message': (
+                        f"{station_name} lacks a DRA facility but requires {dr_unbounded:.2f}% "
+                        "drag reduction to meet SDH."
+                    ),
+                }
+            )
+            result['enforceable'] = False
+
+        if not has_injection:
+            continue
+
+        if dra_ppm_needed > 0.0:
+            dra_ppm_needed = math.ceil(dra_ppm_needed * 10.0) / 10.0
 
         segment_requirements.append(
             {
@@ -2166,10 +2208,11 @@ def compute_minimum_lacing_requirement(
                 'dra_perc_uncapped': float(dr_unbounded),
                 'sdh_required': float(sdh_required),
                 'residual_head': float(residual_head),
-                'max_head_available': float(effective_available_head),
-                'available_head_before_suction': float(available_head),
-                'suction_head': float(suction_requirement),
+                'max_head_available': float(available_head),
+                'available_head_before_suction': float(available_head_before_limit),
+                'suction_head': float(suction_head),
                 'limited_by_station': bool(limited_by_station),
+                'friction_head': float(head_loss),
             }
         )
 
