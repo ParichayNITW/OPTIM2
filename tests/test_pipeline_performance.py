@@ -4115,6 +4115,41 @@ def test_dra_profile_preserves_baseline_after_injection() -> None:
     assert dra_segments_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
 
 
+def test_update_mainline_dra_retains_lower_injection_than_baseline() -> None:
+    """Origin injections below the baseline ppm should remain in the queue."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length, "dra_ppm": 4.0}]
+    station = {
+        "idx": 0,
+        "is_pump": True,
+        "d_inner": diameter_inner,
+        "fallback_dra_ppm": 4.0,
+    }
+    dra_segments, _, _, _ = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 2.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        segment_floor=None,
+        is_origin=True,
+    )
+
+    assert len(dra_segments) == 2
+    assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments[0][1] == pytest.approx(2.0, rel=1e-6)
+    assert dra_segments[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert dra_segments[1][1] == pytest.approx(4.0, rel=1e-6)
+
+
 def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
     """Fallback ppm should repopulate baseline when the queue is empty."""
 
@@ -4377,3 +4412,71 @@ def test_get_speed_display_map_skips_multi_type_aggregation():
     assert list(speed_map.keys()) == ["A", "B"]
     assert speed_map["A"] == 1450.0
     assert math.isnan(speed_map["B"])
+
+
+def test_build_profiles_from_queue_slices_per_station() -> None:
+    import pipeline_optimization_app as app
+
+    queue = [
+        {"length_km": 6.0, "dra_ppm": 9.0},
+        {"length_km": 6.0, "dra_ppm": 10.0},
+        {"length_km": 146.0, "dra_ppm": 4.0},
+        {"length_km": 60.0, "dra_ppm": 6.0},
+    ]
+
+    stations = [
+        {"name": "Paradip", "L": 158.0, "fallback_dra_ppm": 4.0},
+        {"name": "Balasore", "L": 170.0, "fallback_dra_ppm": 6.0},
+    ]
+
+    profiles = app._build_profiles_from_queue(queue, stations)
+    assert "paradip" in profiles
+    assert "balasore" in profiles
+
+    paradip = profiles["paradip"]
+    assert len(paradip) == 3
+    assert paradip[0][0] == pytest.approx(6.0, rel=1e-6)
+    assert paradip[0][1] == pytest.approx(9.0, rel=1e-6)
+    assert paradip[1][1] == pytest.approx(10.0, rel=1e-6)
+    assert sum(length for length, _ppm in paradip) == pytest.approx(158.0, rel=1e-6)
+
+    balasore = profiles["balasore"]
+    assert len(balasore) == 1
+    assert balasore[0][0] == pytest.approx(170.0, rel=1e-6)
+    assert balasore[0][1] == pytest.approx(6.0, rel=1e-6)
+
+
+def test_build_station_table_uses_override_profiles() -> None:
+    import pipeline_optimization_app as app
+    import pandas as pd
+
+    res = {
+        "stations_used": [{"name": "Paradip", "L": 158.0}],
+        "pipeline_flow_paradip": 0.0,
+        "loopline_flow_paradip": 0.0,
+        "pump_flow_paradip": 0.0,
+        "power_cost_paradip": 0.0,
+        "dra_cost_paradip": 0.0,
+        "dra_ppm_paradip": 7.0,
+        "dra_ppm_loop_paradip": 0.0,
+        "drag_reduction_paradip": 0.0,
+        "drag_reduction_loop_paradip": 0.0,
+        "reynolds_paradip": 0.0,
+        "head_loss_paradip": 0.0,
+        "head_loss_kgcm2_paradip": 0.0,
+        "velocity_paradip": 0.0,
+        "residual_head_paradip": 0.0,
+        "rh_kgcm2_paradip": 0.0,
+        "sdh_paradip": 0.0,
+        "sdh_kgcm2_paradip": 0.0,
+        "maop_paradip": 0.0,
+        "maop_kgcm2_paradip": 0.0,
+        "dra_profile_override": {
+            "paradip": [(6.0, 9.0), (152.0, 4.0)],
+        },
+    }
+
+    base_stations = [{"name": "Paradip", "L": 158.0}]
+    df = app.build_station_table(res, base_stations)
+    assert isinstance(df, pd.DataFrame)
+    assert df.loc[0, "DRA Profile (km@ppm)"] == "6.00 km @ 9.00 ppm; 152.00 km @ 4.00 ppm"
