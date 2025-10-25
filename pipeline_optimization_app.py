@@ -3407,7 +3407,7 @@ if auto_batch:
                 height=750,
                 plot_bgcolor='white',
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     st.session_state.pop('batch_df', None)
@@ -5345,7 +5345,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 height=430,
                 margin=dict(l=0, r=0, t=40, b=0)
             )
-            st.plotly_chart(fig_grouped, width='stretch')
+            st.plotly_chart(fig_grouped, use_container_width=True)
     
             # DRA cost bar chart only ---
             st.markdown("<h4 style='font-weight:600; margin-top: 2em;'>DRA Cost</h4>", unsafe_allow_html=True)
@@ -5364,7 +5364,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=0, r=0, t=30, b=0)
             )
-            st.plotly_chart(fig_dra, width='stretch')
+            st.plotly_chart(fig_dra, use_container_width=True)
     
             # --- Pie chart: Total cost distribution by station ---
             st.markdown("#### Cost Contribution by Station")
@@ -5382,7 +5382,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=10, r=10, t=40, b=10)
             )
-            st.plotly_chart(fig_pie, width='stretch')
+            st.plotly_chart(fig_pie, use_container_width=True)
     
             # --- Trend line: Total cost vs. chainage ---
             st.markdown("#### Cost Accumulation Along Pipeline")
@@ -5408,7 +5408,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     font=dict(size=15),
                     height=350
                 )
-                st.plotly_chart(fig_line, width='stretch')
+                st.plotly_chart(fig_line, use_container_width=True)
     
             # --- Table: All cost heads, 2-decimal formatted ---
             df_cost_fmt = df_cost.copy()
@@ -5472,7 +5472,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     title="Head Loss per Segment",
                     height=400
                 )
-                st.plotly_chart(fig_h, width='stretch', key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(
+                    fig_h,
+                    use_container_width=True,
+                    key=f"perf_headloss_{uuid.uuid4().hex[:6]}"
+                )
                 st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), width='stretch', hide_index=True)
             
             # --- 2. Velocity & Reynolds ---
@@ -5510,7 +5514,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     legend=dict(font=dict(size=14)),
                     height=420
                 )
-                st.plotly_chart(fig_v, width='stretch')
+                st.plotly_chart(fig_v, use_container_width=True)
                 # Data table
                 st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), width='stretch', hide_index=True)
             
@@ -5560,7 +5564,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, width='stretch', key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
+                    )
     
             
             # --- 4. Pump Efficiency Curve (Eff vs Flow at various Speeds) ---
@@ -5608,7 +5616,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
             
             # --- 5. Pressure vs Pipeline Length ---
             with press_tab:
@@ -5734,7 +5742,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig.update_xaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
                 fig.update_yaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
             
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
@@ -5787,7 +5795,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400
                         )
-                        st.plotly_chart(fig_pwr, width='stretch')
+                        st.plotly_chart(fig_pwr, use_container_width=True)
                     else:
                         st.warning("DOL speed not specified; skipping Power vs Speed plot.")
                     # --- 2. Power vs Flow (various speeds) ---
@@ -5821,7 +5829,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         font=dict(size=16),
                         height=400,
                     )
-                    st.plotly_chart(fig_pwr2, width='stretch')
+                    st.plotly_chart(fig_pwr2, use_container_width=True)
     
     # ---- Tab 4: System Curves ----
     import plotly.graph_objects as go
@@ -5898,7 +5906,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     margin=dict(l=10, r=10, t=60, b=30),
                     plot_bgcolor="#f5f8fc"
                 )
-                st.plotly_chart(fig_sys, width='stretch', key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(
+                    fig_sys,
+                    use_container_width=True,
+                    key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
+                )
     
     
     # ---- Tab 5: Pump-System Interaction ----
@@ -6087,7 +6099,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
                     hovermode="closest",
                 )
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
     
     
     
@@ -6170,7 +6182,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis_title="% Drag Reduction",
                     legend=dict(orientation="h", y=-0.2),
                 )
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
     
@@ -6356,7 +6368,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             margin=dict(l=30, r=30, b=30, t=80)
         )
     
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown(
             """
@@ -6562,7 +6574,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
             )
     
-            st.plotly_chart(fig3d, width='stretch')
+            st.plotly_chart(fig3d, use_container_width=True)
             st.markdown(
                 "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
                 "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
@@ -6668,7 +6680,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     progress.progress((i+1)/len(pvals))
                 fig = px.line(x=pvals, y=yvals, labels={"x": param, "y": output}, title=f"{output} vs {param} (Sensitivity)")
                 df_sens = pd.DataFrame({param: pvals, output: yvals})
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_sens, width='stretch', hide_index=True)
                 st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
 
