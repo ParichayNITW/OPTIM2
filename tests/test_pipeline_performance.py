@@ -1530,6 +1530,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
             "rough": 0.00004,
             "delivery": 0.0,
             "supply": 0.0,
+            "max_dr": 70.0,
         }
     ]
     terminal = {"min_residual": 0.0, "elev": 0.0}
@@ -1541,6 +1542,8 @@ def test_compute_minimum_lacing_requirement_finds_floor():
         max_flow_m3h=900.0,
         max_visc_cst=2.5,
         min_suction_head=min_suction,
+        fluid_density=0.0,
+        mop_kgcm2=0.0,
     )
 
     assert result["length_km"] is None
@@ -1563,10 +1566,10 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
     max_head = sum(p.get("tdh", 0.0) for p in pump_info)
     sdh_required = max(head_loss, 0.0)
-    available_head = max_head
-    effective_available = max(available_head - min_suction, 0.0)
-    expected_gap = max(sdh_required - effective_available, 0.0)
-    expected_unbounded = expected_gap / sdh_required * 100.0 if sdh_required > 0 else 0.0
+    suction_head = max(min_suction, 0.0)
+    available_head = max_head + suction_head
+    expected_gap = max(sdh_required - available_head, 0.0)
+    expected_unbounded = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
     expected_dr = min(expected_unbounded, 70.0)
     seg_entry = segments[0]
     assert seg_entry["station_idx"] == 0
@@ -1574,13 +1577,12 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
     dra_curve = dra_utils.DRA_CURVE_DATA.get(2.5)
     assert dra_curve is not None and not dra_curve.empty
-    interpolated_ppm = dra_utils._ppm_from_df(dra_curve, expected_dr)
-    assert not math.isclose(interpolated_ppm, round(interpolated_ppm))
-    assert seg_entry["dra_ppm"] == math.ceil(interpolated_ppm)
-    assert seg_entry["dra_ppm"] == pytest.approx(model.get_ppm_for_dr(2.5, expected_dr))
-    assert seg_entry["suction_head"] == pytest.approx(min_suction)
+    expected_ppm = math.ceil(model.get_ppm_for_dr(2.5, expected_dr) * 10.0) / 10.0
+    assert seg_entry["dra_ppm"] == pytest.approx(expected_ppm)
+    assert seg_entry["suction_head"] == pytest.approx(suction_head)
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
-    assert seg_entry["max_head_available"] == pytest.approx(effective_available)
+    assert seg_entry["max_head_available"] == pytest.approx(available_head)
+    assert seg_entry["friction_head"] == pytest.approx(head_loss)
 
 
 def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
@@ -1610,6 +1612,7 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
             "delivery": 0.0,
             "supply": 0.0,
             "min_residual": 8.0,
+            "max_dr": 70.0,
         }
     ]
     terminal = {"min_residual": 4.0, "elev": 0.0}
@@ -1621,6 +1624,8 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
         max_flow_m3h=1200.0,
         max_visc_cst=2.5,
         min_suction_head=min_suction,
+        fluid_density=0.0,
+        mop_kgcm2=0.0,
     )
 
     segments = result.get("segments")
@@ -1642,15 +1647,15 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     residual_head = max(stations[0]["min_residual"], terminal["min_residual"])
     sdh_required = terminal["min_residual"] + head_loss
 
-    available_head = residual_head + max_head
-    effective_available = max(available_head - min_suction, 0.0)
-    expected_gap = max(sdh_required - effective_available, 0.0)
-    expected_dr = expected_gap / sdh_required * 100.0 if sdh_required > 0 else 0.0
+    suction_head = max(residual_head, min_suction)
+    available_head = max_head + suction_head
+    expected_gap = max(sdh_required - available_head, 0.0)
+    expected_dr = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
 
     assert seg_entry["residual_head"] == pytest.approx(residual_head)
     assert seg_entry["available_head_before_suction"] == pytest.approx(available_head)
-    assert seg_entry["suction_head"] == pytest.approx(min_suction)
-    assert seg_entry["max_head_available"] == pytest.approx(effective_available)
+    assert seg_entry["suction_head"] == pytest.approx(suction_head)
+    assert seg_entry["max_head_available"] == pytest.approx(available_head)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
 
 
@@ -1705,7 +1710,185 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry["dra_perc"] == pytest.approx(30.0)
     assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
     assert seg_entry.get("limited_by_station") is True
-    assert seg_entry.get("dra_ppm") == pytest.approx(model.get_ppm_for_dr(2.5, 30.0))
+    rounded_ppm = math.ceil(model.get_ppm_for_dr(2.5, 30.0) * 10.0) / 10.0
+    assert seg_entry.get("dra_ppm") == pytest.approx(rounded_ppm)
+
+
+def test_compute_minimum_lacing_requirement_respects_single_type_series():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Blend Pump",
+            "is_pump": True,
+            "max_pumps": 3,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "DOL": 3000,
+                    "MinRPM": 3000,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 120.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 110.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 100.0},
+                    ],
+                    "eff_data": [
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 80.0},
+                    ],
+                },
+                "B": {
+                    "available": 2,
+                    "DOL": 3000,
+                    "MinRPM": 3000,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 210.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
+                    ],
+                    "eff_data": [
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 80.0},
+                    ],
+                },
+            },
+            "L": 12.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+        }
+    ]
+
+    terminal = {"name": "Terminal", "min_residual": 40.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=3.5,
+        min_suction_head=10.0,
+        fluid_density=850.0,
+        mop_kgcm2=75.0,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    entry = segments[0]
+    assert entry["available_head_before_suction"] == pytest.approx(444.0, rel=1e-3)
+
+    stations[0]["allow_mixed_pump_types"] = True
+    mixed = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=900.0,
+        max_visc_cst=3.5,
+        min_suction_head=10.0,
+        fluid_density=850.0,
+        mop_kgcm2=75.0,
+    )
+    mixed_entry = mixed["segments"][0]
+    assert mixed_entry["available_head_before_suction"] > entry["available_head_before_suction"]
+
+
+def test_compute_minimum_lacing_requirement_matches_sample_case():
+    import pipeline_model as model
+
+    paradip_head = [
+        {"Flow (m³/hr)": 0.0, "Head (m)": 401.43},
+        {"Flow (m³/hr)": 500.88, "Head (m)": 412.86},
+        {"Flow (m³/hr)": 1007.64, "Head (m)": 409.96},
+        {"Flow (m³/hr)": 1503.24, "Head (m)": 396.29},
+        {"Flow (m³/hr)": 1998.88, "Head (m)": 379.03},
+        {"Flow (m³/hr)": 2497.51, "Head (m)": 351.03},
+        {"Flow (m³/hr)": 2999.07, "Head (m)": 315.86},
+        {"Flow (m³/hr)": 3169.14, "Head (m)": 299.96},
+        {"Flow (m³/hr)": 3336.36, "Head (m)": 285.85},
+    ]
+
+    balasore_head = [
+        {"Flow (m³/hr)": 0.0, "Head (m)": 450.0},
+        {"Flow (m³/hr)": 500.0, "Head (m)": 450.0},
+        {"Flow (m³/hr)": 1000.0, "Head (m)": 450.0},
+        {"Flow (m³/hr)": 1500.0, "Head (m)": 440.0},
+        {"Flow (m³/hr)": 2000.0, "Head (m)": 420.0},
+        {"Flow (m³/hr)": 2500.0, "Head (m)": 400.0},
+        {"Flow (m³/hr)": 3000.0, "Head (m)": 360.0},
+        {"Flow (m³/hr)": 3500.0, "Head (m)": 315.0},
+    ]
+
+    stations = [
+        {
+            "name": "Paradip",
+            "is_pump": True,
+            "L": 158.0,
+            "D": 0.762,
+            "t": 0.0079248,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 2,
+            "MinRPM": 2200.0,
+            "DOL": 2990.0,
+            "max_dr": 35.0,
+            "maop_head": 1000.0,
+            "pump_types": {
+                "A": {"available": 0},
+                "B": {
+                    "available": 2,
+                    "MinRPM": 2200.0,
+                    "DOL": 2990.0,
+                    "head_data": paradip_head,
+                    "eff_data": [],
+                },
+            },
+        },
+        {
+            "name": "Balasore",
+            "is_pump": True,
+            "L": 170.0,
+            "D": 0.762,
+            "t": 0.0079248,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 2,
+            "MinRPM": 2200.0,
+            "DOL": 2990.0,
+            "max_dr": 35.0,
+            "maop_head": 1000.0,
+            "pump_types": {
+                "A": {
+                    "available": 2,
+                    "MinRPM": 2200.0,
+                    "DOL": 2990.0,
+                    "head_data": balasore_head,
+                    "eff_data": [],
+                },
+                "B": {"available": 0},
+            },
+        },
+    ]
+
+    terminal = {"name": "Haldia", "elev": 2.0, "min_residual": 50.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=3169.0,
+        max_visc_cst=20.0,
+        min_suction_head=50.0,
+        fluid_density=880.0,
+        mop_kgcm2=59.0,
+    )
+
+    assert result["segments"], "Expected segment-wise baseline output"
+    assert len(result["segments"]) == 2
+    first, second = result["segments"]
+    assert first["dra_perc"] == pytest.approx(28.770138, rel=1e-6)
+    assert first["dra_ppm"] == pytest.approx(24.0, abs=1e-9)
+    assert second["dra_perc"] == pytest.approx(24.128056, rel=1e-6)
+    assert second["dra_ppm"] == pytest.approx(15.0, abs=1e-9)
 
 
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
@@ -3558,6 +3741,82 @@ def test_consecutive_injections_extend_dra_slug() -> None:
     )
 
 
+def test_update_mainline_dra_ignores_non_enforced_floor() -> None:
+    """Baseline floors flagged as non-enforcing should not overwrite the queue."""
+
+    diameter = 0.7
+    flow_m3h = 1000.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    initial_queue = [{"length_km": 150.0, "dra_ppm": 1.0}]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter, "kv": 5.0}
+    option = {"nop": 1, "dra_ppm_main": 7.0}
+
+    dra_segments, queue_after, _, requires_injection = _update_mainline_dra(
+        initial_queue,
+        station,
+        option,
+        158.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=0.0,
+        segment_floor={
+            "length_km": 158.0,
+            "dra_ppm": 4.0,
+            "enforce_queue": False,
+        },
+    )
+
+    assert not requires_injection
+    assert dra_segments
+    assert queue_after
+    assert queue_after[0]["dra_ppm"] == pytest.approx(option["dra_ppm_main"], rel=1e-9)
+    assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after[-1]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-9)
+
+
+def test_update_mainline_dra_enforces_floor_when_requested() -> None:
+    """Explicit enforcement should raise the queue to the requested floor."""
+
+    diameter = 0.7
+    flow_m3h = 1000.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    initial_queue = [{"length_km": 150.0, "dra_ppm": 1.0}]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter, "kv": 5.0}
+    option = {"nop": 1, "dra_ppm_main": 7.0}
+
+    _, queue_after, _, requires_injection = _update_mainline_dra(
+        initial_queue,
+        station,
+        option,
+        158.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=0.0,
+        segment_floor={
+            "length_km": 40.0,
+            "dra_ppm": 4.0,
+            "enforce_queue": True,
+        },
+    )
+
+    assert not requires_injection
+    assert queue_after
+    assert queue_after[0]["dra_ppm"] == pytest.approx(option["dra_ppm_main"], rel=1e-9)
+    assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    remaining = queue_after[1:]
+    assert remaining
+    assert remaining[0]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+    assert remaining[0]["length_km"] == pytest.approx(40.0 - pumped_length, rel=1e-6)
+    if len(remaining) > 1:
+        assert remaining[1]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-9)
+
+
 def test_zero_injection_hour_advances_profile() -> None:
     """Zero-DRA decisions should prepend untreated volume and trim the tail."""
 
@@ -3802,3 +4061,422 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
 
     _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
     _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
+
+
+def test_dra_profile_preserves_baseline_after_injection() -> None:
+    """Injected slugs should overlay a pre-laced baseline across the segment."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length, "dra_ppm": 4.0}]
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter_inner}
+    segment_floor = {"length_km": segment_length, "dra_ppm": 4.0}
+
+    dra_segments_hour1, queue_after_hour1, _, _ = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 5.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        segment_floor=segment_floor,
+        is_origin=True,
+    )
+
+    assert dra_segments_hour1
+    assert dra_segments_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour1[0][1] == pytest.approx(5.0, rel=1e-6)
+    assert dra_segments_hour1[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert dra_segments_hour1[1][1] == pytest.approx(4.0, rel=1e-6)
+
+    dra_segments_hour2, _, _, _ = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        {"nop": 1, "dra_ppm_main": 9.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        segment_floor=segment_floor,
+        is_origin=True,
+    )
+
+    assert dra_segments_hour2
+    assert dra_segments_hour2[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour2[0][1] == pytest.approx(9.0, rel=1e-6)
+    assert dra_segments_hour2[1][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
+    assert dra_segments_hour2[2][0] == pytest.approx(segment_length - pumped_length * 2.0, rel=1e-6)
+    assert dra_segments_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_update_mainline_dra_retains_lower_injection_than_baseline() -> None:
+    """Origin injections below the baseline ppm should remain in the queue."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length, "dra_ppm": 4.0}]
+    station = {
+        "idx": 0,
+        "is_pump": True,
+        "d_inner": diameter_inner,
+        "fallback_dra_ppm": 4.0,
+    }
+    dra_segments, _, _, _ = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 2.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        segment_floor=None,
+        is_origin=True,
+    )
+
+    assert len(dra_segments) == 2
+    assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments[0][1] == pytest.approx(2.0, rel=1e-6)
+    assert dra_segments[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert dra_segments[1][1] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
+    """Fallback ppm should repopulate baseline when the queue is empty."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    station = {
+        "idx": 0,
+        "is_pump": True,
+        "d_inner": diameter_inner,
+        "fallback_dra_ppm": 4.0,
+    }
+
+    dra_segments_inj, queue_after_inj, _, _ = _update_mainline_dra(
+        [],
+        station,
+        {"nop": 1, "dra_ppm_main": 10.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert dra_segments_inj[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_inj[0][1] == pytest.approx(10.0, rel=1e-6)
+    assert dra_segments_inj[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert dra_segments_inj[1][1] == pytest.approx(4.0, rel=1e-6)
+    assert any(
+        entry["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+        for entry in queue_after_inj
+        if entry["length_km"] > 0.0
+    )
+
+    dra_segments_baseline, queue_after_baseline, _, _ = _update_mainline_dra(
+        [],
+        station,
+        {"nop": 1, "dra_ppm_main": 0.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert len(dra_segments_baseline) == 1
+    assert dra_segments_baseline[0][0] == pytest.approx(segment_length, rel=1e-6)
+    assert dra_segments_baseline[0][1] == pytest.approx(4.0, rel=1e-6)
+    assert queue_after_baseline and queue_after_baseline[0]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_time_series_solver_uses_cached_baseline(monkeypatch):
+    import copy
+
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    baseline_requirement = {
+        "dra_ppm": 6.0,
+        "dra_perc": 15.0,
+        "length_km": 100.0,
+        "enforceable": True,
+        "segments": [
+            {"station_idx": 0, "length_km": 40.0, "dra_ppm": 4.0},
+            {"station_idx": 1, "length_km": 60.0, "dra_ppm": 6.0},
+        ],
+    }
+
+    summary = app._summarise_baseline_requirement(baseline_requirement)
+    segments = app._collect_segment_floors(baseline_requirement)
+
+    st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+    st.session_state["origin_lacing_baseline_summary"] = copy.deepcopy(summary)
+    st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments)
+    st.session_state["origin_lacing_baseline_warnings"] = []
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        },
+        {
+            "name": "Station B",
+            "is_pump": True,
+            "L": 18.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        },
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+    hours = [7]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 8000.0,
+                "Viscosity (cSt)": 5.0,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 2.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=2.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+
+    captured: list[dict] = []
+
+    import importlib as importlib_module
+
+    def fake_reload(module):
+        return module
+
+    def stub_solve_pipeline(*args, **kwargs):
+        captured.append(
+            {
+                "forced": copy.deepcopy(kwargs.get("forced_origin_detail")),
+                "floors": copy.deepcopy(kwargs.get("segment_floors")),
+            }
+        )
+        linefill = args[10] if len(args) > 10 else kwargs.get("linefill_dict", [])
+        return {
+            "error": False,
+            "total_cost": 0.0,
+            "linefill": copy.deepcopy(linefill),
+            "dra_front_km": 0.0,
+            "stations_used": copy.deepcopy(args[0] if args else []),
+        }
+
+    monkeypatch.setattr(importlib_module, "reload", fake_reload)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", stub_solve_pipeline)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=500.0,
+        plan_df=None,
+        current_vol=vol_df,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    assert result["error"] is None
+    assert captured, "Expected the solver wrapper to invoke pipeline_model.solve_pipeline"
+    forced_detail = captured[0]["forced"]
+    segment_floors = captured[0]["floors"]
+
+    assert isinstance(segment_floors, list)
+    assert segment_floors == segments
+    assert forced_detail is not None
+    assert forced_detail.get("enforce_queue") is False
+    assert forced_detail.get("dra_ppm", 0.0) >= summary["dra_ppm"]
+
+    for key in [
+        "origin_lacing_baseline",
+        "origin_lacing_baseline_summary",
+        "origin_lacing_segment_baseline",
+        "origin_lacing_baseline_warnings",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def test_solve_pipeline_rebuilds_segment_floors_when_cache_missing(monkeypatch):
+    import importlib as importlib_module
+
+    import pipeline_optimization_app as app
+    import streamlit as st
+
+    baseline_requirement = {
+        "dra_ppm": 6.0,
+        "dra_perc": 15.0,
+        "length_km": 100.0,
+        "enforceable": True,
+        "segments": [
+            {"station_idx": 0, "length_km": 40.0, "dra_ppm": 4.0},
+            {"station_idx": 1, "length_km": 60.0, "dra_ppm": 6.0},
+        ],
+    }
+
+    summary = app._summarise_baseline_requirement(baseline_requirement)
+    expected_segments = app._collect_segment_floors(baseline_requirement)
+
+    st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+    st.session_state["origin_lacing_baseline_summary"] = copy.deepcopy(summary)
+    st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    captured: dict[str, object] = {}
+
+    def fake_reload(module):
+        return module
+
+    def stub_solver(*args, **kwargs):
+        captured["floors"] = copy.deepcopy(kwargs.get("segment_floors"))
+        return {"error": False, "linefill": [], "total_cost": 0.0}
+
+    monkeypatch.setattr(importlib_module, "reload", fake_reload)
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", stub_solver)
+
+    stations = [
+        {"name": "A", "is_pump": True, "L": 40.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+        {"name": "B", "is_pump": True, "L": 60.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+
+    app.solve_pipeline(
+        stations,
+        terminal,
+        1000.0,
+        [5.0, 5.0],
+        [820.0, 820.0],
+        None,
+        5.0,
+        0.0,
+        820.0,
+        25.0,
+        [],
+        pump_shear_rate=0.0,
+    )
+
+    assert isinstance(captured.get("floors"), list)
+    assert captured["floors"] == expected_segments
+
+    for key in [
+        "origin_lacing_baseline",
+        "origin_lacing_baseline_summary",
+        "origin_lacing_segment_baseline",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def test_get_speed_display_map_skips_multi_type_aggregation():
+    import pipeline_optimization_app as app
+
+    station = {"name": "Paradip", "pump_types": {"A": {}, "B": {}}}
+    res = {
+        "speed_paradip": 1450.0,
+        "speed_paradip_a": 1450.0,
+        # No entry for pump type B
+    }
+
+    speed_map = app.get_speed_display_map(res, "paradip", station)
+
+    assert list(speed_map.keys()) == ["A", "B"]
+    assert speed_map["A"] == 1450.0
+    assert math.isnan(speed_map["B"])
+
+
+def test_build_profiles_from_queue_slices_per_station() -> None:
+    import pipeline_optimization_app as app
+
+    queue = [
+        {"length_km": 6.0, "dra_ppm": 9.0},
+        {"length_km": 6.0, "dra_ppm": 10.0},
+        {"length_km": 146.0, "dra_ppm": 4.0},
+        {"length_km": 60.0, "dra_ppm": 6.0},
+    ]
+
+    stations = [
+        {"name": "Paradip", "L": 158.0, "fallback_dra_ppm": 4.0},
+        {"name": "Balasore", "L": 170.0, "fallback_dra_ppm": 6.0},
+    ]
+
+    profiles = app._build_profiles_from_queue(queue, stations)
+    assert "paradip" in profiles
+    assert "balasore" in profiles
+
+    paradip = profiles["paradip"]
+    assert len(paradip) == 3
+    assert paradip[0][0] == pytest.approx(6.0, rel=1e-6)
+    assert paradip[0][1] == pytest.approx(9.0, rel=1e-6)
+    assert paradip[1][1] == pytest.approx(10.0, rel=1e-6)
+    assert sum(length for length, _ppm in paradip) == pytest.approx(158.0, rel=1e-6)
+
+    balasore = profiles["balasore"]
+    assert len(balasore) == 1
+    assert balasore[0][0] == pytest.approx(170.0, rel=1e-6)
+    assert balasore[0][1] == pytest.approx(6.0, rel=1e-6)
+
+
+def test_build_station_table_uses_override_profiles() -> None:
+    import pipeline_optimization_app as app
+    import pandas as pd
+
+    res = {
+        "stations_used": [{"name": "Paradip", "L": 158.0}],
+        "pipeline_flow_paradip": 0.0,
+        "loopline_flow_paradip": 0.0,
+        "pump_flow_paradip": 0.0,
+        "power_cost_paradip": 0.0,
+        "dra_cost_paradip": 0.0,
+        "dra_ppm_paradip": 7.0,
+        "dra_ppm_loop_paradip": 0.0,
+        "drag_reduction_paradip": 0.0,
+        "drag_reduction_loop_paradip": 0.0,
+        "reynolds_paradip": 0.0,
+        "head_loss_paradip": 0.0,
+        "head_loss_kgcm2_paradip": 0.0,
+        "velocity_paradip": 0.0,
+        "residual_head_paradip": 0.0,
+        "rh_kgcm2_paradip": 0.0,
+        "sdh_paradip": 0.0,
+        "sdh_kgcm2_paradip": 0.0,
+        "maop_paradip": 0.0,
+        "maop_kgcm2_paradip": 0.0,
+        "dra_profile_override": {
+            "paradip": [(6.0, 9.0), (152.0, 4.0)],
+        },
+    }
+
+    base_stations = [{"name": "Paradip", "L": 158.0}]
+    df = app.build_station_table(res, base_stations)
+    assert isinstance(df, pd.DataFrame)
+    assert df.loc[0, "DRA Profile (km@ppm)"] == "6.00 km @ 9.00 ppm; 152.00 km @ 4.00 ppm"
