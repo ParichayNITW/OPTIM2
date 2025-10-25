@@ -2526,6 +2526,28 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     if not isinstance(override_profiles, Mapping):
         override_profiles = {}
 
+    def _candidate_suffixes(primary: str, alternate: str | None = None) -> list[str]:
+        names: list[str] = []
+        for value in (primary, alternate):
+            if not value:
+                continue
+            text = str(value)
+            if not text:
+                continue
+            normalised = text.lower().replace(' ', '_')
+            if normalised not in names:
+                names.append(normalised)
+            if text not in names:
+                names.append(text)
+        return names
+
+    def _get_station_field(prefix: str, name_primary: str, name_alt: str | None = None) -> object:
+        for suffix in _candidate_suffixes(name_primary, name_alt):
+            key_variant = f"{prefix}_{suffix}"
+            if key_variant in res:
+                return res.get(key_variant)
+        return None
+
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
         key = name.lower().replace(' ', '_')
@@ -2598,7 +2620,17 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         profile_entries: list[tuple[float, float]] = []
         override_entry = override_profiles.get(key)
-        if isinstance(override_entry, list):
+        raw_profile: object | None = None
+        if isinstance(stn, dict):
+            raw_profile = _get_station_field(
+                'dra_profile',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        else:
+            raw_profile = _get_station_field('dra_profile', name)
+
+        if raw_profile is None and isinstance(override_entry, list):
             for length_val, ppm_val in override_entry:
                 length_f = float(length_val or 0.0)
                 ppm_f = float(ppm_val or 0.0)
@@ -2606,9 +2638,15 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     continue
                 profile_entries.append((length_f, ppm_f))
         else:
-            raw_profile = res.get(f"dra_profile_{key}")
             if isinstance(raw_profile, (list, tuple)):
-                for entry in raw_profile:
+                iterable_profile = raw_profile
+            elif isinstance(raw_profile, Mapping):
+                iterable_profile = raw_profile.items()  # type: ignore[assignment]
+            else:
+                iterable_profile = None
+
+            if isinstance(iterable_profile, (list, tuple)):
+                for entry in iterable_profile:
                     if isinstance(entry, dict):
                         length_val = entry.get('length_km', 0.0)
                         ppm_val = entry.get('dra_ppm', 0.0)
@@ -2627,16 +2665,44 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     if length_f <= 0:
                         continue
                     profile_entries.append((length_f, ppm_f))
+            elif isinstance(override_entry, list):
+                for length_val, ppm_val in override_entry:
+                    length_f = float(length_val or 0.0)
+                    ppm_f = float(ppm_val or 0.0)
+                    if length_f <= 0.0 or ppm_f <= 0.0:
+                        continue
+                    profile_entries.append((length_f, ppm_f))
 
-        treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
+        treated_length_val = res.get(f"dra_treated_length_{key}")
+        if treated_length_val is None and isinstance(stn, dict):
+            treated_length_val = _get_station_field(
+                'dra_treated_length',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        treated_length = _float_or_none(treated_length_val)
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
 
-        inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
+        inlet_ppm_val = res.get(f"dra_inlet_ppm_{key}")
+        if inlet_ppm_val is None and isinstance(stn, dict):
+            inlet_ppm_val = _get_station_field(
+                'dra_inlet_ppm',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        inlet_ppm = _float_or_none(inlet_ppm_val)
         if inlet_ppm is None:
             inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
 
-        outlet_ppm = _float_or_none(res.get(f"dra_outlet_ppm_{key}"))
+        outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
+        if outlet_ppm_val is None and isinstance(stn, dict):
+            outlet_ppm_val = _get_station_field(
+                'dra_outlet_ppm',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
             outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
