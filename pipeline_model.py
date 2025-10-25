@@ -764,6 +764,8 @@ def _ensure_queue_floor(
     length_required: float,
     ppm_required: float,
     segment_requirements: Sequence[Mapping[str, object] | Sequence[object]] | None = None,
+    *,
+    enforce_positive_floor: bool = True,
 ) -> tuple[tuple[float, float], ...]:
     """Ensure ``queue_entries`` satisfies either the global or per-segment floors."""
 
@@ -844,7 +846,10 @@ def _ensure_queue_floor(
             if remaining > 1e-9:
                 portion = min(length_slice, remaining)
                 if portion > 0.0:
-                    ppm_floor = ppm_slice if ppm_slice >= ppm_val - 1e-9 else ppm_val
+                    if enforce_positive_floor:
+                        ppm_floor = ppm_slice if ppm_slice >= ppm_val - 1e-9 else ppm_val
+                    else:
+                        ppm_floor = ppm_val if ppm_slice <= 1e-9 else ppm_slice
                     baseline.append((portion, ppm_floor))
                     remaining -= portion
                 remainder = length_slice - portion
@@ -1745,6 +1750,7 @@ def _update_mainline_dra(
                 fallback_length,
                 fallback_ppm,
                 None,
+                enforce_positive_floor=False,
             )
             merged_queue = tuple(
                 (float(length), float(ppm))
@@ -1752,7 +1758,12 @@ def _update_mainline_dra(
                 if float(length or 0.0) > 0.0
             )
         elif fallback_length > 0.0 and not merged_queue:
-            merged_queue = ((float(fallback_length), float(fallback_ppm)),)
+            merged_queue = (
+                (
+                    float(fallback_length),
+                    float(fallback_ppm) if fallback_ppm > 0.0 else 0.0,
+                ),
+            )
     elif inj_effective > 0.0:
         inferred_ppm = 0.0
         for _len_existing, ppm_existing in reversed(existing_queue):
@@ -1766,6 +1777,7 @@ def _update_mainline_dra(
                 inferred_length,
                 inferred_ppm,
                 None,
+                enforce_positive_floor=False,
             )
             merged_queue = tuple(
                 (float(length), float(ppm))
