@@ -4715,6 +4715,34 @@ def solve_pipeline(
                 })
             opts.extend(non_pump_opts)
 
+        # Filter dominated pump options.  For any two options, if another
+        # yields both a higher head and a higher efficiency it is redundant
+        # and can be removed from the search space.  The bypass option
+        # (``nop`` = 0) is always retained.
+        scored_opts: list[tuple[dict, float, float]] = []
+        for opt in opts:
+            tdh, eff = _pump_head(stn, flow, opt['rpm'], opt['nop'])
+            scored_opts.append((opt, tdh, eff))
+        filtered_opts: list[dict] = []
+        for idx, (opt, head, eff) in enumerate(scored_opts):
+            if opt['nop'] == 0:
+                filtered_opts.append(opt)
+                continue
+            dominated = False
+            for jdx, (other_opt, other_head, other_eff) in enumerate(scored_opts):
+                if idx == jdx or other_opt['nop'] == 0:
+                    continue
+                if (
+                    other_head >= head
+                    and other_eff >= eff
+                    and (other_head > head or other_eff > eff)
+                ):
+                    dominated = True
+                    break
+            if not dominated:
+                filtered_opts.append(opt)
+        opts = filtered_opts
+
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
