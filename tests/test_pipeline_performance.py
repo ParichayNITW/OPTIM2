@@ -4204,6 +4204,60 @@ def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
     assert queue_after_baseline and queue_after_baseline[0]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
 
 
+def test_update_mainline_dra_preserves_prior_slug_with_downstream_injection() -> None:
+    """Origin slugs should remain intact even when pump shear is configured."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+
+    baseline_queue = [
+        {
+            "length_km": segment_length + 170.0,
+            "dra_ppm": 4.0,
+        }
+    ]
+
+    station = {
+        "idx": 0,
+        "is_pump": True,
+        "d_inner": diameter_inner,
+        "kv": 5.0,
+        "L": segment_length,
+        "fallback_dra_ppm": 4.0,
+    }
+
+    _, queue_after_hour1, _, _ = _update_mainline_dra(
+        baseline_queue,
+        station,
+        {"nop": 1, "dra_ppm_main": 10.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+        is_origin=True,
+    )
+
+    profile_hour2, _, _, _ = _update_mainline_dra(
+        queue_after_hour1,
+        station,
+        {"nop": 1, "dra_ppm_main": 9.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        pump_shear_rate=1.0,
+        is_origin=True,
+    )
+
+    assert profile_hour2[0][1] == pytest.approx(9.0, rel=1e-6)
+    assert profile_hour2[1][1] == pytest.approx(10.0, rel=1e-6)
+    treated_total = sum(length for length, _ppm in profile_hour2)
+    assert treated_total == pytest.approx(segment_length, rel=1e-6)
+
+
 def test_time_series_solver_uses_cached_baseline(monkeypatch):
     import copy
 
