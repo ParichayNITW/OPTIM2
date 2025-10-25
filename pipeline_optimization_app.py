@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import time
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -39,6 +40,16 @@ if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
 if "laced_density_kgm3" not in st.session_state:
     st.session_state["laced_density_kgm3"] = st.session_state.get("Fuel_density", 820.0)
+if "search_rpm_step" not in st.session_state:
+    st.session_state["search_rpm_step"] = 50
+if "search_dra_step" not in st.session_state:
+    st.session_state["search_dra_step"] = 2
+if "search_coarse_multiplier" not in st.session_state:
+    st.session_state["search_coarse_multiplier"] = 2.0
+if "search_state_top_k" not in st.session_state:
+    st.session_state["search_state_top_k"] = 50
+if "search_state_cost_margin" not in st.session_state:
+    st.session_state["search_state_cost_margin"] = 5000.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -68,6 +79,33 @@ from dra_utils import (
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
+
+BUTTON_STYLE = """
+<style>
+div[data-testid="stButton"] > button[kind="primary"] {
+    background-color: #d97706;
+    color: #ffffff;
+    border: none;
+    box-shadow: none;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background-color: #b45309;
+    color: #ffffff;
+}
+div[data-testid="stDownloadButton"] > button {
+    background-color: #1d4ed8;
+    color: #ffffff;
+    border: none;
+    box-shadow: none;
+}
+div[data-testid="stDownloadButton"] > button:hover {
+    background-color: #1e3a8a;
+    color: #ffffff;
+}
+</style>
+"""
+
+st.markdown(BUTTON_STYLE, unsafe_allow_html=True)
 
 
 def ensure_initial_dra_column(
@@ -103,6 +141,44 @@ def ensure_initial_dra_column(
     if blank_mask.any():
         df.loc[blank_mask, INIT_DRA_COL] = default
     return df
+
+
+def _prepare_data_editor_source(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if isinstance(df, pd.DataFrame):
+        return df.copy(deep=True)
+    return df
+
+
+def data_editor_copy(df, **kwargs):
+    edited = st.data_editor(_prepare_data_editor_source(df), **kwargs)
+    if isinstance(edited, pd.DataFrame):
+        return edited.copy(deep=True)
+    return edited
+
+
+def _format_duration(seconds: float) -> str:
+    try:
+        total_seconds = float(seconds)
+    except (TypeError, ValueError):
+        total_seconds = 0.0
+    if total_seconds < 0:
+        total_seconds = 0.0
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    secs = total_seconds % 60
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if hours or minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs:.2f}s")
+    return " ".join(parts)
+
+
+def _store_run_duration(label: str, elapsed: float) -> None:
+    st.session_state["last_run_duration"] = float(elapsed)
+    st.session_state["last_run_label"] = label
+    st.session_state["last_run_timestamp"] = dt.datetime.now()
 
 
 def _default_segment_slices(
@@ -1051,11 +1127,11 @@ with st.sidebar:
             else:
                 st.info("Baseline DRA floors cleared. No minimum injection will be enforced.")
 
-        rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
-        dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-        coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
-        state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
-        state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+        rpm_step_default = 50
+        dra_step_default = 2
+        coarse_multiplier_default = 2.0
+        state_top_k_default = 50
+        state_cost_margin_default = 5000.0
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
@@ -1099,6 +1175,18 @@ with st.sidebar:
             key="search_state_cost_margin",
         )
 
+    last_label = st.session_state.get("last_run_label")
+    last_duration = st.session_state.get("last_run_duration")
+    if last_label and last_duration is not None:
+        timestamp = st.session_state.get("last_run_timestamp")
+        if isinstance(timestamp, dt.datetime):
+            time_str = timestamp.strftime("%d/%m/%y %H:%M:%S")
+            st.info(
+                f"{last_label} completed in {_format_duration(last_duration)} (finished at {time_str})."
+            )
+        else:
+            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
         st.session_state["linefill_df"] = pd.DataFrame({
@@ -1131,7 +1219,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-        lf_df = st.data_editor(
+        lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
@@ -1153,7 +1241,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-        lf_df = st.data_editor(
+        lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
@@ -1172,7 +1260,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["day_plan_df"], default=0.0, fill_blanks=True)
-        day_df = st.data_editor(
+        day_df = data_editor_copy(
             st.session_state["day_plan_df"],
             num_rows="dynamic",
             key="day_plan_editor",
@@ -1196,7 +1284,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-        lf_df = st.data_editor(
+        lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
@@ -1218,7 +1306,7 @@ with st.sidebar:
                 "End": [now + pd.Timedelta(hours=24)],
                 "Flow (m³/h)": [1000.0],
             })
-        flow_df = st.data_editor(
+        flow_df = data_editor_copy(
             st.session_state["proj_flow_df"],
             num_rows="dynamic",
             key="proj_flow_editor",
@@ -1237,7 +1325,7 @@ with st.sidebar:
                 "Viscosity (cSt)": [3.0, 10.0],
                 "Density (kg/m³)": [800.0, 840.0],
             })
-        proj_df = st.data_editor(
+        proj_df = data_editor_copy(
             st.session_state["proj_plan_df"],
             num_rows="dynamic",
             key="proj_plan_editor",
@@ -1377,7 +1465,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     "Location (km)": [loop.get('L', stn['L'])/2.0],
                     "Elevation (m)": [loop.get('elev', stn.get('elev',0.0)) + 100.0]
                 })
-            loop_peak_df = st.data_editor(
+            loop_peak_df = data_editor_copy(
                 st.session_state[loop_peak_key],
                 num_rows="dynamic",
                 key=f"{loop_peak_key}_editor",
@@ -1426,7 +1514,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             key_head = f"head_data_{idx}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
                                 st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                            df_head = st.data_editor(
+                            df_head = data_editor_copy(
                                 st.session_state[key_head],
                                 num_rows="dynamic",
                                 key=f"{key_head}_editor",
@@ -1436,7 +1524,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             key_eff = f"eff_data_{idx}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
                                 st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                            df_eff = st.data_editor(
+                            df_eff = data_editor_copy(
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
                                 key=f"{key_eff}_editor",
@@ -1481,7 +1569,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                                 tr['start'] = dt.datetime.strptime(tr['start'], "%H:%M").time()
                                             if isinstance(tr.get('end'), str):
                                                 tr['end'] = dt.datetime.strptime(tr['end'], "%H:%M").time()
-                                        tdf = st.data_editor(
+                                        tdf = data_editor_copy(
                                             pd.DataFrame(raw_tariffs),
                                             num_rows="dynamic",
                                             key=f"tariff{idx}{ptype}",
@@ -1606,7 +1694,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             key_peak = f"peak_data_{idx}"
             if key_peak not in st.session_state or not isinstance(st.session_state[key_peak], pd.DataFrame):
                 st.session_state[key_peak] = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-            peak_df = st.data_editor(
+            peak_df = data_editor_copy(
                 st.session_state[key_peak],
                 num_rows="dynamic",
                 key=f"{key_peak}_editor",
@@ -3095,7 +3183,7 @@ if auto_batch:
     st.session_state["Fuel_density"] = Fuel_density
     st.session_state["Ambient_temp"] = Ambient_temp
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
-    product_table = st.data_editor(
+    product_table = data_editor_copy(
         pd.DataFrame({
             "Product": [f"Product {i+1}" for i in range(num_products)],
             "Viscosity (cSt)": [1.0 + i for i in range(num_products)],
@@ -4550,6 +4638,7 @@ def run_all_updates():
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    start_time = time.perf_counter()
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
@@ -4570,12 +4659,14 @@ def run_all_updates():
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
             **search_kwargs,
         )
+    elapsed = time.perf_counter() - start_time
     if not res or res.get("error"):
         if isinstance(res, dict):
             st.session_state["last_error_response"] = res
         msg = (res.get("message") or "Optimization failed") if isinstance(res, dict) else "Optimization failed"
         st.error(msg)
         return
+    _store_run_duration("Start task", elapsed)
     st.session_state["last_res"] = copy.deepcopy(res)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
@@ -4669,6 +4760,7 @@ if not auto_batch:
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
+        start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             solver_result = _execute_time_series_solver(
                 stations_base,
@@ -4688,6 +4780,7 @@ if not auto_batch:
                 total_length=total_length,
                 sub_steps=sub_steps,
             )
+        elapsed = time.perf_counter() - start_time
 
         error_msg = solver_result["error"]
         reports = solver_result["reports"]
@@ -4701,6 +4794,10 @@ if not auto_batch:
             st.session_state["linefill_next_day"] = pd.DataFrame()
             st.error(error_msg)
             st.stop()
+        _store_run_duration(
+            "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
+            elapsed,
+        )
 
         if solver_result.get("backtracked"):
             warn_msg = _build_enforced_origin_warning(
@@ -4856,6 +4953,7 @@ if not auto_batch:
 
     if run_plan:
         st.session_state["run_mode"] = "plan"
+        start_time = time.perf_counter()
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
@@ -4976,77 +5074,79 @@ if not auto_batch:
             if not reports:
                 st.error("No valid intervals in projected plan.")
                 st.stop()
+        elapsed = time.perf_counter() - start_time
 
-            st.session_state["last_plan_start"] = flow_df["Start"].min()
-            st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
-            st.session_state["last_res"] = copy.deepcopy(reports[-1]["result"])
-            st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
-            st.session_state["last_term_data"] = copy.deepcopy(term_data)
-            st.session_state["last_linefill"] = copy.deepcopy(current_vol)
+        st.session_state["last_plan_start"] = flow_df["Start"].min()
+        st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
+        st.session_state["last_res"] = copy.deepcopy(reports[-1]["result"])
+        st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
+        st.session_state["last_term_data"] = copy.deepcopy(term_data)
+        st.session_state["last_linefill"] = copy.deepcopy(current_vol)
+        _store_run_duration("Run Dynamic Pumping Plan Optimizer", elapsed)
 
-            station_tables = []
-            for rec in reports:
-                res = rec["result"]
-                ts = rec["time"]
-                df_int = build_station_table(res, stations_base)
-                # Prepend pattern and time columns
-                pattern = res.get('flow_pattern_name', '')
-                df_int.insert(0, "Pattern", pattern)
-                df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
-                station_tables.append(df_int)
-            df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+        station_tables = []
+        for rec in reports:
+            res = rec["result"]
+            ts = rec["time"]
+            df_int = build_station_table(res, stations_base)
+            # Prepend pattern and time columns
+            pattern = res.get('flow_pattern_name', '')
+            df_int.insert(0, "Pattern", pattern)
+            df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
+            station_tables.append(df_int)
+        df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            # Exclude non-numeric columns including Pattern for gradient styling
-            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
-            df_plan_numeric = df_plan.copy()
-            for c in num_cols:
-                df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            fmt_dict = {c: "{:.2f}" for c in num_cols}
-            df_plan_style = (
-                df_plan_numeric.style.format(fmt_dict)
-                .background_gradient(cmap="Blues", subset=num_cols)
+        # Exclude non-numeric columns including Pattern for gradient styling
+        num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
+        df_plan_numeric = df_plan.copy()
+        for c in num_cols:
+            df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
+        fmt_dict = {c: "{:.2f}" for c in num_cols}
+        df_plan_style = (
+            df_plan_numeric.style.format(fmt_dict)
+            .background_gradient(cmap="Blues", subset=num_cols)
+        )
+        st.dataframe(df_plan_style, width='stretch', hide_index=True)
+        st.download_button(
+            "Download Dynamic Plan Output data",
+            df_plan.to_csv(index=False, float_format="%.2f"),
+            file_name="dynamic_plan_results.csv",
+        )
+
+        # Display total cost per interval and overall sum
+        cost_rows = [
+            {
+                "Time": rec["time"].strftime("%d/%m %H:%M"),
+                "Pattern": rec["result"].get("flow_pattern_name", ""),
+                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+            }
+            for rec in reports
+        ]
+        df_cost = pd.DataFrame(cost_rows).round(2)
+        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+        st.dataframe(df_cost_style, width='stretch', hide_index=True)
+        st.markdown(
+            f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+        )
+        for rec in reports:
+            display_pump_type_details(
+                rec["result"],
+                stations_base,
+                heading=f"Pump Details by Type ({rec['time'].strftime('%d/%m %H:%M')})",
             )
-            st.dataframe(df_plan_style, width='stretch', hide_index=True)
-            st.download_button(
-                "Download Dynamic Plan Output data",
-                df_plan.to_csv(index=False, float_format="%.2f"),
-                file_name="dynamic_plan_results.csv",
-            )
 
-            # Display total cost per interval and overall sum
-            cost_rows = [
-                {
-                    "Time": rec["time"].strftime("%d/%m %H:%M"),
-                    "Pattern": rec["result"].get("flow_pattern_name", ""),
-                    "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
-                }
-                for rec in reports
-            ]
-            df_cost = pd.DataFrame(cost_rows).round(2)
-            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-            st.dataframe(df_cost_style, width='stretch', hide_index=True)
-            st.markdown(
-                f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
-            )
-            for rec in reports:
-                display_pump_type_details(
-                    rec["result"],
-                    stations_base,
-                    heading=f"Pump Details by Type ({rec['time'].strftime('%d/%m %H:%M')})",
-                )
-
-            combined = []
-            for idx, df_line in enumerate(linefill_snaps):
-                ts = reports[idx]["time"]
-                temp = df_line.copy()
-                temp["Time"] = ts.strftime("%d/%m %H:%M")
-                combined.append(temp)
-            lf_all = pd.concat(combined, ignore_index=True).round(2)
-            st.download_button(
-                "Download Dynamic Linefill Output",
-                lf_all.to_csv(index=False, float_format="%.2f"),
-                file_name="linefill_snapshots.csv",
-            )
+        combined = []
+        for idx, df_line in enumerate(linefill_snaps):
+            ts = reports[idx]["time"]
+            temp = df_line.copy()
+            temp["Time"] = ts.strftime("%d/%m %H:%M")
+            combined.append(temp)
+        lf_all = pd.concat(combined, ignore_index=True).round(2)
+        st.download_button(
+            "Download Dynamic Linefill Output",
+            lf_all.to_csv(index=False, float_format="%.2f"),
+            file_name="linefill_snapshots.csv",
+        )
 
 
 if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
@@ -6705,7 +6805,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/m³)", "Max Velocity (m/s)"],
                     "Benchmark Value": [12000, 70, 0.065, 2.1]
                 })
-                bdf = st.data_editor(bdf)
+                bdf = data_editor_copy(bdf)
                 benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
             elif b_mode == "Upload CSV":
                 up = st.file_uploader("Upload Benchmark CSV", type=["csv"])
