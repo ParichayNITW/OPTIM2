@@ -1530,11 +1530,15 @@ def _update_mainline_dra(
         if pumped_remaining > 1e-9:
             pumped_portion.append((pumped_remaining, 0.0))
 
+    shear_existing = shear
+    if pump_running and shear_existing > 0.0 and is_origin and not apply_injection_shear:
+        shear_existing = 0.0
+
     def _apply_shear(ppm_val: float) -> float:
         ppm_float = float(ppm_val or 0.0)
         if ppm_float <= 0.0:
             return 0.0
-        if not pump_running or shear <= 0.0:
+        if not pump_running or shear_existing <= 0.0:
             return ppm_float
         dr_value = 0.0
         if kv > 0:
@@ -1543,14 +1547,14 @@ def _update_mainline_dra(
             except Exception:
                 dr_value = 0.0
         if dr_value > 0.0:
-            dr_value *= (1.0 - shear)
+            dr_value *= (1.0 - shear_existing)
             if dr_value <= 0.0:
                 return 0.0
             try:
                 return float(get_ppm_for_dr(kv, dr_value))
             except Exception:
-                return max(ppm_float * (1.0 - shear), 0.0)
-        return max(ppm_float * (1.0 - shear), 0.0)
+                return max(ppm_float * (1.0 - shear_existing), 0.0)
+        return max(ppm_float * (1.0 - shear_existing), 0.0)
 
     pumped_adjusted: list[tuple[float, float]] = []
     pumped_differs = False
