@@ -49,7 +49,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -2620,24 +2620,42 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         profile_entries: list[tuple[float, float]] = []
         override_entry = override_profiles.get(key)
-        raw_profile: object | None = None
-        if isinstance(stn, dict):
-            raw_profile = _get_station_field(
-                'dra_profile',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        else:
-            raw_profile = _get_station_field('dra_profile', name)
 
-        if raw_profile is None and isinstance(override_entry, list):
-            for length_val, ppm_val in override_entry:
-                length_f = float(length_val or 0.0)
-                ppm_f = float(ppm_val or 0.0)
-                if length_f <= 0.0 or ppm_f <= 0.0:
+        def _extend_from_iterable(iterable: Iterable[object]) -> None:
+            for entry in iterable:
+                if isinstance(entry, dict):
+                    length_val = entry.get('length_km', 0.0)
+                    ppm_val = entry.get('dra_ppm', 0.0)
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    length_val, ppm_val = entry[0], entry[1]
+                else:
+                    continue
+                try:
+                    length_f = float(length_val or 0.0)
+                except (TypeError, ValueError):
+                    length_f = 0.0
+                try:
+                    ppm_f = float(ppm_val or 0.0)
+                except (TypeError, ValueError):
+                    ppm_f = 0.0
+                if length_f <= 0.0:
                     continue
                 profile_entries.append((length_f, ppm_f))
+
+        if isinstance(override_entry, list) and override_entry:
+            _extend_from_iterable(override_entry)
         else:
+            raw_profile: object | None
+            if isinstance(stn, dict):
+                raw_profile = _get_station_field(
+                    'dra_profile',
+                    stn.get('name', name),
+                    stn.get('orig_name'),
+                )
+            else:
+                raw_profile = _get_station_field('dra_profile', name)
+
+            iterable_profile: Iterable[object] | None
             if isinstance(raw_profile, (list, tuple)):
                 iterable_profile = raw_profile
             elif isinstance(raw_profile, Mapping):
@@ -2645,33 +2663,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             else:
                 iterable_profile = None
 
-            if isinstance(iterable_profile, (list, tuple)):
-                for entry in iterable_profile:
-                    if isinstance(entry, dict):
-                        length_val = entry.get('length_km', 0.0)
-                        ppm_val = entry.get('dra_ppm', 0.0)
-                    elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                        length_val, ppm_val = entry[0], entry[1]
-                    else:
-                        continue
-                    try:
-                        length_f = float(length_val or 0.0)
-                    except (TypeError, ValueError):
-                        length_f = 0.0
-                    try:
-                        ppm_f = float(ppm_val or 0.0)
-                    except (TypeError, ValueError):
-                        ppm_f = 0.0
-                    if length_f <= 0:
-                        continue
-                    profile_entries.append((length_f, ppm_f))
+            if iterable_profile is not None:
+                _extend_from_iterable(iterable_profile)
             elif isinstance(override_entry, list):
-                for length_val, ppm_val in override_entry:
-                    length_f = float(length_val or 0.0)
-                    ppm_f = float(ppm_val or 0.0)
-                    if length_f <= 0.0 or ppm_f <= 0.0:
-                        continue
-                    profile_entries.append((length_f, ppm_f))
+                _extend_from_iterable(override_entry)
 
         treated_length_val = res.get(f"dra_treated_length_{key}")
         if treated_length_val is None and isinstance(stn, dict):
