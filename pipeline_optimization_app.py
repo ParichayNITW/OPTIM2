@@ -5061,7 +5061,16 @@ if not auto_batch:
                     if res.get("error"):
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
                         st.stop()
-
+                    term_key = term_data["name"].lower().replace(" ", "_")
+                    keys = [s["name"].lower().replace(" ", "_") for s in stns_run] + [term_key]
+                    power_costs = {k: float(res.get(f"power_cost_{k}", 0.0) or 0.0) for k in keys}
+                    dra_costs = {k: float(res.get(f"dra_cost_{k}", 0.0) or 0.0) for k in keys}
+                    power_total = sum(power_costs.values())
+                    dra_total = sum(dra_costs.values())
+                    res["power_cost_total"] = power_total
+                    res["dra_cost_total"] = dra_total
+                    cost_4h = power_total + dra_total
+                    res["total_cost"] = cost_4h
                     reports.append({"time": seg_start, "result": res})
                     linefill_snaps.append(current_vol.copy())
                     dra_linefill = res.get("linefill", dra_linefill)
