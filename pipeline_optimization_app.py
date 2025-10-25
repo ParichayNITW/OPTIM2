@@ -2401,6 +2401,105 @@ def build_summary_dataframe(
     return df_sum
 
 
+def _normalise_queue_segments(
+    segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
+) -> list[tuple[float, float]]:
+    """Return queue segments as ``(length_km, ppm)`` tuples."""
+
+    if not segments:
+        return []
+
+    normalised: list[tuple[float, float]] = []
+    for entry in segments:
+        if isinstance(entry, Mapping):
+            length_raw = entry.get("length_km", 0.0)
+            ppm_raw = entry.get("dra_ppm", 0.0)
+        elif isinstance(entry, Sequence) and len(entry) >= 2:
+            length_raw, ppm_raw = entry[0], entry[1]
+        else:
+            continue
+
+        try:
+            length_val = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val <= 0.0:
+            continue
+
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val <= 0.0:
+            continue
+
+        normalised.append((length_val, ppm_val))
+
+    return normalised
+
+
+def _build_profiles_from_queue(
+    queue_segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+) -> dict[str, list[tuple[float, float]]]:
+    """Slice ``queue_segments`` per station to build downstream profiles."""
+
+    if not stations:
+        return {}
+
+    queue = _normalise_queue_segments(queue_segments)
+    if not queue:
+        return {}
+
+    profiles: dict[str, list[tuple[float, float]]] = {}
+    offset = 0.0
+
+    for idx, stn in enumerate(stations):
+        try:
+            seg_length = float(stn.get("L", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        if seg_length <= 0.0:
+            offset += 0.0
+            continue
+
+        seg_start = offset
+        seg_end = offset + seg_length
+        entries: list[tuple[float, float]] = []
+
+        cursor = 0.0
+        for length_val, ppm_val in queue:
+            next_cursor = cursor + length_val
+            overlap_start = max(cursor, seg_start)
+            overlap_end = min(next_cursor, seg_end)
+            overlap = overlap_end - overlap_start
+            if overlap > 1e-9 and ppm_val > 0.0:
+                entries.append((overlap, ppm_val))
+            cursor = next_cursor
+            if cursor >= seg_end - 1e-9:
+                break
+
+        treated = sum(length for length, _ppm in entries)
+        if seg_length - treated > 1e-6:
+            fallback = stn.get("fallback_dra_ppm", 0.0)
+            try:
+                fallback_val = float(fallback or 0.0)
+            except (TypeError, ValueError):
+                fallback_val = 0.0
+            if fallback_val > 0.0:
+                entries.append((seg_length - treated, fallback_val))
+
+        if entries:
+            merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
+            key = stn.get("name", f"station_{idx}")
+            key_norm = str(key).lower().replace(" ", "_")
+            profiles[key_norm] = merged
+
+        offset += seg_length
+
+    return profiles
+
+
 def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     """Return per-station details used in the daily schedule table.
 
@@ -2422,6 +2521,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    override_profiles = res.get('dra_profile_override') if isinstance(res, Mapping) else None
+    if not isinstance(override_profiles, Mapping):
+        override_profiles = {}
 
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
@@ -2494,27 +2597,36 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         }
 
         profile_entries: list[tuple[float, float]] = []
-        raw_profile = res.get(f"dra_profile_{key}")
-        if isinstance(raw_profile, (list, tuple)):
-            for entry in raw_profile:
-                if isinstance(entry, dict):
-                    length_val = entry.get('length_km', 0.0)
-                    ppm_val = entry.get('dra_ppm', 0.0)
-                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                    length_val, ppm_val = entry[0], entry[1]
-                else:
-                    continue
-                try:
-                    length_f = float(length_val or 0.0)
-                except (TypeError, ValueError):
-                    length_f = 0.0
-                try:
-                    ppm_f = float(ppm_val or 0.0)
-                except (TypeError, ValueError):
-                    ppm_f = 0.0
-                if length_f <= 0:
+        override_entry = override_profiles.get(key)
+        if isinstance(override_entry, list):
+            for length_val, ppm_val in override_entry:
+                length_f = float(length_val or 0.0)
+                ppm_f = float(ppm_val or 0.0)
+                if length_f <= 0.0 or ppm_f <= 0.0:
                     continue
                 profile_entries.append((length_f, ppm_f))
+        else:
+            raw_profile = res.get(f"dra_profile_{key}")
+            if isinstance(raw_profile, (list, tuple)):
+                for entry in raw_profile:
+                    if isinstance(entry, dict):
+                        length_val = entry.get('length_km', 0.0)
+                        ppm_val = entry.get('dra_ppm', 0.0)
+                    elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        length_val, ppm_val = entry[0], entry[1]
+                    else:
+                        continue
+                    try:
+                        length_f = float(length_val or 0.0)
+                    except (TypeError, ValueError):
+                        length_f = 0.0
+                    try:
+                        ppm_f = float(ppm_val or 0.0)
+                    except (TypeError, ValueError):
+                        ppm_f = 0.0
+                    if length_f <= 0:
+                        continue
+                    profile_entries.append((length_f, ppm_f))
 
         treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
         if treated_length is None:
@@ -4083,6 +4195,13 @@ def _execute_time_series_solver(
         for k, val in dra_cost_acc.items():
             res[f"dra_cost_{k}"] = val
         res["total_cost"] = block_cost
+
+        queue_segments = res.get("dra_segments") if isinstance(res, Mapping) else None
+        if isinstance(queue_segments, list):
+            profile_override = _build_profiles_from_queue(queue_segments, stations_base)
+            if profile_override:
+                res["dra_profile_override"] = profile_override
+
         reports.append(
             {
                 "time": hr % 24,
