@@ -1,0 +1,121 @@
+Optimizer search depth explained
+================================
+
+Why the optimiser needs search controls
+---------------------------------------
+The pipeline optimiser explores pumping and DRA schedules station by station
+using dynamic programming.  For every station it enumerates legal combinations
+of pump strings, speeds, bypass settings, and drag-reduction levels.  The search
+space can explode quickly, so after each enumeration the solver **prunes** the
+list of partial solutions according to the "Advanced search depth" controls in
+the app.  Pruning keeps runtime manageable, but it also means the optimiser does
+not always keep every theoretically possible path.  The settings described
+below let you decide how fine-grained the search grid is and how aggressively
+partial states are discarded.
+
+Glossary of parameters (plain-language view)
+-------------------------------------------
+* **Refinement RPM step** – how finely the solver slices each pump's permitted
+  speed band during the second (refinement) pass.  Smaller steps create more
+  speed options; larger steps evaluate fewer combinations.
+* **Refinement DRA step** – the step size (in % drag reduction) for mainline and
+  loop DRA grids during refinement.  The solver converts the %DR choices to PPM
+  using the viscosity table before evaluating costs.
+* **Coarse step multiplier** – the factor used to enlarge both step sizes during
+  the initial coarse pass.  A multiplier of 2.0 makes the coarse RPM and DRA
+  grids twice as wide as the refinement grids, so the first pass runs fast while
+  still scouting the full range.
+* **Max DP states retained (`state_top_k`)** – the maximum number of partial
+  states that can survive each station.  Think of this as "how many different
+  in-progress plans do we keep?"
+* **DP cost margin (`state_cost_margin`)** – how far (in currency) a partial plan
+  may be from the cheapest survivor and still be kept.  Wider margins mean more
+  slightly-worse states are preserved for later stations.
+
+Worked example: two stations, one hour
+--------------------------------------
+Consider a toy case with the following limits:
+
+* Station A allows pump speeds from 1 400 to 1 700 rpm.
+* Station B allows 1 500 to 1 800 rpm.
+* Both stations can inject between 0 % and 20 % drag reduction.
+* Advanced search depth values: RPM step = 50, DRA step = 2 %DR, coarse multiplier
+  = 2.0, `state_top_k` = 3, `state_cost_margin` = ₹ 5 000.
+
+### 1. Coarse pass grid
+The coarse pass multiplies the refinement step by 2.0, so the coarse RPM step is
+`50 × 2.0 = 100` rpm and the coarse DRA step is `2 × 2.0 = 4` %DR.  The allowed
+values therefore become:
+
+* Station A speeds: 1 400, 1 500, 1 600, 1 700 rpm.
+* Station B speeds: 1 500, 1 600, 1 700, 1 800 rpm.
+* DRA grid: 0, 4, 8, 12, 16, 20 %DR (each later converted to the nearest ppm).
+
+Suppose the solver evaluates all combinations for Station A and computes the
+hourly costs below (after including power and DRA chemical charges):
+
+| Option | Speed (rpm) | DRA (%DR) | Immediate hourly cost (₹) |
+| ------ | ----------- | --------- | ------------------------- |
+| A₁ | 1 400 | 4 | 95 000 |
+| A₂ | 1 500 | 8 | 97 000 |
+| A₃ | 1 600 | 0 | 100 000 |
+| A₄ | 1 700 | 12 | 104 000 |
+
+The solver sorts the options by cost and keeps the cheapest ones subject to the
+pruning controls.  With `state_top_k = 3` and `state_cost_margin = 5 000`, the
+survivors are A₁, A₂, and A₃ (all within ₹ 5 000 of the best cost).  A₄ is
+discarded because it both exceeds the top‑3 limit and lies more than ₹ 5 000 above
+the cheapest option.
+
+When Station B is processed, the solver pairs each of the three surviving
+Station‑A states with every coarse RPM/DRA combination for B, computes the new
+hourly totals (including whatever costs were carried forward from A), and again
+prunes to the best three or those within ₹ 5 000 of the new best.  The cheapest
+survivor at the end of the coarse pass becomes the seed for the refinement pass.
+
+### 2. Refinement pass grid
+The refinement pass uses the original RPM and DRA steps (50 rpm and 2 %DR).  The
+allowed speed lists now include 1 450, 1 550, … etc., filling in the gaps between
+the coarse points.  Each surviving coarse state is re‑evaluated at this finer
+resolution, again pruning with the same `state_top_k` and `state_cost_margin`
+rules.  Because the refinement step halves the spacing, this pass can uncover a
+lower‑cost combination that sits between the coarse points—so long as the
+necessary coarse state was not pruned earlier.
+
+### 3. Exhaustive retry (same parameters, wider limits)
+If the refinement pass fails to find a feasible plan, the solver tries a final
+retry that increases the internal limits (for example by tripling
+`state_top_k`).  This pass still respects your RPM/DRA steps but allows more
+partial states to survive, improving the odds of success while remaining
+bounded.
+
+Why pruning means "not guaranteed global optimum"
+-------------------------------------------------
+Dynamic programming stores partial solutions indexed by downstream residual head
+and cost.  After each station, the solver applies the `state_top_k` and
+`state_cost_margin` filters.  Any combination that is temporarily more expensive
+than those thresholds disappears—even if it could lead to a cheaper final plan
+later.  Tightening the pruning (small `state_top_k`, narrow cost margin) speeds
+the run but risks discarding the eventual best solution.  Loosening the knobs
+keeps more possibilities but takes longer.
+
+Continuing the example, imagine that the real global optimum requires Station A
+at 1 600 rpm with 8 %DR and Station B at 1 650 rpm with 6 %DR, but the 1 600 rpm
+option cost ₹ 100 500 at Station A alone.  If `state_top_k` were set to 1 or the
+cost margin were too narrow, that option would vanish after Station A, so the
+solver would never discover the true optimum downstream.
+
+Practical guidance
+------------------
+* **Need faster runs?** Increase the RPM/DRA steps or lower `state_top_k`; this
+  trims the search but may miss better answers.
+* **Need a more exhaustive search?** Decrease the steps, raise `state_top_k`, or
+  widen the cost margin so more near-optimal paths survive.
+* **Diagnosing sensitivity.** Re-run the solver with looser settings and confirm
+  that the reported cost does not change materially.  If it does, the previous
+  configuration was likely pruning valuable states.
+
+In short, the advanced search depth panel lets you balance runtime against
+solution quality.  Smaller steps and broader pruning thresholds make the search
+behave more like an exhaustive global optimisation, while larger steps and tight
+limits emphasise speed.
