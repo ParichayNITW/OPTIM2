@@ -83,18 +83,20 @@ INIT_DRA_COL = "Initial DRA (ppm)"
 BUTTON_STYLE = """
 <style>
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #A34726;
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
+    background: var(--primary-color);
+    color: var(--secondary-background-color);
+    border: 1px solid transparent;
+    border-radius: 12px;
+    box-shadow: 0 3px 18px #00000022;
+    font-weight: 600;
+    transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
 }
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #8F3E22;
-    color: #ffffff;
+    filter: brightness(0.92);
 }
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #7F371F;
-    color: #ffffff;
+    filter: brightness(0.85);
+    transform: translateY(1px);
 }
 div[data-testid="stDownloadButton"] > button {
     background-color: #0F2A5F;
