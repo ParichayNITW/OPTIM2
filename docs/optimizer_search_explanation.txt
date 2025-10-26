@@ -114,6 +114,15 @@ Practical guidance
 * **Diagnosing sensitivity.** Re-run the solver with looser settings and confirm
   that the reported cost does not change materially.  If it does, the previous
   configuration was likely pruning valuable states.
+* **Interpreting the "Search Footprint" panel.** After each solve the app now
+  reports how many combinations were generated, pruned, and retained for every
+  pass and station.  Large drops between the "Options" and "Retained" columns
+  indicate aggressive pruning, signalling that widening `state_top_k` or the
+  cost margin might be worthwhile for verification.
+* **Sensitivity badge.** When widening the DP limits leaves the cost unchanged,
+  a blue info banner appears to highlight that the optimiser explored a broader
+  search without finding a cheaper plan.  Use it as a quick confidence check
+  before sharing the results.
 
 In short, the advanced search depth panel lets you balance runtime against
 solution quality.  Smaller steps and broader pruning thresholds make the search
