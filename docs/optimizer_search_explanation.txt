@@ -1,0 +1,82 @@
+Optimizer search depth and global optimality
+===========================================
+
+Overview
+--------
+The pipeline optimiser explores pumping and DRA schedules with a staged
+search.  Each stage (coarse, refinement, and "exhaustive") builds station
+configurations using dynamic programming.  After the solver enumerates all
+options for a station it sorts the partial solutions and prunes the list to
+keep only a limited set based on the advanced-search controls.  Because the
+pruning happens after every station expansion, the algorithm may discard an
+intermediate configuration that is temporarily more expensive yet would
+ultimately enable a cheaper downstream combination.  As a result, the solver
+cannot guarantee a true global minimum unless pruning is completely disabled,
+and the current implementation always keeps pruning to stay tractable.
+
+Pruning knobs
+-------------
+The advanced search depth settings influence how aggressively the solver
+trims partial states:
+
+* `state_top_k` limits how many station states survive at each stage.  When the
+  solver finishes evaluating a station, it keeps only the cheapest `state_top_k`
+  states for the next stage, discarding the rest.
+* `state_cost_margin` allows retaining extra states whose cost is within a
+  configurable margin of the cheapest survivor.  Any state outside this margin
+  is dropped.
+* `rpm_step`, `dra_step`, and `dp_step` affect how many discrete options are
+  generated before pruning, but the pruning still reduces the set to a manageable
+  size.
+
+Because the solver never retains every partial state, it is not an exact global
+search even when the discretisation steps are very small.
+
+Illustrative example
+--------------------
+Consider a simple two-station pipeline with one terminal:
+
+* Station A can run either Pump 1 (low cost, low head) or Pump 2 (higher cost,
+  high head).  Injecting additional DRA at A opens a cheaper downstream option
+  if Station B can run in an efficient mode.
+* Station B has two operating modes: a cheap low-head mode and a more expensive
+  high-head mode.  The low-head mode only works if Station A delivers enough
+  suction head; otherwise Station B must use the high-cost option.
+
+Suppose the solver processes stations in order (A then B) with `state_top_k = 1`
+so it keeps only the single cheapest partial state at each step:
+
+1. When evaluating Station A, Pump 1 plus minimum DRA looks cheapest because it
+   has the lowest immediate cost.  Pump 2 with extra DRA is slightly more
+   expensive at A alone, so it is pruned.
+2. Moving to Station B, the solver only sees the Pump 1 state from Station A.
+   Because that state does not provide enough suction, the low-head option at B
+   is infeasible and the solver must choose the expensive high-head mode.
+
+The globally optimal solution would have chosen Pump 2 with DRA at Station A,
+which would enable the low-cost mode at Station B, but that combination was
+pruned at Step 1.  Increasing `state_top_k` or widening `state_cost_margin`
+allows both Station A configurations to survive and gives the solver a chance to
+find the better global schedule.  Nevertheless, if the search controls remain
+restrictive the pruning logic can still eliminate the true optimum.
+
+Practical guidance
+------------------
+* To approximate a global search, increase `state_top_k` and `state_cost_margin`
+  so more partial solutions survive each stage.  This raises runtime and memory
+  usage, but it reduces the chance of pruning away the optimal path.
+* Fine discretisation (`rpm_step`, `dra_step`, `dp_step`) improves resolution but
+  does not by itself guarantee optimality; pruning still decides which
+  combinations continue through the search.
+* If a scenario is highly sensitive to intermediate pump choices, inspect the
+  solver logs for pruning messages and temporarily expand `state_top_k` to
+  confirm whether the reported solution changes.
+
+Conclusion
+----------
+The optimiser produces high-quality schedules subject to the dynamic-programming
+pruning rules.  Because pruning is integral to keeping the search tractable, the
+current design does not mathematically guarantee a global minimum for arbitrary
+advanced-depth settings.  Users who need results as close as possible to a
+global optimum should loosen the pruning thresholds and review the resulting
+solutions for stability.
