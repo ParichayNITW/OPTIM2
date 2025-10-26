@@ -83,20 +83,18 @@ INIT_DRA_COL = "Initial DRA (ppm)"
 BUTTON_STYLE = """
 <style>
 div[data-testid="stButton"] > button[kind="primary"] {
-    background: var(--primary-color);
-    color: var(--secondary-background-color);
-    border: 1px solid transparent;
-    border-radius: 12px;
-    box-shadow: 0 3px 18px #00000022;
-    font-weight: 600;
-    transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
+    background-color: #A34726;
+    color: #ffffff;
+    border: none;
+    box-shadow: none;
 }
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    filter: brightness(0.92);
+    background-color: #8F3E22;
+    color: #ffffff;
 }
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    filter: brightness(0.85);
-    transform: translateY(1px);
+    background-color: #7F371F;
+    color: #ffffff;
 }
 div[data-testid="stDownloadButton"] > button {
     background-color: #0F2A5F;
@@ -2979,131 +2977,6 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     }
 
 
-PASS_LABELS = {
-    "coarse": "Coarse grid",
-    "exhaustive": "Full grid",
-    "refine": "Refinement window",
-}
-PASS_ORDER = ["coarse", "exhaustive", "refine"]
-
-
-def _record_search_history(result: Mapping[str, object], params: Mapping[str, object]) -> None:
-    """Store the latest optimisation parameters and cost for sensitivity badges."""
-
-    if not isinstance(result, Mapping) or not isinstance(params, Mapping):
-        return
-    try:
-        cost_val = float(result.get("total_cost", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        cost_val = 0.0
-    entry = {"params": dict(params), "cost": cost_val}
-    history = st.session_state.setdefault("search_history", [])
-    history.append(entry)
-    if len(history) > 8:
-        del history[0]
-
-
-def render_search_footprint(result: Mapping[str, object] | None) -> None:
-    """Display per-pass search statistics when telemetry is available."""
-
-    if not isinstance(result, Mapping):
-        return
-    telemetry = result.get("search_telemetry")
-    if not isinstance(telemetry, Mapping):
-        return
-    passes = telemetry.get("passes")
-    if not isinstance(passes, Mapping) or not passes:
-        return
-
-    st.markdown("#### Search Footprint")
-    for pass_key in PASS_ORDER:
-        data = passes.get(pass_key)
-        if not isinstance(data, Mapping):
-            continue
-        totals = data.get("totals", {})
-        stations = data.get("stations", {})
-        label = PASS_LABELS.get(pass_key, pass_key.title())
-
-        options_total = int(float(totals.get("options_generated", 0) or 0))
-        candidates_total = int(float(totals.get("candidates_evaluated", 0) or 0))
-        survivors_total = int(float(totals.get("states_retained", 0) or 0))
-        bucket_total = int(float(totals.get("bucket_survivors", 0) or 0))
-        pruned_total = int(float(totals.get("pruned_after_topk", 0) or 0))
-        runs_total = max(int(float(totals.get("runs", 1) or 1)), 1)
-
-        summary = (
-            f"{label} pass evaluated {options_total} unique pump/DRA combinations "
-            f"and {candidates_total} dynamic-programming transitions. "
-            f"After pruning, {survivors_total} states survived out of {bucket_total} bucket candidates"
-        )
-        if pruned_total > 0:
-            summary += f", removing {pruned_total} via top-k or cost filters."
-        else:
-            summary += "."
-        st.markdown(f"**{summary}**")
-
-        if isinstance(stations, Mapping) and stations:
-            rows: list[dict[str, object]] = []
-            for stats in stations.values():
-                if not isinstance(stats, Mapping):
-                    continue
-                rows.append(
-                    {
-                        "Station": stats.get("name", "Station"),
-                        "Runs": int(float(stats.get("runs", runs_total) or runs_total)),
-                        "Options": int(float(stats.get("options_generated", 0) or 0)),
-                        "States in": int(float(stats.get("states_in", 0) or 0)),
-                        "Candidates": int(float(stats.get("candidates_evaluated", 0) or 0)),
-                        "New states": int(float(stats.get("states_created", 0) or 0)),
-                        "Replacements": int(float(stats.get("states_replaced", 0) or 0)),
-                        "Bucket survivors": int(float(stats.get("bucket_survivors", 0) or 0)),
-                        "Retained": int(float(stats.get("states_retained", 0) or 0)),
-                        "Pruned top-k": int(float(stats.get("pruned_after_topk", 0) or 0)),
-                    }
-                )
-            if rows:
-                df = pd.DataFrame(rows)
-                numeric_cols = [col for col in df.columns if col != "Station"]
-                df = df.sort_values("Station")
-                df_display = df.style.format({col: "{:.0f}" for col in numeric_cols})
-                st.dataframe(df_display, hide_index=True, use_container_width=True)
-
-    st.caption(
-        "Telemetry counts reflect the advanced search depth settings. "
-        "See the Advanced Search explanation for details on the pruning logic."
-    )
-
-
-def render_sensitivity_badge(history: Sequence[Mapping[str, object]] | None) -> None:
-    """Show a badge when DP thresholds were widened without changing cost."""
-
-    if not history or len(history) < 2:
-        return
-    prev = history[-2]
-    curr = history[-1]
-    try:
-        prev_cost = float(prev.get("cost", 0.0) or 0.0)
-        curr_cost = float(curr.get("cost", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return
-    if abs(curr_cost - prev_cost) > 1e-3:
-        return
-    prev_params = prev.get("params", {})
-    curr_params = curr.get("params", {})
-    if not isinstance(prev_params, Mapping) or not isinstance(curr_params, Mapping):
-        return
-    prev_topk = float(prev_params.get("state_top_k", 0) or 0)
-    curr_topk = float(curr_params.get("state_top_k", 0) or 0)
-    prev_margin = float(prev_params.get("state_cost_margin", 0) or 0)
-    curr_margin = float(curr_params.get("state_cost_margin", 0) or 0)
-    if curr_topk <= prev_topk and curr_margin <= prev_margin:
-        return
-    st.info(
-        f"🧪 Sensitivity check: widening DP limits to top_k={curr_topk:.0f}, margin={curr_margin:.0f} "
-        "did not change the optimal cost.",
-    )
-
-
 
 def solve_pipeline(
     stations,
@@ -3235,7 +3108,6 @@ def solve_pipeline(
     try:
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
-        telemetry_payload: dict = {}
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
@@ -3257,7 +3129,6 @@ def solve_pipeline(
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
-                telemetry=telemetry_payload,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -3280,11 +3151,7 @@ def solve_pipeline(
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
-                telemetry=telemetry_payload,
             )
-        if isinstance(res, Mapping):
-            res = dict(res)
-            res['search_telemetry'] = telemetry_payload
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
             usage = res.get("loop_usage", [])
@@ -4793,7 +4660,6 @@ def run_all_updates():
 
     start_time = time.perf_counter()
     with st.spinner("Solving optimization..."):
-        telemetry_payload: dict = {}
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
             term_data,
@@ -4812,7 +4678,6 @@ def run_all_updates():
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
             **search_kwargs,
-            telemetry=telemetry_payload,
         )
     elapsed = time.perf_counter() - start_time
     if not res or res.get("error"):
@@ -4822,9 +4687,7 @@ def run_all_updates():
         st.error(msg)
         return
     _store_run_duration("Start task", elapsed)
-    res["search_telemetry"] = telemetry_payload
     st.session_state["last_res"] = copy.deepcopy(res)
-    _record_search_history(res, search_kwargs)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
     st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
@@ -5235,13 +5098,11 @@ if not auto_batch:
 
         st.session_state["last_plan_start"] = flow_df["Start"].min()
         st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
-        final_res = reports[-1]["result"]
-        st.session_state["last_res"] = copy.deepcopy(final_res)
+        st.session_state["last_res"] = copy.deepcopy(reports[-1]["result"])
         st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["last_linefill"] = copy.deepcopy(current_vol)
         _store_run_duration("Run Dynamic Pumping Plan Optimizer", elapsed)
-        _record_search_history(final_res, _collect_search_depth_kwargs())
 
         station_tables = []
         for rec in reports:
@@ -5369,9 +5230,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
                 file_name="results.csv",
             )
-
-            render_sensitivity_badge(st.session_state.get("search_history"))
-            render_search_footprint(res)
 
             baseline_flow = st.session_state.get("max_laced_flow_m3h")
             baseline_visc = st.session_state.get("max_laced_visc_cst")
