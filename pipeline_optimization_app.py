@@ -83,23 +83,31 @@ INIT_DRA_COL = "Initial DRA (ppm)"
 BUTTON_STYLE = """
 <style>
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #d97706;
+    background-color: #A34726;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #b45309;
+    background-color: #8F3E22;
+    color: #ffffff;
+}
+div[data-testid="stButton"] > button[kind="primary"]:active {
+    background-color: #7F371F;
     color: #ffffff;
 }
 div[data-testid="stDownloadButton"] > button {
-    background-color: #1d4ed8;
+    background-color: #0F2A5F;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-    background-color: #1e3a8a;
+    background-color: #0C2149;
+    color: #ffffff;
+}
+div[data-testid="stDownloadButton"] > button:active {
+    background-color: #091935;
     color: #ffffff;
 }
 </style>
@@ -722,14 +730,22 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 #Custom Styles
 st.markdown("""
     <style>
-    .stButton > button,
-    .stDownloadButton > button {
-        background: var(--primary-color);
-        color: var(--secondary-background-color);
+    .stButton > button {
+        background: #A34726;
+        color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
         border-radius: 12px;
-        box-shadow: 0 3px 18px #00000022;
+        box-shadow: none;
+        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
+    }
+    .stDownloadButton > button {
+        background: #0F2A5F;
+        color: #ffffff;
+        font-weight: 600;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        box-shadow: none;
         transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
     }
     .stButton > button:hover,
