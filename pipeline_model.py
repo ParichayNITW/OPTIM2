@@ -182,6 +182,19 @@ def _station_allows_mixed_pump_types(stn: Mapping[str, object]) -> bool:
             return True
         if value in {'0', 'false', 'no', 'n', 'off'}:
             return False
+
+    pump_types = stn.get('pump_types')
+    if isinstance(pump_types, Mapping):
+        try:
+            avail_a = int(_coerce_float(pump_types.get('A', {}).get('available', 0), 0.0))
+        except Exception:
+            avail_a = 0
+        try:
+            avail_b = int(_coerce_float(pump_types.get('B', {}).get('available', 0), 0.0))
+        except Exception:
+            avail_b = 0
+        if avail_a > 0 and avail_b > 0:
+            return True
     return False
 
 
@@ -4304,7 +4317,6 @@ def solve_pipeline(
         if stn.get('is_pump', False):
             min_p = stn.get('min_pumps', 0)
             if not origin_enforced:
-                min_p = max(1, min_p)
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
@@ -6160,8 +6172,6 @@ def solve_pipeline_with_types(
             allow_mixed_types = _station_allows_mixed_pump_types(stn)
             for numA, numB in combos:
                 total_units = numA + numB
-                if total_units <= 0:
-                    continue
                 if max_station_limit is not None and total_units > max_station_limit:
                     continue
                 if not allow_mixed_types and numA > 0 and numB > 0:
@@ -6170,18 +6180,17 @@ def solve_pipeline_with_types(
                 pdataB = stn['pump_types'].get('B', {})
                 for actA in range(numA + 1):
                     for actB in range(numB + 1):
-                        if actA + actB <= 0:
+                        total_active = actA + actB
+                        if max_station_limit is not None and total_active > max_station_limit:
                             continue
-                        if max_station_limit is not None and (actA + actB) > max_station_limit:
+                        if total_active < min_station_required:
                             continue
-                        if (actA + actB) < min_station_required:
+                        if not allow_mixed_types and actA > 0 and actB > 0:
                             continue
                         active_key = (actA, actB)
                         if active_key in seen_active:
                             continue
                         seen_active.add(active_key)
-                        if not allow_mixed_types and actA > 0 and actB > 0:
-                            continue
                         unit = copy.deepcopy(stn)
                         unit['pump_combo'] = {'A': availA, 'B': availB}
                         unit['active_combo'] = {'A': actA, 'B': actB}
@@ -6235,9 +6244,19 @@ def solve_pipeline_with_types(
                             unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
                             unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
                             unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
-                        unit['max_pumps'] = actA + actB
-                        unit['min_pumps'] = actA + actB
+                        unit['max_pumps'] = total_active
+                        unit['min_pumps'] = total_active
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
+
+            if min_station_required <= 0:
+                zero_key = (0, 0)
+                if zero_key not in seen_active:
+                    unit = copy.deepcopy(stn)
+                    unit['pump_combo'] = {'A': availA, 'B': availB}
+                    unit['active_combo'] = {'A': 0, 'B': 0}
+                    unit['max_pumps'] = 0
+                    unit['min_pumps'] = 0
+                    expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
         else:
             expand_all(
                 pos + 1,
