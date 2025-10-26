@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import time
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -37,6 +38,18 @@ if "max_laced_visc_cst" not in st.session_state:
     st.session_state["max_laced_visc_cst"] = 10.0
 if "min_laced_suction_m" not in st.session_state:
     st.session_state["min_laced_suction_m"] = 0.0
+if "laced_density_kgm3" not in st.session_state:
+    st.session_state["laced_density_kgm3"] = st.session_state.get("Fuel_density", 820.0)
+if "search_rpm_step" not in st.session_state:
+    st.session_state["search_rpm_step"] = 50
+if "search_dra_step" not in st.session_state:
+    st.session_state["search_dra_step"] = 2
+if "search_coarse_multiplier" not in st.session_state:
+    st.session_state["search_coarse_multiplier"] = 2.0
+if "search_state_top_k" not in st.session_state:
+    st.session_state["search_state_top_k"] = 50
+if "search_state_cost_margin" not in st.session_state:
+    st.session_state["search_state_cost_margin"] = 5000.0
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -47,7 +60,7 @@ import uuid
 import json
 import copy
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
 
 # Ensure local modules are importable when the app is run from an arbitrary
@@ -66,6 +79,43 @@ from dra_utils import (
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
+
+BUTTON_STYLE = """
+<style>
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: var(--primary-color);
+    color: var(--secondary-background-color);
+    border: 1px solid transparent;
+    border-radius: 12px;
+    box-shadow: 0 3px 18px #00000022;
+    font-weight: 600;
+    transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    filter: brightness(0.92);
+}
+div[data-testid="stButton"] > button[kind="primary"]:active {
+    filter: brightness(0.85);
+    transform: translateY(1px);
+}
+div[data-testid="stDownloadButton"] > button {
+    background-color: #0F2A5F;
+    color: #ffffff;
+    border: none;
+    box-shadow: none;
+}
+div[data-testid="stDownloadButton"] > button:hover {
+    background-color: #0C2149;
+    color: #ffffff;
+}
+div[data-testid="stDownloadButton"] > button:active {
+    background-color: #091935;
+    color: #ffffff;
+}
+</style>
+"""
+
+st.markdown(BUTTON_STYLE, unsafe_allow_html=True)
 
 
 def ensure_initial_dra_column(
@@ -102,6 +152,254 @@ def ensure_initial_dra_column(
         df.loc[blank_mask, INIT_DRA_COL] = default
     return df
 
+
+def _prepare_data_editor_source(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if isinstance(df, pd.DataFrame):
+        return df.copy(deep=True)
+    return df
+
+
+def data_editor_copy(df, **kwargs):
+    edited = st.data_editor(_prepare_data_editor_source(df), **kwargs)
+    if isinstance(edited, pd.DataFrame):
+        return edited.copy(deep=True)
+    return edited
+
+
+def _format_duration(seconds: float) -> str:
+    try:
+        total_seconds = float(seconds)
+    except (TypeError, ValueError):
+        total_seconds = 0.0
+    if total_seconds < 0:
+        total_seconds = 0.0
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    secs = total_seconds % 60
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if hours or minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs:.2f}s")
+    return " ".join(parts)
+
+
+def _store_run_duration(label: str, elapsed: float) -> None:
+    st.session_state["last_run_duration"] = float(elapsed)
+    st.session_state["last_run_label"] = label
+    st.session_state["last_run_timestamp"] = dt.datetime.now()
+
+
+def _default_segment_slices(
+    stations: list[dict], kv_list: list[float], rho_list: list[float]
+) -> list[list[dict]]:
+    """Return single-slice segment profiles for legacy distance tables."""
+
+    if not stations:
+        return []
+
+    fallback_kv = kv_list[0] if kv_list else 1.0
+    fallback_rho = rho_list[0] if rho_list else 850.0
+    slices: list[list[dict]] = []
+    for idx, stn in enumerate(stations):
+        length = float(stn.get("L", 0.0) or 0.0)
+        kv = kv_list[idx] if idx < len(kv_list) else fallback_kv
+        rho = rho_list[idx] if idx < len(rho_list) else fallback_rho
+        slices.append(
+            [
+                {
+                    "length_km": length,
+                    "kv": float(kv),
+                    "rho": float(rho),
+                }
+            ]
+        )
+    return slices
+
+
+def derive_segment_profiles(
+    linefill_df: pd.DataFrame | None, stations: list[dict]
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return per-segment viscosity/density lists and batch slices."""
+
+    kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill_df, stations)
+    return kv_list, rho_list, segment_slices
+
+
+def map_linefill_to_segments(
+    linefill_df, stations
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Map linefill properties onto each pipeline segment."""
+
+    if linefill_df is None or len(linefill_df) == 0:
+        kv_list = [1.0] * len(stations)
+        rho_list = [850.0] * len(stations)
+        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+        return kv_list, rho_list, segment_slices
+
+    cols = set(linefill_df.columns)
+
+    if "Start (km)" not in cols or "End (km)" not in cols:
+        if "Volume (m³)" in cols or "Volume" in cols:
+            return map_vol_linefill_to_segments(linefill_df, stations)
+        kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
+        rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
+        kv_list = [kv] * len(stations)
+        rho_list = [rho] * len(stations)
+        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
+        return kv_list, rho_list, segment_slices
+
+    cumlen = [0]
+    for stn in stations:
+        cumlen.append(cumlen[-1] + stn["L"])
+    viscs = []
+    dens = []
+    for i in range(len(stations)):
+        seg_start = cumlen[i]
+        seg_end = cumlen[i + 1]
+        found = False
+        for _, row in linefill_df.iterrows():
+            if row["Start (km)"] <= seg_start < row["End (km)"]:
+                viscs.append(row["Viscosity (cSt)"])
+                dens.append(row["Density (kg/m³)"])
+                found = True
+                break
+        if not found:
+            viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
+            dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
+    segment_slices = _default_segment_slices(stations, viscs, dens)
+    return viscs, dens, segment_slices
+
+
+def pipe_cross_section_area_m2(stations: list[dict]) -> float:
+    """Return pipe internal cross-sectional area (m²) using the first station."""
+
+    if not stations:
+        return 0.0
+    D = float(stations[0].get("D", 0.711))
+    t = float(stations[0].get("t", 0.007))
+    d_inner = max(D - 2.0 * t, 0.0)
+    return float((pi * d_inner**2) / 4.0)
+
+
+def map_vol_linefill_to_segments(
+    vol_table: pd.DataFrame | None, stations: list[dict]
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Convert a volumetric linefill table to per-segment fluid properties."""
+
+    if not isinstance(vol_table, pd.DataFrame):
+        return derive_segment_profiles(pd.DataFrame(), stations)
+
+    if not stations:
+        return [], [], []
+
+    batches: list[dict[str, float]] = []
+    for _, r in vol_table.iterrows():
+        try:
+            vol_raw = r.get("Volume (m³)")
+        except AttributeError:
+            vol_raw = None
+        if vol_raw in (None, ""):
+            vol_raw = r.get("Volume")
+        try:
+            vol = float(vol_raw)
+        except (TypeError, ValueError):
+            vol = 0.0
+        if vol <= 0.0:
+            continue
+
+        try:
+            visc = float(r.get("Viscosity (cSt)", 0.0))
+        except (TypeError, ValueError):
+            visc = 0.0
+        try:
+            dens = float(r.get("Density (kg/m³)", 0.0))
+        except (TypeError, ValueError):
+            dens = 0.0
+
+        batches.append({"volume_m3": vol, "kv": visc, "rho": dens})
+
+    if not batches:
+        fallback_kv = 1.0
+        fallback_rho = 850.0
+        kv_list = [fallback_kv] * len(stations)
+        rho_list = [fallback_rho] * len(stations)
+        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
+
+    A = pipe_cross_section_area_m2(stations)
+    if A <= 0:
+        fallback_kv = batches[0]["kv"] if batches else 1.0
+        fallback_rho = batches[0]["rho"] if batches else 850.0
+        kv_list = [fallback_kv] * len(stations)
+        rho_list = [fallback_rho] * len(stations)
+        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
+
+    d_inner = sqrt((4.0 * A) / pi)
+    km_from_volume = pipeline_model._km_from_volume
+
+    for entry in batches:
+        entry["len_km"] = km_from_volume(entry["volume_m3"], d_inner)
+
+    # Map the volumetric batches onto each pipeline segment.
+    seg_kv: list[float] = []
+    seg_rho: list[float] = []
+    seg_slices: list[list[dict]] = []
+    seg_lengths = [float(s.get("L", 0.0) or 0.0) for s in stations]
+
+    i_batch = 0
+    remaining = batches[0]["len_km"] if batches else 0.0
+    kv_cur = batches[0]["kv"] if batches else 1.0
+    rho_cur = batches[0]["rho"] if batches else 850.0
+
+    for L in seg_lengths:
+        need = L
+        if L <= 0:
+            seg_kv.append(kv_cur)
+            seg_rho.append(rho_cur)
+            seg_slices.append([])
+            continue
+
+        segment_entries: list[dict] = []
+        # Consume from batches until this segment is filled from upstream to downstream
+        while need > 1e-9:
+            if remaining <= 1e-9:
+                i_batch += 1
+                if i_batch >= len(batches):
+                    # No more batches: extend with last known properties
+                    segment_entries.append(
+                        {"length_km": need, "kv": kv_cur, "rho": rho_cur}
+                    )
+                    need = 0.0
+                    break
+                remaining = batches[i_batch]["len_km"]
+                kv_cur = batches[i_batch]["kv"]
+                rho_cur = batches[i_batch]["rho"]
+                if remaining <= 1e-9:
+                    continue
+
+            take = min(need, remaining)
+            if take <= 0:
+                break
+
+            segment_entries.append(
+                {"length_km": take, "kv": kv_cur, "rho": rho_cur}
+            )
+            need -= take
+            remaining -= take
+
+        if not segment_entries:
+            segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur})
+
+        seg_slices.append(segment_entries)
+        seg_kv.append(segment_entries[0]["kv"])
+        if L > 0:
+            avg_rho = sum(entry["length_km"] * entry["rho"] for entry in segment_entries) / L
+        else:
+            avg_rho = segment_entries[0]["rho"]
+        seg_rho.append(avg_rho)
+
+    return seg_kv, seg_rho, seg_slices
 
 def _summarise_baseline_requirement(
     baseline_requirement: Mapping[str, object] | None,
@@ -223,6 +521,7 @@ def _collect_segment_floors(
             "station_idx": station_idx,
             "length_km": float(seg_length),
             "dra_ppm": float(floor_ppm),
+            "enforce_queue": False,
         }
 
         try:
@@ -247,6 +546,150 @@ def _collect_segment_floors(
     segments = [item[2] for item in processed]
 
     return segments
+
+
+def _prepare_pipeline_context():
+    """Build station, terminal, and linefill data for optimisation helpers."""
+
+    stations_data = copy.deepcopy(st.session_state.get("stations", []))
+    term_data = {
+        "name": st.session_state.get("terminal_name", "Terminal"),
+        "elev": st.session_state.get("terminal_elev", 0.0),
+        "min_residual": st.session_state.get("terminal_head", 10.0),
+    }
+
+    linefill_df = st.session_state.get("linefill_df")
+    if isinstance(linefill_df, pd.DataFrame):
+        linefill_df = ensure_initial_dra_column(linefill_df, default=0.0, fill_blanks=True)
+    else:
+        linefill_df = pd.DataFrame()
+
+    vol_linefill = st.session_state.get("linefill_vol_df")
+    if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
+        vol_linefill = ensure_initial_dra_column(vol_linefill, default=0.0, fill_blanks=True)
+        try:
+            kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(vol_linefill, stations_data)
+            linefill_df = vol_linefill
+        except Exception:
+            kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
+    else:
+        kv_list, rho_list, segment_slices = derive_segment_profiles(linefill_df, stations_data)
+
+    for idx, stn in enumerate(stations_data, start=1):
+        if not stn.get("is_pump", False):
+            continue
+
+        stn.setdefault("name", f"Station {idx}")
+        stn.setdefault("max_dr", 0.0)
+        stn.setdefault("min_residual", 0.0)
+        stn.setdefault("loopline", False)
+        stn.setdefault("max_pumps", stn.get("available", 0))
+        stn.setdefault("min_pumps", 0)
+        pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
+        if pump_types:
+            for ptype, pdata in pump_types.items():
+                if not isinstance(pdata, Mapping):
+                    continue
+                pdata.setdefault("available", pdata.get("count", 0))
+                if int(pdata.get("available", 0)) <= 0:
+                    continue
+                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                pdata["head_data"] = dfh
+                pdata["eff_data"] = dfe
+        else:
+            dfh = st.session_state.get(f"head_data_{idx}")
+            dfe = st.session_state.get(f"eff_data_{idx}")
+            if dfh is None and "head_data" in stn:
+                dfh = pd.DataFrame(stn["head_data"])
+            if dfe is None and "eff_data" in stn:
+                dfe = pd.DataFrame(stn["eff_data"])
+            if dfh is not None and len(dfh) >= 3:
+                Qh = dfh.iloc[:, 0].values
+                Hh = dfh.iloc[:, 1].values
+                coeff = np.polyfit(Qh, Hh, 2)
+                stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
+            if dfe is not None and len(dfe) >= 5:
+                Qe = dfe.iloc[:, 0].values
+                Ee = dfe.iloc[:, 1].values
+                coeff_e = np.polyfit(Qe, Ee, 4)
+                stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
+
+        if "forced_dra_detail" in stn and stn["forced_dra_detail"] is None:
+            stn.pop("forced_dra_detail")
+
+    return stations_data, term_data, linefill_df, kv_list, rho_list, segment_slices
+
+
+def _compute_and_store_baseline_requirement(
+    stations_data,
+    term_data,
+    kv_list,
+    rho_list,
+    segment_slices,
+):
+    """Recompute the DRA baseline using the current lacing inputs."""
+
+    baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
+    baseline_visc_raw = st.session_state.get("max_laced_visc_cst", 0.0)
+    try:
+        baseline_visc = float(baseline_visc_raw)
+    except (TypeError, ValueError):
+        baseline_visc = 0.0
+    if baseline_visc <= 0.0:
+        try:
+            baseline_visc = float(max(kv_list or [1.0]))
+        except (TypeError, ValueError):
+            baseline_visc = 1.0
+
+    min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
+    fluid_density = float(
+        st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0
+    )
+    mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
+
+    baseline_requirement: dict | None = None
+    warnings: list = []
+    try:
+        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+            stations_data,
+            term_data,
+            max_flow_m3h=baseline_flow,
+            max_visc_cst=baseline_visc,
+            segment_slices=segment_slices,
+            min_suction_head=min_suction,
+            fluid_density=fluid_density,
+            mop_kgcm2=mop_kgcm2,
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        st.error(f"Failed to compute baseline DRA floors: {exc}")
+        baseline_requirement = None
+
+    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+    enforceable = False
+    segments: list[dict[str, object]] | None = None
+    if isinstance(baseline_requirement, Mapping):
+        warnings = list(baseline_requirement.get("warnings") or [])
+        enforceable = bool(baseline_requirement.get("enforceable", True))
+        segments = _collect_segment_floors(baseline_requirement)
+        if not baseline_summary.get("has_positive_segments"):
+            enforceable = False
+
+    st.session_state["origin_lacing_baseline_warnings"] = copy.deepcopy(warnings)
+    st.session_state["origin_lacing_baseline_summary"] = baseline_summary
+
+    if enforceable and baseline_summary.get("has_positive_segments"):
+        st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+        if segments:
+            st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments)
+        else:
+            st.session_state.pop("origin_lacing_segment_baseline", None)
+    else:
+        st.session_state.pop("origin_lacing_baseline", None)
+        st.session_state.pop("origin_lacing_segment_baseline", None)
+        enforceable = False
+
+    return baseline_requirement, baseline_summary, warnings, enforceable, segments
 
 
 def _get_linefill_snapshot_for_hour(
@@ -289,14 +732,22 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 #Custom Styles
 st.markdown("""
     <style>
-    .stButton > button,
-    .stDownloadButton > button {
-        background: var(--primary-color);
-        color: var(--secondary-background-color);
+    .stButton > button {
+        background: #A34726;
+        color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
         border-radius: 12px;
-        box-shadow: 0 3px 18px #00000022;
+        box-shadow: none;
+        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
+    }
+    .stDownloadButton > button {
+        background: #0F2A5F;
+        color: #ffffff;
+        font-weight: 600;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        box-shadow: none;
         transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
     }
     .stButton > button:hover,
@@ -397,6 +848,10 @@ def restore_case_dict(loaded_data):
     st.session_state['min_laced_suction_m'] = loaded_data.get(
         'min_laced_suction_m',
         st.session_state.get('min_laced_suction_m', 0.0),
+    )
+    st.session_state['laced_density_kgm3'] = loaded_data.get(
+        'laced_density_kgm3',
+        st.session_state.get('laced_density_kgm3', st.session_state.get('Fuel_density', 820.0)),
     )
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
@@ -577,12 +1032,124 @@ with st.sidebar:
                 " SDH requirements."
             ),
         )
+        st.number_input(
+            "Fluid density for lacing (kg/m³)",
+            min_value=0.0,
+            value=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))),
+            step=1.0,
+            key="laced_density_kgm3",
+            help=(
+                "Density used to convert MOP/MAOP limits from kg/cm² to metres when "
+                "evaluating baseline lacing floors."
+            ),
+        )
 
-        rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
-        dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-        coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
-        state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
-        state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+        if st.button("Calculate baseline DRA PPM", key="compute_baseline_dra", type="primary"):
+            (
+                stations_ctx,
+                term_ctx,
+                linefill_ctx,
+                kv_ctx,
+                rho_ctx,
+                segment_ctx,
+            ) = _prepare_pipeline_context()
+            (
+                _,
+                baseline_summary,
+                baseline_warnings,
+                enforceable,
+                _,
+            ) = _compute_and_store_baseline_requirement(
+                stations_ctx,
+                term_ctx,
+                kv_ctx,
+                rho_ctx,
+                segment_ctx,
+            )
+            if isinstance(linefill_ctx, pd.DataFrame):
+                st.session_state["linefill_df"] = linefill_ctx
+            if baseline_warnings:
+                for warning in baseline_warnings:
+                    message = warning.get("message") if isinstance(warning, Mapping) else None
+                    if message:
+                        st.warning(message)
+            segments_detail = st.session_state.get("origin_lacing_segment_baseline") if enforceable else None
+            if enforceable and baseline_summary.get("has_positive_segments"):
+                floor_ppm = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+                st.success(
+                    f"Baseline DRA floors updated. Minimum enforced origin injection is {floor_ppm:.2f} ppm."
+                )
+                segment_rows: list[dict[str, object]] = []
+                if isinstance(segments_detail, Sequence):
+                    terminal_name = term_ctx.get("name") if isinstance(term_ctx, Mapping) else "Terminal"
+                    for seg in segments_detail:
+                        if not isinstance(seg, Mapping):
+                            continue
+                        try:
+                            station_idx = int(seg.get("station_idx", 0))
+                        except (TypeError, ValueError):
+                            station_idx = 0
+                        start_name = ""
+                        end_name = terminal_name
+                        if 0 <= station_idx < len(stations_ctx):
+                            start_name = stations_ctx[station_idx].get("name", f"Station {station_idx + 1}")
+                            if station_idx + 1 < len(stations_ctx):
+                                end_name = stations_ctx[station_idx + 1].get(
+                                    "name", f"Station {station_idx + 2}"
+                                )
+                        elif station_idx >= len(stations_ctx):
+                            start_name = stations_ctx[-1].get("name", f"Station {len(stations_ctx)}")
+                        segment_label = (
+                            f"{start_name} → {end_name}"
+                            if start_name and end_name
+                            else start_name or end_name
+                        )
+                        try:
+                            seg_length = float(seg.get("length_km", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_length = 0.0
+                        try:
+                            seg_ppm = float(seg.get("dra_ppm", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_ppm = 0.0
+                        try:
+                            seg_perc = float(seg.get("dra_perc", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_perc = 0.0
+                        try:
+                            seg_suction = float(seg.get("suction_head", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_suction = 0.0
+                        segment_rows.append(
+                            {
+                                "Segment": segment_label,
+                                "Length (km)": seg_length,
+                                "Baseline PPM": seg_ppm,
+                                "Baseline %DR": seg_perc,
+                                "Suction head (m)": seg_suction,
+                            }
+                        )
+                if segment_rows:
+                    seg_df = pd.DataFrame(segment_rows)
+                    seg_df = seg_df.round(
+                        {
+                            "Length (km)": 2,
+                            "Baseline PPM": 2,
+                            "Baseline %DR": 2,
+                            "Suction head (m)": 2,
+                        }
+                    )
+                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No segment-level floors were generated.")
+            else:
+                st.info("Baseline DRA floors cleared. No minimum injection will be enforced.")
+
+        rpm_step_default = 50
+        dra_step_default = 2
+        coarse_multiplier_default = 2.0
+        state_top_k_default = 50
+        state_cost_margin_default = 5000.0
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
@@ -626,6 +1193,18 @@ with st.sidebar:
             key="search_state_cost_margin",
         )
 
+    last_label = st.session_state.get("last_run_label")
+    last_duration = st.session_state.get("last_run_duration")
+    if last_label and last_duration is not None:
+        timestamp = st.session_state.get("last_run_timestamp")
+        if isinstance(timestamp, dt.datetime):
+            time_str = timestamp.strftime("%d/%m/%y %H:%M:%S")
+            st.info(
+                f"{last_label} completed in {_format_duration(last_duration)} (finished at {time_str})."
+            )
+        else:
+            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
         st.session_state["linefill_df"] = pd.DataFrame({
@@ -658,7 +1237,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-        lf_df = st.data_editor(
+        lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
@@ -680,7 +1259,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-        lf_df = st.data_editor(
+        lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
@@ -699,7 +1278,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["day_plan_df"], default=0.0, fill_blanks=True)
-        day_df = st.data_editor(
+        day_df = data_editor_copy(
             st.session_state["day_plan_df"],
             num_rows="dynamic",
             key="day_plan_editor",
@@ -723,7 +1302,7 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-        lf_df = st.data_editor(
+        lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
@@ -745,7 +1324,7 @@ with st.sidebar:
                 "End": [now + pd.Timedelta(hours=24)],
                 "Flow (m³/h)": [1000.0],
             })
-        flow_df = st.data_editor(
+        flow_df = data_editor_copy(
             st.session_state["proj_flow_df"],
             num_rows="dynamic",
             key="proj_flow_editor",
@@ -764,7 +1343,7 @@ with st.sidebar:
                 "Viscosity (cSt)": [3.0, 10.0],
                 "Density (kg/m³)": [800.0, 840.0],
             })
-        proj_df = st.data_editor(
+        proj_df = data_editor_copy(
             st.session_state["proj_plan_df"],
             num_rows="dynamic",
             key="proj_plan_editor",
@@ -904,7 +1483,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     "Location (km)": [loop.get('L', stn['L'])/2.0],
                     "Elevation (m)": [loop.get('elev', stn.get('elev',0.0)) + 100.0]
                 })
-            loop_peak_df = st.data_editor(
+            loop_peak_df = data_editor_copy(
                 st.session_state[loop_peak_key],
                 num_rows="dynamic",
                 key=f"{loop_peak_key}_editor",
@@ -919,6 +1498,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             if stn['is_pump']:
                 stn.setdefault('pump_types', {})
                 pump_tabs = st.tabs(["Type A", "Type B"])
+                enabled_types: dict[str, bool] = {}
                 for tab_idx, ptype in enumerate(['A', 'B']):
                     with pump_tabs[tab_idx]:
                             pdata = stn.get('pump_types', {}).get(ptype, {})
@@ -938,7 +1518,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             if not enabled or avail == 0:
                                 st.info("Pump type disabled")
                                 stn.setdefault('pump_types', {})[ptype] = {'available': 0}
+                                enabled_types[ptype] = False
                                 continue
+                            enabled_types[ptype] = True
 
                             names = pdata.get('names', [])
                             if len(names) < avail:
@@ -953,7 +1535,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             key_head = f"head_data_{idx}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
                                 st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
-                            df_head = st.data_editor(
+                            df_head = data_editor_copy(
                                 st.session_state[key_head],
                                 num_rows="dynamic",
                                 key=f"{key_head}_editor",
@@ -963,7 +1545,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             key_eff = f"eff_data_{idx}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
                                 st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
-                            df_eff = st.data_editor(
+                            df_eff = data_editor_copy(
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
                                 key=f"{key_eff}_editor",
@@ -1008,7 +1590,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                                 tr['start'] = dt.datetime.strptime(tr['start'], "%H:%M").time()
                                             if isinstance(tr.get('end'), str):
                                                 tr['end'] = dt.datetime.strptime(tr['end'], "%H:%M").time()
-                                        tdf = st.data_editor(
+                                        tdf = data_editor_copy(
                                             pd.DataFrame(raw_tariffs),
                                             num_rows="dynamic",
                                             key=f"tariff{idx}{ptype}",
@@ -1126,6 +1708,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         all_names.extend(pn[:avail])
                     stn['pump_names'] = all_names
                     stn['pump_name'] = all_names[0] if all_names else ''
+                    stn['allow_mixed_pump_types'] = bool(enabled_types.get('A') and enabled_types.get('B'))
             else:
                 st.info("Not a pumping station. No pump data required.")
 
@@ -1133,7 +1716,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             key_peak = f"peak_data_{idx}"
             if key_peak not in st.session_state or not isinstance(st.session_state[key_peak], pd.DataFrame):
                 st.session_state[key_peak] = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
-            peak_df = st.data_editor(
+            peak_df = data_editor_copy(
                 st.session_state[key_peak],
                 num_rows="dynamic",
                 key=f"{key_peak}_editor",
@@ -1234,6 +1817,7 @@ def get_full_case_dict():
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
+        "laced_density_kgm3": st.session_state.get('laced_density_kgm3', st.session_state.get('Fuel_density', 820.0)),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -1308,222 +1892,6 @@ st.sidebar.download_button(
     file_name="pipeline_case.json",
     mime="application/json"
 )
-
-def _default_segment_slices(
-    stations: list[dict], kv_list: list[float], rho_list: list[float]
-) -> list[list[dict]]:
-    """Return single-slice segment profiles for legacy distance tables.
-
-    Each station (segment) receives a single ``{"length_km", "kv", "rho"}``
-    dictionary so downstream consumers such as the hydraulic solver receive a
-    well-formed slice list even when only aggregate properties are available.
-    """
-
-    if not stations:
-        return []
-
-    fallback_kv = kv_list[0] if kv_list else 1.0
-    fallback_rho = rho_list[0] if rho_list else 850.0
-    slices: list[list[dict]] = []
-    for idx, stn in enumerate(stations):
-        length = float(stn.get("L", 0.0) or 0.0)
-        kv = kv_list[idx] if idx < len(kv_list) else fallback_kv
-        rho = rho_list[idx] if idx < len(rho_list) else fallback_rho
-        slices.append(
-            [
-                {
-                    "length_km": length,
-                    "kv": float(kv),
-                    "rho": float(rho),
-                }
-            ]
-        )
-    return slices
-
-
-def derive_segment_profiles(
-    linefill_df: pd.DataFrame | None, stations: list[dict]
-) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Return per-segment viscosity/density lists and batch slices."""
-
-    kv_list, rho_list, segment_slices = map_linefill_to_segments(linefill_df, stations)
-    return kv_list, rho_list, segment_slices
-
-
-def map_linefill_to_segments(
-    linefill_df, stations
-) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Map linefill properties onto each pipeline segment.
-
-    Accepts either a tabular linefill with "Start/End (km)" columns or a
-    volumetric table containing "Volume (m³)" information. In the latter case,
-    :func:`map_vol_linefill_to_segments` is used to derive segment properties.
-    """
-
-    if linefill_df is None or len(linefill_df) == 0:
-        # When no linefill information is provided, return conservative defaults
-        # rather than zeros.  Zero viscosities and densities result in
-        # non-physical conditions that cause the optimiser to reject all
-        # scenarios.  Here we assume a light refined product of 1.0 cSt and
-        # density 850 kg/m³ across all segments.
-        kv_list = [1.0] * len(stations)
-        rho_list = [850.0] * len(stations)
-        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
-        return kv_list, rho_list, segment_slices
-
-    cols = set(linefill_df.columns)
-
-    # If Start/End columns are missing but volumetric info is present,
-    # delegate to volumetric mapper and return directly.
-    if "Start (km)" not in cols or "End (km)" not in cols:
-        if "Volume (m³)" in cols or "Volume" in cols:
-            return map_vol_linefill_to_segments(linefill_df, stations)
-        # Fallback: assume uniform properties from the last row
-        kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
-        rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
-        kv_list = [kv] * len(stations)
-        rho_list = [rho] * len(stations)
-        segment_slices = _default_segment_slices(stations, kv_list, rho_list)
-        return kv_list, rho_list, segment_slices
-
-    cumlen = [0]
-    for stn in stations:
-        cumlen.append(cumlen[-1] + stn["L"])
-    viscs = []
-    dens = []
-    for i in range(len(stations)):
-        seg_start = cumlen[i]
-        seg_end = cumlen[i + 1]
-        found = False
-        for _, row in linefill_df.iterrows():
-            if row["Start (km)"] <= seg_start < row["End (km)"]:
-                viscs.append(row["Viscosity (cSt)"])
-                dens.append(row["Density (kg/m³)"])
-                found = True
-                break
-        if not found:
-            viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
-            dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
-    segment_slices = _default_segment_slices(stations, viscs, dens)
-    return viscs, dens, segment_slices
-
-# ==== NEW: Volumetric linefill helpers ====
-def pipe_cross_section_area_m2(stations: list[dict]) -> float:
-    """Return pipe internal cross-sectional area (m²) using the first station's D/t."""
-    if not stations:
-        return 0.0
-    D = float(stations[0].get("D", 0.711))
-    t = float(stations[0].get("t", 0.007))
-    d_inner = max(D - 2.0*t, 0.0)
-    return float((pi * d_inner**2) / 4.0)
-
-def map_vol_linefill_to_segments(
-    vol_table: pd.DataFrame, stations: list[dict]
-) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Convert a volumetric linefill table to per-segment fluid properties.
-
-    The returned tuple contains three parallel sequences with one entry per
-    segment (station):
-
-    ``kv_list``
-        The viscosity of the upstream-most batch touching the segment.  This
-        preserves the historical behaviour used by DRA lookups and other UI
-        features that expect a single representative viscosity per segment.
-
-    ``rho_list``
-        A length-weighted average density across the batches occupying the
-        segment.  This is used when converting heads to pressures.
-
-    ``segment_slices``
-        A list of ``{"length_km", "kv", "rho"}`` dictionaries describing the
-        sequence of batches that span the segment.  These slices are later fed
-        into the hydraulic solver so Darcy–Weisbach losses can be accumulated
-        over the heterogeneous fluid profile instead of assuming a single
-        viscosity.
-
-    Assumes uniform diameter along the pipeline (uses first station ``D``/``t``)
-    to convert volumes to kilometres.
-    """
-    A = pipe_cross_section_area_m2(stations)
-    if A <= 0:
-        raise ValueError("Invalid pipe area (check D and t).")
-    d_inner = sqrt((4.0 * A) / pi)
-    km_from_volume = pipeline_model._km_from_volume
-
-    # Compute lengths occupied by each batch
-    # Expected columns: Product, Volume (m³), Viscosity (cSt), Density (kg/m³)
-    batches = []
-    for _, r in vol_table.iterrows():
-        vol = float(r.get("Volume (m³)", 0.0) or r.get("Volume", 0.0) or 0.0)
-        if vol <= 0:
-            continue
-        length_km = km_from_volume(vol, d_inner)
-        visc = float(r.get("Viscosity (cSt)", 0.0))
-        dens = float(r.get("Density (kg/m³)", 0.0))
-        batches.append({"len_km": length_km, "kv": visc, "rho": dens})
-
-    # Map to segments (each station defines a segment length L)
-    seg_kv: list[float] = []
-    seg_rho: list[float] = []
-    seg_slices: list[list[dict]] = []
-    seg_lengths = [s.get("L", 0.0) for s in stations]
-    i_batch = 0
-    remaining = batches[0]["len_km"] if batches else 0.0
-    kv_cur = batches[0]["kv"] if batches else 1.0
-    rho_cur = batches[0]["rho"] if batches else 850.0
-
-    for L in seg_lengths:
-        need = L
-        if L <= 0:
-            seg_kv.append(kv_cur)
-            seg_rho.append(rho_cur)
-            seg_slices.append([])
-            continue
-        segment_entries: list[dict] = []
-        # Consume from batches until we cover this segment upstream-to-downstream
-        while need > 1e-9:
-            if remaining <= 1e-9:
-                i_batch += 1
-                if i_batch >= len(batches):
-                    # If we ran out, extend with last known properties
-                    segment_entries.append({
-                        "length_km": need,
-                        "kv": kv_cur,
-                        "rho": rho_cur,
-                    })
-                    need = 0.0
-                    break
-                else:
-                    remaining = batches[i_batch]["len_km"]
-                    kv_cur = batches[i_batch]["kv"]
-                    rho_cur = batches[i_batch]["rho"]
-                    if remaining <= 1e-9:
-                        continue
-            take = min(need, remaining)
-            if take <= 0:
-                break
-            segment_entries.append({
-                "length_km": take,
-                "kv": kv_cur,
-                "rho": rho_cur,
-            })
-            need -= take
-            remaining -= take
-        if not segment_entries:
-            segment_entries.append({
-                "length_km": L,
-                "kv": kv_cur,
-                "rho": rho_cur,
-            })
-        seg_slices.append(segment_entries)
-        seg_kv.append(segment_entries[0]["kv"])
-        if L > 0:
-            avg_rho = sum(entry["length_km"] * entry["rho"] for entry in segment_entries) / L
-        else:
-            avg_rho = segment_entries[0]["rho"]
-        seg_rho.append(avg_rho)
-
-    return seg_kv, seg_rho, seg_slices
 
 
 def _normalise_segment_entries(
@@ -1994,7 +2362,8 @@ def get_speed_display_map(
         else:
             values.setdefault(norm, np.nan)
     elif aggregated_val is not None:
-        for norm in suffixes:
+        if len(suffixes) == 1:
+            norm = suffixes[0]
             current = values.get(norm)
             if current is None or (isinstance(current, float) and np.isnan(current)):
                 values[norm] = aggregated_val
@@ -2142,6 +2511,105 @@ def build_summary_dataframe(
     return df_sum
 
 
+def _normalise_queue_segments(
+    segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
+) -> list[tuple[float, float]]:
+    """Return queue segments as ``(length_km, ppm)`` tuples."""
+
+    if not segments:
+        return []
+
+    normalised: list[tuple[float, float]] = []
+    for entry in segments:
+        if isinstance(entry, Mapping):
+            length_raw = entry.get("length_km", 0.0)
+            ppm_raw = entry.get("dra_ppm", 0.0)
+        elif isinstance(entry, Sequence) and len(entry) >= 2:
+            length_raw, ppm_raw = entry[0], entry[1]
+        else:
+            continue
+
+        try:
+            length_val = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val <= 0.0:
+            continue
+
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val <= 0.0:
+            continue
+
+        normalised.append((length_val, ppm_val))
+
+    return normalised
+
+
+def _build_profiles_from_queue(
+    queue_segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+) -> dict[str, list[tuple[float, float]]]:
+    """Slice ``queue_segments`` per station to build downstream profiles."""
+
+    if not stations:
+        return {}
+
+    queue = _normalise_queue_segments(queue_segments)
+    if not queue:
+        return {}
+
+    profiles: dict[str, list[tuple[float, float]]] = {}
+    offset = 0.0
+
+    for idx, stn in enumerate(stations):
+        try:
+            seg_length = float(stn.get("L", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        if seg_length <= 0.0:
+            offset += 0.0
+            continue
+
+        seg_start = offset
+        seg_end = offset + seg_length
+        entries: list[tuple[float, float]] = []
+
+        cursor = 0.0
+        for length_val, ppm_val in queue:
+            next_cursor = cursor + length_val
+            overlap_start = max(cursor, seg_start)
+            overlap_end = min(next_cursor, seg_end)
+            overlap = overlap_end - overlap_start
+            if overlap > 1e-9 and ppm_val > 0.0:
+                entries.append((overlap, ppm_val))
+            cursor = next_cursor
+            if cursor >= seg_end - 1e-9:
+                break
+
+        treated = sum(length for length, _ppm in entries)
+        if seg_length - treated > 1e-6:
+            fallback = stn.get("fallback_dra_ppm", 0.0)
+            try:
+                fallback_val = float(fallback or 0.0)
+            except (TypeError, ValueError):
+                fallback_val = 0.0
+            if fallback_val > 0.0:
+                entries.append((seg_length - treated, fallback_val))
+
+        if entries:
+            merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
+            key = stn.get("name", f"station_{idx}")
+            key_norm = str(key).lower().replace(" ", "_")
+            profiles[key_norm] = merged
+
+        offset += seg_length
+
+    return profiles
+
+
 def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     """Return per-station details used in the daily schedule table.
 
@@ -2163,6 +2631,32 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    override_profiles = res.get('dra_profile_override') if isinstance(res, Mapping) else None
+    if not isinstance(override_profiles, Mapping):
+        override_profiles = {}
+
+    def _candidate_suffixes(primary: str, alternate: str | None = None) -> list[str]:
+        names: list[str] = []
+        for value in (primary, alternate):
+            if not value:
+                continue
+            text = str(value)
+            if not text:
+                continue
+            normalised = text.lower().replace(' ', '_')
+            if normalised not in names:
+                names.append(normalised)
+            if text not in names:
+                names.append(text)
+        return names
+
+    def _get_station_field(prefix: str, name_primary: str, name_alt: str | None = None) -> object:
+        for suffix in _candidate_suffixes(name_primary, name_alt):
+            key_variant = f"{prefix}_{suffix}"
+            if key_variant in res:
+                return res.get(key_variant)
+        return None
 
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
@@ -2235,9 +2729,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         }
 
         profile_entries: list[tuple[float, float]] = []
-        raw_profile = res.get(f"dra_profile_{key}")
-        if isinstance(raw_profile, (list, tuple)):
-            for entry in raw_profile:
+        override_entry = override_profiles.get(key)
+
+        def _extend_from_iterable(iterable: Iterable[object]) -> None:
+            for entry in iterable:
                 if isinstance(entry, dict):
                     length_val = entry.get('length_km', 0.0)
                     ppm_val = entry.get('dra_ppm', 0.0)
@@ -2253,19 +2748,66 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     ppm_f = float(ppm_val or 0.0)
                 except (TypeError, ValueError):
                     ppm_f = 0.0
-                if length_f <= 0:
+                if length_f <= 0.0:
                     continue
                 profile_entries.append((length_f, ppm_f))
 
-        treated_length = _float_or_none(res.get(f"dra_treated_length_{key}"))
+        if isinstance(override_entry, list) and override_entry:
+            _extend_from_iterable(override_entry)
+        else:
+            raw_profile: object | None
+            if isinstance(stn, dict):
+                raw_profile = _get_station_field(
+                    'dra_profile',
+                    stn.get('name', name),
+                    stn.get('orig_name'),
+                )
+            else:
+                raw_profile = _get_station_field('dra_profile', name)
+
+            iterable_profile: Iterable[object] | None
+            if isinstance(raw_profile, (list, tuple)):
+                iterable_profile = raw_profile
+            elif isinstance(raw_profile, Mapping):
+                iterable_profile = raw_profile.items()  # type: ignore[assignment]
+            else:
+                iterable_profile = None
+
+            if iterable_profile is not None:
+                _extend_from_iterable(iterable_profile)
+            elif isinstance(override_entry, list):
+                _extend_from_iterable(override_entry)
+
+        treated_length_val = res.get(f"dra_treated_length_{key}")
+        if treated_length_val is None and isinstance(stn, dict):
+            treated_length_val = _get_station_field(
+                'dra_treated_length',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        treated_length = _float_or_none(treated_length_val)
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
 
-        inlet_ppm = _float_or_none(res.get(f"dra_inlet_ppm_{key}"))
+        inlet_ppm_val = res.get(f"dra_inlet_ppm_{key}")
+        if inlet_ppm_val is None and isinstance(stn, dict):
+            inlet_ppm_val = _get_station_field(
+                'dra_inlet_ppm',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        inlet_ppm = _float_or_none(inlet_ppm_val)
         if inlet_ppm is None:
             inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
 
-        outlet_ppm = _float_or_none(res.get(f"dra_outlet_ppm_{key}"))
+        outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
+        if outlet_ppm_val is None and isinstance(stn, dict):
+            outlet_ppm_val = _get_station_field(
+                'dra_outlet_ppm',
+                stn.get('name', name),
+                stn.get('orig_name'),
+            )
+        outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
             outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
@@ -2436,6 +2978,133 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
         "state_cost_margin": state_cost_margin,
     }
 
+
+PASS_LABELS = {
+    "coarse": "Coarse grid",
+    "exhaustive": "Full grid",
+    "refine": "Refinement window",
+}
+PASS_ORDER = ["coarse", "exhaustive", "refine"]
+
+
+def _record_search_history(result: Mapping[str, object], params: Mapping[str, object]) -> None:
+    """Store the latest optimisation parameters and cost for sensitivity badges."""
+
+    if not isinstance(result, Mapping) or not isinstance(params, Mapping):
+        return
+    try:
+        cost_val = float(result.get("total_cost", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        cost_val = 0.0
+    entry = {"params": dict(params), "cost": cost_val}
+    history = st.session_state.setdefault("search_history", [])
+    history.append(entry)
+    if len(history) > 8:
+        del history[0]
+
+
+def render_search_footprint(result: Mapping[str, object] | None) -> None:
+    """Display per-pass search statistics when telemetry is available."""
+
+    if not isinstance(result, Mapping):
+        return
+    telemetry = result.get("search_telemetry")
+    if not isinstance(telemetry, Mapping):
+        return
+    passes = telemetry.get("passes")
+    if not isinstance(passes, Mapping) or not passes:
+        return
+
+    st.markdown("#### Search Footprint")
+    for pass_key in PASS_ORDER:
+        data = passes.get(pass_key)
+        if not isinstance(data, Mapping):
+            continue
+        totals = data.get("totals", {})
+        stations = data.get("stations", {})
+        label = PASS_LABELS.get(pass_key, pass_key.title())
+
+        options_total = int(float(totals.get("options_generated", 0) or 0))
+        candidates_total = int(float(totals.get("candidates_evaluated", 0) or 0))
+        survivors_total = int(float(totals.get("states_retained", 0) or 0))
+        bucket_total = int(float(totals.get("bucket_survivors", 0) or 0))
+        pruned_total = int(float(totals.get("pruned_after_topk", 0) or 0))
+        runs_total = max(int(float(totals.get("runs", 1) or 1)), 1)
+
+        summary = (
+            f"{label} pass evaluated {options_total} unique pump/DRA combinations "
+            f"and {candidates_total} dynamic-programming transitions. "
+            f"After pruning, {survivors_total} states survived out of {bucket_total} bucket candidates"
+        )
+        if pruned_total > 0:
+            summary += f", removing {pruned_total} via top-k or cost filters."
+        else:
+            summary += "."
+        st.markdown(f"**{summary}**")
+
+        if isinstance(stations, Mapping) and stations:
+            rows: list[dict[str, object]] = []
+            for stats in stations.values():
+                if not isinstance(stats, Mapping):
+                    continue
+                rows.append(
+                    {
+                        "Station": stats.get("name", "Station"),
+                        "Runs": int(float(stats.get("runs", runs_total) or runs_total)),
+                        "Options": int(float(stats.get("options_generated", 0) or 0)),
+                        "States in": int(float(stats.get("states_in", 0) or 0)),
+                        "Candidates": int(float(stats.get("candidates_evaluated", 0) or 0)),
+                        "New states": int(float(stats.get("states_created", 0) or 0)),
+                        "Replacements": int(float(stats.get("states_replaced", 0) or 0)),
+                        "Bucket survivors": int(float(stats.get("bucket_survivors", 0) or 0)),
+                        "Retained": int(float(stats.get("states_retained", 0) or 0)),
+                        "Pruned top-k": int(float(stats.get("pruned_after_topk", 0) or 0)),
+                    }
+                )
+            if rows:
+                df = pd.DataFrame(rows)
+                numeric_cols = [col for col in df.columns if col != "Station"]
+                df = df.sort_values("Station")
+                df_display = df.style.format({col: "{:.0f}" for col in numeric_cols})
+                st.dataframe(df_display, hide_index=True, use_container_width=True)
+
+    st.caption(
+        "Telemetry counts reflect the advanced search depth settings. "
+        "See the Advanced Search explanation for details on the pruning logic."
+    )
+
+
+def render_sensitivity_badge(history: Sequence[Mapping[str, object]] | None) -> None:
+    """Show a badge when DP thresholds were widened without changing cost."""
+
+    if not history or len(history) < 2:
+        return
+    prev = history[-2]
+    curr = history[-1]
+    try:
+        prev_cost = float(prev.get("cost", 0.0) or 0.0)
+        curr_cost = float(curr.get("cost", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return
+    if abs(curr_cost - prev_cost) > 1e-3:
+        return
+    prev_params = prev.get("params", {})
+    curr_params = curr.get("params", {})
+    if not isinstance(prev_params, Mapping) or not isinstance(curr_params, Mapping):
+        return
+    prev_topk = float(prev_params.get("state_top_k", 0) or 0)
+    curr_topk = float(curr_params.get("state_top_k", 0) or 0)
+    prev_margin = float(prev_params.get("state_cost_margin", 0) or 0)
+    curr_margin = float(curr_params.get("state_cost_margin", 0) or 0)
+    if curr_topk <= prev_topk and curr_margin <= prev_margin:
+        return
+    st.info(
+        f"🧪 Sensitivity check: widening DP limits to top_k={curr_topk:.0f}, margin={curr_margin:.0f} "
+        "did not change the optimal cost.",
+    )
+
+
+
 def solve_pipeline(
     stations,
     terminal,
@@ -2474,46 +3143,29 @@ def solve_pipeline(
     if pump_shear_rate is None:
         pump_shear_rate = st.session_state.get("pump_shear_rate", 0.0)
 
-    baseline_flow = st.session_state.get("max_laced_flow_m3h", FLOW)
-    baseline_visc = st.session_state.get("max_laced_visc_cst", max(KV_list or [1.0]))
+    baseline_requirement = copy.deepcopy(st.session_state.get("origin_lacing_baseline"))
+    baseline_segments_state = st.session_state.get("origin_lacing_segment_baseline")
+    baseline_summary = st.session_state.get("origin_lacing_baseline_summary")
+    if not isinstance(baseline_summary, Mapping):
+        baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+        if isinstance(baseline_summary, Mapping):
+            st.session_state["origin_lacing_baseline_summary"] = baseline_summary
 
-    baseline_requirement: dict | None = None
-    try:
-        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
-            stations,
-            terminal,
-            max_flow_m3h=float(baseline_flow),
-            max_visc_cst=float(baseline_visc),
-            segment_slices=segment_slices,
-            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
-        )
-    except Exception:
-        baseline_requirement = None
-
-    baseline_enforceable = True
-    baseline_warnings: list = []
-    baseline_segments: list[dict] | None = None
-    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    if isinstance(baseline_requirement, dict):
-        baseline_warnings = baseline_requirement.get("warnings") or []
-        for warning in baseline_warnings:
-            message = warning.get("message") if isinstance(warning, dict) else None
-            if message:
-                st.warning(message)
+    baseline_enforceable = False
+    if isinstance(baseline_requirement, Mapping) and baseline_summary.get("has_positive_segments"):
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segment_floors = _collect_segment_floors(baseline_requirement)
-        if segment_floors:
-            baseline_segments = copy.deepcopy(segment_floors)
-        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
-            st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+
+    baseline_segments: list[dict] | None = None
+    if baseline_enforceable:
+        if isinstance(baseline_segments_state, Sequence) and baseline_segments_state:
+            baseline_segments = [copy.deepcopy(seg) for seg in baseline_segments_state]
         else:
-            st.session_state.pop("origin_lacing_baseline", None)
-    else:
-        st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_enforceable and baseline_segments:
-        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
-    else:
-        st.session_state.pop("origin_lacing_segment_baseline", None)
+            computed_segments = _collect_segment_floors(baseline_requirement)
+            if computed_segments:
+                baseline_segments = computed_segments
+                st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(computed_segments)
+            else:
+                baseline_enforceable = False
 
     def _combine_origin_detail(
         base_detail: dict | None,
@@ -2549,6 +3201,9 @@ def solve_pipeline(
         if base.get("segments") and "segments" not in user:
             user["segments"] = copy.deepcopy(base["segments"])
 
+        if "enforce_queue" not in user and "enforce_queue" in base:
+            user["enforce_queue"] = base["enforce_queue"]
+
         return user or None
 
     baseline_for_enforcement: dict | None = None
@@ -2570,6 +3225,7 @@ def solve_pipeline(
             if length_floor > 0.0:
                 base_detail["length_km"] = length_floor
         if base_detail:
+            base_detail["enforce_queue"] = False
             baseline_for_enforcement = base_detail
     baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
@@ -2579,6 +3235,7 @@ def solve_pipeline(
     try:
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
+        telemetry_payload: dict = {}
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
@@ -2600,6 +3257,7 @@ def solve_pipeline(
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
+                telemetry=telemetry_payload,
             )
         else:
             res = pipeline_model.solve_pipeline(
@@ -2622,7 +3280,11 @@ def solve_pipeline(
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
+                telemetry=telemetry_payload,
             )
+        if isinstance(res, Mapping):
+            res = dict(res)
+            res['search_telemetry'] = telemetry_payload
         # Append a human-readable flow pattern name based on loop usage
         if not res.get("error"):
             usage = res.get("loop_usage", [])
@@ -2674,7 +3336,7 @@ if auto_batch:
     st.session_state["Fuel_density"] = Fuel_density
     st.session_state["Ambient_temp"] = Ambient_temp
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
-    product_table = st.data_editor(
+    product_table = data_editor_copy(
         pd.DataFrame({
             "Product": [f"Product {i+1}" for i in range(num_products)],
             "Viscosity (cSt)": [1.0 + i for i in range(num_products)],
@@ -2986,7 +3648,7 @@ if auto_batch:
                 height=750,
                 plot_bgcolor='white',
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     st.session_state.pop('batch_df', None)
@@ -3835,6 +4497,13 @@ def _execute_time_series_solver(
         for k, val in dra_cost_acc.items():
             res[f"dra_cost_{k}"] = val
         res["total_cost"] = block_cost
+
+        queue_segments = res.get("dra_segments") if isinstance(res, Mapping) else None
+        if isinstance(queue_segments, list):
+            profile_override = _build_profiles_from_queue(queue_segments, stations_base)
+            if profile_override:
+                res["dra_profile_override"] = profile_override
+
         reports.append(
             {
                 "time": hr % 24,
@@ -3912,103 +4581,42 @@ def _build_enforced_origin_warning(
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
     invalidate_results()
-    stations_data = st.session_state.stations
-    term_data = {
-        "name": st.session_state.get("terminal_name", "Terminal"),
-        "elev": st.session_state.get("terminal_elev", 0.0),
-        "min_residual": st.session_state.get("terminal_head", 10.0),
-    }
-    linefill_df = st.session_state.get("linefill_df")
-    if not isinstance(linefill_df, pd.DataFrame):
-        linefill_df = pd.DataFrame()
-    else:
-        linefill_df = ensure_initial_dra_column(linefill_df, default=0.0, fill_blanks=True)
-
-    vol_linefill = st.session_state.get("linefill_vol_df")
-    if isinstance(vol_linefill, pd.DataFrame) and len(vol_linefill) > 0:
-        vol_linefill = ensure_initial_dra_column(vol_linefill, default=0.0, fill_blanks=True)
-        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(
-            vol_linefill, stations_data
-        )
-        linefill_df = vol_linefill
-    else:
-        kv_list, rho_list, segment_slices = derive_segment_profiles(
-            linefill_df, stations_data
-        )
-
-    for idx, stn in enumerate(stations_data, start=1):
-        if stn.get("is_pump", False):
-            if "pump_types" in stn:
-                for ptype in ["A", "B"]:
-                    if ptype not in stn["pump_types"]:
-                        continue
-                    if stn["pump_types"][ptype].get("available", 0) == 0:
-                        continue
-                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
-                    stn["pump_types"][ptype]["head_data"] = dfh
-                    stn["pump_types"][ptype]["eff_data"] = dfe
-            else:
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
-                if dfh is None and "head_data" in stn:
-                    dfh = pd.DataFrame(stn["head_data"])
-                if dfe is None and "eff_data" in stn:
-                    dfe = pd.DataFrame(stn["eff_data"])
-                if dfh is not None and len(dfh) >= 3:
-                    Qh = dfh.iloc[:, 0].values
-                    Hh = dfh.iloc[:, 1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                if dfe is not None and len(dfe) >= 5:
-                    Qe = dfe.iloc[:, 0].values
-                    Ee = dfe.iloc[:, 1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
+    (
+        stations_data,
+        term_data,
+        linefill_df,
+        kv_list,
+        rho_list,
+        segment_slices,
+    ) = _prepare_pipeline_context()
+    if isinstance(linefill_df, pd.DataFrame):
+        st.session_state["linefill_df"] = linefill_df
 
     search_kwargs = _collect_search_depth_kwargs()
     forced_detail = st.session_state.get("origin_enforced_detail")
     if not isinstance(forced_detail, dict):
         forced_detail = None
 
-    baseline_flow = st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))
-    baseline_visc = st.session_state.get("max_laced_visc_cst", max(kv_list or [1.0]))
-    baseline_requirement = None
-    try:
-        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
-            stations_data,
-            term_data,
-            max_flow_m3h=float(baseline_flow),
-            max_visc_cst=float(baseline_visc),
-            segment_slices=segment_slices,
-            min_suction_head=float(st.session_state.get("min_laced_suction_m", 0.0)),
-        )
-    except Exception:
-        baseline_requirement = None
-    baseline_enforceable = True
-    baseline_warnings: list = []
-    baseline_segments: list[dict] | None = None
-    baseline_summary = _summarise_baseline_requirement(baseline_requirement)
-    if isinstance(baseline_requirement, dict):
-        baseline_warnings = baseline_requirement.get("warnings") or []
+    baseline_requirement = st.session_state.get("origin_lacing_baseline")
+    baseline_summary = st.session_state.get("origin_lacing_baseline_summary")
+    if not isinstance(baseline_summary, Mapping):
+        baseline_summary = _summarise_baseline_requirement(baseline_requirement)
+        st.session_state["origin_lacing_baseline_summary"] = baseline_summary
+    baseline_warnings = st.session_state.get("origin_lacing_baseline_warnings", [])
+    if baseline_warnings:
         for warning in baseline_warnings:
-            message = warning.get("message") if isinstance(warning, dict) else None
+            message = warning.get("message") if isinstance(warning, Mapping) else None
             if message:
                 st.warning(message)
+
+    baseline_enforceable = False
+    if isinstance(baseline_requirement, Mapping) and baseline_summary.get("has_positive_segments"):
         baseline_enforceable = bool(baseline_requirement.get("enforceable", True))
-        segment_floors = _collect_segment_floors(baseline_requirement)
-        if segment_floors:
-            baseline_segments = copy.deepcopy(segment_floors)
-        if baseline_enforceable and baseline_summary.get("has_positive_segments"):
-            st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
-        else:
-            st.session_state.pop("origin_lacing_baseline", None)
-    else:
-        st.session_state.pop("origin_lacing_baseline", None)
-    if baseline_enforceable and baseline_segments:
-        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(baseline_segments)
-    else:
-        st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    baseline_segments_state = st.session_state.get("origin_lacing_segment_baseline")
+    baseline_segments: list[dict[str, object]] | None = None
+    if baseline_enforceable and isinstance(baseline_segments_state, Sequence):
+        baseline_segments = [copy.deepcopy(seg) for seg in baseline_segments_state]
 
     def _normalise_segments_for_detail(detail_obj: Mapping[str, object] | None) -> list[dict[str, object]]:
         segments_out: list[dict[str, object]] = []
@@ -4183,7 +4791,9 @@ def run_all_updates():
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    start_time = time.perf_counter()
     with st.spinner("Solving optimization..."):
+        telemetry_payload: dict = {}
         res = pipeline_model.solve_pipeline_with_types(
             stations_data,
             term_data,
@@ -4202,14 +4812,19 @@ def run_all_updates():
             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
             forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
             **search_kwargs,
+            telemetry=telemetry_payload,
         )
+    elapsed = time.perf_counter() - start_time
     if not res or res.get("error"):
         if isinstance(res, dict):
             st.session_state["last_error_response"] = res
         msg = (res.get("message") or "Optimization failed") if isinstance(res, dict) else "Optimization failed"
         st.error(msg)
         return
+    _store_run_duration("Start task", elapsed)
+    res["search_telemetry"] = telemetry_payload
     st.session_state["last_res"] = copy.deepcopy(res)
+    _record_search_history(res, search_kwargs)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
     st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
@@ -4302,6 +4917,7 @@ if not auto_batch:
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
+        start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             solver_result = _execute_time_series_solver(
                 stations_base,
@@ -4321,6 +4937,7 @@ if not auto_batch:
                 total_length=total_length,
                 sub_steps=sub_steps,
             )
+        elapsed = time.perf_counter() - start_time
 
         error_msg = solver_result["error"]
         reports = solver_result["reports"]
@@ -4334,6 +4951,10 @@ if not auto_batch:
             st.session_state["linefill_next_day"] = pd.DataFrame()
             st.error(error_msg)
             st.stop()
+        _store_run_duration(
+            "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
+            elapsed,
+        )
 
         if solver_result.get("backtracked"):
             warn_msg = _build_enforced_origin_warning(
@@ -4489,6 +5110,7 @@ if not auto_batch:
 
     if run_plan:
         st.session_state["run_mode"] = "plan"
+        start_time = time.perf_counter()
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
@@ -4609,77 +5231,81 @@ if not auto_batch:
             if not reports:
                 st.error("No valid intervals in projected plan.")
                 st.stop()
+        elapsed = time.perf_counter() - start_time
 
-            st.session_state["last_plan_start"] = flow_df["Start"].min()
-            st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
-            st.session_state["last_res"] = copy.deepcopy(reports[-1]["result"])
-            st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
-            st.session_state["last_term_data"] = copy.deepcopy(term_data)
-            st.session_state["last_linefill"] = copy.deepcopy(current_vol)
+        st.session_state["last_plan_start"] = flow_df["Start"].min()
+        st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
+        final_res = reports[-1]["result"]
+        st.session_state["last_res"] = copy.deepcopy(final_res)
+        st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
+        st.session_state["last_term_data"] = copy.deepcopy(term_data)
+        st.session_state["last_linefill"] = copy.deepcopy(current_vol)
+        _store_run_duration("Run Dynamic Pumping Plan Optimizer", elapsed)
+        _record_search_history(final_res, _collect_search_depth_kwargs())
 
-            station_tables = []
-            for rec in reports:
-                res = rec["result"]
-                ts = rec["time"]
-                df_int = build_station_table(res, stations_base)
-                # Prepend pattern and time columns
-                pattern = res.get('flow_pattern_name', '')
-                df_int.insert(0, "Pattern", pattern)
-                df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
-                station_tables.append(df_int)
-            df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
+        station_tables = []
+        for rec in reports:
+            res = rec["result"]
+            ts = rec["time"]
+            df_int = build_station_table(res, stations_base)
+            # Prepend pattern and time columns
+            pattern = res.get('flow_pattern_name', '')
+            df_int.insert(0, "Pattern", pattern)
+            df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
+            station_tables.append(df_int)
+        df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-            # Exclude non-numeric columns including Pattern for gradient styling
-            num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
-            df_plan_numeric = df_plan.copy()
-            for c in num_cols:
-                df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
-            fmt_dict = {c: "{:.2f}" for c in num_cols}
-            df_plan_style = (
-                df_plan_numeric.style.format(fmt_dict)
-                .background_gradient(cmap="Blues", subset=num_cols)
+        # Exclude non-numeric columns including Pattern for gradient styling
+        num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
+        df_plan_numeric = df_plan.copy()
+        for c in num_cols:
+            df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
+        fmt_dict = {c: "{:.2f}" for c in num_cols}
+        df_plan_style = (
+            df_plan_numeric.style.format(fmt_dict)
+            .background_gradient(cmap="Blues", subset=num_cols)
+        )
+        st.dataframe(df_plan_style, width='stretch', hide_index=True)
+        st.download_button(
+            "Download Dynamic Plan Output data",
+            df_plan.to_csv(index=False, float_format="%.2f"),
+            file_name="dynamic_plan_results.csv",
+        )
+
+        # Display total cost per interval and overall sum
+        cost_rows = [
+            {
+                "Time": rec["time"].strftime("%d/%m %H:%M"),
+                "Pattern": rec["result"].get("flow_pattern_name", ""),
+                "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
+            }
+            for rec in reports
+        ]
+        df_cost = pd.DataFrame(cost_rows).round(2)
+        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+        st.dataframe(df_cost_style, width='stretch', hide_index=True)
+        st.markdown(
+            f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
+        )
+        for rec in reports:
+            display_pump_type_details(
+                rec["result"],
+                stations_base,
+                heading=f"Pump Details by Type ({rec['time'].strftime('%d/%m %H:%M')})",
             )
-            st.dataframe(df_plan_style, width='stretch', hide_index=True)
-            st.download_button(
-                "Download Dynamic Plan Output data",
-                df_plan.to_csv(index=False, float_format="%.2f"),
-                file_name="dynamic_plan_results.csv",
-            )
 
-            # Display total cost per interval and overall sum
-            cost_rows = [
-                {
-                    "Time": rec["time"].strftime("%d/%m %H:%M"),
-                    "Pattern": rec["result"].get("flow_pattern_name", ""),
-                    "Total Cost (INR)": rec["result"].get("total_cost", 0.0),
-                }
-                for rec in reports
-            ]
-            df_cost = pd.DataFrame(cost_rows).round(2)
-            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-            st.dataframe(df_cost_style, width='stretch', hide_index=True)
-            st.markdown(
-                f"**Total Optimized Cost: {df_cost['Total Cost (INR)'].sum():,.2f} INR**"
-            )
-            for rec in reports:
-                display_pump_type_details(
-                    rec["result"],
-                    stations_base,
-                    heading=f"Pump Details by Type ({rec['time'].strftime('%d/%m %H:%M')})",
-                )
-
-            combined = []
-            for idx, df_line in enumerate(linefill_snaps):
-                ts = reports[idx]["time"]
-                temp = df_line.copy()
-                temp["Time"] = ts.strftime("%d/%m %H:%M")
-                combined.append(temp)
-            lf_all = pd.concat(combined, ignore_index=True).round(2)
-            st.download_button(
-                "Download Dynamic Linefill Output",
-                lf_all.to_csv(index=False, float_format="%.2f"),
-                file_name="linefill_snapshots.csv",
-            )
+        combined = []
+        for idx, df_line in enumerate(linefill_snaps):
+            ts = reports[idx]["time"]
+            temp = df_line.copy()
+            temp["Time"] = ts.strftime("%d/%m %H:%M")
+            combined.append(temp)
+        lf_all = pd.concat(combined, ignore_index=True).round(2)
+        st.download_button(
+            "Download Dynamic Linefill Output",
+            lf_all.to_csv(index=False, float_format="%.2f"),
+            file_name="linefill_snapshots.csv",
+        )
 
 
 if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
@@ -4743,6 +5369,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
                 file_name="results.csv",
             )
+
+            render_sensitivity_badge(st.session_state.get("search_history"))
+            render_search_footprint(res)
 
             baseline_flow = st.session_state.get("max_laced_flow_m3h")
             baseline_visc = st.session_state.get("max_laced_visc_cst")
@@ -4978,7 +5607,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 height=430,
                 margin=dict(l=0, r=0, t=40, b=0)
             )
-            st.plotly_chart(fig_grouped, width='stretch')
+            st.plotly_chart(fig_grouped, use_container_width=True)
     
             # DRA cost bar chart only ---
             st.markdown("<h4 style='font-weight:600; margin-top: 2em;'>DRA Cost</h4>", unsafe_allow_html=True)
@@ -4997,7 +5626,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=0, r=0, t=30, b=0)
             )
-            st.plotly_chart(fig_dra, width='stretch')
+            st.plotly_chart(fig_dra, use_container_width=True)
     
             # --- Pie chart: Total cost distribution by station ---
             st.markdown("#### Cost Contribution by Station")
@@ -5015,7 +5644,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=10, r=10, t=40, b=10)
             )
-            st.plotly_chart(fig_pie, width='stretch')
+            st.plotly_chart(fig_pie, use_container_width=True)
     
             # --- Trend line: Total cost vs. chainage ---
             st.markdown("#### Cost Accumulation Along Pipeline")
@@ -5041,7 +5670,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     font=dict(size=15),
                     height=350
                 )
-                st.plotly_chart(fig_line, width='stretch')
+                st.plotly_chart(fig_line, use_container_width=True)
     
             # --- Table: All cost heads, 2-decimal formatted ---
             df_cost_fmt = df_cost.copy()
@@ -5105,7 +5734,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     title="Head Loss per Segment",
                     height=400
                 )
-                st.plotly_chart(fig_h, width='stretch', key=f"perf_headloss_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(
+                    fig_h,
+                    use_container_width=True,
+                    key=f"perf_headloss_{uuid.uuid4().hex[:6]}"
+                )
                 st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), width='stretch', hide_index=True)
             
             # --- 2. Velocity & Reynolds ---
@@ -5143,7 +5776,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     legend=dict(font=dict(size=14)),
                     height=420
                 )
-                st.plotly_chart(fig_v, width='stretch')
+                st.plotly_chart(fig_v, use_container_width=True)
                 # Data table
                 st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), width='stretch', hide_index=True)
             
@@ -5193,7 +5826,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, width='stretch', key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
+                    )
     
             
             # --- 4. Pump Efficiency Curve (Eff vs Flow at various Speeds) ---
@@ -5241,7 +5878,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
             
             # --- 5. Pressure vs Pipeline Length ---
             with press_tab:
@@ -5367,7 +6004,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig.update_xaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
                 fig.update_yaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
             
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
@@ -5420,7 +6057,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400
                         )
-                        st.plotly_chart(fig_pwr, width='stretch')
+                        st.plotly_chart(fig_pwr, use_container_width=True)
                     else:
                         st.warning("DOL speed not specified; skipping Power vs Speed plot.")
                     # --- 2. Power vs Flow (various speeds) ---
@@ -5454,7 +6091,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         font=dict(size=16),
                         height=400,
                     )
-                    st.plotly_chart(fig_pwr2, width='stretch')
+                    st.plotly_chart(fig_pwr2, use_container_width=True)
     
     # ---- Tab 4: System Curves ----
     import plotly.graph_objects as go
@@ -5477,7 +6114,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 rough = stn['rough']
                 L_seg = stn['L']
                 elev_i = stn['elev']
-                max_dr = int(stn.get('max_dr', 40))
+                max_dr = max(int(stn.get('max_dr', 40)), 0)
                 kv_list, _, _ = map_linefill_to_segments(linefill_df, stations_data)
                 visc = kv_list[i-1]
                 flows = np.linspace(0, st.session_state.get("FLOW", 1000.0), 101)
@@ -5491,18 +6128,28 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Re_vals = np.zeros_like(v_vals)
                     f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
-                n_curves = (max_dr // pipeline_model.DRA_STEP) + 1
+                dra_step = max(getattr(pipeline_model, "DRA_STEP", 2), 1)
+                dra_levels = list(range(0, max_dr + dra_step, dra_step))
+                if not dra_levels:
+                    dra_levels = [0]
+                n_curves = len(dra_levels)
                 color_palette = [
                     "#1565C0", "#1976D2", "#1E88E5", "#3949AB", "#8E24AA",
                     "#D81B60", "#F4511E", "#F9A825", "#43A047", "#00897B"
                 ]
-                color_idx = np.linspace(0, len(color_palette)-1, n_curves).astype(int)
+                if n_curves <= 0:
+                    color_idx = np.array([0])
+                    n_curves = 1
+                else:
+                    color_idx = np.linspace(0, len(color_palette) - 1, n_curves).astype(int)
                 fig_sys = go.Figure()
-                for j, dra in enumerate(range(0, max_dr + pipeline_model.DRA_STEP, pipeline_model.DRA_STEP)):
+                for j, dra in enumerate(dra_levels):
                     DH = f_vals * ((L_seg*1000.0)/d_inner_i) * (v_vals**2/(2*9.81)) * (1-dra/100.0)
                     SDH_vals = elev_i + DH
                     # Fix: safe indexing for palette if only 1 curve
-                    color = color_palette[color_idx[j]] if n_curves > 1 else color_palette[0]
+                    palette_idx = color_idx[j] if n_curves > 1 else color_idx[0]
+                    palette_idx = min(max(int(palette_idx), 0), len(color_palette) - 1)
+                    color = color_palette[palette_idx]
                     fig_sys.add_trace(go.Scatter(
                         x=flows, y=SDH_vals,
                         mode='lines',
@@ -5521,7 +6168,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     margin=dict(l=10, r=10, t=60, b=30),
                     plot_bgcolor="#f5f8fc"
                 )
-                st.plotly_chart(fig_sys, width='stretch', key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}")
+                st.plotly_chart(
+                    fig_sys,
+                    use_container_width=True,
+                    key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
+                )
     
     
     # ---- Tab 5: Pump-System Interaction ----
@@ -5710,7 +6361,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
                     hovermode="closest",
                 )
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
     
     
     
@@ -5793,7 +6444,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis_title="% Drag Reduction",
                     legend=dict(orientation="h", y=-0.2),
                 )
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
     
@@ -5979,7 +6630,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             margin=dict(l=30, r=30, b=30, t=80)
         )
     
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown(
             """
@@ -6185,7 +6836,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
             )
     
-            st.plotly_chart(fig3d, width='stretch')
+            st.plotly_chart(fig3d, use_container_width=True)
             st.markdown(
                 "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
                 "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
@@ -6291,7 +6942,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     progress.progress((i+1)/len(pvals))
                 fig = px.line(x=pvals, y=yvals, labels={"x": param, "y": output}, title=f"{output} vs {param} (Sensitivity)")
                 df_sens = pd.DataFrame({param: pvals, output: yvals})
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_sens, width='stretch', hide_index=True)
                 st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
 
@@ -6316,7 +6967,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/m³)", "Max Velocity (m/s)"],
                     "Benchmark Value": [12000, 70, 0.065, 2.1]
                 })
-                bdf = st.data_editor(bdf)
+                bdf = data_editor_copy(bdf)
                 benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
             elif b_mode == "Upload CSV":
                 up = st.file_uploader("Upload Benchmark CSV", type=["csv"])
