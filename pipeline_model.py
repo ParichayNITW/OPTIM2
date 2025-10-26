@@ -3364,8 +3364,6 @@ def solve_pipeline(
     pass_trace: list[str] | None = None,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
-    telemetry: dict | None = None,
-    telemetry_pass: str | None = None,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -3564,8 +3562,6 @@ def solve_pipeline(
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
-                telemetry=telemetry,
-                telemetry_pass=telemetry_pass,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -3630,8 +3626,6 @@ def solve_pipeline(
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
-                telemetry=telemetry,
-                telemetry_pass=telemetry_pass,
             )
             if res.get('error'):
                 continue
@@ -3712,9 +3706,6 @@ def solve_pipeline(
     # solution using the user-provided steps.  The recursion is controlled
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
-    if telemetry is not None and 'passes' not in telemetry:
-        telemetry['passes'] = {}
-
     if _internal_pass:
         pass_trace = None
     elif pass_trace is None:
@@ -3837,8 +3828,6 @@ def solve_pipeline(
                 state_cost_margin=state_cost_margin,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
-                telemetry=telemetry,
-                telemetry_pass='coarse',
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -3879,8 +3868,6 @@ def solve_pipeline(
                 pass_trace=None,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
-                telemetry=telemetry,
-                telemetry_pass='exhaustive',
             )
             if pass_trace is not None:
                 pass_trace.append('exhaustive')
@@ -4091,8 +4078,6 @@ def solve_pipeline(
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
-                    telemetry=telemetry,
-                    telemetry_pass='refine',
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -4959,28 +4944,6 @@ def solve_pipeline(
             baseline_floor.get('segments'),
         )
 
-    pass_entry: dict | None = None
-    stations_bucket: dict | None = None
-    pass_totals: dict | None = None
-    if telemetry and telemetry_pass:
-        passes_dict = telemetry.setdefault('passes', {})  # type: ignore[assignment]
-        pass_entry = passes_dict.setdefault(telemetry_pass, {})
-        stations_bucket = pass_entry.setdefault('stations', {})
-        pass_totals = pass_entry.setdefault(
-            'totals',
-            {
-                'options_generated': 0,
-                'candidates_evaluated': 0,
-                'states_created': 0,
-                'states_replaced': 0,
-                'bucket_survivors': 0,
-                'states_retained': 0,
-                'states_in': 0,
-                'runs': 0,
-            },
-        )
-        pass_totals['runs'] = pass_totals.get('runs', 0) + 1
-
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -5001,33 +4964,6 @@ def solve_pipeline(
         best_by_residual: dict[int, object] = {}
         protected_counter = 0
         best_cost_station = float('inf')
-        station_stats: dict | None = None
-        if stations_bucket is not None:
-            station_name = stn_data.get('orig_name') or stn_data.get('name') or f"station_{stn_data.get('idx')}"
-            station_key = str(station_name)
-            station_stats = stations_bucket.setdefault(
-                station_key,
-                {
-                    'index': stn_data.get('idx'),
-                    'name': station_name,
-                    'runs': 0,
-                    'options_generated': 0,
-                    'states_in': 0,
-                    'candidates_evaluated': 0,
-                    'states_created': 0,
-                    'states_replaced': 0,
-                    'bucket_survivors': 0,
-                    'states_retained': 0,
-                    'pruned_after_topk': 0,
-                },
-            )
-            station_stats['runs'] = station_stats.get('runs', 0) + 1
-            options_len = len(stn_data.get('options', ()))
-            station_stats['options_generated'] += options_len
-            station_stats['states_in'] += len(states)
-            if pass_totals is not None:
-                pass_totals['options_generated'] += options_len
-                pass_totals['states_in'] += len(states)
         for state in states.values():
             flow_total = state.get('flow', segment_flows[0])
             dra_queue_prev_full = state.get('dra_queue_full')
@@ -5052,10 +4988,6 @@ def solve_pipeline(
                 d_inner_state,
             )
             for opt in stn_data['options']:
-                if station_stats is not None:
-                    station_stats['candidates_evaluated'] += 1
-                if pass_totals is not None:
-                    pass_totals['candidates_evaluated'] += 1
                 # -----------------------------------------------------------------
                 # Enforce bypass rules on loopline injection:
                 # if the previous station operated in bypass mode (Case‑G)
@@ -5832,14 +5764,6 @@ def solve_pipeline(
                         else:
                             new_states[key_to_use] = entry
                             best_by_residual[bucket] = key_to_use
-                        if station_stats is not None:
-                            station_stats['states_created'] += 1
-                            if existing is not None:
-                                station_stats['states_replaced'] += 1
-                        if pass_totals is not None:
-                            pass_totals['states_created'] += 1
-                            if existing is not None:
-                                pass_totals['states_replaced'] += 1
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
@@ -5848,11 +5772,6 @@ def solve_pipeline(
         # and globally prune to the top ``STATE_TOP_K`` states or those within
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
         # manageable while preserving near-optimal candidates.
-        bucket_survivors = len(new_states)
-        if station_stats is not None:
-            station_stats['bucket_survivors'] += bucket_survivors
-        if pass_totals is not None:
-            pass_totals['bucket_survivors'] += bucket_survivors
         if _exhaustive_pass:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
             protected_items = [
@@ -5911,18 +5830,6 @@ def solve_pipeline(
                 if idx < state_top_k or data['cost'] <= threshold:
                     pruned[residual_key] = data
             states = pruned
-
-        if station_stats is not None:
-            station_stats['states_retained'] += len(states)
-            pruned_topk = bucket_survivors - len(states)
-            if pruned_topk > 0:
-                station_stats['pruned_after_topk'] += pruned_topk
-        if pass_totals is not None:
-            pass_totals['states_retained'] += len(states)
-            pruned_total = bucket_survivors - len(states)
-            if pruned_total > 0:
-                pass_totals.setdefault('pruned_after_topk', 0)
-                pass_totals['pruned_after_topk'] += pruned_total
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -6204,7 +6111,6 @@ def solve_pipeline_with_types(
                 # Call solve_pipeline with explicit loop usage and disable
                 # internal enumeration.  This ensures the provided directives
                 # are respected even for split stations.
-                telemetry_payload: dict = {}
                 result = solve_pipeline(
                     stn_acc,
                     terminal,
@@ -6231,11 +6137,9 @@ def solve_pipeline_with_types(
                     state_cost_margin=state_cost_margin,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
-                    telemetry=telemetry_payload,
                 )
                 if result.get("error"):
                     continue
-                result['search_telemetry'] = telemetry_payload
                 cost = result.get("total_cost", float('inf'))
                 if cost < best_cost:
                     # Preserve usage directive for later labelling
