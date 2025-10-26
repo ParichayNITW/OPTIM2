@@ -1480,6 +1480,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             if stn['is_pump']:
                 stn.setdefault('pump_types', {})
                 pump_tabs = st.tabs(["Type A", "Type B"])
+                enabled_types: dict[str, bool] = {}
                 for tab_idx, ptype in enumerate(['A', 'B']):
                     with pump_tabs[tab_idx]:
                             pdata = stn.get('pump_types', {}).get(ptype, {})
@@ -1499,7 +1500,9 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             if not enabled or avail == 0:
                                 st.info("Pump type disabled")
                                 stn.setdefault('pump_types', {})[ptype] = {'available': 0}
+                                enabled_types[ptype] = False
                                 continue
+                            enabled_types[ptype] = True
 
                             names = pdata.get('names', [])
                             if len(names) < avail:
@@ -1687,6 +1690,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                         all_names.extend(pn[:avail])
                     stn['pump_names'] = all_names
                     stn['pump_name'] = all_names[0] if all_names else ''
+                    stn['allow_mixed_pump_types'] = bool(enabled_types.get('A') and enabled_types.get('B'))
             else:
                 st.info("Not a pumping station. No pump data required.")
 
