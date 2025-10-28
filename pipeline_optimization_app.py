@@ -86,19 +86,19 @@ BUTTON_STYLE = """
 <style>
 div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #C24A00;
+    background-color: #C62828;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
 div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #A53F00;
+    background-color: #AB2020;
     color: #ffffff;
 }
 div[data-testid="stButton"] > button:active,
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #873300;
+    background-color: #8E1A1A;
     color: #ffffff;
 }
 
