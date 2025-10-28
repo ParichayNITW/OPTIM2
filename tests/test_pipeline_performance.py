@@ -2966,6 +2966,97 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
 
 
+def test_floor_pass_checks_minimum_dra_combination() -> None:
+    """The optimiser should explicitly try the minimum-DRA mix."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Paradip",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1400,
+            "DOL": 1400,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 150.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 40.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 30,
+            "max_dr": 40,
+            "power_type": "Grid",
+            "rate": 5.0,
+        }
+    ]
+
+    terminal = {"name": "Terminal", "min_residual": 30, "elev": 0.0}
+
+    kwargs = dict(
+        FLOW=1500.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[] for _ in stations],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=12.0,
+        start_time="00:00",
+        dra_step=5,
+        rpm_step=50,
+        enumerate_loops=False,
+        segment_floors=[{"station_idx": 0, "dra_ppm": 6.0}],
+    )
+
+    name_key = stations[0]["name"].strip().lower().replace(" ", "_")
+    term_key = terminal["name"].strip().lower().replace(" ", "_")
+
+    floor_calls: list[dict[int, dict[str, tuple[int, int]]]] = []
+
+    original = pm.solve_pipeline
+
+    def stub_solver(*args, **inner_kwargs):  # type: ignore[override]
+        if inner_kwargs.get("_internal_pass"):
+            narrow = inner_kwargs.get("narrow_ranges")
+            if narrow:
+                floor_calls.append(copy.deepcopy(narrow))
+                return {
+                    "error": False,
+                    "total_cost": 50.0,
+                    f"residual_head_{term_key}": 60.0,
+                    f"drag_reduction_{name_key}": 38,
+                    f"num_pumps_{name_key}": 1,
+                    f"speed_{name_key}": 1400,
+                }
+            return {
+                "error": False,
+                "total_cost": 120.0,
+                f"residual_head_{term_key}": 60.0,
+                f"drag_reduction_{name_key}": 15,
+                f"num_pumps_{name_key}": 1,
+                f"speed_{name_key}": 1400,
+            }
+        return original(*args, **inner_kwargs)
+
+    with patch.object(pm, "solve_pipeline", new=stub_solver):
+        final_result = original(stations, terminal, **kwargs)
+
+    assert floor_calls, "Expected the floor-only pass to run"
+    assert final_result.get("total_cost") == pytest.approx(50.0)
+    assert final_result.get(f"drag_reduction_{name_key}") == 38
+
+
 def test_refine_allows_zero_when_coarse_prefers_positive() -> None:
     """Refinement range should still explore zero-injection options."""
 
