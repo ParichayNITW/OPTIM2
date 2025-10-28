@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import time
+import base64
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -79,36 +80,78 @@ from dra_utils import (
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
+LOGO_PATH = ROOT / "logo.png"
 
 BUTTON_STYLE = """
 <style>
+div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #A34726;
+    background-color: #C24A00;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
+div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #8F3E22;
+    background-color: #A53F00;
     color: #ffffff;
 }
+div[data-testid="stButton"] > button:active,
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #7F371F;
+    background-color: #873300;
     color: #ffffff;
 }
+
 div[data-testid="stDownloadButton"] > button {
-    background-color: #0F2A5F;
+    background-color: #30427A;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-    background-color: #0C2149;
+    background-color: #2A3A6B;
     color: #ffffff;
 }
 div[data-testid="stDownloadButton"] > button:active {
-    background-color: #091935;
+    background-color: #23315B;
     color: #ffffff;
+}
+
+button[aria-label="Logout"],
+div[data-testid="stFileUploader"] button,
+button[aria-label="Browse files"],
+button[aria-label="💾 Save Case"] {
+    background-color: #C62828 !important;
+    color: #ffffff !important;
+}
+button[aria-label="Logout"]:hover,
+div[data-testid="stFileUploader"] button:hover,
+button[aria-label="Browse files"]:hover,
+button[aria-label="💾 Save Case"]:hover {
+    background-color: #AB2020 !important;
+}
+button[aria-label="Logout"]:active,
+div[data-testid="stFileUploader"] button:active,
+button[aria-label="Browse files"]:active,
+button[aria-label="💾 Save Case"]:active {
+    background-color: #8E1A1A !important;
+}
+
+button[aria-label="Hydraulic feasibility check"],
+button[aria-label="➕ Add Station"],
+button[aria-label="🗑️ Remove Station"] {
+    background-color: #1B5E20 !important;
+    color: #ffffff !important;
+}
+button[aria-label="Hydraulic feasibility check"]:hover,
+button[aria-label="➕ Add Station"]:hover,
+button[aria-label="🗑️ Remove Station"]:hover {
+    background-color: #154A19 !important;
+}
+button[aria-label="Hydraulic feasibility check"]:active,
+button[aria-label="➕ Add Station"]:active,
+button[aria-label="🗑️ Remove Station"]:active {
+    background-color: #0F3612 !important;
 }
 </style>
 """
@@ -731,8 +774,6 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 st.markdown("""
     <style>
     .stButton > button {
-        background: #A34726;
-        color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
         border-radius: 12px;
@@ -740,8 +781,6 @@ st.markdown("""
         transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
     }
     .stDownloadButton > button {
-        background: #0F2A5F;
-        color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
         border-radius: 12px;
@@ -1196,10 +1235,7 @@ with st.sidebar:
     if last_label and last_duration is not None:
         timestamp = st.session_state.get("last_run_timestamp")
         if isinstance(timestamp, dt.datetime):
-            time_str = timestamp.strftime("%d/%m/%y %H:%M:%S")
-            st.info(
-                f"{last_label} completed in {_format_duration(last_duration)} (finished at {time_str})."
-            )
+            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
         else:
             st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
 
@@ -1353,6 +1389,23 @@ with st.sidebar:
             },
         )
         st.session_state["proj_plan_df"] = proj_df
+
+
+if LOGO_PATH.exists():
+    try:
+        logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    except OSError:
+        logo_b64 = None
+
+    if logo_b64:
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:center; margin-top:0.25rem;">
+                <img src="data:image/png;base64,{logo_b64}" alt="Indian Oil" style="width:15vw; max-width:280px; height:auto;" />
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
