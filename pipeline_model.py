@@ -3941,8 +3941,20 @@ def solve_pipeline(
                         refinement_needed = True
                     else:
                         span = max(dra_step, 1)
-                        dmin = max(0, coarse_dr_main - span)
+                        lower_bound = 0
+                        dra_bounds = bounds.get('dra_main')
+                        if isinstance(dra_bounds, tuple) and len(dra_bounds) >= 1:
+                            try:
+                                lower_bound = int(dra_bounds[0])
+                            except (TypeError, ValueError):
+                                lower_bound = 0
+                        if lower_bound <= 0:
+                            dmin = 0
+                        else:
+                            dmin = max(lower_bound, coarse_dr_main - span)
                         dmax = min(max_dr_main, coarse_dr_main + span)
+                        if dmax < dmin:
+                            dmax = dmin
                         if dmin > 0 or dmax < max_dr_main:
                             refinement_needed = True
                     entry: dict[str, tuple[int, int]] = {
@@ -4023,8 +4035,20 @@ def solve_pipeline(
                             refinement_needed = True
                         else:
                             span = max(dra_step, 1)
-                            lmin = max(0, coarse_dr_loop - span)
+                            loop_bounds = bounds.get('dra_loop')
+                            loop_lower = 0
+                            if isinstance(loop_bounds, tuple) and len(loop_bounds) >= 1:
+                                try:
+                                    loop_lower = int(loop_bounds[0])
+                                except (TypeError, ValueError):
+                                    loop_lower = 0
+                            if loop_lower <= 0:
+                                lmin = 0
+                            else:
+                                lmin = max(loop_lower, coarse_dr_loop - span)
                             lmax = min(loop_max, coarse_dr_loop + span)
+                            if lmax < lmin:
+                                lmax = lmin
                             if lmin > 0 or lmax < loop_max:
                                 refinement_needed = True
                         entry["dra_loop"] = (lmin, lmax)
@@ -4044,8 +4068,20 @@ def solve_pipeline(
                         refinement_needed = True
                     else:
                         span = max(dra_step, 1)
-                        dmin = max(0, coarse_dr_main - span)
+                        bounds_entry = bounds.get('dra_main')
+                        lower_bound = 0
+                        if isinstance(bounds_entry, tuple) and len(bounds_entry) >= 1:
+                            try:
+                                lower_bound = int(bounds_entry[0])
+                            except (TypeError, ValueError):
+                                lower_bound = 0
+                        if lower_bound <= 0:
+                            dmin = 0
+                        else:
+                            dmin = max(lower_bound, coarse_dr_main - span)
                         dmax = min(max_dr, coarse_dr_main + span)
+                        if dmax < dmin:
+                            dmax = dmin
                         if dmin > 0 or dmax < max_dr:
                             refinement_needed = True
                     ranges[idx] = {"dra_main": (dmin, dmax)}
