@@ -4659,3 +4659,4 @@ def test_build_station_table_uses_override_profiles() -> None:
     df = app.build_station_table(res, base_stations)
     assert isinstance(df, pd.DataFrame)
     assert df.loc[0, "DRA Profile (km@ppm)"] == "6.00 km @ 9.00 ppm; 152.00 km @ 4.00 ppm"
+
