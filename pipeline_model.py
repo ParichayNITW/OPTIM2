@@ -433,8 +433,18 @@ REFINE_STATE_COST_MARGIN = 2000.0
 REFINE_MAX_DRA_VALUES = 15
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+    """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
+
     if min_val > max_val:
+        # ``min_val`` can legitimately exceed ``max_val`` when a caller narrows the
+        # window to a single point (e.g. zero DRA enforced by a floor).  Always
+        # return the lone value so downstream loops still evaluate the candidate.
         return [min_val]
+
+    # ``range`` already includes the lower bound.  Keeping the left edge in the
+    # grid is important for cases where the minimum allows 0 ppm; the coarse pass
+    # is then guaranteed to explore a "no chemical" option even when the step is
+    # enlarged by ``COARSE_MULTIPLIER``.
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
@@ -3798,6 +3808,12 @@ def solve_pipeline(
                         coarse_reduces_search = True
                         break
 
+        # ``coarse_res`` starts in an error state and is only replaced when the
+        # widened-step run genuinely reduces the search space.  When the coarse
+        # multiplier fails to trim any combinations we skip the extra pass and go
+        # straight to the exhaustive grid that uses the caller's finer steps, so
+        # low-chemical-cost scenarios still evaluate every feasible mix of pumps
+        # and DRA levels.
         coarse_res: dict = {"error": True}
         coarse_failed = True
         if coarse_reduces_search:
