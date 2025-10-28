@@ -433,8 +433,18 @@ REFINE_STATE_COST_MARGIN = 2000.0
 REFINE_MAX_DRA_VALUES = 15
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+    """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
+
     if min_val > max_val:
+        # ``min_val`` can legitimately exceed ``max_val`` when a caller narrows the
+        # window to a single point (e.g. zero DRA enforced by a floor).  Always
+        # return the lone value so downstream loops still evaluate the candidate.
         return [min_val]
+
+    # ``range`` already includes the lower bound.  Keeping the left edge in the
+    # grid is important for cases where the minimum allows 0 ppm; the coarse pass
+    # is then guaranteed to explore a "no chemical" option even when the step is
+    # enlarged by ``COARSE_MULTIPLIER``.
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
@@ -3798,6 +3808,12 @@ def solve_pipeline(
                         coarse_reduces_search = True
                         break
 
+        # ``coarse_res`` starts in an error state and is only replaced when the
+        # widened-step run genuinely reduces the search space.  When the coarse
+        # multiplier fails to trim any combinations we skip the extra pass and go
+        # straight to the exhaustive grid that uses the caller's finer steps, so
+        # low-chemical-cost scenarios still evaluate every feasible mix of pumps
+        # and DRA levels.
         coarse_res: dict = {"error": True}
         coarse_failed = True
         if coarse_reduces_search:
@@ -3874,30 +3890,32 @@ def solve_pipeline(
             if coarse_failed and not exhaustive_result.get("error"):
                 coarse_res = exhaustive_result
                 coarse_failed = False
+        early_choice: dict | None = None
         if (
             not _internal_pass
             and not exhaustive_result.get("error")
             and (run_exhaustive or coarse_res.get("error"))
         ):
             if coarse_res.get("error"):
-                return exhaustive_result
-
-            term_name = (
-                terminal.get("name", "terminal").strip().lower().replace(" ", "_")
-            )
-            term_req = float(terminal.get("min_residual", 0) or 0.0)
-
-            def _result_key(res: Mapping[str, object]) -> tuple[float, float]:
-                total_cost = float(res.get("total_cost", math.inf))
-                residual_val = float(
-                    res.get(f"residual_head_{term_name}", res.get("residual", term_req))
+                early_choice = exhaustive_result
+            else:
+                term_name = (
+                    terminal.get("name", "terminal").strip().lower().replace(" ", "_")
                 )
-                return (total_cost, residual_val - term_req)
+                term_req = float(terminal.get("min_residual", 0) or 0.0)
 
-            return min((coarse_res, exhaustive_result), key=_result_key)
+                def _result_key(res: Mapping[str, object]) -> tuple[float, float]:
+                    total_cost = float(res.get("total_cost", math.inf))
+                    residual_val = float(
+                        res.get(f"residual_head_{term_name}", res.get("residual", term_req))
+                    )
+                    return (total_cost, residual_val - term_req)
+
+                early_choice = min((coarse_res, exhaustive_result), key=_result_key)
         window = max(rpm_step, coarse_rpm_step)
 
         refine_result: dict = {"error": True}
+        floor_result: dict = {"error": True}
         refinement_needed = False
         if coarse_reduces_search and not coarse_res.get("error"):
             ranges: dict[int, dict[str, tuple[int, int]]] = {}
@@ -3941,8 +3959,20 @@ def solve_pipeline(
                         refinement_needed = True
                     else:
                         span = max(dra_step, 1)
-                        dmin = max(0, coarse_dr_main - span)
+                        lower_bound = 0
+                        dra_bounds = bounds.get('dra_main')
+                        if isinstance(dra_bounds, tuple) and len(dra_bounds) >= 1:
+                            try:
+                                lower_bound = int(dra_bounds[0])
+                            except (TypeError, ValueError):
+                                lower_bound = 0
+                        if lower_bound <= 0:
+                            dmin = 0
+                        else:
+                            dmin = max(lower_bound, coarse_dr_main - span)
                         dmax = min(max_dr_main, coarse_dr_main + span)
+                        if dmax < dmin:
+                            dmax = dmin
                         if dmin > 0 or dmax < max_dr_main:
                             refinement_needed = True
                     entry: dict[str, tuple[int, int]] = {
@@ -4023,8 +4053,20 @@ def solve_pipeline(
                             refinement_needed = True
                         else:
                             span = max(dra_step, 1)
-                            lmin = max(0, coarse_dr_loop - span)
+                            loop_bounds = bounds.get('dra_loop')
+                            loop_lower = 0
+                            if isinstance(loop_bounds, tuple) and len(loop_bounds) >= 1:
+                                try:
+                                    loop_lower = int(loop_bounds[0])
+                                except (TypeError, ValueError):
+                                    loop_lower = 0
+                            if loop_lower <= 0:
+                                lmin = 0
+                            else:
+                                lmin = max(loop_lower, coarse_dr_loop - span)
                             lmax = min(loop_max, coarse_dr_loop + span)
+                            if lmax < lmin:
+                                lmax = lmin
                             if lmin > 0 or lmax < loop_max:
                                 refinement_needed = True
                         entry["dra_loop"] = (lmin, lmax)
@@ -4044,8 +4086,20 @@ def solve_pipeline(
                         refinement_needed = True
                     else:
                         span = max(dra_step, 1)
-                        dmin = max(0, coarse_dr_main - span)
+                        bounds_entry = bounds.get('dra_main')
+                        lower_bound = 0
+                        if isinstance(bounds_entry, tuple) and len(bounds_entry) >= 1:
+                            try:
+                                lower_bound = int(bounds_entry[0])
+                            except (TypeError, ValueError):
+                                lower_bound = 0
+                        if lower_bound <= 0:
+                            dmin = 0
+                        else:
+                            dmin = max(lower_bound, coarse_dr_main - span)
                         dmax = min(max_dr, coarse_dr_main + span)
+                        if dmax < dmin:
+                            dmax = dmin
                         if dmin > 0 or dmax < max_dr:
                             refinement_needed = True
                     ranges[idx] = {"dra_main": (dmin, dmax)}
@@ -4082,7 +4136,104 @@ def solve_pipeline(
                 if pass_trace is not None:
                     pass_trace.append('refine')
 
-        primary_candidate = None
+        floor_ranges: dict[int, dict[str, tuple[int, int]]] = {}
+        for idx, stn in enumerate(stations):
+            max_dr_main = _max_dr_int(stn.get("max_dr"))
+            if max_dr_main < 0:
+                max_dr_main = 0
+            kv_val = 0.0
+            if idx < len(KV_list):
+                try:
+                    kv_val = float(KV_list[idx] or 0.0)
+                except (TypeError, ValueError):
+                    kv_val = 0.0
+            floor_ppm = 0.0
+            floor_perc = 0.0
+            floor_entry = segment_floor_lookup.get(idx)
+            if isinstance(floor_entry, Mapping):
+                try:
+                    floor_ppm = max(floor_ppm, float(floor_entry.get("dra_ppm", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    floor_ppm = max(floor_ppm, 0.0)
+                try:
+                    floor_perc = max(floor_perc, float(floor_entry.get("dra_perc", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    floor_perc = max(floor_perc, 0.0)
+            if idx == 0 and isinstance(forced_origin_detail, Mapping):
+                try:
+                    floor_ppm = max(
+                        floor_ppm, float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)
+                    )
+                except (TypeError, ValueError):
+                    floor_ppm = max(floor_ppm, 0.0)
+                try:
+                    floor_perc = max(
+                        floor_perc, float(forced_origin_detail.get("dra_perc", 0.0) or 0.0)
+                    )
+                except (TypeError, ValueError):
+                    floor_perc = max(floor_perc, 0.0)
+            if floor_perc <= 0.0 and floor_ppm > 0.0 and kv_val > 0.0:
+                try:
+                    floor_perc = float(get_dr_for_ppm(kv_val, floor_ppm))
+                except Exception:
+                    floor_perc = 0.0
+            elif floor_perc > 0.0 and floor_ppm <= 0.0 and kv_val > 0.0:
+                try:
+                    floor_ppm = float(get_ppm_for_dr(kv_val, floor_perc))
+                except Exception:
+                    floor_ppm = 0.0
+            floor_dr = 0
+            if floor_perc > 0.0:
+                floor_dr = int(math.ceil(floor_perc))
+            elif floor_ppm > 0.0 and kv_val > 0.0:
+                try:
+                    floor_dr = int(math.ceil(get_dr_for_ppm(kv_val, floor_ppm)))
+                except Exception:
+                    floor_dr = 0
+            if floor_dr < 0:
+                floor_dr = 0
+            if max_dr_main > 0 and floor_dr > max_dr_main:
+                floor_dr = max_dr_main
+            if max_dr_main <= 0 and floor_dr > 0:
+                continue
+            if floor_dr < 0:
+                floor_dr = 0
+            floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
+        if floor_ranges:
+            floor_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=True,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=floor_ranges,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
+                state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                refined_retry=True,
+                forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
+            )
+            if pass_trace is not None:
+                pass_trace.append('floor')
+
+        primary_candidate = early_choice
         if not coarse_failed and not coarse_res.get("error"):
             primary_candidate = coarse_res
 
@@ -4093,6 +4244,8 @@ def solve_pipeline(
             candidates.append(exhaustive_result)
         if not refine_result.get('error'):
             candidates.append(refine_result)
+        if not floor_result.get("error"):
+            candidates.append(floor_result)
 
         if candidates:
             term_name = terminal.get('name', 'terminal').strip().lower().replace(' ', '_')
