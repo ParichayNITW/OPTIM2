@@ -83,31 +83,31 @@ INIT_DRA_COL = "Initial DRA (ppm)"
 BUTTON_STYLE = """
 <style>
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #A34726;
+    background-color: #FF7A00;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #8F3E22;
+    background-color: #E56E00;
     color: #ffffff;
 }
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #7F371F;
+    background-color: #CC6200;
     color: #ffffff;
 }
 div[data-testid="stDownloadButton"] > button {
-    background-color: #0F2A5F;
+    background-color: #30427A;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-    background-color: #0C2149;
+    background-color: #2A3A6B;
     color: #ffffff;
 }
 div[data-testid="stDownloadButton"] > button:active {
-    background-color: #091935;
+    background-color: #23315B;
     color: #ffffff;
 }
 </style>
@@ -1196,10 +1196,7 @@ with st.sidebar:
     if last_label and last_duration is not None:
         timestamp = st.session_state.get("last_run_timestamp")
         if isinstance(timestamp, dt.datetime):
-            time_str = timestamp.strftime("%d/%m/%y %H:%M:%S")
-            st.info(
-                f"{last_label} completed in {_format_duration(last_duration)} (finished at {time_str})."
-            )
+            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
         else:
             st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
 
