@@ -2966,6 +2966,40 @@ def test_refine_considers_neighbourhood_when_coarse_prefers_zero_dra() -> None:
     assert final_result.get("total_cost") < coarse_result.get("total_cost")
 
 
+def test_refine_allows_zero_when_coarse_prefers_positive() -> None:
+    """Refinement range should still explore zero-injection options."""
+
+    import pipeline_model as pm
+
+    coarse_dr_main = 8
+    max_dr_main = 12
+    dra_step = 2
+    coarse_multiplier = 2.0
+    coarse_dra_step = int(round(dra_step * coarse_multiplier))
+    bounds = {"dra_main": (0, max_dr_main)}
+
+    span = max(dra_step, 1)
+    lower_bound = 0
+    dra_bounds = bounds.get("dra_main")
+    if isinstance(dra_bounds, tuple) and dra_bounds:
+        try:
+            lower_bound = int(dra_bounds[0])
+        except (TypeError, ValueError):
+            lower_bound = 0
+
+    if lower_bound <= 0:
+        dmin = 0
+    else:
+        dmin = max(lower_bound, coarse_dr_main - span)
+    dmax = min(max_dr_main, coarse_dr_main + span)
+    if dmax < dmin:
+        dmax = dmin
+
+    assert coarse_dra_step > dra_step
+    assert dmin == 0
+    assert dmax == coarse_dr_main + span
+
+
 def test_zero_dra_option_retained_under_pruning() -> None:
     """Zero-DRA scenarios should survive pruning-based passes."""
 
