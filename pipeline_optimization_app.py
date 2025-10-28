@@ -1393,7 +1393,7 @@ with st.sidebar:
 if LOGO_PATH.exists():
     logo_cols = st.columns([1, 2, 1])
     with logo_cols[1]:
-        st.image(str(LOGO_PATH), use_column_width=False, width=210)
+        st.image(str(LOGO_PATH), width=32)
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
