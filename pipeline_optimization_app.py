@@ -59,6 +59,7 @@ import hashlib
 import uuid
 import json
 import copy
+import base64
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
@@ -68,6 +69,13 @@ from plotly.colors import qualitative
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+LOGO_PATH = ROOT / "logo.png"
+try:
+    with LOGO_PATH.open("rb") as _logo_file:
+        LOGO_BASE64 = base64.b64encode(_logo_file.read()).decode("utf-8")
+except FileNotFoundError:
+    LOGO_BASE64 = ""
 
 # Hide Vega action buttons globally
 alt.renderers.set_embed_options(actions=False)
@@ -82,18 +90,18 @@ INIT_DRA_COL = "Initial DRA (ppm)"
 
 BUTTON_STYLE = """
 <style>
-div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #FF7A00;
+div[data-testid="stButton"] > button {
+    background-color: #D32F2F;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
-div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #E56E00;
+div[data-testid="stButton"] > button:hover {
+    background-color: #B71C1C;
     color: #ffffff;
 }
-div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #CC6200;
+div[data-testid="stButton"] > button:active {
+    background-color: #9A1A1A;
     color: #ffffff;
 }
 div[data-testid="stDownloadButton"] > button {
@@ -731,7 +739,7 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 st.markdown("""
     <style>
     .stButton > button {
-        background: #A34726;
+        background: #d32f2f;
         color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
@@ -1351,6 +1359,27 @@ with st.sidebar:
         )
         st.session_state["proj_plan_df"] = proj_df
 
+
+if LOGO_BASE64:
+    st.markdown(
+        f"""
+        <div style='
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            margin: 1.5rem 0 1rem;
+        '>
+            <img src='data:image/png;base64,{LOGO_BASE64}' alt='Indian Oil Logo'
+                 style='
+                    width: 320px;
+                    max-width: min(320px, 80vw);
+                    height: auto;
+                 '
+            />
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
