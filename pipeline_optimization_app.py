@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import time
+import base64
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -1391,9 +1392,21 @@ with st.sidebar:
 
 
 if LOGO_PATH.exists():
-    logo_cols = st.columns([1, 2, 1])
-    with logo_cols[1]:
-        st.image(str(LOGO_PATH), width=32)
+    try:
+        logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    except OSError:
+        logo_b64 = None
+
+    if logo_b64:
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:center; margin-top:0.25rem;">
+                <img src="data:image/png;base64,{logo_b64}" alt="Indian Oil" style="width:15vw; max-width:280px; height:auto;" />
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
