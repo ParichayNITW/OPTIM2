@@ -1610,6 +1610,8 @@ def _update_mainline_dra(
         for length, _ppm in pumped_portion
         if float(length or 0.0) > 0.0
     )
+    if pump_running and inj_effective <= 0.0 and pumped_length_total > 1e-9:
+        pumped_differs = True
     segments_defined = bool(floor_segments)
     floor_defined = bool(floor_specified and (floor_length > 0.0 or segments_defined))
     enforceable_floor = bool(
