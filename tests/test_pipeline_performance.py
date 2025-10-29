@@ -4369,6 +4369,38 @@ def test_update_mainline_dra_inserts_zero_slug_when_origin_skips_injection() -> 
     assert treated_length == pytest.approx(segment_length - pumped_length, rel=1e-6)
 
 
+def test_update_mainline_dra_inserts_zero_slug_when_midline_skips_injection() -> None:
+    """Midline stations should also forward untreated fluid when skipping DRA."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length, "dra_ppm": 6.0}]
+    station = {"idx": 2, "is_pump": True, "d_inner": diameter_inner}
+
+    dra_segments, queue_after, inj_ppm, requires_injection = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 0.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+    )
+
+    assert inj_ppm == pytest.approx(0.0, rel=1e-9)
+    assert requires_injection is False
+    assert queue_after
+    assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+
+    treated_length = sum(length for length, _ppm in dra_segments)
+    assert treated_length == pytest.approx(segment_length - pumped_length, rel=1e-6)
+
+
 def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
     """Fallback ppm should repopulate baseline when the queue is empty."""
 

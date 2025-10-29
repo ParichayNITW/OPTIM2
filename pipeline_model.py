@@ -1587,10 +1587,10 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if is_origin and inj_effective <= 0.0:
+        if inj_effective <= 0.0:
             if pump_running:
                 zero_output = True
-            elif flow_m3h <= 0.0:
+            elif is_origin and flow_m3h <= 0.0:
                 zero_output = True
         if zero_output:
             ppm_out = 0.0
