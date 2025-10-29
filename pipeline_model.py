@@ -1876,6 +1876,11 @@ def _update_mainline_dra(
             else:
                 ppm_val = 0.0
         if ppm_val <= 0.0:
+            if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
+                prev_len, _ = dra_segments[-1]
+                dra_segments[-1] = (prev_len + length, 0.0)
+            else:
+                dra_segments.append((length, 0.0))
             continue
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
@@ -5799,9 +5804,10 @@ def solve_pipeline(
                             ppm_f = 0.0
                         if length_f <= 0.0:
                             continue
-                        if ppm_f <= 0.0:
-                            continue
-                        profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
+                        profile_entries.append({
+                            'length_km': length_f,
+                            'dra_ppm': ppm_f if ppm_f > 0.0 else 0.0,
+                        })
 
                     treated_profile_length = sum(
                         entry['length_km']
