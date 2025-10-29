@@ -3057,6 +3057,67 @@ def test_floor_pass_checks_minimum_dra_combination() -> None:
     assert final_result.get(f"drag_reduction_{name_key}") == 38
 
 
+def test_floor_pass_runs_once_without_recursion() -> None:
+    """The floor-only retry must not recurse indefinitely."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1300,
+            "DOL": 1500,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 120.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 90.0,
+            "L": 30.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "max_dr": 40,
+            "power_type": "Grid",
+            "rate": 5.0,
+        }
+    ]
+
+    terminal = {"name": "Terminal", "min_residual": 25.0, "elev": 0.0}
+
+    result = pm.solve_pipeline(
+        stations,
+        terminal,
+        FLOW=1400.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[] for _ in stations],
+        RateDRA=200.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=6.0,
+        start_time="00:00",
+        dra_step=5,
+        rpm_step=50,
+        enumerate_loops=False,
+        segment_floors=[{"station_idx": 0, "dra_ppm": 5.0}],
+        pass_trace=[],
+    )
+
+    passes = result.get("executed_passes")
+    assert isinstance(passes, list)
+    assert passes.count("floor") == 1
+
+
 def test_refine_allows_zero_when_coarse_prefers_positive() -> None:
     """Refinement range should still explore zero-injection options."""
 

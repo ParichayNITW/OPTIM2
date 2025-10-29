@@ -4136,103 +4136,104 @@ def solve_pipeline(
                 if pass_trace is not None:
                     pass_trace.append('refine')
 
-        floor_ranges: dict[int, dict[str, tuple[int, int]]] = {}
-        for idx, stn in enumerate(stations):
-            max_dr_main = _max_dr_int(stn.get("max_dr"))
-            if max_dr_main < 0:
-                max_dr_main = 0
-            kv_val = 0.0
-            if idx < len(KV_list):
-                try:
-                    kv_val = float(KV_list[idx] or 0.0)
-                except (TypeError, ValueError):
-                    kv_val = 0.0
-            floor_ppm = 0.0
-            floor_perc = 0.0
-            floor_entry = segment_floor_lookup.get(idx)
-            if isinstance(floor_entry, Mapping):
-                try:
-                    floor_ppm = max(floor_ppm, float(floor_entry.get("dra_ppm", 0.0) or 0.0))
-                except (TypeError, ValueError):
-                    floor_ppm = max(floor_ppm, 0.0)
-                try:
-                    floor_perc = max(floor_perc, float(floor_entry.get("dra_perc", 0.0) or 0.0))
-                except (TypeError, ValueError):
-                    floor_perc = max(floor_perc, 0.0)
-            if idx == 0 and isinstance(forced_origin_detail, Mapping):
-                try:
-                    floor_ppm = max(
-                        floor_ppm, float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)
-                    )
-                except (TypeError, ValueError):
-                    floor_ppm = max(floor_ppm, 0.0)
-                try:
-                    floor_perc = max(
-                        floor_perc, float(forced_origin_detail.get("dra_perc", 0.0) or 0.0)
-                    )
-                except (TypeError, ValueError):
-                    floor_perc = max(floor_perc, 0.0)
-            if floor_perc <= 0.0 and floor_ppm > 0.0 and kv_val > 0.0:
-                try:
-                    floor_perc = float(get_dr_for_ppm(kv_val, floor_ppm))
-                except Exception:
-                    floor_perc = 0.0
-            elif floor_perc > 0.0 and floor_ppm <= 0.0 and kv_val > 0.0:
-                try:
-                    floor_ppm = float(get_ppm_for_dr(kv_val, floor_perc))
-                except Exception:
-                    floor_ppm = 0.0
-            floor_dr = 0
-            if floor_perc > 0.0:
-                floor_dr = int(math.ceil(floor_perc))
-            elif floor_ppm > 0.0 and kv_val > 0.0:
-                try:
-                    floor_dr = int(math.ceil(get_dr_for_ppm(kv_val, floor_ppm)))
-                except Exception:
+        if not _internal_pass:
+            floor_ranges: dict[int, dict[str, tuple[int, int]]] = {}
+            for idx, stn in enumerate(stations):
+                max_dr_main = _max_dr_int(stn.get("max_dr"))
+                if max_dr_main < 0:
+                    max_dr_main = 0
+                kv_val = 0.0
+                if idx < len(KV_list):
+                    try:
+                        kv_val = float(KV_list[idx] or 0.0)
+                    except (TypeError, ValueError):
+                        kv_val = 0.0
+                floor_ppm = 0.0
+                floor_perc = 0.0
+                floor_entry = segment_floor_lookup.get(idx)
+                if isinstance(floor_entry, Mapping):
+                    try:
+                        floor_ppm = max(floor_ppm, float(floor_entry.get("dra_ppm", 0.0) or 0.0))
+                    except (TypeError, ValueError):
+                        floor_ppm = max(floor_ppm, 0.0)
+                    try:
+                        floor_perc = max(floor_perc, float(floor_entry.get("dra_perc", 0.0) or 0.0))
+                    except (TypeError, ValueError):
+                        floor_perc = max(floor_perc, 0.0)
+                if idx == 0 and isinstance(forced_origin_detail, Mapping):
+                    try:
+                        floor_ppm = max(
+                            floor_ppm, float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)
+                        )
+                    except (TypeError, ValueError):
+                        floor_ppm = max(floor_ppm, 0.0)
+                    try:
+                        floor_perc = max(
+                            floor_perc, float(forced_origin_detail.get("dra_perc", 0.0) or 0.0)
+                        )
+                    except (TypeError, ValueError):
+                        floor_perc = max(floor_perc, 0.0)
+                if floor_perc <= 0.0 and floor_ppm > 0.0 and kv_val > 0.0:
+                    try:
+                        floor_perc = float(get_dr_for_ppm(kv_val, floor_ppm))
+                    except Exception:
+                        floor_perc = 0.0
+                elif floor_perc > 0.0 and floor_ppm <= 0.0 and kv_val > 0.0:
+                    try:
+                        floor_ppm = float(get_ppm_for_dr(kv_val, floor_perc))
+                    except Exception:
+                        floor_ppm = 0.0
+                floor_dr = 0
+                if floor_perc > 0.0:
+                    floor_dr = int(math.ceil(floor_perc))
+                elif floor_ppm > 0.0 and kv_val > 0.0:
+                    try:
+                        floor_dr = int(math.ceil(get_dr_for_ppm(kv_val, floor_ppm)))
+                    except Exception:
+                        floor_dr = 0
+                if floor_dr < 0:
                     floor_dr = 0
-            if floor_dr < 0:
-                floor_dr = 0
-            if max_dr_main > 0 and floor_dr > max_dr_main:
-                floor_dr = max_dr_main
-            if max_dr_main <= 0 and floor_dr > 0:
-                continue
-            if floor_dr < 0:
-                floor_dr = 0
-            floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
-        if floor_ranges:
-            floor_result = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                segment_slices,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time,
-                pump_shear_rate=pump_shear_rate,
-                loop_usage_by_station=loop_usage_by_station,
-                enumerate_loops=False,
-                _internal_pass=True,
-                rpm_step=rpm_step,
-                dra_step=dra_step,
-                narrow_ranges=floor_ranges,
-                coarse_multiplier=coarse_multiplier,
-                state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
-                state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
-                refined_retry=True,
-                forced_origin_detail=forced_origin_detail,
-                segment_floors=segment_floors,
-            )
-            if pass_trace is not None:
-                pass_trace.append('floor')
-
+                if max_dr_main > 0 and floor_dr > max_dr_main:
+                    floor_dr = max_dr_main
+                if max_dr_main <= 0 and floor_dr > 0:
+                    continue
+                if floor_dr < 0:
+                    floor_dr = 0
+                floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
+            if floor_ranges:
+                floor_result = solve_pipeline(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    loop_usage_by_station=loop_usage_by_station,
+                    enumerate_loops=False,
+                    _internal_pass=True,
+                    rpm_step=rpm_step,
+                    dra_step=dra_step,
+                    narrow_ranges=floor_ranges,
+                    coarse_multiplier=coarse_multiplier,
+                    state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
+                    state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    refined_retry=True,
+                    forced_origin_detail=forced_origin_detail,
+                    segment_floors=segment_floors,
+                )
+                if pass_trace is not None:
+                    pass_trace.append('floor')
+    
         primary_candidate = early_choice
         if not coarse_failed and not coarse_res.get("error"):
             primary_candidate = coarse_res
