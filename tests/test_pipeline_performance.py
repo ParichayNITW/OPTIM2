@@ -4884,6 +4884,34 @@ def test_build_profiles_from_queue_slices_per_station() -> None:
     assert balasore[0][1] == pytest.approx(6.0, rel=1e-6)
 
 
+def test_build_profiles_from_queue_preserves_zero_segments() -> None:
+    import pipeline_optimization_app as app
+
+    queue = [
+        {"length_km": 45.0, "dra_ppm": 0.0},
+        {"length_km": 30.0, "dra_ppm": 8.0},
+    ]
+
+    stations = [
+        {"name": "Paradip", "L": 30.0, "fallback_dra_ppm": 12.0},
+        {"name": "Balasore", "L": 25.0, "fallback_dra_ppm": 6.0},
+    ]
+
+    profiles = app._build_profiles_from_queue(queue, stations)
+    paradip = profiles.get("paradip")
+    assert paradip is not None
+    assert len(paradip) == 1
+    assert paradip[0][0] == pytest.approx(30.0, rel=1e-6)
+    assert paradip[0][1] == pytest.approx(0.0, abs=1e-9)
+
+    balasore = profiles.get("balasore")
+    assert balasore is not None
+    assert balasore[0][0] == pytest.approx(15.0, rel=1e-6)
+    assert balasore[0][1] == pytest.approx(0.0, abs=1e-9)
+    assert balasore[1][0] == pytest.approx(10.0, rel=1e-6)
+    assert balasore[1][1] == pytest.approx(8.0, rel=1e-6)
+
+
 def test_build_station_table_uses_override_profiles() -> None:
     import pipeline_optimization_app as app
     import pandas as pd
