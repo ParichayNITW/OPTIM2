@@ -1587,10 +1587,10 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if inj_effective <= 0.0:
+        if is_origin and inj_effective <= 0.0:
             if pump_running:
                 zero_output = True
-            elif is_origin and flow_m3h <= 0.0:
+            elif flow_m3h <= 0.0:
                 zero_output = True
         if zero_output:
             ppm_out = 0.0
@@ -1610,8 +1610,6 @@ def _update_mainline_dra(
         for length, _ppm in pumped_portion
         if float(length or 0.0) > 0.0
     )
-    if pump_running and inj_effective <= 0.0 and pumped_length_total > 1e-9:
-        pumped_differs = True
     segments_defined = bool(floor_segments)
     floor_defined = bool(floor_specified and (floor_length > 0.0 or segments_defined))
     enforceable_floor = bool(
@@ -1876,11 +1874,6 @@ def _update_mainline_dra(
             else:
                 ppm_val = 0.0
         if ppm_val <= 0.0:
-            if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
-                prev_len, _ = dra_segments[-1]
-                dra_segments[-1] = (prev_len + length, 0.0)
-            else:
-                dra_segments.append((length, 0.0))
             continue
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
@@ -5804,10 +5797,9 @@ def solve_pipeline(
                             ppm_f = 0.0
                         if length_f <= 0.0:
                             continue
-                        profile_entries.append({
-                            'length_km': length_f,
-                            'dra_ppm': ppm_f if ppm_f > 0.0 else 0.0,
-                        })
+                        if ppm_f <= 0.0:
+                            continue
+                        profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
 
                     treated_profile_length = sum(
                         entry['length_km']
@@ -5824,11 +5816,13 @@ def solve_pipeline(
                         if profile_entries
                         else 0.0
                     )
-                    if not profile_entries or all(
-                        entry['dra_ppm'] <= 0.0 for entry in profile_entries
-                    ):
-                        inlet_ppm_profile = 0.0
-                        outlet_ppm_profile = 0.0
+                    if inj_ppm_main <= 0.0:
+                        treated_profile_length = 0.0
+                        if not profile_entries or all(
+                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                        ):
+                            inlet_ppm_profile = 0.0
+                            outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
