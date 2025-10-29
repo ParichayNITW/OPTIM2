@@ -198,6 +198,27 @@ def ensure_initial_dra_column(
     return df
 
 
+def _generate_color_sequence(count: int, scale: str = "Turbo") -> list[str]:
+    """Return ``count`` visually distinct colors sampled from ``scale``."""
+
+    if count <= 0:
+        return []
+
+    # ``sample_colorscale`` expects positions in [0, 1].  Guard against the
+    # single-color case so we do not sample both 0 and 1 which could look
+    # identical on perceptually uniform scales.
+    if count == 1:
+        positions = [0.5]
+    else:
+        positions = np.linspace(0.0, 1.0, count)
+
+    colors: list[str] = []
+    for pos in positions:
+        sample = px.colors.sample_colorscale(scale, [float(np.clip(pos, 0.0, 1.0))])
+        colors.append(sample[0] if sample else "#1f77b4")
+    return colors
+
+
 def _prepare_data_editor_source(df: pd.DataFrame | None) -> pd.DataFrame | None:
     if isinstance(df, pd.DataFrame):
         return df.copy(deep=True)
@@ -2866,6 +2887,7 @@ def gather_pump_curve_sources(
                     "rho": _coerce_float(stn.get("rho"), stn.get("rho", 850.0)),
                     "count": count,
                     "rpm_active": _coerce_int(detail_map.get(ptype, {}).get("rpm"), 0),
+                    "power_type": pdata.get("power_type", stn.get("power_type")),
                 }
             )
     if sources:
@@ -2902,6 +2924,7 @@ def gather_pump_curve_sources(
             "rho": _coerce_float(stn.get("rho"), stn.get("rho", 850.0)),
             "count": count,
             "rpm_active": rpm_active,
+            "power_type": stn.get("power_type"),
         }
     ]
 
@@ -6179,9 +6202,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     if not stn.get('is_pump', False):
                         continue
                     sources = gather_pump_curve_sources(stn, i, res)
-                    palette = qualitative.Plotly + qualitative.Safe + qualitative.D3
                     fig = go.Figure()
                     added = False
+                    trace_defs: list[dict[str, object]] = []
                     for src_idx, source in enumerate(sources):
                         df_head = source.get("head_df")
                         if isinstance(df_head, pd.DataFrame) and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
@@ -6200,7 +6223,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         A = float(source.get("A", 0.0))
                         B = float(source.get("B", 0.0))
                         C = float(source.get("C", 0.0))
-                        base_color = palette[src_idx % len(palette)] if palette else None
                         for rpm in rpm_vals:
                             if rpm <= 0:
                                 continue
@@ -6211,14 +6233,24 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             valid = H >= 0
                             if not np.any(valid):
                                 continue
+                            trace_defs.append(
+                                {
+                                    "x": Q_at_rpm[valid],
+                                    "y": H[valid],
+                                    "label": f"{source['label']} ({rpm} rpm)",
+                                }
+                            )
+                    if trace_defs:
+                        colors = _generate_color_sequence(len(trace_defs))
+                        for trace, color in zip(trace_defs, colors):
                             fig.add_trace(
                                 go.Scatter(
-                                    x=Q_at_rpm[valid],
-                                    y=H[valid],
+                                    x=trace["x"],
+                                    y=trace["y"],
                                     mode='lines',
-                                    name=f"{source['label']} ({rpm} rpm)",
+                                    name=trace["label"],
                                     hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m",
-                                    line=dict(color=base_color),
+                                    line=dict(color=color, width=2.3),
                                 )
                             )
                             added = True
@@ -6248,10 +6280,10 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         continue
                     sources = gather_pump_curve_sources(stn, i, res)
                     fig = go.Figure()
-                    palette = qualitative.Plotly + qualitative.Safe + qualitative.Prism
                     added = False
                     FLOW = float(st.session_state.get("FLOW", 1000.0))
-                    for src_idx, source in enumerate(sources):
+                    trace_defs: list[dict[str, object]] = []
+                    for source in sources:
                         Qe = source.get("eff_df")
                         if isinstance(Qe, pd.DataFrame) and len(Qe) > 1:
                             flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
@@ -6273,7 +6305,6 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         R = float(source.get("R", 0.0))
                         S = float(source.get("S", 0.0))
                         T = float(source.get("T", 0.0))
-                        base_color = palette[src_idx % len(palette)] if palette else None
                         for rpm in rpm_vals:
                             if rpm <= 0:
                                 continue
@@ -6282,14 +6313,24 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             Q_equiv = flows * N_max / rpm if rpm else flows
                             eff = (P * Q_equiv**4 + Qc * Q_equiv**3 + R * Q_equiv**2 + S * Q_equiv + T)
                             eff = np.clip(eff, 0, max_user_eff)
+                            trace_defs.append(
+                                {
+                                    "x": flows,
+                                    "y": eff,
+                                    "label": f"{source['label']} ({rpm} rpm)",
+                                }
+                            )
+                    if trace_defs:
+                        colors = _generate_color_sequence(len(trace_defs))
+                        for trace, color in zip(trace_defs, colors):
                             fig.add_trace(
                                 go.Scatter(
-                                    x=flows,
-                                    y=eff,
+                                    x=trace["x"],
+                                    y=trace["y"],
                                     mode='lines',
-                                    name=f"{source['label']} ({rpm} rpm)",
+                                    name=trace["label"],
                                     hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %",
-                                    line=dict(color=base_color),
+                                    line=dict(color=color, width=2.3),
                                 )
                             )
                             added = True
@@ -6458,6 +6499,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     fig_pwr2 = go.Figure()
                     added_speed = False
                     added_flow = False
+                    flow_traces: list[dict[str, object]] = []
                     for src_idx, source in enumerate(sources):
                         N_min = int(source.get("min_rpm", 0))
                         N_max = int(source.get("dol", 0))
@@ -6514,14 +6556,24 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             eff_flows = (P4 * Q_equiv**4 + Qc * Q_equiv**3 + R * Q_equiv**2 + S * Q_equiv + T)
                             eff_flows = np.clip(eff_flows / 100.0, 0.01, 1.0)
                             power_flows = (rho * flows * 9.81 * H) / (3600.0 * 1000 * eff_flows)
+                            flow_traces.append(
+                                {
+                                    "x": flows,
+                                    "y": power_flows,
+                                    "label": f"{source['label']} ({rpm} rpm)",
+                                }
+                            )
+                    if flow_traces:
+                        colors = _generate_color_sequence(len(flow_traces))
+                        for trace, color in zip(flow_traces, colors):
                             fig_pwr2.add_trace(
                                 go.Scatter(
-                                    x=flows,
-                                    y=power_flows,
+                                    x=trace["x"],
+                                    y=trace["y"],
                                     mode='lines',
-                                    name=f"{source['label']} ({rpm} rpm)",
+                                    name=trace["label"],
                                     hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW",
-                                    line=dict(color=base_color),
+                                    line=dict(color=color, width=2.3),
                                 )
                             )
                             added_flow = True
@@ -6795,42 +6847,61 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                                 )
                             )
 
-                    N_min = overall_N_min
                     N_max = overall_N_max if overall_N_max > 0 else int(default_source.get("dol", 0) or 0)
 
                     # Optimized pump combination curve
-                    base = stn['name'].split('_')[0]
-                    combo_units = [s for s in stations_data if s.get('is_pump', False) and s['name'].startswith(base)]
-                    if len(combo_units) > 1:
-                        head_combo = np.zeros_like(flows)
-                        for unit in combo_units:
-                            ukey = unit['name'].lower().replace(' ', '_')
-                            rpm_u = res.get(f"speed_{ukey}", N_max)
-                            A_u = res.get(f"coef_A_{ukey}", 0)
-                            B_u = res.get(f"coef_B_{ukey}", 0)
-                            C_u = res.get(f"coef_C_{ukey}", 0)
-                            Nmax_u = res.get(f"dol_{ukey}", N_max)
-                            Q_equiv = flows * Nmax_u / rpm_u if rpm_u else flows
-                            H_DOL = A_u*Q_equiv**2 + B_u*Q_equiv + C_u
-                            H_u = H_DOL * (rpm_u/Nmax_u)**2 if Nmax_u else H_DOL
-                            head_combo += H_u
-                        fig.add_trace(go.Scatter(
-                            x=flows, y=head_combo, mode='lines',
+                    combo_sources = [
+                        dict(src)
+                        for src in sources
+                        if _coerce_int(src.get("count"), 0) > 0 and _coerce_int(src.get("rpm_active"), 0) > 0
+                    ]
+                    if not combo_sources:
+                        fallback_count = max(int(res.get(f"num_pumps_{key}", default_source.get("count", 1)) or 1), 1)
+                        fallback_speed = int(res.get(f"speed_{key}", overall_N_max) or 0)
+                        combo_sources = [
+                            {
+                                **dict(default_source),
+                                "count": fallback_count,
+                                "rpm_active": fallback_speed if fallback_speed > 0 else default_source.get("dol", overall_N_max),
+                            }
+                        ]
+
+                    head_combo = np.zeros_like(flows)
+                    total_count = 0
+                    for src in combo_sources:
+                        count_src = max(int(src.get("count", 1)), 1)
+                        total_count += count_src
+                        N_max_src = float(src.get("dol", overall_N_max))
+                        if N_max_src <= 0:
+                            N_max_src = float(overall_N_max if overall_N_max > 0 else default_source.get("dol", 0) or 1.0)
+                        rpm_src = float(src.get("rpm_active", overall_N_max))
+                        if rpm_src <= 0:
+                            rpm_src = float(res.get(f"speed_{key}", overall_N_max) or N_max_src)
+                        min_rpm_src = float(src.get("min_rpm", 0))
+                        if min_rpm_src > 0 and rpm_src < min_rpm_src:
+                            rpm_src = min_rpm_src
+                        if rpm_src <= 0:
+                            rpm_src = N_max_src
+                        Q_equiv = flows * N_max_src / rpm_src if rpm_src else flows
+                        A_src = float(src.get("A", A))
+                        B_src = float(src.get("B", B))
+                        C_src = float(src.get("C", C))
+                        H_DOL = A_src * Q_equiv**2 + B_src * Q_equiv + C_src
+                        H_src = H_DOL * (rpm_src / N_max_src) ** 2 if N_max_src else H_DOL
+                        head_combo += count_src * np.clip(H_src, 0, None)
+
+                    combo_label = "Optimized Combo" if len(combo_sources) > 1 else "Optimized Pump"
+                    if len(combo_sources) == 1 and total_count > 1:
+                        combo_label = f"Optimized {total_count} pump{'s' if total_count > 1 else ''}"
+                    fig.add_trace(
+                        go.Scatter(
+                            x=flows,
+                            y=head_combo,
+                            mode='lines',
                             line=dict(color='black', width=4, dash='dash'),
-                            name='Optimized Combo',
-                        ))
-                    else:
-                        speed_opt = res.get(f"speed_{key}", N_max)
-                        nopt = int(res.get(f"num_pumps_{key}", 1))
-                        Q_equiv = flows * N_max / speed_opt if speed_opt else flows
-                        H_DOL = A*Q_equiv**2 + B*Q_equiv + C
-                        H_opt = H_DOL * (speed_opt/N_max)**2 if N_max else H_DOL
-                        head_combo = nopt * H_opt
-                        fig.add_trace(go.Scatter(
-                            x=flows, y=head_combo, mode='lines',
-                            line=dict(color='black', width=4, dash='dash'),
-                            name=f'Optimized {nopt} pump{"s" if nopt>1 else ""}',
-                        ))
+                            name=combo_label,
+                        )
+                    )
                 elif is_pump:
                     st.warning("Pump data unavailable to plot pump curves for the selected station.")
 
@@ -6999,11 +7070,53 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         Xv, Yv = np.meshgrid(conf['x'], conf['y'], indexing='ij')
         Z = np.zeros_like(Xv, dtype=float)
     
-        # --- Pump coefficients ---
-        A = stn.get('A', 0); B = stn.get('B', 0); Cc = stn.get('C', 0)
-        P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
-        S = stn.get('S', 0); T = stn.get('T', 0)
-        DOL = float(pipeline_model._station_max_rpm(stn, default=N_max) or N_max)
+        sources = gather_pump_curve_sources(stn, pump_idx + 1, last_res)
+        combo_sources = [
+            dict(src)
+            for src in sources
+            if _coerce_int(src.get("count"), 0) > 0 and _coerce_int(src.get("rpm_active"), 0) > 0
+        ]
+        if not combo_sources and sources:
+            combo_sources = [dict(sources[0])]
+            combo_sources[0]["count"] = max(
+                _coerce_int(combo_sources[0].get("count"), nopt_opt),
+                nopt_opt,
+            )
+            combo_sources[0]["rpm_active"] = _coerce_int(combo_sources[0].get("rpm_active"), speed_opt)
+            if combo_sources[0]["rpm_active"] <= 0:
+                combo_sources[0]["rpm_active"] = _coerce_int(combo_sources[0].get("dol"), speed_opt)
+        if not combo_sources:
+            combo_sources = [
+                {
+                    "A": stn.get('A', 0.0),
+                    "B": stn.get('B', 0.0),
+                    "C": stn.get('C', 0.0),
+                    "P": stn.get('P', 0.0),
+                    "Q": stn.get('Q', 0.0),
+                    "R": stn.get('R', 0.0),
+                    "S": stn.get('S', 0.0),
+                    "T": stn.get('T', 0.0),
+                    "dol": pipeline_model._station_max_rpm(stn, default=N_max) or N_max,
+                    "min_rpm": pipeline_model._station_min_rpm(stn, default=N_min),
+                    "count": max(nopt_opt, 1),
+                    "rpm_active": speed_opt if speed_opt > 0 else pipeline_model._station_max_rpm(stn, default=N_max),
+                    "rho": _coerce_float(stn.get('rho'), stn.get('rho', 850.0)),
+                    "power_type": stn.get('power_type'),
+                }
+            ]
+
+        default_source = combo_sources[0]
+        A = float(default_source.get('A', stn.get('A', 0.0)))
+        B = float(default_source.get('B', stn.get('B', 0.0)))
+        Cc = float(default_source.get('C', stn.get('C', 0.0)))
+        P = float(default_source.get('P', stn.get('P', 0.0)))
+        Qc = float(default_source.get('Q', stn.get('Q', 0.0)))
+        R = float(default_source.get('R', stn.get('R', 0.0)))
+        S = float(default_source.get('S', stn.get('S', 0.0)))
+        T = float(default_source.get('T', stn.get('T', 0.0)))
+        DOL = float(default_source.get('dol', pipeline_model._station_max_rpm(stn, default=N_max) or N_max))
+        if DOL <= 0:
+            DOL = float(pipeline_model._station_max_rpm(stn, default=N_max) or N_max or 1.0)
         linefill_df = st.session_state.get("last_linefill", st.session_state.get("linefill_df", pd.DataFrame()))
         kv_list, rho_list, _ = map_linefill_to_segments(linefill_df, stations_data)
         rho = rho_list[pump_idx]
@@ -7034,14 +7147,80 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     break
             return cost
 
-        def get_head(q, n): return (A*q**2 + B*q + Cc)*(n/DOL)**2
-        def get_eff(q, n): q_adj = q * DOL/n if n > 0 else q; return (P*q_adj**4 + Qc*q_adj**3 + R*q_adj**2 + S*q_adj + T)
+        base_combo_count = sum(max(float(src.get("count", 0.0)), 0.0) for src in combo_sources)
+        if base_combo_count <= 0:
+            base_combo_count = 1.0
+
+        def _resolve_rpm_for_source(candidate: float, src: Mapping[str, object]) -> tuple[float, float]:
+            max_rpm = float(src.get("dol", DOL) or DOL)
+            min_rpm = float(src.get("min_rpm", 0) or 0.0)
+            rpm_val = float(candidate)
+            if max_rpm > 0:
+                rpm_val = min(rpm_val, max_rpm)
+            if min_rpm > 0:
+                rpm_val = max(rpm_val, min_rpm)
+            if rpm_val <= 0:
+                rpm_val = float(src.get("rpm_active") or speed_opt or max_rpm)
+            if rpm_val <= 0:
+                rpm_val = max_rpm if max_rpm > 0 else DOL
+            if max_rpm <= 0:
+                max_rpm = DOL
+            return rpm_val, max_rpm
+
+        def evaluate_combo(q: float, rpm_candidate: float, *, pump_override: float | None = None) -> tuple[float, float, float]:
+            total_head = 0.0
+            total_hydraulic_kw = 0.0
+            total_shaft_kw = 0.0
+            for src in combo_sources:
+                count_raw = max(float(src.get("count", 0.0)), 0.0)
+                if count_raw <= 0.0:
+                    continue
+                if pump_override is not None and base_combo_count > 0:
+                    count_eff = count_raw * (pump_override / base_combo_count)
+                else:
+                    count_eff = count_raw
+                if count_eff <= 0:
+                    continue
+                rpm_val, max_rpm = _resolve_rpm_for_source(rpm_candidate, src)
+                if rpm_val <= 0:
+                    continue
+                Q_equiv = q * max_rpm / rpm_val if rpm_val else q
+                A_src = float(src.get("A", A))
+                B_src = float(src.get("B", B))
+                C_src = float(src.get("C", Cc))
+                head_dol = A_src * Q_equiv**2 + B_src * Q_equiv + C_src
+                head_single = np.clip(head_dol * (rpm_val / max_rpm) ** 2 if max_rpm else head_dol, 0, None)
+                total_head += count_eff * head_single
+                P_src = float(src.get("P", P))
+                Q_src = float(src.get("Q", Qc))
+                R_src = float(src.get("R", R))
+                S_src = float(src.get("S", S))
+                T_src = float(src.get("T", T))
+                eff_val = P_src * Q_equiv**4 + Q_src * Q_equiv**3 + R_src * Q_equiv**2 + S_src * Q_equiv + T_src
+                eff_frac = max(min(eff_val / 100.0, 1.0), 0.01)
+                rho_src = float(src.get("rho", rho))
+                hydraulic_kw = (rho_src * q * g * head_single * count_eff) / (3600.0 * 1000.0)
+                total_hydraulic_kw += hydraulic_kw
+                total_shaft_kw += hydraulic_kw / eff_frac
+            overall_eff = 100.0 * total_hydraulic_kw / total_shaft_kw if total_shaft_kw > 0 else 0.0
+            return total_head, overall_eff, total_shaft_kw
+
+        def get_head(q, n):
+            head_val, _, _ = evaluate_combo(q, n)
+            return head_val
+
+        def get_eff(q, n):
+            _, eff_val, _ = evaluate_combo(q, n)
+            return eff_val
+
         def get_power_cost(q, n, d, npump=1):
-            h = get_head(q, n)
-            eff = max(get_eff(q, n)/100, 0.01)
+            _, _, shaft_kw = evaluate_combo(q, n, pump_override=npump)
+            if shaft_kw <= 0:
+                return 0.0
             motor_eff = 0.98 if stn.get('power_type') == 'Diesel' else (0.95 if n >= DOL else 0.91)
-            pwr = (rho*q*g*h*npump)/(3600.0*eff*motor_eff*1000)
-            return tariff_cost(pwr, 24.0, "00:00")
+            motor_eff = max(min(motor_eff, 0.99), 0.01)
+            input_kw = shaft_kw / motor_eff
+            return tariff_cost(input_kw, 24.0, "00:00")
         def get_system_head(q, d):
             d_inner = stn['D'] - 2*stn['t']
             rough = stn['rough']
