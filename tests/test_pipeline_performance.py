@@ -4470,6 +4470,70 @@ def test_update_mainline_dra_advects_zero_slug_across_hours() -> None:
     assert treated_after_hour2 == pytest.approx(segment_length + 30.0 - zero_hour2, rel=1e-6)
 
 
+def test_station_record_preserves_zero_segments_without_injection() -> None:
+    """Reporting profiles must expose the untreated front when no DRA is injected."""
+
+    diameter_inner = 0.7461504
+    segment_length = 158.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length, "dra_ppm": 6.0}]
+    station = {
+        "idx": 0,
+        "is_pump": True,
+        "d_inner": diameter_inner,
+        "L": segment_length,
+        "kv": 6.0,
+        "rough": 4e-5,
+        "name": "station_a",
+        "rho": 850.0,
+    }
+
+    _segments, queue_after, inj_ppm, _ = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 0.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert inj_ppm == pytest.approx(0.0, abs=1e-9)
+
+    queue_after_full = _merge_queue(
+        tuple(
+            (float(entry["length_km"]), float(entry["dra_ppm"]))
+            for entry in queue_after
+            if float(entry["length_km"]) > 0.0
+        )
+    )
+    profile_source = _segment_profile_from_queue(queue_after_full, 0.0, segment_length)
+    profile_entries = [
+        {
+            "length_km": float(length),
+            "dra_ppm": float(ppm) if float(ppm) > 0.0 else 0.0,
+        }
+        for length, ppm in profile_source
+        if float(length) > 0.0
+    ]
+
+    assert profile_entries, "Expected profile to contain at least one slice"
+    assert profile_entries[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+    treated_length = sum(
+        entry["length_km"]
+        for entry in profile_entries
+        if entry["dra_ppm"] > 0.0
+    )
+    untreated_length = segment_length - treated_length
+
+    assert treated_length == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert untreated_length == pytest.approx(pumped_length, rel=1e-6)
+
+
 def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
     """Fallback ppm should repopulate baseline when the queue is empty."""
 
