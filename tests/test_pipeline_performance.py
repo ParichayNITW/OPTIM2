@@ -4720,3 +4720,129 @@ def test_build_station_table_uses_override_profiles() -> None:
     df = app.build_station_table(res, base_stations)
     assert isinstance(df, pd.DataFrame)
     assert df.loc[0, "DRA Profile (km@ppm)"] == "6.00 km @ 9.00 ppm; 152.00 km @ 4.00 ppm"
+
+
+def test_manual_baseline_overrides_auto_for_solver(monkeypatch):
+    import copy
+    import importlib
+    import pandas as pd
+    import streamlit as st
+
+    import pipeline_optimization_app as app
+
+    st.session_state.clear()
+    importlib.reload(app)
+
+    stations = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+    ]
+
+    st.session_state["stations"] = copy.deepcopy(stations)
+    st.session_state["baseline_input_mode"] = "manual"
+    st.session_state["baseline_input_mode_prev"] = "manual"
+    st.session_state["manual_baseline_df"] = pd.DataFrame(
+        {
+            "Station": ["Paradip", "Balasore"],
+            "Station Index": [0, 1],
+            "Segment Length (km)": [158.0, 170.0],
+            "Minimum DRA (ppm)": [0.0, 7.0],
+        }
+    )
+
+    auto_requirement = {
+        "dra_ppm": 3.0,
+        "dra_perc": 0.0,
+        "length_km": 158.0,
+        "enforceable": True,
+        "segments": [{"station_idx": 0, "length_km": 158.0, "dra_ppm": 3.0}],
+    }
+    st.session_state["auto_origin_lacing_baseline"] = copy.deepcopy(auto_requirement)
+    st.session_state["auto_origin_lacing_baseline_summary"] = app._summarise_baseline_requirement(auto_requirement)
+    st.session_state["auto_origin_lacing_segment_baseline"] = copy.deepcopy(auto_requirement["segments"])
+    st.session_state["auto_origin_lacing_baseline_warnings"] = []
+
+    app._update_manual_baseline_state(st.session_state["stations"])
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+
+    def stub_solver(*args, **kwargs):
+        captured["segment_floors"] = copy.deepcopy(kwargs.get("segment_floors"))
+        return {"error": False, "linefill": [], "total_cost": 0.0}
+
+    monkeypatch.setattr(app.pipeline_model, "solve_pipeline", stub_solver)
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+
+    app.solve_pipeline(
+        copy.deepcopy(stations),
+        terminal,
+        1000.0,
+        [5.0, 5.0],
+        [820.0, 820.0],
+        None,
+        5.0,
+        0.0,
+        820.0,
+        25.0,
+        [],
+        pump_shear_rate=0.0,
+    )
+
+    floors = captured.get("segment_floors")
+    assert isinstance(floors, list)
+    assert floors == [
+        {"station_idx": 1, "length_km": 170.0, "dra_ppm": 7.0, "enforce_queue": False}
+    ]
+
+
+def test_switching_back_to_auto_restores_baseline():
+    import copy
+    import importlib
+    import streamlit as st
+
+    import pipeline_optimization_app as app
+
+    st.session_state.clear()
+    importlib.reload(app)
+
+    stations = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+    ]
+
+    st.session_state["stations"] = copy.deepcopy(stations)
+
+    auto_requirement = {
+        "dra_ppm": 4.0,
+        "dra_perc": 0.0,
+        "length_km": 158.0,
+        "enforceable": True,
+        "segments": [{"station_idx": 0, "length_km": 158.0, "dra_ppm": 4.0}],
+    }
+    auto_summary = app._summarise_baseline_requirement(auto_requirement)
+
+    st.session_state["auto_origin_lacing_baseline"] = copy.deepcopy(auto_requirement)
+    st.session_state["auto_origin_lacing_baseline_summary"] = copy.deepcopy(auto_summary)
+    st.session_state["auto_origin_lacing_segment_baseline"] = copy.deepcopy(auto_requirement["segments"])
+    st.session_state["auto_origin_lacing_baseline_warnings"] = []
+
+    st.session_state["baseline_input_mode"] = "auto"
+    st.session_state["baseline_input_mode_prev"] = "manual"
+
+    st.session_state["origin_lacing_baseline"] = {"dra_ppm": 0.0, "segments": []}
+    st.session_state["origin_lacing_baseline_summary"] = app._summarise_baseline_requirement({"dra_ppm": 0.0})
+    st.session_state["origin_lacing_segment_baseline"] = []
+    st.session_state["origin_lacing_baseline_warnings"] = []
+
+    app._handle_baseline_mode_switch(st.session_state["stations"])
+
+    restored = st.session_state.get("origin_lacing_baseline")
+    restored_summary = st.session_state.get("origin_lacing_baseline_summary")
+    restored_segments = st.session_state.get("origin_lacing_segment_baseline")
+
+    assert restored == auto_requirement
+    assert restored_summary == auto_summary
+    assert restored_segments == auto_requirement["segments"]
