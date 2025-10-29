@@ -1748,7 +1748,7 @@ st.markdown(
         letter-spacing:0.5px;
         font-family: inherit;
     '>
-        Pipeline Optima™: Intelligent Pipeline Network Optimization Suite
+        Pipeline Optima™: Pipeline Network Optimization System
     </h1>
     """,
     unsafe_allow_html=True
