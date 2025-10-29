@@ -2731,6 +2731,181 @@ def get_speed_display_map(
     return speed_map
 
 
+def _coerce_float(value, default=0.0) -> float:
+    """Safely convert ``value`` to ``float`` falling back to ``default``."""
+
+    try:
+        if isinstance(value, (int, float)) and not pd.isna(value):
+            return float(value)
+    except Exception:
+        pass
+    try:
+        if isinstance(default, (int, float)) and not pd.isna(default):
+            return float(default)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _coerce_int(value, default=0) -> int:
+    """Safely convert ``value`` to ``int`` falling back to ``default``."""
+
+    try:
+        if isinstance(value, (int, float)) and not pd.isna(value):
+            return int(round(float(value)))
+    except Exception:
+        pass
+    try:
+        if isinstance(default, (int, float)) and not pd.isna(default):
+            return int(round(float(default)))
+    except Exception:
+        pass
+    return 0
+
+
+def _load_curve_df(session_key: str, fallback) -> pd.DataFrame | None:
+    """Return a dataframe for curve data from session state or fallback."""
+
+    df = st.session_state.get(session_key)
+    if isinstance(df, pd.DataFrame):
+        return df
+    if isinstance(fallback, pd.DataFrame):
+        return fallback.copy()
+    if isinstance(fallback, Sequence) and fallback and not isinstance(fallback, (str, bytes)):
+        try:
+            df_fb = pd.DataFrame(fallback)
+        except Exception:
+            return None
+        else:
+            return df_fb
+    return None
+
+
+def gather_pump_curve_sources(
+    stn: Mapping[str, object],
+    idx: int,
+    res: Mapping[str, object] | None = None,
+) -> list[dict[str, object]]:
+    """Collect per-pump-type curve information for plotting utilities."""
+
+    key_base = str(stn.get("name", f"station_{idx}")).lower().replace(" ", "_")
+    pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
+    detail_map: dict[str, Mapping[str, object]] = {}
+    if isinstance(res, Mapping):
+        details = res.get(f"pump_details_{key_base}") or res.get(f"pump_details_{stn.get('name', '')}") or []
+        if isinstance(details, Sequence):
+            for item in details:
+                if isinstance(item, Mapping):
+                    ptype = item.get("ptype")
+                    if isinstance(ptype, str):
+                        detail_map[ptype] = item
+
+    def _active_types() -> list[str]:
+        active = [
+            ptype
+            for ptype, info in detail_map.items()
+            if _coerce_int(info.get("count"), 0) > 0
+        ]
+        if active:
+            return active
+        if pump_types:
+            return [
+                ptype
+                for ptype, pdata in pump_types.items()
+                if isinstance(pdata, Mapping) and _coerce_int(pdata.get("available"), 0) > 0
+            ]
+        return []
+
+    sources: list[dict[str, object]] = []
+    active_ptypes = _active_types()
+    if pump_types and active_ptypes:
+        for ptype in active_ptypes:
+            pdata = pump_types.get(ptype, {})
+            if not isinstance(pdata, Mapping):
+                continue
+            df_head = _load_curve_df(f"head_data_{idx}{ptype}", pdata.get("head_data"))
+            df_eff = _load_curve_df(f"eff_data_{idx}{ptype}", pdata.get("eff_data"))
+            A = _coerce_float(pdata.get("A"), stn.get("A", 0.0))
+            B = _coerce_float(pdata.get("B"), stn.get("B", 0.0))
+            C = _coerce_float(pdata.get("C"), stn.get("C", 0.0))
+            P = _coerce_float(pdata.get("P"), stn.get("P", 0.0))
+            Qc = _coerce_float(pdata.get("Q"), stn.get("Q", 0.0))
+            R = _coerce_float(pdata.get("R"), stn.get("R", 0.0))
+            S = _coerce_float(pdata.get("S"), stn.get("S", 0.0))
+            T = _coerce_float(pdata.get("T"), stn.get("T", 0.0))
+            min_rpm = _coerce_int(
+                pdata.get("MinRPM"),
+                res.get(f"min_rpm_{key_base}") if isinstance(res, Mapping) else stn.get("MinRPM", 0),
+            )
+            dol = _coerce_int(
+                pdata.get("DOL"),
+                res.get(f"dol_{key_base}") if isinstance(res, Mapping) else stn.get("DOL", 0),
+            )
+            if dol <= 0 and isinstance(detail_map.get(ptype), Mapping):
+                dol = _coerce_int(detail_map[ptype].get("rpm"), dol)
+            count = max(
+                _coerce_int(detail_map.get(ptype, {}).get("count"), pdata.get("available", 0)),
+                1,
+            )
+            sources.append(
+                {
+                    "label": f"{stn.get('name', f'Station {idx}')} — Type {ptype}",
+                    "ptype": ptype,
+                    "head_df": df_head,
+                    "eff_df": df_eff,
+                    "A": A,
+                    "B": B,
+                    "C": C,
+                    "P": P,
+                    "Q": Qc,
+                    "R": R,
+                    "S": S,
+                    "T": T,
+                    "min_rpm": min_rpm,
+                    "dol": dol,
+                    "rho": _coerce_float(stn.get("rho"), stn.get("rho", 850.0)),
+                    "count": count,
+                    "rpm_active": _coerce_int(detail_map.get(ptype, {}).get("rpm"), 0),
+                }
+            )
+    if sources:
+        return sources
+
+    df_head = _load_curve_df(f"head_data_{idx}", stn.get("head_data"))
+    df_eff = _load_curve_df(f"eff_data_{idx}", stn.get("eff_data"))
+    if isinstance(res, Mapping):
+        min_rpm = _coerce_int(res.get(f"min_rpm_{key_base}"), stn.get("MinRPM", 0))
+        dol = _coerce_int(res.get(f"dol_{key_base}"), stn.get("DOL", 0))
+        count = max(_coerce_int(res.get(f"num_pumps_{key_base}"), stn.get("max_pumps", 1)), 1)
+        rpm_active = _coerce_int(res.get(f"speed_{key_base}"), 0)
+    else:
+        min_rpm = _coerce_int(stn.get("MinRPM", 0), stn.get("MinRPM", 0))
+        dol = _coerce_int(stn.get("DOL", 0), stn.get("DOL", 0))
+        count = max(_coerce_int(stn.get("max_pumps", 1), 1), 1)
+        rpm_active = 0
+    return [
+        {
+            "label": stn.get("name", f"Station {idx}"),
+            "ptype": None,
+            "head_df": df_head,
+            "eff_df": df_eff,
+            "A": _coerce_float(stn.get("A"), 0.0),
+            "B": _coerce_float(stn.get("B"), 0.0),
+            "C": _coerce_float(stn.get("C"), 0.0),
+            "P": _coerce_float(stn.get("P"), 0.0),
+            "Q": _coerce_float(stn.get("Q"), 0.0),
+            "R": _coerce_float(stn.get("R"), 0.0),
+            "S": _coerce_float(stn.get("S"), 0.0),
+            "T": _coerce_float(stn.get("T"), 0.0),
+            "min_rpm": min_rpm,
+            "dol": dol,
+            "rho": _coerce_float(stn.get("rho"), stn.get("rho", 850.0)),
+            "count": count,
+            "rpm_active": rpm_active,
+        }
+    ]
+
+
 def add_speed_columns(row: dict, res: dict, station: dict | None, prefix: str = "Speed") -> None:
     """Populate ``row`` with per-type speed columns for ``station``."""
 
@@ -6003,38 +6178,53 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 for i, stn in enumerate(stations_data, start=1):
                     if not stn.get('is_pump', False):
                         continue
-                    key = stn['name'].lower().replace(' ','_')
-                    df_head = st.session_state.get(f"head_data_{i}")
-                    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
-                        flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
-                        max_flow = np.max(flow_user)
-                    else:
-                        max_flow = st.session_state.get("FLOW", 1000.0)
-                    flows = np.linspace(0, max_flow, 200)
-                    A = res.get(f"coef_A_{key}",0)
-                    B = res.get(f"coef_B_{key}",0)
-                    C = res.get(f"coef_C_{key}",0)
-                    N_min = int(res.get(f"min_rpm_{key}", 0))
-                    N_max = int(res.get(f"dol_{key}", 0))
-                    if N_max == 0:
-                        st.warning(f"Pump DOL (max RPM) not set for {stn['name']} — cannot plot characteristic curves.")
-                        continue
-                    rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
-                    if rpm_vals and rpm_vals[-1] != N_max:
-                        rpm_vals.append(N_max)
+                    sources = gather_pump_curve_sources(stn, i, res)
+                    palette = qualitative.Plotly + qualitative.Safe + qualitative.D3
                     fig = go.Figure()
-                    for rpm in rpm_vals:
-                        if rpm == 0:
+                    added = False
+                    for src_idx, source in enumerate(sources):
+                        df_head = source.get("head_df")
+                        if isinstance(df_head, pd.DataFrame) and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                            flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
+                            max_flow = float(np.max(flow_user))
+                        else:
+                            max_flow = float(st.session_state.get("FLOW", 1000.0))
+                        flows = np.linspace(0, max_flow, 200)
+                        N_min = int(source.get("min_rpm", 0))
+                        N_max = int(source.get("dol", 0))
+                        if N_max <= 0:
                             continue
-                        Q_at_rpm = flows
-                        Q_equiv_DOL = Q_at_rpm * N_max / rpm if rpm else Q_at_rpm
-                        H_DOL = (A*Q_equiv_DOL**2 + B*Q_equiv_DOL + C)
-                        H = H_DOL * (rpm/N_max)**2 if N_max else H_DOL
-                        valid = H >= 0
-                        fig.add_trace(go.Scatter(
-                            x=Q_at_rpm[valid], y=H[valid], mode='lines', name=f"{rpm} rpm",
-                            hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m"
-                        ))
+                        rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
+                        if rpm_vals and rpm_vals[-1] != N_max:
+                            rpm_vals.append(N_max)
+                        A = float(source.get("A", 0.0))
+                        B = float(source.get("B", 0.0))
+                        C = float(source.get("C", 0.0))
+                        base_color = palette[src_idx % len(palette)] if palette else None
+                        for rpm in rpm_vals:
+                            if rpm <= 0:
+                                continue
+                            Q_at_rpm = flows
+                            Q_equiv_DOL = Q_at_rpm * N_max / rpm if rpm else Q_at_rpm
+                            H_DOL = (A * Q_equiv_DOL**2 + B * Q_equiv_DOL + C)
+                            H = H_DOL * (rpm / N_max) ** 2 if N_max else H_DOL
+                            valid = H >= 0
+                            if not np.any(valid):
+                                continue
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=Q_at_rpm[valid],
+                                    y=H[valid],
+                                    mode='lines',
+                                    name=f"{source['label']} ({rpm} rpm)",
+                                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m",
+                                    line=dict(color=base_color),
+                                )
+                            )
+                            added = True
+                    if not added:
+                        st.warning(f"Insufficient pump data to plot characteristic curves for {stn['name']}.")
+                        continue
                     fig.update_layout(
                         title=f"Head vs Flow: {stn['name']}",
                         xaxis_title="Flow (m³/hr)",
@@ -6046,7 +6236,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     st.plotly_chart(
                         fig,
                         use_container_width=True,
-                        key=f"char_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
+                        key=f"char_curve_{i}_{stn['name'].lower().replace(' ','_')}_{uuid.uuid4().hex[:6]}"
                     )
     
             
@@ -6056,37 +6246,56 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 for i, stn in enumerate(stations_data, start=1):
                     if not stn.get('is_pump', False):
                         continue
-                    key = stn['name'].lower().replace(' ','_')
-                    Qe = st.session_state.get(f"eff_data_{i}")
-                    FLOW = st.session_state.get("FLOW", 1000.0)
-                    if Qe is not None and len(Qe) > 1:
-                        flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
-                        eff_user = np.array(Qe['Efficiency (%)'], dtype=float)
-                        flow_min = float(np.min(flow_user))
-                        flow_max = float(np.max(flow_user))
-                        max_user_eff = float(np.max(eff_user))
-                    else:
-                        flow_min, flow_max = 0.0, FLOW
-                        max_user_eff = 100
-                    # Polynomial coefficients at DOL (user input speed)
-                    P = stn.get('P', 0); Qc = stn.get('Q', 0); R = stn.get('R', 0)
-                    S = stn.get('S', 0); T = stn.get('T', 0)
-                    N_min = int(res.get(f"min_rpm_{key}", 0))
-                    N_max = int(res.get(f"dol_{key}", 0))
-                    rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
-                    if rpm_vals and rpm_vals[-1] != N_max:
-                        rpm_vals.append(N_max)
+                    sources = gather_pump_curve_sources(stn, i, res)
                     fig = go.Figure()
-                    for rpm in rpm_vals:
-                        q_upper = flow_max * (rpm/N_max) if N_max else flow_max
-                        flows = np.linspace(0, q_upper, 100)
-                        Q_equiv = flows * N_max / rpm if rpm else flows
-                        eff = (P*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
-                        eff = np.clip(eff, 0, max_user_eff)
-                        fig.add_trace(go.Scatter(
-                            x=flows, y=eff, mode='lines', name=f"{rpm} rpm",
-                            hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %"
-                        ))
+                    palette = qualitative.Plotly + qualitative.Safe + qualitative.Prism
+                    added = False
+                    FLOW = float(st.session_state.get("FLOW", 1000.0))
+                    for src_idx, source in enumerate(sources):
+                        Qe = source.get("eff_df")
+                        if isinstance(Qe, pd.DataFrame) and len(Qe) > 1:
+                            flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
+                            eff_user = np.array(Qe['Efficiency (%)'], dtype=float)
+                            flow_max = float(np.max(flow_user))
+                            max_user_eff = float(np.max(eff_user)) if eff_user.size else 100.0
+                        else:
+                            flow_max = FLOW
+                            max_user_eff = 100.0
+                        N_min = int(source.get("min_rpm", 0))
+                        N_max = int(source.get("dol", 0))
+                        if N_max <= 0:
+                            continue
+                        rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
+                        if rpm_vals and rpm_vals[-1] != N_max:
+                            rpm_vals.append(N_max)
+                        P = float(source.get("P", 0.0))
+                        Qc = float(source.get("Q", 0.0))
+                        R = float(source.get("R", 0.0))
+                        S = float(source.get("S", 0.0))
+                        T = float(source.get("T", 0.0))
+                        base_color = palette[src_idx % len(palette)] if palette else None
+                        for rpm in rpm_vals:
+                            if rpm <= 0:
+                                continue
+                            q_upper = flow_max * (rpm / N_max) if N_max else flow_max
+                            flows = np.linspace(0, q_upper, 100)
+                            Q_equiv = flows * N_max / rpm if rpm else flows
+                            eff = (P * Q_equiv**4 + Qc * Q_equiv**3 + R * Q_equiv**2 + S * Q_equiv + T)
+                            eff = np.clip(eff, 0, max_user_eff)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=flows,
+                                    y=eff,
+                                    mode='lines',
+                                    name=f"{source['label']} ({rpm} rpm)",
+                                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %",
+                                    line=dict(color=base_color),
+                                )
+                            )
+                            added = True
+                    if not added:
+                        st.warning(f"Insufficient efficiency data to plot curves for {stn['name']}.")
+                        continue
                     fig.update_layout(
                         title=f"Efficiency vs Flow: {stn['name']}",
                         xaxis_title="Flow (m³/hr)",
@@ -6241,74 +6450,105 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     if not stn.get('is_pump', False):
                         continue
                     key = stn['name'].lower().replace(' ','_')
-                    # 1. Get constants and coefficients
-                    A = res.get(f"coef_A_{key}", 0)
-                    B = res.get(f"coef_B_{key}", 0)
-                    C = res.get(f"coef_C_{key}", 0)
-                    P4 = stn.get('P',0); Qc = stn.get('Q',0); R = stn.get('R',0); S = stn.get('S',0); T = stn.get('T',0)
-                    N_min = int(res.get(f"min_rpm_{key}", 0))
-                    N_max = int(res.get(f"dol_{key}", 0))
-                    rho = stn.get('rho', 850)
-                    # --- 1. Power vs Speed (at constant, optimized flow) ---
-                    pump_flow = pump_flow_dict.get(key, st.session_state.get("FLOW",1000.0))
-                    # Head and eff at pump_flow, DOL
-                    H = (A*pump_flow**2 + B*pump_flow + C)
-                    eff = (P4*pump_flow**4 + Qc*pump_flow**3 + R*pump_flow**2 + S*pump_flow + T)
-                    eff = max(0.01, eff/100)
-                    P1 = (rho * pump_flow * 9.81 * H)/(3600.0*1000*eff)
-                    if N_max > 0:
-                        speeds = np.arange(N_min, N_max + 1, pipeline_model.RPM_STEP)
-                        power_curve = [P1 * (rpm/N_max)**3 for rpm in speeds]
-                        fig_pwr = go.Figure()
-                        fig_pwr.add_trace(go.Scatter(
-                            x=speeds, y=power_curve, mode='lines+markers',
-                            name="Power vs Speed",
-                            marker_color="#1976D2",
-                            line=dict(width=3),
-                            hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW",
-                        ))
+                    sources = gather_pump_curve_sources(stn, i, res)
+                    pump_flow = float(pump_flow_dict.get(key, st.session_state.get("FLOW", 1000.0)))
+                    palette = qualitative.Plotly + qualitative.Safe + qualitative.D3
+
+                    fig_pwr = go.Figure()
+                    fig_pwr2 = go.Figure()
+                    added_speed = False
+                    added_flow = False
+                    for src_idx, source in enumerate(sources):
+                        N_min = int(source.get("min_rpm", 0))
+                        N_max = int(source.get("dol", 0))
+                        if N_max <= 0:
+                            continue
+                        speeds = np.arange(N_min if N_min > 0 else pipeline_model.RPM_STEP, N_max + 1, pipeline_model.RPM_STEP)
+                        if speeds.size == 0 or speeds[-1] != N_max:
+                            speeds = np.append(speeds, N_max)
+                        A = float(source.get("A", 0.0))
+                        B = float(source.get("B", 0.0))
+                        C = float(source.get("C", 0.0))
+                        P4 = float(source.get("P", 0.0))
+                        Qc = float(source.get("Q", 0.0))
+                        R = float(source.get("R", 0.0))
+                        S = float(source.get("S", 0.0))
+                        T = float(source.get("T", 0.0))
+                        rho = float(source.get("rho", stn.get('rho', 850)))
+                        eff_val = (P4 * pump_flow**4 + Qc * pump_flow**3 + R * pump_flow**2 + S * pump_flow + T)
+                        eff_frac = max(0.01, eff_val / 100.0)
+                        head_val = A * pump_flow**2 + B * pump_flow + C
+                        base_power = (rho * pump_flow * 9.81 * head_val) / (3600.0 * 1000 * eff_frac)
+                        base_color = palette[src_idx % len(palette)] if palette else None
+                        if base_power > 0:
+                            fig_pwr.add_trace(
+                                go.Scatter(
+                                    x=speeds,
+                                    y=[base_power * (rpm / N_max) ** 3 for rpm in speeds],
+                                    mode='lines+markers',
+                                    name=f"{source['label']}",
+                                    marker=dict(color=base_color),
+                                    line=dict(color=base_color, width=3),
+                                    hovertemplate="Speed: %{x} rpm<br>Power: %{y:.2f} kW",
+                                )
+                            )
+                            added_speed = True
+
+                        df_head = source.get("head_df")
+                        if isinstance(df_head, pd.DataFrame) and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                            flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
+                            flow_max = float(np.max(flow_user))
+                        else:
+                            flow_max = pump_flow
+                        rpm_vals = list(range(N_min if N_min > 0 else pipeline_model.RPM_STEP, N_max + 1, pipeline_model.RPM_STEP))
+                        if rpm_vals and rpm_vals[-1] != N_max:
+                            rpm_vals.append(N_max)
+                        for rpm in rpm_vals:
+                            if rpm <= 0:
+                                continue
+                            q_upper = flow_max * (rpm / N_max) if N_max else flow_max
+                            flows = np.linspace(0, q_upper, 100)
+                            Q_equiv = flows * N_max / rpm if rpm else flows
+                            H_DOL = A * Q_equiv**2 + B * Q_equiv + C
+                            H = H_DOL * (rpm / N_max) ** 2 if N_max else H_DOL
+                            eff_flows = (P4 * Q_equiv**4 + Qc * Q_equiv**3 + R * Q_equiv**2 + S * Q_equiv + T)
+                            eff_flows = np.clip(eff_flows / 100.0, 0.01, 1.0)
+                            power_flows = (rho * flows * 9.81 * H) / (3600.0 * 1000 * eff_flows)
+                            fig_pwr2.add_trace(
+                                go.Scatter(
+                                    x=flows,
+                                    y=power_flows,
+                                    mode='lines',
+                                    name=f"{source['label']} ({rpm} rpm)",
+                                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW",
+                                    line=dict(color=base_color),
+                                )
+                            )
+                            added_flow = True
+
+                    if added_speed:
                         fig_pwr.update_layout(
                             title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
                             xaxis_title="Speed (rpm)",
                             yaxis_title="Power (kW)",
                             font=dict(size=16),
-                            height=400
+                            height=400,
                         )
                         st.plotly_chart(fig_pwr, use_container_width=True)
                     else:
-                        st.warning("DOL speed not specified; skipping Power vs Speed plot.")
-                    # --- 2. Power vs Flow (various speeds) ---
-                    df_head = st.session_state.get(f"head_data_{i}")
-                    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
-                        flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
-                        flow_max = float(np.max(flow_user))
+                        st.warning(f"DOL speed not specified for {stn['name']}; skipping Power vs Speed plot.")
+
+                    if added_flow:
+                        fig_pwr2.update_layout(
+                            title=f"Power vs Flow at Various Speeds: {stn['name']}",
+                            xaxis_title="Flow (m³/hr)",
+                            yaxis_title="Power (kW)",
+                            font=dict(size=16),
+                            height=400,
+                        )
+                        st.plotly_chart(fig_pwr2, use_container_width=True)
                     else:
-                        flow_max = pump_flow
-                    rpm_vals = list(range(N_min, N_max + 1, pipeline_model.RPM_STEP))
-                    if rpm_vals and rpm_vals[-1] != N_max:
-                        rpm_vals.append(N_max)
-                    fig_pwr2 = go.Figure()
-                    for rpm in rpm_vals:
-                        q_upper = flow_max * (rpm/N_max) if N_max else flow_max
-                        flows = np.linspace(0, q_upper, 100)
-                        Q_equiv = flows * N_max / rpm if rpm else flows
-                        H_DOL = A*Q_equiv**2 + B*Q_equiv + C
-                        H = H_DOL * (rpm/N_max)**2 if N_max else H_DOL
-                        eff_flows = (P4*Q_equiv**4 + Qc*Q_equiv**3 + R*Q_equiv**2 + S*Q_equiv + T)
-                        eff_flows = np.clip(eff_flows/100, 0.01, 1.0)
-                        power_flows = (rho * flows * 9.81 * H)/(3600.0*1000*eff_flows)
-                        fig_pwr2.add_trace(go.Scatter(
-                            x=flows, y=power_flows, mode='lines', name=f"{rpm} rpm",
-                            hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW",
-                        ))
-                    fig_pwr2.update_layout(
-                        title=f"Power vs Flow at Various Speeds: {stn['name']}",
-                        xaxis_title="Flow (m³/hr)",
-                        yaxis_title="Power (kW)",
-                        font=dict(size=16),
-                        height=400,
-                    )
-                    st.plotly_chart(fig_pwr2, use_container_width=True)
+                        st.warning(f"Insufficient pump data to plot Power vs Flow curves for {stn['name']}.")
     
     # ---- Tab 4: System Curves ----
     import plotly.graph_objects as go
@@ -6421,14 +6661,20 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 is_pump = stn.get('is_pump', False)
                 max_dr = int(stn.get('max_dr', 40))
                 n_pumps = int(stn.get('max_pumps', 1))
-    
+                sources = gather_pump_curve_sources(stn, stn_idx + 1, res)
+
                 # -------- Max Flow Based on Pump Data Table --------
-                df_head = st.session_state.get(f"head_data_{stn_idx+1}")
-                if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
-                    user_flows = np.array(df_head["Flow (m³/hr)"], dtype=float)
-                    max_flow = np.max(user_flows)
+                head_dfs = [src.get("head_df") for src in sources if isinstance(src.get("head_df"), pd.DataFrame)]
+                flow_candidates: list[float] = []
+                for df_head in head_dfs:
+                    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 0:
+                        flow_arr = np.array(df_head["Flow (m³/hr)"], dtype=float)
+                        if flow_arr.size:
+                            flow_candidates.append(float(np.max(flow_arr)))
+                if flow_candidates:
+                    max_flow = max(flow_candidates)
                 else:
-                    max_flow = st.session_state.get("FLOW", 1000.0)
+                    max_flow = float(st.session_state.get("FLOW", 1000.0))
                 flows = np.linspace(0, max_flow, 800)
     
                 # -------- Downstream Pump Bypass Logic --------
@@ -6498,38 +6744,60 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
     
                 # -------- Pump Curves: All Series, All RPM, Vivid Colors --------
                 pump_palettes = qualitative.Plotly + qualitative.D3 + qualitative.Bold
-                if is_pump:
-                    N_min = int(res.get(f"min_rpm_{key}", 1200))
-                    N_max = int(res.get(f"dol_{key}", 3000))
-                    rpm_steps = np.arange(N_min, N_max + 1, pipeline_model.RPM_STEP)
-                    n_rpms = len(rpm_steps)
-                    A = res.get(f"coef_A_{key}", 0)
-                    B = res.get(f"coef_B_{key}", 0)
-                    C = res.get(f"coef_C_{key}", 0)
-                    for npump in range(1, n_pumps+1):
-                        for idx, rpm in enumerate(rpm_steps):
-                            # Fix: protect division by zero
-                            if n_rpms > 1:
-                                blend = idx / (n_rpms-1)
-                            else:
-                                blend = 0.5
+                if is_pump and sources:
+                    default_source = sources[0]
+                    overall_N_min = int(res.get(f"min_rpm_{key}", default_source.get("min_rpm", 1200)))
+                    overall_N_max = int(res.get(f"dol_{key}", default_source.get("dol", 3000)))
+                    if overall_N_max <= 0:
+                        overall_N_max = int(default_source.get("dol", 0) or 0)
+                    A = float(res.get(f"coef_A_{key}", default_source.get("A", 0)))
+                    B = float(res.get(f"coef_B_{key}", default_source.get("B", 0)))
+                    C = float(res.get(f"coef_C_{key}", default_source.get("C", 0)))
+
+                    for src_idx, source in enumerate(sources):
+                        A_src = float(source.get("A", A))
+                        B_src = float(source.get("B", B))
+                        C_src = float(source.get("C", C))
+                        N_min_src = int(source.get("min_rpm", overall_N_min))
+                        N_max_src = int(source.get("dol", overall_N_max))
+                        if N_max_src <= 0:
+                            continue
+                        rpm_steps = np.arange(
+                            N_min_src if N_min_src > 0 else pipeline_model.RPM_STEP,
+                            N_max_src + 1,
+                            pipeline_model.RPM_STEP,
+                        )
+                        if rpm_steps.size == 0 or rpm_steps[-1] != N_max_src:
+                            rpm_steps = np.append(rpm_steps, N_max_src)
+                        n_rpms = len(rpm_steps)
+                        count_src = max(int(source.get("count", 1)), 1)
+                        for idx_rpm, rpm in enumerate(rpm_steps):
+                            if rpm <= 0:
+                                continue
+                            blend = idx_rpm / (n_rpms - 1) if n_rpms > 1 else 0.5
                             color = sample_colorscale("Turbo", 0.2 + 0.6 * blend)[0]
-                            Q_equiv = flows * N_max / rpm if rpm else flows
-                            H_DOL = A*Q_equiv**2 + B*Q_equiv + C
-                            H_pump = npump * (H_DOL * (rpm/N_max)**2 if N_max else H_DOL)
+                            Q_equiv = flows * N_max_src / rpm if rpm else flows
+                            H_DOL = A_src * Q_equiv**2 + B_src * Q_equiv + C_src
+                            H_pump = count_src * (H_DOL * (rpm / N_max_src) ** 2 if N_max_src else H_DOL)
                             H_pump = np.clip(H_pump, 0, None)
-                            label = f"{npump} Pump{'s' if npump>1 else ''} ({rpm} rpm)"
-                            showlegend = (idx == 0 or idx == n_rpms-1)
-                            fig.add_trace(go.Scatter(
-                                x=flows, y=H_pump,
-                                mode='lines',
-                                line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
-                                name=label if showlegend else None,
-                                showlegend=showlegend,
-                                opacity=0.92 if showlegend else 0.56,
-                                hoverinfo="skip"
-                            ))
-    
+                            label = f"{source['label']} ({count_src} pump{'s' if count_src>1 else ''}, {rpm} rpm)"
+                            showlegend = idx_rpm in (0, n_rpms - 1)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=flows,
+                                    y=H_pump,
+                                    mode='lines',
+                                    line=dict(width=3 if showlegend else 1.7, color=color, dash='solid'),
+                                    name=label if showlegend else None,
+                                    showlegend=showlegend,
+                                    opacity=0.92 if showlegend else 0.56,
+                                    hoverinfo="skip"
+                                )
+                            )
+
+                    N_min = overall_N_min
+                    N_max = overall_N_max if overall_N_max > 0 else int(default_source.get("dol", 0) or 0)
+
                     # Optimized pump combination curve
                     base = stn['name'].split('_')[0]
                     combo_units = [s for s in stations_data if s.get('is_pump', False) and s['name'].startswith(base)]
@@ -6563,6 +6831,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             line=dict(color='black', width=4, dash='dash'),
                             name=f'Optimized {nopt} pump{"s" if nopt>1 else ""}',
                         ))
+                elif is_pump:
+                    st.warning("Pump data unavailable to plot pump curves for the selected station.")
 
                 # -------- Layout Polish: Bright, Vivid, Clean --------
                 fig.update_layout(
