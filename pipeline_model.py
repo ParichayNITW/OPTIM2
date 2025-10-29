@@ -5824,13 +5824,11 @@ def solve_pipeline(
                         if profile_entries
                         else 0.0
                     )
-                    if inj_ppm_main <= 0.0:
-                        treated_profile_length = 0.0
-                        if not profile_entries or all(
-                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
-                        ):
-                            inlet_ppm_profile = 0.0
-                            outlet_ppm_profile = 0.0
+                    if not profile_entries or all(
+                        entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                    ):
+                        inlet_ppm_profile = 0.0
+                        outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
