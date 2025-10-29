@@ -4365,7 +4365,10 @@ def test_update_mainline_dra_inserts_zero_slug_when_origin_skips_injection() -> 
     assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
     assert queue_after[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
 
-    treated_length = sum(length for length, _ppm in dra_segments)
+    assert dra_segments
+    assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments[0][1] == pytest.approx(0.0, abs=1e-9)
+    treated_length = sum(length for length, ppm in dra_segments if ppm > 0)
     assert treated_length == pytest.approx(segment_length - pumped_length, rel=1e-6)
 
 
@@ -4397,8 +4400,74 @@ def test_update_mainline_dra_inserts_zero_slug_when_midline_skips_injection() ->
     assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
     assert queue_after[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
 
-    treated_length = sum(length for length, _ppm in dra_segments)
+    assert dra_segments
+    assert dra_segments[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments[0][1] == pytest.approx(0.0, abs=1e-9)
+    treated_length = sum(length for length, ppm in dra_segments if ppm > 0)
     assert treated_length == pytest.approx(segment_length - pumped_length, rel=1e-6)
+
+
+def test_update_mainline_dra_advects_zero_slug_across_hours() -> None:
+    """Untreated slugs from midline stations should advance each hour."""
+
+    diameter_inner = 0.7461504
+    segment_length = 170.0
+    flow_m3h = 2600.0
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter_inner)
+
+    queue_initial = [{"length_km": segment_length + 30.0, "dra_ppm": 6.0}]
+    station = {"idx": 1, "is_pump": True, "d_inner": diameter_inner}
+
+    dra_segments_hour1, queue_hour1, _, _ = _update_mainline_dra(
+        queue_initial,
+        station,
+        {"nop": 1, "dra_ppm_main": 0.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+    )
+
+    dra_segments_hour2, queue_hour2, _, _ = _update_mainline_dra(
+        queue_hour1,
+        station,
+        {"nop": 1, "dra_ppm_main": 0.0},
+        segment_length,
+        flow_m3h,
+        hours,
+        pump_running=True,
+    )
+
+    assert dra_segments_hour1
+    assert dra_segments_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert dra_segments_hour1[0][1] == pytest.approx(0.0, abs=1e-9)
+
+    assert dra_segments_hour2
+    assert dra_segments_hour2[0][0] == pytest.approx(2 * pumped_length, rel=1e-6)
+    assert dra_segments_hour2[0][1] == pytest.approx(0.0, abs=1e-9)
+
+    def zero_front_length(queue: list[dict]) -> float:
+        for entry in queue:
+            ppm = float(entry.get("dra_ppm", 0.0) or 0.0)
+            if ppm <= 1e-9:
+                return float(entry.get("length_km", 0.0) or 0.0)
+            if entry.get("length_km", 0.0):
+                break
+        return 0.0
+
+    zero_hour1 = zero_front_length(queue_hour1)
+    zero_hour2 = zero_front_length(queue_hour2)
+
+    assert zero_hour1 == pytest.approx(pumped_length, rel=1e-6)
+    assert zero_hour2 == pytest.approx(2 * pumped_length, rel=1e-6)
+
+    treated_after_hour2 = sum(
+        entry["length_km"]
+        for entry in queue_hour2
+        if entry["length_km"] > 0 and entry["dra_ppm"] > 1e-9
+    )
+    assert treated_after_hour2 == pytest.approx(segment_length + 30.0 - zero_hour2, rel=1e-6)
 
 
 def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
