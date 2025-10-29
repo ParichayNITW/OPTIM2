@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import time
+import base64
 import streamlit as st
 import altair as alt
 import pipeline_model
@@ -50,6 +51,10 @@ if "search_state_top_k" not in st.session_state:
     st.session_state["search_state_top_k"] = 50
 if "search_state_cost_margin" not in st.session_state:
     st.session_state["search_state_cost_margin"] = 5000.0
+if "baseline_input_mode" not in st.session_state:
+    st.session_state["baseline_input_mode"] = "auto"
+if "baseline_input_mode_prev" not in st.session_state:
+    st.session_state["baseline_input_mode_prev"] = st.session_state.get("baseline_input_mode", "auto")
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -59,7 +64,6 @@ import hashlib
 import uuid
 import json
 import copy
-import base64
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
@@ -69,13 +73,6 @@ from plotly.colors import qualitative
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-LOGO_PATH = ROOT / "logo.png"
-try:
-    with LOGO_PATH.open("rb") as _logo_file:
-        LOGO_BASE64 = base64.b64encode(_logo_file.read()).decode("utf-8")
-except FileNotFoundError:
-    LOGO_BASE64 = ""
 
 # Hide Vega action buttons globally
 alt.renderers.set_embed_options(actions=False)
@@ -87,23 +84,28 @@ from dra_utils import (
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
+LOGO_PATH = ROOT / "logo.png"
 
 BUTTON_STYLE = """
 <style>
-div[data-testid="stButton"] > button {
-    background-color: #D32F2F;
+div[data-testid="stButton"] > button,
+div[data-testid="stButton"] > button[kind="primary"] {
+    background-color: #C62828;
     color: #ffffff;
     border: none;
     box-shadow: none;
 }
-div[data-testid="stButton"] > button:hover {
-    background-color: #B71C1C;
+div[data-testid="stButton"] > button:hover,
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background-color: #AB2020;
     color: #ffffff;
 }
-div[data-testid="stButton"] > button:active {
-    background-color: #9A1A1A;
+div[data-testid="stButton"] > button:active,
+div[data-testid="stButton"] > button[kind="primary"]:active {
+    background-color: #8E1A1A;
     color: #ffffff;
 }
+
 div[data-testid="stDownloadButton"] > button {
     background-color: #30427A;
     color: #ffffff;
@@ -117,6 +119,43 @@ div[data-testid="stDownloadButton"] > button:hover {
 div[data-testid="stDownloadButton"] > button:active {
     background-color: #23315B;
     color: #ffffff;
+}
+
+button[aria-label="Logout"],
+div[data-testid="stFileUploader"] button,
+button[aria-label="Browse files"],
+button[aria-label="💾 Save Case"] {
+    background-color: #C62828 !important;
+    color: #ffffff !important;
+}
+button[aria-label="Logout"]:hover,
+div[data-testid="stFileUploader"] button:hover,
+button[aria-label="Browse files"]:hover,
+button[aria-label="💾 Save Case"]:hover {
+    background-color: #AB2020 !important;
+}
+button[aria-label="Logout"]:active,
+div[data-testid="stFileUploader"] button:active,
+button[aria-label="Browse files"]:active,
+button[aria-label="💾 Save Case"]:active {
+    background-color: #8E1A1A !important;
+}
+
+button[aria-label="Hydraulic feasibility check"],
+button[aria-label="➕ Add Station"],
+button[aria-label="🗑️ Remove Station"] {
+    background-color: #1B5E20 !important;
+    color: #ffffff !important;
+}
+button[aria-label="Hydraulic feasibility check"]:hover,
+button[aria-label="➕ Add Station"]:hover,
+button[aria-label="🗑️ Remove Station"]:hover {
+    background-color: #154A19 !important;
+}
+button[aria-label="Hydraulic feasibility check"]:active,
+button[aria-label="➕ Add Station"]:active,
+button[aria-label="🗑️ Remove Station"]:active {
+    background-color: #0F3612 !important;
 }
 </style>
 """
@@ -163,6 +202,249 @@ def _prepare_data_editor_source(df: pd.DataFrame | None) -> pd.DataFrame | None:
     if isinstance(df, pd.DataFrame):
         return df.copy(deep=True)
     return df
+
+
+def _ensure_manual_baseline_table(
+    stations: Sequence[Mapping[str, object]] | None,
+    table: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Return a manual baseline table aligned with ``stations``.
+
+    Only stations that can plausibly inject DRA (pumps or nodes with a
+    configured drag-reduction capability) are included.  Existing user inputs
+    are preserved when possible so edits survive station metadata tweaks.
+    """
+
+    if not isinstance(table, pd.DataFrame):
+        table = pd.DataFrame(columns=[
+            "Station",
+            "Station Index",
+            "Segment Length (km)",
+            "Minimum DRA (ppm)",
+        ])
+
+    existing: dict[int, float] = {}
+    if isinstance(table, pd.DataFrame) and not table.empty:
+        for row_map in table.to_dict(orient="records"):
+            try:
+                idx_val = int(row_map.get("Station Index", row_map.get("Station_Index", row_map.get("Station index", -1))))
+            except (TypeError, ValueError):
+                idx_val = -1
+            if idx_val < 0:
+                continue
+            try:
+                ppm_val = float(
+                    row_map.get("Minimum DRA (ppm)", row_map.get("Minimum_DRA_(ppm)", row_map.get("Minimum DRA ppm", 0.0)))
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            existing[idx_val] = ppm_val
+
+    rows: list[dict[str, object]] = []
+    for idx, stn in enumerate(stations or []):
+        if not isinstance(stn, Mapping):
+            continue
+
+        include = bool(stn.get("is_pump", False))
+        try:
+            max_dr = float(stn.get("max_dr", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            max_dr = 0.0
+
+        loop_has_dr = False
+        loop = stn.get("loopline") if isinstance(stn.get("loopline"), Mapping) else None
+        if isinstance(loop, Mapping):
+            try:
+                loop_has_dr = float(loop.get("max_dr", 0.0) or 0.0) > 0.0
+            except (TypeError, ValueError):
+                loop_has_dr = False
+
+        if not include and max_dr <= 0.0 and not loop_has_dr:
+            continue
+
+        try:
+            seg_length = float(stn.get("L", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_length = 0.0
+        if seg_length <= 0.0:
+            continue
+
+        name = stn.get("name", f"Station {idx + 1}")
+        ppm_default = existing.get(idx, 0.0)
+
+        rows.append(
+            {
+                "Station": str(name),
+                "Station Index": int(idx),
+                "Segment Length (km)": float(seg_length),
+                "Minimum DRA (ppm)": float(ppm_default),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=[
+            "Station",
+            "Station Index",
+            "Segment Length (km)",
+            "Minimum DRA (ppm)",
+        ])
+
+    table_new = pd.DataFrame(rows)
+    return table_new
+
+
+def _manual_baseline_to_requirement(
+    stations: Sequence[Mapping[str, object]] | None,
+    table: pd.DataFrame | None,
+) -> tuple[dict | None, list[dict[str, object]]]:
+    """Convert a manual baseline table into solver-ready structures."""
+
+    if not isinstance(table, pd.DataFrame) or table.empty:
+        return None, []
+
+    segments: list[dict[str, object]] = []
+    total_length = 0.0
+    max_ppm = 0.0
+
+    for row_map in table.to_dict(orient="records"):
+        try:
+            idx_val = int(row_map.get("Station Index", row_map.get("Station_Index", row_map.get("Station index", -1))))
+        except (TypeError, ValueError):
+            idx_val = -1
+        if idx_val < 0:
+            continue
+
+        try:
+            seg_length = float(
+                row_map.get("Segment Length (km)", row_map.get("Segment_Length_(km)", row_map.get("Segment Length", 0.0)))
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            seg_length = 0.0
+
+        try:
+            ppm_val = float(
+                row_map.get(
+                    "Minimum DRA (ppm)",
+                    row_map.get("Minimum_DRA_(ppm)", row_map.get("Minimum DRA ppm", 0.0)),
+                )
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+
+        ppm_val = max(ppm_val, 0.0)
+
+        if seg_length > 0.0 and ppm_val > 0.0:
+            segments.append(
+                {
+                    "station_idx": idx_val,
+                    "length_km": float(seg_length),
+                    "dra_ppm": float(ppm_val),
+                    "enforce_queue": False,
+                }
+            )
+            total_length += float(seg_length)
+            max_ppm = max(max_ppm, float(ppm_val))
+
+    if not segments:
+        requirement: dict[str, object] | None = {
+            "dra_ppm": 0.0,
+            "dra_perc": 0.0,
+            "length_km": 0.0,
+            "enforceable": False,
+            "segments": [],
+        }
+        return requirement, []
+
+    requirement = {
+        "dra_ppm": float(max_ppm),
+        "dra_perc": 0.0,
+        "length_km": float(total_length),
+        "enforceable": True,
+        "segments": segments,
+    }
+    return requirement, segments
+
+
+def _update_manual_baseline_state(stations: Sequence[Mapping[str, object]] | None) -> None:
+    """Synchronise session state with the current manual baseline table."""
+
+    base_df = st.session_state.get("manual_baseline_df")
+    table = _ensure_manual_baseline_table(stations, base_df)
+    if not isinstance(base_df, pd.DataFrame) or not table.equals(base_df):
+        st.session_state["manual_baseline_df"] = table
+
+    requirement, segments = _manual_baseline_to_requirement(stations, table)
+
+    summary = _summarise_baseline_requirement(requirement)
+
+    st.session_state["manual_origin_lacing_baseline"] = copy.deepcopy(requirement)
+    st.session_state["manual_origin_lacing_baseline_summary"] = copy.deepcopy(summary)
+    st.session_state["manual_origin_lacing_segment_baseline"] = copy.deepcopy(segments)
+
+    if requirement:
+        st.session_state["origin_lacing_baseline"] = copy.deepcopy(requirement)
+    else:
+        st.session_state.pop("origin_lacing_baseline", None)
+
+    if summary:
+        st.session_state["origin_lacing_baseline_summary"] = copy.deepcopy(summary)
+    else:
+        st.session_state.pop("origin_lacing_baseline_summary", None)
+
+    if segments:
+        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments)
+    else:
+        st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    st.session_state["origin_lacing_baseline_warnings"] = []
+
+
+def _restore_auto_baseline_state() -> None:
+    """Restore automatically computed baseline data into active session keys."""
+
+    auto_req = st.session_state.get("auto_origin_lacing_baseline")
+    auto_summary = st.session_state.get("auto_origin_lacing_baseline_summary")
+    auto_segments = st.session_state.get("auto_origin_lacing_segment_baseline")
+    auto_warnings = st.session_state.get("auto_origin_lacing_baseline_warnings", [])
+
+    if isinstance(auto_req, Mapping):
+        st.session_state["origin_lacing_baseline"] = copy.deepcopy(auto_req)
+    else:
+        st.session_state.pop("origin_lacing_baseline", None)
+
+    if isinstance(auto_summary, Mapping):
+        st.session_state["origin_lacing_baseline_summary"] = copy.deepcopy(auto_summary)
+    else:
+        st.session_state.pop("origin_lacing_baseline_summary", None)
+
+    if isinstance(auto_segments, Sequence):
+        st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(list(auto_segments))
+    else:
+        st.session_state.pop("origin_lacing_segment_baseline", None)
+
+    st.session_state["origin_lacing_baseline_warnings"] = copy.deepcopy(auto_warnings)
+
+
+def _handle_baseline_mode_switch(stations: Sequence[Mapping[str, object]] | None) -> None:
+    """Respond to changes in the baseline input mode selection."""
+
+    mode = st.session_state.get("baseline_input_mode", "auto")
+    prev_mode = st.session_state.get("baseline_input_mode_prev", mode)
+
+    if mode == prev_mode:
+        if mode == "manual":
+            _update_manual_baseline_state(stations)
+        return
+
+    if mode == "manual":
+        _update_manual_baseline_state(stations)
+    else:
+        _restore_auto_baseline_state()
+
+    st.session_state["baseline_input_mode_prev"] = mode
 
 
 def data_editor_copy(df, **kwargs):
@@ -683,16 +965,25 @@ def _compute_and_store_baseline_requirement(
 
     st.session_state["origin_lacing_baseline_warnings"] = copy.deepcopy(warnings)
     st.session_state["origin_lacing_baseline_summary"] = baseline_summary
+    st.session_state["auto_origin_lacing_baseline_warnings"] = copy.deepcopy(warnings)
+    st.session_state["auto_origin_lacing_baseline_summary"] = copy.deepcopy(baseline_summary)
 
     if enforceable and baseline_summary.get("has_positive_segments"):
         st.session_state["origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
+        st.session_state["auto_origin_lacing_baseline"] = copy.deepcopy(baseline_requirement)
         if segments:
             st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments)
+            st.session_state["auto_origin_lacing_segment_baseline"] = copy.deepcopy(segments)
         else:
             st.session_state.pop("origin_lacing_segment_baseline", None)
+            st.session_state.pop("auto_origin_lacing_segment_baseline", None)
     else:
         st.session_state.pop("origin_lacing_baseline", None)
         st.session_state.pop("origin_lacing_segment_baseline", None)
+        st.session_state.pop("auto_origin_lacing_baseline", None)
+        st.session_state.pop("auto_origin_lacing_segment_baseline", None)
+        st.session_state.pop("auto_origin_lacing_baseline_summary", None)
+        st.session_state.pop("auto_origin_lacing_baseline_warnings", None)
         enforceable = False
 
     return baseline_requirement, baseline_summary, warnings, enforceable, segments
@@ -739,8 +1030,6 @@ st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sideb
 st.markdown("""
     <style>
     .stButton > button {
-        background: #d32f2f;
-        color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
         border-radius: 12px;
@@ -748,8 +1037,6 @@ st.markdown("""
         transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
     }
     .stDownloadButton > button {
-        background: #0F2A5F;
-        color: #ffffff;
         font-weight: 600;
         border: 1px solid transparent;
         border-radius: 12px;
@@ -1009,6 +1296,15 @@ with st.sidebar:
 
     with st.container():
         st.markdown("<div class='section-title' style='font-size:1.1em;'>Provide Inputs for DRA lacing of pipeline</div>", unsafe_allow_html=True)
+        baseline_mode = st.radio(
+            "Baseline DRA floor source",
+            options=("auto", "manual"),
+            format_func=lambda opt: "Calculate automatically" if opt == "auto" else "Manual entry",
+            key="baseline_input_mode",
+        )
+        _handle_baseline_mode_switch(st.session_state.get("stations", []))
+        manual_baseline = baseline_mode == "manual"
+
         st.number_input(
             "Target laced flow (m³/h)",
             min_value=0.0,
@@ -1016,6 +1312,7 @@ with st.sidebar:
             step=10.0,
             key="max_laced_flow_m3h",
             help="Defines the maximum flow rate that DRA lacing is tuned to support.",
+            disabled=manual_baseline,
         )
         st.number_input(
             "Target laced viscosity (cSt)",
@@ -1025,6 +1322,7 @@ with st.sidebar:
             format="%.2f",
             key="max_laced_visc_cst",
             help="Viscosity reference used when evaluating DRA lacing performance.",
+            disabled=manual_baseline,
         )
         st.number_input(
             "Minimum suction pressure (m)",
@@ -1037,6 +1335,7 @@ with st.sidebar:
                 "Headroom to reserve at the suction reference when enforcing downstream"
                 " SDH requirements."
             ),
+            disabled=manual_baseline,
         )
         st.number_input(
             "Fluid density for lacing (kg/m³)",
@@ -1048,9 +1347,10 @@ with st.sidebar:
                 "Density used to convert MOP/MAOP limits from kg/cm² to metres when "
                 "evaluating baseline lacing floors."
             ),
+            disabled=manual_baseline,
         )
 
-        if st.button("Calculate baseline DRA PPM", key="compute_baseline_dra", type="primary"):
+        if st.button("Calculate baseline DRA PPM", key="compute_baseline_dra", type="primary", disabled=manual_baseline):
             (
                 stations_ctx,
                 term_ctx,
@@ -1150,6 +1450,43 @@ with st.sidebar:
                     st.info("No segment-level floors were generated.")
             else:
                 st.info("Baseline DRA floors cleared. No minimum injection will be enforced.")
+
+        if manual_baseline:
+            st.info(
+                "Manual baseline overrides automatic calculations. The lacing design inputs above are ignored while this mode is active."
+            )
+            manual_table = _ensure_manual_baseline_table(
+                st.session_state.get("stations", []),
+                st.session_state.get("manual_baseline_df"),
+            )
+            st.session_state["manual_baseline_df"] = manual_table
+            if manual_table.empty:
+                st.warning("No DRA-injecting stations available. Add pump stations with drag-reduction capability to configure manual floors.")
+            else:
+                editor_df = data_editor_copy(
+                    manual_table,
+                    num_rows="fixed",
+                    hide_index=True,
+                    key="manual_baseline_editor",
+                    column_config={
+                        "Station": st.column_config.TextColumn("Station", disabled=True),
+                        "Station Index": st.column_config.NumberColumn("Station Index", disabled=True, width="small"),
+                        "Segment Length (km)": st.column_config.NumberColumn(
+                            "Segment Length (km)", disabled=True, format="%.2f"
+                        ),
+                        "Minimum DRA (ppm)": st.column_config.NumberColumn(
+                            "Minimum DRA (ppm)", min_value=0.0, step=0.1, format="%.2f"
+                        ),
+                    },
+                )
+                editor_df = editor_df.copy()
+                if "Minimum DRA (ppm)" in editor_df.columns:
+                    editor_df["Minimum DRA (ppm)"] = pd.to_numeric(
+                        editor_df["Minimum DRA (ppm)"], errors="coerce"
+                    ).fillna(0.0)
+                    editor_df["Minimum DRA (ppm)"] = editor_df["Minimum DRA (ppm)"].clip(lower=0.0)
+                st.session_state["manual_baseline_df"] = editor_df
+                _update_manual_baseline_state(st.session_state.get("stations", []))
 
         rpm_step_default = 50
         dra_step_default = 2
@@ -1360,26 +1697,22 @@ with st.sidebar:
         st.session_state["proj_plan_df"] = proj_df
 
 
-if LOGO_BASE64:
-    st.markdown(
-        f"""
-        <div style='
-            display:flex;
-            justify-content:center;
-            align-items:center;
-            margin: 1.5rem 0 1rem;
-        '>
-            <img src='data:image/png;base64,{LOGO_BASE64}' alt='Indian Oil Logo'
-                 style='
-                    width: 320px;
-                    max-width: min(320px, 80vw);
-                    height: auto;
-                 '
-            />
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+if LOGO_PATH.exists():
+    try:
+        logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    except OSError:
+        logo_b64 = None
+
+    if logo_b64:
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:center; margin-top:0.25rem;">
+                <img src="data:image/png;base64,{logo_b64}" alt="Indian Oil" style="width:15vw; max-width:280px; height:auto;" />
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 st.markdown(
