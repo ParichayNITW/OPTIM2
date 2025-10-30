@@ -1114,7 +1114,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das.
+            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
             </div>
             """,
             unsafe_allow_html=True
@@ -8031,7 +8031,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
+    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
     </div>
     """,
     unsafe_allow_html=True
