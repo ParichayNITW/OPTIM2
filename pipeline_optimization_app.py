@@ -4750,6 +4750,7 @@ def _execute_time_series_solver(
     enforced_actions: list[dict] = []
 
     error_msg: str | None = None
+    failure_detail: dict[str, object] | None = None
     ti = 0
 
     while ti < len(hours):
@@ -4825,6 +4826,14 @@ def _execute_time_series_solver(
             if res.get("error"):
                 cur_hr = (hr + sub) % 24
                 error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
+                failure_detail = {
+                    "hour": cur_hr,
+                    "hour_index": ti,
+                    "sub_step": sub,
+                    "error": res.get("error"),
+                    "message": res.get("message"),
+                    "executed_passes": list(res.get("executed_passes") or []),
+                }
                 break
 
             term_key = term_data["name"].lower().replace(" ", "_")
@@ -4938,6 +4947,7 @@ def _execute_time_series_solver(
             reports = reports[: ti - 1]
             linefill_snaps = linefill_snaps[: ti]
             hour_states = hour_states[: ti]
+            failure_detail = None
 
             restored = prev_state
             current_vol_local = restored["vol"].copy()
@@ -4992,8 +5002,28 @@ def _execute_time_series_solver(
         "backtracked": backtracked,
         "backtrack_notes": backtrack_notes,
         "enforced_origin_actions": enforced_actions,
+        "failure_detail": copy.deepcopy(failure_detail) if isinstance(failure_detail, dict) else None,
     }
     return result
+
+
+def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bool:
+    """Return ``True`` when a max-flow search should run for ``result``."""
+
+    if not isinstance(result, Mapping):
+        return False
+
+    if not result.get("error"):
+        return False
+
+    detail = result.get("failure_detail")
+    executed: list[str] = []
+    if isinstance(detail, Mapping):
+        passes = detail.get("executed_passes")
+        if isinstance(passes, Sequence):
+            executed = [str(p).lower() for p in passes]
+
+    return "exhaustive" in executed
 
 
 def _find_maximum_feasible_flow(
@@ -5507,27 +5537,29 @@ if not auto_batch:
 
         if error_msg:
             fallback_note: str | None = None
-            with st.spinner("Computing max achievable flow..."):
-                fallback = _find_maximum_feasible_flow(
-                    flow_rate=FLOW_sched,
-                    stations_base=stations_base,
-                    term_data=term_data,
-                    hours=hours,
-                    plan_df=base_plan_df,
-                    current_vol=base_current_vol,
-                    dra_linefill=base_dra_linefill,
-                    dra_reach_km=base_dra_reach,
-                    RateDRA=RateDRA,
-                    Price_HSD=Price_HSD,
-                    fuel_density=st.session_state.get("Fuel_density", 820.0),
-                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                    total_length=total_length,
-                    sub_steps=sub_steps,
-                    flow_step=50.0,
-                    is_hourly=is_hourly,
-                )
+            fallback: dict | None = None
+            if _should_attempt_max_flow_fallback(solver_result):
+                with st.spinner("Computing max achievable flow..."):
+                    fallback = _find_maximum_feasible_flow(
+                        flow_rate=FLOW_sched,
+                        stations_base=stations_base,
+                        term_data=term_data,
+                        hours=hours,
+                        plan_df=base_plan_df,
+                        current_vol=base_current_vol,
+                        dra_linefill=base_dra_linefill,
+                        dra_reach_km=base_dra_reach,
+                        RateDRA=RateDRA,
+                        Price_HSD=Price_HSD,
+                        fuel_density=st.session_state.get("Fuel_density", 820.0),
+                        ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                        mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        total_length=total_length,
+                        sub_steps=sub_steps,
+                        flow_step=50.0,
+                        is_hourly=is_hourly,
+                    )
             if fallback:
                 FLOW_sched = fallback["flow_rate"]
                 solver_result = fallback["solver_result"]
