@@ -168,6 +168,12 @@ UI_HIDE_STYLE = """
 #MainMenu {
     visibility: hidden;
 }
+
+div[data-testid="stMainMenu"],
+div[data-testid="main-menu"],
+header [data-testid="stMainMenu"] {
+    display: none !important;
+}
 </style>
 """
 
