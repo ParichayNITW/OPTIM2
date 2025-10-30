@@ -2500,6 +2500,48 @@ def shift_vol_linefill(
     return vol_table, day_plan
 
 
+def _truncate_day_plan_volume(
+    day_plan: pd.DataFrame | None,
+    target_volume_m3: float,
+) -> pd.DataFrame | None:
+    """Return a copy of ``day_plan`` trimmed so its total volume does not exceed ``target_volume_m3``."""
+
+    if not isinstance(day_plan, pd.DataFrame):
+        return day_plan
+
+    try:
+        target = float(target_volume_m3)
+    except (TypeError, ValueError):
+        target = 0.0
+    if target <= 0.0:
+        return pd.DataFrame(columns=day_plan.columns)
+
+    trimmed = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
+    if "Volume (m³)" not in trimmed.columns:
+        return trimmed
+
+    trimmed["Volume (m³)"] = pd.to_numeric(trimmed["Volume (m³)"], errors="coerce").fillna(0.0)
+    total = float(trimmed["Volume (m³)"].sum())
+    if total <= target + 1e-6:
+        return trimmed
+
+    excess = total - target
+    idx = len(trimmed) - 1
+    while excess > 1e-6 and idx >= 0:
+        current = float(trimmed.iloc[idx]["Volume (m³)"])
+        take = min(current, excess)
+        trimmed.at[idx, "Volume (m³)"] = current - take
+        excess -= take
+        if trimmed.at[idx, "Volume (m³)"] <= 1e-6:
+            trimmed = trimmed.drop(index=idx)
+        idx -= 1
+
+    trimmed = trimmed.reset_index(drop=True)
+    if "Volume (m³)" in trimmed.columns:
+        trimmed["Volume (m³)"] = trimmed["Volume (m³)"].clip(lower=0.0)
+    return trimmed
+
+
 def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
     """Convert a volumetric linefill dataframe to a list of DRA batches."""
     if df is None or len(df) == 0:
@@ -4954,6 +4996,94 @@ def _execute_time_series_solver(
     return result
 
 
+def _find_maximum_feasible_flow(
+    *,
+    flow_rate: float,
+    stations_base: list[dict],
+    term_data: dict,
+    hours: list[int],
+    plan_df: pd.DataFrame | None,
+    current_vol: pd.DataFrame,
+    dra_linefill: list[dict],
+    dra_reach_km: float,
+    RateDRA: float,
+    Price_HSD: float,
+    fuel_density: float,
+    ambient_temp: float,
+    mop_kgcm2: float | None,
+    pump_shear_rate: float,
+    total_length: float,
+    sub_steps: int,
+    flow_step: float = 50.0,
+    is_hourly: bool = False,
+) -> dict | None:
+    """Return the first feasible solution below ``flow_rate`` reducing in ``flow_step`` increments."""
+
+    try:
+        base_flow = float(flow_rate)
+    except (TypeError, ValueError):
+        base_flow = 0.0
+    try:
+        step = abs(float(flow_step))
+    except (TypeError, ValueError):
+        step = 50.0
+    if step <= 0.0:
+        step = 50.0
+
+    hours_count = len(hours) if hours else 0
+    if base_flow <= 0.0 or hours_count <= 0:
+        return None
+
+    import copy as _copy
+
+    initial_total = base_flow * hours_count
+    flow_candidate = base_flow - step
+    while flow_candidate > 0.0:
+        candidate_total = flow_candidate * hours_count
+        if not is_hourly:
+            plan_candidate = _truncate_day_plan_volume(plan_df, candidate_total)
+        else:
+            plan_candidate = plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None
+
+        vol_candidate = current_vol.copy()
+        plan_for_solver = plan_candidate.copy() if isinstance(plan_candidate, pd.DataFrame) else None
+        dra_candidate = _copy.deepcopy(dra_linefill)
+
+        solver_result = _execute_time_series_solver(
+            stations_base,
+            term_data,
+            hours,
+            flow_rate=flow_candidate,
+            plan_df=plan_for_solver,
+            current_vol=vol_candidate,
+            dra_linefill=dra_candidate,
+            dra_reach_km=dra_reach_km,
+            RateDRA=RateDRA,
+            Price_HSD=Price_HSD,
+            fuel_density=fuel_density,
+            ambient_temp=ambient_temp,
+            mop_kgcm2=mop_kgcm2,
+            pump_shear_rate=pump_shear_rate,
+            total_length=total_length,
+            sub_steps=sub_steps,
+        )
+
+        if not solver_result.get("error"):
+            plan_output = plan_candidate.copy() if isinstance(plan_candidate, pd.DataFrame) else None
+            reduction = initial_total - candidate_total
+            return {
+                "flow_rate": flow_candidate,
+                "solver_result": solver_result,
+                "plan_df": plan_output,
+                "total_throughput": candidate_total,
+                "reduction": reduction,
+            }
+
+        flow_candidate -= step
+
+    return None
+
+
 def _build_enforced_origin_warning(
     backtrack_notes: list[str] | None,
     enforced_details: list[dict] | None,
@@ -5308,6 +5438,9 @@ if not auto_batch:
             daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
             FLOW_sched = daily_m3 / 24.0
 
+        RateDRA = st.session_state.get("RateDRA", 500.0)
+        Price_HSD = st.session_state.get("Price_HSD", 70.0)
+
         if is_hourly:
             hours = [7]
         else:
@@ -5336,6 +5469,11 @@ if not auto_batch:
                 current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
         dra_linefill = df_to_dra_linefill(current_vol)
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
+
+        base_current_vol = current_vol.copy()
+        base_plan_df = plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None
+        base_dra_linefill = copy.deepcopy(dra_linefill)
+        base_dra_reach = float(dra_reach_km)
 
         start_time = time.perf_counter()
         with st.spinner(spinner_msg):
@@ -5368,9 +5506,64 @@ if not auto_batch:
         dra_reach_km = solver_result["final_dra_reach"]
 
         if error_msg:
-            st.session_state["linefill_next_day"] = pd.DataFrame()
-            st.error(error_msg)
-            st.stop()
+            fallback_note: str | None = None
+            with st.spinner("Computing max achievable flow..."):
+                fallback = _find_maximum_feasible_flow(
+                    flow_rate=FLOW_sched,
+                    stations_base=stations_base,
+                    term_data=term_data,
+                    hours=hours,
+                    plan_df=base_plan_df,
+                    current_vol=base_current_vol,
+                    dra_linefill=base_dra_linefill,
+                    dra_reach_km=base_dra_reach,
+                    RateDRA=RateDRA,
+                    Price_HSD=Price_HSD,
+                    fuel_density=st.session_state.get("Fuel_density", 820.0),
+                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    total_length=total_length,
+                    sub_steps=sub_steps,
+                    flow_step=50.0,
+                    is_hourly=is_hourly,
+                )
+            if fallback:
+                FLOW_sched = fallback["flow_rate"]
+                solver_result = fallback["solver_result"]
+                reports = solver_result["reports"]
+                linefill_snaps = solver_result["linefill_snaps"]
+                current_vol = solver_result["final_vol"]
+                plan_df = solver_result["final_plan"]
+                dra_linefill = solver_result["final_dra_linefill"]
+                dra_reach_km = solver_result["final_dra_reach"]
+                error_msg = None
+                reduction = float(fallback.get("reduction", 0.0) or 0.0)
+                total_throughput = float(fallback.get("total_throughput", 0.0) or 0.0)
+                if isinstance(fallback.get("plan_df"), pd.DataFrame):
+                    plan_df = fallback["plan_df"]
+                if reduction > 0.0:
+                    original_total = reduction + total_throughput
+                    hours_count = max(len(hours), 1)
+                    if is_hourly:
+                        fallback_note = (
+                            f"Requested {original_total:,.0f} m³ was infeasible; "
+                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³ "
+                            f"({FLOW_sched:,.0f} m³/h)."
+                        )
+                    else:
+                        fallback_note = (
+                            f"Requested {original_total:,.0f} m³/day "
+                            f"({original_total / hours_count:,.0f} m³/h) was infeasible; "
+                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³/day "
+                            f"({FLOW_sched:,.0f} m³/h)."
+                        )
+            if error_msg:
+                st.session_state["linefill_next_day"] = pd.DataFrame()
+                st.error(error_msg)
+                st.stop()
+            if fallback_note:
+                st.info(fallback_note)
         _store_run_duration(
             "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
             elapsed,
