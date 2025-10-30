@@ -5038,48 +5038,46 @@ def _execute_time_series_solver(
         return tested[key]
 
     with st.spinner("Computing max achievable flow"):
-        baseline = _run_cached(0.0)
-        if baseline.get("error"):
-            best_result: dict | None = None
-            best_flow = 0.0
-        else:
-            best_result = baseline
-            best_flow = 0.0
-        low = 0.0
-        high = flow_request
-        tolerance = max(flow_request * 1e-3, 0.5)
-        if baseline.get("error"):
-            pass
-        for _ in range(25):
-            if high - low <= tolerance:
+        step_size = float(st.session_state.get("flow_fallback_step_m3h", 50.0) or 50.0)
+        if not math.isfinite(step_size) or step_size <= 0.0:
+            step_size = 50.0
+
+        def _snap_down(value: float) -> float:
+            if step_size <= 0.0:
+                return max(float(value), 0.0)
+            steps = math.floor(max(float(value), 0.0) / step_size)
+            snapped = steps * step_size
+            return round(snapped, 6)
+
+        best_result: dict | None = None
+        best_flow = 0.0
+
+        candidate = _snap_down(flow_request)
+        if math.isclose(candidate, flow_request, rel_tol=1e-9, abs_tol=1e-9):
+            candidate = _snap_down(candidate - step_size)
+        tested_steps: set[float] = set()
+
+        while candidate >= 0.0:
+            candidate = max(candidate, 0.0)
+            key = round(candidate, 6)
+            if key in tested_steps and candidate > 0.0:
+                candidate = _snap_down(candidate - step_size)
+                continue
+            tested_steps.add(key)
+            cand_res = _run_cached(candidate)
+            if not cand_res.get("error"):
+                best_result = cand_res
+                best_flow = candidate
                 break
-            mid = 0.5 * (low + high)
-            mid_res = _run_cached(mid)
-            if mid_res.get("error"):
-                high = mid
-            else:
-                low = mid
-                best_result = mid_res
-                best_flow = mid
-        if best_result is not None and not best_result.get("error"):
-            final_res = _run_cached(low)
-            if not final_res.get("error"):
-                best_result = final_res
-                best_flow = low
-            upper_candidate = min(high, flow_request)
-            upper_floor = int(math.floor(upper_candidate)) if upper_candidate > 0 else 0
-            best_floor = int(math.floor(best_flow)) if best_flow > 0 else 0
-            if upper_floor > best_floor:
-                for candidate in range(upper_floor, best_floor, -1):
-                    if candidate <= 0:
-                        break
-                    int_res = _run_cached(float(candidate))
-                    if not int_res.get("error"):
-                        best_result = int_res
-                        best_flow = float(candidate)
-                        break
-        else:
-            best_flow = 0.0
+            if candidate <= 0.0:
+                break
+            candidate = _snap_down(candidate - step_size)
+
+        if best_result is None:
+            zero_res = _run_cached(0.0)
+            if not zero_res.get("error"):
+                best_result = zero_res
+                best_flow = 0.0
 
     if best_result is None or best_result.get("error"):
         result.setdefault("flow_achieved_m3h", 0.0)
@@ -5094,9 +5092,11 @@ def _execute_time_series_solver(
     best_result["flow_achieved_m3h"] = best_flow
     best_result["flow_total_achieved_m3"] = achieved_total
     best_result["flow_fallback_applied"] = True
+    trimmed_total = max(total_requested - achieved_total, 0.0)
     best_result["flow_fallback_note"] = (
         f"Target hourly flow {flow_request:.2f} m³/h was infeasible. "
-        f"Optimized for {best_flow:.2f} m³/h ({achieved_total:.0f} m³ total)."
+        f"Optimized for {best_flow:.2f} m³/h ({achieved_total:.0f} m³ total). "
+        f"Trimmed {trimmed_total:.0f} m³ from the end of the pumping schedule."
     )
     return best_result
 
