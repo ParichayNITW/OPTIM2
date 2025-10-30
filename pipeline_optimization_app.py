@@ -1096,7 +1096,7 @@ palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD7
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
-users = {"pipeline_optima": hash_pwd("heteroscedasticity")}
+users = {"pipeline_optima": hash_pwd("iocl@2407")}
 def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
