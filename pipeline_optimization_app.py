@@ -59,6 +59,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import math
 from math import isclose, pi, sqrt
 import hashlib
 import uuid
@@ -4665,7 +4666,7 @@ def _format_plan_injection_label(
     return label
 
 
-def _execute_time_series_solver(
+def _execute_time_series_solver_core(
     stations_base: list[dict],
     term_data: dict,
     hours: list[int],
@@ -4952,6 +4953,152 @@ def _execute_time_series_solver(
         "enforced_origin_actions": enforced_actions,
     }
     return result
+
+
+def _execute_time_series_solver(
+    stations_base: list[dict],
+    term_data: dict,
+    hours: list[int],
+    *,
+    flow_rate: float,
+    plan_df: pd.DataFrame | None,
+    current_vol: pd.DataFrame,
+    dra_linefill: list[dict],
+    dra_reach_km: float,
+    RateDRA: float,
+    Price_HSD: float,
+    fuel_density: float,
+    ambient_temp: float,
+    mop_kgcm2: float | None,
+    pump_shear_rate: float,
+    total_length: float,
+    sub_steps: int = 1,
+) -> dict:
+    import copy
+
+    hours_list = list(hours)
+    flow_request = float(flow_rate or 0.0)
+
+    plan_template = plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None
+    current_template = current_vol.copy() if hasattr(current_vol, "copy") else current_vol
+    dra_linefill_template = copy.deepcopy(dra_linefill)
+    dra_reach_template = float(dra_reach_km)
+
+    def _run_solver(flow_target: float) -> dict:
+        return _execute_time_series_solver_core(
+            stations_base,
+            term_data,
+            hours_list,
+            flow_rate=flow_target,
+            plan_df=plan_template.copy() if isinstance(plan_template, pd.DataFrame) else None,
+            current_vol=current_template.copy() if hasattr(current_template, "copy") else current_template,
+            dra_linefill=copy.deepcopy(dra_linefill_template),
+            dra_reach_km=dra_reach_template,
+            RateDRA=RateDRA,
+            Price_HSD=Price_HSD,
+            fuel_density=fuel_density,
+            ambient_temp=ambient_temp,
+            mop_kgcm2=mop_kgcm2,
+            pump_shear_rate=pump_shear_rate,
+            total_length=total_length,
+            sub_steps=sub_steps,
+        )
+
+    result = _run_solver(flow_request)
+
+    hours_count = len(hours_list)
+    total_requested = flow_request * hours_count
+    result["flow_request_m3h"] = flow_request
+    result["flow_total_requested_m3"] = total_requested
+    if not result.get("error"):
+        result["flow_achieved_m3h"] = flow_request
+        result["flow_total_achieved_m3"] = total_requested
+        result["flow_fallback_applied"] = False
+        return result
+
+    error_text = str(result.get("error", ""))
+    should_attempt_fallback = (
+        flow_request > 0.0
+        and hours_count > 1
+        and "no feasible" in error_text.lower()
+    )
+    if not should_attempt_fallback:
+        result.setdefault("flow_achieved_m3h", 0.0)
+        result.setdefault("flow_total_achieved_m3", 0.0)
+        result.setdefault("flow_fallback_applied", False)
+        return result
+
+    tested: dict[float, dict] = {}
+
+    def _run_cached(flow_target: float) -> dict:
+        flow_clean = max(float(flow_target or 0.0), 0.0)
+        key = round(flow_clean, 6)
+        if key not in tested:
+            tested[key] = _run_solver(flow_clean)
+        return tested[key]
+
+    with st.spinner("Computing max achievable flow"):
+        baseline = _run_cached(0.0)
+        if baseline.get("error"):
+            best_result: dict | None = None
+            best_flow = 0.0
+        else:
+            best_result = baseline
+            best_flow = 0.0
+        low = 0.0
+        high = flow_request
+        tolerance = max(flow_request * 1e-3, 0.5)
+        if baseline.get("error"):
+            pass
+        for _ in range(25):
+            if high - low <= tolerance:
+                break
+            mid = 0.5 * (low + high)
+            mid_res = _run_cached(mid)
+            if mid_res.get("error"):
+                high = mid
+            else:
+                low = mid
+                best_result = mid_res
+                best_flow = mid
+        if best_result is not None and not best_result.get("error"):
+            final_res = _run_cached(low)
+            if not final_res.get("error"):
+                best_result = final_res
+                best_flow = low
+            upper_candidate = min(high, flow_request)
+            upper_floor = int(math.floor(upper_candidate)) if upper_candidate > 0 else 0
+            best_floor = int(math.floor(best_flow)) if best_flow > 0 else 0
+            if upper_floor > best_floor:
+                for candidate in range(upper_floor, best_floor, -1):
+                    if candidate <= 0:
+                        break
+                    int_res = _run_cached(float(candidate))
+                    if not int_res.get("error"):
+                        best_result = int_res
+                        best_flow = float(candidate)
+                        break
+        else:
+            best_flow = 0.0
+
+    if best_result is None or best_result.get("error"):
+        result.setdefault("flow_achieved_m3h", 0.0)
+        result.setdefault("flow_total_achieved_m3", 0.0)
+        result.setdefault("flow_fallback_applied", False)
+        return result
+
+    best_result = copy.deepcopy(best_result)
+    achieved_total = best_flow * hours_count
+    best_result["flow_request_m3h"] = flow_request
+    best_result["flow_total_requested_m3"] = total_requested
+    best_result["flow_achieved_m3h"] = best_flow
+    best_result["flow_total_achieved_m3"] = achieved_total
+    best_result["flow_fallback_applied"] = True
+    best_result["flow_fallback_note"] = (
+        f"Target hourly flow {flow_request:.2f} m³/h was infeasible. "
+        f"Optimized for {best_flow:.2f} m³/h ({achieved_total:.0f} m³ total)."
+    )
+    return best_result
 
 
 def _build_enforced_origin_warning(
@@ -5375,6 +5522,10 @@ if not auto_batch:
             "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
             elapsed,
         )
+
+        fallback_note = solver_result.get("flow_fallback_note")
+        if fallback_note:
+            st.info(fallback_note)
 
         if solver_result.get("backtracked"):
             warn_msg = _build_enforced_origin_warning(

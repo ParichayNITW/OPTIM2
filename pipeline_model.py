@@ -185,16 +185,17 @@ def _station_allows_mixed_pump_types(stn: Mapping[str, object]) -> bool:
 
     pump_types = stn.get('pump_types')
     if isinstance(pump_types, Mapping):
-        try:
-            avail_a = int(_coerce_float(pump_types.get('A', {}).get('available', 0), 0.0))
-        except Exception:
-            avail_a = 0
-        try:
-            avail_b = int(_coerce_float(pump_types.get('B', {}).get('available', 0), 0.0))
-        except Exception:
-            avail_b = 0
-        if avail_a > 0 and avail_b > 0:
-            return True
+        nested_flag = pump_types.get('allow_mixed_pump_types')
+        if isinstance(nested_flag, bool):
+            return nested_flag
+        if isinstance(nested_flag, (int, float)):
+            return bool(nested_flag)
+        if isinstance(nested_flag, str):
+            value = nested_flag.strip().lower()
+            if value in {'1', 'true', 'yes', 'y', 'on'}:
+                return True
+            if value in {'0', 'false', 'no', 'n', 'off'}:
+                return False
     return False
 
 
@@ -4221,7 +4222,8 @@ def solve_pipeline(
                     continue
                 if floor_dr < 0:
                     floor_dr = 0
-                floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
+                if floor_dr > 0:
+                    floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
             if floor_ranges:
                 floor_result = solve_pipeline(
                     stations,
@@ -4573,6 +4575,7 @@ def solve_pipeline(
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -5786,6 +5789,7 @@ def solve_pipeline(
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
                     profile_entries: list[dict[str, float]] = []
+                    include_zero_profile = inj_ppm_main <= 0.0
                     for length, ppm in segment_profile_raw:
                         try:
                             length_f = float(length or 0.0)
@@ -5797,9 +5801,19 @@ def solve_pipeline(
                             ppm_f = 0.0
                         if length_f <= 0.0:
                             continue
-                        if ppm_f <= 0.0:
+                        if ppm_f <= 0.0 and not include_zero_profile:
                             continue
                         profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
+                    if include_zero_profile and not profile_entries:
+                        pumped_profile_length = _km_from_volume(flow_total * hours, stn_data['d_inner'])
+                        if seg_length_total > 0.0:
+                            pumped_profile_length = min(max(pumped_profile_length, 0.0), seg_length_total)
+                        else:
+                            pumped_profile_length = max(pumped_profile_length, 0.0)
+                        if pumped_profile_length > 0.0:
+                            profile_entries.append(
+                                {'length_km': pumped_profile_length, 'dra_ppm': 0.0}
+                            )
 
                     treated_profile_length = sum(
                         entry['length_km']
