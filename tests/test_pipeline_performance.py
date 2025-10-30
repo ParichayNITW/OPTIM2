@@ -779,6 +779,26 @@ def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
     assert attempts == [150.0, 100.0, 50.0]
 
 
+def test_should_attempt_max_flow_requires_exhaustive():
+    import pipeline_optimization_app as app
+
+    result = {"error": "failed", "failure_detail": {"executed_passes": ["coarse"]}}
+    assert not app._should_attempt_max_flow_fallback(result)
+
+    result["failure_detail"]["executed_passes"].append("exhaustive")
+    assert app._should_attempt_max_flow_fallback(result)
+
+
+def test_should_attempt_max_flow_handles_missing_detail():
+    import pipeline_optimization_app as app
+
+    assert not app._should_attempt_max_flow_fallback(None)
+    assert not app._should_attempt_max_flow_fallback({})
+    assert not app._should_attempt_max_flow_fallback({"error": None})
+
+    result = {"error": "failed", "failure_detail": {}}
+    assert not app._should_attempt_max_flow_fallback(result)
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 
