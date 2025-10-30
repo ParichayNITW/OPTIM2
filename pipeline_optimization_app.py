@@ -163,6 +163,17 @@ button[aria-label="🗑️ Remove Station"]:active {
 st.markdown(BUTTON_STYLE, unsafe_allow_html=True)
 
 
+UI_HIDE_STYLE = """
+<style>
+#MainMenu {
+    visibility: hidden;
+}
+</style>
+"""
+
+st.markdown(UI_HIDE_STYLE, unsafe_allow_html=True)
+
+
 def ensure_initial_dra_column(
     df: pd.DataFrame | None,
     *,
