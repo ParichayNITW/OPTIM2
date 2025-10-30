@@ -2160,7 +2160,13 @@ def test_time_series_solver_computes_max_feasible_flow(monkeypatch):
             *_,
         ) = solver_args
 
-        attempts.append(float(flow))
+        start_time = str(solver_kwargs.get("start_time", "00:00"))
+        try:
+            hour = int(start_time.split(":")[0])
+        except (ValueError, TypeError):
+            hour = -1
+        if hour == hours[0] % 24:
+            attempts.append(float(flow))
         if flow > 2400.0:
             return {"error": True, "message": "No feasible pump combination found for stations."}
 
@@ -2197,14 +2203,17 @@ def test_time_series_solver_computes_max_feasible_flow(monkeypatch):
     assert result.get("flow_fallback_applied") is True
     assert result.get("flow_request_m3h") == pytest.approx(3000.0)
     achieved_flow = float(result.get("flow_achieved_m3h", 0.0))
-    assert achieved_flow == pytest.approx(2400.0, abs=5.0)
+    assert achieved_flow == pytest.approx(2400.0, abs=1e-6)
     assert achieved_flow >= 0.0
     total_hours = len(hours)
     assert result.get("flow_total_achieved_m3") == pytest.approx(achieved_flow * total_hours, rel=1e-6)
-    assert any(flow > 2400.0 for flow in attempts)
-    assert any(flow <= 2400.0 for flow in attempts)
+
+    expected_attempts = [3000.0] + [3000.0 - 50.0 * i for i in range(1, 13)]
+    assert attempts == pytest.approx(expected_attempts)
+
     note = result.get("flow_fallback_note", "")
     assert "2400" in note or "2,400" in note
+    assert "Trimmed" in note
 
 
 def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
@@ -4346,6 +4355,66 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
 
     _, profile_b_no_injection = _profiles_for_case(12.0, True, 0.0, True)
     _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
+
+
+def test_dra_profile_accumulates_zero_slug_until_injection() -> None:
+    """Zero-injection hours should build a growing untreated front at the origin."""
+
+    segment_length = 158.0
+    flow_m3h = 3000.0
+    diameter = 0.7386975636894871
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter, "L": segment_length}
+
+    queue: list[dict[str, float]] = [{"length_km": segment_length, "dra_ppm": 5.0}]
+
+    def _advance(queue_in: list[dict[str, float]], inj_ppm: float) -> tuple[list[dict[str, float]], list[tuple[float, float]]]:
+        dra_segments, queue_after, _, _ = _update_mainline_dra(
+            queue_in,
+            station,
+            {"nop": 1, "dra_ppm_main": inj_ppm},
+            segment_length,
+            flow_m3h,
+            hours,
+            pump_running=True,
+            is_origin=True,
+        )
+        assert not dra_segments or isinstance(dra_segments, list)
+        merged_queue = tuple(
+            (float(entry["length_km"]), float(entry["dra_ppm"]))
+            for entry in queue_after
+            if float(entry["length_km"]) > 0.0
+        )
+        profile = [
+            (float(length), float(ppm))
+            for length, ppm in _segment_profile_from_queue(merged_queue, 0.0, segment_length)
+        ]
+        return queue_after, profile
+
+    queue, profile_hour1 = _advance(queue, 0.0)
+    assert len(profile_hour1) == 2
+    assert profile_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert profile_hour1[0][1] == pytest.approx(0.0, abs=1e-6)
+    assert profile_hour1[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert profile_hour1[1][1] == pytest.approx(5.0, rel=1e-6)
+
+    queue, profile_hour2 = _advance(queue, 0.0)
+    assert len(profile_hour2) == 2
+    assert profile_hour2[0][0] == pytest.approx(2 * pumped_length, rel=1e-6)
+    assert profile_hour2[0][1] == pytest.approx(0.0, abs=1e-6)
+    assert profile_hour2[1][0] == pytest.approx(segment_length - 2 * pumped_length, rel=1e-6)
+    assert profile_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
+
+    queue, profile_hour3 = _advance(queue, 3.0)
+    assert len(profile_hour3) == 3
+    assert profile_hour3[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert profile_hour3[0][1] == pytest.approx(3.0, rel=1e-6)
+    assert profile_hour3[1][0] == pytest.approx(2 * pumped_length, rel=1e-6)
+    assert profile_hour3[1][1] == pytest.approx(0.0, abs=1e-6)
+    assert profile_hour3[2][0] == pytest.approx(segment_length - 3 * pumped_length, rel=1e-6)
+    assert profile_hour3[2][1] == pytest.approx(5.0, rel=1e-6)
 
 
 def test_dra_profile_preserves_baseline_after_injection() -> None:
