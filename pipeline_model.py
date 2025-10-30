@@ -185,17 +185,16 @@ def _station_allows_mixed_pump_types(stn: Mapping[str, object]) -> bool:
 
     pump_types = stn.get('pump_types')
     if isinstance(pump_types, Mapping):
-        nested_flag = pump_types.get('allow_mixed_pump_types')
-        if isinstance(nested_flag, bool):
-            return nested_flag
-        if isinstance(nested_flag, (int, float)):
-            return bool(nested_flag)
-        if isinstance(nested_flag, str):
-            value = nested_flag.strip().lower()
-            if value in {'1', 'true', 'yes', 'y', 'on'}:
-                return True
-            if value in {'0', 'false', 'no', 'n', 'off'}:
-                return False
+        try:
+            avail_a = int(_coerce_float(pump_types.get('A', {}).get('available', 0), 0.0))
+        except Exception:
+            avail_a = 0
+        try:
+            avail_b = int(_coerce_float(pump_types.get('B', {}).get('available', 0), 0.0))
+        except Exception:
+            avail_b = 0
+        if avail_a > 0 and avail_b > 0:
+            return True
     return False
 
 
@@ -1665,13 +1664,16 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
+        if inj_effective > 0.0:
+            tail_queue = list(remaining_queue)
+        else:
+            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
-
-    if inj_effective > 0.0:
-        tail_queue = list(remaining_queue)
-    else:
-        tail_queue = list(existing_queue)
+        if inj_effective > 0.0:
+            tail_queue = list(remaining_queue)
+        else:
+            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
     if pump_running and inj_effective > 0.0 and head_length > 0.0:
@@ -1732,10 +1734,7 @@ def _update_mainline_dra(
                 rest_entries = rest_entries[1:]
 
             zero_capacity = max(pipeline_length - inj_length, 0.0)
-            if inj_effective > 0.0:
-                target_zero_length = min(initial_zero_prefix, zero_capacity)
-            else:
-                target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
+            target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
             if target_zero_length < zero_front_pre:
                 target_zero_length = zero_front_pre
 
@@ -1793,34 +1792,25 @@ def _update_mainline_dra(
                 ),
             )
     elif inj_effective > 0.0:
-        has_zero_segment = any(
-            float(ppm or 0.0) <= 0.0 for length, ppm in merged_queue if float(length or 0.0) > 0.0
-        )
-        try:
-            station_idx = int(stn_data.get('idx', -1))
-        except (TypeError, ValueError):
-            station_idx = -1
-        preserve_zero_segment = has_zero_segment and station_idx == 0
-        if not preserve_zero_segment:
-            inferred_ppm = 0.0
-            for _len_existing, ppm_existing in reversed(existing_queue):
-                if ppm_existing > 0.0:
-                    inferred_ppm = ppm_existing
-                    break
-            inferred_length = target_length if target_length > 0 else segment_length
-            if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
-                merged_with_inferred = _ensure_queue_floor(
-                    merged_queue,
-                    inferred_length,
-                    inferred_ppm,
-                    None,
-                    enforce_positive_floor=False,
-                )
-                merged_queue = tuple(
-                    (float(length), float(ppm))
-                    for length, ppm in merged_with_inferred
-                    if float(length or 0.0) > 0.0
-                )
+        inferred_ppm = 0.0
+        for _len_existing, ppm_existing in reversed(existing_queue):
+            if ppm_existing > 0.0:
+                inferred_ppm = ppm_existing
+                break
+        inferred_length = target_length if target_length > 0 else segment_length
+        if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
+            merged_with_inferred = _ensure_queue_floor(
+                merged_queue,
+                inferred_length,
+                inferred_ppm,
+                None,
+                enforce_positive_floor=False,
+            )
+            merged_queue = tuple(
+                (float(length), float(ppm))
+                for length, ppm in merged_with_inferred
+                if float(length or 0.0) > 0.0
+            )
 
     queue_after = [
         {'length_km': float(length), 'dra_ppm': float(ppm)}
@@ -4231,8 +4221,7 @@ def solve_pipeline(
                     continue
                 if floor_dr < 0:
                     floor_dr = 0
-                if floor_dr > 0:
-                    floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
+                floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
             if floor_ranges:
                 floor_result = solve_pipeline(
                     stations,
@@ -4584,7 +4573,6 @@ def solve_pipeline(
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
-                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -5798,21 +5786,6 @@ def solve_pipeline(
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
                     profile_entries: list[dict[str, float]] = []
-                    include_zero_profile = inj_ppm_main <= 0.0
-                    if not include_zero_profile:
-                        try:
-                            station_idx = int(stn_data.get('idx', -1))
-                        except (TypeError, ValueError):
-                            station_idx = -1
-                        if station_idx == 0:
-                            for _length_val, ppm_val in segment_profile_raw:
-                                try:
-                                    ppm_check = float(ppm_val or 0.0)
-                                except (TypeError, ValueError):
-                                    ppm_check = 0.0
-                                if ppm_check <= 0.0:
-                                    include_zero_profile = True
-                                    break
                     for length, ppm in segment_profile_raw:
                         try:
                             length_f = float(length or 0.0)
@@ -5824,19 +5797,9 @@ def solve_pipeline(
                             ppm_f = 0.0
                         if length_f <= 0.0:
                             continue
-                        if ppm_f <= 0.0 and not include_zero_profile:
+                        if ppm_f <= 0.0:
                             continue
                         profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
-                    if include_zero_profile and not profile_entries:
-                        pumped_profile_length = _km_from_volume(flow_total * hours, stn_data['d_inner'])
-                        if seg_length_total > 0.0:
-                            pumped_profile_length = min(max(pumped_profile_length, 0.0), seg_length_total)
-                        else:
-                            pumped_profile_length = max(pumped_profile_length, 0.0)
-                        if pumped_profile_length > 0.0:
-                            profile_entries.append(
-                                {'length_km': pumped_profile_length, 'dra_ppm': 0.0}
-                            )
 
                     treated_profile_length = sum(
                         entry['length_km']
