@@ -2108,6 +2108,105 @@ def test_time_series_solver_reports_error_without_plan(monkeypatch):
     assert result["backtracked"] is False
 
 
+def test_time_series_solver_computes_max_feasible_flow(monkeypatch):
+    import copy
+    import pipeline_optimization_app as app
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 20.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        }
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 10.0}
+    hours = [(7 + h) % 24 for h in range(24)]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 12000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    attempts: list[float] = []
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        (
+            stations,
+            terminal,
+            flow,
+            kv_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            fuel_density,
+            ambient_temp,
+            dra_linefill_in,
+            dra_reach_km,
+            mop_kgcm2,
+            *_,
+        ) = solver_args
+
+        attempts.append(float(flow))
+        if flow > 2400.0:
+            return {"error": True, "message": "No feasible pump combination found for stations."}
+
+        return {
+            "error": False,
+            "total_cost": float(flow) * 0.1,
+            "linefill": copy.deepcopy(dra_linefill_in),
+            "dra_front_km": float(dra_reach_km),
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+    monkeypatch.setattr(app.st, "spinner", _null_spinner)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=3000.0,
+        plan_df=vol_df.copy(),
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    assert result["error"] is None
+    assert result.get("flow_fallback_applied") is True
+    assert result.get("flow_request_m3h") == pytest.approx(3000.0)
+    achieved_flow = float(result.get("flow_achieved_m3h", 0.0))
+    assert achieved_flow == pytest.approx(2400.0, abs=5.0)
+    assert achieved_flow >= 0.0
+    total_hours = len(hours)
+    assert result.get("flow_total_achieved_m3") == pytest.approx(achieved_flow * total_hours, rel=1e-6)
+    assert any(flow > 2400.0 for flow in attempts)
+    assert any(flow <= 2400.0 for flow in attempts)
+    note = result.get("flow_fallback_note", "")
+    assert "2400" in note or "2,400" in note
+
+
 def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
     import pipeline_optimization_app as app
 
@@ -4421,6 +4520,63 @@ def test_update_mainline_dra_uses_fallback_when_queue_empty() -> None:
     assert dra_segments_baseline[0][0] == pytest.approx(segment_length, rel=1e-6)
     assert dra_segments_baseline[0][1] == pytest.approx(4.0, rel=1e-6)
     assert queue_after_baseline and queue_after_baseline[0]["dra_ppm"] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_pipeline_profile_reports_zero_when_uninjected() -> None:
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1000,
+            "DOL": 2800,
+            "pump_type": "type1",
+            "A": 0.0,
+            "B": 0.0,
+            "C": 190.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 82.0,
+            "L": 40.0,
+            "d": 0.7,
+            "rough": 0.00004,
+            "elev": 0.0,
+            "min_residual": 25,
+            "max_dr": 0,
+            "power_type": "Grid",
+            "rate": 0.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 25}
+
+    result = solve_pipeline(
+        stations,
+        terminal,
+        FLOW=1600.0,
+        KV_list=[1.8],
+        rho_list=[845.0],
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[{"volume": 9000.0, "dra_ppm": 0.0}],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        enumerate_loops=False,
+        rpm_step=50,
+        dra_step=2,
+    )
+
+    assert not result.get("error"), result.get("message")
+    profile = result.get("dra_profile_station_a") or []
+    assert profile, "Expected zero-ppm profile entry"
+    first_entry = profile[0]
+    assert first_entry["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
+    assert first_entry["length_km"] > 0.0
 
 
 def test_update_mainline_dra_preserves_prior_slug_with_downstream_injection() -> None:
