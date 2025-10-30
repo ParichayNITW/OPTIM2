@@ -163,6 +163,17 @@ button[aria-label="🗑️ Remove Station"]:active {
 st.markdown(BUTTON_STYLE, unsafe_allow_html=True)
 
 
+UI_HIDE_STYLE = """
+<style>
+#MainMenu {
+    visibility: hidden;
+}
+</style>
+"""
+
+st.markdown(UI_HIDE_STYLE, unsafe_allow_html=True)
+
+
 def ensure_initial_dra_column(
     df: pd.DataFrame | None,
     *,
@@ -1114,7 +1125,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
+            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das.
             </div>
             """,
             unsafe_allow_html=True
@@ -1151,10 +1162,6 @@ def restore_case_dict(loaded_data):
     st.session_state['pump_shear_rate'] = loaded_data.get('pump_shear_rate', 0.0)
     st.session_state['MOP_kgcm2'] = loaded_data.get('MOP_kgcm2', 100.0)
     st.session_state['op_mode'] = loaded_data.get('op_mode', "Flow rate")
-    st.session_state['hourly_flow'] = loaded_data.get(
-        'hourly_flow',
-        st.session_state.get('hourly_flow', st.session_state.get('FLOW', 1000.0)),
-    )
     st.session_state['max_laced_flow_m3h'] = loaded_data.get(
         'max_laced_flow_m3h',
         st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
@@ -1171,38 +1178,6 @@ def restore_case_dict(loaded_data):
         'laced_density_kgm3',
         st.session_state.get('laced_density_kgm3', st.session_state.get('Fuel_density', 820.0)),
     )
-    st.session_state['baseline_input_mode'] = loaded_data.get(
-        'baseline_input_mode',
-        st.session_state.get('baseline_input_mode', 'auto'),
-    )
-    st.session_state['baseline_input_mode_prev'] = st.session_state.get('baseline_input_mode')
-    manual_table = loaded_data.get('manual_baseline_table')
-    if manual_table is not None:
-        st.session_state['manual_baseline_df'] = pd.DataFrame(manual_table)
-    else:
-        st.session_state.pop('manual_baseline_df', None)
-
-    def _restore_optional_state(key: str) -> None:
-        if key in loaded_data:
-            st.session_state[key] = copy.deepcopy(loaded_data[key])
-        else:
-            st.session_state.pop(key, None)
-
-    for _key in [
-        'manual_origin_lacing_baseline',
-        'manual_origin_lacing_baseline_summary',
-        'manual_origin_lacing_segment_baseline',
-        'origin_lacing_baseline',
-        'origin_lacing_baseline_summary',
-        'origin_lacing_segment_baseline',
-        'origin_lacing_baseline_warnings',
-        'auto_origin_lacing_baseline',
-        'auto_origin_lacing_baseline_summary',
-        'auto_origin_lacing_segment_baseline',
-        'auto_origin_lacing_baseline_warnings',
-    ]:
-        _restore_optional_state(_key)
-
     if loaded_data.get("linefill_vol"):
         st.session_state["linefill_vol_df"] = pd.DataFrame(loaded_data["linefill_vol"])
         ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
@@ -2212,14 +2187,6 @@ def get_full_case_dict():
     else:
         proj_plan = []
 
-    manual_table_state = st.session_state.get("manual_baseline_df")
-    if isinstance(manual_table_state, pd.DataFrame):
-        manual_baseline_table = manual_table_state.to_dict(orient="records")
-    elif isinstance(manual_table_state, Sequence) and not isinstance(manual_table_state, (str, bytes)):
-        manual_baseline_table = list(manual_table_state)
-    else:
-        manual_baseline_table = []
-
     stations = st.session_state.get('stations', [])
     first_station = stations[0] if stations else {}
     return {
@@ -2236,24 +2203,10 @@ def get_full_case_dict():
         "Ambient_temp": st.session_state.get('Ambient_temp', 25.0),
         "MOP_kgcm2": st.session_state.get('MOP_kgcm2', 100.0),
         "op_mode": st.session_state.get('op_mode', "Flow rate"),
-        "hourly_flow": st.session_state.get('hourly_flow', st.session_state.get('FLOW', 1000.0)),
         "max_laced_flow_m3h": st.session_state.get('max_laced_flow_m3h', st.session_state.get('FLOW', 1000.0)),
         "max_laced_visc_cst": st.session_state.get('max_laced_visc_cst', 10.0),
         "min_laced_suction_m": st.session_state.get('min_laced_suction_m', 0.0),
         "laced_density_kgm3": st.session_state.get('laced_density_kgm3', st.session_state.get('Fuel_density', 820.0)),
-        "baseline_input_mode": st.session_state.get('baseline_input_mode', 'auto'),
-        "manual_baseline_table": manual_baseline_table,
-        "manual_origin_lacing_baseline": copy.deepcopy(st.session_state.get('manual_origin_lacing_baseline')),
-        "manual_origin_lacing_baseline_summary": copy.deepcopy(st.session_state.get('manual_origin_lacing_baseline_summary')),
-        "manual_origin_lacing_segment_baseline": copy.deepcopy(st.session_state.get('manual_origin_lacing_segment_baseline')),
-        "origin_lacing_baseline": copy.deepcopy(st.session_state.get('origin_lacing_baseline')),
-        "origin_lacing_baseline_summary": copy.deepcopy(st.session_state.get('origin_lacing_baseline_summary')),
-        "origin_lacing_segment_baseline": copy.deepcopy(st.session_state.get('origin_lacing_segment_baseline')),
-        "origin_lacing_baseline_warnings": copy.deepcopy(st.session_state.get('origin_lacing_baseline_warnings', [])),
-        "auto_origin_lacing_baseline": copy.deepcopy(st.session_state.get('auto_origin_lacing_baseline')),
-        "auto_origin_lacing_baseline_summary": copy.deepcopy(st.session_state.get('auto_origin_lacing_baseline_summary')),
-        "auto_origin_lacing_segment_baseline": copy.deepcopy(st.session_state.get('auto_origin_lacing_segment_baseline')),
-        "auto_origin_lacing_baseline_warnings": copy.deepcopy(st.session_state.get('auto_origin_lacing_baseline_warnings', [])),
         "linefill": st.session_state.get('linefill_df', pd.DataFrame()).to_dict(orient="records"),
         "linefill_vol": st.session_state.get('linefill_vol_df', pd.DataFrame()).to_dict(orient="records"),
         "day_plan": st.session_state.get('day_plan_df', pd.DataFrame()).to_dict(orient="records"),
@@ -8031,7 +7984,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
+    &copy; 2025 Pipeline Optima™ v1.1.1. Developed by Parichay Das.
     </div>
     """,
     unsafe_allow_html=True
