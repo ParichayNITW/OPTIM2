@@ -648,6 +648,137 @@ def test_floor_schedule_logs_when_queue_meets_floor_each_hour() -> None:
         current_linefill = result.get("linefill", current_linefill)
 
 
+def test_maximum_flow_fallback_trims_day_plan(monkeypatch):
+    import pipeline_optimization_app as app
+
+    plan_df = pd.DataFrame(
+        [
+            {"Product": "A", "Volume (m³)": 20000.0, "Viscosity (cSt)": 3.0, "Density (kg/m³)": 810.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "B", "Volume (m³)": 30000.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "C", "Volume (m³)": 22000.0, "Viscosity (cSt)": 5.0, "Density (kg/m³)": 830.0, app.INIT_DRA_COL: 0.0},
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    vol_df = pd.DataFrame(
+        [
+            {"Product": "LF", "Volume (m³)": 50000.0, "Viscosity (cSt)": 2.0, "Density (kg/m³)": 800.0, app.INIT_DRA_COL: 0.0},
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    attempts: list[float] = []
+
+    def fake_solver(
+        stations,
+        terminal,
+        hours,
+        *,
+        flow_rate,
+        plan_df,
+        current_vol,
+        dra_linefill,
+        dra_reach_km,
+        **kwargs,
+    ):
+        attempts.append(flow_rate)
+        if flow_rate > 2950.0:
+            return {"error": "infeasible"}
+        return {
+            "error": None,
+            "reports": [],
+            "linefill_snaps": [current_vol.copy()],
+            "final_vol": current_vol.copy(),
+            "final_plan": plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None,
+            "final_dra_linefill": copy.deepcopy(dra_linefill),
+            "final_dra_reach": dra_reach_km,
+        }
+
+    monkeypatch.setattr(app, "_execute_time_series_solver", fake_solver)
+
+    fallback = app._find_maximum_feasible_flow(
+        flow_rate=3000.0,
+        stations_base=[],
+        term_data={"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        hours=[(7 + h) % 24 for h in range(24)],
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        flow_step=50.0,
+        is_hourly=False,
+    )
+
+    assert attempts == [2950.0]
+    assert fallback is not None
+    assert fallback["flow_rate"] == pytest.approx(2950.0)
+    assert fallback["total_throughput"] == pytest.approx(2950.0 * 24)
+    assert fallback["reduction"] == pytest.approx(1200.0)
+
+    trimmed_plan = fallback["plan_df"]
+    assert isinstance(trimmed_plan, pd.DataFrame)
+    assert trimmed_plan["Volume (m³)"].sum() == pytest.approx(2950.0 * 24)
+    assert trimmed_plan.iloc[-1]["Volume (m³)"] == pytest.approx(20800.0)
+
+
+def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
+    import pipeline_optimization_app as app
+
+    plan_df = pd.DataFrame(
+        [
+            {"Product": "A", "Volume (m³)": 2400.0, "Viscosity (cSt)": 3.0, "Density (kg/m³)": 810.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "B", "Volume (m³)": 2400.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    vol_df = plan_df.copy()
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    attempts: list[float] = []
+
+    def always_fail(*args, flow_rate, **kwargs):
+        attempts.append(flow_rate)
+        return {"error": "no solution"}
+
+    monkeypatch.setattr(app, "_execute_time_series_solver", always_fail)
+
+    fallback = app._find_maximum_feasible_flow(
+        flow_rate=200.0,
+        stations_base=[],
+        term_data={"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        hours=[(7 + h) % 24 for h in range(24)],
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        flow_step=50.0,
+        is_hourly=False,
+    )
+
+    assert fallback is None
+    assert attempts == [150.0, 100.0, 50.0]
+
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 
