@@ -1665,16 +1665,13 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+
+    if inj_effective > 0.0:
+        tail_queue = list(remaining_queue)
+    else:
+        tail_queue = list(existing_queue)
 
     combined_entries: list[tuple[float, float]] = []
     if pump_running and inj_effective > 0.0 and head_length > 0.0:
@@ -1735,7 +1732,10 @@ def _update_mainline_dra(
                 rest_entries = rest_entries[1:]
 
             zero_capacity = max(pipeline_length - inj_length, 0.0)
-            target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
+            if inj_effective > 0.0:
+                target_zero_length = min(initial_zero_prefix, zero_capacity)
+            else:
+                target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
             if target_zero_length < zero_front_pre:
                 target_zero_length = zero_front_pre
 
@@ -1793,25 +1793,34 @@ def _update_mainline_dra(
                 ),
             )
     elif inj_effective > 0.0:
-        inferred_ppm = 0.0
-        for _len_existing, ppm_existing in reversed(existing_queue):
-            if ppm_existing > 0.0:
-                inferred_ppm = ppm_existing
-                break
-        inferred_length = target_length if target_length > 0 else segment_length
-        if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
-            merged_with_inferred = _ensure_queue_floor(
-                merged_queue,
-                inferred_length,
-                inferred_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_inferred
-                if float(length or 0.0) > 0.0
-            )
+        has_zero_segment = any(
+            float(ppm or 0.0) <= 0.0 for length, ppm in merged_queue if float(length or 0.0) > 0.0
+        )
+        try:
+            station_idx = int(stn_data.get('idx', -1))
+        except (TypeError, ValueError):
+            station_idx = -1
+        preserve_zero_segment = has_zero_segment and station_idx == 0
+        if not preserve_zero_segment:
+            inferred_ppm = 0.0
+            for _len_existing, ppm_existing in reversed(existing_queue):
+                if ppm_existing > 0.0:
+                    inferred_ppm = ppm_existing
+                    break
+            inferred_length = target_length if target_length > 0 else segment_length
+            if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
+                merged_with_inferred = _ensure_queue_floor(
+                    merged_queue,
+                    inferred_length,
+                    inferred_ppm,
+                    None,
+                    enforce_positive_floor=False,
+                )
+                merged_queue = tuple(
+                    (float(length), float(ppm))
+                    for length, ppm in merged_with_inferred
+                    if float(length or 0.0) > 0.0
+                )
 
     queue_after = [
         {'length_km': float(length), 'dra_ppm': float(ppm)}
@@ -5790,6 +5799,20 @@ def solve_pipeline(
                         })
                     profile_entries: list[dict[str, float]] = []
                     include_zero_profile = inj_ppm_main <= 0.0
+                    if not include_zero_profile:
+                        try:
+                            station_idx = int(stn_data.get('idx', -1))
+                        except (TypeError, ValueError):
+                            station_idx = -1
+                        if station_idx == 0:
+                            for _length_val, ppm_val in segment_profile_raw:
+                                try:
+                                    ppm_check = float(ppm_val or 0.0)
+                                except (TypeError, ValueError):
+                                    ppm_check = 0.0
+                                if ppm_check <= 0.0:
+                                    include_zero_profile = True
+                                    break
                     for length, ppm in segment_profile_raw:
                         try:
                             length_f = float(length or 0.0)

@@ -5061,7 +5061,10 @@ def _execute_time_series_solver(
             candidate = max(candidate, 0.0)
             key = round(candidate, 6)
             if key in tested_steps and candidate > 0.0:
-                candidate = _snap_down(candidate - step_size)
+                next_candidate = _snap_down(candidate - step_size)
+                if math.isclose(next_candidate, candidate, rel_tol=1e-12, abs_tol=1e-12):
+                    break
+                candidate = next_candidate
                 continue
             tested_steps.add(key)
             cand_res = _run_cached(candidate)
@@ -5071,7 +5074,10 @@ def _execute_time_series_solver(
                 break
             if candidate <= 0.0:
                 break
-            candidate = _snap_down(candidate - step_size)
+            next_candidate = _snap_down(candidate - step_size)
+            if math.isclose(next_candidate, candidate, rel_tol=1e-12, abs_tol=1e-12):
+                break
+            candidate = next_candidate
 
         if best_result is None:
             zero_res = _run_cached(0.0)

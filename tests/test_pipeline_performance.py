@@ -4357,6 +4357,66 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b_no_injection, [(2.0, 0.0), (18.0, 10.0)])
 
 
+def test_dra_profile_accumulates_zero_slug_until_injection() -> None:
+    """Zero-injection hours should build a growing untreated front at the origin."""
+
+    segment_length = 158.0
+    flow_m3h = 3000.0
+    diameter = 0.7386975636894871
+    hours = 1.0
+    pumped_length = _km_from_volume(flow_m3h * hours, diameter)
+
+    station = {"idx": 0, "is_pump": True, "d_inner": diameter, "L": segment_length}
+
+    queue: list[dict[str, float]] = [{"length_km": segment_length, "dra_ppm": 5.0}]
+
+    def _advance(queue_in: list[dict[str, float]], inj_ppm: float) -> tuple[list[dict[str, float]], list[tuple[float, float]]]:
+        dra_segments, queue_after, _, _ = _update_mainline_dra(
+            queue_in,
+            station,
+            {"nop": 1, "dra_ppm_main": inj_ppm},
+            segment_length,
+            flow_m3h,
+            hours,
+            pump_running=True,
+            is_origin=True,
+        )
+        assert not dra_segments or isinstance(dra_segments, list)
+        merged_queue = tuple(
+            (float(entry["length_km"]), float(entry["dra_ppm"]))
+            for entry in queue_after
+            if float(entry["length_km"]) > 0.0
+        )
+        profile = [
+            (float(length), float(ppm))
+            for length, ppm in _segment_profile_from_queue(merged_queue, 0.0, segment_length)
+        ]
+        return queue_after, profile
+
+    queue, profile_hour1 = _advance(queue, 0.0)
+    assert len(profile_hour1) == 2
+    assert profile_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert profile_hour1[0][1] == pytest.approx(0.0, abs=1e-6)
+    assert profile_hour1[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert profile_hour1[1][1] == pytest.approx(5.0, rel=1e-6)
+
+    queue, profile_hour2 = _advance(queue, 0.0)
+    assert len(profile_hour2) == 2
+    assert profile_hour2[0][0] == pytest.approx(2 * pumped_length, rel=1e-6)
+    assert profile_hour2[0][1] == pytest.approx(0.0, abs=1e-6)
+    assert profile_hour2[1][0] == pytest.approx(segment_length - 2 * pumped_length, rel=1e-6)
+    assert profile_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
+
+    queue, profile_hour3 = _advance(queue, 3.0)
+    assert len(profile_hour3) == 3
+    assert profile_hour3[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert profile_hour3[0][1] == pytest.approx(3.0, rel=1e-6)
+    assert profile_hour3[1][0] == pytest.approx(2 * pumped_length, rel=1e-6)
+    assert profile_hour3[1][1] == pytest.approx(0.0, abs=1e-6)
+    assert profile_hour3[2][0] == pytest.approx(segment_length - 3 * pumped_length, rel=1e-6)
+    assert profile_hour3[2][1] == pytest.approx(5.0, rel=1e-6)
+
+
 def test_dra_profile_preserves_baseline_after_injection() -> None:
     """Injected slugs should overlay a pre-laced baseline across the segment."""
 
