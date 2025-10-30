@@ -171,13 +171,62 @@ UI_HIDE_STYLE = """
 
 div[data-testid="stMainMenu"],
 div[data-testid="main-menu"],
-header [data-testid="stMainMenu"] {
+header [data-testid="stMainMenu"],
+header button[aria-label="Main menu"],
+header button[title="Main menu"],
+header button[data-testid="baseButton-headerNoPadding"][aria-label="Main menu"] {
     display: none !important;
+}
+
+header button[data-testid="baseButton-headerNoPadding"][aria-label="Main menu"] {
+    pointer-events: none !important;
 }
 </style>
 """
 
+UI_HIDE_SCRIPT = """
+<script>
+(function() {
+    const doc = window.parent?.document || window.document;
+    if (!doc || !doc.body) {
+        return;
+    }
+
+    const selectors = [
+        'button[aria-label="Main menu"]',
+        'button[title="Main menu"]',
+        'button[data-testid="baseButton-headerNoPadding"] svg[data-testid="stIconMenu"]',
+        'div[data-testid="stMainMenu"]'
+    ];
+
+    const hideMenu = () => {
+        let removedAny = false;
+        selectors.forEach((selector) => {
+            doc.querySelectorAll(selector).forEach((node) => {
+                const button = node.closest?.('button') || node;
+                button.style.setProperty('display', 'none', 'important');
+                button.setAttribute('aria-hidden', 'true');
+                button.setAttribute('tabindex', '-1');
+                removedAny = true;
+            });
+        });
+        return removedAny;
+    };
+
+    const observer = new MutationObserver(() => {
+        if (hideMenu()) {
+            observer.disconnect();
+        }
+    });
+
+    observer.observe(doc.body, { childList: true, subtree: true });
+    hideMenu();
+})();
+</script>
+"""
+
 st.markdown(UI_HIDE_STYLE, unsafe_allow_html=True)
+st.markdown(UI_HIDE_SCRIPT, unsafe_allow_html=True)
 
 
 def ensure_initial_dra_column(
@@ -1062,7 +1111,12 @@ def _get_linefill_snapshot_for_hour(
 
     return snapshot.copy(deep=True)
 
-st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Pipeline Optima™",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items=None,
+)
 
 #Custom Styles
 st.markdown("""
