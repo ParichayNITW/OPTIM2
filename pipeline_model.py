@@ -1691,6 +1691,11 @@ def _update_mainline_dra(
     trimmed_queue, _leftover = _trim_queue_tail(combined_entries, excess_length)
     merged_queue = _merge_queue(trimmed_queue)
 
+    queue_contains_zero = any(
+        float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+        for length, ppm in merged_queue
+    )
+
     if (
         pump_running
         and is_origin
@@ -1792,25 +1797,30 @@ def _update_mainline_dra(
                 ),
             )
     elif inj_effective > 0.0:
-        inferred_ppm = 0.0
-        for _len_existing, ppm_existing in reversed(existing_queue):
-            if ppm_existing > 0.0:
-                inferred_ppm = ppm_existing
-                break
-        inferred_length = target_length if target_length > 0 else segment_length
-        if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
-            merged_with_inferred = _ensure_queue_floor(
-                merged_queue,
-                inferred_length,
-                inferred_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_inferred
-                if float(length or 0.0) > 0.0
-            )
+        existing_has_zero = any(
+            float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+            for length, ppm in existing_queue
+        )
+        if not existing_has_zero:
+            inferred_ppm = 0.0
+            for _len_existing, ppm_existing in reversed(existing_queue):
+                if ppm_existing > 0.0:
+                    inferred_ppm = ppm_existing
+                    break
+            inferred_length = target_length if target_length > 0 else segment_length
+            if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
+                merged_with_inferred = _ensure_queue_floor(
+                    merged_queue,
+                    inferred_length,
+                    inferred_ppm,
+                    None,
+                    enforce_positive_floor=False,
+                )
+                merged_queue = tuple(
+                    (float(length), float(ppm))
+                    for length, ppm in merged_with_inferred
+                    if float(length or 0.0) > 0.0
+                )
 
     queue_after = [
         {'length_km': float(length), 'dra_ppm': float(ppm)}
@@ -1843,7 +1853,7 @@ def _update_mainline_dra(
                 break
 
     zero_fill_ppm = 0.0
-    if not floor_requires_injection:
+    if not floor_requires_injection and not queue_contains_zero:
         if floor_segments:
             for _seg_length, seg_ppm in floor_segments:
                 if seg_ppm > zero_fill_ppm:
@@ -5038,6 +5048,11 @@ def solve_pipeline(
         if float(length) > 0
     )
 
+    initial_queue_has_zero = any(
+        float(length) > 0.0 and float(ppm_val) <= 0.0
+        for length, ppm_val in initial_queue
+    )
+
     fallback_by_segment: list[float] = []
     if initial_queue:
         base_queue_tuple = tuple(initial_queue)
@@ -6028,6 +6043,19 @@ def solve_pipeline(
     queue_source = best_state.get('dra_queue_full')
     if queue_source is None:
         queue_source = best_state.get('dra_queue', ())
+
+    inlet_queue = best_state.get('dra_queue_at_inlet')
+    if inlet_queue is not None:
+        inlet_has_zero = any(
+            float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+            for length, ppm in inlet_queue
+        )
+        source_has_zero = any(
+            float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+            for length, ppm in queue_source or ()
+        )
+        if inlet_has_zero and not source_has_zero:
+            queue_source = inlet_queue
     queue_final = [
         (
             float(length),
@@ -6036,6 +6064,36 @@ def solve_pipeline(
         for length, ppm in queue_source
         if float(length) > 0
     ]
+
+    positive_length = sum(length for length, ppm in queue_final if ppm > 0)
+    total_length_queue = sum(length for length, _ppm in queue_final)
+    station_keys: list[str] = []
+    for idx, stn in enumerate(stations):
+        name = stn.get('name', f'station_{idx}')
+        norm = str(name).strip().lower().replace(' ', '_')
+        station_keys.append(norm)
+    any_injection = any(
+        float(result.get(f'dra_ppm_{key}', 0.0) or 0.0) > 0.0
+        or float(result.get(f'dra_ppm_loop_{key}', 0.0) or 0.0) > 0.0
+        for key in station_keys
+    )
+    if not any_injection:
+        any_injection = float(result.get('dra_ppm_terminal', 0.0) or 0.0) > 0.0
+    if (
+        initial_queue_has_zero
+        and queue_final
+        and total_length_queue > 0.0
+        and positive_length >= total_length_queue - 1e-9
+        and not any_injection
+    ):
+        queue_final = [
+            (
+                float(length),
+                float(ppm),
+            )
+            for length, ppm in initial_queue
+            if float(length) > 0.0
+        ]
 
     def _queue_to_linefill_entries(
         queue_entries: list[tuple[float, float]],
