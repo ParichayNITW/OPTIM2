@@ -130,6 +130,7 @@ _RESULT_STATE_KEYS = {
     "auto_origin_lacing_baseline_summary",
     "auto_origin_lacing_baseline_warnings",
     "auto_origin_lacing_segment_baseline",
+    "origin_enforced_detail",
     "batch_df",
     "day_df",
     "day_df_raw",
