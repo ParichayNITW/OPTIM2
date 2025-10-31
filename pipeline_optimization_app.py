@@ -64,7 +64,6 @@ import hashlib
 import uuid
 import json
 import copy
-import decimal
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
@@ -86,91 +85,6 @@ from dra_utils import (
 
 INIT_DRA_COL = "Initial DRA (ppm)"
 LOGO_PATH = ROOT / "logo.png"
-
-LINEFILL_DISPLAY_COLUMNS = [
-    "Product",
-    "Volume (m³)",
-    "Density (kg/m³)",
-    "Viscosity (cSt)",
-    INIT_DRA_COL,
-]
-
-DAY_PLAN_DISPLAY_COLUMNS = [
-    "Product",
-    "Volume (m³)",
-    "Density (kg/m³)",
-    "Viscosity (cSt)",
-    INIT_DRA_COL,
-]
-
-PRESSURE_RENAME_MAP = {
-    "Pipeline Flow (m³/hr)": "Flowrate (m³/hr)",
-    "No. of Pumps": "Pump No",
-    "Residual Head (m)": "Suction Pressure (m)",
-    "Residual Head (kg/cm²)": "Suction Pressure (kg/cm²)",
-    "SDH (m)": "Discharge Pressure (m)",
-    "SDH (kg/cm²)": "Discharge Pressure (kg/cm²)",
-}
-
-DAY_TABLE_PRIORITY_COLUMNS = [
-    "Time",
-    "Station",
-    "Flowrate (m³/hr)",
-    "Pump No",
-    "Pump Name",
-    "__PUMP_SPEED__",
-    "DRA PPM",
-    "Suction Pressure (kg/cm²)",
-    "Discharge Pressure (kg/cm²)",
-    "Total Cost (INR)",
-]
-
-_RESULT_STATE_KEYS = {
-    "auto_origin_lacing_baseline",
-    "auto_origin_lacing_baseline_summary",
-    "auto_origin_lacing_baseline_warnings",
-    "auto_origin_lacing_segment_baseline",
-    "origin_enforced_detail",
-    "batch_df",
-    "day_df",
-    "day_df_raw",
-    "day_hours",
-    "day_linefill_snaps",
-    "day_reports",
-    "day_signature",
-    "day_signature_payload",
-    "day_stations",
-    "last_error_response",
-    "last_linefill",
-    "last_plan_hours",
-    "last_plan_start",
-    "last_res",
-    "last_station_table",
-    "last_stations_data",
-    "last_term_data",
-    "linefill_next_day",
-    "run_mode",
-    "should_rerun",
-    "summary_table",
-}
-
-_SIGNATURE_STATE_IGNORE_KEYS = _RESULT_STATE_KEYS | {
-    "_input_signature_hash",
-    "_input_signature_payload",
-    "baseline_input_mode_prev",
-    "add_station",
-    "compute_baseline_dra",
-    "login_btn",
-    "main_logout_btn",
-    "ps_stn",
-    "rem_station",
-    "run_day_btn",
-    "run_hour_btn",
-    "run_plan_btn",
-    "runbatchbtn",
-    "start_task",
-    "transpose_day",
-}
 
 BUTTON_STYLE = """
 <style>
@@ -309,221 +223,6 @@ def _prepare_data_editor_source(df: pd.DataFrame | None) -> pd.DataFrame | None:
     if isinstance(df, pd.DataFrame):
         return df.copy(deep=True)
     return df
-
-
-def _enforce_column_sequence(df: pd.DataFrame, order: Sequence[str]) -> pd.DataFrame:
-    """Return ``df`` with columns reordered to place ``order`` first."""
-
-    if not isinstance(df, pd.DataFrame):
-        return df
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for col in order:
-        if col in df.columns and col not in seen:
-            ordered.append(col)
-            seen.add(col)
-    remainder = [col for col in df.columns if col not in seen]
-    return df.loc[:, ordered + remainder]
-
-
-def _prioritise_day_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Reorder day schedule columns to surface key metrics first."""
-
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return df
-
-    pump_speed_cols = [
-        col
-        for col in df.columns
-        if col.startswith("Pump Speed ") and col.endswith("(rpm)")
-    ]
-    # Preserve deterministic ordering for display stability
-    pump_speed_cols.sort()
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for col in DAY_TABLE_PRIORITY_COLUMNS:
-        if col == "__PUMP_SPEED__":
-            for speed_col in pump_speed_cols:
-                if speed_col not in seen and speed_col in df.columns:
-                    ordered.append(speed_col)
-                    seen.add(speed_col)
-            continue
-        if col in df.columns and col not in seen:
-            ordered.append(col)
-            seen.add(col)
-
-    remainder = [col for col in df.columns if col not in seen]
-    return df.loc[:, ordered + remainder]
-
-
-def _normalize_for_signature(value):
-    """Convert ``value`` into JSON-serialisable primitives for hashing."""
-
-    if isinstance(value, pd.DataFrame):
-        df = value.copy(deep=True)
-        df = df.where(pd.notnull(df), None)
-        return [_normalize_for_signature(row) for row in df.to_dict(orient="records")]
-
-    if isinstance(value, pd.Series):
-        series = value.where(pd.notnull(value), None)
-        return [_normalize_for_signature(val) for val in series.tolist()]
-
-    if isinstance(value, np.ndarray):
-        return [_normalize_for_signature(val) for val in value.tolist()]
-
-    if isinstance(value, Mapping):
-        return {
-            str(key): _normalize_for_signature(val)
-            for key, val in sorted(value.items(), key=lambda item: str(item[0]))
-        }
-
-    if isinstance(value, (list, tuple, set)):
-        return [_normalize_for_signature(val) for val in list(value)]
-
-    if isinstance(value, (bytes, bytearray)):
-        return base64.b64encode(bytes(value)).decode("ascii")
-
-    if isinstance(value, uuid.UUID):
-        return str(value)
-
-    if isinstance(value, (Path, os.PathLike)):
-        return str(value)
-
-    if isinstance(value, decimal.Decimal):
-        return float(value)
-
-    if hasattr(value, "getvalue") and callable(value.getvalue):
-        try:
-            raw = value.getvalue()
-        except Exception:
-            raw = None
-        payload: dict[str, object] = {
-            "name": getattr(value, "name", None),
-            "type": value.__class__.__name__,
-        }
-        if isinstance(raw, (bytes, bytearray)):
-            payload["digest"] = hashlib.sha256(bytes(raw)).hexdigest()
-            payload["size"] = len(raw)
-        elif raw is not None:
-            payload["repr"] = repr(raw)
-        return payload
-
-    if isinstance(value, (np.integer,)):
-        return int(value)
-
-    if isinstance(value, (np.floating,)):
-        return float(value)
-
-    if isinstance(value, (np.bool_,)):
-        return bool(value)
-
-    if isinstance(value, (dt.time,)):
-        return value.isoformat()
-
-    if isinstance(value, (pd.Timestamp, dt.datetime, dt.date)):
-        return value.isoformat()
-
-    if isinstance(value, (pd.Timedelta, np.timedelta64)):
-        return pd.Timedelta(value).total_seconds()
-
-    if isinstance(value, float) and np.isnan(value):
-        return None
-
-    try:
-        if pd.isna(value):  # Handles pandas NA scalars
-            return None
-    except TypeError:
-        pass
-
-    try:
-        json.dumps(value)
-    except TypeError:
-        return repr(value)
-
-    return value
-
-
-def _hash_signature_payload(payload: Mapping[str, object] | None) -> str | None:
-    """Return a deterministic hash for the provided ``payload``."""
-
-    if payload is None:
-        return None
-
-    normalized = _normalize_for_signature(payload)
-    data = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
-
-
-def _collect_time_series_signature_payload(*, is_hourly: bool) -> dict[str, object]:
-    """Gather the current optimiser inputs for signature generation."""
-
-    payload: dict[str, object] = {
-        "mode": "hourly" if is_hourly else "daily",
-        "stations": copy.deepcopy(st.session_state.get("stations")),
-        "terminal": {
-            "name": st.session_state.get("terminal_name"),
-            "elev": st.session_state.get("terminal_elev"),
-            "min_residual": st.session_state.get("terminal_head"),
-        },
-        "FLOW": st.session_state.get("FLOW"),
-        "hourly_flow": st.session_state.get("hourly_flow"),
-        "planner_days": st.session_state.get("planner_days"),
-        "RateDRA": st.session_state.get("RateDRA"),
-        "Price_HSD": st.session_state.get("Price_HSD"),
-        "Fuel_density": st.session_state.get("Fuel_density"),
-        "Ambient_temp": st.session_state.get("Ambient_temp"),
-        "pump_shear_rate": st.session_state.get("pump_shear_rate"),
-        "MOP_kgcm2": st.session_state.get("MOP_kgcm2"),
-        "search": _collect_search_depth_kwargs(),
-        "baseline_mode": st.session_state.get("baseline_input_mode"),
-        "baseline_requirement": copy.deepcopy(st.session_state.get("origin_lacing_baseline")),
-        "baseline_summary": copy.deepcopy(st.session_state.get("origin_lacing_baseline_summary")),
-        "baseline_segments": copy.deepcopy(st.session_state.get("origin_lacing_segment_baseline")),
-        "forced_detail": copy.deepcopy(st.session_state.get("origin_enforced_detail")),
-    }
-
-    linefill_vol = st.session_state.get("linefill_vol_df")
-    if isinstance(linefill_vol, pd.DataFrame):
-        payload["linefill_vol_df"] = ensure_initial_dra_column(
-            linefill_vol.copy(deep=True), default=0.0, fill_blanks=True
-        )
-    else:
-        payload["linefill_vol_df"] = None
-
-    plan_df = st.session_state.get("day_plan_df")
-    if isinstance(plan_df, pd.DataFrame):
-        payload["day_plan_df"] = ensure_initial_dra_column(
-            plan_df.copy(deep=True), default=0.0, fill_blanks=True
-        )
-    else:
-        payload["day_plan_df"] = None
-
-    return payload
-
-
-def _collect_user_input_signature_payload() -> dict[str, object]:
-    """Capture all current user-controlled inputs for cache invalidation."""
-
-    payload: dict[str, object] = {}
-    for key, value in st.session_state.items():
-        if key in _SIGNATURE_STATE_IGNORE_KEYS:
-            continue
-        payload[key] = copy.deepcopy(value)
-    return payload
-
-
-def _maybe_invalidate_cached_results() -> None:
-    """Drop cached optimiser outputs when user inputs have changed."""
-
-    payload = _collect_user_input_signature_payload()
-    current_hash = _hash_signature_payload(payload)
-    previous_hash = st.session_state.get("_input_signature_hash")
-    if previous_hash is not None and current_hash != previous_hash:
-        invalidate_results()
-    st.session_state["_input_signature_hash"] = current_hash
-    st.session_state["_input_signature_payload"] = payload
 
 
 def _ensure_manual_baseline_table(
@@ -1929,8 +1628,8 @@ with st.sidebar:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1"],
                 "Volume (m³)": [50000.0],
-                "Density (kg/m³)": [810.0],
                 "Viscosity (cSt)": [5.0],
+                "Density (kg/m³)": [810.0],
                 INIT_DRA_COL: [0.0],
             })
         else:
@@ -1941,7 +1640,6 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
-        lf_df = _enforce_column_sequence(lf_df, LINEFILL_DISPLAY_COLUMNS)
         st.session_state["linefill_vol_df"] = lf_df
         # Ensure the generic linefill reference uses the volumetric table so
         # runs and saved cases reflect current edits.
@@ -1952,8 +1650,8 @@ with st.sidebar:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1", "Product-2", "Product-3"],
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
-                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 INIT_DRA_COL: [0.0] * 3,
             })
         else:
@@ -1964,7 +1662,6 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
-        lf_df = _enforce_column_sequence(lf_df, LINEFILL_DISPLAY_COLUMNS)
         st.session_state["linefill_vol_df"] = lf_df
         st.session_state["linefill_df"] = lf_df
         st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
@@ -1972,8 +1669,8 @@ with st.sidebar:
             st.session_state["day_plan_df"] = pd.DataFrame({
                 "Product": ["Product-4", "Product-5", "Product-6", "Product-7"],
                 "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
-                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0],
                 "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
+                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0],
                 INIT_DRA_COL: [0.0] * 4,
             })
         else:
@@ -1983,9 +1680,7 @@ with st.sidebar:
             num_rows="dynamic",
             key="day_plan_editor",
         )
-        day_df = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
-        day_df = _enforce_column_sequence(day_df, DAY_PLAN_DISPLAY_COLUMNS)
-        st.session_state["day_plan_df"] = day_df
+        st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
         hourly_flow = st.number_input(
             "Hourly flow rate (m³/hr)",
             value=st.session_state.get("hourly_flow", 1000.0),
@@ -1998,8 +1693,8 @@ with st.sidebar:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1", "Product-2", "Product-3"],
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
-                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 INIT_DRA_COL: [0.0] * 3,
             })
         else:
@@ -2010,7 +1705,6 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
-        lf_df = _enforce_column_sequence(lf_df, LINEFILL_DISPLAY_COLUMNS)
         st.session_state["linefill_vol_df"] = lf_df
         st.session_state["linefill_df"] = lf_df
         st.session_state["planner_days"] = st.number_input(
@@ -2043,8 +1737,8 @@ with st.sidebar:
             st.session_state["proj_plan_df"] = pd.DataFrame({
                 "Product": ["Product-4", "Product-5"],
                 "Volume (m³)": [12000.0, 8000.0],
-                "Density (kg/m³)": [800.0, 840.0],
                 "Viscosity (cSt)": [3.0, 10.0],
+                "Density (kg/m³)": [800.0, 840.0],
             })
         proj_df = data_editor_copy(
             st.session_state["proj_plan_df"],
@@ -2057,7 +1751,6 @@ with st.sidebar:
                 "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)"),
             },
         )
-        proj_df = _enforce_column_sequence(proj_df, DAY_PLAN_DISPLAY_COLUMNS)
         st.session_state["proj_plan_df"] = proj_df
 
 
@@ -4486,12 +4179,8 @@ else:
 
 def invalidate_results():
     """Clear any cached optimisation results from session state."""
-
-    for key in _RESULT_STATE_KEYS:
-        st.session_state.pop(key, None)
-    # Legacy keys retained for backward compatibility with stored sessions
-    for legacy_key in ("day_signature", "day_signature_payload"):
-        st.session_state.pop(legacy_key, None)
+    for k in ("last_res", "last_stations_data", "last_term_data", "last_linefill", "last_station_table"):
+        st.session_state.pop(k, None)
 
 
 def _estimate_treatable_length(
@@ -5533,9 +5222,6 @@ def _build_enforced_origin_warning(
 
 def run_all_updates():
     """Invalidate caches, rebuild station data and solve for the global optimum."""
-    label = "Start task"
-    timer_placeholder = st.empty()
-    timer_placeholder.info(f"{label} in progress. Timer started…")
     invalidate_results()
     (
         stations_data,
@@ -5773,11 +5459,9 @@ def run_all_updates():
         if isinstance(res, dict):
             st.session_state["last_error_response"] = res
         msg = (res.get("message") or "Optimization failed") if isinstance(res, dict) else "Optimization failed"
-        timer_placeholder.error(f"{label} failed after {_format_duration(elapsed)}.")
         st.error(msg)
         return
-    timer_placeholder.success(f"{label} completed in {_format_duration(elapsed)}.")
-    _store_run_duration(label, elapsed)
+    _store_run_duration("Start task", elapsed)
     st.session_state["last_res"] = copy.deepcopy(res)
     st.session_state["last_stations_data"] = copy.deepcopy(res.get("stations_used", stations_data))
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
@@ -5785,9 +5469,6 @@ def run_all_updates():
     st.session_state["last_station_table"] = build_station_table(res, stations_data)
     st.session_state["run_mode"] = "instantaneous"
     st.rerun()
-
-
-_maybe_invalidate_cached_results()
 
 
 if not auto_batch:
@@ -5801,12 +5482,6 @@ if not auto_batch:
 
     if run_day or run_hour:
         is_hourly = bool(run_hour)
-        label = "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer"
-        timer_placeholder = st.empty()
-        start_time = time.perf_counter()
-        timer_placeholder.info(f"{label} in progress. Timer started…")
-
-        invalidate_results()
         st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
 
         stations_base = copy.deepcopy(st.session_state.stations)
@@ -5838,10 +5513,6 @@ if not auto_batch:
         if isinstance(vol_df, pd.DataFrame):
             vol_df = ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
         if vol_df is None or len(vol_df) == 0:
-            elapsed_abort = time.perf_counter() - start_time
-            timer_placeholder.error(
-                f"{label} failed after {_format_duration(elapsed_abort)}."
-            )
             st.error("Please enter linefill (volumetric) data.")
             st.stop()
 
@@ -5857,8 +5528,6 @@ if not auto_batch:
 
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
-
-        signature_payload = _collect_time_series_signature_payload(is_hourly=is_hourly)
 
         if is_hourly:
             hours = [7]
@@ -5894,6 +5563,7 @@ if not auto_batch:
         base_dra_linefill = copy.deepcopy(dra_linefill)
         base_dra_reach = float(dra_reach_km)
 
+        start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             solver_result = _execute_time_series_solver(
                 stations_base,
@@ -5913,6 +5583,8 @@ if not auto_batch:
                 total_length=total_length,
                 sub_steps=sub_steps,
             )
+        elapsed = time.perf_counter() - start_time
+
         error_msg = solver_result["error"]
         reports = solver_result["reports"]
         linefill_snaps = solver_result["linefill_snaps"]
@@ -5977,16 +5649,15 @@ if not auto_batch:
                             f"({FLOW_sched:,.0f} m³/h)."
                         )
             if error_msg:
-                elapsed = time.perf_counter() - start_time
                 st.session_state["linefill_next_day"] = pd.DataFrame()
-                timer_placeholder.error(f"{label} failed after {_format_duration(elapsed)}.")
                 st.error(error_msg)
                 st.stop()
             if fallback_note:
                 st.info(fallback_note)
-        elapsed = time.perf_counter() - start_time
-        timer_placeholder.success(f"{label} completed in {_format_duration(elapsed)}.")
-        _store_run_duration(label, elapsed)
+        _store_run_duration(
+            "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
+            elapsed,
+        )
 
         if solver_result.get("backtracked"):
             warn_msg = _build_enforced_origin_warning(
@@ -6017,8 +5688,6 @@ if not auto_batch:
             station_tables.append(df_int)
         df_day = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
 
-        df_day = df_day.rename(columns=PRESSURE_RENAME_MAP)
-
         # Ensure numeric columns are typed as numeric to avoid conversion errors when styling
         # Pandas may treat some columns as object if they contain NaN or are newly inserted.
         df_day_numeric = df_day.copy()
@@ -6028,9 +5697,6 @@ if not auto_batch:
         for c in num_cols:
             df_day_numeric[c] = pd.to_numeric(df_day_numeric[c], errors="coerce").fillna(0.0)
 
-        df_day_numeric = _prioritise_day_columns(df_day_numeric)
-        df_day = _prioritise_day_columns(df_day)
-
         # Persist results for reuse across Streamlit reruns
         st.session_state["day_df"] = df_day_numeric
         st.session_state["day_df_raw"] = df_day
@@ -6038,8 +5704,6 @@ if not auto_batch:
         st.session_state["day_linefill_snaps"] = linefill_snaps
         st.session_state["day_hours"] = hours
         st.session_state["day_stations"] = stations_base
-        st.session_state["day_signature"] = _hash_signature_payload(signature_payload)
-        st.session_state["day_signature_payload"] = signature_payload
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
         df_day_numeric = st.session_state["day_df"]
@@ -6048,114 +5712,92 @@ if not auto_batch:
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
-
-        if isinstance(df_day_numeric, pd.DataFrame):
-            df_day_numeric = df_day_numeric.rename(columns=PRESSURE_RENAME_MAP)
-            df_day_numeric = _prioritise_day_columns(df_day_numeric)
-            st.session_state["day_df"] = df_day_numeric
-        if isinstance(df_day, pd.DataFrame):
-            df_day = df_day.rename(columns=PRESSURE_RENAME_MAP)
-            df_day = _prioritise_day_columns(df_day)
-            st.session_state["day_df_raw"] = df_day
-
-        is_hourly_mode = st.session_state.get("run_mode") == "hourly"
-        signature_payload = _collect_time_series_signature_payload(is_hourly=is_hourly_mode)
-        stored_hash = st.session_state.get("day_signature")
-        current_hash = _hash_signature_payload(signature_payload)
-        stale_results = bool(stored_hash and current_hash and stored_hash != current_hash)
-
-        if stale_results:
-            run_label = "Run Hourly Flow Rate Optimizer" if is_hourly_mode else "Run Daily Pumping Schedule Optimizer"
-            st.info(
-                f"Pipeline inputs have changed since the last run. Click **{run_label}** to refresh the results."
+        transpose_view = st.checkbox("Transpose output table", key="transpose_day")
+        df_display = df_day_numeric.T if transpose_view else df_day_numeric
+        if transpose_view:
+            numeric_rows_mask = df_display.apply(
+                lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
             )
+            num_rows_disp = df_display.index[numeric_rows_mask].tolist()
+            df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
+                pd.to_numeric, errors="coerce"
+            )
+            df_disp_style = df_display.style.format(
+                "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
+            )
+            if num_rows_disp:
+                df_disp_style = df_disp_style.background_gradient(
+                    cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
+                )
         else:
-            transpose_view = st.checkbox("Transpose output table", key="transpose_day")
-            df_display = df_day_numeric.T if transpose_view else df_day_numeric
-            if transpose_view:
-                numeric_rows_mask = df_display.apply(
-                    lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
-                )
-                num_rows_disp = df_display.index[numeric_rows_mask].tolist()
-                df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
-                    pd.to_numeric, errors="coerce"
-                )
-                df_disp_style = df_display.style.format(
-                    "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
-                )
-                if num_rows_disp:
-                    df_disp_style = df_disp_style.background_gradient(
-                        cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
-                    )
-            else:
-                num_cols_disp = [
-                    c
-                    for c in df_display.columns
-                    if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
-                ]
-                fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
-                df_disp_style = df_display.style.format(fmt_disp)
-                if num_cols_disp:
-                    df_disp_style = df_disp_style.background_gradient(
-                        cmap="Blues", subset=num_cols_disp
-                    )
-            st.dataframe(
-                df_disp_style,
-                width='stretch',
-                hide_index=not transpose_view,
-            )
-            label_prefix = "Hourly" if is_hourly_mode else "Daily"
-            first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
-            last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
-            st.download_button(
-                f"Download {label_prefix} Optimizer Output data",
-                df_day.to_csv(index=False, float_format="%.2f"),
-                file_name="hourly_schedule_results.csv" if is_hourly_mode else "daily_schedule_results.csv",
-            )
-
-            # Display total cost per time slice and global sum
-            cost_rows = [
-                {
-                    "Time": f"{rec['time']:02d}:00",
-                    "Pattern": rec["result"].get("flow_pattern_name", ""),
-                    "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
-                }
-                for rec in reports
+            num_cols_disp = [
+                c
+                for c in df_display.columns
+                if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
             ]
-            df_cost = pd.DataFrame(cost_rows)
-            df_cost["Total Cost (INR)"] = pd.to_numeric(
-                df_cost["Total Cost (INR)"], errors="coerce",
-            )
-            df_cost = df_cost.round(2)
-            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-            st.dataframe(df_cost_style, width='stretch', hide_index=True)
-            if is_hourly_mode:
-                total_label = f"1h ({first_label})" if hours else "1h"
-            else:
-                total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
-            total_cost_value = df_cost["Total Cost (INR)"].sum()
-            st.markdown(
-                f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
-            )
-            for rec in reports:
-                display_pump_type_details(
-                    rec["result"],
-                    stations_base,
-                    heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+            fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
+            df_disp_style = df_display.style.format(fmt_disp)
+            if num_cols_disp:
+                df_disp_style = df_disp_style.background_gradient(
+                    cmap="Blues", subset=num_cols_disp
                 )
+        st.dataframe(
+            df_disp_style,
+            width='stretch',
+            hide_index=not transpose_view,
+        )
+        label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
+        first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+        last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
+        st.download_button(
+            f"Download {label_prefix} Optimizer Output data",
+            df_day.to_csv(index=False, float_format="%.2f"),
+            file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
+        )
 
-            combined = []
-            for idx, df_line in enumerate(linefill_snaps):
-                hr = hours[idx] % 24
-                temp = df_line.copy()
-                temp['Time'] = f"{hr:02d}:00"
-                combined.append(temp)
-            lf_all = pd.concat(combined, ignore_index=True).round(2)
-            st.download_button(
-                f"Download {label_prefix} Dynamic Linefill Output",
-                lf_all.to_csv(index=False, float_format="%.2f"),
-                file_name="linefill_snapshots.csv",
+        # Display total cost per time slice and global sum
+        cost_rows = [
+            {
+                "Time": f"{rec['time']:02d}:00",
+                "Pattern": rec["result"].get("flow_pattern_name", ""),
+                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
+            }
+            for rec in reports
+        ]
+        df_cost = pd.DataFrame(cost_rows)
+        df_cost["Total Cost (INR)"] = pd.to_numeric(
+            df_cost["Total Cost (INR)"], errors="coerce",
+        )
+        df_cost = df_cost.round(2)
+        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+        st.dataframe(df_cost_style, width='stretch', hide_index=True)
+        if st.session_state.get("run_mode") == "hourly":
+            total_label = f"1h ({first_label})" if hours else "1h"
+        else:
+            total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
+        total_cost_value = df_cost["Total Cost (INR)"].sum()
+        st.markdown(
+            f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
+        )
+        for rec in reports:
+            display_pump_type_details(
+                rec["result"],
+                stations_base,
+                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
             )
+
+        combined = []
+        for idx, df_line in enumerate(linefill_snaps):
+            hr = hours[idx] % 24
+            temp = df_line.copy()
+            temp['Time'] = f"{hr:02d}:00"
+            combined.append(temp)
+        lf_all = pd.concat(combined, ignore_index=True).round(2)
+        st.download_button(
+            f"Download {label_prefix} Dynamic Linefill Output",
+            lf_all.to_csv(index=False, float_format="%.2f"),
+            file_name="linefill_snapshots.csv",
+        )
 
         next_day_linefill = st.session_state.get("linefill_next_day")
         if isinstance(next_day_linefill, pd.DataFrame) and not next_day_linefill.empty:
@@ -6170,19 +5812,8 @@ if not auto_batch:
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_plan:
-        label = "Run Dynamic Pumping Plan Optimizer"
-        timer_placeholder = st.empty()
-        timer_placeholder.info(f"{label} in progress. Timer started…")
-        invalidate_results()
         st.session_state["run_mode"] = "plan"
         start_time = time.perf_counter()
-
-        def _abort_plan(message: str) -> None:
-            elapsed_abort = time.perf_counter() - start_time
-            timer_placeholder.error(f"{label} failed after {_format_duration(elapsed_abort)}.")
-            st.error(message)
-            st.stop()
-
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
@@ -6207,16 +5838,19 @@ if not auto_batch:
                     if names:
                         stn['pump_name'] = names[0]
             if not stations_base:
-                _abort_plan("Please configure station data before running.")
+                st.error("Please configure station data before running.")
+                st.stop()
             term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
 
             vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
             if vol_df is None or len(vol_df) == 0:
-                _abort_plan("Please enter linefill (volumetric) data.")
+                st.error("Please enter linefill (volumetric) data.")
+                st.stop()
 
             flow_df = st.session_state.get("proj_flow_df", pd.DataFrame())
             if flow_df is None or len(flow_df) == 0:
-                _abort_plan("Please enter flow schedule data.")
+                st.error("Please enter flow schedule data.")
+                st.stop()
             prod_plan_df = st.session_state.get("proj_plan_df", pd.DataFrame())
             current_plan = prod_plan_df.copy()
 
@@ -6260,7 +5894,8 @@ if not auto_batch:
                         future_vol, current_plan = shift_vol_linefill(current_vol.copy(), pumped_m3, current_plan)
                         kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations_base)
                     except ValueError as e:
-                        _abort_plan(str(e))
+                        st.error(str(e))
+                        st.stop()
 
                     kv_run = [max(a, b) for a, b in zip(kv_now, kv_next)]
                     rho_run = [max(a, b) for a, b in zip(rho_now, rho_next)]
@@ -6284,9 +5919,8 @@ if not auto_batch:
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                     )
                     if res.get("error"):
-                        _abort_plan(
-                            f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}"
-                        )
+                        st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
+                        st.stop()
 
                     reports.append({"time": seg_start, "result": res})
                     linefill_snaps.append(current_vol.copy())
@@ -6298,7 +5932,8 @@ if not auto_batch:
                     seg_start = seg_end
 
             if not reports:
-                _abort_plan("No valid intervals in projected plan.")
+                st.error("No valid intervals in projected plan.")
+                st.stop()
         elapsed = time.perf_counter() - start_time
 
         st.session_state["last_plan_start"] = flow_df["Start"].min()
@@ -6307,8 +5942,7 @@ if not auto_batch:
         st.session_state["last_stations_data"] = copy.deepcopy(stations_base)
         st.session_state["last_term_data"] = copy.deepcopy(term_data)
         st.session_state["last_linefill"] = copy.deepcopy(current_vol)
-        timer_placeholder.success(f"{label} completed in {_format_duration(elapsed)}.")
-        _store_run_duration(label, elapsed)
+        _store_run_duration("Run Dynamic Pumping Plan Optimizer", elapsed)
 
         station_tables = []
         for rec in reports:
@@ -6321,13 +5955,10 @@ if not auto_batch:
             df_int.insert(0, "Time", ts.strftime("%d/%m %H:%M"))
             station_tables.append(df_int)
         df_plan = pd.concat(station_tables, ignore_index=True).fillna(0.0).round(2)
-        df_plan = df_plan.rename(columns=PRESSURE_RENAME_MAP)
-        df_plan = _prioritise_day_columns(df_plan)
 
         # Exclude non-numeric columns including Pattern for gradient styling
         num_cols = [c for c in df_plan.columns if c not in ["Time", "Station", "Pump Name", "Pattern"]]
         df_plan_numeric = df_plan.copy()
-        df_plan_numeric = _prioritise_day_columns(df_plan_numeric)
         for c in num_cols:
             df_plan_numeric[c] = pd.to_numeric(df_plan_numeric[c], errors="coerce").fillna(0.0)
         fmt_dict = {c: "{:.2f}" for c in num_cols}
