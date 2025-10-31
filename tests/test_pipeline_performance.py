@@ -190,6 +190,182 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def test_invalidate_results_clears_enforced_detail():
+    import pipeline_optimization_app as app
+
+    session = app.st.session_state
+    sentinel = object()
+    tracked = ["origin_enforced_detail", "day_df", "day_reports"]
+    previous = {key: session.get(key, sentinel) for key in tracked}
+
+    session["origin_enforced_detail"] = {"dra_ppm": 50.0, "length_km": 2.5}
+    session["day_df"] = pd.DataFrame({"Time": ["07:00"], "Flowrate (m³/hr)": [1000.0]})
+    session["day_reports"] = [
+        {"time": 7, "result": {"linefill": [{"length_km": 1.0, "dra_ppm": 50.0}]}}
+    ]
+
+    app.invalidate_results()
+
+    assert "origin_enforced_detail" not in session
+    assert "day_df" not in session
+    assert "day_reports" not in session
+
+    for key, value in previous.items():
+        if value is sentinel:
+            session.pop(key, None)
+        else:
+            session[key] = value
+
+
+def test_time_series_signature_changes_with_inputs() -> None:
+    import pipeline_optimization_app as app
+
+    session = app.st.session_state
+    tracked_keys = [
+        "stations",
+        "terminal_name",
+        "terminal_elev",
+        "terminal_head",
+        "FLOW",
+        "RateDRA",
+        "Price_HSD",
+        "Fuel_density",
+        "Ambient_temp",
+        "MOP_kgcm2",
+        "pump_shear_rate",
+        "linefill_vol_df",
+        "day_plan_df",
+        "planner_days",
+        "hourly_flow",
+        "baseline_input_mode",
+        "origin_lacing_baseline",
+        "origin_lacing_baseline_summary",
+        "origin_lacing_segment_baseline",
+        "origin_enforced_detail",
+        "search_rpm_step",
+        "search_dra_step",
+        "search_coarse_multiplier",
+        "search_state_top_k",
+        "search_state_cost_margin",
+    ]
+    sentinel = object()
+    previous_values = {key: session.get(key, sentinel) for key in tracked_keys}
+
+    try:
+        session["stations"] = [
+            {
+                "name": "Station A",
+                "is_pump": True,
+                "L": 10.0,
+                "d": 0.7,
+                "t": 0.007,
+            }
+        ]
+        session["terminal_name"] = "Terminal"
+        session["terminal_elev"] = 5.0
+        session["terminal_head"] = 15.0
+        session["FLOW"] = 1200.0
+        session["RateDRA"] = 500.0
+        session["Price_HSD"] = 70.0
+        session["Fuel_density"] = 820.0
+        session["Ambient_temp"] = 25.0
+        session["MOP_kgcm2"] = 100.0
+        session["pump_shear_rate"] = 0.0
+        session["planner_days"] = 1.0
+        session["hourly_flow"] = 1000.0
+        session["baseline_input_mode"] = "auto"
+        session["origin_lacing_baseline"] = None
+        session["origin_lacing_baseline_summary"] = None
+        session["origin_lacing_segment_baseline"] = None
+        session["origin_enforced_detail"] = None
+        session["search_rpm_step"] = 50
+        session["search_dra_step"] = 2
+        session["search_coarse_multiplier"] = 2.0
+        session["search_state_top_k"] = 50
+        session["search_state_cost_margin"] = 5000.0
+
+        session["linefill_vol_df"] = pd.DataFrame(
+            [
+                {
+                    "Product": "Batch 1",
+                    "Volume (m³)": 10000.0,
+                    "Viscosity (cSt)": 3.0,
+                    "Density (kg/m³)": 820.0,
+                    app.INIT_DRA_COL: 0.0,
+                }
+            ]
+        )
+        session["day_plan_df"] = pd.DataFrame(
+            [
+                {
+                    "Product": "Plan 1",
+                    "Volume (m³)": 6000.0,
+                    "Viscosity (cSt)": 3.0,
+                    "Density (kg/m³)": 815.0,
+                    app.INIT_DRA_COL: 0.0,
+                }
+            ]
+        )
+
+        base_payload = app._collect_time_series_signature_payload(is_hourly=False)
+        base_sig = app._hash_signature_payload(base_payload)
+
+        session["RateDRA"] = 750.0
+        rate_payload = app._collect_time_series_signature_payload(is_hourly=False)
+        rate_sig = app._hash_signature_payload(rate_payload)
+        assert rate_sig != base_sig
+
+        session["RateDRA"] = 500.0
+        plan_df = session["day_plan_df"].copy()
+        plan_df.loc[0, "Volume (m³)"] = 8000.0
+        session["day_plan_df"] = plan_df
+        plan_payload = app._collect_time_series_signature_payload(is_hourly=False)
+        plan_sig = app._hash_signature_payload(plan_payload)
+        assert plan_sig != base_sig
+    finally:
+        for key, value in previous_values.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+
+def test_input_signature_invalidation_clears_cached_outputs() -> None:
+    import pipeline_optimization_app as app
+
+    session = app.st.session_state
+
+    tracked_keys = [
+        "stations",
+        "FLOW",
+        "day_df",
+        "_input_signature_hash",
+        "_input_signature_payload",
+    ]
+    sentinel = object()
+    previous_values = {key: session.get(key, sentinel) for key in tracked_keys}
+
+    try:
+        session["stations"] = []
+        session["FLOW"] = 1000.0
+        session["day_df"] = pd.DataFrame([{"value": 1.0}])
+
+        app._maybe_invalidate_cached_results()
+        assert "day_df" in session
+
+        session["FLOW"] = 1200.0
+        session["day_df"] = pd.DataFrame([{"value": 2.0}])
+
+        app._maybe_invalidate_cached_results()
+        assert "day_df" not in session
+    finally:
+        for key, value in previous_values.items():
+            if value is sentinel:
+                session.pop(key, None)
+            else:
+                session[key] = value
+
+
 def test_segment_floor_without_injection_is_infeasible():
     stations = [
         {
