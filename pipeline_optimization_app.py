@@ -5707,9 +5707,9 @@ if not auto_batch:
 
     if run_day or run_hour:
         is_hourly = bool(run_hour)
-        st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
 
         invalidate_results()
+        st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
 
         stations_base = copy.deepcopy(st.session_state.stations)
         for stn in stations_base:
@@ -6056,8 +6056,8 @@ if not auto_batch:
     st.markdown("</div>", unsafe_allow_html=True)
 
     if run_plan:
-        st.session_state["run_mode"] = "plan"
         invalidate_results()
+        st.session_state["run_mode"] = "plan"
         start_time = time.perf_counter()
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
