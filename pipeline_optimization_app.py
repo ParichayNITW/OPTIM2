@@ -130,6 +130,7 @@ _RESULT_STATE_KEYS = {
     "auto_origin_lacing_baseline_summary",
     "auto_origin_lacing_baseline_warnings",
     "auto_origin_lacing_segment_baseline",
+    "origin_enforced_detail",
     "batch_df",
     "day_df",
     "day_df_raw",
@@ -5802,6 +5803,7 @@ if not auto_batch:
         is_hourly = bool(run_hour)
         label = "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer"
         timer_placeholder = st.empty()
+        start_time = time.perf_counter()
         timer_placeholder.info(f"{label} in progress. Timer started…")
 
         invalidate_results()
@@ -5836,6 +5838,10 @@ if not auto_batch:
         if isinstance(vol_df, pd.DataFrame):
             vol_df = ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
         if vol_df is None or len(vol_df) == 0:
+            elapsed_abort = time.perf_counter() - start_time
+            timer_placeholder.error(
+                f"{label} failed after {_format_duration(elapsed_abort)}."
+            )
             st.error("Please enter linefill (volumetric) data.")
             st.stop()
 
@@ -5888,7 +5894,6 @@ if not auto_batch:
         base_dra_linefill = copy.deepcopy(dra_linefill)
         base_dra_reach = float(dra_reach_km)
 
-        start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             solver_result = _execute_time_series_solver(
                 stations_base,
