@@ -190,6 +190,33 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
                 session[key] = value
 
 
+def test_invalidate_results_clears_enforced_detail():
+    import pipeline_optimization_app as app
+
+    session = app.st.session_state
+    sentinel = object()
+    tracked = ["origin_enforced_detail", "day_df", "day_reports"]
+    previous = {key: session.get(key, sentinel) for key in tracked}
+
+    session["origin_enforced_detail"] = {"dra_ppm": 50.0, "length_km": 2.5}
+    session["day_df"] = pd.DataFrame({"Time": ["07:00"], "Flowrate (m³/hr)": [1000.0]})
+    session["day_reports"] = [
+        {"time": 7, "result": {"linefill": [{"length_km": 1.0, "dra_ppm": 50.0}]}}
+    ]
+
+    app.invalidate_results()
+
+    assert "origin_enforced_detail" not in session
+    assert "day_df" not in session
+    assert "day_reports" not in session
+
+    for key, value in previous.items():
+        if value is sentinel:
+            session.pop(key, None)
+        else:
+            session[key] = value
+
+
 def test_time_series_signature_changes_with_inputs() -> None:
     import pipeline_optimization_app as app
 
