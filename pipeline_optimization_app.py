@@ -4494,9 +4494,6 @@ def invalidate_results():
         st.session_state.pop(legacy_key, None)
 
 
-_maybe_invalidate_cached_results()
-
-
 def _estimate_treatable_length(
     *,
     total_length_km: float,
@@ -5788,6 +5785,9 @@ def run_all_updates():
     st.session_state["last_station_table"] = build_station_table(res, stations_data)
     st.session_state["run_mode"] = "instantaneous"
     st.rerun()
+
+
+_maybe_invalidate_cached_results()
 
 
 if not auto_batch:
