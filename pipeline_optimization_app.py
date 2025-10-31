@@ -64,6 +64,7 @@ import hashlib
 import uuid
 import json
 import copy
+import decimal
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
@@ -286,6 +287,9 @@ def _normalize_for_signature(value):
         series = value.where(pd.notnull(value), None)
         return [_normalize_for_signature(val) for val in series.tolist()]
 
+    if isinstance(value, np.ndarray):
+        return [_normalize_for_signature(val) for val in value.tolist()]
+
     if isinstance(value, Mapping):
         return {
             str(key): _normalize_for_signature(val)
@@ -294,6 +298,34 @@ def _normalize_for_signature(value):
 
     if isinstance(value, (list, tuple, set)):
         return [_normalize_for_signature(val) for val in list(value)]
+
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+
+    if isinstance(value, uuid.UUID):
+        return str(value)
+
+    if isinstance(value, (Path, os.PathLike)):
+        return str(value)
+
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+
+    if hasattr(value, "getvalue") and callable(value.getvalue):
+        try:
+            raw = value.getvalue()
+        except Exception:
+            raw = None
+        payload: dict[str, object] = {
+            "name": getattr(value, "name", None),
+            "type": value.__class__.__name__,
+        }
+        if isinstance(raw, (bytes, bytearray)):
+            payload["digest"] = hashlib.sha256(bytes(raw)).hexdigest()
+            payload["size"] = len(raw)
+        elif raw is not None:
+            payload["repr"] = repr(raw)
+        return payload
 
     if isinstance(value, (np.integer,)):
         return int(value)
@@ -304,6 +336,9 @@ def _normalize_for_signature(value):
     if isinstance(value, (np.bool_,)):
         return bool(value)
 
+    if isinstance(value, (dt.time,)):
+        return value.isoformat()
+
     if isinstance(value, (pd.Timestamp, dt.datetime, dt.date)):
         return value.isoformat()
 
@@ -313,8 +348,16 @@ def _normalize_for_signature(value):
     if isinstance(value, float) and np.isnan(value):
         return None
 
-    if pd.isna(value):  # Handles pandas NA scalars
-        return None
+    try:
+        if pd.isna(value):  # Handles pandas NA scalars
+            return None
+    except TypeError:
+        pass
+
+    try:
+        json.dumps(value)
+    except TypeError:
+        return repr(value)
 
     return value
 
