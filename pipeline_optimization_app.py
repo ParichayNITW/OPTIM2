@@ -468,10 +468,40 @@ def _handle_baseline_mode_switch(stations: Sequence[Mapping[str, object]] | None
     st.session_state["baseline_input_mode_prev"] = mode
 
 
+def _coerce_data_editor_state(value):
+    """Return a safe copy of a stored data editor value."""
+
+    if isinstance(value, pd.DataFrame):
+        return value.copy(deep=True)
+
+    if isinstance(value, (list, tuple)):
+        return list(value)
+
+    if isinstance(value, Mapping):
+        return dict(value)
+
+    return value
+
+
 def data_editor_copy(df, **kwargs):
-    edited = st.data_editor(_prepare_data_editor_source(df), **kwargs)
+    key = kwargs.get("key")
+    source = None
+
+    if key:
+        state_value = st.session_state.get(key)
+        if state_value is not None:
+            source = _coerce_data_editor_state(state_value)
+
+    if source is None:
+        source = _prepare_data_editor_source(df)
+
+    edited = st.data_editor(source, **kwargs)
     if isinstance(edited, pd.DataFrame):
         return edited.copy(deep=True)
+    if isinstance(edited, (list, tuple)):
+        return list(edited)
+    if isinstance(edited, Mapping):
+        return dict(edited)
     return edited
 
 
