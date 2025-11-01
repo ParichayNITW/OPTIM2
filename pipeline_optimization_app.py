@@ -468,41 +468,42 @@ def _handle_baseline_mode_switch(stations: Sequence[Mapping[str, object]] | None
     st.session_state["baseline_input_mode_prev"] = mode
 
 
-def _coerce_data_editor_state(value):
-    """Return a safe copy of a stored data editor value."""
+def data_editor_copy(df, **kwargs):
+    key = kwargs.get("key")
+    state_key = None
+    source = _prepare_data_editor_source(df)
+
+    if key:
+        state_key = f"_data_editor_value__{key}"
+        state_value = st.session_state.get(state_key)
+        if state_value is not None:
+            source = _clone_data_editor_value(state_value)
+
+    edited = st.data_editor(source, **kwargs)
+    result = _clone_data_editor_value(edited)
+
+    if state_key is not None:
+        st.session_state[state_key] = _clone_data_editor_value(result)
+
+    return result
+
+
+def _clone_data_editor_value(value):
+    """Return a defensive copy of ``value`` suitable for reuse."""
 
     if isinstance(value, pd.DataFrame):
         return value.copy(deep=True)
 
-    if isinstance(value, (list, tuple)):
-        return list(value)
+    if isinstance(value, np.ndarray):
+        return value.copy()
 
     if isinstance(value, Mapping):
-        return dict(value)
+        return copy.deepcopy(dict(value))
 
-    return value
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return copy.deepcopy(list(value))
 
-
-def data_editor_copy(df, **kwargs):
-    key = kwargs.get("key")
-    source = None
-
-    if key:
-        state_value = st.session_state.get(key)
-        if state_value is not None:
-            source = _coerce_data_editor_state(state_value)
-
-    if source is None:
-        source = _prepare_data_editor_source(df)
-
-    edited = st.data_editor(source, **kwargs)
-    if isinstance(edited, pd.DataFrame):
-        return edited.copy(deep=True)
-    if isinstance(edited, (list, tuple)):
-        return list(edited)
-    if isinstance(edited, Mapping):
-        return dict(edited)
-    return edited
+    return copy.deepcopy(value)
 
 
 def _format_duration(seconds: float) -> str:
