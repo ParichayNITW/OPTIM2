@@ -469,41 +469,10 @@ def _handle_baseline_mode_switch(stations: Sequence[Mapping[str, object]] | None
 
 
 def data_editor_copy(df, **kwargs):
-    key = kwargs.get("key")
-    state_key = None
-    source = _prepare_data_editor_source(df)
-
-    if key:
-        state_key = f"_data_editor_value__{key}"
-        state_value = st.session_state.get(state_key)
-        if state_value is not None:
-            source = _clone_data_editor_value(state_value)
-
-    edited = st.data_editor(source, **kwargs)
-    result = _clone_data_editor_value(edited)
-
-    if state_key is not None:
-        st.session_state[state_key] = _clone_data_editor_value(result)
-
-    return result
-
-
-def _clone_data_editor_value(value):
-    """Return a defensive copy of ``value`` suitable for reuse."""
-
-    if isinstance(value, pd.DataFrame):
-        return value.copy(deep=True)
-
-    if isinstance(value, np.ndarray):
-        return value.copy()
-
-    if isinstance(value, Mapping):
-        return copy.deepcopy(dict(value))
-
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return copy.deepcopy(list(value))
-
-    return copy.deepcopy(value)
+    edited = st.data_editor(_prepare_data_editor_source(df), **kwargs)
+    if isinstance(edited, pd.DataFrame):
+        return edited.copy(deep=True)
+    return edited
 
 
 def _format_duration(seconds: float) -> str:
