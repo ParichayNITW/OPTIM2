@@ -73,12 +73,12 @@ sorting:
 High-DRA, high-RPM options end up near the bottom of each bucket, but they are
 still present in the list.
 
-### Step 4 – Take up to 60 evenly spaced entries per bucket
+### Step 4 – Take up to 24 evenly spaced entries per bucket
 
-The hard cap is `MAX_OPTIONS_PER_PUMP_COUNT = 60`.  Our buckets hold 5, 20, and 20
+The hard cap is `MAX_OPTIONS_PER_PUMP_COUNT = 24`.  Our buckets hold 5, 20, and 20
 entries respectively, so **nothing is dropped** at Station A.  If a bucket had,
-say, 200 entries, the sampler would keep 60 of them using even spacing: rows 0,
-3, 6, 9, … up to the last row.  That guarantees we keep low, mid, and high
+say, 200 entries, the sampler would keep 24 of them using even spacing: rows 0,
+8, 16, 24, … up to the last row.  That guarantees we keep low, mid, and high
 DRA/RPM values instead of only the lowest few.
 
 Station B keeps the same 5/20/20 split because it has the same layout.
@@ -87,18 +87,18 @@ Station B keeps the same 5/20/20 split because it has the same layout.
 
 After the per-bucket trim, Station A now has `5 + 20 + 20 = 45` entries.
 Station B also has 45 entries.  These counts are below the station-wide limit of
-`MAX_OPTIONS_PER_STATION = 120`, so we do not need any extra trimming.
+`MAX_OPTIONS_PER_STATION = 72`, so we do not need any extra trimming.
 
-If a station ever exceeded 120 entries even after the per-bucket trim, the code
+If a station ever exceeded 72 entries even after the per-bucket trim, the code
 would sort the merged list by the same “less chemical, slower motor” rule and
-again pick evenly spaced rows (0, floor(n/119), 2×floor(n/119), …, last) so the
-remaining 120 still cover the full range.
+again pick evenly spaced rows (0, floor(n/71), 2×floor(n/71), …, last) so the
+remaining 72 still cover the full range.
 
 ### Step 6 – Pass the reduced list to the DP solver
 
 Each station now hands **45** options to the DP stage instead of all 45 raw
 entries (no change in this simple example).  In bigger real-world JSON files the
-same steps routinely shrink 400–800 raw combinations to at most 120 per station.
+same steps routinely shrink 400–800 raw combinations to at most 72 per station.
 
 ## Putting both stations together
 
@@ -113,10 +113,10 @@ With the trimmed lists we now understand the size of the search space:
 
 If we had not trimmed the lists in a more complicated case (say 240 options per
 station), the solver would face `240 × 240 = 57,600` pairs to inspect each hour.
-Capping both stations at 120 options reduces that to `120 × 120 = 14,400` pairs
-per hour, which is **4× smaller**.  When the raw lists are even larger, the cut
-is often 10× or 20×.  That is why the run time drops from “spinning for more
-than 10 minutes” to just a few minutes.
+Capping both stations at 72 options reduces that to `72 × 72 = 5,184` pairs per
+hour, which is **11× smaller**.  When the raw lists are even larger, the cut is
+often 10× or 20×.  That is why the run time drops from “spinning for more than
+10 minutes” to under a couple of minutes.
 
 ## Four-station example with 10 DRA steps and 2200–2900 RPM
 
@@ -152,24 +152,25 @@ consider every hour.  That is the huge number we must tame.
 
 The code trims in two passes:
 
-1. **Cap each pump-count bucket at 60 entries.**  The sampler sorts the bucket by
-   “less DRA, closer to minimum RPM” and then keeps 60 evenly spaced rows.  In
-   this example the 0-pump buckets stay untouched (10 entries < 60).  The 1-,
-   2-, and 3-pump buckets shrink from 80 down to 60 entries apiece.
-2. **Cap the whole station at 120 entries.**  After step 1, Station 1 holds
-   `10 + 60 + 60 + 60 = 190` entries, so it needs an extra trim.  The sampler
-   sorts the merged list and keeps 120 evenly spaced rows.  That leaves roughly
-   6 zero-pump entries and about 38 entries for each positive pump count, for a
-   final total of **120 options** at Station 1.
+1. **Cap each pump-count bucket at 24 entries.**  The sampler sorts the bucket by
+   “less DRA, closer to minimum RPM” and then keeps 24 evenly spaced rows.  In
+   this example the 0-pump buckets stay untouched (10 entries < 24).  The 1-,
+   2-, and 3-pump buckets shrink from 80 down to 24 entries apiece.
+2. **Cap the whole station at 72 entries.**  After step 1, Station 1 holds
+   `10 + 24 + 24 + 24 = 82` entries, so it needs an extra trim.  The sampler
+   sorts the merged list and keeps 72 evenly spaced rows.  Because the zero-pump
+   entries sit at the front of the ranking, nearly all of them remain, together
+   with a well-spaced mix of the three pumping buckets.  The station therefore
+   hands about **72 options** to the solver.
 
-   Each of Stations 2–4 ends Step 1 with `10 + 60 + 60 = 130` entries, so they
-   also run the station-wide trim.  The evenly spaced sampler keeps about 9
-   zero-pump entries, 56 one-pump entries, and 55 two-pump entries, again
-   landing on **120 options per station**.
+   Each of Stations 2–4 ends Step 1 with `10 + 24 + 24 = 58` entries, so they
+   already sit below the station-wide cap.  No second trim is required and each
+   of those stations provides **58 options**.
 
-After trimming, all four stations hand **120 options each** to the solver.  The
-cartesian product now has `120 × 120 × 120 × 120 = 248,832,000` combinations—still
-large, but already almost **5× smaller** than the raw list.
+After trimming, Station 1 offers **72** options while Stations 2–4 offer **58**
+each.  The cartesian product now has
+`72 × 58 × 58 × 58 = 14,048,064` combinations—still large, but already almost
+**90× smaller** than the raw list.
 
 ### 3. What happens after the K-state pruning
 
@@ -188,15 +189,15 @@ plans from one station to the next.  Two guardrails keep this list small:
 1. **Before the hour starts** we have at most 100 candidates left over from the
    previous hour.  You can picture them as 100 index cards, each card showing
    “pressure left + running cost so far.”
-2. **Station 1** tries all of its 120 options on every card.  Worst case,
-   `100 cards × 120 options = 12,000` fresh cards are generated.  Right away the
-   DP sorts those 12,000 cards by “same bucket, cheaper first” and keeps only 50
+2. **Station 1** tries all of its 72 options on every card.  Worst case,
+   `100 cards × 72 options = 7,200` fresh cards are generated.  Right away the
+   DP sorts those 7,200 cards by “same bucket, cheaper first” and keeps only 50
    per bucket, never more than 100 overall.  The rest go straight into the bin.
-3. **Station 2** receives those ≤100 survivors, tries its 120 options, produces
-   up to another 12,000 raw cards, then trims back to ≤50 per bucket and ≤100
+3. **Station 2** receives those ≤100 survivors, tries its 58 options, produces
+   up to another 5,800 raw cards, then trims back to ≤50 per bucket and ≤100
    total again.
-4. **Station 3** repeats the exact same dance.
-5. **Station 4** does it once more.
+4. **Station 3** repeats the exact same dance with its 58 options.
+5. **Station 4** does it once more with its 58 options.
 
 After all four stations, the hour ends with ≤100 cards.  Those are the only
 candidates we carry into the next hour, and the cycle repeats.
@@ -206,7 +207,7 @@ candidates we carry into the next hour, and the cycle repeats.
 Suppose the previous hour hands the new hour just **3** candidates: one in the
 “high pressure” bucket and two in the “low pressure” bucket.
 
-* Station 1 multiplies 3 cards by 120 options → 360 trial cards.  It keeps the
+* Station 1 multiplies 3 cards by 72 options → 216 trial cards.  It keeps the
   cheapest 1×50 in the high-pressure bucket and 2×50 in the low-pressure bucket,
   so still only 3 cards continue.
 * If later stations invent slightly better variations, the bucket rule lets up
@@ -219,17 +220,17 @@ bucket.
 
 #### Counting the combinations the solver really touches
 
-With the trims in place, the worst case inside an hour is `4 stations × 12,000`
-evaluations = **48,000 station-option tests**.  The untrimmed alternative (all
+With the trims in place, the worst case inside an hour is
+`7,200 + (3 × 5,800) = 24,600` evaluations.  The untrimmed alternative (all
 station options × all carried states) would have been hundreds of millions of
 tests.  The K-state pruning therefore removes >99% of the work while still
 keeping the best candidates in every bucket.
 
 ### 4. Final count of options explored for the pipeline
 
-Across the four stations the solver touches at most 48,000 option/state pairs in
+Across the four stations the solver touches at most 24,600 option/state pairs in
 an hour after trimming and K-state pruning.  Over a 24-hour optimisation that is
-`48,000 × 24 = 1,152,000` evaluations, which the current implementation handles
+`24,600 × 24 = 590,400` evaluations, which the current implementation handles
 comfortably.  Every surviving option is still combined with every surviving
 state, so the DP continues to search the full space defined by the trimmed
 station lists and therefore can still find the global minimum within that space.
@@ -244,7 +245,7 @@ station lists and therefore can still find the global minimum within that space.
    that truly needs more DRA or higher RPM keeps the relevant options.
 3. **Protected fallback states stay.**  The DP logic separately keeps baseline
    (zero-DRA) states and maintains a per-bucket “top K” to avoid dropping nearly
-   optimal paths.  With only 60–120 entries per station the DP can track all of
+   optimal paths.  With only 24–72 entries per station the DP can track all of
    them comfortably.
 
 In short: we still examine every combination that could plausibly deliver the
@@ -254,8 +255,8 @@ options that only slow the calculation down.
 ## Quick recap in plain words
 
 *Step 1* build the full list.  *Step 2* split it by pump count.  *Step 3* sort by
-“less chemical, slower motor”.  *Step 4* take up to 60 evenly spaced entries in
-each bucket.  *Step 5* merge everything and, if needed, trim again to 120 using
+“less chemical, slower motor”.  *Step 4* take up to 24 evenly spaced entries in
+each bucket.  *Step 5* merge everything and, if needed, trim again to 72 using
 the same even spacing.  *Step 6* give those options to the DP, which then
 examines all 24-hour sequences from the reduced, evenly spread menu.
 

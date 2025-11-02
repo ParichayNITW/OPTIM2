@@ -43,8 +43,8 @@ GLOBAL_STATE_LIMIT_MULTIPLIER = 2
 # limits apply per operating pump count and overall so that both a variety of
 # pump utilizations and drag-reduction settings remain available without
 # letting the option space explode.
-MAX_OPTIONS_PER_PUMP_COUNT = 60
-MAX_OPTIONS_PER_STATION = 120
+MAX_OPTIONS_PER_PUMP_COUNT = 24
+MAX_OPTIONS_PER_STATION = 72
 
 # ---------------------------------------------------------------------------
 # Helper utilities
