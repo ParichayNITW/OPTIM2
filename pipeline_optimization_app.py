@@ -2465,15 +2465,16 @@ def _merge_segment_profiles(
     return _compress_slice_entries(merged)
 
 
-def combine_volumetric_profiles(
+def _combine_profile_pair(
     stations: list[dict],
-    current_vol: pd.DataFrame,
-    future_vol: pd.DataFrame,
+    kv_now: list[float],
+    rho_now: list[float],
+    slices_now: list[list[dict]],
+    kv_next: list[float],
+    rho_next: list[float],
+    slices_next: list[list[dict]],
 ) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Return worst-case viscosity/density lists and slices for scheduling."""
-
-    kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations)
-    kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations)
+    """Combine two precomputed segment profiles into a worst-case envelope."""
 
     kv_list: list[float] = []
     rho_list: list[float] = []
@@ -2496,6 +2497,31 @@ def combine_volumetric_profiles(
         rho_list.append(rho_max)
 
     return kv_list, rho_list, segment_slices
+
+
+def _combine_profile_results(
+    stations: list[dict],
+    current_profile: tuple[list[float], list[float], list[list[dict]]],
+    future_profile: tuple[list[float], list[float], list[list[dict]]],
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return the combined profile from precomputed current/future profiles."""
+
+    kv_now, rho_now, slices_now = current_profile
+    kv_next, rho_next, slices_next = future_profile
+    return _combine_profile_pair(stations, kv_now, rho_now, slices_now, kv_next, rho_next, slices_next)
+
+
+def combine_volumetric_profiles(
+    stations: list[dict],
+    current_vol: pd.DataFrame,
+    future_vol: pd.DataFrame,
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return worst-case viscosity/density lists and slices for scheduling."""
+
+    kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations)
+    kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations)
+
+    return _combine_profile_pair(stations, kv_now, rho_now, slices_now, kv_next, rho_next, slices_next)
 
 
 def shift_vol_linefill(
@@ -4799,6 +4825,7 @@ def _execute_time_series_solver(
     current_vol_local = current_vol.copy()
     dra_linefill_local = copy.deepcopy(dra_linefill)
     dra_reach_local = float(dra_reach_km)
+    current_profile = map_vol_linefill_to_segments(current_vol_local, stations_base)
 
     reports: list[dict] = []
     linefill_snaps: list[pd.DataFrame] = []
@@ -4821,6 +4848,7 @@ def _execute_time_series_solver(
                 "dra_linefill": copy.deepcopy(dra_linefill_local),
                 "dra_reach_km": float(dra_reach_local),
                 "linefill_snapshot": current_vol_local.copy(),
+                "profile_cache": copy.deepcopy(current_profile),
             }
             hour_states.append(state)
             linefill_snaps.append(current_vol_local.copy())
@@ -4831,6 +4859,12 @@ def _execute_time_series_solver(
             dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
             dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
             linefill_snaps[ti] = state["linefill_snapshot"].copy()
+            cached_profile = state.get("profile_cache")
+            if cached_profile is not None:
+                current_profile = copy.deepcopy(cached_profile)
+            else:
+                current_profile = map_vol_linefill_to_segments(current_vol_local, stations_base)
+                state["profile_cache"] = copy.deepcopy(current_profile)
 
         sdh_hourly: list[float] = []
         res: dict = {}
@@ -4842,11 +4876,13 @@ def _execute_time_series_solver(
         forced_detail_used: dict | None = None
         for sub in range(sub_steps):
             pumped_tmp = flow_rate * 1.0
-            future_vol, future_plan = shift_vol_linefill(
-                current_vol_local.copy(), pumped_tmp, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
-            )
-            kv_list, rho_list, segment_slices = combine_volumetric_profiles(
-                stations_base, current_vol_local, future_vol
+            plan_for_shift = plan_local if isinstance(plan_local, pd.DataFrame) else None
+            future_vol, future_plan = shift_vol_linefill(current_vol_local, pumped_tmp, plan_for_shift)
+            future_profile = map_vol_linefill_to_segments(future_vol, stations_base)
+            kv_list, rho_list, segment_slices = _combine_profile_results(
+                stations_base,
+                current_profile,
+                future_profile,
             )
 
             stns_run = copy.deepcopy(stations_base)
@@ -4907,6 +4943,7 @@ def _execute_time_series_solver(
             current_vol_local, plan_local = future_vol, future_plan
             current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
             dra_reach_local = res.get("dra_front_km", dra_reach_local)
+            current_profile = copy.deepcopy(future_profile)
 
         if forced_detail_used and isinstance(res, dict):
             res.setdefault("forced_origin_detail", forced_detail_used)
@@ -4952,6 +4989,8 @@ def _execute_time_series_solver(
                     step_hours=1.0 / max(float(sub_steps or 1), 1.0),
                 )
                 if tightened:
+                    prev_profile = map_vol_linefill_to_segments(prev_state.get("vol"), stations_base)
+                    prev_state["profile_cache"] = copy.deepcopy(prev_profile)
                     detail = prev_state.get("origin_enforced_detail") or {}
                     st.session_state["origin_enforced_detail"] = copy.deepcopy(detail)
                     segments_detail = detail.get("segments") if isinstance(detail, dict) else None
@@ -5012,6 +5051,12 @@ def _execute_time_series_solver(
             plan_local = restored["plan"].copy() if isinstance(restored.get("plan"), pd.DataFrame) else None
             dra_linefill_local = copy.deepcopy(restored.get("dra_linefill", []))
             dra_reach_local = float(restored.get("dra_reach_km", dra_reach_local))
+            cached_profile = restored.get("profile_cache")
+            if cached_profile is not None:
+                current_profile = copy.deepcopy(cached_profile)
+            else:
+                current_profile = map_vol_linefill_to_segments(current_vol_local, stations_base)
+                restored["profile_cache"] = copy.deepcopy(current_profile)
 
             ti -= 1
             continue
