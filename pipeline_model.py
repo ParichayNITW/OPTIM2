@@ -26,55 +26,6 @@ from dra_utils import get_ppm_for_dr, get_dr_for_ppm
 # caller explicitly supplies a fallback.
 DEFAULT_MAX_DR = 70
 
-# Limit how many "protected" dynamic-programming states are retained per
-# residual bucket.  Protected states represent zero-DRA or baseline operating
-# points which we never want to prune entirely, however in large search
-# spaces they can accumulate rapidly and stall the solver.  Capping them keeps
-# the enumeration tractable without compromising coverage of the fallback
-# strategies.
-MAX_PROTECTED_STATES_PER_BUCKET = 2
-# Global cap for the dynamic-programming frontier.  This is expressed as a
-# multiplier of ``state_top_k`` so callers can still widen the search if
-# required while ensuring the solver does not explore an unbounded number of
-# states in pathological cases.
-GLOBAL_STATE_LIMIT_MULTIPLIER = 2
-
-# Cap per-station option enumeration to keep the DP expansion tractable.  The
-# limits apply per operating pump count and overall so that both a variety of
-# pump utilizations and drag-reduction settings remain available without
-# letting the option space explode.
-MAX_OPTIONS_PER_PUMP_COUNT = 24
-MAX_OPTIONS_PER_STATION = 72
-
-
-def _rank_option_for_trim(
-    opt: Mapping[str, object],
-    min_rpm: float,
-) -> tuple[float, float, float, int, float]:
-    """Return a heuristic ordering key for station option trimming."""
-
-    try:
-        dra_main = float(opt.get('dra_main', 0.0) or 0.0)
-    except (TypeError, ValueError):
-        dra_main = 0.0
-    try:
-        dra_loop = float(opt.get('dra_loop', 0.0) or 0.0)
-    except (TypeError, ValueError):
-        dra_loop = 0.0
-    try:
-        rpm_val = float(opt.get('rpm', 0.0) or 0.0)
-    except (TypeError, ValueError):
-        rpm_val = 0.0
-    try:
-        nop_val = int(opt.get('nop', 0) or 0)
-    except (TypeError, ValueError):
-        nop_val = 0
-    rpm_dev = abs(rpm_val - min_rpm) if min_rpm > 0.0 else rpm_val
-    floor_penalty = 0.0
-    if opt.get('dra_floor_limited'):
-        floor_penalty = 1.0
-    return (dra_main + dra_loop, rpm_dev, rpm_val, nop_val, floor_penalty)
-
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -4962,62 +4913,6 @@ def solve_pipeline(
                 })
             opts.extend(non_pump_opts)
 
-        if len(opts) > MAX_OPTIONS_PER_STATION:
-            min_rpm_local = float(station_rpm_min)
-            grouped_opts: dict[int, list[dict]] = {}
-            for opt in opts:
-                try:
-                    nop_key = int(opt.get('nop', 0) or 0)
-                except (TypeError, ValueError):
-                    nop_key = 0
-                grouped_opts.setdefault(nop_key, []).append(opt)
-
-            trimmed_opts: list[dict] = []
-            def _sample_group(entries: list[dict], limit: int) -> list[dict]:
-                """Return up to ``limit`` entries spread across ``entries``."""
-
-                if limit <= 0:
-                    return []
-                if len(entries) <= limit:
-                    return list(entries)
-                if limit == 1:
-                    return [entries[0]]
-                span = len(entries) - 1
-                step = span / float(limit - 1)
-                indices: list[int] = []
-                for i in range(limit):
-                    idx = int(round(i * step))
-                    if idx >= len(entries):
-                        idx = len(entries) - 1
-                    indices.append(idx)
-                seen: set[int] = set()
-                sampled: list[dict] = []
-                for idx in indices:
-                    if idx in seen:
-                        continue
-                    sampled.append(entries[idx])
-                    seen.add(idx)
-                if len(sampled) < limit:
-                    for idx, entry in enumerate(entries):
-                        if idx in seen:
-                            continue
-                        sampled.append(entry)
-                        seen.add(idx)
-                        if len(sampled) >= limit:
-                            break
-                return sampled
-
-            for group in grouped_opts.values():
-                group.sort(key=lambda entry: _rank_option_for_trim(entry, min_rpm_local))
-                limit_group = min(MAX_OPTIONS_PER_PUMP_COUNT, len(group))
-                trimmed_opts.extend(_sample_group(group, limit_group))
-
-            if len(trimmed_opts) > MAX_OPTIONS_PER_STATION:
-                trimmed_opts.sort(key=lambda entry: _rank_option_for_trim(entry, min_rpm_local))
-                trimmed_opts = _sample_group(trimmed_opts, MAX_OPTIONS_PER_STATION)
-
-            opts = trimmed_opts
-
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
@@ -5239,81 +5134,6 @@ def solve_pipeline(
             baseline_floor.get('dra_ppm', 0.0),
             baseline_floor.get('segments'),
         )
-
-    def _limit_protected_items(
-        items: list[tuple[object, dict]],
-        limit: int = MAX_PROTECTED_STATES_PER_BUCKET,
-    ) -> list[tuple[object, dict]]:
-        """Return ``items`` with at most ``limit`` protected entries per bucket."""
-
-        if limit <= 0:
-            return items
-
-        buckets: dict[object, list[tuple[object, dict]]] = {}
-        for key, data in items:
-            if not data.get('protected'):
-                continue
-            if isinstance(key, tuple) and key:
-                bucket = key[0]
-            else:
-                bucket = key
-            buckets.setdefault(bucket, []).append((key, data))
-
-        if not buckets:
-            return items
-
-        keep_keys: set[object] = set()
-        for entries in buckets.values():
-            entries.sort(key=lambda kv: (float(kv[1].get('cost', float('inf'))), -float(kv[1].get('residual', 0.0))))
-            for key, _ in entries[:limit]:
-                keep_keys.add(key)
-
-        if not keep_keys:
-            return [(key, data) for key, data in items if not data.get('protected')]
-
-        filtered: list[tuple[object, dict]] = []
-        for key, data in items:
-            if data.get('protected') and key not in keep_keys:
-                continue
-            filtered.append((key, data))
-        return filtered
-
-    def _enforce_global_state_limit(
-        states_dict: dict[object, dict],
-        *,
-        limit_multiplier: int = GLOBAL_STATE_LIMIT_MULTIPLIER,
-    ) -> dict[object, dict]:
-        """Return a pruned copy of ``states_dict`` capped to a global limit."""
-
-        if limit_multiplier <= 0:
-            limit_multiplier = 1
-        limit = max(int(state_top_k * limit_multiplier), state_top_k, 100)
-        if len(states_dict) <= limit:
-            return states_dict
-
-        items_sorted = sorted(states_dict.items(), key=lambda kv: kv[1]['cost'])
-        protected_items = [(key, data) for key, data in items_sorted if data.get('protected')]
-        selected: list[tuple[object, dict]] = []
-        used_keys: set[object] = set()
-
-        for key, data in protected_items:
-            if key in used_keys:
-                continue
-            selected.append((key, data))
-            used_keys.add(key)
-            if len(selected) >= limit:
-                break
-
-        if len(selected) < limit:
-            for key, data in items_sorted:
-                if key in used_keys:
-                    continue
-                selected.append((key, data))
-                used_keys.add(key)
-                if len(selected) >= limit:
-                    break
-
-        return {key: data for key, data in selected}
 
     states: dict[int, dict] = {
         init_residual: {
@@ -6145,7 +5965,6 @@ def solve_pipeline(
         # manageable while preserving near-optimal candidates.
         if _exhaustive_pass:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-            items = _limit_protected_items(items)
             protected_items = [
                 (key, data) for key, data in items if data.get('protected')
             ]
@@ -6186,10 +6005,9 @@ def solve_pipeline(
                 added_keys.add(key)
             if not selected:
                 selected = items[:exhaustive_top_k]
-            states = _enforce_global_state_limit({key: data for key, data in selected})
+            states = {key: data for key, data in selected}
         else:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
-            items = _limit_protected_items(items)
             protected_entries = [
                 (key, data) for key, data in items if data.get('protected')
             ]
@@ -6202,7 +6020,7 @@ def solve_pipeline(
                     continue
                 if idx < state_top_k or data['cost'] <= threshold:
                     pruned[residual_key] = data
-            states = _enforce_global_state_limit(pruned)
+            states = pruned
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
