@@ -46,6 +46,35 @@ GLOBAL_STATE_LIMIT_MULTIPLIER = 2
 MAX_OPTIONS_PER_PUMP_COUNT = 24
 MAX_OPTIONS_PER_STATION = 72
 
+
+def _rank_option_for_trim(
+    opt: Mapping[str, object],
+    min_rpm: float,
+) -> tuple[float, float, float, int, float]:
+    """Return a heuristic ordering key for station option trimming."""
+
+    try:
+        dra_main = float(opt.get('dra_main', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        dra_main = 0.0
+    try:
+        dra_loop = float(opt.get('dra_loop', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        dra_loop = 0.0
+    try:
+        rpm_val = float(opt.get('rpm', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        rpm_val = 0.0
+    try:
+        nop_val = int(opt.get('nop', 0) or 0)
+    except (TypeError, ValueError):
+        nop_val = 0
+    rpm_dev = abs(rpm_val - min_rpm) if min_rpm > 0.0 else rpm_val
+    floor_penalty = 0.0
+    if opt.get('dra_floor_limited'):
+        floor_penalty = 1.0
+    return (dra_main + dra_loop, rpm_dev, rpm_val, nop_val, floor_penalty)
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -5285,31 +5314,6 @@ def solve_pipeline(
                     break
 
         return {key: data for key, data in selected}
-
-    def _rank_option_for_trim(opt: Mapping[str, object], min_rpm: float) -> tuple[float, float, float, int, float]:
-        """Return a heuristic ordering key for station option trimming."""
-
-        try:
-            dra_main = float(opt.get('dra_main', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            dra_main = 0.0
-        try:
-            dra_loop = float(opt.get('dra_loop', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            dra_loop = 0.0
-        try:
-            rpm_val = float(opt.get('rpm', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            rpm_val = 0.0
-        try:
-            nop_val = int(opt.get('nop', 0) or 0)
-        except (TypeError, ValueError):
-            nop_val = 0
-        rpm_dev = abs(rpm_val - min_rpm) if min_rpm > 0.0 else rpm_val
-        floor_penalty = 0.0
-        if opt.get('dra_floor_limited'):
-            floor_penalty = 1.0
-        return (dra_main + dra_loop, rpm_dev, rpm_val, nop_val, floor_penalty)
 
     states: dict[int, dict] = {
         init_residual: {
