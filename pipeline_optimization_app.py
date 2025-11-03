@@ -3490,41 +3490,22 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
 
-        inlet_ppm_val = res.get(f"dra_inlet_ppm_{key}")
-        if inlet_ppm_val is None and isinstance(stn, dict):
-            inlet_ppm_val = _get_station_field(
-                'dra_inlet_ppm',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        inlet_ppm = _float_or_none(inlet_ppm_val)
-        if inlet_ppm is None:
-            inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
-
-        outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
-        if outlet_ppm_val is None and isinstance(stn, dict):
-            outlet_ppm_val = _get_station_field(
-                'dra_outlet_ppm',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        outlet_ppm = _float_or_none(outlet_ppm_val)
-        if outlet_ppm is None:
-            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
-            profile_str = "; ".join(
-                f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
+            profile_str = ", ".join(
+                f"{length:.2f} km@ {ppm:.2f} ppm" for length, ppm in profile_entries
             )
         else:
             profile_str = ""
 
-        row['DRA Inlet PPM'] = inlet_ppm
-        row['DRA Outlet PPM'] = outlet_ppm
+        untreated_length = sum(length for length, ppm in profile_entries if ppm <= 0)
         row['DRA Treated Length (km)'] = treated_length
         base_length = _float_or_none(base_stn.get('L')) if isinstance(base_stn, dict) else None
         if base_length is None:
             base_length = 0.0
-        row['DRA Untreated Length (km)'] = max(base_length - treated_length, 0.0)
+        untreated_candidates = [base_length - treated_length, untreated_length]
+        valid_untreated = [value for value in untreated_candidates if value is not None]
+        untreated_display = max(valid_untreated) if valid_untreated else 0.0
+        row['DRA Untreated Length (km)'] = max(untreated_display, 0.0)
         row['DRA Profile (km@ppm)'] = profile_str
 
         speed_station = base_stn if base_stn else (stn if isinstance(stn, dict) else None)
@@ -5087,26 +5068,31 @@ def _execute_time_series_solver(
                 res["dra_profile_override"] = profile_override
 
                 for key_norm, profile_entries in profile_override.items():
-                    serialised = [
-                        {"length_km": float(length), "dra_ppm": float(ppm)}
-                        for length, ppm in profile_entries
-                        if float(length or 0.0) > 0.0 and float(ppm or 0.0) > 0.0
-                    ]
-                    res[f"dra_profile_{key_norm}"] = serialised
+                    serialised: list[dict[str, float]] = []
+                    treated_length = 0.0
+                    for length, ppm in profile_entries:
+                        try:
+                            length_val = float(length or 0.0)
+                        except (TypeError, ValueError):
+                            length_val = 0.0
+                        try:
+                            ppm_val = float(ppm or 0.0)
+                        except (TypeError, ValueError):
+                            ppm_val = 0.0
+                        if length_val <= 0.0:
+                            continue
+                        if ppm_val < 0.0:
+                            ppm_val = 0.0
+                        serialised.append({"length_km": length_val, "dra_ppm": ppm_val})
+                        if ppm_val > 0.0:
+                            treated_length += length_val
 
-                    treated_length = sum(
-                        float(length)
-                        for length, ppm in profile_entries
-                        if float(length or 0.0) > 0.0 and float(ppm or 0.0) > 0.0
-                    )
-                    res[f"dra_treated_length_{key_norm}"] = treated_length
-
-                    if profile_entries:
-                        res[f"dra_inlet_ppm_{key_norm}"] = float(profile_entries[0][1] or 0.0)
-                        res[f"dra_outlet_ppm_{key_norm}"] = float(profile_entries[-1][1] or 0.0)
+                    if serialised:
+                        res[f"dra_profile_{key_norm}"] = serialised
                     else:
-                        res[f"dra_inlet_ppm_{key_norm}"] = 0.0
-                        res[f"dra_outlet_ppm_{key_norm}"] = 0.0
+                        res.pop(f"dra_profile_{key_norm}", None)
+
+                    res[f"dra_treated_length_{key_norm}"] = treated_length
 
         reports.append(
             {
