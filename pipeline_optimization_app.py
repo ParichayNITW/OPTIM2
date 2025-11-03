@@ -3195,8 +3195,8 @@ def _normalise_queue_segments(
             ppm_val = float(ppm_raw or 0.0)
         except (TypeError, ValueError):
             ppm_val = 0.0
-        if ppm_val <= 0.0:
-            continue
+        if pd.isna(ppm_val) or ppm_val < 0.0:
+            ppm_val = 0.0
 
         normalised.append((length_val, ppm_val))
 
@@ -3238,21 +3238,27 @@ def _build_profiles_from_queue(
             overlap_start = max(cursor, seg_start)
             overlap_end = min(next_cursor, seg_end)
             overlap = overlap_end - overlap_start
-            if overlap > 1e-9 and ppm_val > 0.0:
-                entries.append((overlap, ppm_val))
+            if overlap > 1e-9:
+                ppm_clean = ppm_val if ppm_val > 0.0 else 0.0
+                entries.append((overlap, ppm_clean))
             cursor = next_cursor
             if cursor >= seg_end - 1e-9:
                 break
 
         treated = sum(length for length, _ppm in entries)
-        if seg_length - treated > 1e-6:
+        untreated = max(seg_length - treated, 0.0)
+        if untreated > 1e-6:
             fallback = stn.get("fallback_dra_ppm", 0.0)
             try:
                 fallback_val = float(fallback or 0.0)
             except (TypeError, ValueError):
                 fallback_val = 0.0
+            if pd.isna(fallback_val) or fallback_val < 0.0:
+                fallback_val = 0.0
             if fallback_val > 0.0:
-                entries.append((seg_length - treated, fallback_val))
+                entries.append((untreated, fallback_val))
+            else:
+                entries.append((untreated, 0.0))
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
