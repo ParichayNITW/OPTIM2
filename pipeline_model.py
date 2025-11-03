@@ -828,7 +828,7 @@ def _ensure_queue_floor(
 
     total_length_in = sum(length for length, _ppm in normalised)
     if total_length_in > 1e-9:
-        target_length = total_length_in
+        target_length = max(total_length_in, length_val)
     else:
         target_length = length_val
 
@@ -1900,7 +1900,9 @@ def _update_mainline_dra(
             dra_segments.append((remaining_length, zero_fill_ppm))
 
     if floor_requires_injection and inj_effective <= 0.0:
-        dra_segments = []
+        has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
+        if not has_positive:
+            dra_segments = []
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
 @njit(cache=True, fastmath=True)
