@@ -3619,7 +3619,13 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         inlet_ppm = _float_or_none(inlet_ppm_val)
         if inlet_ppm is None:
-            inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
+            inlet_ppm = 0.0
+            for length_val, ppm_val in profile_entries:
+                if float(ppm_val or 0.0) > 0.0:
+                    inlet_ppm = float(ppm_val)
+                    break
+            else:
+                inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
 
         outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
         if outlet_ppm_val is None and isinstance(stn, dict):
@@ -3630,7 +3636,13 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+            outlet_ppm = 0.0
+            for length_val, ppm_val in reversed(profile_entries):
+                if float(ppm_val or 0.0) > 0.0:
+                    outlet_ppm = float(ppm_val)
+                    break
+            else:
+                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries

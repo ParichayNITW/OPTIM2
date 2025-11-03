@@ -1199,6 +1199,62 @@ def _segment_profile_from_queue(
     return _take_queue_front(segment_queue, seg_len)
 
 
+def _normalise_station_profile(
+    profile: Sequence[tuple[float, float]] | Sequence[Mapping[str, float]] | None,
+) -> list[dict[str, float]]:
+    """Return a display-ready profile preserving zero-ppm slices.
+
+    ``profile`` may be provided as a sequence of ``(length_km, dra_ppm)`` tuples
+    or dictionaries exposing the same keys.  The helper coalesces consecutive
+    zero-ppm entries so downstream consumers (UI tables, exports) receive a
+    concise yet faithful representation of untreated sections alongside treated
+    slugs.
+    """
+
+    if not profile:
+        return []
+
+    normalised: list[dict[str, float]] = []
+    pending_zero = 0.0
+
+    for entry in profile:
+        if isinstance(entry, Mapping):
+            length_raw = entry.get("length_km", 0.0)
+            ppm_raw = entry.get("dra_ppm", 0.0)
+        else:
+            try:
+                length_raw, ppm_raw = entry  # type: ignore[misc]
+            except (TypeError, ValueError):
+                continue
+
+        try:
+            length_val = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val <= 0.0:
+            continue
+
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+
+        if ppm_val <= 0.0:
+            pending_zero += length_val
+            continue
+
+        if pending_zero > 0.0:
+            normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
+            pending_zero = 0.0
+
+        normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
+
+    if pending_zero > 0.0:
+        normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
+
+    return normalised
+
+
 def _predict_effective_injection(
     ppm_requested: float,
     kv: float,
@@ -5802,44 +5858,32 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
-                    profile_entries: list[dict[str, float]] = []
-                    for length, ppm in segment_profile_raw:
-                        try:
-                            length_f = float(length or 0.0)
-                        except (TypeError, ValueError):
-                            length_f = 0.0
-                        try:
-                            ppm_f = float(ppm or 0.0)
-                        except (TypeError, ValueError):
-                            ppm_f = 0.0
-                        if length_f <= 0.0:
-                            continue
-                        if ppm_f <= 0.0:
-                            continue
-                        profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
+                    profile_entries = _normalise_station_profile(segment_profile_raw)
 
                     treated_profile_length = sum(
                         entry['length_km']
                         for entry in profile_entries
                         if entry['dra_ppm'] > 0.0
                     )
-                    inlet_ppm_profile = (
-                        profile_entries[0]['dra_ppm']
-                        if profile_entries
-                        else 0.0
-                    )
-                    outlet_ppm_profile = (
-                        profile_entries[-1]['dra_ppm']
-                        if profile_entries
-                        else 0.0
-                    )
-                    if inj_ppm_main <= 0.0:
+
+                    try:
+                        inlet_ppm_profile = float(inj_ppm_main or 0.0)
+                    except (TypeError, ValueError):
+                        inlet_ppm_profile = 0.0
+                    if inlet_ppm_profile <= 0.0:
+                        for entry in profile_entries:
+                            if entry['dra_ppm'] > 0.0:
+                                inlet_ppm_profile = entry['dra_ppm']
+                                break
+
+                    outlet_ppm_profile = 0.0
+                    for entry in reversed(profile_entries):
+                        if entry['dra_ppm'] > 0.0:
+                            outlet_ppm_profile = entry['dra_ppm']
+                            break
+
+                    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
                         treated_profile_length = 0.0
-                        if not profile_entries or all(
-                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
-                        ):
-                            inlet_ppm_profile = 0.0
-                            outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
