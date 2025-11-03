@@ -1638,6 +1638,13 @@ with st.sidebar:
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -1660,6 +1667,13 @@ with st.sidebar:
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -1679,6 +1693,13 @@ with st.sidebar:
             st.session_state["day_plan_df"],
             num_rows="dynamic",
             key="day_plan_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
         hourly_flow = st.number_input(
@@ -1703,6 +1724,13 @@ with st.sidebar:
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -1750,6 +1778,12 @@ with st.sidebar:
                 "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)"),
                 "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)"),
             },
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+            ],
         )
         st.session_state["proj_plan_df"] = proj_df
 
