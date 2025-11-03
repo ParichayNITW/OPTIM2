@@ -4912,6 +4912,35 @@ def test_build_station_table_uses_override_profiles() -> None:
     assert df.loc[0, "DRA Profile (km@ppm)"] == "6.00 km @ 9.00 ppm; 152.00 km @ 4.00 ppm"
 
 
+def test_build_profiles_from_queue_preserves_zero_entries() -> None:
+    import pipeline_optimization_app as app
+
+    queue = [
+        {"length_km": 5.0, "dra_ppm": 0.0},
+        {"length_km": 3.0, "dra_ppm": 10.0},
+    ]
+    stations = [{"name": "Paradip", "L": 10.0}]
+
+    profiles = app._build_profiles_from_queue(queue, stations)
+
+    assert "paradip" in profiles
+    assert profiles["paradip"] == [(5.0, 0.0), (3.0, 10.0), (2.0, 0.0)]
+
+
+def test_normalise_queue_segments_retains_zero_slices() -> None:
+    import pipeline_optimization_app as app
+
+    queue = [
+        {"length_km": 4.0, "dra_ppm": None},
+        (2.0, 5.0),
+        (1.0, -3.0),
+    ]
+
+    normalised = app._normalise_queue_segments(queue)
+
+    assert normalised == [(4.0, 0.0), (2.0, 5.0), (1.0, 0.0)]
+
+
 def test_manual_baseline_overrides_auto_for_solver(monkeypatch):
     import copy
     import importlib
