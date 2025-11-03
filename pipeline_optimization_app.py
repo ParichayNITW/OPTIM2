@@ -5071,17 +5071,29 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
     if not isinstance(result, Mapping):
         return False
 
-    if not result.get("error"):
+    error_msg = result.get("error")
+    if not error_msg:
         return False
 
     detail = result.get("failure_detail")
     executed: list[str] = []
+    detail_msg: str = ""
     if isinstance(detail, Mapping):
         passes = detail.get("executed_passes")
         if isinstance(passes, Sequence):
             executed = [str(p).lower() for p in passes]
+        detail_msg = str(detail.get("message") or "")
 
-    return "exhaustive" in executed
+    if "exhaustive" in executed:
+        return True
+
+    combined_msg = f"{error_msg} {detail_msg}".lower()
+    infeasible_keywords = (
+        "no feasible",
+        "infeasible",
+        "not feasible",
+    )
+    return any(keyword in combined_msg for keyword in infeasible_keywords)
 
 
 def _find_maximum_feasible_flow(
