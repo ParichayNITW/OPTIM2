@@ -1546,7 +1546,7 @@ with st.sidebar:
                 _update_manual_baseline_state(st.session_state.get("stations", []))
 
         rpm_step_default = 50
-        dra_step_default = 2
+        dra_step_default = 5
         coarse_multiplier_default = 2.0
         state_top_k_default = 50
         state_cost_margin_default = 5000.0
