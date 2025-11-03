@@ -5812,8 +5812,8 @@ def solve_pipeline(
                             ppm_f = 0.0
                         if length_f <= 0.0:
                             continue
-                        if ppm_f < 0.0:
-                            ppm_f = 0.0
+                        if ppm_f <= 0.0:
+                            continue
                         profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
 
                     treated_profile_length = sum(
@@ -5821,10 +5821,28 @@ def solve_pipeline(
                         for entry in profile_entries
                         if entry['dra_ppm'] > 0.0
                     )
-
+                    inlet_ppm_profile = (
+                        profile_entries[0]['dra_ppm']
+                        if profile_entries
+                        else 0.0
+                    )
+                    outlet_ppm_profile = (
+                        profile_entries[-1]['dra_ppm']
+                        if profile_entries
+                        else 0.0
+                    )
+                    if inj_ppm_main <= 0.0:
+                        treated_profile_length = 0.0
+                        if not profile_entries or all(
+                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                        ):
+                            inlet_ppm_profile = 0.0
+                            outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
+                        f"dra_inlet_ppm_{stn_data['name']}": inlet_ppm_profile,
+                        f"dra_outlet_ppm_{stn_data['name']}": outlet_ppm_profile,
                     })
                     # Accumulate cost and update dynamic state.  When comparing states
                     # with the same residual bucket, prefer the one with lower cost
