@@ -13,6 +13,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import dra_utils
+import pipeline_model
 
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
@@ -4456,6 +4457,181 @@ def test_dra_profile_preserves_baseline_after_injection() -> None:
     assert dra_segments_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
     assert dra_segments_hour2[2][0] == pytest.approx(segment_length - pumped_length * 2.0, rel=1e-6)
     assert dra_segments_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_time_series_solver_updates_profiles_with_queue(monkeypatch) -> None:
+    import pipeline_optimization_app as app
+
+    diameter = 0.8
+    stations_base = [
+        {"name": "A", "L": 200.0, "is_pump": True, "d_inner": diameter},
+        {"name": "B", "L": 300.0, "is_pump": True, "d_inner": diameter},
+        {"name": "C", "L": 180.0, "is_pump": True, "d_inner": diameter},
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+
+    speed_kmh = 3.0
+    flow_m3h = pipeline_model._volume_from_km(speed_kmh, diameter)
+    total_length = sum(stn["L"] for stn in stations_base)
+
+    linefill_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": pipeline_model._volume_from_km(total_length, diameter),
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 810.0,
+                app.INIT_DRA_COL: 5.0,
+            }
+        ]
+    )
+    linefill_df = app.ensure_initial_dra_column(linefill_df, default=5.0, fill_blanks=True)
+    linefill_df["DRA ppm"] = 5.0
+    dra_linefill = app.df_to_dra_linefill(linefill_df)
+    current_vol = app.apply_dra_ppm(linefill_df.copy(), dra_linefill)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan Batch",
+                "Volume (m³)": flow_m3h * 2.0,
+                "Viscosity (cSt)": 3.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    call_count = {"value": 0}
+
+    def _stub_solver(
+        stations,
+        term_data,
+        flow_rate,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        fuel_density,
+        ambient_temp,
+        dra_linefill_in,
+        dra_reach_km,
+        mop_kgcm2,
+        *,
+        hours,
+        start_time,
+        pump_shear_rate,
+        forced_origin_detail=None,
+        **_kwargs,
+    ):
+        diameter_local = float(stations[0].get("d_inner") or 0.0)
+        pumped_length = pipeline_model._km_from_volume(flow_rate * hours, diameter_local)
+
+        if call_count["value"] == 0:
+            queue_layout = [
+                (3.0, 0.0),
+                (197.0, 5.0),
+                (3.0, 0.0),
+                (297.0, 5.0),
+                (3.0, 0.0),
+                (177.0, 5.0),
+            ]
+        else:
+            queue_layout = [
+                (6.0, 0.0),
+                (194.0, 5.0),
+                (6.0, 0.0),
+                (294.0, 5.0),
+                (6.0, 0.0),
+                (174.0, 5.0),
+            ]
+
+        call_count["value"] += 1
+
+        linefill_out = [
+            {
+                "length_km": length,
+                "dra_ppm": ppm if ppm > 0.0 else 0.0,
+                "volume": pipeline_model._volume_from_km(length, diameter_local)
+                if diameter_local > 0.0
+                else 0.0,
+            }
+            for length, ppm in queue_layout
+        ]
+
+        result = {
+            "error": False,
+            "total_cost": 0.0,
+            "dra_front_km": pumped_length,
+            "linefill": linefill_out,
+            "dra_segments": [
+                {"length_km": length, "dra_ppm": ppm}
+                for length, ppm in queue_layout
+            ],
+            "stations_used": copy.deepcopy(stations),
+        }
+
+        return result
+
+    monkeypatch.setattr(app, "solve_pipeline", _stub_solver)
+
+    reports_result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        [7, 8],
+        flow_rate=flow_m3h,
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=total_length,
+        sub_steps=1,
+    )
+
+    assert reports_result["error"] is None
+    reports = reports_result["reports"]
+    assert len(reports) == 2
+
+    def _profile_lengths(report_idx: int) -> dict[str, list[tuple[float, float]]]:
+        result = reports[report_idx]["result"]
+        return {
+            key[len("dra_profile_"):]: [
+                (float(entry.get("length_km", 0.0) or 0.0), float(entry.get("dra_ppm", 0.0) or 0.0))
+                for entry in value
+            ]
+            for key, value in result.items()
+            if key.startswith("dra_profile_") and isinstance(value, list)
+        }
+
+    profile_hour1 = _profile_lengths(0)
+    profile_hour2 = _profile_lengths(1)
+
+    override_hour1 = reports[0]["result"].get("dra_profile_override", {})
+    override_hour2 = reports[1]["result"].get("dra_profile_override", {})
+
+    assert override_hour1.get("a") == [(3.0, 0.0), (197.0, 5.0)]
+    assert override_hour1.get("b") == [(3.0, 0.0), (297.0, 5.0)]
+    assert override_hour1.get("c") == [(3.0, 0.0), (177.0, 5.0)]
+
+    assert override_hour2.get("a") == [(6.0, 0.0), (194.0, 5.0)]
+    assert override_hour2.get("b") == [(6.0, 0.0), (294.0, 5.0)]
+    assert override_hour2.get("c") == [(6.0, 0.0), (174.0, 5.0)]
+
+    assert profile_hour1["a"] == [(197.0, 5.0)]
+    assert profile_hour1["b"] == [(297.0, 5.0)]
+    assert profile_hour1["c"] == [(177.0, 5.0)]
+
+    assert profile_hour2["a"] == [(194.0, 5.0)]
+    assert profile_hour2["b"] == [(294.0, 5.0)]
+    assert profile_hour2["c"] == [(174.0, 5.0)]
 
 
 def test_update_mainline_dra_retains_lower_injection_than_baseline() -> None:
