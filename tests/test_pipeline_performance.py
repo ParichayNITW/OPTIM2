@@ -2597,6 +2597,110 @@ def test_time_series_solver_propagates_plan_dra_into_queue(monkeypatch):
     assert final_linefill[0].get("dra_ppm", 0.0) == pytest.approx(6.5)
 
 
+def test_time_series_solver_extends_zero_plan_injections(monkeypatch):
+    import copy
+
+    import pipeline_model as pm
+    import pipeline_optimization_app as app
+
+    stations_base = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "L": 12.0,
+            "D": 0.7,
+            "t": 0.007,
+            "max_pumps": 1,
+        }
+    ]
+    term_data = {"name": "Terminal", "elev": 0.0, "min_residual": 5.0}
+    hours = [0]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": 1200.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 4.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Untreated Batch",
+                "Volume (m³)": 800.0,
+                "Viscosity (cSt)": 2.3,
+                "Density (kg/m³)": 818.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        dra_linefill_in = copy.deepcopy(solver_args[10])
+        origin_diameter = stations_base[0]["D"]
+        linefill_out: list[dict] = []
+        for entry in dra_linefill_in:
+            entry_copy = copy.deepcopy(entry)
+            if "length_km" not in entry_copy:
+                volume_val = float(entry_copy.get("volume", 0.0) or 0.0)
+                entry_copy["length_km"] = pm._km_from_volume(volume_val, origin_diameter)
+            linefill_out.append(entry_copy)
+        return {
+            "error": False,
+            "total_cost": 0.0,
+            "linefill": linefill_out,
+            "dra_segments": [
+                {"length_km": ent.get("length_km", 0.0), "dra_ppm": ent.get("dra_ppm", 0.0)}
+                for ent in linefill_out
+            ],
+            "dra_front_km": 0.0,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    flow_rate = 400.0
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=flow_rate,
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    assert result["error"] is None
+    final_linefill = result["final_dra_linefill"]
+    assert isinstance(final_linefill, list) and final_linefill
+    head = final_linefill[0]
+    assert head.get("dra_ppm", 1.0) == pytest.approx(0.0)
+    expected_length = pm._km_from_volume(flow_rate, stations_base[0]["D"])
+    assert head.get("length_km", 0.0) == pytest.approx(expected_length)
+
+    reports = result.get("reports") or []
+    assert reports, "Expected at least one hourly report"
+    override = reports[0]["result"].get("dra_profile_override", {})
+    profile = override.get("station_a")
+    assert profile is not None and profile[0][1] == pytest.approx(0.0)
+
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
         {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
