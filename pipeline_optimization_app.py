@@ -3189,6 +3189,8 @@ def build_summary_dataframe(
 
 def _normalise_queue_segments(
     segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
+    *,
+    include_zero: bool = False,
 ) -> list[tuple[float, float]]:
     """Return queue segments as ``(length_km, ppm)`` tuples."""
 
@@ -3216,8 +3218,12 @@ def _normalise_queue_segments(
             ppm_val = float(ppm_raw or 0.0)
         except (TypeError, ValueError):
             ppm_val = 0.0
-        if ppm_val <= 0.0:
+
+        if ppm_val <= 0.0 and not include_zero:
             continue
+
+        if ppm_val < 0.0 and include_zero:
+            ppm_val = 0.0
 
         normalised.append((length_val, ppm_val))
 
@@ -3227,13 +3233,15 @@ def _normalise_queue_segments(
 def _build_profiles_from_queue(
     queue_segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
     stations: Sequence[Mapping[str, object]] | None,
+    *,
+    include_zero: bool = False,
 ) -> dict[str, list[tuple[float, float]]]:
     """Slice ``queue_segments`` per station to build downstream profiles."""
 
     if not stations:
         return {}
 
-    queue = _normalise_queue_segments(queue_segments)
+    queue = _normalise_queue_segments(queue_segments, include_zero=include_zero)
     if not queue:
         return {}
 
@@ -3251,7 +3259,8 @@ def _build_profiles_from_queue(
 
         seg_start = offset
         seg_end = offset + seg_length
-        entries: list[tuple[float, float]] = []
+        entries_all: list[tuple[float, float]] = []
+        entries_positive: list[tuple[float, float]] = []
 
         cursor = 0.0
         for length_val, ppm_val in queue:
@@ -3259,21 +3268,37 @@ def _build_profiles_from_queue(
             overlap_start = max(cursor, seg_start)
             overlap_end = min(next_cursor, seg_end)
             overlap = overlap_end - overlap_start
-            if overlap > 1e-9 and ppm_val > 0.0:
-                entries.append((overlap, ppm_val))
+            if overlap > 1e-9:
+                entries_all.append((overlap, ppm_val))
+                if ppm_val > 0.0:
+                    entries_positive.append((overlap, ppm_val))
             cursor = next_cursor
             if cursor >= seg_end - 1e-9:
                 break
 
-        treated = sum(length for length, _ppm in entries)
-        if seg_length - treated > 1e-6:
+        treated = sum(length for length, _ppm in entries_positive)
+        covered = sum(length for length, _ppm in entries_all)
+        remaining = seg_length - treated
+        remaining_all = seg_length - covered
+
+        if remaining > 1e-6 or (include_zero and remaining_all > 1e-6):
             fallback = stn.get("fallback_dra_ppm", 0.0)
             try:
                 fallback_val = float(fallback or 0.0)
             except (TypeError, ValueError):
                 fallback_val = 0.0
-            if fallback_val > 0.0:
-                entries.append((seg_length - treated, fallback_val))
+
+            positive_gap = seg_length - treated
+            if positive_gap > 1e-6 and fallback_val > 0.0:
+                entries_positive.append((positive_gap, fallback_val))
+                entries_all.append((positive_gap, fallback_val))
+                treated += positive_gap
+                covered += positive_gap
+            elif include_zero and remaining_all > 1e-6:
+                entries_all.append((remaining_all, 0.0))
+                covered += remaining_all
+
+        entries = entries_all if include_zero else entries_positive
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
@@ -5055,9 +5080,33 @@ def _execute_time_series_solver(
 
         queue_segments = res.get("dra_segments") if isinstance(res, Mapping) else None
         if isinstance(queue_segments, list):
-            profile_override = _build_profiles_from_queue(queue_segments, stations_base)
+            profile_override = _build_profiles_from_queue(
+                queue_segments, stations_base, include_zero=True
+            )
             if profile_override:
                 res["dra_profile_override"] = profile_override
+
+                for key_norm, profile_entries in profile_override.items():
+                    serialised = [
+                        {"length_km": float(length), "dra_ppm": float(ppm)}
+                        for length, ppm in profile_entries
+                        if float(length or 0.0) > 0.0 and float(ppm or 0.0) > 0.0
+                    ]
+                    res[f"dra_profile_{key_norm}"] = serialised
+
+                    treated_length = sum(
+                        float(length)
+                        for length, ppm in profile_entries
+                        if float(length or 0.0) > 0.0 and float(ppm or 0.0) > 0.0
+                    )
+                    res[f"dra_treated_length_{key_norm}"] = treated_length
+
+                    if profile_entries:
+                        res[f"dra_inlet_ppm_{key_norm}"] = float(profile_entries[0][1] or 0.0)
+                        res[f"dra_outlet_ppm_{key_norm}"] = float(profile_entries[-1][1] or 0.0)
+                    else:
+                        res[f"dra_inlet_ppm_{key_norm}"] = 0.0
+                        res[f"dra_outlet_ppm_{key_norm}"] = 0.0
 
         reports.append(
             {
