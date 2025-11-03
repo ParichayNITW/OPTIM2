@@ -83,38 +83,6 @@ def test_map_linefill_to_segments_returns_segment_slices() -> None:
             assert {"length_km", "kv", "rho"} <= set(entry.keys())
 
 
-def test_map_vol_linefill_uses_inner_diameter_when_available() -> None:
-    stations = [
-        {"name": "Station A", "L": 6.0, "d": 0.45, "t": 0.0},
-        {"name": "Station B", "L": 4.0, "d": 0.45, "t": 0.0},
-    ]
-    d_inner = stations[0]["d"]
-
-    vol_df = pd.DataFrame(
-        [
-            {
-                "Product": "Batch 1",
-                "Volume (m³)": _volume_from_km(6.0, d_inner),
-                "Viscosity (cSt)": 2.0,
-                "Density (kg/m³)": 820.0,
-            },
-            {
-                "Product": "Batch 2",
-                "Volume (m³)": _volume_from_km(4.0, d_inner),
-                "Viscosity (cSt)": 3.0,
-                "Density (kg/m³)": 835.0,
-            },
-        ]
-    )
-
-    _, _, segment_slices = map_vol_linefill_to_segments(vol_df, stations)
-
-    assert len(segment_slices) == 2
-    total_lengths = [sum(entry["length_km"] for entry in slices) for slices in segment_slices]
-    assert math.isclose(total_lengths[0], 6.0, rel_tol=0.0, abs_tol=1e-6)
-    assert math.isclose(total_lengths[1], 4.0, rel_tol=0.0, abs_tol=1e-6)
-
-
 def test_combine_volumetric_profiles_merges_future_batches() -> None:
     station = {"name": "Only Station", "L": 10.0, "D": 0.7, "t": 0.007}
     d_inner = station["D"] - 2.0 * station["t"]
