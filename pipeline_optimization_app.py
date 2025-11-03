@@ -5076,12 +5076,43 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
 
     detail = result.get("failure_detail")
     executed: list[str] = []
+    message_parts: list[str] = []
+    hour_index: int | None = None
+
     if isinstance(detail, Mapping):
         passes = detail.get("executed_passes")
         if isinstance(passes, Sequence):
             executed = [str(p).lower() for p in passes]
+        msg = detail.get("message")
+        if isinstance(msg, str):
+            message_parts.append(msg.lower())
+        hour_idx_val = detail.get("hour_index")
+        try:
+            if hour_idx_val is not None:
+                hour_index = int(hour_idx_val)
+        except (TypeError, ValueError):
+            hour_index = None
 
-    return "exhaustive" in executed
+    err_msg = result.get("error")
+    if isinstance(err_msg, str):
+        message_parts.append(err_msg.lower())
+
+    if "exhaustive" in executed:
+        return True
+
+    reports = result.get("reports")
+    has_reports = isinstance(reports, Sequence) and len(reports) > 0
+    first_hour_failure = hour_index in (None, 0)
+
+    if has_reports or not first_hour_failure:
+        return False
+
+    if not message_parts:
+        return False
+
+    combined = " ".join(message_parts)
+    keywords = ("feasible", "viscosity", "flow rate", "flowrate", "flow-rate")
+    return any(word in combined for word in keywords)
 
 
 def _find_maximum_feasible_flow(
