@@ -66,8 +66,8 @@ def test_apply_dra_ppm_splits_rows_at_queue_boundaries(
     assert restored.tolist() == pytest.approx(df["Volume (m³)"].tolist())
 
 
-def test_build_station_table_includes_dra_profile_columns() -> None:
-    """Station tables should expose inlet/outlet ppm and profile strings."""
+def test_build_station_table_reports_profile_without_inlet_outlet() -> None:
+    """Station tables should focus on DRA profiles without inlet/outlet columns."""
 
     res = {
         'stations_used': [
@@ -125,8 +125,6 @@ def test_build_station_table_includes_dra_profile_columns() -> None:
             {'length_km': 3.0, 'dra_ppm': 10.0},
         ],
         'dra_treated_length_station_a': 5.0,
-        'dra_inlet_ppm_station_a': 12.0,
-        'dra_outlet_ppm_station_a': 10.0,
     }
 
     base_stations = [
@@ -141,22 +139,20 @@ def test_build_station_table_includes_dra_profile_columns() -> None:
     ]
 
     df = build_station_table(res, base_stations)
-    assert 'DRA Inlet PPM' in df.columns
-    assert 'DRA Outlet PPM' in df.columns
+    assert 'DRA Inlet PPM' not in df.columns
+    assert 'DRA Outlet PPM' not in df.columns
     assert 'DRA Treated Length (km)' in df.columns
     assert 'DRA Untreated Length (km)' in df.columns
     assert 'DRA Profile (km@ppm)' in df.columns
 
     row = df.iloc[0]
-    assert row['DRA Inlet PPM'] == pytest.approx(12.0, rel=1e-9)
-    assert row['DRA Outlet PPM'] == pytest.approx(10.0, rel=1e-9)
     assert row['DRA Treated Length (km)'] == pytest.approx(5.0, rel=1e-9)
     assert row['DRA Untreated Length (km)'] == pytest.approx(3.0, rel=1e-9)
     profile_str = row['DRA Profile (km@ppm)']
     assert isinstance(profile_str, str)
-    assert '2.00 km @ 12.00 ppm' in profile_str
-    assert '1.00 km @ 0.00 ppm' in profile_str
-    assert '3.00 km @ 10.00 ppm' in profile_str
+    assert '2.00 km@ 12.00 ppm' in profile_str
+    assert '1.00 km@ 0.00 ppm' in profile_str
+    assert '3.00 km@ 10.00 ppm' in profile_str
 
 
 def test_build_station_table_computes_defaults_when_solver_omits_metrics() -> None:
@@ -215,11 +211,9 @@ def test_build_station_table_computes_defaults_when_solver_omits_metrics() -> No
 
     assert row['DRA Treated Length (km)'] == pytest.approx(4.0, rel=1e-9)
     assert row['DRA Untreated Length (km)'] == pytest.approx(8.0, rel=1e-9)
-    assert row['DRA Inlet PPM'] == pytest.approx(5.0, rel=1e-9)
-    assert row['DRA Outlet PPM'] == pytest.approx(0.0, rel=1e-9)
     profile_str = row['DRA Profile (km@ppm)']
-    assert '4.00 km @ 5.00 ppm' in profile_str
-    assert '6.00 km @ 0.00 ppm' in profile_str
+    assert '4.00 km@ 5.00 ppm' in profile_str
+    assert '6.00 km@ 0.00 ppm' in profile_str
 
 
 def test_build_station_table_includes_zero_ppm_profile_for_floorless_station() -> None:
@@ -261,8 +255,6 @@ def test_build_station_table_includes_zero_ppm_profile_for_floorless_station() -
             {'length_km': 1.5, 'dra_ppm': 0.0},
         ],
         'dra_treated_length_station_c': 0.0,
-        'dra_inlet_ppm_station_c': 0.0,
-        'dra_outlet_ppm_station_c': 0.0,
     }
 
     base_stations = [
@@ -282,9 +274,7 @@ def test_build_station_table_includes_zero_ppm_profile_for_floorless_station() -
 
     assert row['DRA Treated Length (km)'] == pytest.approx(0.0, rel=1e-9)
     assert row['DRA Untreated Length (km)'] == pytest.approx(4.0, rel=1e-9)
-    assert row['DRA Inlet PPM'] == pytest.approx(0.0, rel=1e-9)
-    assert row['DRA Outlet PPM'] == pytest.approx(0.0, rel=1e-9)
     profile_str = row['DRA Profile (km@ppm)']
     assert profile_str.strip() != ''
-    assert '2.50 km @ 0.00 ppm' in profile_str
-    assert '1.50 km @ 0.00 ppm' in profile_str
+    assert '2.50 km@ 0.00 ppm' in profile_str
+    assert '1.50 km@ 0.00 ppm' in profile_str
