@@ -586,9 +586,30 @@ def pipe_cross_section_area_m2(stations: list[dict]) -> float:
 
     if not stations:
         return 0.0
-    D = float(stations[0].get("D", 0.711))
-    t = float(stations[0].get("t", 0.007))
-    d_inner = max(D - 2.0 * t, 0.0)
+    stn0 = stations[0] or {}
+
+    def _coerce(value: object, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return float(default)
+
+    d_inner = _coerce(stn0.get("d_inner"), 0.0)
+    if d_inner <= 0.0:
+        d_inner = _coerce(stn0.get("d"), 0.0)
+
+    if d_inner <= 0.0:
+        outer_d = _coerce(stn0.get("D"), 0.0)
+        thickness = _coerce(stn0.get("t"), 0.0)
+        if outer_d > 0.0 and thickness > 0.0:
+            d_inner = outer_d - 2.0 * thickness
+        elif outer_d > 0.0:
+            d_inner = outer_d
+
+    d_inner = max(d_inner, 0.0)
+    if d_inner <= 0.0:
+        return 0.0
+
     return float((pi * d_inner**2) / 4.0)
 
 
