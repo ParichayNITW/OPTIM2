@@ -5088,6 +5088,38 @@ def test_build_station_table_uses_override_profiles() -> None:
     assert df.loc[0, "DRA Profile (km@ppm)"] == "6.00 km @ 9.00 ppm; 152.00 km @ 4.00 ppm"
 
 
+def test_build_station_table_prefers_injection_field_over_profile_head() -> None:
+    import pipeline_optimization_app as app
+    import pandas as pd
+
+    res = {
+        "stations_used": [{"name": "Paradip", "L": 12.0}],
+        "pipeline_flow_paradip": 0.0,
+        "loopline_flow_paradip": 0.0,
+        "pump_flow_paradip": 0.0,
+        "power_cost_paradip": 0.0,
+        "dra_cost_paradip": 0.0,
+        "dra_ppm_paradip": 0.0,
+        "dra_ppm_loop_paradip": 0.0,
+        "drag_reduction_paradip": 0.0,
+        "drag_reduction_loop_paradip": 0.0,
+        "dra_profile_paradip": [
+            {"length_km": 4.0, "dra_ppm": 0.0},
+            {"length_km": 8.0, "dra_ppm": 6.0},
+        ],
+        "dra_inlet_ppm_paradip": 6.0,
+    }
+
+    base_stations = [{"name": "Paradip", "L": 12.0}]
+    df = app.build_station_table(res, base_stations)
+
+    assert isinstance(df, pd.DataFrame)
+    assert df.loc[0, "DRA Inlet PPM"] == pytest.approx(6.0)
+    profile_str = df.loc[0, "DRA Profile (km@ppm)"]
+    assert "4.00 km @ 0.00 ppm" in profile_str
+    assert "8.00 km @ 6.00 ppm" in profile_str
+
+
 def test_build_profiles_from_queue_preserves_zero_entries() -> None:
     import pipeline_optimization_app as app
 
@@ -5101,6 +5133,28 @@ def test_build_profiles_from_queue_preserves_zero_entries() -> None:
 
     assert "paradip" in profiles
     assert profiles["paradip"] == [(5.0, 0.0), (3.0, 10.0), (2.0, 0.0)]
+
+
+def test_normalise_station_profile_preserves_zero_segments() -> None:
+    import pipeline_model as pm
+
+    raw_profile = (
+        (2.0, 0.0),
+        (3.0, 5.0),
+        (1.5, 0.0),
+        (4.0, 7.0),
+        (0.5, 0.0),
+    )
+
+    normalised = pm._normalise_station_profile(raw_profile)
+
+    assert normalised == [
+        {"length_km": 2.0, "dra_ppm": 0.0},
+        {"length_km": 3.0, "dra_ppm": 5.0},
+        {"length_km": 1.5, "dra_ppm": 0.0},
+        {"length_km": 4.0, "dra_ppm": 7.0},
+        {"length_km": 0.5, "dra_ppm": 0.0},
+    ]
 
 
 def test_normalise_queue_segments_retains_zero_slices() -> None:
