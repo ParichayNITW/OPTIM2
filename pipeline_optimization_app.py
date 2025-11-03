@@ -2502,12 +2502,14 @@ def shift_vol_linefill(
     vol_table: pd.DataFrame,
     pumped_m3: float,
     day_plan: pd.DataFrame | None,
-) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
     """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
 
     Fluid is removed from the terminal end of ``vol_table`` and the same volume
     is injected at the origin from ``day_plan`` if provided.  The updated
-    ``vol_table`` and the (possibly shortened) ``day_plan`` are returned.
+    ``vol_table`` together with the shortened ``day_plan`` and a list of
+    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
+    returned.
     """
 
     # Remove delivered volume from downstream end
@@ -2524,6 +2526,8 @@ def shift_vol_linefill(
             vol_table = vol_table.drop(index=idx)
         idx -= 1
     vol_table = vol_table.reset_index(drop=True)
+
+    injected_batches: list[dict[str, float]] = []
 
     # Inject new product at upstream end according to day plan
     if day_plan is not None:
@@ -2548,14 +2552,170 @@ def shift_vol_linefill(
             if pd.isna(ppm_value):
                 ppm_value = 0.0
             batch[INIT_DRA_COL] = ppm_value
+            if "DRA ppm" in vol_table.columns or "DRA ppm" in day_plan.columns:
+                batch["DRA ppm"] = ppm_value
             vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
             day_plan.at[j, "Volume (m³)"] = v - take
             added -= take
+            if take > 1e-9:
+                injected_batches.append({"volume": float(take), "dra_ppm": ppm_value})
             if day_plan.at[j, "Volume (m³)"] <= 1e-9:
                 j += 1
         day_plan = day_plan.iloc[j:].reset_index(drop=True)
 
-    return vol_table, day_plan
+    if injected_batches:
+        injected_batches = [
+            {
+                "volume": float(batch.get("volume", 0.0)),
+                "dra_ppm": float(batch.get("dra_ppm", 0.0)),
+            }
+            for batch in reversed(injected_batches)
+        ]
+
+    return vol_table, day_plan, injected_batches
+
+
+def _build_forced_detail_from_batches(
+    batches: Sequence[Mapping[str, object]] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    *,
+    plan_df: pd.DataFrame | None = None,
+) -> dict[str, object] | None:
+    """Convert plan-injected ``batches`` into a forced-origin detail structure."""
+
+    if not batches:
+        return None
+
+    origin_diameter = 0.0
+    if stations:
+        first = stations[0]
+        if isinstance(first, Mapping):
+            try:
+                origin_diameter = float(
+                    first.get("d_inner")
+                    or first.get("D")
+                    or first.get("d")
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                origin_diameter = 0.0
+
+    plan_segments: list[dict[str, object]] = []
+    total_volume = 0.0
+    max_ppm = 0.0
+
+    for entry in batches:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            volume_val = float(entry.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            volume_val = 0.0
+        if volume_val <= 1e-9:
+            continue
+        try:
+            ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if pd.isna(ppm_val) or ppm_val < 0.0:
+            ppm_val = 0.0
+        if ppm_val <= 0.0:
+            continue
+        length_km = 0.0
+        if origin_diameter > 0.0:
+            length_km = pipeline_model._km_from_volume(volume_val, origin_diameter)
+        total_volume += volume_val
+        max_ppm = max(max_ppm, ppm_val)
+        plan_segments.append({
+            "length_km": length_km,
+            "dra_ppm": ppm_val,
+            "volume_m3": volume_val,
+        })
+
+    if not plan_segments:
+        return None
+
+    total_length = sum(seg.get("length_km", 0.0) for seg in plan_segments)
+    detail: dict[str, object] = {
+        "dra_ppm": max_ppm,
+        "length_km": total_length,
+        "volume_m3": total_volume,
+        "segments": plan_segments,
+        "plan_injections": [
+            {
+                "dra_ppm": seg.get("dra_ppm", 0.0),
+                "volume_m3": seg.get("volume_m3", 0.0),
+            }
+            for seg in plan_segments
+        ],
+        "enforce_queue": True,
+    }
+
+    if isinstance(plan_df, pd.DataFrame):
+        detail["plan_snapshot"] = plan_df.copy()
+
+    return detail
+
+
+def _merge_forced_origin_details(
+    base: Mapping[str, object] | None,
+    addition: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Combine two forced-origin specifications into a single detail."""
+
+    if base is None and addition is None:
+        return None
+    if base is None:
+        return copy.deepcopy(addition) if isinstance(addition, Mapping) else None
+    if addition is None:
+        return copy.deepcopy(base) if isinstance(base, Mapping) else None
+
+    merged = copy.deepcopy(base)
+
+    try:
+        merged["dra_ppm"] = max(
+            float(merged.get("dra_ppm", 0.0) or 0.0),
+            float(addition.get("dra_ppm", 0.0) or 0.0),
+        )
+    except (TypeError, ValueError):
+        merged["dra_ppm"] = float(addition.get("dra_ppm", 0.0) or 0.0)
+
+    try:
+        length_base = float(merged.get("length_km", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        length_base = 0.0
+    try:
+        length_add = float(addition.get("length_km", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        length_add = 0.0
+    merged["length_km"] = max(length_base, length_add)
+
+    try:
+        vol_base = float(merged.get("volume_m3", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        vol_base = 0.0
+    try:
+        vol_add = float(addition.get("volume_m3", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        vol_add = 0.0
+    merged["volume_m3"] = vol_base + vol_add
+
+    segments_base = list(merged.get("segments") or []) if isinstance(merged.get("segments"), list) else []
+    segments_add = list(addition.get("segments") or []) if isinstance(addition.get("segments"), list) else []
+    if segments_add:
+        merged["segments"] = segments_base + copy.deepcopy(segments_add)
+
+    plan_inj_base = list(merged.get("plan_injections") or []) if isinstance(merged.get("plan_injections"), list) else []
+    plan_inj_add = list(addition.get("plan_injections") or []) if isinstance(addition.get("plan_injections"), list) else []
+    if plan_inj_add:
+        merged["plan_injections"] = plan_inj_base + copy.deepcopy(plan_inj_add)
+
+    if addition.get("plan_snapshot") is not None:
+        merged["plan_snapshot"] = copy.deepcopy(addition.get("plan_snapshot"))
+
+    merged["enforce_queue"] = bool(merged.get("enforce_queue", True)) and bool(addition.get("enforce_queue", True))
+
+    return merged
 
 
 def _truncate_day_plan_volume(
@@ -3652,13 +3812,14 @@ def solve_pipeline(
     Price_HSD,
     Fuel_density,
     Ambient_temp,
-    linefill_dict,
+    linefill=None,
     dra_reach_km: float = 0.0,
     mop_kgcm2: float | None = None,
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
+    linefill_dict=None,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -3678,6 +3839,13 @@ def solve_pipeline(
 
     if pump_shear_rate is None:
         pump_shear_rate = st.session_state.get("pump_shear_rate", 0.0)
+
+    if linefill is None:
+        linefill = linefill_dict
+    elif linefill_dict is not None:
+        raise TypeError("Specify only one of 'linefill' or 'linefill_dict'.")
+    if linefill is None:
+        linefill = []
 
     baseline_requirement = copy.deepcopy(st.session_state.get("origin_lacing_baseline"))
     baseline_segments_state = st.session_state.get("origin_lacing_segment_baseline")
@@ -3783,7 +3951,7 @@ def solve_pipeline(
                 Price_HSD,
                 Fuel_density,
                 Ambient_temp,
-                linefill_dict,
+                linefill,
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
@@ -3805,7 +3973,7 @@ def solve_pipeline(
                 Price_HSD,
                 Fuel_density,
                 Ambient_temp,
-                linefill_dict,
+                linefill,
                 dra_reach_km,
                 mop_kgcm2,
                 hours,
@@ -4848,8 +5016,13 @@ def _execute_time_series_solver(
         forced_detail_used: dict | None = None
         for sub in range(sub_steps):
             pumped_tmp = flow_rate * 1.0
-            future_vol, future_plan = shift_vol_linefill(
+            future_vol, future_plan, injected_batches = shift_vol_linefill(
                 current_vol_local.copy(), pumped_tmp, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
+            )
+            plan_forced_detail = _build_forced_detail_from_batches(
+                injected_batches,
+                stations_base,
+                plan_df=plan_local if isinstance(plan_local, pd.DataFrame) else None,
             )
             kv_list, rho_list, segment_slices = combine_volumetric_profiles(
                 stations_base, current_vol_local, future_vol
@@ -4862,6 +5035,11 @@ def _execute_time_series_solver(
                 detail_obj = state.get("origin_enforced_detail")
                 if isinstance(detail_obj, dict):
                     forced_detail = copy.deepcopy(detail_obj)
+            if plan_forced_detail:
+                if forced_detail is not None:
+                    forced_detail = _merge_forced_origin_details(forced_detail, plan_forced_detail)
+                else:
+                    forced_detail = copy.deepcopy(plan_forced_detail)
             res = solve_pipeline(
                 stns_run,
                 term_data,
@@ -5930,7 +6108,14 @@ if not auto_batch:
 
                     try:
                         kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations_base)
-                        future_vol, current_plan = shift_vol_linefill(current_vol.copy(), pumped_m3, current_plan)
+                        future_vol, current_plan, injected_batches = shift_vol_linefill(
+                            current_vol.copy(), pumped_m3, current_plan
+                        )
+                        plan_forced_detail = _build_forced_detail_from_batches(
+                            injected_batches,
+                            stations_base,
+                            plan_df=current_plan,
+                        )
                         kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations_base)
                     except ValueError as e:
                         st.error(str(e))
@@ -5956,6 +6141,7 @@ if not auto_batch:
                         st.session_state.get("MOP_kgcm2"),
                         hours=duration_hr,
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        forced_origin_detail=plan_forced_detail,
                     )
                     if res.get("error"):
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
