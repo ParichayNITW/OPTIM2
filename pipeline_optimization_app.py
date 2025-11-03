@@ -5124,7 +5124,20 @@ def _find_maximum_feasible_flow(
 
     import copy as _copy
 
-    initial_total = base_flow * hours_count
+    # Track the requested throughput so we can report the exact shortfall when
+    # a reduced plan is required.  When a day plan is provided we prefer its
+    # stated total so rounding differences (or partially entered schedules)
+    # propagate consistently to the fallback summary.
+    if (
+        not is_hourly
+        and isinstance(plan_df, pd.DataFrame)
+        and "Volume (m³)" in plan_df.columns
+    ):
+        initial_total = float(
+            pd.to_numeric(plan_df["Volume (m³)"], errors="coerce").fillna(0.0).sum()
+        )
+    else:
+        initial_total = base_flow * hours_count
     flow_candidate = base_flow - step
     while flow_candidate > 0.0:
         candidate_total = flow_candidate * hours_count
@@ -5136,6 +5149,13 @@ def _find_maximum_feasible_flow(
         vol_candidate = current_vol.copy()
         plan_for_solver = plan_candidate.copy() if isinstance(plan_candidate, pd.DataFrame) else None
         dra_candidate = _copy.deepcopy(dra_linefill)
+
+        if isinstance(plan_candidate, pd.DataFrame) and "Volume (m³)" in plan_candidate.columns:
+            plan_candidate_total = float(
+                pd.to_numeric(plan_candidate["Volume (m³)"], errors="coerce").fillna(0.0).sum()
+            )
+        else:
+            plan_candidate_total = candidate_total
 
         solver_result = _execute_time_series_solver(
             stations_base,
@@ -5158,12 +5178,13 @@ def _find_maximum_feasible_flow(
 
         if not solver_result.get("error"):
             plan_output = plan_candidate.copy() if isinstance(plan_candidate, pd.DataFrame) else None
-            reduction = initial_total - candidate_total
+            total_throughput = plan_candidate_total
+            reduction = max(initial_total - total_throughput, 0.0)
             return {
                 "flow_rate": flow_candidate,
                 "solver_result": solver_result,
                 "plan_df": plan_output,
-                "total_throughput": candidate_total,
+                "total_throughput": total_throughput,
                 "reduction": reduction,
             }
 
