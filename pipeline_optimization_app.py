@@ -1624,40 +1624,27 @@ with st.sidebar:
     if mode == "Flow rate":
         # Flow rate is already captured as FLOW above.
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
-        desired_linefill_order = [
-            "Product",
-            "Volume (m³)",
-            "Density (kg/m³)",
-            "Viscosity (cSt)",
-            INIT_DRA_COL,
-        ]
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1"],
                 "Volume (m³)": [50000.0],
-                "Density (kg/m³)": [810.0],
                 "Viscosity (cSt)": [5.0],
+                "Density (kg/m³)": [810.0],
                 INIT_DRA_COL: [0.0],
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-            existing_cols = [
-                col
-                for col in desired_linefill_order
-                if col in st.session_state["linefill_vol_df"].columns
-            ]
-            remaining_cols = [
-                col
-                for col in st.session_state["linefill_vol_df"].columns
-                if col not in existing_cols
-            ]
-            st.session_state["linefill_vol_df"] = st.session_state["linefill_vol_df"][
-                existing_cols + remaining_cols
-            ]
         lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -1666,79 +1653,53 @@ with st.sidebar:
         st.session_state["linefill_df"] = lf_df
     elif mode == "Daily Pumping Schedule":
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
-        desired_linefill_order = [
-            "Product",
-            "Volume (m³)",
-            "Density (kg/m³)",
-            "Viscosity (cSt)",
-            INIT_DRA_COL,
-        ]
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1", "Product-2", "Product-3"],
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
-                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 INIT_DRA_COL: [0.0] * 3,
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-            existing_cols = [
-                col
-                for col in desired_linefill_order
-                if col in st.session_state["linefill_vol_df"].columns
-            ]
-            remaining_cols = [
-                col
-                for col in st.session_state["linefill_vol_df"].columns
-                if col not in existing_cols
-            ]
-            st.session_state["linefill_vol_df"] = st.session_state["linefill_vol_df"][
-                existing_cols + remaining_cols
-            ]
         lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
         st.session_state["linefill_df"] = lf_df
         st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
-        desired_day_plan_order = [
-            "Product",
-            "Volume (m³)",
-            "Density (kg/m³)",
-            "Viscosity (cSt)",
-            INIT_DRA_COL,
-        ]
         if "day_plan_df" not in st.session_state:
             st.session_state["day_plan_df"] = pd.DataFrame({
                 "Product": ["Product-4", "Product-5", "Product-6", "Product-7"],
                 "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
-                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0],
                 "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
+                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0],
                 INIT_DRA_COL: [0.0] * 4,
             })
         else:
             ensure_initial_dra_column(st.session_state["day_plan_df"], default=0.0, fill_blanks=True)
-            existing_cols = [
-                col
-                for col in desired_day_plan_order
-                if col in st.session_state["day_plan_df"].columns
-            ]
-            remaining_cols = [
-                col
-                for col in st.session_state["day_plan_df"].columns
-                if col not in existing_cols
-            ]
-            st.session_state["day_plan_df"] = st.session_state["day_plan_df"][
-                existing_cols + remaining_cols
-            ]
         day_df = data_editor_copy(
             st.session_state["day_plan_df"],
             num_rows="dynamic",
             key="day_plan_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
         hourly_flow = st.number_input(
@@ -1749,40 +1710,27 @@ with st.sidebar:
         st.session_state["hourly_flow"] = hourly_flow
     else:
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
-        desired_linefill_order = [
-            "Product",
-            "Volume (m³)",
-            "Density (kg/m³)",
-            "Viscosity (cSt)",
-            INIT_DRA_COL,
-        ]
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1", "Product-2", "Product-3"],
                 "Volume (m³)": [50000.0, 40000.0, 15000.0],
-                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 INIT_DRA_COL: [0.0] * 3,
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
-            existing_cols = [
-                col
-                for col in desired_linefill_order
-                if col in st.session_state["linefill_vol_df"].columns
-            ]
-            remaining_cols = [
-                col
-                for col in st.session_state["linefill_vol_df"].columns
-                if col not in existing_cols
-            ]
-            st.session_state["linefill_vol_df"] = st.session_state["linefill_vol_df"][
-                existing_cols + remaining_cols
-            ]
         lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+                INIT_DRA_COL,
+            ],
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -1830,6 +1778,12 @@ with st.sidebar:
                 "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)"),
                 "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)"),
             },
+            column_order=[
+                "Product",
+                "Volume (m³)",
+                "Density (kg/m³)",
+                "Viscosity (cSt)",
+            ],
         )
         st.session_state["proj_plan_df"] = proj_df
 
