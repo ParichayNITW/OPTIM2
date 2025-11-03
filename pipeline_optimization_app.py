@@ -2575,6 +2575,125 @@ def shift_vol_linefill(
     return vol_table, day_plan, injected_batches
 
 
+def _append_zero_plan_segments_to_result(
+    result: Mapping[str, object] | None,
+    injected_batches: Sequence[Mapping[str, object]] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    *,
+    pipeline_length_km: float,
+) -> None:
+    """Extend solver results so untreated plan volumes appear as zero-ppm slugs."""
+
+    if not isinstance(result, Mapping) or not injected_batches:
+        return
+
+    try:
+        total_length = float(pipeline_length_km)
+    except (TypeError, ValueError):
+        total_length = 0.0
+    if total_length <= 0.0:
+        return
+
+    origin_diameter = 0.0
+    if stations:
+        first_station = stations[0]
+        if isinstance(first_station, Mapping):
+            for key in ("d_inner", "D", "d"):
+                try:
+                    origin_diameter = float(first_station.get(key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    origin_diameter = 0.0
+                if origin_diameter > 0.0:
+                    break
+    if origin_diameter <= 0.0:
+        return
+
+    zero_length = 0.0
+    for batch in injected_batches:
+        if not isinstance(batch, Mapping):
+            continue
+        try:
+            volume = float(batch.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            volume = 0.0
+        if volume <= 1e-9:
+            continue
+        try:
+            ppm_val = float(batch.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val > 0.0:
+            break
+        length_val = pipeline_model._km_from_volume(volume, origin_diameter)
+        if length_val > 0.0:
+            zero_length += length_val
+
+    if zero_length <= 1e-9:
+        return
+
+    linefill_raw = result.get("linefill")
+    queue_entries: list[tuple[float, float]] = []
+    if isinstance(linefill_raw, Sequence):
+        for entry in linefill_raw:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                length = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length = 0.0
+            if length <= 0.0:
+                try:
+                    vol_entry = float(entry.get("volume", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    vol_entry = 0.0
+                if vol_entry > 0.0:
+                    length = pipeline_model._km_from_volume(vol_entry, origin_diameter)
+            if length <= 1e-9:
+                continue
+            try:
+                ppm_entry = float(entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_entry = 0.0
+            queue_entries.append((length, ppm_entry if ppm_entry > 0.0 else 0.0))
+
+    if queue_entries:
+        head_length, head_ppm = queue_entries[0]
+        if head_ppm <= 0.0:
+            if head_length < zero_length - 1e-9:
+                queue_entries[0] = (zero_length, 0.0)
+        else:
+            queue_entries = [(zero_length, 0.0)] + queue_entries
+    else:
+        queue_entries = [(zero_length, 0.0)]
+
+    queue_entries = pipeline_model._merge_queue(queue_entries)
+    total_queue = sum(length for length, _ppm in queue_entries)
+    if total_queue > total_length + 1e-9:
+        trimmed, _ = pipeline_model._trim_queue_tail(queue_entries, total_queue - total_length)
+        queue_entries = pipeline_model._merge_queue(trimmed)
+
+    linefill_entries: list[dict[str, float]] = []
+    for length, ppm in queue_entries:
+        if length <= 0.0:
+            continue
+        linefill_entries.append(
+            {
+                "length_km": float(length),
+                "dra_ppm": float(ppm if ppm > 0.0 else 0.0),
+                "volume": pipeline_model._volume_from_km(length, origin_diameter),
+            }
+        )
+
+    if not linefill_entries:
+        return
+
+    result["linefill"] = linefill_entries
+    result["dra_segments"] = [
+        {"length_km": entry["length_km"], "dra_ppm": entry["dra_ppm"]}
+        for entry in linefill_entries
+    ]
+
+
 def _build_forced_detail_from_batches(
     batches: Sequence[Mapping[str, object]] | None,
     stations: Sequence[Mapping[str, object]] | None,
@@ -5073,6 +5192,13 @@ def _execute_time_series_solver(
             )
 
             block_cost += res.get("total_cost", 0.0)
+
+            _append_zero_plan_segments_to_result(
+                res,
+                injected_batches,
+                stations_base,
+                pipeline_length_km=total_length,
+            )
 
             if forced_detail and not forced_detail_used:
                 forced_detail_used = copy.deepcopy(forced_detail)
