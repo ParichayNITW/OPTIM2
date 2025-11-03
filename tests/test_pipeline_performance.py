@@ -779,11 +779,17 @@ def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
     assert attempts == [150.0, 100.0, 50.0]
 
 
-def test_should_attempt_max_flow_requires_exhaustive():
+def test_should_attempt_max_flow_detects_infeasible_message():
     import pipeline_optimization_app as app
 
-    result = {"error": "failed", "failure_detail": {"executed_passes": ["coarse"]}}
-    assert not app._should_attempt_max_flow_fallback(result)
+    result = {
+        "error": "Optimization failed at 07:00 -> No feasible pump combination found for stations.",
+        "failure_detail": {
+            "executed_passes": ["coarse"],
+            "message": "No feasible pump combination found for stations.",
+        },
+    }
+    assert app._should_attempt_max_flow_fallback(result)
 
     result["failure_detail"]["executed_passes"].append("exhaustive")
     assert app._should_attempt_max_flow_fallback(result)
