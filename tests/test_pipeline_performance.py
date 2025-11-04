@@ -2832,6 +2832,123 @@ def test_time_series_solver_records_hourly_dra_profiles(monkeypatch):
     assert hourly_profiles["station_b"][1][0]["dra_ppm"] == pytest.approx(30.0)
     assert hourly_profiles["station_c"][1][0]["dra_ppm"] == pytest.approx(5.0)
 
+
+def test_dra_profile_override_respects_explicit_empty_profile(monkeypatch):
+    import copy
+
+    import pipeline_model as pm
+    import pipeline_optimization_app as app
+
+    stations_base = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "D": 0.7, "t": 0.007},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "D": 0.7, "t": 0.007},
+    ]
+    term_data = {"name": "Haldia", "elev": 0.0, "min_residual": 5.0}
+    hours = [0]
+
+    inner_diameter = stations_base[0]["D"] - 2 * stations_base[0]["t"]
+    flow_rate = pm._volume_from_km(10.0, inner_diameter)
+
+    def fake_solver(*solver_args, **solver_kwargs):
+        result = {
+            "error": False,
+            "total_cost": 0.0,
+            "dra_front_km": 0.0,
+            "linefill": [],
+            "dra_segments": [
+                {"length_km": 158.0, "dra_ppm": 25.0},
+                {"length_km": 170.0, "dra_ppm": 25.0},
+            ],
+            "dra_profile_paradip": [],
+            "dra_profile_balasore": [],
+            "stations_used": copy.deepcopy(stations_base),
+        }
+        for stn in stations_base:
+            key = stn["name"].strip().lower().replace(" ", "_")
+            result[f"pipeline_flow_{key}"] = 0.0
+            result[f"loopline_flow_{key}"] = 0.0
+            result[f"pump_flow_{key}"] = 0.0
+            result[f"power_cost_{key}"] = 0.0
+            result[f"dra_cost_{key}"] = 0.0
+            result[f"dra_ppm_{key}"] = 0.0
+            result[f"dra_ppm_loop_{key}"] = 0.0
+            result[f"num_pumps_{key}"] = 0
+            result[f"efficiency_{key}"] = 0.0
+            result[f"pump_bkw_{key}"] = 0.0
+            result[f"motor_kw_{key}"] = 0.0
+            result[f"reynolds_{key}"] = 0.0
+            result[f"head_loss_{key}"] = 0.0
+            result[f"head_loss_kgcm2_{key}"] = 0.0
+            result[f"residual_head_{key}"] = 0.0
+            result[f"rh_kgcm2_{key}"] = 0.0
+            result[f"sdh_{key}"] = 0.0
+            result[f"sdh_kgcm2_{key}"] = 0.0
+            result[f"maop_{key}"] = 0.0
+            result[f"maop_kgcm2_{key}"] = 0.0
+            result[f"drag_reduction_{key}"] = 0.0
+            result[f"drag_reduction_loop_{key}"] = 0.0
+        return result
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch",
+                "Volume (m³)": 500.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill: list[dict] = []
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Plan",
+                "Volume (m³)": 200.0,
+                "Viscosity (cSt)": 2.3,
+                "Density (kg/m³)": 818.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    result = app._execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=flow_rate,
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=5.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=1.0,
+        total_length=sum(stn["L"] for stn in stations_base),
+        sub_steps=1,
+    )
+
+    hourly_profiles = result.get("dra_profiles_hourly") or {}
+    assert hourly_profiles.get("paradip") == [[]]
+    assert hourly_profiles.get("balasore") == [[]]
+
+    report = result.get("reports", [])[0]["result"]
+    table = app.build_station_table(report, stations_base)
+    paradip_row = table.loc[table["Station"] == "Paradip", "DRA Profile (km@ppm)"].iloc[0]
+    balasore_row = table.loc[table["Station"] == "Balasore", "DRA Profile (km@ppm)"].iloc[0]
+    assert paradip_row == ""
+    assert balasore_row == ""
+
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
         {"name": "Station A", "L": 6.0, "D": 0.7, "t": 0.007},
