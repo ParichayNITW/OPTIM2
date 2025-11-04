@@ -5471,7 +5471,8 @@ def test_build_station_table_prefers_injection_field_over_profile_head() -> None
     df = app.build_station_table(res, base_stations)
 
     assert isinstance(df, pd.DataFrame)
-    assert df.loc[0, "DRA Inlet PPM"] == pytest.approx(6.0)
+    assert "DRA Inlet PPM" not in df.columns
+    assert "DRA Outlet PPM" not in df.columns
     profile_str = df.loc[0, "DRA Profile (km@ppm)"]
     assert "4.00 km @ 0.00 ppm" in profile_str
     assert "8.00 km @ 6.00 ppm" in profile_str

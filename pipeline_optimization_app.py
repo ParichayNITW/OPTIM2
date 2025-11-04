@@ -2662,7 +2662,7 @@ def _append_zero_plan_segments_to_result(
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
         else:
-            queue_entries = [(zero_length, 0.0)] + queue_entries
+            queue_entries = queue_entries + [(zero_length, 0.0)]
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -3609,24 +3609,16 @@ def _build_profiles_from_queue(
 
         treated = sum(length for length, _ppm in entries)
         untreated = max(seg_length - treated, 0.0)
-        if untreated > 1e-6:
-            fallback = stn.get("fallback_dra_ppm", 0.0)
-            try:
-                fallback_val = float(fallback or 0.0)
-            except (TypeError, ValueError):
-                fallback_val = 0.0
-            if pd.isna(fallback_val) or fallback_val < 0.0:
-                fallback_val = 0.0
-            if fallback_val > 0.0:
-                entries.append((untreated, fallback_val))
-            else:
-                entries.append((untreated, 0.0))
+        if untreated > 1e-9:
+            entries.append((untreated, 0.0))
 
-        if entries:
-            merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
-            key = stn.get("name", f"station_{idx}")
-            key_norm = _normalise_station_name(key)
-            profiles[key_norm] = merged
+        if not entries:
+            entries = [(seg_length, 0.0)]
+
+        merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
+        key = stn.get("name", f"station_{idx}")
+        key_norm = _normalise_station_name(key)
+        profiles[key_norm] = merged
 
         offset += seg_length
 
@@ -3796,35 +3788,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
 
-        inlet_ppm_val = res.get(f"dra_inlet_ppm_{key}")
-        if inlet_ppm_val is None and isinstance(stn, dict):
-            inlet_ppm_val = _lookup_station_field(
-                res,
-                'dra_inlet_ppm',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        inlet_ppm = _float_or_none(inlet_ppm_val)
-        if inlet_ppm is None:
-            inlet_ppm = 0.0
-            for length_val, ppm_val in profile_entries:
-                if float(ppm_val or 0.0) > 0.0:
-                    inlet_ppm = float(ppm_val)
-                    break
-            else:
-                inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
-
-        outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
-        if outlet_ppm_val is None and isinstance(stn, dict):
-            outlet_ppm_val = _lookup_station_field(
-                res,
-                'dra_outlet_ppm',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        outlet_ppm = _float_or_none(outlet_ppm_val)
-        if outlet_ppm is None:
-            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -3832,8 +3795,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         else:
             profile_str = ""
 
-        row['DRA Inlet PPM'] = inlet_ppm
-        row['DRA Outlet PPM'] = outlet_ppm
         row['DRA Treated Length (km)'] = treated_length
         base_length = _float_or_none(base_stn.get('L')) if isinstance(base_stn, dict) else None
         if base_length is None:
@@ -5308,19 +5269,48 @@ def _execute_time_series_solver(
             prev_result = reports[ti - 1]["result"] if ti - 1 < len(reports) else {}
             prev_front = float(prev_result.get("dra_front_km", 0.0) or 0.0)
             untreated_head_km = 0.0
-            prev_linefill = prev_result.get("linefill") if isinstance(prev_result, dict) else None
-            if isinstance(prev_linefill, list):
-                for entry in prev_linefill:
-                    if not isinstance(entry, dict):
+            entries: object | None = None
+            if isinstance(prev_result, Mapping):
+                entries = prev_result.get("linefill")
+            if not isinstance(entries, list) and isinstance(prev_state, Mapping):
+                entries = prev_state.get("dra_linefill")
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, Mapping):
                         continue
-                    ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    try:
+                        ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        ppm_val = 0.0
                     if ppm_val > 0.0:
                         break
-                    length_raw = entry.get("length_km", 0.0)
+                    length_raw = entry.get("length_km")
+                    if length_raw in (None, ""):
+                        length_raw = entry.get("length")
                     try:
                         length_val = float(length_raw)
                     except (TypeError, ValueError):
-                        length_val = 0.0
+                        try:
+                            volume_val = float(entry.get("volume", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            volume_val = 0.0
+                        if volume_val > 0.0:
+                            origin_station = stations_base[0] if stations_base else {}
+                            diameter = 0.0
+                            if isinstance(origin_station, Mapping):
+                                for key in ("d_inner", "D", "d"):
+                                    try:
+                                        diameter = float(origin_station.get(key, 0.0) or 0.0)
+                                    except (TypeError, ValueError):
+                                        diameter = 0.0
+                                    if diameter > 0.0:
+                                        break
+                            if diameter > 0.0:
+                                length_val = pipeline_model._km_from_volume(volume_val, diameter)
+                            else:
+                                length_val = 0.0
+                        else:
+                            length_val = 0.0
                     if length_val <= 0.0:
                         continue
                     untreated_head_km += max(length_val, 0.0)
