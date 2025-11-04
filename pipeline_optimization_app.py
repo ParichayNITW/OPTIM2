@@ -3730,7 +3730,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         }
 
         profile_entries: list[tuple[float, float]] = []
-        override_entry = override_profiles.get(key)
 
         def _extend_from_iterable(iterable: Iterable[object]) -> None:
             for entry in iterable:
@@ -3753,34 +3752,37 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     continue
                 profile_entries.append((length_f, ppm_f))
 
-        profile_present = False
-        raw_profile: object | None = None
-        if isinstance(res, Mapping):
+        override_entry: object | None = None
+        if isinstance(override_profiles, Mapping):
+            override_entry = override_profiles.get(key)
+            if (not override_entry) and isinstance(stn, dict):
+                alt_key = _normalise_station_name(stn.get('orig_name'))
+                if alt_key:
+                    override_entry = override_profiles.get(alt_key)
+
+        if override_entry:
+            if isinstance(override_entry, (list, tuple)):
+                _extend_from_iterable(override_entry)
+            elif isinstance(override_entry, Mapping):
+                _extend_from_iterable(override_entry.items())  # type: ignore[arg-type]
+
+        if not profile_entries and isinstance(res, Mapping):
+            raw_profile: object | None = None
             if isinstance(stn, dict):
                 for suffix in _candidate_suffixes(stn.get('name', name), stn.get('orig_name')):
                     lookup_key = f'dra_profile_{suffix}'
                     if lookup_key in res:
                         raw_profile = res.get(lookup_key)
-                        profile_present = True
                         break
             else:
                 direct_key = f'dra_profile_{key}'
                 if direct_key in res:
                     raw_profile = res.get(direct_key)
-                    profile_present = True
 
-        iterable_profile: Iterable[object] | None
-        if isinstance(raw_profile, (list, tuple)):
-            iterable_profile = raw_profile
-        elif isinstance(raw_profile, Mapping):
-            iterable_profile = raw_profile.items()  # type: ignore[assignment]
-        else:
-            iterable_profile = None
-
-        if iterable_profile is not None:
-            _extend_from_iterable(iterable_profile)
-        elif isinstance(override_entry, list) and override_entry and not profile_present:
-            _extend_from_iterable(override_entry)
+            if isinstance(raw_profile, (list, tuple)):
+                _extend_from_iterable(raw_profile)
+            elif isinstance(raw_profile, Mapping):
+                _extend_from_iterable(raw_profile.items())  # type: ignore[arg-type]
 
         treated_length_val = res.get(f"dra_treated_length_{key}")
         if treated_length_val is None and isinstance(stn, dict):
@@ -5429,13 +5431,22 @@ def _execute_time_series_solver(
             if not key_norm:
                 continue
 
-            profile_entries: object | None = None
-            profile_present = False
-            if isinstance(res, Mapping):
+            override_entries: object | None = None
+            if profile_override:
+                override_key = key_norm
+                if not profile_override.get(override_key) and isinstance(stn, Mapping):
+                    alt_key = _normalise_station_name(stn.get("orig_name"))
+                    if alt_key and profile_override.get(alt_key):
+                        override_key = alt_key
+                override_entries = profile_override.get(override_key)
+
+            normalised_entries = _normalise_profile_entries(override_entries)
+
+            if not normalised_entries and isinstance(res, Mapping):
+                profile_entries: object | None = None
                 direct_key = f"dra_profile_{key_norm}"
                 if direct_key in res:
                     profile_entries = res.get(direct_key)
-                    profile_present = True
                 elif isinstance(stn, Mapping):
                     for suffix in _candidate_suffixes(
                         stn.get("name", name), stn.get("orig_name")
@@ -5443,23 +5454,9 @@ def _execute_time_series_solver(
                         lookup_key = f"dra_profile_{suffix}"
                         if lookup_key in res:
                             profile_entries = res.get(lookup_key)
-                            profile_present = True
                             break
 
-            normalised_entries = _normalise_profile_entries(profile_entries)
-            if (
-                not normalised_entries
-                and not profile_present
-                and profile_override
-            ):
-                override_key = key_norm
-                if not profile_override.get(override_key) and isinstance(stn, Mapping):
-                    alt_key = _normalise_station_name(stn.get("orig_name"))
-                    if alt_key and profile_override.get(alt_key):
-                        override_key = alt_key
-                override_entries = profile_override.get(override_key)
-                if override_entries:
-                    normalised_entries = _normalise_profile_entries(override_entries)
+                normalised_entries = _normalise_profile_entries(profile_entries)
 
             hourly_profiles.setdefault(key_norm, []).append(copy.deepcopy(normalised_entries))
 
