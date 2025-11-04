@@ -3445,6 +3445,47 @@ def build_summary_dataframe(
     return df_sum
 
 
+def _normalise_station_name(name: str | None) -> str:
+    """Return a normalised key for station lookups."""
+
+    if not name:
+        return ""
+    return str(name).strip().lower().replace(" ", "_")
+
+
+def _candidate_suffixes(primary: str, alternate: str | None = None) -> list[str]:
+    """Return possible key suffixes for a station field."""
+
+    names: list[str] = []
+    for value in (primary, alternate):
+        if not value:
+            continue
+        text = str(value)
+        if not text:
+            continue
+        normalised = _normalise_station_name(text)
+        if normalised and normalised not in names:
+            names.append(normalised)
+        if text not in names:
+            names.append(text)
+    return names
+
+
+def _lookup_station_field(
+    source: Mapping[str, object],
+    prefix: str,
+    name_primary: str,
+    name_alt: str | None = None,
+) -> object:
+    """Return a station-specific field value from ``source`` when present."""
+
+    for suffix in _candidate_suffixes(name_primary, name_alt):
+        key_variant = f"{prefix}_{suffix}"
+        if key_variant in source:
+            return source.get(key_variant)
+    return None
+
+
 def _normalise_queue_segments(
     segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
 ) -> list[tuple[float, float]]:
@@ -3480,6 +3521,48 @@ def _normalise_queue_segments(
         normalised.append((length_val, ppm_val))
 
     return normalised
+
+
+def _normalise_profile_entries(profile: object | None) -> list[dict[str, float]]:
+    """Return a list of ``{"length_km", "dra_ppm"}`` dictionaries."""
+
+    if profile is None:
+        return []
+
+    if isinstance(profile, Mapping):
+        iterable: Iterable[object] = profile.items()
+    elif isinstance(profile, Sequence):
+        iterable = profile  # type: ignore[assignment]
+    else:
+        return []
+
+    entries: list[dict[str, float]] = []
+    for entry in iterable:
+        if isinstance(entry, Mapping):
+            length_raw = entry.get("length_km", 0.0)
+            ppm_raw = entry.get("dra_ppm", 0.0)
+        elif isinstance(entry, Sequence) and len(entry) >= 2:
+            length_raw, ppm_raw = entry[0], entry[1]
+        else:
+            continue
+
+        try:
+            length_val = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val <= 0.0:
+            continue
+
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if pd.isna(ppm_val):
+            ppm_val = 0.0
+
+        entries.append({"length_km": length_val, "dra_ppm": ppm_val})
+
+    return entries
 
 
 def _build_profiles_from_queue(
@@ -3542,7 +3625,7 @@ def _build_profiles_from_queue(
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
             key = stn.get("name", f"station_{idx}")
-            key_norm = str(key).lower().replace(" ", "_")
+            key_norm = _normalise_station_name(key)
             profiles[key_norm] = merged
 
         offset += seg_length
@@ -3576,31 +3659,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     if not isinstance(override_profiles, Mapping):
         override_profiles = {}
 
-    def _candidate_suffixes(primary: str, alternate: str | None = None) -> list[str]:
-        names: list[str] = []
-        for value in (primary, alternate):
-            if not value:
-                continue
-            text = str(value)
-            if not text:
-                continue
-            normalised = text.lower().replace(' ', '_')
-            if normalised not in names:
-                names.append(normalised)
-            if text not in names:
-                names.append(text)
-        return names
-
-    def _get_station_field(prefix: str, name_primary: str, name_alt: str | None = None) -> object:
-        for suffix in _candidate_suffixes(name_primary, name_alt):
-            key_variant = f"{prefix}_{suffix}"
-            if key_variant in res:
-                return res.get(key_variant)
-        return None
-
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
-        key = name.lower().replace(' ', '_')
+        key = _normalise_station_name(name)
         if f"pipeline_flow_{key}" not in res:
             continue
 
@@ -3692,35 +3753,39 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                     continue
                 profile_entries.append((length_f, ppm_f))
 
-        if isinstance(override_entry, list) and override_entry:
-            _extend_from_iterable(override_entry)
-        else:
-            raw_profile: object | None
+        profile_present = False
+        raw_profile: object | None = None
+        if isinstance(res, Mapping):
             if isinstance(stn, dict):
-                raw_profile = _get_station_field(
-                    'dra_profile',
-                    stn.get('name', name),
-                    stn.get('orig_name'),
-                )
+                for suffix in _candidate_suffixes(stn.get('name', name), stn.get('orig_name')):
+                    lookup_key = f'dra_profile_{suffix}'
+                    if lookup_key in res:
+                        raw_profile = res.get(lookup_key)
+                        profile_present = True
+                        break
             else:
-                raw_profile = _get_station_field('dra_profile', name)
+                direct_key = f'dra_profile_{key}'
+                if direct_key in res:
+                    raw_profile = res.get(direct_key)
+                    profile_present = True
 
-            iterable_profile: Iterable[object] | None
-            if isinstance(raw_profile, (list, tuple)):
-                iterable_profile = raw_profile
-            elif isinstance(raw_profile, Mapping):
-                iterable_profile = raw_profile.items()  # type: ignore[assignment]
-            else:
-                iterable_profile = None
+        iterable_profile: Iterable[object] | None
+        if isinstance(raw_profile, (list, tuple)):
+            iterable_profile = raw_profile
+        elif isinstance(raw_profile, Mapping):
+            iterable_profile = raw_profile.items()  # type: ignore[assignment]
+        else:
+            iterable_profile = None
 
-            if iterable_profile is not None:
-                _extend_from_iterable(iterable_profile)
-            elif isinstance(override_entry, list):
-                _extend_from_iterable(override_entry)
+        if iterable_profile is not None:
+            _extend_from_iterable(iterable_profile)
+        elif isinstance(override_entry, list) and override_entry and not profile_present:
+            _extend_from_iterable(override_entry)
 
         treated_length_val = res.get(f"dra_treated_length_{key}")
         if treated_length_val is None and isinstance(stn, dict):
-            treated_length_val = _get_station_field(
+            treated_length_val = _lookup_station_field(
+                res,
                 'dra_treated_length',
                 stn.get('name', name),
                 stn.get('orig_name'),
@@ -3731,7 +3796,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         inlet_ppm_val = res.get(f"dra_inlet_ppm_{key}")
         if inlet_ppm_val is None and isinstance(stn, dict):
-            inlet_ppm_val = _get_station_field(
+            inlet_ppm_val = _lookup_station_field(
+                res,
                 'dra_inlet_ppm',
                 stn.get('name', name),
                 stn.get('orig_name'),
@@ -3748,20 +3814,15 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
 
         outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
         if outlet_ppm_val is None and isinstance(stn, dict):
-            outlet_ppm_val = _get_station_field(
+            outlet_ppm_val = _lookup_station_field(
+                res,
                 'dra_outlet_ppm',
                 stn.get('name', name),
                 stn.get('orig_name'),
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = 0.0
-            for length_val, ppm_val in reversed(profile_entries):
-                if float(ppm_val or 0.0) > 0.0:
-                    outlet_ppm = float(ppm_val)
-                    break
-            else:
-                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -4565,7 +4626,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
@@ -5111,6 +5172,7 @@ def _execute_time_series_solver(
     backtracked = False
     backtrack_notes: list[str] = []
     enforced_actions: list[dict] = []
+    hourly_profiles: dict[str, list[list[dict[str, float]]]] = {}
 
     error_msg: str | None = None
     failure_detail: dict[str, object] | None = None
@@ -5355,10 +5417,51 @@ def _execute_time_series_solver(
         res["total_cost"] = block_cost
 
         queue_segments = res.get("dra_segments") if isinstance(res, Mapping) else None
+        profile_override: dict[str, list[tuple[float, float]]] = {}
         if isinstance(queue_segments, list):
             profile_override = _build_profiles_from_queue(queue_segments, stations_base)
             if profile_override:
                 res["dra_profile_override"] = profile_override
+
+        for stn in stations_base:
+            name = stn.get("name", "") if isinstance(stn, Mapping) else str(stn)
+            key_norm = _normalise_station_name(name)
+            if not key_norm:
+                continue
+
+            profile_entries: object | None = None
+            profile_present = False
+            if isinstance(res, Mapping):
+                direct_key = f"dra_profile_{key_norm}"
+                if direct_key in res:
+                    profile_entries = res.get(direct_key)
+                    profile_present = True
+                elif isinstance(stn, Mapping):
+                    for suffix in _candidate_suffixes(
+                        stn.get("name", name), stn.get("orig_name")
+                    ):
+                        lookup_key = f"dra_profile_{suffix}"
+                        if lookup_key in res:
+                            profile_entries = res.get(lookup_key)
+                            profile_present = True
+                            break
+
+            normalised_entries = _normalise_profile_entries(profile_entries)
+            if (
+                not normalised_entries
+                and not profile_present
+                and profile_override
+            ):
+                override_key = key_norm
+                if not profile_override.get(override_key) and isinstance(stn, Mapping):
+                    alt_key = _normalise_station_name(stn.get("orig_name"))
+                    if alt_key and profile_override.get(alt_key):
+                        override_key = alt_key
+                override_entries = profile_override.get(override_key)
+                if override_entries:
+                    normalised_entries = _normalise_profile_entries(override_entries)
+
+            hourly_profiles.setdefault(key_norm, []).append(copy.deepcopy(normalised_entries))
 
         reports.append(
             {
@@ -5383,6 +5486,7 @@ def _execute_time_series_solver(
         "backtrack_notes": backtrack_notes,
         "enforced_origin_actions": enforced_actions,
         "failure_detail": copy.deepcopy(failure_detail) if isinstance(failure_detail, dict) else None,
+        "dra_profiles_hourly": hourly_profiles,
     }
     return result
 
