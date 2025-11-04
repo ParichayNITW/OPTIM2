@@ -2724,9 +2724,9 @@ def test_time_series_solver_records_hourly_dra_profiles(monkeypatch):
     hourly_outputs = [
         {
             "profiles": {
-                "dra_profile_station_a": [{"length_km": 7.0, "dra_ppm": 20.0}],
-                "dra_profile_station_b": [{"length_km": 7.0, "dra_ppm": 0.0}],
-                "dra_profile_station_c": [{"length_km": 7.0, "dra_ppm": 0.0}],
+                "dra_profile_station_a": [{"length_km": 7.0, "dra_ppm": 1.0}],
+                "dra_profile_station_b": [{"length_km": 7.0, "dra_ppm": 1.0}],
+                "dra_profile_station_c": [{"length_km": 7.0, "dra_ppm": 1.0}],
             },
             "linefill": [
                 {"length_km": 7.0, "dra_ppm": 20.0, "volume": segment_volume},
@@ -2739,9 +2739,9 @@ def test_time_series_solver_records_hourly_dra_profiles(monkeypatch):
         },
         {
             "profiles": {
-                "dra_profile_station_a": [{"length_km": 7.0, "dra_ppm": 15.0}],
-                "dra_profile_station_b": [{"length_km": 7.0, "dra_ppm": 30.0}],
-                "dra_profile_station_c": [{"length_km": 7.0, "dra_ppm": 5.0}],
+                "dra_profile_station_a": [{"length_km": 7.0, "dra_ppm": 2.0}],
+                "dra_profile_station_b": [{"length_km": 7.0, "dra_ppm": 2.0}],
+                "dra_profile_station_c": [{"length_km": 7.0, "dra_ppm": 2.0}],
             },
             "linefill": [
                 {"length_km": 7.0, "dra_ppm": 15.0, "volume": segment_volume},
@@ -2826,14 +2826,24 @@ def test_time_series_solver_records_hourly_dra_profiles(monkeypatch):
     hourly_profiles = result.get("dra_profiles_hourly") or {}
     assert set(hourly_profiles.keys()) == {"station_a", "station_b", "station_c"}
     assert len(hourly_profiles["station_a"]) == 2
-    assert hourly_profiles["station_a"][0][0]["dra_ppm"] == pytest.approx(20.0)
-    assert hourly_profiles["station_a"][1][0]["dra_ppm"] == pytest.approx(15.0)
-    assert hourly_profiles["station_b"][0][0]["dra_ppm"] == pytest.approx(0.0)
-    assert hourly_profiles["station_b"][1][0]["dra_ppm"] == pytest.approx(30.0)
-    assert hourly_profiles["station_c"][1][0]["dra_ppm"] == pytest.approx(5.0)
+    ppm_hour0_a = {round(entry["dra_ppm"], 5) for entry in hourly_profiles["station_a"][0]}
+    ppm_hour1_a = {round(entry["dra_ppm"], 5) for entry in hourly_profiles["station_a"][1]}
+    ppm_hour0_b = {round(entry["dra_ppm"], 5) for entry in hourly_profiles["station_b"][0]}
+    ppm_hour1_b = {round(entry["dra_ppm"], 5) for entry in hourly_profiles["station_b"][1]}
+    ppm_hour1_c = {round(entry["dra_ppm"], 5) for entry in hourly_profiles["station_c"][1]}
+
+    assert 20.0 in ppm_hour0_a
+    assert 15.0 in ppm_hour1_a
+    assert 0.0 in ppm_hour0_b
+    assert 30.0 in ppm_hour1_b
+    assert 5.0 in ppm_hour1_c
+
+    # Solver-supplied placeholder values should not leak into the recorded profiles
+    assert 1.0 not in ppm_hour0_a
+    assert 2.0 not in ppm_hour1_a
 
 
-def test_dra_profile_override_respects_explicit_empty_profile(monkeypatch):
+def test_dra_profile_table_prefers_queue_profiles(monkeypatch):
     import copy
 
     import pipeline_model as pm
@@ -2906,18 +2916,7 @@ def test_dra_profile_override_respects_explicit_empty_profile(monkeypatch):
     dra_linefill: list[dict] = []
     current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
 
-    plan_df = pd.DataFrame(
-        [
-            {
-                "Product": "Plan",
-                "Volume (m³)": 200.0,
-                "Viscosity (cSt)": 2.3,
-                "Density (kg/m³)": 818.0,
-                app.INIT_DRA_COL: 0.0,
-            }
-        ]
-    )
-    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+    plan_df = None
 
     result = app._execute_time_series_solver(
         stations_base,
@@ -2933,21 +2932,27 @@ def test_dra_profile_override_respects_explicit_empty_profile(monkeypatch):
         fuel_density=820.0,
         ambient_temp=25.0,
         mop_kgcm2=100.0,
-        pump_shear_rate=1.0,
+        pump_shear_rate=0.0,
         total_length=sum(stn["L"] for stn in stations_base),
         sub_steps=1,
     )
 
     hourly_profiles = result.get("dra_profiles_hourly") or {}
-    assert hourly_profiles.get("paradip") == [[]]
-    assert hourly_profiles.get("balasore") == [[]]
+    paradip_profiles = hourly_profiles.get("paradip", [[]])[0]
+    balasore_profiles = hourly_profiles.get("balasore", [[]])[0]
+
+    paradip_ppm = {round(entry["dra_ppm"], 5) for entry in paradip_profiles}
+    balasore_ppm = {round(entry["dra_ppm"], 5) for entry in balasore_profiles}
+
+    assert 25.0 in paradip_ppm
+    assert 25.0 in balasore_ppm
 
     report = result.get("reports", [])[0]["result"]
     table = app.build_station_table(report, stations_base)
     paradip_row = table.loc[table["Station"] == "Paradip", "DRA Profile (km@ppm)"].iloc[0]
     balasore_row = table.loc[table["Station"] == "Balasore", "DRA Profile (km@ppm)"].iloc[0]
-    assert paradip_row == ""
-    assert balasore_row == ""
+    assert "158.00 km @ 25.00 ppm" in paradip_row
+    assert "170.00 km @ 25.00 ppm" in balasore_row
 
 def test_kv_rho_from_vol_returns_segment_slices() -> None:
     stations = [
