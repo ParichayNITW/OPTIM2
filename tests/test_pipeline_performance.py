@@ -5515,6 +5515,27 @@ def test_normalise_station_profile_preserves_zero_segments() -> None:
     ]
 
 
+def test_normalise_station_profile_extends_to_segment_length() -> None:
+    import pipeline_model as pm
+
+    raw_profile = ((7.0, 8.0),)
+
+    normalised = pm._normalise_station_profile(raw_profile, segment_length=80.0)
+
+    assert normalised == [
+        {"length_km": 7.0, "dra_ppm": 8.0},
+        {"length_km": 73.0, "dra_ppm": 0.0},
+    ]
+
+
+def test_normalise_station_profile_returns_zero_for_empty_segment() -> None:
+    import pipeline_model as pm
+
+    normalised = pm._normalise_station_profile((), segment_length=158.0)
+
+    assert normalised == [{"length_km": 158.0, "dra_ppm": 0.0}]
+
+
 def test_normalise_queue_segments_retains_zero_slices() -> None:
     import pipeline_optimization_app as app
 

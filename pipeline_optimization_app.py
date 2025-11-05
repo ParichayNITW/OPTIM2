@@ -2609,6 +2609,7 @@ def _append_zero_plan_segments_to_result(
         return
 
     zero_length = 0.0
+    has_positive_injection = False
     for batch in injected_batches:
         if not isinstance(batch, Mapping):
             continue
@@ -2623,7 +2624,8 @@ def _append_zero_plan_segments_to_result(
         except (TypeError, ValueError):
             ppm_val = 0.0
         if ppm_val > 0.0:
-            break
+            has_positive_injection = True
+            continue
         length_val = pipeline_model._km_from_volume(volume, origin_diameter)
         if length_val > 0.0:
             zero_length += length_val
@@ -2658,10 +2660,13 @@ def _append_zero_plan_segments_to_result(
 
     if queue_entries:
         head_length, head_ppm = queue_entries[0]
-        if head_ppm <= 0.0:
-            if head_length < zero_length - 1e-9:
-                queue_entries[0] = (zero_length, 0.0)
-        else:
+        if not has_positive_injection:
+            if head_ppm <= 0.0:
+                target_length = max(head_length, zero_length)
+                queue_entries[0] = (target_length, 0.0)
+            else:
+                queue_entries = [(zero_length, 0.0)] + queue_entries
+        elif zero_length > 0.0:
             queue_entries = queue_entries + [(zero_length, 0.0)]
     else:
         queue_entries = [(zero_length, 0.0)]
