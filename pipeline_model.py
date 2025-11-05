@@ -1702,9 +1702,7 @@ def _update_mainline_dra(
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
-            if not pump_running and inj_effective > 0.0:
-                ppm_out += inj_effective
-            elif not pump_running and inj_effective <= 0.0:
+            if not pump_running:
                 ppm_out = ppm_input
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
@@ -1763,27 +1761,65 @@ def _update_mainline_dra(
                 pumped_portion = updated_portion
                 pumped_adjusted = updated_adjusted
 
-    tail_queue: list[tuple[float, float]]
+    tail_ppm_source = 0.0
+    if pumped_portion:
+        tail_ppm_source = float(pumped_portion[-1][1] or 0.0)
+    elif existing_queue:
+        tail_ppm_source = float(existing_queue[0][1] or 0.0)
+
+    head_slug_ppm = 0.0
     if pump_running:
-        advected_portion = [
+        if inj_effective > 0.0 and pumped_adjusted:
+            tail_length, tail_ppm = pumped_adjusted[-1]
+            tail_length = float(tail_length or 0.0)
+            if tail_length > 0.0:
+                if abs(tail_ppm) > 1e-9:
+                    pumped_differs = True
+                pumped_adjusted[-1] = (tail_length, 0.0)
+        advected_raw = [
             (float(length), float(ppm))
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
+        if head_length > 0.0 and advected_raw:
+            trimmed_advected = _trim_queue_front(tuple(advected_raw), head_length)
+            advected_portion = [
+                (float(length), float(ppm))
+                for length, ppm in trimmed_advected
+                if float(length or 0.0) > 0.0
+            ]
+        else:
+            advected_portion = advected_raw
         if inj_effective > 0.0:
+            head_slug_ppm = max(inj_effective, 0.0)
             tail_queue = list(remaining_queue)
         else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+            head_slug_ppm = 0.0
+            tail_queue = list(remaining_queue)
     else:
-        advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
+        advected_raw = [
+            (float(length), float(ppm))
+            for length, ppm in pumped_adjusted
+            if float(length or 0.0) > 0.0
+        ]
+        if head_length > 0.0 and advected_raw:
+            trimmed_advected = _trim_queue_front(tuple(advected_raw), head_length)
+            advected_portion = [
+                (float(length), float(ppm))
+                for length, ppm in trimmed_advected
+                if float(length or 0.0) > 0.0
+            ]
         else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+            advected_portion = advected_raw
+        tail_queue = list(remaining_queue)
+        if inj_effective > 0.0:
+            head_slug_ppm = max(tail_ppm_source + inj_effective, 0.0)
+        else:
+            head_slug_ppm = max(tail_ppm_source, 0.0)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and inj_effective > 0.0 and head_length > 0.0:
-        combined_entries.append((head_length, max(inj_effective, 0.0)))
+    if head_length > 0.0:
+        combined_entries.append((head_length, head_slug_ppm))
 
     combined_entries.extend(advected_portion)
     combined_entries.extend(tail_queue)
@@ -5963,15 +5999,19 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    inlet_ppm_profile = _profile_edge_ppm(segment_profile_raw)
-                    if inlet_ppm_profile is None:
+                    if profile_entries:
+                        first_entry = profile_entries[0]
+                        last_entry = profile_entries[-1]
                         try:
-                            inlet_ppm_profile = float(inj_ppm_main or 0.0)
+                            inlet_ppm_profile = float(first_entry.get('dra_ppm', 0.0) or 0.0)
                         except (TypeError, ValueError):
                             inlet_ppm_profile = 0.0
-
-                    outlet_ppm_profile = _profile_edge_ppm(segment_profile_raw, reverse=True)
-                    if outlet_ppm_profile is None:
+                        try:
+                            outlet_ppm_profile = float(last_entry.get('dra_ppm', 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            outlet_ppm_profile = 0.0
+                    else:
+                        inlet_ppm_profile = 0.0
                         outlet_ppm_profile = 0.0
 
                     if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:

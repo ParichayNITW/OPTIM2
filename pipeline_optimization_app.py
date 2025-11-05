@@ -3738,13 +3738,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         inlet_ppm = _float_or_none(inlet_ppm_val)
         if inlet_ppm is None:
-            inlet_ppm = 0.0
-            for length_val, ppm_val in profile_entries:
-                if float(ppm_val or 0.0) > 0.0:
-                    inlet_ppm = float(ppm_val)
-                    break
-            else:
-                inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
+            inlet_ppm = float(profile_entries[0][1]) if profile_entries else 0.0
 
         outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
         if outlet_ppm_val is None and isinstance(stn, dict):
@@ -3755,13 +3749,7 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = 0.0
-            for length_val, ppm_val in reversed(profile_entries):
-                if float(ppm_val or 0.0) > 0.0:
-                    outlet_ppm = float(ppm_val)
-                    break
-            else:
-                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+            outlet_ppm = float(profile_entries[-1][1]) if profile_entries else 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -4565,7 +4553,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
@@ -4738,7 +4726,6 @@ def _enforce_minimum_origin_dra(
         queue_entries=queue,
         plan_volume_m3=plan_total_volume,
     )
-
     total_required_length = 0.0
     for seg in segments_to_enforce:
         try:
@@ -4761,6 +4748,19 @@ def _enforce_minimum_origin_dra(
                 for seg in segments_to_enforce[1:]:
                     seg["length_km"] = 0.0
                 total_required_length = float(treatable_limit)
+        else:
+            desired_length = float(treatable_limit)
+            if total_length_value > 0.0:
+                desired_length = min(desired_length, float(total_length_value))
+            if desired_length > total_required_length + 1e-9:
+                scale_up = desired_length / total_required_length if total_required_length > 0.0 else 0.0
+                for seg in segments_to_enforce:
+                    try:
+                        seg_length = float(seg.get("length_km", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        seg_length = 0.0
+                    seg["length_km"] = max(seg_length * scale_up, 0.0)
+                total_required_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in segments_to_enforce)
 
     if total_required_length <= 0.0:
         total_required_length = float(min_length)
