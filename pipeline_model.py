@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from itertools import product
 import math
 
@@ -828,7 +828,7 @@ def _ensure_queue_floor(
 
     total_length_in = sum(length for length, _ppm in normalised)
     if total_length_in > 1e-9:
-        target_length = max(total_length_in, length_val)
+        target_length = total_length_in
     else:
         target_length = length_val
 
@@ -1199,112 +1199,6 @@ def _segment_profile_from_queue(
     return _take_queue_front(segment_queue, seg_len)
 
 
-def _profile_edge_ppm(
-    profile: Sequence[Mapping[str, float]] | Sequence[tuple[float, float]] | None,
-    *,
-    reverse: bool = False,
-) -> float | None:
-    """Return the ppm value of the first positive-length slice in ``profile``.
-
-    The helper mirrors the inlet/outlet lookup performed when recording the DRA
-    profile for each station.  ``profile`` may contain dictionaries with
-    ``length_km`` and ``dra_ppm`` keys or two-item iterables.  A ``None`` value
-    indicates that no entry is available.  Zero-length slices are ignored while
-    zero-ppm slices are preserved so that untreated fluid is reported correctly
-    at the profile edges.
-    """
-
-    if not profile:
-        return None
-
-    iterator: Iterable
-    if reverse:
-        iterator = reversed(profile)
-    else:
-        iterator = iter(profile)
-
-    for raw in iterator:
-        if isinstance(raw, Mapping):
-            length_raw = raw.get('length_km', 0.0)
-            ppm_raw = raw.get('dra_ppm', 0.0)
-        else:
-            try:
-                length_raw, ppm_raw = raw  # type: ignore[misc]
-            except (TypeError, ValueError):
-                continue
-        try:
-            length_val = float(length_raw or 0.0)
-        except (TypeError, ValueError):
-            length_val = 0.0
-        if length_val <= 0.0:
-            continue
-        try:
-            ppm_val = float(ppm_raw or 0.0)
-        except (TypeError, ValueError):
-            ppm_val = 0.0
-        if ppm_val < 0.0:
-            ppm_val = 0.0
-        return ppm_val
-
-    return None
-
-
-def _normalise_station_profile(
-    profile: Sequence[tuple[float, float]] | Sequence[Mapping[str, float]] | None,
-) -> list[dict[str, float]]:
-    """Return a display-ready profile preserving zero-ppm slices.
-
-    ``profile`` may be provided as a sequence of ``(length_km, dra_ppm)`` tuples
-    or dictionaries exposing the same keys.  The helper coalesces consecutive
-    zero-ppm entries so downstream consumers (UI tables, exports) receive a
-    concise yet faithful representation of untreated sections alongside treated
-    slugs.
-    """
-
-    if not profile:
-        return []
-
-    normalised: list[dict[str, float]] = []
-    pending_zero = 0.0
-
-    for entry in profile:
-        if isinstance(entry, Mapping):
-            length_raw = entry.get("length_km", 0.0)
-            ppm_raw = entry.get("dra_ppm", 0.0)
-        else:
-            try:
-                length_raw, ppm_raw = entry  # type: ignore[misc]
-            except (TypeError, ValueError):
-                continue
-
-        try:
-            length_val = float(length_raw or 0.0)
-        except (TypeError, ValueError):
-            length_val = 0.0
-        if length_val <= 0.0:
-            continue
-
-        try:
-            ppm_val = float(ppm_raw or 0.0)
-        except (TypeError, ValueError):
-            ppm_val = 0.0
-
-        if ppm_val <= 0.0:
-            pending_zero += length_val
-            continue
-
-        if pending_zero > 0.0:
-            normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
-            pending_zero = 0.0
-
-        normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
-
-    if pending_zero > 0.0:
-        normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
-
-    return normalised
-
-
 def _predict_effective_injection(
     ppm_requested: float,
     kv: float,
@@ -1660,13 +1554,7 @@ def _update_mainline_dra(
             pumped_portion.append((pumped_remaining, 0.0))
 
     shear_existing = shear
-    if (
-        pump_running
-        and shear_existing > 0.0
-        and is_origin
-        and inj_effective <= 0.0
-        and not apply_injection_shear
-    ):
+    if pump_running and shear_existing > 0.0 and is_origin and not apply_injection_shear:
         shear_existing = 0.0
 
     def _apply_shear(ppm_val: float) -> float:
@@ -1708,9 +1596,7 @@ def _update_mainline_dra(
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
-            if pump_running and inj_effective > 0.0 and is_origin:
-                ppm_out += inj_effective
-            elif not pump_running and inj_effective > 0.0:
+            if not pump_running and inj_effective > 0.0:
                 ppm_out += inj_effective
             elif not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
@@ -1771,36 +1657,30 @@ def _update_mainline_dra(
                 pumped_portion = updated_portion
                 pumped_adjusted = updated_adjusted
 
-    pumped_total = sum(
-        float(length or 0.0)
-        for length, _ppm in pumped_portion
-        if float(length or 0.0) > 0.0
-    )
-
-    head_entries: list[tuple[float, float]] = []
-    if pumped_total > 0.0:
-        if pump_running and inj_effective > 0.0 and not is_origin:
-            head_entries.append((pumped_total, float(max(inj_effective, 0.0))))
+    tail_queue: list[tuple[float, float]]
+    if pump_running:
+        advected_portion = [
+            (float(length), float(ppm))
+            for length, ppm in pumped_adjusted
+            if float(length or 0.0) > 0.0
+        ]
+        if inj_effective > 0.0:
+            tail_queue = list(remaining_queue)
         else:
-            head_entries.extend(
-                (
-                    float(length or 0.0),
-                    float(ppm or 0.0),
-                )
-                for length, ppm in pumped_adjusted
-                if float(length or 0.0) > 0.0
-            )
+            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+    else:
+        advected_portion = pumped_adjusted
+        if inj_effective > 0.0:
+            tail_queue = list(remaining_queue)
+        else:
+            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    combined_entries.extend(head_entries)
-    combined_entries.extend(
-        (
-            float(length or 0.0),
-            float(ppm or 0.0),
-        )
-        for length, ppm in remaining_queue
-        if float(length or 0.0) > 0.0
-    )
+    if pump_running and inj_effective > 0.0 and head_length > 0.0:
+        combined_entries.append((head_length, max(inj_effective, 0.0)))
+
+    combined_entries.extend(advected_portion)
+    combined_entries.extend(tail_queue)
 
     combined_total = _queue_total_length(combined_entries)
 
@@ -1948,13 +1828,8 @@ def _update_mainline_dra(
         if float(length) > 0
     ]
 
-    if segment_length > 0.0:
-        report_queue = [
-            (float(length or 0.0), float(ppm or 0.0))
-            for length, ppm in merged_queue
-            if float(length or 0.0) > 0.0
-        ]
-        profile_source = _segment_profile_from_queue(report_queue, 0.0, segment_length)
+    if segment_length > 0:
+        profile_source = _segment_profile_from_queue(merged_queue, 0.0, segment_length)
     else:
         profile_source = tuple()
 
@@ -2025,9 +1900,7 @@ def _update_mainline_dra(
             dra_segments.append((remaining_length, zero_fill_ppm))
 
     if floor_requires_injection and inj_effective <= 0.0:
-        has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
-        if not has_positive:
-            dra_segments = []
+        dra_segments = []
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
 @njit(cache=True, fastmath=True)
@@ -4705,14 +4578,11 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
-            dra_grid_min = 0
-            dra_grid_max = 0
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
-                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -4743,12 +4613,9 @@ def solve_pipeline(
                             dr_min = dr_max
                 if dr_min > dr_max:
                     dr_min = dr_max
-                dra_grid_min = dr_min
-                dra_grid_max = dr_max
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
-                if dra_main_vals:
-                    dra_grid_min = dra_main_vals[0]
-                    dra_grid_max = dra_main_vals[-1]
+                dra_grid_min = dra_main_vals[0] if dra_main_vals else dr_min
+                dra_grid_max = dra_main_vals[-1] if dra_main_vals else dr_max
                 if not dra_main_vals and dr_max >= 0:
                     dra_main_vals = [dr_max]
                     dra_grid_min = dra_grid_max = dr_max
@@ -5933,27 +5800,44 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
-                    profile_entries = _normalise_station_profile(segment_profile_raw)
+                    profile_entries: list[dict[str, float]] = []
+                    for length, ppm in segment_profile_raw:
+                        try:
+                            length_f = float(length or 0.0)
+                        except (TypeError, ValueError):
+                            length_f = 0.0
+                        try:
+                            ppm_f = float(ppm or 0.0)
+                        except (TypeError, ValueError):
+                            ppm_f = 0.0
+                        if length_f <= 0.0:
+                            continue
+                        if ppm_f <= 0.0:
+                            continue
+                        profile_entries.append({'length_km': length_f, 'dra_ppm': ppm_f})
 
                     treated_profile_length = sum(
                         entry['length_km']
                         for entry in profile_entries
                         if entry['dra_ppm'] > 0.0
                     )
-
-                    inlet_ppm_profile = _profile_edge_ppm(segment_profile_raw)
-                    if inlet_ppm_profile is None:
-                        try:
-                            inlet_ppm_profile = float(inj_ppm_main or 0.0)
-                        except (TypeError, ValueError):
-                            inlet_ppm_profile = 0.0
-
-                    outlet_ppm_profile = _profile_edge_ppm(segment_profile_raw, reverse=True)
-                    if outlet_ppm_profile is None:
-                        outlet_ppm_profile = 0.0
-
-                    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
+                    inlet_ppm_profile = (
+                        profile_entries[0]['dra_ppm']
+                        if profile_entries
+                        else 0.0
+                    )
+                    outlet_ppm_profile = (
+                        profile_entries[-1]['dra_ppm']
+                        if profile_entries
+                        else 0.0
+                    )
+                    if inj_ppm_main <= 0.0:
                         treated_profile_length = 0.0
+                        if not profile_entries or all(
+                            entry['dra_ppm'] <= 0.0 for entry in profile_entries
+                        ):
+                            inlet_ppm_profile = 0.0
+                            outlet_ppm_profile = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
