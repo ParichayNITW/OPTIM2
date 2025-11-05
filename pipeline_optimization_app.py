@@ -586,9 +586,30 @@ def pipe_cross_section_area_m2(stations: list[dict]) -> float:
 
     if not stations:
         return 0.0
-    D = float(stations[0].get("D", 0.711))
-    t = float(stations[0].get("t", 0.007))
-    d_inner = max(D - 2.0 * t, 0.0)
+    stn0 = stations[0] or {}
+
+    def _coerce(value: object, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return float(default)
+
+    d_inner = _coerce(stn0.get("d_inner"), 0.0)
+    if d_inner <= 0.0:
+        d_inner = _coerce(stn0.get("d"), 0.0)
+
+    if d_inner <= 0.0:
+        outer_d = _coerce(stn0.get("D"), 0.0)
+        thickness = _coerce(stn0.get("t"), 0.0)
+        if outer_d > 0.0 and thickness > 0.0:
+            d_inner = outer_d - 2.0 * thickness
+        elif outer_d > 0.0:
+            d_inner = outer_d
+
+    d_inner = max(d_inner, 0.0)
+    if d_inner <= 0.0:
+        return 0.0
+
     return float((pi * d_inner**2) / 4.0)
 
 
@@ -3168,6 +3189,8 @@ def build_summary_dataframe(
 
 def _normalise_queue_segments(
     segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
+    *,
+    include_zero: bool = False,
 ) -> list[tuple[float, float]]:
     """Return queue segments as ``(length_km, ppm)`` tuples."""
 
@@ -3195,8 +3218,12 @@ def _normalise_queue_segments(
             ppm_val = float(ppm_raw or 0.0)
         except (TypeError, ValueError):
             ppm_val = 0.0
-        if ppm_val <= 0.0:
+
+        if ppm_val <= 0.0 and not include_zero:
             continue
+
+        if ppm_val < 0.0 and include_zero:
+            ppm_val = 0.0
 
         normalised.append((length_val, ppm_val))
 
@@ -3206,13 +3233,15 @@ def _normalise_queue_segments(
 def _build_profiles_from_queue(
     queue_segments: Sequence[Mapping[str, object] | Sequence[object]] | None,
     stations: Sequence[Mapping[str, object]] | None,
+    *,
+    include_zero: bool = False,
 ) -> dict[str, list[tuple[float, float]]]:
     """Slice ``queue_segments`` per station to build downstream profiles."""
 
     if not stations:
         return {}
 
-    queue = _normalise_queue_segments(queue_segments)
+    queue = _normalise_queue_segments(queue_segments, include_zero=include_zero)
     if not queue:
         return {}
 
@@ -3230,7 +3259,8 @@ def _build_profiles_from_queue(
 
         seg_start = offset
         seg_end = offset + seg_length
-        entries: list[tuple[float, float]] = []
+        entries_all: list[tuple[float, float]] = []
+        entries_positive: list[tuple[float, float]] = []
 
         cursor = 0.0
         for length_val, ppm_val in queue:
@@ -3238,21 +3268,37 @@ def _build_profiles_from_queue(
             overlap_start = max(cursor, seg_start)
             overlap_end = min(next_cursor, seg_end)
             overlap = overlap_end - overlap_start
-            if overlap > 1e-9 and ppm_val > 0.0:
-                entries.append((overlap, ppm_val))
+            if overlap > 1e-9:
+                entries_all.append((overlap, ppm_val))
+                if ppm_val > 0.0:
+                    entries_positive.append((overlap, ppm_val))
             cursor = next_cursor
             if cursor >= seg_end - 1e-9:
                 break
 
-        treated = sum(length for length, _ppm in entries)
-        if seg_length - treated > 1e-6:
+        treated = sum(length for length, _ppm in entries_positive)
+        covered = sum(length for length, _ppm in entries_all)
+        remaining = seg_length - treated
+        remaining_all = seg_length - covered
+
+        if remaining > 1e-6 or (include_zero and remaining_all > 1e-6):
             fallback = stn.get("fallback_dra_ppm", 0.0)
             try:
                 fallback_val = float(fallback or 0.0)
             except (TypeError, ValueError):
                 fallback_val = 0.0
-            if fallback_val > 0.0:
-                entries.append((seg_length - treated, fallback_val))
+
+            positive_gap = seg_length - treated
+            if positive_gap > 1e-6 and fallback_val > 0.0:
+                entries_positive.append((positive_gap, fallback_val))
+                entries_all.append((positive_gap, fallback_val))
+                treated += positive_gap
+                covered += positive_gap
+            elif include_zero and remaining_all > 1e-6:
+                entries_all.append((remaining_all, 0.0))
+                covered += remaining_all
+
+        entries = entries_all if include_zero else entries_positive
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
@@ -3444,41 +3490,22 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if treated_length is None:
             treated_length = sum(length for length, ppm in profile_entries if ppm > 0)
 
-        inlet_ppm_val = res.get(f"dra_inlet_ppm_{key}")
-        if inlet_ppm_val is None and isinstance(stn, dict):
-            inlet_ppm_val = _get_station_field(
-                'dra_inlet_ppm',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        inlet_ppm = _float_or_none(inlet_ppm_val)
-        if inlet_ppm is None:
-            inlet_ppm = profile_entries[0][1] if profile_entries else 0.0
-
-        outlet_ppm_val = res.get(f"dra_outlet_ppm_{key}")
-        if outlet_ppm_val is None and isinstance(stn, dict):
-            outlet_ppm_val = _get_station_field(
-                'dra_outlet_ppm',
-                stn.get('name', name),
-                stn.get('orig_name'),
-            )
-        outlet_ppm = _float_or_none(outlet_ppm_val)
-        if outlet_ppm is None:
-            outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
-            profile_str = "; ".join(
-                f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
+            profile_str = ", ".join(
+                f"{length:.2f} km@ {ppm:.2f} ppm" for length, ppm in profile_entries
             )
         else:
             profile_str = ""
 
-        row['DRA Inlet PPM'] = inlet_ppm
-        row['DRA Outlet PPM'] = outlet_ppm
+        untreated_length = sum(length for length, ppm in profile_entries if ppm <= 0)
         row['DRA Treated Length (km)'] = treated_length
         base_length = _float_or_none(base_stn.get('L')) if isinstance(base_stn, dict) else None
         if base_length is None:
             base_length = 0.0
-        row['DRA Untreated Length (km)'] = max(base_length - treated_length, 0.0)
+        untreated_candidates = [base_length - treated_length, untreated_length]
+        valid_untreated = [value for value in untreated_candidates if value is not None]
+        untreated_display = max(valid_untreated) if valid_untreated else 0.0
+        row['DRA Untreated Length (km)'] = max(untreated_display, 0.0)
         row['DRA Profile (km@ppm)'] = profile_str
 
         speed_station = base_stn if base_stn else (stn if isinstance(stn, dict) else None)
@@ -5034,9 +5061,38 @@ def _execute_time_series_solver(
 
         queue_segments = res.get("dra_segments") if isinstance(res, Mapping) else None
         if isinstance(queue_segments, list):
-            profile_override = _build_profiles_from_queue(queue_segments, stations_base)
+            profile_override = _build_profiles_from_queue(
+                queue_segments, stations_base, include_zero=True
+            )
             if profile_override:
                 res["dra_profile_override"] = profile_override
+
+                for key_norm, profile_entries in profile_override.items():
+                    serialised: list[dict[str, float]] = []
+                    treated_length = 0.0
+                    for length, ppm in profile_entries:
+                        try:
+                            length_val = float(length or 0.0)
+                        except (TypeError, ValueError):
+                            length_val = 0.0
+                        try:
+                            ppm_val = float(ppm or 0.0)
+                        except (TypeError, ValueError):
+                            ppm_val = 0.0
+                        if length_val <= 0.0:
+                            continue
+                        if ppm_val < 0.0:
+                            ppm_val = 0.0
+                        serialised.append({"length_km": length_val, "dra_ppm": ppm_val})
+                        if ppm_val > 0.0:
+                            treated_length += length_val
+
+                    if serialised:
+                        res[f"dra_profile_{key_norm}"] = serialised
+                    else:
+                        res.pop(f"dra_profile_{key_norm}", None)
+
+                    res[f"dra_treated_length_{key_norm}"] = treated_length
 
         reports.append(
             {
