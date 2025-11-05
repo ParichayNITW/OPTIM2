@@ -5866,21 +5866,51 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    try:
-                        inlet_ppm_profile = float(inj_ppm_main or 0.0)
-                    except (TypeError, ValueError):
-                        inlet_ppm_profile = 0.0
-                    if inlet_ppm_profile <= 0.0:
-                        for entry in profile_entries:
-                            if entry['dra_ppm'] > 0.0:
-                                inlet_ppm_profile = entry['dra_ppm']
-                                break
+                    def _edge_ppm(
+                        profile: Sequence[Mapping[str, float]] | Sequence[tuple[float, float]] | None,
+                        *,
+                        reverse: bool = False,
+                    ) -> float | None:
+                        if not profile:
+                            return None
+                        if reverse:
+                            iterator = reversed(profile)
+                        else:
+                            iterator = iter(profile)
+                        for raw in iterator:
+                            if isinstance(raw, Mapping):
+                                length_raw = raw.get('length_km', 0.0)
+                                ppm_raw = raw.get('dra_ppm', 0.0)
+                            else:
+                                try:
+                                    length_raw, ppm_raw = raw  # type: ignore[misc]
+                                except (TypeError, ValueError):
+                                    continue
+                            try:
+                                length_val = float(length_raw or 0.0)
+                            except (TypeError, ValueError):
+                                length_val = 0.0
+                            if length_val <= 0.0:
+                                continue
+                            try:
+                                ppm_val = float(ppm_raw or 0.0)
+                            except (TypeError, ValueError):
+                                ppm_val = 0.0
+                            if ppm_val < 0.0:
+                                ppm_val = 0.0
+                            return ppm_val
+                        return None
 
-                    outlet_ppm_profile = 0.0
-                    for entry in reversed(profile_entries):
-                        if entry['dra_ppm'] > 0.0:
-                            outlet_ppm_profile = entry['dra_ppm']
-                            break
+                    inlet_ppm_profile = _edge_ppm(segment_profile_raw)
+                    if inlet_ppm_profile is None:
+                        try:
+                            inlet_ppm_profile = float(inj_ppm_main or 0.0)
+                        except (TypeError, ValueError):
+                            inlet_ppm_profile = 0.0
+
+                    outlet_ppm_profile = _edge_ppm(segment_profile_raw, reverse=True)
+                    if outlet_ppm_profile is None:
+                        outlet_ppm_profile = 0.0
 
                     if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
                         treated_profile_length = 0.0
