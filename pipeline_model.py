@@ -1660,7 +1660,13 @@ def _update_mainline_dra(
             pumped_portion.append((pumped_remaining, 0.0))
 
     shear_existing = shear
-    if pump_running and shear_existing > 0.0 and is_origin and not apply_injection_shear:
+    if (
+        pump_running
+        and shear_existing > 0.0
+        and is_origin
+        and inj_effective <= 0.0
+        and not apply_injection_shear
+    ):
         shear_existing = 0.0
 
     def _apply_shear(ppm_val: float) -> float:
@@ -1702,7 +1708,9 @@ def _update_mainline_dra(
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
-            if not pump_running and inj_effective > 0.0:
+            if pump_running and inj_effective > 0.0 and is_origin:
+                ppm_out += inj_effective
+            elif not pump_running and inj_effective > 0.0:
                 ppm_out += inj_effective
             elif not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
@@ -1763,30 +1771,36 @@ def _update_mainline_dra(
                 pumped_portion = updated_portion
                 pumped_adjusted = updated_adjusted
 
-    tail_queue: list[tuple[float, float]]
-    if pump_running:
-        advected_portion = [
-            (float(length), float(ppm))
-            for length, ppm in pumped_adjusted
-            if float(length or 0.0) > 0.0
-        ]
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
+    pumped_total = sum(
+        float(length or 0.0)
+        for length, _ppm in pumped_portion
+        if float(length or 0.0) > 0.0
+    )
+
+    head_entries: list[tuple[float, float]] = []
+    if pumped_total > 0.0:
+        if pump_running and inj_effective > 0.0 and not is_origin:
+            head_entries.append((pumped_total, float(max(inj_effective, 0.0))))
         else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
-    else:
-        advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+            head_entries.extend(
+                (
+                    float(length or 0.0),
+                    float(ppm or 0.0),
+                )
+                for length, ppm in pumped_adjusted
+                if float(length or 0.0) > 0.0
+            )
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and inj_effective > 0.0 and head_length > 0.0:
-        combined_entries.append((head_length, max(inj_effective, 0.0)))
-
-    combined_entries.extend(advected_portion)
-    combined_entries.extend(tail_queue)
+    combined_entries.extend(head_entries)
+    combined_entries.extend(
+        (
+            float(length or 0.0),
+            float(ppm or 0.0),
+        )
+        for length, ppm in remaining_queue
+        if float(length or 0.0) > 0.0
+    )
 
     combined_total = _queue_total_length(combined_entries)
 
@@ -1934,54 +1948,12 @@ def _update_mainline_dra(
         if float(length) > 0
     ]
 
-    report_queue: list[tuple[float, float]]
     if segment_length > 0.0:
         report_queue = [
             (float(length or 0.0), float(ppm or 0.0))
             for length, ppm in merged_queue
             if float(length or 0.0) > 0.0
         ]
-        pumped_total = sum(
-            float(length or 0.0)
-            for length, _ppm in pumped_portion
-            if float(length or 0.0) > 0.0
-        )
-        replacement: list[tuple[float, float]] = []
-        remaining_for_report = list(report_queue)
-        if pump_running and inj_effective > 0.0 and head_length > 0.0:
-            replacement.append((float(head_length), float(max(inj_effective, 0.0))))
-            remaining_for_report = list(_trim_queue_front(remaining_for_report, head_length))
-            if pumped_total > 0.0:
-                remaining_for_report = list(_trim_queue_front(remaining_for_report, pumped_total))
-        else:
-            injected_length = sum(
-                float(length or 0.0)
-                for length, _ppm in pumped_adjusted
-                if float(length or 0.0) > 0.0
-            )
-            if injected_length > 0.0:
-                replacement.extend(
-                    (
-                        float(length or 0.0),
-                        float(ppm or 0.0),
-                    )
-                    for length, ppm in pumped_adjusted
-                    if float(length or 0.0) > 0.0
-                )
-                remaining_for_report = list(_trim_queue_front(remaining_for_report, injected_length))
-        if pumped_total > 0.0:
-            replacement.extend(
-                (
-                    float(length or 0.0),
-                    float(ppm or 0.0),
-                )
-                for length, ppm in pumped_portion
-                if float(length or 0.0) > 0.0
-            )
-        if replacement:
-            report_queue = _merge_queue(replacement + remaining_for_report)
-        else:
-            report_queue = report_queue
         profile_source = _segment_profile_from_queue(report_queue, 0.0, segment_length)
     else:
         profile_source = tuple()
@@ -4733,11 +4705,14 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            dra_grid_min = 0
+            dra_grid_max = 0
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -4768,9 +4743,12 @@ def solve_pipeline(
                             dr_min = dr_max
                 if dr_min > dr_max:
                     dr_min = dr_max
+                dra_grid_min = dr_min
+                dra_grid_max = dr_max
                 dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
-                dra_grid_min = dra_main_vals[0] if dra_main_vals else dr_min
-                dra_grid_max = dra_main_vals[-1] if dra_main_vals else dr_max
+                if dra_main_vals:
+                    dra_grid_min = dra_main_vals[0]
+                    dra_grid_max = dra_main_vals[-1]
                 if not dra_main_vals and dr_max >= 0:
                     dra_main_vals = [dr_max]
                     dra_grid_min = dra_grid_max = dr_max
