@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import product
 import math
 
@@ -1197,6 +1197,56 @@ def _segment_profile_from_queue(
         return ()
 
     return _take_queue_front(segment_queue, seg_len)
+
+
+def _profile_edge_ppm(
+    profile: Sequence[Mapping[str, float]] | Sequence[tuple[float, float]] | None,
+    *,
+    reverse: bool = False,
+) -> float | None:
+    """Return the ppm value of the first positive-length slice in ``profile``.
+
+    The helper mirrors the inlet/outlet lookup performed when recording the DRA
+    profile for each station.  ``profile`` may contain dictionaries with
+    ``length_km`` and ``dra_ppm`` keys or two-item iterables.  A ``None`` value
+    indicates that no entry is available.  Zero-length slices are ignored while
+    zero-ppm slices are preserved so that untreated fluid is reported correctly
+    at the profile edges.
+    """
+
+    if not profile:
+        return None
+
+    iterator: Iterable
+    if reverse:
+        iterator = reversed(profile)
+    else:
+        iterator = iter(profile)
+
+    for raw in iterator:
+        if isinstance(raw, Mapping):
+            length_raw = raw.get('length_km', 0.0)
+            ppm_raw = raw.get('dra_ppm', 0.0)
+        else:
+            try:
+                length_raw, ppm_raw = raw  # type: ignore[misc]
+            except (TypeError, ValueError):
+                continue
+        try:
+            length_val = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val <= 0.0:
+            continue
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if ppm_val < 0.0:
+            ppm_val = 0.0
+        return ppm_val
+
+    return None
 
 
 def _normalise_station_profile(
@@ -5866,49 +5916,14 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    def _edge_ppm(
-                        profile: Sequence[Mapping[str, float]] | Sequence[tuple[float, float]] | None,
-                        *,
-                        reverse: bool = False,
-                    ) -> float | None:
-                        if not profile:
-                            return None
-                        if reverse:
-                            iterator = reversed(profile)
-                        else:
-                            iterator = iter(profile)
-                        for raw in iterator:
-                            if isinstance(raw, Mapping):
-                                length_raw = raw.get('length_km', 0.0)
-                                ppm_raw = raw.get('dra_ppm', 0.0)
-                            else:
-                                try:
-                                    length_raw, ppm_raw = raw  # type: ignore[misc]
-                                except (TypeError, ValueError):
-                                    continue
-                            try:
-                                length_val = float(length_raw or 0.0)
-                            except (TypeError, ValueError):
-                                length_val = 0.0
-                            if length_val <= 0.0:
-                                continue
-                            try:
-                                ppm_val = float(ppm_raw or 0.0)
-                            except (TypeError, ValueError):
-                                ppm_val = 0.0
-                            if ppm_val < 0.0:
-                                ppm_val = 0.0
-                            return ppm_val
-                        return None
-
-                    inlet_ppm_profile = _edge_ppm(segment_profile_raw)
+                    inlet_ppm_profile = _profile_edge_ppm(segment_profile_raw)
                     if inlet_ppm_profile is None:
                         try:
                             inlet_ppm_profile = float(inj_ppm_main or 0.0)
                         except (TypeError, ValueError):
                             inlet_ppm_profile = 0.0
 
-                    outlet_ppm_profile = _edge_ppm(segment_profile_raw, reverse=True)
+                    outlet_ppm_profile = _profile_edge_ppm(segment_profile_raw, reverse=True)
                     if outlet_ppm_profile is None:
                         outlet_ppm_profile = 0.0
 
