@@ -1201,8 +1201,6 @@ def _segment_profile_from_queue(
 
 def _normalise_station_profile(
     profile: Sequence[tuple[float, float]] | Sequence[Mapping[str, float]] | None,
-    *,
-    segment_length: float | None = None,
 ) -> list[dict[str, float]]:
     """Return a display-ready profile preserving zero-ppm slices.
 
@@ -1210,24 +1208,14 @@ def _normalise_station_profile(
     or dictionaries exposing the same keys.  The helper coalesces consecutive
     zero-ppm entries so downstream consumers (UI tables, exports) receive a
     concise yet faithful representation of untreated sections alongside treated
-    slugs.  When ``segment_length`` is supplied the function also ensures the
-    returned slices span the full segment, appending an explicit zero-ppm entry
-    when untreated distance remains or when the incoming profile is empty.
+    slugs.
     """
 
-    try:
-        seg_length = float(segment_length or 0.0)
-    except (TypeError, ValueError):
-        seg_length = 0.0
-
     if not profile:
-        if seg_length > 0.0:
-            return [{"length_km": seg_length, "dra_ppm": 0.0}]
         return []
 
     normalised: list[dict[str, float]] = []
     pending_zero = 0.0
-    total_length = 0.0
 
     for entry in profile:
         if isinstance(entry, Mapping):
@@ -1257,23 +1245,12 @@ def _normalise_station_profile(
 
         if pending_zero > 0.0:
             normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
-            total_length += pending_zero
             pending_zero = 0.0
 
         normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
-        total_length += length_val
 
     if pending_zero > 0.0:
         normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
-        total_length += pending_zero
-
-    if seg_length > 0.0:
-        if not normalised:
-            normalised.append({"length_km": seg_length, "dra_ppm": 0.0})
-        else:
-            remainder = seg_length - total_length
-            if remainder > 1e-9:
-                normalised.append({"length_km": remainder, "dra_ppm": 0.0})
 
     return normalised
 
@@ -5881,10 +5858,7 @@ def solve_pipeline(
                             f"drag_reduction_{stn_data['name']}": eff_dra_main,
                             f"drag_reduction_loop_{stn_data['name']}": eff_dra_loop,
                         })
-                    profile_entries = _normalise_station_profile(
-                        segment_profile_raw,
-                        segment_length=seg_length_total,
-                    )
+                    profile_entries = _normalise_station_profile(segment_profile_raw)
 
                     treated_profile_length = sum(
                         entry['length_km']
