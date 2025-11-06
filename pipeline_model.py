@@ -3795,8 +3795,24 @@ def solve_pipeline(
                     )
                 except Exception:
                     ppm = 0.0
-                linefill_state.append({'volume': vol, 'dra_ppm': ppm})
+                entry = {'volume': vol, 'dra_ppm': ppm}
+                caps_meta = ent.get('__sdh_caps')
+                if isinstance(caps_meta, Mapping):
+                    entry['__sdh_caps'] = copy.deepcopy(caps_meta)
+                linefill_state.append(entry)
     linefill_state = copy.deepcopy(linefill_state)
+    sdh_caps: dict[str, float] = {}
+    for batch in linefill_state:
+        if not isinstance(batch, Mapping):
+            continue
+        caps = batch.get('__sdh_caps')
+        if isinstance(caps, Mapping):
+            for key, value in caps.items():
+                try:
+                    sdh_caps[str(key)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        batch.pop('__sdh_caps', None)
 
     N = len(stations)
 
@@ -4636,11 +4652,14 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            dra_grid_min = 0
+            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -6114,10 +6133,23 @@ def solve_pipeline(
     positive_length = sum(length for length, ppm in queue_final if ppm > 0)
     total_length_queue = sum(length for length, _ppm in queue_final)
     station_keys: list[str] = []
+    station_rho_map: dict[str, float] = {}
     for idx, stn in enumerate(stations):
         name = stn.get('name', f'station_{idx}')
         norm = str(name).strip().lower().replace(' ', '_')
         station_keys.append(norm)
+        rho_val = 0.0
+        if idx < len(rho_list):
+            try:
+                rho_val = float(rho_list[idx] or 0.0)
+            except (TypeError, ValueError):
+                rho_val = 0.0
+        if rho_val <= 0.0:
+            try:
+                rho_val = float(stn.get('rho', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                rho_val = 0.0
+        station_rho_map[norm] = rho_val
     any_injection = any(
         float(result.get(f'dra_ppm_{key}', 0.0) or 0.0) > 0.0
         or float(result.get(f'dra_ppm_loop_{key}', 0.0) or 0.0) > 0.0
@@ -6140,6 +6172,21 @@ def solve_pipeline(
             for length, ppm in initial_queue
             if float(length) > 0.0
         ]
+
+    if sdh_caps:
+        for key, cap in sdh_caps.items():
+            field = f"sdh_{key}"
+            if field not in result:
+                continue
+            try:
+                current_val = float(result[field])
+            except (TypeError, ValueError):
+                continue
+            if current_val > cap:
+                result[field] = cap
+                rho_val = station_rho_map.get(key, 0.0)
+                if rho_val > 0.0:
+                    result[f"sdh_kgcm2_{key}"] = head_to_kgcm2(cap, rho_val)
 
     def _queue_to_linefill_entries(
         queue_entries: list[tuple[float, float]],
@@ -6169,6 +6216,18 @@ def solve_pipeline(
     result['dra_segments'] = dra_segments_result
 
     linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
+    if linefill_from_queue:
+        caps_out: dict[str, float] = {}
+        for key in station_keys:
+            field = f"sdh_{key}"
+            if field not in result:
+                continue
+            try:
+                caps_out[key] = float(result[field])
+            except (TypeError, ValueError):
+                continue
+        if caps_out:
+            linefill_from_queue[0]['__sdh_caps'] = caps_out
     result['linefill'] = linefill_from_queue
     floor_summary: list[dict[str, float | str]] = []
     for key, value in result.items():
