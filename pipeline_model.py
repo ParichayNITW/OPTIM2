@@ -1645,9 +1645,15 @@ def _update_mainline_dra(
         zero_output = False
         if is_origin and inj_effective <= 0.0:
             if pump_running:
-                zero_output = True
+                # When the origin pumps draw already-laced product (``ppm_input``
+                # > 0) the slug should retain its concentration.  Only truly
+                # untreated fluid at the front of the queue should be reset to
+                # ``0 ppm`` when the injection is off.  This mirrors the sample
+                # hourly cases where "Choice 2" keeps the inherited profile for
+                # Station A instead of introducing an artificial zero-ppm slug.
+                zero_output = ppm_input <= 0.0
             elif flow_m3h <= 0.0:
-                zero_output = True
+                zero_output = ppm_input <= 0.0
         if zero_output:
             ppm_out = 0.0
         else:
