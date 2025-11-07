@@ -463,6 +463,122 @@ def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
     )
 
 
+def test_hourly_profile_matches_reference_cases() -> None:
+    """Validate the sample hourly progression scenarios for clarity."""
+
+    initial_queue = [
+        {"length_km": 14.3, "dra_ppm": 3.0},
+        {"length_km": 65.7, "dra_ppm": 0.0},
+    ]
+    diameter = 0.7
+    segment_length = 80.0
+    pumped_distance = 7.0
+    flow_m3h = _volume_from_km(pumped_distance, diameter)
+    hours = 1.0
+
+    stn_data = {"idx": 1, "d_inner": diameter, "kv": 3.0}
+
+    scenarios = [
+        {
+            "label": "pump_running_injecting",
+            "pump_running": True,
+            "inj": 9.0,
+            "expected_front": (pumped_distance, 9.0),
+            "expected_second": (14.3 - pumped_distance, 3.0),
+            "expected_outlet": 0.0,
+        },
+        {
+            "label": "pump_running_idle",
+            "pump_running": True,
+            "inj": 0.0,
+            "expected_front": (pumped_distance, 0.0),
+            "expected_second": (14.3, 3.0),
+            "expected_outlet": 3.0,
+        },
+        {
+            "label": "pump_idle_injecting",
+            "pump_running": False,
+            "inj": 9.0,
+            "expected_front": (pumped_distance, 12.0),
+            "expected_second": (14.3 - pumped_distance, 3.0),
+            "expected_outlet": 9.0,
+        },
+        {
+            "label": "pump_idle_idle",
+            "pump_running": False,
+            "inj": 0.0,
+            "expected_front": (14.3, 3.0),
+            "expected_second": (65.7, 0.0),
+            "expected_outlet": 3.0,
+        },
+    ]
+
+    for case in scenarios:
+        dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
+            copy.deepcopy(initial_queue),
+            dict(stn_data),
+            {"dra_ppm_main": case["inj"]},
+            segment_length,
+            flow_m3h,
+            hours,
+            pump_running=case["pump_running"],
+            pump_shear_rate=1.0,
+        )
+
+        assert inj_ppm == pytest.approx(case["inj"]), case["label"]
+        assert dra_segments, case["label"]
+        assert queue_after, case["label"]
+
+        front = queue_after[0]
+        assert front["dra_ppm"] == pytest.approx(case["expected_front"][1], rel=1e-9, abs=1e-12), case["label"]
+        assert front["length_km"] == pytest.approx(case["expected_front"][0], rel=1e-6), case["label"]
+
+        if len(queue_after) > 1:
+            second = queue_after[1]
+            assert second["dra_ppm"] == pytest.approx(case["expected_second"][1], rel=1e-9, abs=1e-12), case["label"]
+            assert second["length_km"] == pytest.approx(case["expected_second"][0], rel=1e-6), case["label"]
+
+        merged = pm._merge_queue(
+            [
+                (
+                    float(entry.get("length_km", 0.0) or 0.0),
+                    float(entry.get("dra_ppm", 0.0) or 0.0),
+                )
+                for entry in queue_after
+                if float(entry.get("length_km", 0.0) or 0.0) > 0.0
+            ]
+        )
+        queue_full = tuple(
+            (float(length), float(ppm))
+            for length, ppm in merged
+            if float(length or 0.0) > 0.0
+        )
+        profile_entries = [
+            {"length_km": float(length), "dra_ppm": float(ppm)}
+            for length, ppm in _segment_profile_from_queue(queue_full, 0.0, segment_length)
+            if float(length) > 0.0
+        ]
+
+        outlet_from_profile = 0.0
+        for entry in reversed(profile_entries):
+            if entry["dra_ppm"] > 0.0:
+                outlet_from_profile = entry["dra_ppm"]
+                break
+
+        if case["pump_running"]:
+            if case["inj"] > 0.0:
+                outlet_value = 0.0
+            else:
+                outlet_value = outlet_from_profile
+        else:
+            if case["inj"] > 0.0:
+                outlet_value = case["inj"]
+            else:
+                outlet_value = outlet_from_profile
+
+        assert outlet_value == pytest.approx(case["expected_outlet"], rel=1e-9, abs=1e-12), case["label"]
+
+
 def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
     """Cases 1 & 3: downstream coverage persists when the segment extends further."""
 
