@@ -1715,14 +1715,19 @@ def _update_mainline_dra(
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
-        advected_portion = [
-            (float(length), float(ppm))
-            for length, ppm in pumped_adjusted
-            if float(length or 0.0) > 0.0
-        ]
         if inj_effective > 0.0:
+            advected_portion = [
+                (float(length), float(ppm))
+                for length, ppm in pumped_adjusted
+                if float(length or 0.0) > 0.0 and float(ppm or 0.0) > 0.0
+            ]
             tail_queue = list(remaining_queue)
         else:
+            advected_portion = [
+                (float(length), float(ppm))
+                for length, ppm in pumped_adjusted
+                if float(length or 0.0) > 0.0
+            ]
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
@@ -5272,6 +5277,8 @@ def solve_pipeline(
                     if usage_prev == 2 and opt.get('dra_loop') not in (0, None):
                         continue
                 pump_running = stn_data.get('is_pump', False) and opt.get('nop', 0) > 0
+                raw_injection_setting = opt.get('dra_ppm_main', None)
+                has_injection_command = 'dra_ppm_main' in opt and raw_injection_setting is not None
                 (
                     dra_segments,
                     queue_after_list,
@@ -5900,7 +5907,7 @@ def solve_pipeline(
                         except (TypeError, ValueError):
                             is_station_origin = False
 
-                    if inlet_ppm_profile <= 0.0 and not is_station_origin:
+                    if not has_injection_command and inlet_ppm_profile <= 0.0 and not is_station_origin:
                         for entry in profile_entries:
                             if entry['dra_ppm'] > 0.0:
                                 inlet_ppm_profile = entry['dra_ppm']
@@ -5911,6 +5918,12 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0:
                             outlet_ppm_profile = entry['dra_ppm']
                             break
+
+                    if pump_running:
+                        if inj_ppm_main > 0.0:
+                            outlet_ppm_profile = 0.0
+                    elif inj_ppm_main > 0.0:
+                        outlet_ppm_profile = inj_ppm_main
 
                     if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
                         treated_profile_length = 0.0
