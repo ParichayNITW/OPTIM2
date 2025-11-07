@@ -579,6 +579,103 @@ def test_hourly_profile_matches_reference_cases() -> None:
         assert outlet_value == pytest.approx(case["expected_outlet"], rel=1e-9, abs=1e-12), case["label"]
 
 
+def test_origin_hourly_cases_preserve_laced_slugs() -> None:
+    """Case 2 at the origin should keep the inherited DRA profile."""
+
+    initial_queue = [
+        {"length_km": 14.3, "dra_ppm": 3.0},
+        {"length_km": 65.7, "dra_ppm": 3.0},
+    ]
+
+    diameter = 0.7
+    pumped_distance = 7.0
+    flow_m3h = _volume_from_km(pumped_distance, diameter)
+    hours = 1.0
+
+    stn_origin = {"idx": 0, "is_pump": True, "d_inner": diameter, "kv": 3.0}
+
+    scenarios = [
+        {
+            "label": "choice1_running_injecting",
+            "pump_running": True,
+            "inj": 9.0,
+            "expected_front": (pumped_distance, 9.0),
+            "expected_second": (80.0 - pumped_distance, 3.0),
+        },
+        {
+            "label": "choice2_running_idle",
+            "pump_running": True,
+            "inj": 0.0,
+            "expected_front": (80.0, 3.0),
+            "expected_second": None,
+        },
+        {
+            "label": "choice3_idle_injecting",
+            "pump_running": False,
+            "inj": 9.0,
+            "expected_front": (pumped_distance, 12.0),
+            "expected_second": (80.0 - pumped_distance, 3.0),
+        },
+        {
+            "label": "choice4_idle_idle",
+            "pump_running": False,
+            "inj": 0.0,
+            "expected_front": (80.0, 3.0),
+            "expected_second": None,
+        },
+    ]
+
+    for case in scenarios:
+        dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
+            copy.deepcopy(initial_queue),
+            dict(stn_origin),
+            {"dra_ppm_main": case["inj"], "nop": 1 if case["pump_running"] else 0},
+            80.0,
+            flow_m3h,
+            hours,
+            pump_running=case["pump_running"],
+        )
+
+        assert inj_ppm == pytest.approx(case["inj"]), case["label"]
+        assert dra_segments, case["label"]
+        assert queue_after, case["label"]
+
+        front = queue_after[0]
+        assert front["length_km"] == pytest.approx(case["expected_front"][0], rel=1e-6), case["label"]
+        assert front["dra_ppm"] == pytest.approx(case["expected_front"][1], rel=1e-9, abs=1e-12), case["label"]
+
+        if case["expected_second"] is not None:
+            assert len(queue_after) >= 2, case["label"]
+            second = queue_after[1]
+            assert second["length_km"] == pytest.approx(case["expected_second"][0], rel=1e-6), case["label"]
+            assert second["dra_ppm"] == pytest.approx(case["expected_second"][1], rel=1e-9, abs=1e-12), case["label"]
+        else:
+            assert len(queue_after) == 1, case["label"]
+
+        profile_entries = [
+            {
+                "length_km": float(length),
+                "dra_ppm": float(ppm),
+            }
+            for length, ppm in _segment_profile_from_queue(
+                tuple(
+                    (
+                        float(entry.get("length_km", 0.0) or 0.0),
+                        float(entry.get("dra_ppm", 0.0) or 0.0),
+                    )
+                    for entry in queue_after
+                    if float(entry.get("length_km", 0.0) or 0.0) > 0.0
+                ),
+                0.0,
+                80.0,
+            )
+            if float(length) > 0.0
+        ]
+
+        assert profile_entries, case["label"]
+        assert all(entry["dra_ppm"] > 0.0 for entry in profile_entries), case["label"]
+
+
 def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
     """Cases 1 & 3: downstream coverage persists when the segment extends further."""
 
@@ -982,8 +1079,8 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
             {"nop": 1, "dra_ppm_main": 0},
             True,
             1.0,
-            [(3.0, 10.0)],
-            [(2.0, 0.0), (23.0, 10.0)],
+            [(5.0, 10.0)],
+            [(25.0, 10.0)],
             [(22.0, 10.0)],
         ),
         (
@@ -1289,8 +1386,8 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     )
 
 
-def test_origin_station_without_injection_zeroes_slug() -> None:
-    """Origin pumps should drop inherited slugs to 0 ppm when not injecting."""
+def test_origin_station_without_injection_retains_slug() -> None:
+    """Origin pumps should keep inherited slugs when no new fluid is added."""
 
     initial_queue = [{"length_km": 5.0, "dra_ppm": 30}]
     stn_data = {"is_pump": True, "d_inner": 0.7, "idx": 0}
@@ -1312,17 +1409,21 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
             dra_shear_factor=shear_factor,
         )
 
-        assert not dra_segments
+        assert dra_segments
+        length_total = sum(length for length, _ppm in dra_segments)
+        assert length_total == pytest.approx(segment_length, rel=1e-6)
+        assert all(ppm == initial_queue[0]["dra_ppm"] for _length, ppm in dra_segments)
+
         assert queue_after
-        assert queue_after[0]["dra_ppm"] == 0
+        assert queue_after[0]["dra_ppm"] == pytest.approx(initial_queue[0]["dra_ppm"], rel=1e-9)
         assert queue_after[0]["length_km"] == pytest.approx(
-            pumped_length,
+            initial_queue[0]["length_km"],
             rel=1e-6,
         )
 
 
-def test_origin_zero_front_advances_with_repeated_updates() -> None:
-    """Untreated origin fronts should accumulate across successive hours."""
+def test_origin_front_retains_profile_without_injection() -> None:
+    """Origin queue retains its ppm when pumping already-laced product."""
 
     initial_queue = [(158.0, 4.0)]
     stn_data = {"is_pump": True, "d_inner": 0.82, "idx": 0}
@@ -1352,9 +1453,9 @@ def test_origin_zero_front_advances_with_repeated_updates() -> None:
     )
 
     assert queue_after_stage1
-    zero_front_1 = queue_after_stage1[0]
-    assert zero_front_1["dra_ppm"] == 0
-    assert zero_front_1["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    front_stage1 = queue_after_stage1[0]
+    assert front_stage1["dra_ppm"] == pytest.approx(initial_queue[0][1], rel=1e-9)
+    assert front_stage1["length_km"] == pytest.approx(initial_queue[0][0], rel=1e-6)
 
     precomputed_stage2 = _prepare_dra_queue_consumption(
         queue_after_stage1,
@@ -1376,13 +1477,13 @@ def test_origin_zero_front_advances_with_repeated_updates() -> None:
     )
 
     assert queue_after_stage2
-    zero_front_2 = queue_after_stage2[0]
-    assert zero_front_2["dra_ppm"] == 0
-    assert zero_front_2["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+    front_stage2 = queue_after_stage2[0]
+    assert front_stage2["dra_ppm"] == pytest.approx(initial_queue[0][1], rel=1e-9)
+    assert front_stage2["length_km"] == pytest.approx(initial_queue[0][0], rel=1e-6)
 
 
-def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
-    """Injecting after idle hours should retain and extend the untreated front."""
+def test_origin_profile_updates_when_injecting_after_idle_hours() -> None:
+    """After idle pumping the injected slug should prepend without erasing history."""
 
     initial_queue = [(158.0, 4.0)]
     stn_data = {"is_pump": True, "d_inner": 0.82, "idx": 0}
@@ -1432,9 +1533,9 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
     )
 
     assert queue_stage2
-    accumulated_zero = queue_stage2[0]
-    assert accumulated_zero["dra_ppm"] == 0
-    assert accumulated_zero["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
+    accumulated_front = queue_stage2[0]
+    assert accumulated_front["dra_ppm"] == pytest.approx(initial_queue[0][1], rel=1e-9)
+    assert accumulated_front["length_km"] == pytest.approx(initial_queue[0][0], rel=1e-6)
 
     opt_inject = {"nop": 1, "dra_ppm_main": 25.0}
 
@@ -1459,20 +1560,16 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
 
     assert inj_ppm == pytest.approx(opt_inject["dra_ppm_main"], rel=1e-9)
     assert queue_stage3
-    total_length = sum(entry["length_km"] for entry in queue_stage3)
-    expected_zero_length = pumped_length * 3.0
-    assert expected_zero_length <= total_length + 1e-6
-
     injected_slug = queue_stage3[0]
     assert injected_slug["dra_ppm"] == pytest.approx(opt_inject["dra_ppm_main"], rel=1e-6)
-    assert injected_slug["length_km"] == pytest.approx(min(pumped_length, total_length), rel=1e-6)
+    assert injected_slug["length_km"] == pytest.approx(pumped_length, rel=1e-6)
 
-    zero_entry_idx = next(
-        idx for idx, entry in enumerate(queue_stage3) if abs(entry["dra_ppm"]) <= 1e-9
+    legacy_slug = queue_stage3[1]
+    assert legacy_slug["dra_ppm"] == pytest.approx(initial_queue[0][1], rel=1e-9)
+    assert legacy_slug["length_km"] == pytest.approx(
+        initial_queue[0][0] - pumped_length,
+        rel=1e-6,
     )
-    zero_entry = queue_stage3[zero_entry_idx]
-    assert zero_entry_idx >= 1
-    assert zero_entry["length_km"] == pytest.approx(expected_zero_length, rel=1e-6)
 
 
 def test_full_shear_zero_front_propagates_downstream() -> None:
