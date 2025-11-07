@@ -5889,7 +5889,18 @@ def solve_pipeline(
                         inlet_ppm_profile = float(inj_ppm_main or 0.0)
                     except (TypeError, ValueError):
                         inlet_ppm_profile = 0.0
-                    if inlet_ppm_profile <= 0.0:
+
+                    idx_raw = stn_data.get('idx') if isinstance(stn_data, Mapping) else None
+                    is_station_origin = False
+                    if isinstance(idx_raw, (int, float)):
+                        is_station_origin = int(idx_raw) == 0
+                    elif isinstance(idx_raw, str):
+                        try:
+                            is_station_origin = int(float(idx_raw)) == 0
+                        except (TypeError, ValueError):
+                            is_station_origin = False
+
+                    if inlet_ppm_profile <= 0.0 and not is_station_origin:
                         for entry in profile_entries:
                             if entry['dra_ppm'] > 0.0:
                                 inlet_ppm_profile = entry['dra_ppm']
