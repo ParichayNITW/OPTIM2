@@ -5945,11 +5945,6 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    try:
-                        inlet_ppm_profile = float(inj_ppm_main or 0.0)
-                    except (TypeError, ValueError):
-                        inlet_ppm_profile = 0.0
-
                     idx_raw = stn_data.get('idx') if isinstance(stn_data, Mapping) else None
                     is_station_origin = False
                     if isinstance(idx_raw, (int, float)):
@@ -5960,26 +5955,66 @@ def solve_pipeline(
                         except (TypeError, ValueError):
                             is_station_origin = False
 
-                    if not has_injection_command and inlet_ppm_profile <= 0.0 and not is_station_origin:
-                        for entry in profile_entries:
-                            if entry['dra_ppm'] > 0.0:
-                                inlet_ppm_profile = entry['dra_ppm']
-                                break
+                    if profile_entries:
+                        inlet_ppm_profile = _coerce_float(profile_entries[0].get('dra_ppm'), 0.0)
+                        outlet_ppm_profile = _coerce_float(profile_entries[-1].get('dra_ppm'), 0.0)
+                    else:
+                        inlet_ppm_profile = 0.0
+                        outlet_ppm_profile = 0.0
 
-                    outlet_ppm_profile = 0.0
-                    for entry in reversed(profile_entries):
-                        if entry['dra_ppm'] > 0.0:
-                            outlet_ppm_profile = entry['dra_ppm']
-                            break
+                    if is_station_origin and pump_running and inj_ppm_main <= 0.0:
+                        try:
+                            d_inner_val = float(
+                                stn_data.get('d_inner')
+                                or stn_data.get('d')
+                                or 0.0
+                            )
+                        except (TypeError, ValueError):
+                            d_inner_val = 0.0
+                        if d_inner_val > 0.0:
+                            moved_length = _km_from_volume(flow_total * hours, d_inner_val)
+                        else:
+                            moved_length = 0.0
+                        try:
+                            seg_length = float(stn_data.get('L', 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            seg_length = 0.0
+                        if seg_length > 0.0:
+                            moved_length = min(moved_length, seg_length)
+                        if moved_length > 1e-9:
+                            old_profile = profile_entries
+                            new_profile: list[dict[str, float]] = []
+                            remaining_head = moved_length
+                            for seg in old_profile:
+                                length_val = _coerce_float(seg.get('length_km'), 0.0)
+                                ppm_val = _coerce_float(seg.get('dra_ppm'), 0.0)
+                                if length_val <= 0.0:
+                                    continue
+                                if remaining_head <= 0.0:
+                                    new_profile.append({'length_km': length_val, 'dra_ppm': ppm_val})
+                                elif length_val <= remaining_head + 1e-12:
+                                    remaining_head -= length_val
+                                else:
+                                    new_profile.append(
+                                        {
+                                            'length_km': length_val - remaining_head,
+                                            'dra_ppm': ppm_val,
+                                        }
+                                    )
+                                    remaining_head = 0.0
+                            profile_entries = [{'length_km': moved_length, 'dra_ppm': 0.0}] + new_profile
+                            treated_profile_length = sum(
+                                seg['length_km']
+                                for seg in profile_entries
+                                if seg['dra_ppm'] > 0.0
+                            )
+                            if profile_entries:
+                                inlet_ppm_profile = _coerce_float(profile_entries[0].get('dra_ppm'), 0.0)
+                                outlet_ppm_profile = _coerce_float(profile_entries[-1].get('dra_ppm'), 0.0)
+                            else:
+                                inlet_ppm_profile = 0.0
+                                outlet_ppm_profile = 0.0
 
-                    if pump_running:
-                        if inj_ppm_main > 0.0:
-                            outlet_ppm_profile = 0.0
-                    elif inj_ppm_main > 0.0:
-                        outlet_ppm_profile = inj_ppm_main
-
-                    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
-                        treated_profile_length = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
