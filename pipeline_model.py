@@ -1419,6 +1419,8 @@ def _update_mainline_dra(
         pumped_length = float(precomputed[0] if precomputed and len(precomputed) > 0 else 0.0)
     pumped_length = max(pumped_length, 0.0)
 
+    zero_tol = 1e-9
+
     initial_zero_prefix = _queue_leading_zero_length(queue)
 
     local_shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
@@ -1544,6 +1546,11 @@ def _update_mainline_dra(
             existing_queue.append((length, ppm_val))
 
     existing_queue = _merge_queue(existing_queue)
+    existing_zero_free = all(
+        float(ppm or 0.0) > zero_tol
+        for length, ppm in existing_queue
+        if float(length or 0.0) > 0.0
+    )
     existing_total = _queue_total_length(existing_queue)
 
     if existing_total > 0:
@@ -1651,9 +1658,9 @@ def _update_mainline_dra(
                 # ``0 ppm`` when the injection is off.  This mirrors the sample
                 # hourly cases where "Choice 2" keeps the inherited profile for
                 # Station A instead of introducing an artificial zero-ppm slug.
-                zero_output = ppm_input <= 0.0
+                zero_output = ppm_input <= zero_tol
             elif flow_m3h <= 0.0:
-                zero_output = ppm_input <= 0.0
+                zero_output = ppm_input <= zero_tol
         if zero_output:
             ppm_out = 0.0
         else:
@@ -1759,9 +1766,47 @@ def _update_mainline_dra(
     merged_queue = _merge_queue(trimmed_queue)
 
     queue_contains_zero = any(
-        float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+        float(length or 0.0) > 0.0 and abs(float(ppm or 0.0)) <= zero_tol
         for length, ppm in merged_queue
     )
+
+    if (
+        queue_contains_zero
+        and existing_zero_free
+        and shear_existing <= zero_tol
+        and inj_effective <= 0.0
+    ):
+        fallback_ppm = 0.0
+        for length, ppm in existing_queue:
+            length_val = float(length or 0.0)
+            if length_val <= 0.0:
+                continue
+            ppm_val = float(ppm or 0.0)
+            if ppm_val > fallback_ppm:
+                fallback_ppm = ppm_val
+        if fallback_ppm <= zero_tol:
+            for length, ppm in pumped_adjusted:
+                length_val = float(length or 0.0)
+                if length_val <= 0.0:
+                    continue
+                ppm_val = float(ppm or 0.0)
+                if ppm_val > fallback_ppm:
+                    fallback_ppm = ppm_val
+        if fallback_ppm > zero_tol:
+            rebuilt_entries: list[tuple[float, float]] = []
+            for length, ppm in merged_queue:
+                length_val = float(length or 0.0)
+                if length_val <= 0.0:
+                    continue
+                ppm_val = float(ppm or 0.0)
+                if abs(ppm_val) <= zero_tol:
+                    ppm_val = fallback_ppm
+                rebuilt_entries.append((length_val, ppm_val))
+            merged_queue = _merge_queue(rebuilt_entries)
+            queue_contains_zero = any(
+                float(length or 0.0) > 0.0 and abs(float(ppm or 0.0)) <= zero_tol
+                for length, ppm in merged_queue
+            )
 
     if (
         pump_running
@@ -1770,7 +1815,6 @@ def _update_mainline_dra(
         and head_length > 0.0
         and merged_queue
     ):
-        zero_tol = 1e-9
         pipeline_length = _queue_total_length(merged_queue)
         if pipeline_length > 0.0:
             base_queue = tuple(
@@ -1915,9 +1959,12 @@ def _update_mainline_dra(
                 ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
             except (TypeError, ValueError):
                 ppm_val = 0.0
-            if ppm_val <= 0.0:
+            if abs(ppm_val) <= zero_tol:
                 has_explicit_zero = True
                 break
+
+    if has_explicit_zero and not queue_contains_zero:
+        has_explicit_zero = False
 
     zero_fill_ppm = 0.0
     if not floor_requires_injection and not queue_contains_zero:
@@ -1945,12 +1992,12 @@ def _update_mainline_dra(
             continue
         profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
-        if ppm_val <= 0.0:
+        if ppm_val <= zero_tol:
             if zero_fill_ppm > 0.0 and not has_explicit_zero:
                 ppm_val = zero_fill_ppm
             else:
                 ppm_val = 0.0
-        if ppm_val <= 0.0:
+        if ppm_val <= zero_tol:
             continue
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
