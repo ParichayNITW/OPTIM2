@@ -4159,11 +4159,6 @@ if auto_batch:
     Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
     Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
     Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
-    st.session_state["FLOW"] = FLOW
-    st.session_state["RateDRA"] = RateDRA
-    st.session_state["Price_HSD"] = Price_HSD
-    st.session_state["Fuel_density"] = Fuel_density
-    st.session_state["Ambient_temp"] = Ambient_temp
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
     product_table = data_editor_copy(
         pd.DataFrame({
@@ -4187,9 +4182,11 @@ if auto_batch:
                 "elev": st.session_state.get("terminal_elev", 0.0),
                 "min_residual": st.session_state.get("terminal_head", 50.0)
             }
-            FLOW = st.session_state.get("FLOW", 1000.0)
-            RateDRA = st.session_state.get("RateDRA", 500.0)
-            Price_HSD = st.session_state.get("Price_HSD", 70.0)
+            flow_value = FLOW
+            dra_rate = RateDRA
+            diesel_price = Price_HSD
+            fuel_density = Fuel_density
+            ambient_temp = Ambient_temp
             result_rows = []
             segs = int(100 // step_size)
             try:
@@ -4242,14 +4239,14 @@ if auto_batch:
                     res = solve_pipeline(
                         stations_data,
                         term_data,
-                        FLOW,
+                        flow_value,
                         kv_list,
                         rho_list,
                         None,
-                        RateDRA,
-                        Price_HSD,
-                        st.session_state.get("Fuel_density", 820.0),
-                        st.session_state.get("Ambient_temp", 25.0),
+                        dra_rate,
+                        diesel_price,
+                        fuel_density,
+                        ambient_temp,
                         {},
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                     )
@@ -4276,14 +4273,14 @@ if auto_batch:
                     res = solve_pipeline(
                         stations_data,
                         term_data,
-                        FLOW,
+                        flow_value,
                         kv_list,
                         rho_list,
                         None,
-                        RateDRA,
-                        Price_HSD,
-                        st.session_state.get("Fuel_density", 820.0),
-                        st.session_state.get("Ambient_temp", 25.0),
+                        dra_rate,
+                        diesel_price,
+                        fuel_density,
+                        ambient_temp,
                         {},
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                     )
@@ -4321,14 +4318,14 @@ if auto_batch:
                         res = solve_pipeline(
                             stations_data,
                             term_data,
-                            FLOW,
+                            flow_value,
                             kv_list,
                             rho_list,
                             None,
-                            RateDRA,
-                            Price_HSD,
-                            st.session_state.get("Fuel_density", 820.0),
-                            st.session_state.get("Ambient_temp", 25.0),
+                            dra_rate,
+                            diesel_price,
+                            fuel_density,
+                            ambient_temp,
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         )
@@ -4360,14 +4357,14 @@ if auto_batch:
                         res = solve_pipeline(
                             stations_data,
                             term_data,
-                            FLOW,
+                            flow_value,
                             kv_list,
                             rho_list,
                             None,
-                            RateDRA,
-                            Price_HSD,
-                            st.session_state.get("Fuel_density", 820.0),
-                            st.session_state.get("Ambient_temp", 25.0),
+                            dra_rate,
+                            diesel_price,
+                            fuel_density,
+                            ambient_temp,
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         )
@@ -4412,14 +4409,14 @@ if auto_batch:
                         res = solve_pipeline(
                             stations_data,
                             term_data,
-                            FLOW,
+                            flow_value,
                             kv_list,
                             rho_list,
                             None,
-                            RateDRA,
-                            Price_HSD,
-                            st.session_state.get("Fuel_density", 820.0),
-                            st.session_state.get("Ambient_temp", 25.0),
+                            dra_rate,
+                            diesel_price,
+                            fuel_density,
+                            ambient_temp,
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         )

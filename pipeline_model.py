@@ -431,6 +431,17 @@ STATE_COST_MARGIN = 5000.0
 REFINE_STATE_TOP_K = 30
 REFINE_STATE_COST_MARGIN = 2000.0
 REFINE_MAX_DRA_VALUES = 15
+# Allow a limited number of materially different DRA queues to coexist inside
+# the same residual bucket during dynamic programming.  Each additional variant
+# represents a meaningfully higher chemical commitment that may be required to
+# keep downstream hours feasible even if it costs more than the cheapest state
+# with the same residual head.
+STATE_MAX_BUCKET_VARIANTS = 3
+# Tolerances used when comparing DRA queue signatures.  Differences smaller than
+# these thresholds are treated as equivalent so we do not explode the search
+# space with near-identical queues.
+DRA_SIGNATURE_LEN_TOL = 0.1  # km
+DRA_SIGNATURE_PPM_TOL = 0.5  # ppm
 
 def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
@@ -997,6 +1008,42 @@ def _queue_total_length(
         if length_val > 0:
             total += length_val
     return total
+
+
+def _queue_signature(
+    queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
+) -> tuple[float, float, float]:
+    """Return a coarse signature capturing the chemical commitment of a queue."""
+
+    if not queue_entries:
+        return (0.0, 0.0, 0.0)
+
+    total_positive = 0.0
+    head_ppm = 0.0
+    max_ppm = 0.0
+    head_found = False
+    for length, ppm in queue_entries:
+        try:
+            length_val = float(length or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        try:
+            ppm_val = float(ppm or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if not head_found and length_val > 0:
+            head_ppm = ppm_val
+            head_found = True
+        if ppm_val > 0.0 and length_val > 0.0:
+            total_positive += length_val
+            if ppm_val > max_ppm:
+                max_ppm = ppm_val
+
+    return (
+        round(total_positive, 3),
+        round(head_ppm, 2),
+        round(max_ppm, 2),
+    )
 
 
 def _queue_leading_zero_length(
@@ -5205,12 +5252,13 @@ def solve_pipeline(
             'dra_queue_full': initial_queue,
             'dra_queue_at_inlet': initial_queue,
             'inj_ppm_main': 0,
+            'queue_signature': _queue_signature(initial_queue),
         }
     }
 
     for stn_data in station_opts:
         new_states: dict[object, dict] = {}
-        best_by_residual: dict[int, object] = {}
+        best_by_residual: dict[int, list[object]] = {}
         protected_counter = 0
         best_cost_station = float('inf')
         for state in states.values():
@@ -5293,6 +5341,7 @@ def solve_pipeline(
                     for length, ppm in merged_after_full
                     if float(length or 0.0) > 0
                 )
+                queue_signature = _queue_signature(queue_after_full)
                 seg_length_total = float(stn_data.get('L', 0.0) or 0.0)
                 segment_profile_raw = _segment_profile_from_queue(
                     queue_after_full,
@@ -5941,66 +5990,100 @@ def solve_pipeline(
                     else:
                         baseline_option = zero_dra_option
                     is_protected = zero_dra_option or baseline_option
-                    existing_key = best_by_residual.get(bucket)
-                    existing = new_states.get(existing_key) if existing_key is not None else None
                     flow_next = flow_total
-                    replace_existing = False
-                    if existing is None:
-                        replace_existing = True
-                        key_to_use: object = bucket
+                    existing_keys = best_by_residual.get(bucket, [])
+                    existing_entries: list[tuple[object, dict]] = []
+                    for key in existing_keys:
+                        existing_state = new_states.get(key)
+                        if existing_state is not None:
+                            existing_entries.append((key, existing_state))
+
+                    any_protected_existing = any(
+                        bool(existing_state.get('protected')) for _key, existing_state in existing_entries
+                    )
+
+                    key_to_use: object | None = None
+                    replace_key: object | None = None
+                    allow_variant = False
+                    matched_protected = False
+                    for existing_key, existing_state in existing_entries:
+                        existing_sig = existing_state.get('queue_signature')
+                        if existing_sig is None:
+                            existing_sig = _queue_signature(existing_state.get('dra_queue_full'))
+                            existing_state['queue_signature'] = existing_sig
+                        len_diff = abs(queue_signature[0] - existing_sig[0])
+                        head_diff = abs(queue_signature[1] - existing_sig[1])
+                        max_diff = abs(queue_signature[2] - existing_sig[2])
+                        matches_signature = (
+                            len_diff <= DRA_SIGNATURE_LEN_TOL
+                            and head_diff <= DRA_SIGNATURE_PPM_TOL
+                            and max_diff <= DRA_SIGNATURE_PPM_TOL
+                        )
+                        if matches_signature:
+                            matched_protected = bool(existing_state.get('protected'))
+                            if (
+                                new_cost < existing_state['cost']
+                                or (
+                                    abs(new_cost - existing_state['cost']) < 1e-9
+                                    and residual_next > existing_state['residual']
+                                )
+                            ) and not (matched_protected and not is_protected):
+                                replace_key = existing_key
+                                break
+                        elif len(existing_keys) < STATE_MAX_BUCKET_VARIANTS:
+                            allow_variant = True
+
+                    if not existing_entries:
+                        key_to_use = bucket
+                    elif replace_key is not None:
+                        key_to_use = replace_key
+                    elif is_protected and not any_protected_existing:
+                        protected_counter += 1
+                        key_to_use = (bucket, f"protected_{protected_counter}")
+                        best_by_residual.setdefault(bucket, []).append(key_to_use)
+                    elif (
+                        allow_variant
+                        and len(existing_keys) < STATE_MAX_BUCKET_VARIANTS
+                        and queue_signature[0] > DRA_SIGNATURE_LEN_TOL
+                        and queue_signature[2] > DRA_SIGNATURE_PPM_TOL
+                    ):
+                        variant_index = len(existing_keys) + 1
+                        key_to_use = (bucket, f"variant_{variant_index}")
+                        best_by_residual.setdefault(bucket, []).append(key_to_use)
                     else:
-                        existing_protected = bool(existing.get('protected'))
-                        if (
-                            new_cost < existing['cost']
-                            or (
-                                abs(new_cost - existing['cost']) < 1e-9
-                                and residual_next > existing['residual']
-                            )
-                        ):
-                            if not (existing_protected and not is_protected):
-                                replace_existing = True
-                                key_to_use = existing_key  # type: ignore[assignment]
-                            else:
-                                replace_existing = False
-                        elif is_protected and not existing_protected:
-                            protected_counter += 1
-                            key_to_use = (bucket, f"protected_{protected_counter}")
-                            new_states[key_to_use] = {
-                                'cost': new_cost,
-                                'residual': residual_next,
-                                'records': new_record_list,
-                                'last_maop': stn_data['maop_head'],
-                                'last_maop_kg': stn_data['maop_kgcm2'],
-                                'flow': flow_next,
-                                'carry_loop_dra': new_carry,
-                                'dra_queue_full': queue_after_full,
-                                'dra_queue_at_inlet': queue_after_inlet,
-                                'inj_ppm_main': inj_ppm_main,
-                                'protected': True,
-                            }
-                            continue
+                        key_to_use = None
+
+                    if key_to_use is None:
+                        continue
+
+                    entry = {
+                        'cost': new_cost,
+                        'residual': residual_next,
+                        'records': new_record_list,
+                        'last_maop': stn_data['maop_head'],
+                        'last_maop_kg': stn_data['maop_kgcm2'],
+                        'flow': flow_next,
+                        'carry_loop_dra': new_carry,
+                        'dra_queue_full': queue_after_full,
+                        'dra_queue_at_inlet': queue_after_inlet,
+                        'inj_ppm_main': inj_ppm_main,
+                        'protected': is_protected,
+                        'queue_signature': queue_signature,
+                    }
+
+                    if replace_key is not None:
+                        existing_entry = new_states.get(replace_key)
+                        if existing_entry is not None:
+                            entry['protected'] = is_protected or bool(existing_entry.get('protected'))
+                        new_states[replace_key] = entry
+                    else:
+                        new_states[key_to_use] = entry
+                        if key_to_use == bucket:
+                            best_by_residual[bucket] = [key_to_use]
                         else:
-                            replace_existing = False
-                    if replace_existing:
-                        entry = {
-                            'cost': new_cost,
-                            'residual': residual_next,
-                            'records': new_record_list,
-                            'last_maop': stn_data['maop_head'],
-                            'last_maop_kg': stn_data['maop_kgcm2'],
-                            'flow': flow_next,
-                            'carry_loop_dra': new_carry,
-                            'dra_queue_full': queue_after_full,
-                            'dra_queue_at_inlet': queue_after_inlet,
-                            'inj_ppm_main': inj_ppm_main,
-                            'protected': is_protected,
-                        }
-                        if existing is not None and existing_key is not None:
-                            entry['protected'] = is_protected or bool(existing.get('protected'))
-                            new_states[existing_key] = entry
-                        else:
-                            new_states[key_to_use] = entry
-                            best_by_residual[bucket] = key_to_use
+                            bucket_list = best_by_residual.setdefault(bucket, [])
+                            if key_to_use not in bucket_list:
+                                bucket_list.append(key_to_use)
 
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
