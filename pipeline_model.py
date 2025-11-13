@@ -403,7 +403,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 25
 DRA_STEP = 2
-MAX_DRA_KM = 250.0
+MAX_DRA_KM = 500.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
 # per-type speed lists tractable while still including the extrema.
