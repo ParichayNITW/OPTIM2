@@ -55,6 +55,20 @@ if "baseline_input_mode" not in st.session_state:
     st.session_state["baseline_input_mode"] = "auto"
 if "baseline_input_mode_prev" not in st.session_state:
     st.session_state["baseline_input_mode_prev"] = st.session_state.get("baseline_input_mode", "auto")
+
+# Synchronise global parameter state with auto-batch widgets (if present)
+_BATCH_GLOBAL_KEY_MAP = {
+    "FLOW": "batch_flow",
+    "RateDRA": "batch_dra",
+    "Price_HSD": "batch_diesel",
+    "Fuel_density": "batch_fuel_density",
+    "Ambient_temp": "batch_amb_temp",
+}
+
+if st.session_state.get("auto_batch_enabled"):
+    for _global_key, _batch_key in _BATCH_GLOBAL_KEY_MAP.items():
+        if _batch_key in st.session_state:
+            st.session_state[_global_key] = st.session_state[_batch_key]
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -4147,23 +4161,46 @@ def solve_pipeline(
 st.markdown("---")
 st.subheader("Batch Linefill Scenario Analysis")
 
-auto_batch = st.checkbox("Run Auto Linefill Generator (Batch Interface Scenarios)")
+auto_batch = st.checkbox(
+    "Run Auto Linefill Generator (Batch Interface Scenarios)",
+    key="auto_batch_enabled",
+)
 
 if auto_batch:
     if not st.session_state.get('stations'):
         st.info("Define pipeline stations above to enable batch optimisation.")
         st.stop()
     total_length = sum(stn["L"] for stn in st.session_state.stations)
-    FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="batch_flow")
-    RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="batch_dra")
-    Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
-    Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
-    Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
-    st.session_state["FLOW"] = FLOW
-    st.session_state["RateDRA"] = RateDRA
-    st.session_state["Price_HSD"] = Price_HSD
-    st.session_state["Fuel_density"] = Fuel_density
-    st.session_state["Ambient_temp"] = Ambient_temp
+    FLOW = st.number_input(
+        "Flow rate (m³/hr)",
+        value=st.session_state.get("FLOW", 1000.0),
+        step=10.0,
+        key="batch_flow",
+    )
+    RateDRA = st.number_input(
+        "DRA Cost (INR/L)",
+        value=st.session_state.get("RateDRA", 500.0),
+        step=1.0,
+        key="batch_dra",
+    )
+    Price_HSD = st.number_input(
+        "Fuel Price (INR/L)",
+        value=st.session_state.get("Price_HSD", 70.0),
+        step=0.5,
+        key="batch_diesel",
+    )
+    Fuel_density = st.number_input(
+        "Fuel density (kg/m³)",
+        value=st.session_state.get("Fuel_density", 820.0),
+        step=1.0,
+        key="batch_fuel_density",
+    )
+    Ambient_temp = st.number_input(
+        "Ambient temperature (°C)",
+        value=st.session_state.get("Ambient_temp", 25.0),
+        step=1.0,
+        key="batch_amb_temp",
+    )
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
     product_table = data_editor_copy(
         pd.DataFrame({
