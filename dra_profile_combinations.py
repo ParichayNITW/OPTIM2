@@ -141,15 +141,19 @@ def generate_combination_profiles(
         case_entry: dict[str, object] = {label: ("On" if state_map[label] else "Off") for label in state_labels}
         case_entry.setdefault("profiles", [])
 
-        queue_state = list(initial_queue)
+        queue_full = tuple(pm._merge_queue(initial_queue))
         history: list[dict[str, object]] = []
 
-        initial_profiles = _segment_profiles_from_queue(queue_state, segments)
+        initial_profiles = _segment_profiles_from_queue(queue_full, segments)
         history.append({"time": "07:00", "segments": initial_profiles})
 
         for step in range(hours):
             hour_profiles: list[Tuple[Tuple[float, float], ...]] = []
+            upstream_offset = 0.0
             for idx, (station_cfg, seg_len) in enumerate(zip(pm_stations, segments)):
+                current_full = queue_full
+                prefix_entries = pm._take_queue_front(current_full, upstream_offset)
+                queue_at_inlet = pm._trim_queue_front(current_full, upstream_offset)
                 logical = scenario.stations[idx]
                 pump_label = f"{logical.name} Pump"
                 pump_running = True if logical.pump_forced_on else state_map.get(pump_label, logical.pump_forced_on)
@@ -161,8 +165,16 @@ def generate_combination_profiles(
 
                 opt = {"dra_ppm_main": inj_ppm}
 
+                precomputed = pm._prepare_dra_queue_consumption(
+                    queue_at_inlet,
+                    seg_len,
+                    flow_m3h,
+                    1.0,
+                    d_inner,
+                )
+
                 dra_segments, queue_state, *_ = pm._update_mainline_dra(
-                    queue_state,
+                    queue_at_inlet,
                     station_cfg,
                     opt,
                     seg_len,
@@ -177,6 +189,18 @@ def generate_combination_profiles(
                 )
 
                 hour_profiles.append(_normalise_segments(dra_segments))
+
+                queue_after_body = tuple(
+                    (
+                        float(entry.get("length_km", 0.0) or 0.0),
+                        float(entry.get("dra_ppm", 0.0) or 0.0),
+                    )
+                    for entry in queue_state
+                    if float(entry.get("length_km", 0.0) or 0.0) > 0.0
+                )
+                combined_entries = list(prefix_entries) + list(queue_after_body)
+                queue_full = tuple(pm._merge_queue(combined_entries))
+                upstream_offset += seg_len
 
             history.append({"time": f"{8 + step:02d}:00", "segments": tuple(hour_profiles)})
 
