@@ -382,7 +382,7 @@ def test_zero_injection_benefits_from_inherited_slug() -> None:
 
 
 def test_update_mainline_dra_injects_when_pump_idle() -> None:
-    """Idle pump injections should add to the traversed slug rather than replace it."""
+    """Idle pump injections should overlay the traversed slug with the injected ppm."""
 
     initial_queue = [{"length_km": 12.0, "dra_ppm": 40}]
     stn_data = {"is_pump": True, "d_inner": 0.7}
@@ -402,12 +402,11 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
     )
 
     assert inj_ppm == opt["dra_ppm_main"]
-    expected_ppm = initial_queue[0]["dra_ppm"] + inj_ppm
     assert dra_segments
-    assert dra_segments[0][1] == expected_ppm
+    assert dra_segments[0][1] == inj_ppm
     assert dra_segments[0][0] == pytest.approx(segment_length, rel=1e-6)
     assert queue_after
-    assert queue_after[0]["dra_ppm"] == expected_ppm
+    assert queue_after[0]["dra_ppm"] == inj_ppm
     assert queue_after[0]["length_km"] == pytest.approx(
         pumped_length,
         rel=1e-6,
@@ -420,7 +419,7 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
 
 
 def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
-    """Case 2: idle pump injections add to each incoming slice."""
+    """Case 2: idle pump injections replace the traversed slices with injected ppm."""
 
     initial_queue = [
         {"length_km": 4.0, "dra_ppm": 20},
@@ -442,23 +441,15 @@ def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
     )
 
     assert not dra_segments
-    assert queue_after and len(queue_after) >= 3
-    expected_front_ppm = initial_queue[0]["dra_ppm"] + inj_ppm
-    assert queue_after[0]["dra_ppm"] == expected_front_ppm
+    assert queue_after and len(queue_after) == 2
+    assert queue_after[0]["dra_ppm"] == inj_ppm
     assert queue_after[0]["length_km"] == pytest.approx(
-        initial_queue[0]["length_km"],
+        pumped_length,
         rel=1e-6,
     )
-
-    consumed_second = pumped_length - initial_queue[0]["length_km"]
-    assert consumed_second > 0
-    expected_second_ppm = initial_queue[1]["dra_ppm"] + inj_ppm
-    assert queue_after[1]["dra_ppm"] == expected_second_ppm
-    assert queue_after[1]["length_km"] == pytest.approx(consumed_second, rel=1e-6)
-
-    assert queue_after[2]["dra_ppm"] == initial_queue[1]["dra_ppm"]
-    assert queue_after[2]["length_km"] == pytest.approx(
-        initial_queue[1]["length_km"] - consumed_second,
+    assert queue_after[1]["dra_ppm"] == initial_queue[1]["dra_ppm"]
+    assert queue_after[1]["length_km"] == pytest.approx(
+        initial_queue[1]["length_km"] - (pumped_length - initial_queue[0]["length_km"]),
         rel=1e-6,
     )
 
@@ -553,7 +544,7 @@ def test_downstream_station_waits_for_advancing_front() -> None:
     )
 
     assert queue_after_a
-    assert queue_after_a[0]["dra_ppm"] == opt_idle["dra_ppm_main"] + initial_queue[0]["dra_ppm"]
+    assert queue_after_a[0]["dra_ppm"] == opt_idle["dra_ppm_main"]
     assert queue_after_a[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
     total_after_a = sum(
         float(entry.get("length_km", 0.0) or 0.0)
@@ -857,8 +848,8 @@ def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
             {"nop": 0, "dra_ppm_main": 12},
             False,
             0.0,
-            [(2.0, 22.0), (3.0, 10.0)],
-            [(2.0, 22.0), (23.0, 10.0)],
+            [(2.0, 12.0), (3.0, 10.0)],
+            [(2.0, 12.0), (23.0, 10.0)],
             [(22.0, 10.0)],
         ),
         (
