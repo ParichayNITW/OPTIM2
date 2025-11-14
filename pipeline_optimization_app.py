@@ -3495,6 +3495,13 @@ def _build_profiles_from_queue(
     if not queue:
         return {}
 
+    merged_queue = pipeline_model._merge_queue(queue)  # type: ignore[attr-defined]
+    queue_full: tuple[tuple[float, float], ...] = tuple(
+        (float(length), float(ppm))
+        for length, ppm in merged_queue
+        if float(length) > 0.0
+    )
+
     profiles: dict[str, list[tuple[float, float]]] = {}
     offset = 0.0
 
@@ -3507,43 +3514,42 @@ def _build_profiles_from_queue(
             offset += 0.0
             continue
 
-        seg_start = offset
-        seg_end = offset + seg_length
-        entries: list[tuple[float, float]] = []
+        segment_profile = pipeline_model._segment_profile_from_queue(  # type: ignore[attr-defined]
+            queue_full,
+            offset,
+            seg_length,
+        )
 
-        cursor = 0.0
-        for length_val, ppm_val in queue:
-            next_cursor = cursor + length_val
-            overlap_start = max(cursor, seg_start)
-            overlap_end = min(next_cursor, seg_end)
-            overlap = overlap_end - overlap_start
-            if overlap > 1e-9:
-                ppm_clean = ppm_val if ppm_val > 0.0 else 0.0
-                entries.append((overlap, ppm_clean))
-            cursor = next_cursor
-            if cursor >= seg_end - 1e-9:
-                break
+        if not segment_profile and seg_length > 0.0:
+            segment_profile = ((seg_length, 0.0),)
 
-        treated = sum(length for length, _ppm in entries)
-        untreated = max(seg_length - treated, 0.0)
-        if untreated > 1e-6:
-            fallback = stn.get("fallback_dra_ppm", 0.0)
+        normalised = pipeline_model._normalise_station_profile(segment_profile)  # type: ignore[attr-defined]
+
+        covered = sum(float(entry.get("length_km", 0.0) or 0.0) for entry in normalised)
+        remainder = max(seg_length - covered, 0.0)
+        if remainder > 1e-6:
+            fallback_raw = stn.get("fallback_dra_ppm", 0.0)
             try:
-                fallback_val = float(fallback or 0.0)
+                fallback_val = float(fallback_raw or 0.0)
             except (TypeError, ValueError):
                 fallback_val = 0.0
             if pd.isna(fallback_val) or fallback_val < 0.0:
                 fallback_val = 0.0
-            if fallback_val > 0.0:
-                entries.append((untreated, fallback_val))
-            else:
-                entries.append((untreated, 0.0))
+            normalised.append({"length_km": remainder, "dra_ppm": fallback_val})
 
-        if entries:
-            merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
-            key = stn.get("name", f"station_{idx}")
-            key_norm = str(key).lower().replace(" ", "_")
-            profiles[key_norm] = merged
+        if not normalised:
+            offset += seg_length
+            continue
+
+        key = stn.get("name", f"station_{idx}")
+        key_norm = str(key).lower().replace(" ", "_")
+        tuples = [
+            (float(entry.get("length_km", 0.0)), float(entry.get("dra_ppm", 0.0)))
+            for entry in normalised
+            if float(entry.get("length_km", 0.0)) > 0.0
+        ]
+        merged = pipeline_model._merge_queue(tuples)  # type: ignore[attr-defined]
+        profiles[key_norm] = [(float(length), float(ppm)) for length, ppm in merged if float(length) > 0.0]
 
         offset += seg_length
 
