@@ -1940,8 +1940,6 @@ def _update_mainline_dra(
                 ppm_val = zero_fill_ppm
             else:
                 ppm_val = 0.0
-        if ppm_val <= 0.0:
-            continue
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -1955,6 +1953,23 @@ def _update_mainline_dra(
             dra_segments[-1] = (prev_len + remaining_length, zero_fill_ppm)
         else:
             dra_segments.append((remaining_length, zero_fill_ppm))
+
+    # Preserve explicit zero-ppm portions so downstream reporting can surface
+    # untreated footage between stations.  Prior logic dropped zero slices,
+    # which made the formatted profile misrepresent queue head conditions.
+    if dra_segments:
+        cleaned_segments: list[tuple[float, float]] = []
+        for length, ppm_val in dra_segments:
+            length_float = float(length or 0.0)
+            if length_float <= 0.0:
+                continue
+            ppm_float = float(ppm_val or 0.0)
+            if cleaned_segments and abs(cleaned_segments[-1][1] - ppm_float) <= 1e-9:
+                prev_len, prev_ppm = cleaned_segments[-1]
+                cleaned_segments[-1] = (prev_len + length_float, prev_ppm)
+            else:
+                cleaned_segments.append((length_float, ppm_float))
+        dra_segments = cleaned_segments
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
