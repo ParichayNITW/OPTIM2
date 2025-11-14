@@ -4732,10 +4732,13 @@ def test_dra_profile_preserves_baseline_after_injection() -> None:
 
     assert dra_segments_hour2
     positive_hour2 = [(length, ppm) for length, ppm in dra_segments_hour2 if ppm > 0.0]
+    assert len(positive_hour2) == 3
     assert positive_hour2[0][0] == pytest.approx(pumped_length, rel=1e-6)
     assert positive_hour2[0][1] == pytest.approx(9.0, rel=1e-6)
-    assert positive_hour2[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
-    assert positive_hour2[1][1] == pytest.approx(4.0, rel=1e-6)
+    assert positive_hour2[1][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert positive_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
+    assert positive_hour2[2][0] == pytest.approx(segment_length - 2 * pumped_length, rel=1e-6)
+    assert positive_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
 
 
 def test_update_mainline_dra_retains_lower_injection_than_baseline() -> None:
