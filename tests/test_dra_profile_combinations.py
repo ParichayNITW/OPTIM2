@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dra_profile_combinations import Scenario, generate_combination_profiles
+from dra_profile_combinations import Scenario, Station, generate_combination_profiles
 
 EXPECTED_PROFILES = {('Off', 'Off', 'Off', 'Off'): {'07:00': (((80.0, 5.0),), ((60.0, 5.0),), ((60.0, 0.0),)),
                                 '08:00': (((5.0, 0.0), (75.0, 5.0)),
@@ -197,18 +197,28 @@ def test_generate_combination_profiles_matches_expected() -> None:
     scenario = Scenario(
         length_km=200.0,
         volume_m3=120_000.0,
-        segment_lengths=(80.0, 60.0, 60.0),
+        stations=(
+            Station("Station 1", 80.0, has_pump=True, has_dra=True, pump_forced_on=True, dra_ppm_on=6.0, kv=3.0),
+            Station("Station 2", 60.0, has_pump=True, has_dra=True, dra_ppm_on=6.0, kv=3.0),
+            Station("Station 3", 60.0, has_pump=True, has_dra=False),
+        ),
         baseline_queue=((140.0, 5.0), (60.0, 0.0)),
         dra_min_ppm=3.0,
         dra_max_ppm=6.0,
-        dra_selection_ppm=6.0,
+        km_per_hour=5.0,
     )
 
     actual = generate_combination_profiles(scenario)
     assert len(actual) == len(EXPECTED_PROFILES)
 
     for entry in actual:
-        key = (entry['S1 DRA'], entry['S2 DRA'], entry['S2 Pump'], entry['S3 Pump'])
+        key = (
+            entry.get('Station 1 DRA', 'Off'),
+            entry.get('Station 2 DRA', 'Off'),
+            entry.get('Station 2 Pump', 'Off'),
+            entry.get('Station 3 Pump', 'Off'),
+        )
         assert key in EXPECTED_PROFILES
         snapshots = {snapshot['time']: snapshot['segments'] for snapshot in entry['profiles']}
         assert snapshots == EXPECTED_PROFILES[key]
+

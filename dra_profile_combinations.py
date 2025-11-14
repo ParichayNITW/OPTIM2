@@ -1,5 +1,5 @@
 
-"""Generate DRA profile combinations for a three-station pipeline scenario."""
+"""Enumerate DRA profiles for arbitrary pump/DRA combinations."""
 
 from __future__ import annotations
 
@@ -12,17 +12,29 @@ import pipeline_model as pm
 
 
 @dataclass(frozen=True)
+class Station:
+    """Description of a pipeline station used for simulation."""
+
+    name: str
+    length_km: float
+    has_pump: bool = True
+    has_dra: bool = False
+    pump_forced_on: bool = False
+    dra_ppm_on: float | None = None
+    kv: float | None = None
+
+
+@dataclass(frozen=True)
 class Scenario:
-    """Static description of the reference pipeline scenario."""
+    """Static description of a pipeline used for combination generation."""
 
     length_km: float
     volume_m3: float
-    segment_lengths: Sequence[float]
+    stations: Sequence[Station]
     baseline_queue: Sequence[Tuple[float, float]]
     dra_min_ppm: float
     dra_max_ppm: float
-    dra_selection_ppm: float
-    kv: float = 3.0
+    km_per_hour: float
 
     def inner_diameter(self) -> float:
         """Return the inner diameter implied by line volume and length."""
@@ -78,15 +90,22 @@ def _segment_profiles_from_queue(
 
 def generate_combination_profiles(
     scenario: Scenario,
+    *,
+    hours: int = 3,
 ) -> list[dict[str, object]]:
-    """Return DRA profiles for every pump/DRA combination over three hours."""
+    """Return DRA profiles for every pump/DRA combination over ``hours`` steps."""
 
     d_inner = scenario.inner_diameter()
-    segments = list(float(seg) for seg in scenario.segment_lengths)
-    stations = [
-        {"name": "Station 1", "idx": 0, "d_inner": d_inner, "kv": scenario.kv},
-        {"name": "Station 2", "idx": 1, "d_inner": d_inner, "kv": scenario.kv},
-        {"name": "Station 3", "idx": 2, "d_inner": d_inner, "kv": scenario.kv},
+    segments = [float(stn.length_km) for stn in scenario.stations]
+
+    pm_stations = [
+        {
+            "name": station.name,
+            "idx": idx,
+            "d_inner": d_inner,
+            "kv": float(station.kv if station.kv is not None else 3.0),
+        }
+        for idx, station in enumerate(scenario.stations)
     ]
 
     initial_queue = [
@@ -95,47 +114,60 @@ def generate_combination_profiles(
         if float(length) > 0.0
     ]
 
+    if scenario.length_km > 0.0 and scenario.km_per_hour > 0.0:
+        diameter = d_inner
+        area = math.pi * (diameter ** 2) / 4.0 if diameter > 0.0 else 0.0
+        flow_m3h = scenario.km_per_hour * 1000.0 * area if area > 0.0 else 0.0
+    else:
+        flow_m3h = 0.0
+
+    state_labels: list[str] = []
+    state_variants: list[list[bool]] = []
+    for station in scenario.stations:
+        if station.has_dra:
+            state_labels.append(f"{station.name} DRA")
+            state_variants.append([False, True])
+        if station.has_pump and not station.pump_forced_on:
+            state_labels.append(f"{station.name} Pump")
+            state_variants.append([False, True])
+    if not state_labels:
+        state_labels = ["(no toggles)"]
+        state_variants = [[False]]
+
     results: list[dict[str, object]] = []
 
-    for s1_dra, s2_dra, s2_pump, s3_pump in product([False, True], repeat=4):
-        inj_s1 = scenario.dra_selection_ppm if s1_dra else 0.0
-        inj_s2 = scenario.dra_selection_ppm if s2_dra else 0.0
-
-        case_entry: dict[str, object] = {
-            "S1 DRA": "On" if s1_dra else "Off",
-            "S2 DRA": "On" if s2_dra else "Off",
-            "S2 Pump": "On" if s2_pump else "Off",
-            "S3 Pump": "On" if s3_pump else "Off",
-            "profiles": [],
-        }
+    for states in product(*state_variants):
+        state_map = dict(zip(state_labels, states, strict=False))
+        case_entry: dict[str, object] = {label: ("On" if state_map[label] else "Off") for label in state_labels}
+        case_entry.setdefault("profiles", [])
 
         queue_state = list(initial_queue)
         history: list[dict[str, object]] = []
 
         initial_profiles = _segment_profiles_from_queue(queue_state, segments)
-        history.append(
-            {
-                "time": "07:00",
-                "segments": initial_profiles,
-            }
-        )
+        history.append({"time": "07:00", "segments": initial_profiles})
 
-        flow_m3h = scenario.volume_m3 / (scenario.length_km / 5.0) if scenario.length_km > 0 else 0.0
-        hours = 1.0
-
-        for step in range(3):
+        for step in range(hours):
             hour_profiles: list[Tuple[Tuple[float, float], ...]] = []
-            for idx, (station, seg_len) in enumerate(zip(stations, segments)):
-                pump_running = True if idx == 0 else (s2_pump if idx == 1 else s3_pump)
-                inj_ppm = inj_s1 if idx == 0 else (inj_s2 if idx == 1 else 0.0)
+            for idx, (station_cfg, seg_len) in enumerate(zip(pm_stations, segments)):
+                logical = scenario.stations[idx]
+                pump_label = f"{logical.name} Pump"
+                pump_running = True if logical.pump_forced_on else state_map.get(pump_label, logical.pump_forced_on)
+
+                dra_label = f"{logical.name} DRA"
+                dra_on = state_map.get(dra_label, False)
+                dra_ppm = logical.dra_ppm_on if logical.dra_ppm_on is not None else scenario.dra_max_ppm
+                inj_ppm = float(dra_ppm if dra_on else 0.0)
+
                 opt = {"dra_ppm_main": inj_ppm}
+
                 dra_segments, queue_state, *_ = pm._update_mainline_dra(
                     queue_state,
-                    station,
+                    station_cfg,
                     opt,
                     seg_len,
                     flow_m3h,
-                    hours,
+                    1.0,
                     pump_running=pump_running,
                     pump_shear_rate=0.0,
                     dra_shear_factor=0.0,
@@ -143,13 +175,10 @@ def generate_combination_profiles(
                     is_origin=(idx == 0),
                     segment_floor=None,
                 )
+
                 hour_profiles.append(_normalise_segments(dra_segments))
-            history.append(
-                {
-                    "time": f"{8 + step:02d}:00",
-                    "segments": tuple(hour_profiles),
-                }
-            )
+
+            history.append({"time": f"{8 + step:02d}:00", "segments": tuple(hour_profiles)})
 
         case_entry["profiles"] = history
         results.append(case_entry)
@@ -163,26 +192,26 @@ def main() -> None:
     scenario = Scenario(
         length_km=200.0,
         volume_m3=120_000.0,
-        segment_lengths=(80.0, 60.0, 60.0),
+        stations=(
+            Station("Station 1", 80.0, has_pump=True, has_dra=True, pump_forced_on=True, dra_ppm_on=6.0, kv=3.0),
+            Station("Station 2", 60.0, has_pump=True, has_dra=True, dra_ppm_on=6.0, kv=3.0),
+            Station("Station 3", 60.0, has_pump=True, has_dra=False),
+        ),
         baseline_queue=((140.0, 5.0), (60.0, 0.0)),
         dra_min_ppm=3.0,
         dra_max_ppm=6.0,
-        dra_selection_ppm=6.0,
+        km_per_hour=5.0,
     )
     profiles = generate_combination_profiles(scenario)
 
     for entry in profiles:
-        header = (
-            f"S1 DRA: {entry['S1 DRA']}, "
-            f"S2 DRA: {entry['S2 DRA']}, "
-            f"S2 Pump: {entry['S2 Pump']}, "
-            f"S3 Pump: {entry['S3 Pump']}"
-        )
+        header_parts = [f"{label}: {state}" for label, state in entry.items() if label != "profiles"]
+        header = ", ".join(header_parts)
         print(header)
         for snapshot in entry["profiles"]:
             print(f"  {snapshot['time']}")
             for idx, segment in enumerate(snapshot["segments"], start=1):
-                print(f"    S{idx}: {_format_segments(segment)}")
+                print(f"    {scenario.stations[idx - 1].name}: {_format_segments(segment)}")
         print()
 
 
