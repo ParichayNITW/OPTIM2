@@ -1715,14 +1715,15 @@ def _update_mainline_dra(
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
-        advected_portion = [
-            (float(length), float(ppm))
-            for length, ppm in pumped_adjusted
-            if float(length or 0.0) > 0.0
-        ]
         if inj_effective > 0.0:
+            advected_portion = []
             tail_queue = list(remaining_queue)
         else:
+            advected_portion = [
+                (float(length), float(ppm))
+                for length, ppm in pumped_adjusted
+                if float(length or 0.0) > 0.0
+            ]
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
@@ -1916,7 +1917,7 @@ def _update_mainline_dra(
                     zero_fill_ppm = seg_ppm
         if zero_fill_ppm <= 0.0 and floor_ppm > 0.0:
             zero_fill_ppm = floor_ppm
-        if zero_fill_ppm <= 0.0 and existing_queue:
+        if zero_fill_ppm <= 0.0 and (floor_segments or floor_ppm > 0.0) and existing_queue:
             for _length_existing, ppm_existing in reversed(existing_queue):
                 if ppm_existing > 0.0:
                     zero_fill_ppm = ppm_existing
@@ -4636,11 +4637,14 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            dra_grid_min = 0
+            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -5147,11 +5151,11 @@ def solve_pipeline(
             entry['fallback_dra_ppm'] = fallback_val
 
     baseline_floor: dict | None = None
-    enforce_queue_floor = True
+    enforce_queue_floor = False
     if isinstance(forced_origin_detail, Mapping):
         ppm_floor = float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0)
         length_floor = float(forced_origin_detail.get('length_km', 0.0) or 0.0)
-        enforce_queue_floor = bool(forced_origin_detail.get('enforce_queue', True))
+        enforce_queue_floor = bool(forced_origin_detail.get('enforce_queue', False))
 
         segment_floor_raw = forced_origin_detail.get('segments')
         segment_floor_norm: list[dict[str, float]] = []
@@ -5169,7 +5173,11 @@ def solve_pipeline(
                     seg_ppm = 0.0
                 if seg_length <= 0.0 or seg_ppm <= 0.0:
                     continue
-                segment_floor_norm.append({'length_km': seg_length, 'dra_ppm': seg_ppm})
+                segment_floor_norm.append({
+                    'length_km': seg_length,
+                    'dra_ppm': seg_ppm,
+                    'enforce_queue': bool(enforce_queue_floor),
+                })
             if segment_floor_norm:
                 seg_total = sum(item['length_km'] for item in segment_floor_norm)
                 seg_max_ppm = max(item['dra_ppm'] for item in segment_floor_norm)
@@ -5185,7 +5193,7 @@ def solve_pipeline(
             if segment_floor_norm:
                 baseline_floor['segments'] = segment_floor_norm
 
-    if baseline_floor and baseline_floor.get('enforce_queue', True):
+    if baseline_floor and baseline_floor.get('enforce_queue', False):
         initial_queue = _ensure_queue_floor(
             initial_queue,
             baseline_floor.get('length_km', 0.0),
