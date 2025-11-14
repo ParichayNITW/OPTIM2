@@ -1652,9 +1652,7 @@ def _update_mainline_dra(
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
-            if not pump_running and inj_effective > 0.0:
-                ppm_out += inj_effective
-            elif not pump_running and inj_effective <= 0.0:
+            if not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
@@ -1736,10 +1734,14 @@ def _update_mainline_dra(
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and inj_effective > 0.0 and head_length > 0.0:
+    advected_tuple: tuple[tuple[float, float], ...] = tuple(advected_portion)
+    if inj_effective > 0.0 and head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
-
-    combined_entries.extend(advected_portion)
+        if advected_tuple:
+            remainder_after_head = _trim_queue_front(advected_tuple, head_length)
+            combined_entries.extend(remainder_after_head)
+    else:
+        combined_entries.extend(advected_portion)
     combined_entries.extend(tail_queue)
 
     combined_total = _queue_total_length(combined_entries)
