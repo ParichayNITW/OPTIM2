@@ -144,6 +144,21 @@ def _normalise_segment_floor(entry: dict[str, object] | None) -> dict[str, objec
     return cleaned if cleaned else None
 
 
+def _clamp_dra_ppm(value: float, *, minimum: float, maximum: float) -> float:
+    """Return ``value`` clamped between ``minimum`` and ``maximum`` when set."""
+
+    ppm = max(float(value or 0.0), 0.0)
+    lo = max(float(minimum or 0.0), 0.0)
+    hi = max(float(maximum or 0.0), 0.0)
+    if hi > 0.0 and lo > hi:
+        lo = hi
+    if hi > 0.0:
+        ppm = min(ppm, hi)
+    if lo > 0.0:
+        ppm = max(ppm, lo)
+    return ppm
+
+
 def generate_combination_profiles(
     scenario: Scenario,
     *,
@@ -158,6 +173,18 @@ def generate_combination_profiles(
     except (TypeError, ValueError):
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
+    try:
+        inj_min = float(scenario.dra_min_ppm)
+    except (TypeError, ValueError):
+        inj_min = 0.0
+    try:
+        inj_max = float(scenario.dra_max_ppm)
+    except (TypeError, ValueError):
+        inj_max = 0.0
+    inj_min = max(inj_min, 0.0)
+    inj_max = max(inj_max, 0.0)
+    if inj_max > 0.0 and inj_min > inj_max:
+        inj_min = inj_max
 
     pm_stations = [
         {
@@ -232,8 +259,13 @@ def generate_combination_profiles(
 
                 dra_label = f"{logical.name} DRA"
                 dra_on = state_map.get(dra_label, False)
-                dra_ppm = logical.dra_ppm_on if logical.dra_ppm_on is not None else scenario.dra_max_ppm
-                inj_ppm = float(dra_ppm if dra_on else 0.0)
+                target_ppm = logical.dra_ppm_on
+                if target_ppm is None:
+                    target_ppm = scenario.dra_max_ppm
+                target_ppm = float(target_ppm or 0.0)
+                inj_ppm = 0.0
+                if dra_on and target_ppm > 0.0:
+                    inj_ppm = _clamp_dra_ppm(target_ppm, minimum=inj_min, maximum=inj_max)
 
                 opt = {"dra_ppm_main": inj_ppm}
 
