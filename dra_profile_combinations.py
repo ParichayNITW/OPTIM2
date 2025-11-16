@@ -35,6 +35,7 @@ class Scenario:
     dra_min_ppm: float
     dra_max_ppm: float
     km_per_hour: float
+    pump_shear_rate: float = 0.0
 
     def inner_diameter(self) -> float:
         """Return the inner diameter implied by line volume and length."""
@@ -97,6 +98,11 @@ def generate_combination_profiles(
 
     d_inner = scenario.inner_diameter()
     segments = [float(stn.length_km) for stn in scenario.stations]
+    try:
+        pump_shear_rate = float(scenario.pump_shear_rate)
+    except (TypeError, ValueError):
+        pump_shear_rate = 0.0
+    pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     pm_stations = [
         {
@@ -127,9 +133,14 @@ def generate_combination_profiles(
         if station.has_dra:
             state_labels.append(f"{station.name} DRA")
             state_variants.append([False, True])
-        if station.has_pump and not station.pump_forced_on:
-            state_labels.append(f"{station.name} Pump")
-            state_variants.append([False, True])
+        if station.has_pump:
+            pump_label = f"{station.name} Pump"
+            if station.pump_forced_on:
+                state_labels.append(pump_label)
+                state_variants.append([True])
+            else:
+                state_labels.append(pump_label)
+                state_variants.append([False, True])
     if not state_labels:
         state_labels = ["(no toggles)"]
         state_variants = [[False]]
@@ -181,7 +192,7 @@ def generate_combination_profiles(
                     flow_m3h,
                     1.0,
                     pump_running=pump_running,
-                    pump_shear_rate=0.0,
+                    pump_shear_rate=pump_shear_rate,
                     dra_shear_factor=0.0,
                     shear_injection=False,
                     is_origin=(idx == 0),
