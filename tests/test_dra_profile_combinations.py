@@ -125,3 +125,34 @@ def test_generate_combination_profiles_matches_expected() -> None:
         assert key in EXPECTED_PROFILES
         snapshots = {snapshot['time']: snapshot['segments'] for snapshot in entry['profiles']}
         assert snapshots == EXPECTED_PROFILES[key]
+
+
+def test_generate_combination_profiles_clamps_injection() -> None:
+    scenario = Scenario(
+        length_km=10.0,
+        volume_m3=6_000.0,
+        stations=(
+            Station(
+                "Solo",
+                10.0,
+                has_pump=True,
+                pump_forced_on=True,
+                has_dra=True,
+                dra_ppm_on=1.0,
+            ),
+        ),
+        baseline_queue=((10.0, 0.0),),
+        dra_min_ppm=2.0,
+        dra_max_ppm=3.0,
+        km_per_hour=5.0,
+    )
+
+    profiles = generate_combination_profiles(scenario, hours=1)
+    assert len(profiles) == 2
+
+    states = {entry['Solo DRA']: entry for entry in profiles}
+    on_profile = states['On']['profiles'][1]['segments'][0]
+    assert on_profile == ((5.0, 2.0), (5.0, 0.0))
+
+    off_profile = states['Off']['profiles'][1]['segments'][0]
+    assert off_profile == ((10.0, 0.0),)
