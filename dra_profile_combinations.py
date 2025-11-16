@@ -222,9 +222,10 @@ def generate_combination_profiles(
             hour_profiles: list[Tuple[Tuple[float, float], ...]] = []
             upstream_offset = 0.0
             for idx, (station_cfg, seg_len) in enumerate(zip(pm_stations, segments)):
+                segment_start = upstream_offset
                 current_full = queue_full
-                prefix_entries = pm._take_queue_front(current_full, upstream_offset)
-                queue_at_inlet = pm._trim_queue_front(current_full, upstream_offset)
+                prefix_entries = pm._take_queue_front(current_full, segment_start)
+                queue_at_inlet = pm._trim_queue_front(current_full, segment_start)
                 logical = scenario.stations[idx]
                 pump_label = f"{logical.name} Pump"
                 pump_running = True if logical.pump_forced_on else state_map.get(pump_label, logical.pump_forced_on)
@@ -259,8 +260,6 @@ def generate_combination_profiles(
                     segment_floor=_normalise_segment_floor(logical.segment_floor),
                 )
 
-                hour_profiles.append(_normalise_segments(dra_segments))
-
                 queue_after_body = tuple(
                     (
                         float(entry.get("length_km", 0.0) or 0.0),
@@ -271,6 +270,12 @@ def generate_combination_profiles(
                 )
                 combined_entries = list(prefix_entries) + list(queue_after_body)
                 queue_full = tuple(pm._merge_queue(combined_entries))
+                segment_profile = pm._segment_profile_from_queue(
+                    queue_full,
+                    segment_start,
+                    seg_len,
+                )
+                hour_profiles.append(_normalise_segments(segment_profile))
                 upstream_offset += seg_len
 
             history.append({"time": f"{8 + step:02d}:00", "segments": tuple(hour_profiles)})
