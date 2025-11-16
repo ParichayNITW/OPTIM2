@@ -22,6 +22,7 @@ class Station:
     pump_forced_on: bool = False
     dra_ppm_on: float | None = None
     kv: float | None = None
+    fallback_dra_ppm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,11 @@ def generate_combination_profiles(
             "idx": idx,
             "d_inner": d_inner,
             "kv": float(station.kv if station.kv is not None else 3.0),
+            **(
+                {"fallback_dra_ppm": float(station.fallback_dra_ppm)}
+                if station.fallback_dra_ppm is not None
+                else {}
+            ),
         }
         for idx, station in enumerate(scenario.stations)
     ]
