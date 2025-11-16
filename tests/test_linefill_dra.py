@@ -640,6 +640,27 @@ def test_segment_profile_from_queue_downstream_segment() -> None:
     assert profile[1][1] == pytest.approx(10.0, rel=1e-9)
 
 
+def test_segment_profile_from_queue_pads_empty_segments() -> None:
+    """Segments with no queued fluid should still report zero-ppm coverage."""
+
+    profile = _segment_profile_from_queue((), upstream_length=0.0, segment_length=12.5)
+
+    assert profile == ((12.5, 0.0),)
+
+
+def test_segment_profile_from_queue_pads_partial_segments() -> None:
+    """Any uncovered remainder should be reported as zero-ppm footage."""
+
+    queue_full = (
+        (5.0, 4.0),
+        (2.0, 0.0),
+    )
+
+    profile = _segment_profile_from_queue(queue_full, upstream_length=0.0, segment_length=10.0)
+
+    assert profile == ((5.0, 4.0), (2.0, 0.0), (3.0, 0.0))
+
+
 def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
     """Station B should retain the inherited slug even when no flow is pumped."""
 

@@ -1178,9 +1178,6 @@ def _segment_profile_from_queue(
     remaining queue.
     """
 
-    if not queue_entries:
-        return ()
-
     try:
         upstream = max(float(upstream_length or 0.0), 0.0)
     except (TypeError, ValueError):
@@ -1192,11 +1189,18 @@ def _segment_profile_from_queue(
     if seg_len <= 0:
         return ()
 
-    segment_queue = _trim_queue_front(queue_entries, upstream)
-    if not segment_queue:
-        return ()
+    if not queue_entries:
+        segment_queue: tuple[tuple[float, float], ...] = ()
+    else:
+        segment_queue = _trim_queue_front(queue_entries, upstream)
 
-    return _take_queue_front(segment_queue, seg_len)
+    profile = _take_queue_front(segment_queue, seg_len)
+    total_taken = sum(length for length, _ppm in profile)
+    remaining = seg_len - total_taken
+    if remaining > 1e-9:
+        profile = tuple(profile + ((remaining, 0.0),))
+
+    return profile
 
 
 def _normalise_station_profile(
