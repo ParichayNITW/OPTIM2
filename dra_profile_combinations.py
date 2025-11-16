@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import product
 import math
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, Mapping, Sequence, Tuple
 
 import pipeline_model as pm
 
@@ -23,6 +23,7 @@ class Station:
     dra_ppm_on: float | None = None
     kv: float | None = None
     fallback_dra_ppm: float | None = None
+    segment_floor: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,59 @@ def _segment_profiles_from_queue(
         profiles.append(_normalise_segments(profile))
         upstream += seg_len
     return tuple(profiles)
+
+
+def _normalise_segment_floor(entry: dict[str, object] | None) -> dict[str, object] | None:
+    """Return a cleaned segment-floor mapping for ``_update_mainline_dra``."""
+
+    if not isinstance(entry, dict):
+        return None
+
+    cleaned: dict[str, object] = {}
+    if "length_km" in entry:
+        try:
+            cleaned["length_km"] = float(entry["length_km"] or 0.0)
+        except (TypeError, ValueError):
+            cleaned["length_km"] = 0.0
+    if "dra_ppm" in entry:
+        try:
+            cleaned["dra_ppm"] = float(entry["dra_ppm"] or 0.0)
+        except (TypeError, ValueError):
+            cleaned["dra_ppm"] = 0.0
+    if "dra_perc" in entry:
+        try:
+            cleaned["dra_perc"] = float(entry["dra_perc"] or 0.0)
+        except (TypeError, ValueError):
+            cleaned["dra_perc"] = 0.0
+
+    seg_entries = entry.get("segments")
+    if isinstance(seg_entries, Sequence):
+        segments: list[dict[str, float]] = []
+        for seg_entry in seg_entries:
+            if not isinstance(seg_entry, Mapping):
+                continue
+            seg_clean: dict[str, float] = {}
+            try:
+                seg_clean["length_km"] = float(seg_entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_clean["length_km"] = 0.0
+            try:
+                seg_clean["dra_ppm"] = float(seg_entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_clean["dra_ppm"] = 0.0
+            try:
+                seg_clean["dra_perc"] = float(seg_entry.get("dra_perc", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_clean["dra_perc"] = 0.0
+            if seg_clean:
+                segments.append(seg_clean)
+        if segments:
+            cleaned["segments"] = segments
+
+    if "enforce_queue" in entry:
+        cleaned["enforce_queue"] = bool(entry["enforce_queue"])
+
+    return cleaned if cleaned else None
 
 
 def generate_combination_profiles(
@@ -202,7 +256,7 @@ def generate_combination_profiles(
                     dra_shear_factor=0.0,
                     shear_injection=False,
                     is_origin=(idx == 0),
-                    segment_floor=None,
+                    segment_floor=_normalise_segment_floor(logical.segment_floor),
                 )
 
                 hour_profiles.append(_normalise_segments(dra_segments))

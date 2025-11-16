@@ -31,7 +31,7 @@ def main() -> None:
                 pump_forced_on=True,
                 has_dra=True,
                 dra_ppm_on=3.0,
-                fallback_dra_ppm=2.0,
+                segment_floor={"length_km": 100.0, "dra_ppm": 2.0, "enforce_queue": True},
             ),
             Station(
                 "Segment B→C",
@@ -39,7 +39,7 @@ def main() -> None:
                 has_pump=True,
                 has_dra=True,
                 dra_ppm_on=3.0,
-                fallback_dra_ppm=2.0,
+                segment_floor={"length_km": 50.0, "dra_ppm": 2.0, "enforce_queue": True},
             ),
         ),
         baseline_queue=((150.0, 0.0),),

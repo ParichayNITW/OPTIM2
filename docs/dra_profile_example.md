@@ -58,9 +58,9 @@ logic inside `dra_profile_combinations.generate_combination_profiles`.
 ## ABC pipeline variant (100 km + 50 km)
 
 To match the latest ABC pipeline request (A→B = 100 km, B→C = 50 km, entire
-line initially at 0 ppm, baseline/fallback requirement of 2 ppm on both
-segments, 5 km/h flow, optional DRA shots of 3 ppm at A and 3 ppm at B, pumps
-with global shear 1.0), run:
+line initially at 0 ppm, per-segment baseline floors of 2 ppm, 5 km/h flow,
+optional DRA shots of 3 ppm at A and 3 ppm at B, pumps with global shear 1.0),
+run:
 
 ```bash
 python scripts/abc_pipeline_profiles.py
@@ -72,9 +72,11 @@ This helper considers every combination of:
   origin station), and
 * B's DRA and pump switches (On injects 3 ppm, pump shear respected).
 
-Both stations feed `_update_mainline_dra` with a `fallback_dra_ppm=2.0`, so even
-when the injectors are off the optimiser enforces the 2 ppm baseline that the
-user requested for each segment.
+Both stations set `segment_floor` entries so `_update_mainline_dra` enforces a
+2 ppm treated-length requirement whenever a DRA slug is injected. When the
+injector is off the floor cannot be met, so the optimiser reports an empty
+profile for that hour—exactly what the Streamlit app shows when the "Run daily
+…" actions are invoked.
 
 The output is formatted the same way as the three-station example: each block
 lists the switch states followed by a two-column table showing the optimiser's
