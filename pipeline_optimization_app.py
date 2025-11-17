@@ -64,6 +64,7 @@ import hashlib
 import uuid
 import json
 import copy
+import threading
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
@@ -494,10 +495,53 @@ def _format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
+def _render_run_duration_notice() -> None:
+    """Display the elapsed time for the last optimisation run when available."""
+
+    last_label = st.session_state.get("last_run_label")
+    last_duration = st.session_state.get("last_run_duration")
+    if last_label and last_duration is not None:
+        st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+
+
 def _store_run_duration(label: str, elapsed: float) -> None:
     st.session_state["last_run_duration"] = float(elapsed)
     st.session_state["last_run_label"] = label
     st.session_state["last_run_timestamp"] = dt.datetime.now()
+
+
+def _run_with_timer(spinner_msg: str, func, *args, **kwargs):
+    """Execute ``func`` while displaying a live timer next to the spinner."""
+
+    timer_placeholder = st.empty()
+    result_container: dict[str, object] = {}
+    error_container: dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _target():
+        try:
+            result_container["value"] = func(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001
+            error_container["error"] = exc
+        finally:
+            done.set()
+
+    start_time = time.perf_counter()
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+
+    with st.spinner(spinner_msg):
+        while not done.is_set():
+            elapsed = time.perf_counter() - start_time
+            timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
+            time.sleep(0.5)
+        worker.join()
+
+    elapsed = time.perf_counter() - start_time
+    timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
+    if error_container:
+        raise error_container["error"]
+    return result_container.get("value"), elapsed
 
 
 def _default_segment_slices(
@@ -1593,14 +1637,7 @@ with st.sidebar:
             key="search_state_cost_margin",
         )
 
-    last_label = st.session_state.get("last_run_label")
-    last_duration = st.session_state.get("last_run_duration")
-    if last_label and last_duration is not None:
-        timestamp = st.session_state.get("last_run_timestamp")
-        if isinstance(timestamp, dt.datetime):
-            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
-        else:
-            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+    _render_run_duration_notice()
 
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
@@ -1640,10 +1677,10 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
-        st.session_state["linefill_vol_df"] = lf_df
+        st.session_state["linefill_vol_df"] = lf_df.copy(deep=True)
         # Ensure the generic linefill reference uses the volumetric table so
         # runs and saved cases reflect current edits.
-        st.session_state["linefill_df"] = lf_df
+        st.session_state["linefill_df"] = st.session_state["linefill_vol_df"].copy(deep=True)
     elif mode == "Daily Pumping Schedule":
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
@@ -1662,8 +1699,8 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
-        st.session_state["linefill_vol_df"] = lf_df
-        st.session_state["linefill_df"] = lf_df
+        st.session_state["linefill_vol_df"] = lf_df.copy(deep=True)
+        st.session_state["linefill_df"] = st.session_state["linefill_vol_df"].copy(deep=True)
         st.markdown("**Pumping Plan for the Day (Order of Pumping)**")
         if "day_plan_df" not in st.session_state:
             st.session_state["day_plan_df"] = pd.DataFrame({
@@ -1680,7 +1717,9 @@ with st.sidebar:
             num_rows="dynamic",
             key="day_plan_editor",
         )
-        st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
+        st.session_state["day_plan_df"] = ensure_initial_dra_column(
+            day_df.copy(deep=True), default=0.0, fill_blanks=True
+        )
         hourly_flow = st.number_input(
             "Hourly flow rate (m³/hr)",
             value=st.session_state.get("hourly_flow", 1000.0),
@@ -1705,8 +1744,8 @@ with st.sidebar:
             key="linefill_vol_editor",
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
-        st.session_state["linefill_vol_df"] = lf_df
-        st.session_state["linefill_df"] = lf_df
+        st.session_state["linefill_vol_df"] = lf_df.copy(deep=True)
+        st.session_state["linefill_df"] = st.session_state["linefill_vol_df"].copy(deep=True)
         st.session_state["planner_days"] = st.number_input(
             "Number of days in Projected Pumping Plan",
             min_value=1.0,
@@ -3668,6 +3707,35 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
 
+        def _clean_profile(entries: list[tuple[float, float]], base_length: float) -> list[tuple[float, float]]:
+            """Normalise profile slices and pad untreated gaps for display."""
+
+            cleaned: list[tuple[float, float]] = []
+            for length_raw, ppm_raw in entries:
+                try:
+                    length_val = float(length_raw or 0.0)
+                except (TypeError, ValueError):
+                    length_val = 0.0
+                try:
+                    ppm_val = float(ppm_raw or 0.0)
+                except (TypeError, ValueError):
+                    ppm_val = 0.0
+
+                if length_val <= 0.0:
+                    continue
+
+                cleaned.append((length_val, ppm_val if ppm_val > 0.0 else 0.0))
+
+            total_length = sum(length for length, _ppm in cleaned)
+            if base_length > 0.0 and total_length < base_length - 1e-6:
+                cleaned.append((base_length - total_length, 0.0))
+
+            if not cleaned:
+                return []
+
+            merged = pipeline_model._merge_queue(cleaned)  # type: ignore[attr-defined]
+            return merged
+
         profile_entries: list[tuple[float, float]] = []
         override_entry = override_profiles.get(key)
 
@@ -3717,6 +3785,12 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                 _extend_from_iterable(iterable_profile)
             elif isinstance(override_entry, list):
                 _extend_from_iterable(override_entry)
+
+        base_length = _float_or_none(base_stn.get('L')) if isinstance(base_stn, dict) else None
+        if base_length is None:
+            base_length = 0.0
+
+        profile_entries = _clean_profile(profile_entries, base_length)
 
         treated_length_val = res.get(f"dra_treated_length_{key}")
         if treated_length_val is None and isinstance(stn, dict):
@@ -3772,9 +3846,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         row['DRA Inlet PPM'] = inlet_ppm
         row['DRA Outlet PPM'] = outlet_ppm
         row['DRA Treated Length (km)'] = treated_length
-        base_length = _float_or_none(base_stn.get('L')) if isinstance(base_stn, dict) else None
-        if base_length is None:
-            base_length = 0.0
         row['DRA Untreated Length (km)'] = max(base_length - treated_length, 0.0)
         row['DRA Profile (km@ppm)'] = profile_str
 
@@ -4160,14 +4231,29 @@ if auto_batch:
     Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
     Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
-    product_table = data_editor_copy(
-        pd.DataFrame({
+    if "batch_product_table" not in st.session_state:
+        st.session_state["batch_product_table"] = pd.DataFrame({
             "Product": [f"Product {i+1}" for i in range(num_products)],
             "Viscosity (cSt)": [1.0 + i for i in range(num_products)],
-            "Density (kg/m³)": [800 + 40*i for i in range(num_products)],
-        }),
+            "Density (kg/m³)": [800 + 40 * i for i in range(num_products)],
+        })
+    batch_table = st.session_state["batch_product_table"].copy(deep=True)
+    if len(batch_table) < num_products:
+        start_idx = len(batch_table)
+        for i in range(start_idx, num_products):
+            batch_table.loc[i] = {
+                "Product": f"Product {i + 1}",
+                "Viscosity (cSt)": 1.0 + i,
+                "Density (kg/m³)": 800 + 40 * i,
+            }
+    elif len(batch_table) > num_products:
+        batch_table = batch_table.head(num_products)
+    product_table = data_editor_copy(
+        batch_table,
         num_rows="dynamic", key="batch_prod_tbl"
     )
+    if isinstance(product_table, pd.DataFrame):
+        st.session_state["batch_product_table"] = product_table.copy(deep=True).reset_index(drop=True)
     step_size = st.number_input("Step Size (%)", min_value=5, max_value=50, value=10, step=5)
     batch_run = st.button("Run Batch Optimization", key="runbatchbtn", type="primary")
 
@@ -5785,28 +5871,27 @@ def run_all_updates():
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
-    start_time = time.perf_counter()
-    with st.spinner("Solving optimization..."):
-        res = pipeline_model.solve_pipeline_with_types(
-            stations_data,
-            term_data,
-            st.session_state.get("FLOW", 1000.0),
-            kv_list,
-            rho_list,
-            segment_slices,
-            st.session_state.get("RateDRA", 500.0),
-            st.session_state.get("Price_HSD", 70.0),
-            st.session_state.get("Fuel_density", 820.0),
-            st.session_state.get("Ambient_temp", 25.0),
-            df_to_dra_linefill(linefill_df),
-            200.0,
-            st.session_state.get("MOP_kgcm2"),
-            24.0,
-            pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-            forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
-            **search_kwargs,
-        )
-    elapsed = time.perf_counter() - start_time
+    res, elapsed = _run_with_timer(
+        "Solving optimization...",
+        pipeline_model.solve_pipeline_with_types,
+        stations_data,
+        term_data,
+        st.session_state.get("FLOW", 1000.0),
+        kv_list,
+        rho_list,
+        segment_slices,
+        st.session_state.get("RateDRA", 500.0),
+        st.session_state.get("Price_HSD", 70.0),
+        st.session_state.get("Fuel_density", 820.0),
+        st.session_state.get("Ambient_temp", 25.0),
+        df_to_dra_linefill(linefill_df),
+        200.0,
+        st.session_state.get("MOP_kgcm2"),
+        24.0,
+        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+        forced_origin_detail=copy.deepcopy(forced_detail_effective) if forced_detail_effective else None,
+        **search_kwargs,
+    )
     if not res or res.get("error"):
         if isinstance(res, dict):
             st.session_state["last_error_response"] = res
@@ -5915,27 +6000,26 @@ if not auto_batch:
         base_dra_linefill = copy.deepcopy(dra_linefill)
         base_dra_reach = float(dra_reach_km)
 
-        start_time = time.perf_counter()
-        with st.spinner(spinner_msg):
-            solver_result = _execute_time_series_solver(
-                stations_base,
-                term_data,
-                hours,
-                flow_rate=FLOW_sched,
-                plan_df=plan_df,
-                current_vol=current_vol,
-                dra_linefill=dra_linefill,
-                dra_reach_km=dra_reach_km,
-                RateDRA=RateDRA,
-                Price_HSD=Price_HSD,
-                fuel_density=st.session_state.get("Fuel_density", 820.0),
-                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                total_length=total_length,
-                sub_steps=sub_steps,
-            )
-        elapsed = time.perf_counter() - start_time
+        solver_result, elapsed = _run_with_timer(
+            spinner_msg,
+            _execute_time_series_solver,
+            stations_base,
+            term_data,
+            hours,
+            flow_rate=FLOW_sched,
+            plan_df=plan_df,
+            current_vol=current_vol,
+            dra_linefill=dra_linefill,
+            dra_reach_km=dra_reach_km,
+            RateDRA=RateDRA,
+            Price_HSD=Price_HSD,
+            fuel_density=st.session_state.get("Fuel_density", 820.0),
+            ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+            mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+            pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+            total_length=total_length,
+            sub_steps=sub_steps,
+        )
 
         error_msg = solver_result["error"]
         reports = solver_result["reports"]
@@ -5949,27 +6033,28 @@ if not auto_batch:
             fallback_note: str | None = None
             fallback: dict | None = None
             if _should_attempt_max_flow_fallback(solver_result):
-                with st.spinner("Computing max achievable flow..."):
-                    fallback = _find_maximum_feasible_flow(
-                        flow_rate=FLOW_sched,
-                        stations_base=stations_base,
-                        term_data=term_data,
-                        hours=hours,
-                        plan_df=base_plan_df,
-                        current_vol=base_current_vol,
-                        dra_linefill=base_dra_linefill,
-                        dra_reach_km=base_dra_reach,
-                        RateDRA=RateDRA,
-                        Price_HSD=Price_HSD,
-                        fuel_density=st.session_state.get("Fuel_density", 820.0),
-                        ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                        mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                        total_length=total_length,
-                        sub_steps=sub_steps,
-                        flow_step=50.0,
-                        is_hourly=is_hourly,
-                    )
+                fallback, _ = _run_with_timer(
+                    "Computing max achievable flow...",
+                    _find_maximum_feasible_flow,
+                    flow_rate=FLOW_sched,
+                    stations_base=stations_base,
+                    term_data=term_data,
+                    hours=hours,
+                    plan_df=base_plan_df,
+                    current_vol=base_current_vol,
+                    dra_linefill=base_dra_linefill,
+                    dra_reach_km=base_dra_reach,
+                    RateDRA=RateDRA,
+                    Price_HSD=Price_HSD,
+                    fuel_density=st.session_state.get("Fuel_density", 820.0),
+                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    total_length=total_length,
+                    sub_steps=sub_steps,
+                    flow_step=50.0,
+                    is_hourly=is_hourly,
+                )
             if fallback:
                 FLOW_sched = fallback["flow_rate"]
                 solver_result = fallback["solver_result"]
@@ -6064,6 +6149,7 @@ if not auto_batch:
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
+        _render_run_duration_notice()
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
         df_display = df_day_numeric.T if transpose_view else df_day_numeric
         if transpose_view:
@@ -6165,7 +6251,9 @@ if not auto_batch:
 
     if run_plan:
         st.session_state["run_mode"] = "plan"
+        timer_placeholder = st.empty()
         start_time = time.perf_counter()
+        timer_placeholder.info(f"Elapsed: {_format_duration(0)}")
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
@@ -6237,6 +6325,9 @@ if not auto_batch:
                     continue
                 seg_start = start_ts
                 while seg_start < end_ts:
+                    timer_placeholder.info(
+                        f"Elapsed: {_format_duration(time.perf_counter() - start_time)}"
+                    )
                     seg_end = min(seg_start + pd.Timedelta(hours=4), end_ts)
                     duration_hr = (seg_end - seg_start).total_seconds() / 3600.0
                     pumped_m3 = flow * duration_hr
@@ -6295,6 +6386,7 @@ if not auto_batch:
                 st.error("No valid intervals in projected plan.")
                 st.stop()
         elapsed = time.perf_counter() - start_time
+        timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
 
         st.session_state["last_plan_start"] = flow_df["Start"].min()
         st.session_state["last_plan_hours"] = (flow_df["End"].max() - flow_df["Start"].min()).total_seconds() / 3600.0
@@ -6386,6 +6478,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         if "last_res" not in st.session_state:
             st.info("Please run optimization.")
         else:
+            _render_run_duration_notice()
             res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
