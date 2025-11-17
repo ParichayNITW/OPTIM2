@@ -1248,10 +1248,16 @@ def _normalise_station_profile(
             continue
 
         if pending_zero > 0.0:
-            normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
+            if normalised and abs(normalised[-1]["dra_ppm"] - 0.0) <= 1e-12:
+                normalised[-1]["length_km"] += pending_zero
+            else:
+                normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
             pending_zero = 0.0
 
-        normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
+        if normalised and abs(normalised[-1]["dra_ppm"] - ppm_val) <= 1e-12:
+            normalised[-1]["length_km"] += length_val
+        else:
+            normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
 
     if pending_zero > 0.0:
         normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
@@ -1979,6 +1985,21 @@ def _update_mainline_dra(
             else:
                 cleaned_segments.append((length_float, ppm_float))
         dra_segments = cleaned_segments
+
+    # When no injection occurs, suppress zero-ppm slices if any treated slug
+    # remains so the returned profile focuses on the active DRA portions.
+    if dra_segments and inj_effective <= 0.0 and not pump_running and is_origin:
+        has_positive = any(float(ppm_val) > 0.0 for _len_val, ppm_val in dra_segments)
+        if has_positive:
+            filtered_segments = [
+                (float(length_val), float(ppm_val))
+                for length_val, ppm_val in dra_segments
+                if float(length_val) > 0.0 and float(ppm_val) > 0.0
+            ]
+            dra_segments = [
+                (float(length), float(ppm))
+                for length, ppm in _merge_queue(filtered_segments)
+            ]
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
