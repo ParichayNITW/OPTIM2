@@ -513,6 +513,8 @@ def _store_run_duration(label: str, elapsed: float) -> None:
 def _run_with_timer(spinner_msg: str, func, *args, **kwargs):
     """Execute ``func`` while displaying a live timer next to the spinner."""
 
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
     timer_placeholder = st.empty()
     result_container: dict[str, object] = {}
     error_container: dict[str, BaseException] = {}
@@ -528,17 +530,26 @@ def _run_with_timer(spinner_msg: str, func, *args, **kwargs):
 
     start_time = time.perf_counter()
     worker = threading.Thread(target=_target, daemon=True)
+    ctx = get_script_run_ctx()
+    if ctx is not None:
+        add_script_run_ctx(worker, ctx)
     worker.start()
 
     with st.spinner(spinner_msg):
         while not done.is_set():
             elapsed = time.perf_counter() - start_time
-            timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
+            try:
+                timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
+            except Exception:
+                break
             time.sleep(0.5)
         worker.join()
 
     elapsed = time.perf_counter() - start_time
-    timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
+    try:
+        timer_placeholder.info(f"Elapsed: {_format_duration(elapsed)}")
+    except Exception:
+        pass
     if error_container:
         raise error_container["error"]
     return result_container.get("value"), elapsed
