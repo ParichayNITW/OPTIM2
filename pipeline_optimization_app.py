@@ -3495,13 +3495,6 @@ def _build_profiles_from_queue(
     if not queue:
         return {}
 
-    merged_queue = pipeline_model._merge_queue(queue)  # type: ignore[attr-defined]
-    queue_full: tuple[tuple[float, float], ...] = tuple(
-        (float(length), float(ppm))
-        for length, ppm in merged_queue
-        if float(length) > 0.0
-    )
-
     profiles: dict[str, list[tuple[float, float]]] = {}
     offset = 0.0
 
@@ -3514,35 +3507,43 @@ def _build_profiles_from_queue(
             offset += 0.0
             continue
 
-        segment_profile = pipeline_model._segment_profile_from_queue(  # type: ignore[attr-defined]
-            queue_full,
-            offset,
-            seg_length,
-        )
+        seg_start = offset
+        seg_end = offset + seg_length
+        entries: list[tuple[float, float]] = []
 
-        if not segment_profile and seg_length > 0.0:
-            segment_profile = ((seg_length, 0.0),)
+        cursor = 0.0
+        for length_val, ppm_val in queue:
+            next_cursor = cursor + length_val
+            overlap_start = max(cursor, seg_start)
+            overlap_end = min(next_cursor, seg_end)
+            overlap = overlap_end - overlap_start
+            if overlap > 1e-9:
+                ppm_clean = ppm_val if ppm_val > 0.0 else 0.0
+                entries.append((overlap, ppm_clean))
+            cursor = next_cursor
+            if cursor >= seg_end - 1e-9:
+                break
 
-        normalised = pipeline_model._normalise_station_profile(segment_profile)  # type: ignore[attr-defined]
+        treated = sum(length for length, _ppm in entries)
+        untreated = max(seg_length - treated, 0.0)
+        if untreated > 1e-6:
+            fallback = stn.get("fallback_dra_ppm", 0.0)
+            try:
+                fallback_val = float(fallback or 0.0)
+            except (TypeError, ValueError):
+                fallback_val = 0.0
+            if pd.isna(fallback_val) or fallback_val < 0.0:
+                fallback_val = 0.0
+            if fallback_val > 0.0:
+                entries.append((untreated, fallback_val))
+            else:
+                entries.append((untreated, 0.0))
 
-        covered = sum(float(entry.get("length_km", 0.0) or 0.0) for entry in normalised)
-        remainder = max(seg_length - covered, 0.0)
-        if remainder > 1e-6:
-            normalised.append({"length_km": remainder, "dra_ppm": 0.0})
-
-        if not normalised:
-            offset += seg_length
-            continue
-
-        key = stn.get("name", f"station_{idx}")
-        key_norm = str(key).lower().replace(" ", "_")
-        tuples = [
-            (float(entry.get("length_km", 0.0)), float(entry.get("dra_ppm", 0.0)))
-            for entry in normalised
-            if float(entry.get("length_km", 0.0)) > 0.0
-        ]
-        merged = pipeline_model._merge_queue(tuples)  # type: ignore[attr-defined]
-        profiles[key_norm] = [(float(length), float(ppm)) for length, ppm in merged if float(length) > 0.0]
+        if entries:
+            merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
+            key = stn.get("name", f"station_{idx}")
+            key_norm = str(key).lower().replace(" ", "_")
+            profiles[key_norm] = merged
 
         offset += seg_length
 
@@ -3755,7 +3756,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
             if profile_entries:
-                outlet_ppm = float(profile_entries[-1][1])
+                try:
+                    outlet_ppm = float(profile_entries[-1][1])
+                except (TypeError, ValueError):
+                    outlet_ppm = 0.0
             else:
                 outlet_ppm = 0.0
         if profile_entries:
@@ -3884,7 +3888,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     """Return validated search-depth parameters for backend solvers."""
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
-    dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
+    dra_step_default = getattr(pipeline_model, "DRA_STEP", 5)
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
@@ -4561,7 +4565,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
@@ -4757,20 +4761,6 @@ def _enforce_minimum_origin_dra(
                 for seg in segments_to_enforce[1:]:
                     seg["length_km"] = 0.0
                 total_required_length = float(treatable_limit)
-        elif ratio > 1.0:
-            length_cap = float(treatable_limit)
-            if total_length_value > 0.0:
-                length_cap = min(length_cap, float(total_length_value))
-            extra_length = length_cap - total_required_length
-            if extra_length > 1e-9 and segments_to_enforce:
-                base_len = float(segments_to_enforce[0].get("length_km", 0.0) or 0.0)
-                segments_to_enforce[0]["length_km"] = max(base_len + extra_length, 0.0)
-            total_required_length = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in segments_to_enforce)
-            if total_required_length <= 0.0 and segments_to_enforce:
-                segments_to_enforce[0]["length_km"] = float(length_cap)
-                for seg in segments_to_enforce[1:]:
-                    seg["length_km"] = 0.0
-                total_required_length = float(length_cap)
 
     if total_required_length <= 0.0:
         total_required_length = float(min_length)
@@ -5278,7 +5268,7 @@ def _execute_time_series_solver(
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
-                    min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
+                    min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 5.0,
                     baseline_requirement=st.session_state.get("origin_lacing_baseline"),
                     hourly_flow_m3=flow_rate,
                     step_hours=1.0 / max(float(sub_steps or 1), 1.0),
@@ -7293,7 +7283,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Re_vals = np.zeros_like(v_vals)
                     f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
-                dra_step = max(getattr(pipeline_model, "DRA_STEP", 2), 1)
+                dra_step = max(getattr(pipeline_model, "DRA_STEP", 5), 1)
                 dra_levels = list(range(0, max_dr + dra_step, dra_step))
                 if not dra_levels:
                     dra_levels = [0]
