@@ -5154,9 +5154,11 @@ def test_build_profiles_from_queue_slices_per_station() -> None:
     assert sum(length for length, _ppm in paradip) == pytest.approx(158.0, rel=1e-6)
 
     balasore = profiles["balasore"]
-    assert len(balasore) == 1
-    assert balasore[0][0] == pytest.approx(170.0, rel=1e-6)
+    assert len(balasore) == 2
+    assert balasore[0][0] == pytest.approx(60.0, rel=1e-6)
     assert balasore[0][1] == pytest.approx(6.0, rel=1e-6)
+    assert balasore[1][0] == pytest.approx(110.0, rel=1e-6)
+    assert balasore[1][1] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_build_station_table_uses_override_profiles() -> None:
