@@ -495,6 +495,15 @@ def _format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
+def _render_run_duration_notice() -> None:
+    """Display the elapsed time for the last optimisation run when available."""
+
+    last_label = st.session_state.get("last_run_label")
+    last_duration = st.session_state.get("last_run_duration")
+    if last_label and last_duration is not None:
+        st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+
+
 def _store_run_duration(label: str, elapsed: float) -> None:
     st.session_state["last_run_duration"] = float(elapsed)
     st.session_state["last_run_label"] = label
@@ -1628,14 +1637,7 @@ with st.sidebar:
             key="search_state_cost_margin",
         )
 
-    last_label = st.session_state.get("last_run_label")
-    last_duration = st.session_state.get("last_run_duration")
-    if last_label and last_duration is not None:
-        timestamp = st.session_state.get("last_run_timestamp")
-        if isinstance(timestamp, dt.datetime):
-            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
-        else:
-            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+    _render_run_duration_notice()
 
     st.subheader("Operating Mode")
     if "linefill_df" not in st.session_state:
@@ -4229,14 +4231,29 @@ if auto_batch:
     Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
     Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
-    product_table = data_editor_copy(
-        pd.DataFrame({
+    if "batch_product_table" not in st.session_state:
+        st.session_state["batch_product_table"] = pd.DataFrame({
             "Product": [f"Product {i+1}" for i in range(num_products)],
             "Viscosity (cSt)": [1.0 + i for i in range(num_products)],
-            "Density (kg/m³)": [800 + 40*i for i in range(num_products)],
-        }),
+            "Density (kg/m³)": [800 + 40 * i for i in range(num_products)],
+        })
+    batch_table = st.session_state["batch_product_table"].copy(deep=True)
+    if len(batch_table) < num_products:
+        start_idx = len(batch_table)
+        for i in range(start_idx, num_products):
+            batch_table.loc[i] = {
+                "Product": f"Product {i + 1}",
+                "Viscosity (cSt)": 1.0 + i,
+                "Density (kg/m³)": 800 + 40 * i,
+            }
+    elif len(batch_table) > num_products:
+        batch_table = batch_table.head(num_products)
+    product_table = data_editor_copy(
+        batch_table,
         num_rows="dynamic", key="batch_prod_tbl"
     )
+    if isinstance(product_table, pd.DataFrame):
+        st.session_state["batch_product_table"] = product_table.copy(deep=True).reset_index(drop=True)
     step_size = st.number_input("Step Size (%)", min_value=5, max_value=50, value=10, step=5)
     batch_run = st.button("Run Batch Optimization", key="runbatchbtn", type="primary")
 
@@ -6132,10 +6149,7 @@ if not auto_batch:
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
-        last_label = st.session_state.get("last_run_label")
-        last_duration = st.session_state.get("last_run_duration")
-        if last_label and last_duration is not None:
-            st.info(f"{last_label} completed in {_format_duration(last_duration)}.")
+        _render_run_duration_notice()
         transpose_view = st.checkbox("Transpose output table", key="transpose_day")
         df_display = df_day_numeric.T if transpose_view else df_day_numeric
         if transpose_view:
@@ -6464,6 +6478,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         if "last_res" not in st.session_state:
             st.info("Please run optimization.")
         else:
+            _render_run_duration_notice()
             res = st.session_state["last_res"]
             stations_data = st.session_state["last_stations_data"]
             terminal_name = st.session_state["last_term_data"]["name"]
