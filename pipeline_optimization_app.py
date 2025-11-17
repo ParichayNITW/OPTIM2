@@ -3528,14 +3528,7 @@ def _build_profiles_from_queue(
         covered = sum(float(entry.get("length_km", 0.0) or 0.0) for entry in normalised)
         remainder = max(seg_length - covered, 0.0)
         if remainder > 1e-6:
-            fallback_raw = stn.get("fallback_dra_ppm", 0.0)
-            try:
-                fallback_val = float(fallback_raw or 0.0)
-            except (TypeError, ValueError):
-                fallback_val = 0.0
-            if pd.isna(fallback_val) or fallback_val < 0.0:
-                fallback_val = 0.0
-            normalised.append({"length_km": remainder, "dra_ppm": fallback_val})
+            normalised.append({"length_km": remainder, "dra_ppm": 0.0})
 
         if not normalised:
             offset += seg_length
