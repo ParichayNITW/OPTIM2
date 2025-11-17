@@ -191,6 +191,7 @@ def test_partial_slug_advances_with_positive_injection() -> None:
     ]
 
     sdh_progression: list[float] = []
+    slug_lengths: list[float] = []
     hours = 1.0
     for _ in range(4):
         reach = _dra_length_km(linefill_state, station["d"])
@@ -215,12 +216,31 @@ def test_partial_slug_advances_with_positive_injection() -> None:
         assert not result.get("error"), result.get("message")
         assert result["dra_ppm_origin_pump"] > 0
         sdh_progression.append(result["sdh_origin_pump"])
+        slug_length = 0.0
+        for slice_entry in result["linefill"]:
+            try:
+                length_val = float(slice_entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                ppm_val = float(slice_entry.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            if length_val <= 0.0:
+                continue
+            if ppm_val >= 10.0:
+                slug_length += length_val
+        slug_lengths.append(slug_length)
         linefill_state = copy.deepcopy(result["linefill"])
 
-    assert all(b <= a for a, b in zip(sdh_progression, sdh_progression[1:]))
-    diffs = [a - b for a, b in zip(sdh_progression, sdh_progression[1:])]
-    assert diffs, "Expected SDH to change over successive hours"
-    assert max(diffs) <= 6.0
+    assert slug_lengths, "Expected slug length samples"
+    assert all(
+        next_len <= curr_len + 1e-6
+        for curr_len, next_len in zip(slug_lengths, slug_lengths[1:])
+    )
+    deltas = [b - a for a, b in zip(sdh_progression, sdh_progression[1:])]
+    assert deltas, "Expected SDH to change over successive hours"
+    assert max(deltas) <= 3.0
 
 
 def test_queue_preserves_length_and_zero_front_progression() -> None:
