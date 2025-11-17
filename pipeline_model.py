@@ -402,7 +402,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 # ---------------------------------------------------------------------------
 
 RPM_STEP = 25
-DRA_STEP = 2
+DRA_STEP = 5
 MAX_DRA_KM = 250.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
@@ -1178,6 +1178,9 @@ def _segment_profile_from_queue(
     remaining queue.
     """
 
+    if not queue_entries:
+        return ()
+
     try:
         upstream = max(float(upstream_length or 0.0), 0.0)
     except (TypeError, ValueError):
@@ -1189,18 +1192,11 @@ def _segment_profile_from_queue(
     if seg_len <= 0:
         return ()
 
-    if not queue_entries:
-        segment_queue: tuple[tuple[float, float], ...] = ()
-    else:
-        segment_queue = _trim_queue_front(queue_entries, upstream)
+    segment_queue = _trim_queue_front(queue_entries, upstream)
+    if not segment_queue:
+        return ()
 
-    profile = _take_queue_front(segment_queue, seg_len)
-    total_taken = sum(length for length, _ppm in profile)
-    remaining = seg_len - total_taken
-    if remaining > 1e-9:
-        profile = tuple(profile + ((remaining, 0.0),))
-
-    return profile
+    return _take_queue_front(segment_queue, seg_len)
 
 
 def _normalise_station_profile(
@@ -1248,16 +1244,10 @@ def _normalise_station_profile(
             continue
 
         if pending_zero > 0.0:
-            if normalised and abs(normalised[-1]["dra_ppm"] - 0.0) <= 1e-12:
-                normalised[-1]["length_km"] += pending_zero
-            else:
-                normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
+            normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
             pending_zero = 0.0
 
-        if normalised and abs(normalised[-1]["dra_ppm"] - ppm_val) <= 1e-12:
-            normalised[-1]["length_km"] += length_val
-        else:
-            normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
+        normalised.append({"length_km": length_val, "dra_ppm": ppm_val})
 
     if pending_zero > 0.0:
         normalised.append({"length_km": pending_zero, "dra_ppm": 0.0})
@@ -1662,7 +1652,9 @@ def _update_mainline_dra(
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
-            if not pump_running and inj_effective <= 0.0:
+            if not pump_running and inj_effective > 0.0:
+                ppm_out += inj_effective
+            elif not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
@@ -1733,25 +1725,17 @@ def _update_mainline_dra(
         else:
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
     else:
-        advected_portion = [
-            (float(length), float(ppm))
-            for length, ppm in pumped_adjusted
-            if float(length or 0.0) > 0.0
-        ]
+        advected_portion = pumped_adjusted
         if inj_effective > 0.0:
             tail_queue = list(remaining_queue)
         else:
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    advected_tuple: tuple[tuple[float, float], ...] = tuple(advected_portion)
-    if inj_effective > 0.0 and head_length > 0.0:
+    if pump_running and inj_effective > 0.0 and head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
-        if advected_tuple:
-            remainder_after_head = _trim_queue_front(advected_tuple, head_length)
-            combined_entries.extend(remainder_after_head)
-    else:
-        combined_entries.extend(advected_portion)
+
+    combined_entries.extend(advected_portion)
     combined_entries.extend(tail_queue)
 
     combined_total = _queue_total_length(combined_entries)
@@ -1932,7 +1916,7 @@ def _update_mainline_dra(
                     zero_fill_ppm = seg_ppm
         if zero_fill_ppm <= 0.0 and floor_ppm > 0.0:
             zero_fill_ppm = floor_ppm
-        if zero_fill_ppm <= 0.0 and (floor_segments or floor_ppm > 0.0) and existing_queue:
+        if zero_fill_ppm <= 0.0 and existing_queue:
             for _length_existing, ppm_existing in reversed(existing_queue):
                 if ppm_existing > 0.0:
                     zero_fill_ppm = ppm_existing
@@ -1955,6 +1939,8 @@ def _update_mainline_dra(
                 ppm_val = zero_fill_ppm
             else:
                 ppm_val = 0.0
+        if ppm_val <= 0.0:
+            continue
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -1968,38 +1954,6 @@ def _update_mainline_dra(
             dra_segments[-1] = (prev_len + remaining_length, zero_fill_ppm)
         else:
             dra_segments.append((remaining_length, zero_fill_ppm))
-
-    # Preserve explicit zero-ppm portions so downstream reporting can surface
-    # untreated footage between stations.  Prior logic dropped zero slices,
-    # which made the formatted profile misrepresent queue head conditions.
-    if dra_segments:
-        cleaned_segments: list[tuple[float, float]] = []
-        for length, ppm_val in dra_segments:
-            length_float = float(length or 0.0)
-            if length_float <= 0.0:
-                continue
-            ppm_float = float(ppm_val or 0.0)
-            if cleaned_segments and abs(cleaned_segments[-1][1] - ppm_float) <= 1e-9:
-                prev_len, prev_ppm = cleaned_segments[-1]
-                cleaned_segments[-1] = (prev_len + length_float, prev_ppm)
-            else:
-                cleaned_segments.append((length_float, ppm_float))
-        dra_segments = cleaned_segments
-
-    # When no injection occurs, suppress zero-ppm slices if any treated slug
-    # remains so the returned profile focuses on the active DRA portions.
-    if dra_segments and inj_effective <= 0.0 and not pump_running and is_origin:
-        has_positive = any(float(ppm_val) > 0.0 for _len_val, ppm_val in dra_segments)
-        if has_positive:
-            filtered_segments = [
-                (float(length_val), float(ppm_val))
-                for length_val, ppm_val in dra_segments
-                if float(length_val) > 0.0 and float(ppm_val) > 0.0
-            ]
-            dra_segments = [
-                (float(length), float(ppm))
-                for length, ppm in _merge_queue(filtered_segments)
-            ]
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
@@ -4682,8 +4636,6 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
-            dra_grid_min = 0
-            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
@@ -5196,11 +5148,11 @@ def solve_pipeline(
             entry['fallback_dra_ppm'] = fallback_val
 
     baseline_floor: dict | None = None
-    enforce_queue_floor = False
+    enforce_queue_floor = True
     if isinstance(forced_origin_detail, Mapping):
         ppm_floor = float(forced_origin_detail.get('dra_ppm', 0.0) or 0.0)
         length_floor = float(forced_origin_detail.get('length_km', 0.0) or 0.0)
-        enforce_queue_floor = bool(forced_origin_detail.get('enforce_queue', False))
+        enforce_queue_floor = bool(forced_origin_detail.get('enforce_queue', True))
 
         segment_floor_raw = forced_origin_detail.get('segments')
         segment_floor_norm: list[dict[str, float]] = []
@@ -5218,11 +5170,7 @@ def solve_pipeline(
                     seg_ppm = 0.0
                 if seg_length <= 0.0 or seg_ppm <= 0.0:
                     continue
-                segment_floor_norm.append({
-                    'length_km': seg_length,
-                    'dra_ppm': seg_ppm,
-                    'enforce_queue': bool(enforce_queue_floor),
-                })
+                segment_floor_norm.append({'length_km': seg_length, 'dra_ppm': seg_ppm})
             if segment_floor_norm:
                 seg_total = sum(item['length_km'] for item in segment_floor_norm)
                 seg_max_ppm = max(item['dra_ppm'] for item in segment_floor_norm)
@@ -5238,7 +5186,7 @@ def solve_pipeline(
             if segment_floor_norm:
                 baseline_floor['segments'] = segment_floor_norm
 
-    if baseline_floor and baseline_floor.get('enforce_queue', False):
+    if baseline_floor and baseline_floor.get('enforce_queue', True):
         initial_queue = _ensure_queue_floor(
             initial_queue,
             baseline_floor.get('length_km', 0.0),
