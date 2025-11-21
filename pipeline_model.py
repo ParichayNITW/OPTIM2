@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from itertools import product
 import math
 
@@ -443,14 +444,21 @@ STATE_MAX_BUCKET_VARIANTS = 3
 DRA_SIGNATURE_LEN_TOL = 0.1  # km
 DRA_SIGNATURE_PPM_TOL = 0.5  # ppm
 
-def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
-    """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
+@lru_cache(maxsize=2048)
+def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
+    """Return the inclusive integer grid between ``min_val`` and ``max_val``.
+
+    Results are memoised so repeated lookups with the same bounds and step size
+    reuse a shared tuple instead of allocating a fresh list every time.  The
+    grid keeps the lower bound even when the step is enlarged so that "no
+    chemical" or minimum-speed options remain available during coarse passes.
+    """
 
     if min_val > max_val:
         # ``min_val`` can legitimately exceed ``max_val`` when a caller narrows the
         # window to a single point (e.g. zero DRA enforced by a floor).  Always
         # return the lone value so downstream loops still evaluate the candidate.
-        return [min_val]
+        return (min_val,)
 
     # ``range`` already includes the lower bound.  Keeping the left edge in the
     # grid is important for cases where the minimum allows 0 ppm; the coarse pass
@@ -459,7 +467,7 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
-    return vals
+    return tuple(vals)
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
