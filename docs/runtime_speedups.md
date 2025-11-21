@@ -15,3 +15,9 @@ In plain terms: we stopped re-writing the same checklist of dial settings on
 fresh sheets of paper.  The optimiser still checks every setting it used to, it
 just reuses the checklist instead of copying it from scratch, so you get the
 same best answer faster.
+
+We are **not** pre-computing every flow vs. head or flow vs. efficiency curve
+for every possible pump combination or RPM.  Those physics are still evaluated
+when the solver needs them, using the same per-option cache it already had to
+avoid repeating identical calculations within a run.  The only new caching is
+of the integer RPM/ppm candidate lists themselves.
