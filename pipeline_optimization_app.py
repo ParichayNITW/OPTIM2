@@ -2661,8 +2661,10 @@ def _append_zero_plan_segments_to_result(
         if head_ppm <= 0.0:
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
-        else:
-            queue_entries = [(zero_length, 0.0)] + queue_entries
+        elif zero_length > 1e-9:
+            # Preserve treated head segments by appending untreated plan slices
+            # to the back of the queue rather than prepending them.
+            queue_entries.append((zero_length, 0.0))
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -3755,13 +3757,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = 0.0
-            for length_val, ppm_val in reversed(profile_entries):
-                if float(ppm_val or 0.0) > 0.0:
-                    outlet_ppm = float(ppm_val)
-                    break
+            if profile_entries:
+                outlet_ppm = float(profile_entries[-1][1])
             else:
-                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+                outlet_ppm = 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -4562,7 +4561,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
@@ -4627,17 +4626,15 @@ def _enforce_minimum_origin_dra(
         min_length = max(float(min_fraction) * float(total_length_km), 0.0)
     except (TypeError, ValueError):
         min_length = 0.0
-    if min_length <= 0.0:
-        min_length = 1.0
 
     try:
         total_length_value = float(total_length_km)
     except (TypeError, ValueError):
         total_length_value = 0.0
     if total_length_value > 0.0:
-        min_length = min(total_length_value, max(min_length, 1.0))
+        min_length = min(total_length_value, max(min_length, 0.0))
     else:
-        min_length = max(min_length, 1.0)
+        min_length = max(min_length, 0.0)
 
     segments_source = _collect_segment_floors(baseline_requirement, min_ppm=floor_ppm)
     segments_to_enforce = [dict(seg) for seg in segments_source]
@@ -5314,6 +5311,7 @@ def _execute_time_series_solver(
                 break
 
             backtracked = True
+            error_msg = None
             if detail_note:
                 backtrack_notes.append(detail_note)
             else:
