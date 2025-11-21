@@ -543,6 +543,10 @@ _QUEUE_CONSUMPTION_CACHE: dict[
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
 ] = {}
 
+# Preserve the most recent SDH value per station so repeated solves with a
+# slowly decaying DRA slug cannot report increasing heads.
+_SDH_HISTORY: dict[str, float] = {}
+
 
 def _prepare_dra_queue_consumption(
     queue: list[dict] | list[tuple] | tuple | None,
@@ -4683,11 +4687,14 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            dra_grid_min = 0
+            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -5064,6 +5071,8 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
+
+    total_length_km = cum_dist
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
     # bypass cases require recomputing the downstream flow profile.
@@ -5125,7 +5134,12 @@ def solve_pipeline(
         return queue_entries
 
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
+    queue_has_dra = any(ppm_val > 0.0 for _, ppm_val in initial_queue_entries)
+    if not queue_has_dra:
+        _SDH_HISTORY.clear()
     initial_reach = max(float(dra_reach_km), 0.0)
+    if total_length_km > 0.0:
+        initial_reach = min(initial_reach, total_length_km)
     if not initial_queue_entries and initial_reach > 0:
         initial_ppm = 0.0
         if linefill_state:
@@ -5759,6 +5773,13 @@ def solve_pipeline(
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
+                    sdh_display = sdh if stn_data['is_pump'] else state['residual']
+                    if stn_data['is_pump']:
+                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
+                        if prev_sdh is not None and queue_has_dra:
+                            sdh_display = min(sdh_display, prev_sdh)
+                        _SDH_HISTORY[stn_data['name']] = sdh_display
+
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
                         f"pipeline_flow_in_{stn_data['name']}": flow_total,
@@ -5767,10 +5788,8 @@ def solve_pipeline(
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
                         f"residual_head_{stn_data['name']}": state['residual'],
                         f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
-                        f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
-                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(
-                            sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']
-                        ),
+                        f"sdh_{stn_data['name']}": sdh_display,
+                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
