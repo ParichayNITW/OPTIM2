@@ -51,6 +51,8 @@ if "search_state_top_k" not in st.session_state:
     st.session_state["search_state_top_k"] = 50
 if "search_state_cost_margin" not in st.session_state:
     st.session_state["search_state_cost_margin"] = 5000.0
+if "search_state_cost_margin_pct" not in st.session_state:
+    st.session_state["search_state_cost_margin_pct"] = 1.0
 if "baseline_input_mode" not in st.session_state:
     st.session_state["baseline_input_mode"] = "auto"
 if "baseline_input_mode_prev" not in st.session_state:
@@ -1550,6 +1552,7 @@ with st.sidebar:
         coarse_multiplier_default = 2.0
         state_top_k_default = 50
         state_cost_margin_default = 5000.0
+        state_cost_margin_pct_default = 1.0
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
@@ -1591,6 +1594,15 @@ with st.sidebar:
             value=float(st.session_state.get("search_state_cost_margin", state_cost_margin_default)),
             step=100.0,
             key="search_state_cost_margin",
+        )
+        st.number_input(
+            "DP cost margin (% of best)",
+            min_value=0.0,
+            value=float(st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)),
+            step=0.1,
+            format="%.1f",
+            key="search_state_cost_margin_pct",
+            help="Keeps any DP state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -3891,6 +3903,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -3921,12 +3934,21 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
+    state_cost_margin_pct = float(
+        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+        or state_cost_margin_pct_default
+    )
+    if state_cost_margin_pct < 0:
+        state_cost_margin_pct = 0.0
+    state_cost_margin_pct /= 100.0
+
     return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
+        "state_cost_margin_pct": state_cost_margin_pct,
     }
 
 
