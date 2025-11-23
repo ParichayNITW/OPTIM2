@@ -421,11 +421,14 @@ V_MIN = 0.5
 V_MAX = 2.5
 
 # Limit the number of dynamic-programming states carried forward after
-# each station.  ``STATE_TOP_K`` bounds the total states retained while
-# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
-# this many currency units of the best state for the current station.
+# each station.  ``STATE_COST_MARGIN_PCT`` keeps any state within this percent
+# of the best to avoid losing near-ties on expensive scenarios. ``STATE_TOP_K``
+# bounds the total states retained while ``STATE_COST_MARGIN`` allows keeping
+# any state whose cost lies within this many currency units of the best state
+# for the current station.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
+STATE_COST_MARGIN_PCT = 0.01
 # Limit refinement passes to a smaller state budget so the narrowed search
 # completes quickly even when invoked repeatedly (e.g. within scheduling
 # loops).  The coarse and exhaustive passes retain the broader defaults.
@@ -3518,6 +3521,7 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     _exhaustive_pass: bool = False,
     refined_retry: bool = False,
     pass_trace: list[str] | None = None,
@@ -3586,6 +3590,13 @@ def solve_pipeline(
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     try:
+        state_cost_margin_pct = float(state_cost_margin_pct)
+    except (TypeError, ValueError):
+        state_cost_margin_pct = STATE_COST_MARGIN_PCT
+    if state_cost_margin_pct < 0.0:
+        state_cost_margin_pct = 0.0
+
+    try:
         rpm_step = int(rpm_step)
     except (TypeError, ValueError):
         rpm_step = RPM_STEP
@@ -3619,6 +3630,12 @@ def solve_pipeline(
         state_cost_margin = STATE_COST_MARGIN
     if state_cost_margin < 0:
         state_cost_margin = 0.0
+    try:
+        state_cost_margin_pct = float(state_cost_margin_pct)
+    except (TypeError, ValueError):
+        state_cost_margin_pct = STATE_COST_MARGIN_PCT
+    if state_cost_margin_pct < 0.0:
+        state_cost_margin_pct = 0.0
 
     if segment_slices is None:
         segment_slices = [[] for _ in stations]
@@ -3718,6 +3735,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
@@ -3782,6 +3800,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
@@ -3991,6 +4010,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
             )
@@ -4028,6 +4048,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=True,
                 refined_retry=coarse_failed,
                 pass_trace=None,
@@ -4279,6 +4300,7 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
@@ -4376,6 +4398,7 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    state_cost_margin_pct=state_cost_margin_pct,
                     refined_retry=True,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
@@ -5278,6 +5301,28 @@ def solve_pipeline(
         }
     }
 
+    def _pareto_prune_states(state_map: dict[object, dict]) -> dict[object, dict]:
+        """Drop states that are strictly dominated on residual vs cost."""
+
+        if not state_map:
+            return state_map
+        sorted_states = sorted(
+            state_map.items(),
+            key=lambda kv: (-float(kv[1].get('residual', 0.0)), float(kv[1].get('cost', float('inf')))),
+        )
+        best_cost_seen = float('inf')
+        pruned: dict[object, dict] = {}
+        for key, data in sorted_states:
+            cost_val = float(data.get('cost', float('inf')))
+            if data.get('protected'):
+                pruned[key] = data
+                best_cost_seen = min(best_cost_seen, cost_val)
+                continue
+            if cost_val < best_cost_seen - 1e-9:
+                pruned[key] = data
+                best_cost_seen = cost_val
+        return pruned
+
     for stn_data in station_opts:
         new_states: dict[object, dict] = {}
         best_by_residual: dict[int, list[object]] = {}
@@ -6112,6 +6157,12 @@ def solve_pipeline(
                             if key_to_use not in bucket_list:
                                 bucket_list.append(key_to_use)
 
+        new_states = _pareto_prune_states(new_states)
+        if new_states:
+            try:
+                best_cost_station = min(best_cost_station, min(data['cost'] for data in new_states.values()))
+            except Exception:
+                best_cost_station = best_cost_station
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         # After evaluating all options for this station retain only the
@@ -6125,7 +6176,10 @@ def solve_pipeline(
                 (key, data) for key, data in items if data.get('protected')
             ]
             exhaustive_top_k = max(state_top_k, int(state_top_k * 3))
-            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN)
+            relative_margin = 0.0
+            if best_cost_station < float('inf'):
+                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
+            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN, relative_margin)
             within_threshold: list[tuple[object, dict]] = [
                 (key, data)
                 for key, data in items
@@ -6167,7 +6221,10 @@ def solve_pipeline(
             protected_entries = [
                 (key, data) for key, data in items if data.get('protected')
             ]
-            threshold = best_cost_station + state_cost_margin
+            relative_margin = 0.0
+            if best_cost_station < float('inf'):
+                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
+            threshold = best_cost_station + max(state_cost_margin, relative_margin)
             pruned: dict[object, dict] = {}
             for key, data in protected_entries:
                 pruned[key] = data
@@ -6421,6 +6478,7 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
 ) -> dict:
@@ -6525,6 +6583,7 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
+                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
