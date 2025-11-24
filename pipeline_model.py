@@ -404,7 +404,6 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 25
 DRA_STEP = 2
-DRA_PPM_STEP = 1
 MAX_DRA_KM = 250.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
@@ -472,50 +471,6 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return tuple(vals)
-
-
-def _ppm_aligned_dra_values(
-    kv: float,
-    dr_min: int,
-    dr_max: int,
-    dra_step: int,
-    dra_ppm_step: int,
-) -> tuple[int, ...]:
-    """Return a %DR grid that also aligns with 1 ppm increments.
-
-    The primary grid uses ``dra_step`` in %DR space to preserve legacy
-    behaviour.  To ensure low baseline PPM inputs cannot mask feasible
-    solutions at higher chemical levels, the grid is augmented with the %DR
-    values produced by every ``dra_ppm_step`` increment in PPM between the
-    bounds implied by ``dr_min``/``dr_max`` for the station viscosity.
-    """
-
-    base_grid = set(_allowed_values(dr_min, dr_max, dra_step))
-    if kv > 0.0 and dra_ppm_step > 0 and dr_max > dr_min:
-        try:
-            ppm_min = float(get_ppm_for_dr(kv, dr_min)) if dr_min > 0 else 0.0
-        except Exception:
-            ppm_min = 0.0
-        try:
-            ppm_max = float(get_ppm_for_dr(kv, dr_max))
-        except Exception:
-            ppm_max = ppm_min
-        ppm_step = max(1, int(dra_ppm_step))
-        start_ppm = int(math.floor(ppm_min))
-        stop_ppm = int(math.ceil(ppm_max))
-        for ppm in range(start_ppm, stop_ppm + 1, ppm_step):
-            if ppm <= 0:
-                continue
-            try:
-                dr_from_ppm = int(math.ceil(get_dr_for_ppm(kv, ppm)))
-            except Exception:
-                continue
-            if dr_min <= dr_from_ppm <= dr_max:
-                base_grid.add(dr_from_ppm)
-
-    if not base_grid:
-        return (dr_max,)
-    return tuple(sorted(base_grid))
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
@@ -1831,9 +1786,72 @@ def _update_mainline_dra(
         and inj_effective > 0.0
         and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
     )
-    floor_requires_injection = bool(floor_defined and enforce_queue_floor and inj_effective <= 0.0)
-    if segments_defined and enforce_queue_floor and inj_effective <= 0.0:
-        floor_requires_injection = True
+    def _queue_meets_floor(queue_entries: list[tuple[float, float]], length_req: float, ppm_req: float) -> bool:
+        """Return True when ``queue_entries`` cover ``length_req`` km at ``ppm_req`` or higher."""
+
+        if length_req <= 0.0 or ppm_req <= 0.0:
+            return True
+        remaining = length_req
+        for length_val, ppm_val in queue_entries:
+            if remaining <= 0.0:
+                break
+            length_float = float(length_val or 0.0)
+            ppm_float = float(ppm_val or 0.0)
+            if length_float <= 0.0:
+                continue
+            if ppm_float + 1e-9 < ppm_req:
+                return False
+            remaining -= length_float
+        return remaining <= 1e-9
+
+    floor_requires_injection = False
+    if floor_defined and enforce_queue_floor and inj_effective <= 0.0:
+        meets_floor = True
+        available_length = max(
+            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+        )
+        if segments_defined:
+            remaining_length = available_length
+            for seg_length, seg_ppm in floor_segments:
+                target_length = min(seg_length, remaining_length)
+                if target_length <= 0.0:
+                    continue
+                if not _queue_meets_floor(pumped_portion, target_length, seg_ppm):
+                    meets_floor = False
+                    break
+                remaining_length -= target_length
+        elif floor_length > 0.0 and floor_ppm > 0.0:
+            meets_floor = _queue_meets_floor(pumped_portion, min(floor_length, available_length), floor_ppm)
+
+        if not meets_floor:
+            # If the freshly pumped slice is too short to satisfy the floor,
+            # fall back to checking the full downstream queue before
+            # declaring injection mandatory.  This prevents valid runs from
+            # being discarded when the existing treated column already meets
+            # the required ppm over the longer floor length.
+            total_available = _queue_total_length(existing_queue)
+            if segments_defined:
+                remaining_length = total_available
+                queue_for_check = existing_queue
+                meets_floor = True
+                for seg_length, seg_ppm in floor_segments:
+                    target_length = min(seg_length, remaining_length)
+                    if target_length <= 0.0:
+                        continue
+                    if not _queue_meets_floor(queue_for_check, target_length, seg_ppm):
+                        meets_floor = False
+                        break
+                    queue_for_check = _trim_queue_front(queue_for_check, target_length)
+                    remaining_length -= target_length
+            elif floor_length > 0.0 and floor_ppm > 0.0:
+                meets_floor = _queue_meets_floor(
+                    existing_queue,
+                    min(floor_length, total_available),
+                    floor_ppm,
+                )
+
+        floor_requires_injection = not meets_floor
     enforce_floor = enforceable_floor and not floor_requires_injection
     if enforce_floor:
         available_length = max(
@@ -4948,9 +4966,7 @@ def solve_pipeline(
                             dr_min = dr_max
                 if dr_min > dr_max:
                     dr_min = dr_max
-                dra_main_vals = _ppm_aligned_dra_values(
-                    kv, dr_min, dr_max, dra_step, DRA_PPM_STEP
-                )
+                dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
                 dra_grid_min = dra_main_vals[0] if dra_main_vals else dr_min
                 dra_grid_max = dra_main_vals[-1] if dra_main_vals else dr_max
                 if not dra_main_vals and dr_max >= 0:
@@ -6805,7 +6821,6 @@ def solve_pipeline_with_types(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
-                    pass_trace=[],
                 )
                 if result.get("error"):
                     continue
