@@ -4492,6 +4492,51 @@ def solve_pipeline(
                 result_choice['executed_passes'] = list(pass_trace)
             return result_choice
 
+        if not refined_retry:
+            widened_top_k = max(state_top_k, STATE_TOP_K * 2)
+            widened_margin = max(state_cost_margin, STATE_COST_MARGIN * 2)
+            widened_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 2)
+            retry_pass_trace = None
+            if pass_trace is not None:
+                retry_pass_trace = list(pass_trace)
+                retry_pass_trace.append('wide_retry')
+            retry_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=_internal_pass,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=narrow_ranges,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=widened_top_k,
+                state_cost_margin=widened_margin,
+                state_cost_margin_pct=widened_margin_pct,
+                _exhaustive_pass=_exhaustive_pass,
+                refined_retry=True,
+                pass_trace=retry_pass_trace,
+                forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
+            )
+            if not retry_result.get("error"):
+                return retry_result
+
         if not exhaustive_result.get("error"):
             result_choice = exhaustive_result
         elif not coarse_res.get("error"):
