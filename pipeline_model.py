@@ -4929,6 +4929,7 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            floor_filter_active = floor_ppm_min > 0.0 and not force_full_dra_grid
             dra_grid_min = 0
             dra_grid_max = max_dr_main
             if fixed_dr is not None:
@@ -4975,7 +4976,7 @@ def solve_pipeline(
                     dra_grid_min = dra_grid_max = dr_max
                 if not force_full_dra_grid and narrow_ranges is not None and len(dra_main_vals) > REFINE_MAX_DRA_VALUES:
                     dra_main_vals = _downsample_evenly(dra_main_vals, REFINE_MAX_DRA_VALUES)
-                if not force_full_dra_grid and floor_ppm_min > 0.0 and not floor_limited_local and dra_main_vals:
+                if floor_filter_active and not floor_limited_local and dra_main_vals:
                     filtered_vals: list[int] = []
                     for candidate in dra_main_vals:
                         if candidate <= 0:
@@ -5026,7 +5027,7 @@ def solve_pipeline(
                     seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
                         ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
-                        if floor_ppm_min > 0.0:
+                        if floor_filter_active:
                             if ppm_main <= 0.0 and not floor_exceeds_cap:
                                 continue
                             if ppm_main < floor_ppm_min - floor_ppm_tol:
@@ -5039,7 +5040,7 @@ def solve_pipeline(
                         if ppm_main < 0.0:
                             ppm_main = 0.0
                         ppm_for_dr = ppm_main
-                        if floor_exceeds_cap and max_ppm_cap > 0.0:
+                        if floor_filter_active and floor_exceeds_cap and max_ppm_cap > 0.0:
                             ppm_for_dr = min(ppm_for_dr, max_ppm_cap)
                         key = int(round(ppm_main / tol_ppm)) if tol_ppm > 0 else int(round(ppm_main))
                         if key in seen_ppm_keys:
@@ -5168,6 +5169,7 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            floor_filter_active = floor_ppm_min > 0.0 and not force_full_dra_grid
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
@@ -5204,7 +5206,7 @@ def solve_pipeline(
                     dra_vals = [dr_max]
                 if not force_full_dra_grid and narrow_ranges is not None and len(dra_vals) > REFINE_MAX_DRA_VALUES:
                     dra_vals = _downsample_evenly(dra_vals, REFINE_MAX_DRA_VALUES)
-                if not force_full_dra_grid and floor_ppm_min > 0.0 and not floor_limited_local and dra_vals:
+                if floor_filter_active and not floor_limited_local and dra_vals:
                     filtered_vals = []
                     for candidate in dra_vals:
                         if candidate <= 0:
@@ -5220,7 +5222,7 @@ def solve_pipeline(
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
-                    if floor_ppm_min > 0.0:
+                    if floor_filter_active:
                         if ppm_main <= 0.0 and not floor_exceeds_cap:
                             continue
                         if ppm_main < floor_ppm_min - floor_ppm_tol:
@@ -5234,7 +5236,7 @@ def solve_pipeline(
                     if ppm_main > 0.0 and kv > 0.0:
                         try:
                             ppm_for_dr = ppm_main
-                            if floor_exceeds_cap and max_ppm_cap > 0.0:
+                            if floor_filter_active and floor_exceeds_cap and max_ppm_cap > 0.0:
                                 ppm_for_dr = min(ppm_for_dr, max_ppm_cap)
                             dra_from_ppm = float(get_dr_for_ppm(kv, ppm_for_dr))
                         except Exception:
