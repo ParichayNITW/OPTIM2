@@ -4537,6 +4537,51 @@ def solve_pipeline(
             if not retry_result.get("error"):
                 return retry_result
 
+        if not refined_retry:
+            brute_force_top_k = max(state_top_k, STATE_TOP_K * 5)
+            brute_force_margin = max(state_cost_margin, STATE_COST_MARGIN * 5)
+            brute_force_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 10)
+            brute_pass_trace = None
+            if pass_trace is not None:
+                brute_pass_trace = list(pass_trace)
+                brute_pass_trace.append("brute_retry")
+            brute_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=_internal_pass,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=None,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=brute_force_top_k,
+                state_cost_margin=brute_force_margin,
+                state_cost_margin_pct=brute_force_margin_pct,
+                _exhaustive_pass=True,
+                refined_retry=True,
+                pass_trace=brute_pass_trace,
+                forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
+            )
+            if not brute_result.get("error"):
+                return brute_result
+
         if not exhaustive_result.get("error"):
             result_choice = exhaustive_result
         elif not coarse_res.get("error"):
