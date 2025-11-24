@@ -5487,14 +5487,6 @@ def solve_pipeline(
             if segment_floor_norm:
                 baseline_floor['segments'] = segment_floor_norm
 
-    if baseline_floor and baseline_floor.get('enforce_queue', True):
-        initial_queue = _ensure_queue_floor(
-            initial_queue,
-            baseline_floor.get('length_km', 0.0),
-            baseline_floor.get('dra_ppm', 0.0),
-            baseline_floor.get('segments'),
-        )
-
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -6475,6 +6467,11 @@ def solve_pipeline(
         key=lambda x: (x['cost'], x['residual'] - term_req),
     )
     result: dict = {}
+    result['initial_dra_queue'] = [
+        {'length_km': float(length), 'dra_ppm': float(ppm)}
+        for length, ppm in initial_queue
+        if float(length) > 0.0
+    ]
     for rec in best_state['records']:
         result.update(rec)
 
