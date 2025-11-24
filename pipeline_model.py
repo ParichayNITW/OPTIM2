@@ -1786,9 +1786,45 @@ def _update_mainline_dra(
         and inj_effective > 0.0
         and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
     )
+    def _queue_meets_floor(queue_entries: list[tuple[float, float]], length_req: float, ppm_req: float) -> bool:
+        """Return True when ``queue_entries`` cover ``length_req`` km at ``ppm_req`` or higher."""
+
+        if length_req <= 0.0 or ppm_req <= 0.0:
+            return True
+        remaining = length_req
+        for length_val, ppm_val in queue_entries:
+            if remaining <= 0.0:
+                break
+            length_float = float(length_val or 0.0)
+            ppm_float = float(ppm_val or 0.0)
+            if length_float <= 0.0:
+                continue
+            if ppm_float + 1e-9 < ppm_req:
+                return False
+            remaining -= length_float
+        return remaining <= 1e-9
+
     floor_requires_injection = bool(floor_defined and enforce_queue_floor and inj_effective <= 0.0)
-    if segments_defined and enforce_queue_floor and inj_effective <= 0.0:
-        floor_requires_injection = True
+    if floor_requires_injection:
+        meets_floor = True
+        available_length = max(
+            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+        )
+        if segments_defined:
+            remaining_length = available_length
+            for seg_length, seg_ppm in floor_segments:
+                target_length = min(seg_length, remaining_length)
+                if target_length <= 0.0:
+                    continue
+                if not _queue_meets_floor(pumped_portion, target_length, seg_ppm):
+                    meets_floor = False
+                    break
+                remaining_length -= target_length
+        elif floor_length > 0.0 and floor_ppm > 0.0:
+            meets_floor = _queue_meets_floor(pumped_portion, min(floor_length, available_length), floor_ppm)
+        if meets_floor:
+            floor_requires_injection = False
     enforce_floor = enforceable_floor and not floor_requires_injection
     if enforce_floor:
         available_length = max(
