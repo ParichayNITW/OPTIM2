@@ -4601,9 +4601,9 @@ def solve_pipeline(
                 return retry_result
 
         if not refined_retry:
-            brute_force_top_k = max(state_top_k, STATE_TOP_K * 5)
-            brute_force_margin = max(state_cost_margin, STATE_COST_MARGIN * 5)
-            brute_force_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 10)
+            brute_force_top_k = max(state_top_k, STATE_TOP_K * 20)
+            brute_force_margin = max(state_cost_margin, STATE_COST_MARGIN * 10)
+            brute_force_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 20)
             brute_pass_trace = None
             if pass_trace is not None:
                 brute_pass_trace = list(pass_trace)
@@ -4629,7 +4629,7 @@ def solve_pipeline(
                 enumerate_loops=False,
                 _internal_pass=_internal_pass,
                 rpm_step=rpm_step,
-                dra_step=dra_step,
+                dra_step=1,
                 narrow_ranges=None,
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=brute_force_top_k,
