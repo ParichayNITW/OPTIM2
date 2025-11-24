@@ -1804,8 +1804,8 @@ def _update_mainline_dra(
             remaining -= length_float
         return remaining <= 1e-9
 
-    floor_requires_injection = bool(floor_defined and enforce_queue_floor and inj_effective <= 0.0)
-    if floor_requires_injection:
+    floor_requires_injection = False
+    if floor_defined and enforce_queue_floor and inj_effective <= 0.0:
         meets_floor = True
         available_length = max(
             sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
@@ -1823,8 +1823,35 @@ def _update_mainline_dra(
                 remaining_length -= target_length
         elif floor_length > 0.0 and floor_ppm > 0.0:
             meets_floor = _queue_meets_floor(pumped_portion, min(floor_length, available_length), floor_ppm)
-        if meets_floor:
-            floor_requires_injection = False
+
+        if not meets_floor:
+            # If the freshly pumped slice is too short to satisfy the floor,
+            # fall back to checking the full downstream queue before
+            # declaring injection mandatory.  This prevents valid runs from
+            # being discarded when the existing treated column already meets
+            # the required ppm over the longer floor length.
+            total_available = _queue_total_length(existing_queue)
+            if segments_defined:
+                remaining_length = total_available
+                queue_for_check = existing_queue
+                meets_floor = True
+                for seg_length, seg_ppm in floor_segments:
+                    target_length = min(seg_length, remaining_length)
+                    if target_length <= 0.0:
+                        continue
+                    if not _queue_meets_floor(queue_for_check, target_length, seg_ppm):
+                        meets_floor = False
+                        break
+                    queue_for_check = _trim_queue_front(queue_for_check, target_length)
+                    remaining_length -= target_length
+            elif floor_length > 0.0 and floor_ppm > 0.0:
+                meets_floor = _queue_meets_floor(
+                    existing_queue,
+                    min(floor_length, total_available),
+                    floor_ppm,
+                )
+
+        floor_requires_injection = not meets_floor
     enforce_floor = enforceable_floor and not floor_requires_injection
     if enforce_floor:
         available_length = max(
