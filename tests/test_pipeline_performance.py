@@ -795,6 +795,25 @@ def test_should_attempt_max_flow_detects_infeasible_message():
     assert app._should_attempt_max_flow_fallback(result)
 
 
+def test_should_attempt_max_flow_needs_exhaustive_pass_marker():
+    import pipeline_optimization_app as app
+
+    base_result = {
+        "error": "No feasible solution",
+        "failure_detail": {"executed_passes": ["coarse"]},
+        "executed_passes": ["coarse"],
+    }
+
+    assert not app._should_attempt_max_flow_fallback(base_result)
+
+    with_exhaustive = {
+        **base_result,
+        "executed_passes": ["coarse", "exhaustive"],
+    }
+
+    assert app._should_attempt_max_flow_fallback(with_exhaustive)
+
+
 def test_should_attempt_max_flow_handles_missing_detail():
     import pipeline_optimization_app as app
 
