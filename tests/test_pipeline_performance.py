@@ -824,6 +824,25 @@ def test_should_attempt_max_flow_handles_missing_detail():
     result = {"error": "failed", "failure_detail": {}}
     assert not app._should_attempt_max_flow_fallback(result)
 
+
+def test_ppm_aligned_dra_grid_covers_single_ppm_steps():
+    import math
+    import pipeline_model as pm
+    from dra_utils import get_dr_for_ppm
+
+    kv = 10.0
+    dr_min = 0
+    dr_max = 25
+    dra_step = 5  # coarse %DR spacing would normally skip intermediate ppm values
+
+    grid = pm._ppm_aligned_dra_values(kv, dr_min, dr_max, dra_step, pm.DRA_PPM_STEP)
+
+    ppm_target = 7.0
+    dr_from_ppm = int(math.ceil(get_dr_for_ppm(kv, ppm_target)))
+
+    assert dr_from_ppm in grid
+    assert grid[0] == dr_min
+
 def _basic_terminal(min_residual: float = 10.0) -> dict:
     return {"name": "Terminal", "elev": 0.0, "min_residual": min_residual}
 
