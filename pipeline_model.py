@@ -6758,6 +6758,7 @@ def solve_pipeline_with_types(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
+                    pass_trace=[],
                 )
                 if result.get("error"):
                     continue
