@@ -4601,9 +4601,9 @@ def solve_pipeline(
                 return retry_result
 
         if not refined_retry:
-            brute_force_top_k = max(state_top_k, STATE_TOP_K * 5)
-            brute_force_margin = max(state_cost_margin, STATE_COST_MARGIN * 5)
-            brute_force_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 10)
+            brute_force_top_k = max(state_top_k, STATE_TOP_K * 20)
+            brute_force_margin = max(state_cost_margin, STATE_COST_MARGIN * 10)
+            brute_force_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 20)
             brute_pass_trace = None
             if pass_trace is not None:
                 brute_pass_trace = list(pass_trace)
@@ -4629,12 +4629,12 @@ def solve_pipeline(
                 enumerate_loops=False,
                 _internal_pass=_internal_pass,
                 rpm_step=rpm_step,
-                dra_step=dra_step,
+                dra_step=1,
                 narrow_ranges=None,
-                coarse_multiplier=coarse_multiplier,
-                state_top_k=brute_force_top_k,
-                state_cost_margin=brute_force_margin,
-                state_cost_margin_pct=brute_force_margin_pct,
+                coarse_multiplier=1.0,
+                state_top_k=max(brute_force_top_k, 5000),
+                state_cost_margin=float("inf"),
+                state_cost_margin_pct=float("inf"),
                 _exhaustive_pass=True,
                 refined_retry=True,
                 pass_trace=brute_pass_trace,
@@ -4916,6 +4916,7 @@ def solve_pipeline(
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = _max_dr_int(stn.get('max_dr'))
+            force_full_dra_grid = _exhaustive_pass and refined_retry
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
@@ -4938,15 +4939,15 @@ def solve_pipeline(
                 dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
-                if rng and 'dra_main' in rng:
+                if not force_full_dra_grid and rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
-                if floor_perc_min_int > 0:
+                if not force_full_dra_grid and floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
-                if floor_dr_min_int > 0:
+                if not force_full_dra_grid and floor_dr_min_int > 0:
                     dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
-                if floor_ppm_min > 0.0:
+                if not force_full_dra_grid and floor_ppm_min > 0.0:
                     if dr_min <= 0:
                         dr_min = max(dr_min, min_step)
                     if dr_min <= dr_max:
@@ -4972,9 +4973,9 @@ def solve_pipeline(
                 if not dra_main_vals and dr_max >= 0:
                     dra_main_vals = [dr_max]
                     dra_grid_min = dra_grid_max = dr_max
-                if narrow_ranges is not None and len(dra_main_vals) > REFINE_MAX_DRA_VALUES:
+                if not force_full_dra_grid and narrow_ranges is not None and len(dra_main_vals) > REFINE_MAX_DRA_VALUES:
                     dra_main_vals = _downsample_evenly(dra_main_vals, REFINE_MAX_DRA_VALUES)
-                if floor_ppm_min > 0.0 and not floor_limited_local and dra_main_vals:
+                if not force_full_dra_grid and floor_ppm_min > 0.0 and not floor_limited_local and dra_main_vals:
                     filtered_vals: list[int] = []
                     for candidate in dra_main_vals:
                         if candidate <= 0:
@@ -4990,7 +4991,7 @@ def solve_pipeline(
                     dra_main_vals = filtered_vals
             max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
-            if rng and 'dra_loop' in rng:
+            if not force_full_dra_grid and rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
@@ -5154,6 +5155,7 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = _max_dr_int(stn.get('max_dr'))
+            force_full_dra_grid = _exhaustive_pass and refined_retry
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
@@ -5169,15 +5171,15 @@ def solve_pipeline(
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
-                if rng and 'dra_main' in rng:
+                if not force_full_dra_grid and rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
-                if floor_perc_min_int > 0:
+                if not force_full_dra_grid and floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
-                if floor_dr_min_int > 0:
+                if not force_full_dra_grid and floor_dr_min_int > 0:
                     dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
-                if floor_ppm_min > 0.0:
+                if not force_full_dra_grid and floor_ppm_min > 0.0:
                     if dr_min <= 0:
                         dr_min = max(dr_min, min_step)
                     if dr_min <= dr_max:
@@ -5200,9 +5202,9 @@ def solve_pipeline(
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 if not dra_vals and dr_max >= 0:
                     dra_vals = [dr_max]
-                if narrow_ranges is not None and len(dra_vals) > REFINE_MAX_DRA_VALUES:
+                if not force_full_dra_grid and narrow_ranges is not None and len(dra_vals) > REFINE_MAX_DRA_VALUES:
                     dra_vals = _downsample_evenly(dra_vals, REFINE_MAX_DRA_VALUES)
-                if floor_ppm_min > 0.0 and not floor_limited_local and dra_vals:
+                if not force_full_dra_grid and floor_ppm_min > 0.0 and not floor_limited_local and dra_vals:
                     filtered_vals = []
                     for candidate in dra_vals:
                         if candidate <= 0:
