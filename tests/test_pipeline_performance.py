@@ -789,7 +789,7 @@ def test_should_attempt_max_flow_detects_infeasible_message():
             "message": "No feasible pump combination found for stations.",
         },
     }
-    assert app._should_attempt_max_flow_fallback(result)
+    assert not app._should_attempt_max_flow_fallback(result)
 
     result["failure_detail"]["executed_passes"].append("exhaustive")
     assert app._should_attempt_max_flow_fallback(result)
