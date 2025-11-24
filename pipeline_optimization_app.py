@@ -5436,7 +5436,13 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
             executed = [str(p).lower() for p in passes]
         detail_msg = str(detail.get("message") or "")
 
-    if "exhaustive" in executed:
+    if executed:
+        # Only consider the optimisation infeasible after the exhaustive grid
+        # search has been attempted.  Coarse/refinement passes alone may skip
+        # valid pump-speed/DRA combinations, so defer fallback logic until the
+        # exhaustive sweep is confirmed.
+        if "exhaustive" not in executed:
+            return False
         return True
 
     combined_msg = f"{error_msg} {detail_msg}".lower()
