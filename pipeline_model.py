@@ -1025,6 +1025,56 @@ def _queue_total_length(
     return total
 
 
+def _summarise_state_for_audit(state_data: Mapping[str, object], station_name: str) -> dict[str, object]:
+    """Return a lightweight snapshot of a DP state for UI display.
+
+    Only inexpensive fields are copied so collecting the audit has negligible
+    impact on solver runtime.  The summary focuses on user-facing quantities
+    such as cost, residual head, pumps running, injection rates, and queue
+    length.
+    """
+
+    summary: dict[str, object] = {
+        'cost': float(state_data.get('cost', 0.0) or 0.0),
+        'residual': float(state_data.get('residual', 0.0) or 0.0),
+        'queue_km': _queue_total_length(state_data.get('dra_queue_full')),  # type: ignore[arg-type]
+        'protected': bool(state_data.get('protected', False)),
+    }
+
+    try:
+        summary['dra_ppm_main'] = float(state_data.get('inj_ppm_main', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        summary['dra_ppm_main'] = 0.0
+
+    records = state_data.get('records')
+    record = None
+    if isinstance(records, list):
+        for rec in reversed(records):
+            if isinstance(rec, Mapping) and f"num_pumps_{station_name}" in rec:
+                record = rec
+                break
+
+    if isinstance(record, Mapping):
+        try:
+            summary['num_pumps'] = int(record.get(f"num_pumps_{station_name}", 0) or 0)
+        except (TypeError, ValueError):
+            summary['num_pumps'] = 0
+        try:
+            summary['rpm'] = float(record.get(f"speed_{station_name}", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            summary['rpm'] = 0.0
+        try:
+            summary['dra_ppm_loop'] = float(record.get(f"dra_ppm_loop_{station_name}", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            summary['dra_ppm_loop'] = 0.0
+    else:
+        summary['num_pumps'] = 0
+        summary['rpm'] = 0.0
+        summary['dra_ppm_loop'] = 0.0
+
+    return summary
+
+
 def _queue_signature(
     queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
 ) -> tuple[float, float, float]:
@@ -3527,6 +3577,7 @@ def solve_pipeline(
     pass_trace: list[str] | None = None,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
+    collect_state_audit: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -3739,6 +3790,7 @@ def solve_pipeline(
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -3804,6 +3856,7 @@ def solve_pipeline(
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
             if res.get('error'):
                 continue
@@ -4013,6 +4066,7 @@ def solve_pipeline(
                 state_cost_margin_pct=state_cost_margin_pct,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -4054,6 +4108,7 @@ def solve_pipeline(
                 pass_trace=None,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
             if pass_trace is not None:
                 pass_trace.append('exhaustive')
@@ -4303,6 +4358,7 @@ def solve_pipeline(
                     state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -4402,6 +4458,7 @@ def solve_pipeline(
                     refined_retry=True,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
                 )
                 if pass_trace is not None:
                     pass_trace.append('floor')
@@ -5300,6 +5357,8 @@ def solve_pipeline(
             'queue_signature': _queue_signature(initial_queue),
         }
     }
+    state_audit_log: list[dict[str, object]] = []
+    total_candidates_checked = 0
 
     def _pareto_prune_states(state_map: dict[object, dict]) -> dict[object, dict]:
         """Drop states that are strictly dominated on residual vs cost."""
@@ -5324,6 +5383,7 @@ def solve_pipeline(
         return pruned
 
     for stn_data in station_opts:
+        station_evaluated = 0
         new_states: dict[object, dict] = {}
         best_by_residual: dict[int, list[object]] = {}
         protected_counter = 0
@@ -6128,6 +6188,7 @@ def solve_pipeline(
                     if key_to_use is None:
                         continue
 
+                    station_evaluated += 1
                     entry = {
                         'cost': new_cost,
                         'residual': residual_next,
@@ -6158,6 +6219,7 @@ def solve_pipeline(
                                 bucket_list.append(key_to_use)
 
         new_states = _pareto_prune_states(new_states)
+        unique_after_pareto = len(new_states)
         if new_states:
             try:
                 best_cost_station = min(best_cost_station, min(data['cost'] for data in new_states.values()))
@@ -6234,6 +6296,21 @@ def solve_pipeline(
                 if idx < state_top_k or data['cost'] <= threshold:
                     pruned[residual_key] = data
             states = pruned
+
+        if collect_state_audit:
+            audit_entry: dict[str, object] = {
+                'index': stn_data.get('idx', -1),
+                'name': stn_data.get('name', f"station_{len(state_audit_log) + 1}"),
+                'evaluated': station_evaluated,
+                'unique_after_pareto': unique_after_pareto,
+                'carried_forward': len(states),
+                'states': [
+                    _summarise_state_for_audit(data, stn_data.get('name', 'station'))
+                    for _key, data in sorted(states.items(), key=lambda kv: kv[1]['cost'])
+                ],
+            }
+            state_audit_log.append(audit_entry)
+            total_candidates_checked += station_evaluated
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -6337,6 +6414,9 @@ def solve_pipeline(
 
     linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
     result['linefill'] = linefill_from_queue
+    if collect_state_audit:
+        result['state_audit'] = state_audit_log
+        result['state_audit_total_candidates'] = total_candidates_checked
     floor_summary: list[dict[str, float | str]] = []
     for key, value in result.items():
         if not key.startswith('floor_injection_applied_'):
@@ -6481,6 +6561,7 @@ def solve_pipeline_with_types(
     state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
+    collect_state_audit: bool = False,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -6586,6 +6667,7 @@ def solve_pipeline_with_types(
                     state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
                 )
                 if result.get("error"):
                     continue
