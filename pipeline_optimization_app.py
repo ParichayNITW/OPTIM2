@@ -53,6 +53,10 @@ if "search_state_cost_margin" not in st.session_state:
     st.session_state["search_state_cost_margin"] = 5000.0
 if "search_state_cost_margin_pct" not in st.session_state:
     st.session_state["search_state_cost_margin_pct"] = 1.0
+if "search_collect_state_audit" not in st.session_state:
+    st.session_state["search_collect_state_audit"] = True
+if "show_dp_audit" not in st.session_state:
+    st.session_state["show_dp_audit"] = False
 if "baseline_input_mode" not in st.session_state:
     st.session_state["baseline_input_mode"] = "auto"
 if "baseline_input_mode_prev" not in st.session_state:
@@ -1603,6 +1607,12 @@ with st.sidebar:
             format="%.1f",
             key="search_state_cost_margin_pct",
             help="Keeps any DP state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
+        )
+        st.checkbox(
+            "Capture DP candidate log (for raw output)",
+            value=bool(st.session_state.get("search_collect_state_audit", True)),
+            key="search_collect_state_audit",
+            help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing DP states, so overhead is minimal.",
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -3942,6 +3952,8 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
         state_cost_margin_pct = 0.0
     state_cost_margin_pct /= 100.0
 
+    collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
+
     return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
@@ -3949,6 +3961,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
         "state_cost_margin_pct": state_cost_margin_pct,
+        "collect_state_audit": collect_state_audit,
     }
 
 
@@ -6571,6 +6584,42 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     st.caption(
                         "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                     )
+
+            audit_log = res.get("state_audit") or []
+            if audit_log:
+                st.markdown("#### Candidate search log (cost-sorted)")
+                st.caption(
+                    "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun the solver."
+                )
+                col_audit = st.columns(2)
+                total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
+                col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
+                col_audit[1].metric("Stations logged", f"{len(audit_log)}")
+                toggle_cols = st.columns(2)
+                if toggle_cols[0].button("Show raw DP candidates", key="show_dp_audit_btn"):
+                    st.session_state["show_dp_audit"] = True
+                if st.session_state.get("show_dp_audit") and toggle_cols[1].button(
+                    "Hide raw DP candidates", key="hide_dp_audit_btn"
+                ):
+                    st.session_state["show_dp_audit"] = False
+                if st.session_state.get("show_dp_audit"):
+                    for entry in audit_log:
+                        station_name = entry.get("name", "Station")
+                        evaluated = int(entry.get("evaluated", 0) or 0)
+                        carried = int(entry.get("carried_forward", 0) or 0)
+                        unique_after = int(entry.get("unique_after_pareto", 0) or 0)
+                        st.markdown(
+                            f"**{station_name}** — checked {evaluated} candidates, {unique_after} unique after Pareto trim, {carried} carried forward."
+                        )
+                        candidates_df = pd.DataFrame(entry.get("states") or [])
+                        if not candidates_df.empty:
+                            st.dataframe(
+                                candidates_df.round(2),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                        else:
+                            st.caption("No candidates recorded for this station.")
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
