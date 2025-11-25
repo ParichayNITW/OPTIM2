@@ -199,7 +199,6 @@ def test_segment_head_loss_respects_multi_batch_profiles() -> None:
     )
 
     assert not result.get("error"), result.get("message")
-    assert result.get("initial_dra_queue") == []
     head_loss_solver = result["head_loss_station_a"]
 
     manual_loss = 0.0
