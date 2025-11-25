@@ -892,13 +892,10 @@ def _prepare_pipeline_context():
 
         stn.setdefault("name", f"Station {idx}")
         stn.setdefault("max_dr", 0.0)
-        stn.setdefault("max_dra_ppm", 0.0)
         stn.setdefault("min_residual", 0.0)
         stn.setdefault("loopline", False)
         stn.setdefault("max_pumps", stn.get("available", 0))
         stn.setdefault("min_pumps", 0)
-        if isinstance(stn.get("loopline"), Mapping):
-            stn["loopline"].setdefault("max_dra_ppm", stn["loopline"].get("max_dra_ppm", 0.0))
         pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
         if pump_types:
             for ptype, pdata in pump_types.items():
@@ -1831,7 +1828,6 @@ if "stations" not in st.session_state:
         'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
         'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
         'max_dr': 0.0,
-        'max_dra_ppm': 0.0,
         'delivery': 0.0,
         'supply': 0.0
     }]
@@ -1847,7 +1843,6 @@ with st.sidebar:
             'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
             'max_dr': 0.0,
-            'max_dra_ppm': 0.0,
             'delivery': 0.0,
             'supply': 0.0
         }
@@ -1869,13 +1864,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 "Max achievable Drag Reduction (%)",
                 value=stn.get('max_dr', 0.0),
                 key=f"mdr{idx}"
-            )
-            stn['max_dra_ppm'] = st.number_input(
-                "Max DRA PPM",
-                value=stn.get('max_dra_ppm', 0.0),
-                min_value=0.0,
-                step=1.0,
-                key=f"mdrppm{idx}"
             )
             if idx == 1:
                 stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
@@ -1912,13 +1900,6 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                     "Max Drag Reduction (%)",
                     value=loop.get('max_dr', 0.0),
                     key=f"loopmdr{idx}"
-                )
-                loop['max_dra_ppm'] = st.number_input(
-                    "Max DRA PPM",
-                    value=loop.get('max_dra_ppm', 0.0),
-                    min_value=0.0,
-                    step=1.0,
-                    key=f"loopmdrppm{idx}"
                 )
                 loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
 
@@ -2689,11 +2670,13 @@ def _append_zero_plan_segments_to_result(
 
     if queue_entries:
         head_length, head_ppm = queue_entries[0]
-        if zero_length > 1e-9:
-            if head_ppm <= 0.0:
-                queue_entries[0] = (head_length + zero_length, 0.0)
-            else:
-                queue_entries.insert(0, (zero_length, 0.0))
+        if head_ppm <= 0.0:
+            if head_length < zero_length - 1e-9:
+                queue_entries[0] = (zero_length, 0.0)
+        elif zero_length > 1e-9:
+            # Preserve treated head segments by appending untreated plan slices
+            # to the back of the queue rather than prepending them.
+            queue_entries.append((zero_length, 0.0))
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -3920,7 +3903,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
-    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", None)
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -3951,27 +3934,22 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
-    state_cost_margin_pct: float | None = None
-    if state_cost_margin_pct_default is not None:
-        pct_default = state_cost_margin_pct_default * 100.0
-        state_cost_margin_pct = float(
-            st.session_state.get("search_state_cost_margin_pct", pct_default)
-            or pct_default
-        )
-        if state_cost_margin_pct < 0:
-            state_cost_margin_pct = 0.0
-        state_cost_margin_pct /= 100.0
+    state_cost_margin_pct = float(
+        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+        or state_cost_margin_pct_default
+    )
+    if state_cost_margin_pct < 0:
+        state_cost_margin_pct = 0.0
+    state_cost_margin_pct /= 100.0
 
-    result = {
+    return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
+        "state_cost_margin_pct": state_cost_margin_pct,
     }
-    if state_cost_margin_pct is not None:
-        result["state_cost_margin_pct"] = state_cost_margin_pct
-    return result
 
 
 
