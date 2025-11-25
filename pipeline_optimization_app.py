@@ -3755,13 +3755,13 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = 0.0
-            for length_val, ppm_val in reversed(profile_entries):
-                if float(ppm_val or 0.0) > 0.0:
-                    outlet_ppm = float(ppm_val)
-                    break
+            if profile_entries:
+                try:
+                    outlet_ppm = float(profile_entries[-1][1])
+                except (TypeError, ValueError):
+                    outlet_ppm = 0.0
             else:
-                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+                outlet_ppm = 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -3888,7 +3888,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     """Return validated search-depth parameters for backend solvers."""
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
-    dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
+    dra_step_default = getattr(pipeline_model, "DRA_STEP", 5)
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
@@ -5265,7 +5265,7 @@ def _execute_time_series_solver(
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
-                    min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
+                    min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 5.0,
                     baseline_requirement=st.session_state.get("origin_lacing_baseline"),
                     hourly_flow_m3=flow_rate,
                     step_hours=1.0 / max(float(sub_steps or 1), 1.0),
@@ -7280,7 +7280,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Re_vals = np.zeros_like(v_vals)
                     f_vals = np.zeros_like(v_vals)
                 # Professional gradient: from blue to red
-                dra_step = max(getattr(pipeline_model, "DRA_STEP", 2), 1)
+                dra_step = max(getattr(pipeline_model, "DRA_STEP", 5), 1)
                 dra_levels = list(range(0, max_dr + dra_step, dra_step))
                 if not dra_levels:
                     dra_levels = [0]

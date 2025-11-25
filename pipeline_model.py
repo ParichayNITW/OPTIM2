@@ -402,7 +402,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 # ---------------------------------------------------------------------------
 
 RPM_STEP = 25
-DRA_STEP = 2
+DRA_STEP = 5
 MAX_DRA_KM = 250.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
@@ -4688,6 +4688,7 @@ def solve_pipeline(
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
