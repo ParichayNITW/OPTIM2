@@ -2609,6 +2609,7 @@ def _append_zero_plan_segments_to_result(
         return
 
     zero_length = 0.0
+    positive_injection_present = False
     for batch in injected_batches:
         if not isinstance(batch, Mapping):
             continue
@@ -2623,6 +2624,7 @@ def _append_zero_plan_segments_to_result(
         except (TypeError, ValueError):
             ppm_val = 0.0
         if ppm_val > 0.0:
+            positive_injection_present = True
             break
         length_val = pipeline_model._km_from_volume(volume, origin_diameter)
         if length_val > 0.0:
@@ -2662,7 +2664,10 @@ def _append_zero_plan_segments_to_result(
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
         else:
-            queue_entries = [(zero_length, 0.0)] + queue_entries
+            if positive_injection_present:
+                queue_entries.append((zero_length, 0.0))
+            else:
+                queue_entries = [(zero_length, 0.0)] + queue_entries
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -3755,13 +3760,13 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = 0.0
-            for length_val, ppm_val in reversed(profile_entries):
-                if float(ppm_val or 0.0) > 0.0:
-                    outlet_ppm = float(ppm_val)
-                    break
+            if profile_entries:
+                try:
+                    outlet_ppm = float(profile_entries[-1][1])
+                except (TypeError, ValueError):
+                    outlet_ppm = 0.0
             else:
-                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+                outlet_ppm = 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -4562,7 +4567,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
