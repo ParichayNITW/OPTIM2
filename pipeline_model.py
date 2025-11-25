@@ -1931,8 +1931,55 @@ def _update_mainline_dra(
         if float(length) > 0
     ]
 
-    if segment_length > 0:
-        profile_source = _segment_profile_from_queue(merged_queue, 0.0, segment_length)
+    report_queue: list[tuple[float, float]]
+    if segment_length > 0.0:
+        report_queue = [
+            (float(length or 0.0), float(ppm or 0.0))
+            for length, ppm in merged_queue
+            if float(length or 0.0) > 0.0
+        ]
+        pumped_total = sum(
+            float(length or 0.0)
+            for length, _ppm in pumped_portion
+            if float(length or 0.0) > 0.0
+        )
+        replacement: list[tuple[float, float]] = []
+        remaining_for_report = list(report_queue)
+        if pump_running and inj_effective > 0.0 and head_length > 0.0:
+            replacement.append((float(head_length), float(max(inj_effective, 0.0))))
+            remaining_for_report = list(_trim_queue_front(remaining_for_report, head_length))
+            if pumped_total > 0.0:
+                remaining_for_report = list(_trim_queue_front(remaining_for_report, pumped_total))
+        else:
+            injected_length = sum(
+                float(length or 0.0)
+                for length, _ppm in pumped_adjusted
+                if float(length or 0.0) > 0.0
+            )
+            if injected_length > 0.0:
+                replacement.extend(
+                    (
+                        float(length or 0.0),
+                        float(ppm or 0.0),
+                    )
+                    for length, ppm in pumped_adjusted
+                    if float(length or 0.0) > 0.0
+                )
+                remaining_for_report = list(_trim_queue_front(remaining_for_report, injected_length))
+        if pumped_total > 0.0:
+            replacement.extend(
+                (
+                    float(length or 0.0),
+                    float(ppm or 0.0),
+                )
+                for length, ppm in pumped_portion
+                if float(length or 0.0) > 0.0
+            )
+        if replacement:
+            report_queue = _merge_queue(replacement + remaining_for_report)
+        else:
+            report_queue = report_queue
+        profile_source = _segment_profile_from_queue(report_queue, 0.0, segment_length)
     else:
         profile_source = tuple()
 
