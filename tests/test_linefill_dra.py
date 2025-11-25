@@ -17,6 +17,7 @@ import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
+    _profile_edge_ppm,
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
@@ -648,6 +649,38 @@ def test_segment_profile_from_queue_downstream_segment() -> None:
     assert profile[0][1] == pytest.approx(12.0, rel=1e-9)
     assert profile[1][0] == pytest.approx(18.0, rel=1e-9)
     assert profile[1][1] == pytest.approx(10.0, rel=1e-9)
+
+
+def test_profile_edge_ppm_preserves_untreated_front() -> None:
+    """Zero-ppm slices at the front should propagate to the inlet reading."""
+
+    profile = (
+        (7.0, 0.0),
+        (93.0, 3.0),
+    )
+
+    inlet_ppm = _profile_edge_ppm(profile)
+    outlet_ppm = _profile_edge_ppm(profile, reverse=True)
+
+    assert inlet_ppm == pytest.approx(0.0)
+    assert outlet_ppm == pytest.approx(3.0)
+
+
+def test_profile_edge_ppm_handles_reverse_and_negative_values() -> None:
+    """Negative ppm values should be clamped while preserving trailing zeros."""
+
+    profile = (
+        (4.0, -2.0),
+        (6.0, 0.0),
+        (10.0, 5.0),
+        (1.0, 0.0),
+    )
+
+    inlet_ppm = _profile_edge_ppm(profile)
+    outlet_ppm = _profile_edge_ppm(profile, reverse=True)
+
+    assert inlet_ppm == pytest.approx(0.0)
+    assert outlet_ppm == pytest.approx(0.0)
 
 
 def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
