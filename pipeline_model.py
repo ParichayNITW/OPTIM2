@@ -4706,12 +4706,27 @@ def solve_pipeline(
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = _max_dr_int(stn.get('max_dr'))
-            max_ppm_cap = 0.0
+            user_ppm_cap = stn.get('max_dra_ppm', 0.0)
+            try:
+                user_ppm_cap = float(user_ppm_cap or 0.0)
+            except (TypeError, ValueError):
+                user_ppm_cap = 0.0
+            max_ppm_cap = max(user_ppm_cap, 0.0)
+            derived_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
-                    max_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
+                    derived_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
                 except Exception:
-                    max_ppm_cap = 0.0
+                    derived_ppm_cap = 0.0
+            if max_ppm_cap <= 0.0:
+                max_ppm_cap = derived_ppm_cap
+            elif kv > 0.0 and max_ppm_cap > 0.0:
+                try:
+                    cap_dr_from_ppm = float(get_dr_for_ppm(kv, max_ppm_cap))
+                except Exception:
+                    cap_dr_from_ppm = 0.0
+                if cap_dr_from_ppm > 0.0:
+                    max_dr_main = min(max_dr_main, int(math.ceil(cap_dr_from_ppm)))
             floor_limited_local = bool(floor_limited)
             floor_exceeds_cap = False
             if floor_ppm_min > 0.0:
@@ -4780,6 +4795,28 @@ def solve_pipeline(
                     dra_main_vals = filtered_vals
             max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
+            user_ppm_cap_loop = 0.0
+            if loop_dict:
+                try:
+                    user_ppm_cap_loop = float(loop_dict.get('max_dra_ppm', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    user_ppm_cap_loop = 0.0
+            max_ppm_cap_loop = max(user_ppm_cap_loop, 0.0)
+            derived_ppm_cap_loop = 0.0
+            if kv > 0.0 and max_dr_loop > 0:
+                try:
+                    derived_ppm_cap_loop = float(get_ppm_for_dr(kv, max_dr_loop))
+                except Exception:
+                    derived_ppm_cap_loop = 0.0
+            if max_ppm_cap_loop <= 0.0:
+                max_ppm_cap_loop = derived_ppm_cap_loop
+            elif kv > 0.0 and max_ppm_cap_loop > 0.0:
+                try:
+                    loop_dr_from_ppm = float(get_dr_for_ppm(kv, max_ppm_cap_loop))
+                except Exception:
+                    loop_dr_from_ppm = 0.0
+                if loop_dr_from_ppm > 0.0:
+                    max_dr_loop = min(max_dr_loop, int(math.ceil(loop_dr_from_ppm)))
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
@@ -4815,6 +4852,8 @@ def solve_pipeline(
                     seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
                         ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                        if max_ppm_cap > 0.0 and ppm_main > max_ppm_cap:
+                            ppm_main = max_ppm_cap
                         if floor_ppm_min > 0.0:
                             if ppm_main <= 0.0 and not floor_exceeds_cap:
                                 continue
@@ -4828,7 +4867,7 @@ def solve_pipeline(
                         if ppm_main < 0.0:
                             ppm_main = 0.0
                         ppm_for_dr = ppm_main
-                        if floor_exceeds_cap and max_ppm_cap > 0.0:
+                        if max_ppm_cap > 0.0:
                             ppm_for_dr = min(ppm_for_dr, max_ppm_cap)
                         key = int(round(ppm_main / tol_ppm)) if tol_ppm > 0 else int(round(ppm_main))
                         if key in seen_ppm_keys:
@@ -4882,6 +4921,8 @@ def solve_pipeline(
                     for dra_main_use, ppm_main in ppm_candidates:
                         for dra_loop in dra_loop_vals:
                             ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
+                            if max_ppm_cap_loop > 0.0 and ppm_loop > max_ppm_cap_loop:
+                                ppm_loop = max_ppm_cap_loop
                             inj_effective_est = _predict_effective_injection(
                                 ppm_main,
                                 kv,
@@ -4944,12 +4985,27 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = _max_dr_int(stn.get('max_dr'))
-            max_ppm_cap = 0.0
+            user_ppm_cap = stn.get('max_dra_ppm', 0.0)
+            try:
+                user_ppm_cap = float(user_ppm_cap or 0.0)
+            except (TypeError, ValueError):
+                user_ppm_cap = 0.0
+            max_ppm_cap = max(user_ppm_cap, 0.0)
+            derived_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
-                    max_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
+                    derived_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
                 except Exception:
-                    max_ppm_cap = 0.0
+                    derived_ppm_cap = 0.0
+            if max_ppm_cap <= 0.0:
+                max_ppm_cap = derived_ppm_cap
+            elif kv > 0.0 and max_ppm_cap > 0.0:
+                try:
+                    cap_dr_from_ppm = float(get_dr_for_ppm(kv, max_ppm_cap))
+                except Exception:
+                    cap_dr_from_ppm = 0.0
+                if cap_dr_from_ppm > 0.0:
+                    max_dr_main = min(max_dr_main, int(math.ceil(cap_dr_from_ppm)))
             floor_limited_local = bool(floor_limited)
             floor_exceeds_cap = False
             if floor_ppm_min > 0.0:
@@ -5008,6 +5064,8 @@ def solve_pipeline(
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                    if max_ppm_cap > 0.0 and ppm_main > max_ppm_cap:
+                        ppm_main = max_ppm_cap
                     if floor_ppm_min > 0.0:
                         if ppm_main <= 0.0 and not floor_exceeds_cap:
                             continue
@@ -5022,7 +5080,7 @@ def solve_pipeline(
                     if ppm_main > 0.0 and kv > 0.0:
                         try:
                             ppm_for_dr = ppm_main
-                            if floor_exceeds_cap and max_ppm_cap > 0.0:
+                            if max_ppm_cap > 0.0:
                                 ppm_for_dr = min(ppm_for_dr, max_ppm_cap)
                             dra_from_ppm = float(get_dr_for_ppm(kv, ppm_for_dr))
                         except Exception:
