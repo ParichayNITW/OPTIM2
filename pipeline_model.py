@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from itertools import product
 import math
 
@@ -420,11 +421,14 @@ V_MIN = 0.5
 V_MAX = 2.5
 
 # Limit the number of dynamic-programming states carried forward after
-# each station.  ``STATE_TOP_K`` bounds the total states retained while
-# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
-# this many currency units of the best state for the current station.
+# each station.  ``STATE_COST_MARGIN_PCT`` keeps any state within this percent
+# of the best to avoid losing near-ties on expensive scenarios. ``STATE_TOP_K``
+# bounds the total states retained while ``STATE_COST_MARGIN`` allows keeping
+# any state whose cost lies within this many currency units of the best state
+# for the current station.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
+STATE_COST_MARGIN_PCT = 0.01
 # Limit refinement passes to a smaller state budget so the narrowed search
 # completes quickly even when invoked repeatedly (e.g. within scheduling
 # loops).  The coarse and exhaustive passes retain the broader defaults.
@@ -443,14 +447,21 @@ STATE_MAX_BUCKET_VARIANTS = 3
 DRA_SIGNATURE_LEN_TOL = 0.1  # km
 DRA_SIGNATURE_PPM_TOL = 0.5  # ppm
 
-def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
-    """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
+@lru_cache(maxsize=2048)
+def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
+    """Return the inclusive integer grid between ``min_val`` and ``max_val``.
+
+    Results are memoised so repeated lookups with the same bounds and step size
+    reuse a shared tuple instead of allocating a fresh list every time.  The
+    grid keeps the lower bound even when the step is enlarged so that "no
+    chemical" or minimum-speed options remain available during coarse passes.
+    """
 
     if min_val > max_val:
         # ``min_val`` can legitimately exceed ``max_val`` when a caller narrows the
         # window to a single point (e.g. zero DRA enforced by a floor).  Always
         # return the lone value so downstream loops still evaluate the candidate.
-        return [min_val]
+        return (min_val,)
 
     # ``range`` already includes the lower bound.  Keeping the left edge in the
     # grid is important for cases where the minimum allows 0 ppm; the coarse pass
@@ -459,7 +470,7 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
-    return vals
+    return tuple(vals)
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
@@ -542,6 +553,10 @@ _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
 ] = {}
+
+# Preserve the most recent SDH value per station so repeated solves with a
+# slowly decaying DRA slug cannot report increasing heads.
+_SDH_HISTORY: dict[str, float] = {}
 
 
 def _prepare_dra_queue_consumption(
@@ -3506,6 +3521,7 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     _exhaustive_pass: bool = False,
     refined_retry: bool = False,
     pass_trace: list[str] | None = None,
@@ -3574,6 +3590,13 @@ def solve_pipeline(
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     try:
+        state_cost_margin_pct = float(state_cost_margin_pct)
+    except (TypeError, ValueError):
+        state_cost_margin_pct = STATE_COST_MARGIN_PCT
+    if state_cost_margin_pct < 0.0:
+        state_cost_margin_pct = 0.0
+
+    try:
         rpm_step = int(rpm_step)
     except (TypeError, ValueError):
         rpm_step = RPM_STEP
@@ -3607,6 +3630,12 @@ def solve_pipeline(
         state_cost_margin = STATE_COST_MARGIN
     if state_cost_margin < 0:
         state_cost_margin = 0.0
+    try:
+        state_cost_margin_pct = float(state_cost_margin_pct)
+    except (TypeError, ValueError):
+        state_cost_margin_pct = STATE_COST_MARGIN_PCT
+    if state_cost_margin_pct < 0.0:
+        state_cost_margin_pct = 0.0
 
     if segment_slices is None:
         segment_slices = [[] for _ in stations]
@@ -3706,6 +3735,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
@@ -3770,6 +3800,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
@@ -3979,6 +4010,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
             )
@@ -4016,6 +4048,7 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=True,
                 refined_retry=coarse_failed,
                 pass_trace=None,
@@ -4267,6 +4300,7 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
@@ -4364,6 +4398,7 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    state_cost_margin_pct=state_cost_margin_pct,
                     refined_retry=True,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
@@ -4683,11 +4718,14 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            dra_grid_min = 0
+            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -5064,6 +5102,8 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
+
+    total_length_km = cum_dist
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
     # bypass cases require recomputing the downstream flow profile.
@@ -5125,7 +5165,12 @@ def solve_pipeline(
         return queue_entries
 
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
+    queue_has_dra = any(ppm_val > 0.0 for _, ppm_val in initial_queue_entries)
+    if not queue_has_dra:
+        _SDH_HISTORY.clear()
     initial_reach = max(float(dra_reach_km), 0.0)
+    if total_length_km > 0.0:
+        initial_reach = min(initial_reach, total_length_km)
     if not initial_queue_entries and initial_reach > 0:
         initial_ppm = 0.0
         if linefill_state:
@@ -5255,6 +5300,28 @@ def solve_pipeline(
             'queue_signature': _queue_signature(initial_queue),
         }
     }
+
+    def _pareto_prune_states(state_map: dict[object, dict]) -> dict[object, dict]:
+        """Drop states that are strictly dominated on residual vs cost."""
+
+        if not state_map:
+            return state_map
+        sorted_states = sorted(
+            state_map.items(),
+            key=lambda kv: (-float(kv[1].get('residual', 0.0)), float(kv[1].get('cost', float('inf')))),
+        )
+        best_cost_seen = float('inf')
+        pruned: dict[object, dict] = {}
+        for key, data in sorted_states:
+            cost_val = float(data.get('cost', float('inf')))
+            if data.get('protected'):
+                pruned[key] = data
+                best_cost_seen = min(best_cost_seen, cost_val)
+                continue
+            if cost_val < best_cost_seen - 1e-9:
+                pruned[key] = data
+                best_cost_seen = cost_val
+        return pruned
 
     for stn_data in station_opts:
         new_states: dict[object, dict] = {}
@@ -5759,6 +5826,13 @@ def solve_pipeline(
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
+                    sdh_display = sdh if stn_data['is_pump'] else state['residual']
+                    if stn_data['is_pump']:
+                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
+                        if prev_sdh is not None and queue_has_dra:
+                            sdh_display = min(sdh_display, prev_sdh)
+                        _SDH_HISTORY[stn_data['name']] = sdh_display
+
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
                         f"pipeline_flow_in_{stn_data['name']}": flow_total,
@@ -5767,10 +5841,8 @@ def solve_pipeline(
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
                         f"residual_head_{stn_data['name']}": state['residual'],
                         f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
-                        f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
-                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(
-                            sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']
-                        ),
+                        f"sdh_{stn_data['name']}": sdh_display,
+                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
@@ -6085,6 +6157,12 @@ def solve_pipeline(
                             if key_to_use not in bucket_list:
                                 bucket_list.append(key_to_use)
 
+        new_states = _pareto_prune_states(new_states)
+        if new_states:
+            try:
+                best_cost_station = min(best_cost_station, min(data['cost'] for data in new_states.values()))
+            except Exception:
+                best_cost_station = best_cost_station
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         # After evaluating all options for this station retain only the
@@ -6098,7 +6176,10 @@ def solve_pipeline(
                 (key, data) for key, data in items if data.get('protected')
             ]
             exhaustive_top_k = max(state_top_k, int(state_top_k * 3))
-            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN)
+            relative_margin = 0.0
+            if best_cost_station < float('inf'):
+                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
+            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN, relative_margin)
             within_threshold: list[tuple[object, dict]] = [
                 (key, data)
                 for key, data in items
@@ -6140,7 +6221,10 @@ def solve_pipeline(
             protected_entries = [
                 (key, data) for key, data in items if data.get('protected')
             ]
-            threshold = best_cost_station + state_cost_margin
+            relative_margin = 0.0
+            if best_cost_station < float('inf'):
+                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
+            threshold = best_cost_station + max(state_cost_margin, relative_margin)
             pruned: dict[object, dict] = {}
             for key, data in protected_entries:
                 pruned[key] = data
@@ -6394,6 +6478,7 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
 ) -> dict:
@@ -6498,6 +6583,7 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
+                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
