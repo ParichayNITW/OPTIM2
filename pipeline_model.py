@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from itertools import product
 import math
 
@@ -420,11 +421,14 @@ V_MIN = 0.5
 V_MAX = 2.5
 
 # Limit the number of dynamic-programming states carried forward after
-# each station.  ``STATE_TOP_K`` bounds the total states retained while
-# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
-# this many currency units of the best state for the current station.
+# each station.  ``STATE_COST_MARGIN_PCT`` keeps any state within this percent
+# of the best to avoid losing near-ties on expensive scenarios. ``STATE_TOP_K``
+# bounds the total states retained while ``STATE_COST_MARGIN`` allows keeping
+# any state whose cost lies within this many currency units of the best state
+# for the current station.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
+STATE_COST_MARGIN_PCT = 0.01
 # Limit refinement passes to a smaller state budget so the narrowed search
 # completes quickly even when invoked repeatedly (e.g. within scheduling
 # loops).  The coarse and exhaustive passes retain the broader defaults.
@@ -443,14 +447,21 @@ STATE_MAX_BUCKET_VARIANTS = 3
 DRA_SIGNATURE_LEN_TOL = 0.1  # km
 DRA_SIGNATURE_PPM_TOL = 0.5  # ppm
 
-def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
-    """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
+@lru_cache(maxsize=2048)
+def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
+    """Return the inclusive integer grid between ``min_val`` and ``max_val``.
+
+    Results are memoised so repeated lookups with the same bounds and step size
+    reuse a shared tuple instead of allocating a fresh list every time.  The
+    grid keeps the lower bound even when the step is enlarged so that "no
+    chemical" or minimum-speed options remain available during coarse passes.
+    """
 
     if min_val > max_val:
         # ``min_val`` can legitimately exceed ``max_val`` when a caller narrows the
         # window to a single point (e.g. zero DRA enforced by a floor).  Always
         # return the lone value so downstream loops still evaluate the candidate.
-        return [min_val]
+        return (min_val,)
 
     # ``range`` already includes the lower bound.  Keeping the left edge in the
     # grid is important for cases where the minimum allows 0 ppm; the coarse pass
@@ -459,7 +470,7 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
-    return vals
+    return tuple(vals)
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
@@ -542,6 +553,10 @@ _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
 ] = {}
+
+# Preserve the most recent SDH value per station so repeated solves with a
+# slowly decaying DRA slug cannot report increasing heads.
+_SDH_HISTORY: dict[str, float] = {}
 
 
 def _prepare_dra_queue_consumption(
@@ -1008,6 +1023,56 @@ def _queue_total_length(
         if length_val > 0:
             total += length_val
     return total
+
+
+def _summarise_state_for_audit(state_data: Mapping[str, object], station_name: str) -> dict[str, object]:
+    """Return a lightweight snapshot of a DP state for UI display.
+
+    Only inexpensive fields are copied so collecting the audit has negligible
+    impact on solver runtime.  The summary focuses on user-facing quantities
+    such as cost, residual head, pumps running, injection rates, and queue
+    length.
+    """
+
+    summary: dict[str, object] = {
+        'cost': float(state_data.get('cost', 0.0) or 0.0),
+        'residual': float(state_data.get('residual', 0.0) or 0.0),
+        'queue_km': _queue_total_length(state_data.get('dra_queue_full')),  # type: ignore[arg-type]
+        'protected': bool(state_data.get('protected', False)),
+    }
+
+    try:
+        summary['dra_ppm_main'] = float(state_data.get('inj_ppm_main', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        summary['dra_ppm_main'] = 0.0
+
+    records = state_data.get('records')
+    record = None
+    if isinstance(records, list):
+        for rec in reversed(records):
+            if isinstance(rec, Mapping) and f"num_pumps_{station_name}" in rec:
+                record = rec
+                break
+
+    if isinstance(record, Mapping):
+        try:
+            summary['num_pumps'] = int(record.get(f"num_pumps_{station_name}", 0) or 0)
+        except (TypeError, ValueError):
+            summary['num_pumps'] = 0
+        try:
+            summary['rpm'] = float(record.get(f"speed_{station_name}", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            summary['rpm'] = 0.0
+        try:
+            summary['dra_ppm_loop'] = float(record.get(f"dra_ppm_loop_{station_name}", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            summary['dra_ppm_loop'] = 0.0
+    else:
+        summary['num_pumps'] = 0
+        summary['rpm'] = 0.0
+        summary['dra_ppm_loop'] = 0.0
+
+    return summary
 
 
 def _queue_signature(
@@ -1721,9 +1786,72 @@ def _update_mainline_dra(
         and inj_effective > 0.0
         and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
     )
-    floor_requires_injection = bool(floor_defined and enforce_queue_floor and inj_effective <= 0.0)
-    if segments_defined and enforce_queue_floor and inj_effective <= 0.0:
-        floor_requires_injection = True
+    def _queue_meets_floor(queue_entries: list[tuple[float, float]], length_req: float, ppm_req: float) -> bool:
+        """Return True when ``queue_entries`` cover ``length_req`` km at ``ppm_req`` or higher."""
+
+        if length_req <= 0.0 or ppm_req <= 0.0:
+            return True
+        remaining = length_req
+        for length_val, ppm_val in queue_entries:
+            if remaining <= 0.0:
+                break
+            length_float = float(length_val or 0.0)
+            ppm_float = float(ppm_val or 0.0)
+            if length_float <= 0.0:
+                continue
+            if ppm_float + 1e-9 < ppm_req:
+                return False
+            remaining -= length_float
+        return remaining <= 1e-9
+
+    floor_requires_injection = False
+    if floor_defined and enforce_queue_floor and inj_effective <= 0.0:
+        meets_floor = True
+        available_length = max(
+            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
+            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
+        )
+        if segments_defined:
+            remaining_length = available_length
+            for seg_length, seg_ppm in floor_segments:
+                target_length = min(seg_length, remaining_length)
+                if target_length <= 0.0:
+                    continue
+                if not _queue_meets_floor(pumped_portion, target_length, seg_ppm):
+                    meets_floor = False
+                    break
+                remaining_length -= target_length
+        elif floor_length > 0.0 and floor_ppm > 0.0:
+            meets_floor = _queue_meets_floor(pumped_portion, min(floor_length, available_length), floor_ppm)
+
+        if not meets_floor:
+            # If the freshly pumped slice is too short to satisfy the floor,
+            # fall back to checking the full downstream queue before
+            # declaring injection mandatory.  This prevents valid runs from
+            # being discarded when the existing treated column already meets
+            # the required ppm over the longer floor length.
+            total_available = _queue_total_length(existing_queue)
+            if segments_defined:
+                remaining_length = total_available
+                queue_for_check = existing_queue
+                meets_floor = True
+                for seg_length, seg_ppm in floor_segments:
+                    target_length = min(seg_length, remaining_length)
+                    if target_length <= 0.0:
+                        continue
+                    if not _queue_meets_floor(queue_for_check, target_length, seg_ppm):
+                        meets_floor = False
+                        break
+                    queue_for_check = _trim_queue_front(queue_for_check, target_length)
+                    remaining_length -= target_length
+            elif floor_length > 0.0 and floor_ppm > 0.0:
+                meets_floor = _queue_meets_floor(
+                    existing_queue,
+                    min(floor_length, total_available),
+                    floor_ppm,
+                )
+
+        floor_requires_injection = not meets_floor
     enforce_floor = enforceable_floor and not floor_requires_injection
     if enforce_floor:
         available_length = max(
@@ -3506,11 +3634,13 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     _exhaustive_pass: bool = False,
     refined_retry: bool = False,
     pass_trace: list[str] | None = None,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
+    collect_state_audit: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -3574,6 +3704,13 @@ def solve_pipeline(
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     try:
+        state_cost_margin_pct = float(state_cost_margin_pct)
+    except (TypeError, ValueError):
+        state_cost_margin_pct = STATE_COST_MARGIN_PCT
+    if state_cost_margin_pct < 0.0:
+        state_cost_margin_pct = 0.0
+
+    try:
         rpm_step = int(rpm_step)
     except (TypeError, ValueError):
         rpm_step = RPM_STEP
@@ -3607,6 +3744,12 @@ def solve_pipeline(
         state_cost_margin = STATE_COST_MARGIN
     if state_cost_margin < 0:
         state_cost_margin = 0.0
+    try:
+        state_cost_margin_pct = float(state_cost_margin_pct)
+    except (TypeError, ValueError):
+        state_cost_margin_pct = STATE_COST_MARGIN_PCT
+    if state_cost_margin_pct < 0.0:
+        state_cost_margin_pct = 0.0
 
     if segment_slices is None:
         segment_slices = [[] for _ in stations]
@@ -3706,9 +3849,11 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
@@ -3770,9 +3915,11 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
             if res.get('error'):
                 continue
@@ -3979,8 +4126,10 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
             coarse_failed = bool(coarse_res.get("error"))
             if pass_trace is not None:
@@ -4016,11 +4165,13 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
+                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=True,
                 refined_retry=coarse_failed,
                 pass_trace=None,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
             )
             if pass_trace is not None:
                 pass_trace.append('exhaustive')
@@ -4267,8 +4418,10 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
                 )
                 if pass_trace is not None:
                     pass_trace.append('refine')
@@ -4364,9 +4517,11 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
+                    state_cost_margin_pct=state_cost_margin_pct,
                     refined_retry=True,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
                 )
                 if pass_trace is not None:
                     pass_trace.append('floor')
@@ -4399,6 +4554,96 @@ def solve_pipeline(
                 result_choice = dict(result_choice)
                 result_choice['executed_passes'] = list(pass_trace)
             return result_choice
+
+        if not refined_retry:
+            widened_top_k = max(state_top_k, STATE_TOP_K * 2)
+            widened_margin = max(state_cost_margin, STATE_COST_MARGIN * 2)
+            widened_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 2)
+            retry_pass_trace = None
+            if pass_trace is not None:
+                retry_pass_trace = list(pass_trace)
+                retry_pass_trace.append('wide_retry')
+            retry_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=_internal_pass,
+                rpm_step=rpm_step,
+                dra_step=dra_step,
+                narrow_ranges=narrow_ranges,
+                coarse_multiplier=coarse_multiplier,
+                state_top_k=widened_top_k,
+                state_cost_margin=widened_margin,
+                state_cost_margin_pct=widened_margin_pct,
+                _exhaustive_pass=_exhaustive_pass,
+                refined_retry=True,
+                pass_trace=retry_pass_trace,
+                forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
+            )
+            if not retry_result.get("error"):
+                return retry_result
+
+        if not refined_retry:
+            brute_force_top_k = max(state_top_k, STATE_TOP_K * 20)
+            brute_force_margin = max(state_cost_margin, STATE_COST_MARGIN * 10)
+            brute_force_margin_pct = max(state_cost_margin_pct, STATE_COST_MARGIN_PCT * 20)
+            brute_pass_trace = None
+            if pass_trace is not None:
+                brute_pass_trace = list(pass_trace)
+                brute_pass_trace.append("brute_retry")
+            brute_result = solve_pipeline(
+                stations,
+                terminal,
+                FLOW,
+                KV_list,
+                rho_list,
+                segment_slices,
+                RateDRA,
+                Price_HSD,
+                Fuel_density,
+                Ambient_temp,
+                linefill,
+                dra_reach_km,
+                mop_kgcm2,
+                hours,
+                start_time,
+                pump_shear_rate=pump_shear_rate,
+                loop_usage_by_station=loop_usage_by_station,
+                enumerate_loops=False,
+                _internal_pass=_internal_pass,
+                rpm_step=rpm_step,
+                dra_step=1,
+                narrow_ranges=None,
+                coarse_multiplier=1.0,
+                state_top_k=max(brute_force_top_k, 5000),
+                state_cost_margin=float("inf"),
+                state_cost_margin_pct=float("inf"),
+                _exhaustive_pass=True,
+                refined_retry=True,
+                pass_trace=brute_pass_trace,
+                forced_origin_detail=forced_origin_detail,
+                segment_floors=segment_floors,
+                collect_state_audit=collect_state_audit,
+            )
+            if not brute_result.get("error"):
+                return brute_result
 
         if not exhaustive_result.get("error"):
             result_choice = exhaustive_result
@@ -4671,6 +4916,7 @@ def solve_pipeline(
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = _max_dr_int(stn.get('max_dr'))
+            force_full_dra_grid = _exhaustive_pass and refined_retry
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
@@ -4683,22 +4929,26 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            floor_filter_active = floor_ppm_min > 0.0 and not force_full_dra_grid
+            dra_grid_min = 0
+            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
+                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
-                if rng and 'dra_main' in rng:
+                if not force_full_dra_grid and rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
-                if floor_perc_min_int > 0:
+                if not force_full_dra_grid and floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
-                if floor_dr_min_int > 0:
+                if not force_full_dra_grid and floor_dr_min_int > 0:
                     dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
-                if floor_ppm_min > 0.0:
+                if not force_full_dra_grid and floor_ppm_min > 0.0:
                     if dr_min <= 0:
                         dr_min = max(dr_min, min_step)
                     if dr_min <= dr_max:
@@ -4724,9 +4974,9 @@ def solve_pipeline(
                 if not dra_main_vals and dr_max >= 0:
                     dra_main_vals = [dr_max]
                     dra_grid_min = dra_grid_max = dr_max
-                if narrow_ranges is not None and len(dra_main_vals) > REFINE_MAX_DRA_VALUES:
+                if not force_full_dra_grid and narrow_ranges is not None and len(dra_main_vals) > REFINE_MAX_DRA_VALUES:
                     dra_main_vals = _downsample_evenly(dra_main_vals, REFINE_MAX_DRA_VALUES)
-                if floor_ppm_min > 0.0 and not floor_limited_local and dra_main_vals:
+                if floor_filter_active and not floor_limited_local and dra_main_vals:
                     filtered_vals: list[int] = []
                     for candidate in dra_main_vals:
                         if candidate <= 0:
@@ -4742,7 +4992,7 @@ def solve_pipeline(
                     dra_main_vals = filtered_vals
             max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
-            if rng and 'dra_loop' in rng:
+            if not force_full_dra_grid and rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
                 dr_loop_max = min(max_dr_loop, rng['dra_loop'][1])
             dra_loop_vals = _allowed_values(dr_loop_min, dr_loop_max, dra_step) if loop_dict else [0]
@@ -4777,7 +5027,7 @@ def solve_pipeline(
                     seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
                         ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
-                        if floor_ppm_min > 0.0:
+                        if floor_filter_active:
                             if ppm_main <= 0.0 and not floor_exceeds_cap:
                                 continue
                             if ppm_main < floor_ppm_min - floor_ppm_tol:
@@ -4790,7 +5040,7 @@ def solve_pipeline(
                         if ppm_main < 0.0:
                             ppm_main = 0.0
                         ppm_for_dr = ppm_main
-                        if floor_exceeds_cap and max_ppm_cap > 0.0:
+                        if floor_filter_active and floor_exceeds_cap and max_ppm_cap > 0.0:
                             ppm_for_dr = min(ppm_for_dr, max_ppm_cap)
                         key = int(round(ppm_main / tol_ppm)) if tol_ppm > 0 else int(round(ppm_main))
                         if key in seen_ppm_keys:
@@ -4906,6 +5156,7 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = _max_dr_int(stn.get('max_dr'))
+            force_full_dra_grid = _exhaustive_pass and refined_retry
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
@@ -4918,18 +5169,19 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
+            floor_filter_active = floor_ppm_min > 0.0 and not force_full_dra_grid
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_main > 0:
                 dr_min, dr_max = 0, max_dr_main
-                if rng and 'dra_main' in rng:
+                if not force_full_dra_grid and rng and 'dra_main' in rng:
                     dr_min = max(0, rng['dra_main'][0])
                     dr_max = min(max_dr_main, rng['dra_main'][1])
-                if floor_perc_min_int > 0:
+                if not force_full_dra_grid and floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
-                if floor_dr_min_int > 0:
+                if not force_full_dra_grid and floor_dr_min_int > 0:
                     dr_min = max(dr_min, floor_dr_min_int)
                 min_step = dra_step if dra_step > 0 else 1
-                if floor_ppm_min > 0.0:
+                if not force_full_dra_grid and floor_ppm_min > 0.0:
                     if dr_min <= 0:
                         dr_min = max(dr_min, min_step)
                     if dr_min <= dr_max:
@@ -4952,9 +5204,9 @@ def solve_pipeline(
                 dra_vals = _allowed_values(dr_min, dr_max, dra_step)
                 if not dra_vals and dr_max >= 0:
                     dra_vals = [dr_max]
-                if narrow_ranges is not None and len(dra_vals) > REFINE_MAX_DRA_VALUES:
+                if not force_full_dra_grid and narrow_ranges is not None and len(dra_vals) > REFINE_MAX_DRA_VALUES:
                     dra_vals = _downsample_evenly(dra_vals, REFINE_MAX_DRA_VALUES)
-                if floor_ppm_min > 0.0 and not floor_limited_local and dra_vals:
+                if floor_filter_active and not floor_limited_local and dra_vals:
                     filtered_vals = []
                     for candidate in dra_vals:
                         if candidate <= 0:
@@ -4970,7 +5222,7 @@ def solve_pipeline(
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
-                    if floor_ppm_min > 0.0:
+                    if floor_filter_active:
                         if ppm_main <= 0.0 and not floor_exceeds_cap:
                             continue
                         if ppm_main < floor_ppm_min - floor_ppm_tol:
@@ -4984,7 +5236,7 @@ def solve_pipeline(
                     if ppm_main > 0.0 and kv > 0.0:
                         try:
                             ppm_for_dr = ppm_main
-                            if floor_exceeds_cap and max_ppm_cap > 0.0:
+                            if floor_filter_active and floor_exceeds_cap and max_ppm_cap > 0.0:
                                 ppm_for_dr = min(ppm_for_dr, max_ppm_cap)
                             dra_from_ppm = float(get_dr_for_ppm(kv, ppm_for_dr))
                         except Exception:
@@ -5064,6 +5316,8 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
+
+    total_length_km = cum_dist
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
     # bypass cases require recomputing the downstream flow profile.
@@ -5125,7 +5379,12 @@ def solve_pipeline(
         return queue_entries
 
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
+    queue_has_dra = any(ppm_val > 0.0 for _, ppm_val in initial_queue_entries)
+    if not queue_has_dra:
+        _SDH_HISTORY.clear()
     initial_reach = max(float(dra_reach_km), 0.0)
+    if total_length_km > 0.0:
+        initial_reach = min(initial_reach, total_length_km)
     if not initial_queue_entries and initial_reach > 0:
         initial_ppm = 0.0
         if linefill_state:
@@ -5232,14 +5491,6 @@ def solve_pipeline(
             if segment_floor_norm:
                 baseline_floor['segments'] = segment_floor_norm
 
-    if baseline_floor and baseline_floor.get('enforce_queue', True):
-        initial_queue = _ensure_queue_floor(
-            initial_queue,
-            baseline_floor.get('length_km', 0.0),
-            baseline_floor.get('dra_ppm', 0.0),
-            baseline_floor.get('segments'),
-        )
-
     states: dict[int, dict] = {
         init_residual: {
             'cost': 0.0,
@@ -5255,8 +5506,33 @@ def solve_pipeline(
             'queue_signature': _queue_signature(initial_queue),
         }
     }
+    state_audit_log: list[dict[str, object]] = []
+    total_candidates_checked = 0
+
+    def _pareto_prune_states(state_map: dict[object, dict]) -> dict[object, dict]:
+        """Drop states that are strictly dominated on residual vs cost."""
+
+        if not state_map:
+            return state_map
+        sorted_states = sorted(
+            state_map.items(),
+            key=lambda kv: (-float(kv[1].get('residual', 0.0)), float(kv[1].get('cost', float('inf')))),
+        )
+        best_cost_seen = float('inf')
+        pruned: dict[object, dict] = {}
+        for key, data in sorted_states:
+            cost_val = float(data.get('cost', float('inf')))
+            if data.get('protected'):
+                pruned[key] = data
+                best_cost_seen = min(best_cost_seen, cost_val)
+                continue
+            if cost_val < best_cost_seen - 1e-9:
+                pruned[key] = data
+                best_cost_seen = cost_val
+        return pruned
 
     for stn_data in station_opts:
+        station_evaluated = 0
         new_states: dict[object, dict] = {}
         best_by_residual: dict[int, list[object]] = {}
         protected_counter = 0
@@ -5759,6 +6035,13 @@ def solve_pipeline(
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
+                    sdh_display = sdh if stn_data['is_pump'] else state['residual']
+                    if stn_data['is_pump']:
+                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
+                        if prev_sdh is not None and queue_has_dra:
+                            sdh_display = min(sdh_display, prev_sdh)
+                        _SDH_HISTORY[stn_data['name']] = sdh_display
+
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
                         f"pipeline_flow_in_{stn_data['name']}": flow_total,
@@ -5767,10 +6050,8 @@ def solve_pipeline(
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
                         f"residual_head_{stn_data['name']}": state['residual'],
                         f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
-                        f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
-                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(
-                            sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']
-                        ),
+                        f"sdh_{stn_data['name']}": sdh_display,
+                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
@@ -6056,6 +6337,7 @@ def solve_pipeline(
                     if key_to_use is None:
                         continue
 
+                    station_evaluated += 1
                     entry = {
                         'cost': new_cost,
                         'residual': residual_next,
@@ -6085,6 +6367,13 @@ def solve_pipeline(
                             if key_to_use not in bucket_list:
                                 bucket_list.append(key_to_use)
 
+        new_states = _pareto_prune_states(new_states)
+        unique_after_pareto = len(new_states)
+        if new_states:
+            try:
+                best_cost_station = min(best_cost_station, min(data['cost'] for data in new_states.values()))
+            except Exception:
+                best_cost_station = best_cost_station
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         # After evaluating all options for this station retain only the
@@ -6098,7 +6387,10 @@ def solve_pipeline(
                 (key, data) for key, data in items if data.get('protected')
             ]
             exhaustive_top_k = max(state_top_k, int(state_top_k * 3))
-            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN)
+            relative_margin = 0.0
+            if best_cost_station < float('inf'):
+                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
+            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN, relative_margin)
             within_threshold: list[tuple[object, dict]] = [
                 (key, data)
                 for key, data in items
@@ -6140,7 +6432,10 @@ def solve_pipeline(
             protected_entries = [
                 (key, data) for key, data in items if data.get('protected')
             ]
-            threshold = best_cost_station + state_cost_margin
+            relative_margin = 0.0
+            if best_cost_station < float('inf'):
+                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
+            threshold = best_cost_station + max(state_cost_margin, relative_margin)
             pruned: dict[object, dict] = {}
             for key, data in protected_entries:
                 pruned[key] = data
@@ -6150,6 +6445,21 @@ def solve_pipeline(
                 if idx < state_top_k or data['cost'] <= threshold:
                     pruned[residual_key] = data
             states = pruned
+
+        if collect_state_audit:
+            audit_entry: dict[str, object] = {
+                'index': stn_data.get('idx', -1),
+                'name': stn_data.get('name', f"station_{len(state_audit_log) + 1}"),
+                'evaluated': station_evaluated,
+                'unique_after_pareto': unique_after_pareto,
+                'carried_forward': len(states),
+                'states': [
+                    _summarise_state_for_audit(data, stn_data.get('name', 'station'))
+                    for _key, data in sorted(states.items(), key=lambda kv: kv[1]['cost'])
+                ],
+            }
+            state_audit_log.append(audit_entry)
+            total_candidates_checked += station_evaluated
 
     # Pick lowest-cost end state and, among equal-cost candidates,
     # prefer the one whose terminal residual head is closest to the
@@ -6161,6 +6471,11 @@ def solve_pipeline(
         key=lambda x: (x['cost'], x['residual'] - term_req),
     )
     result: dict = {}
+    result['initial_dra_queue'] = [
+        {'length_km': float(length), 'dra_ppm': float(ppm)}
+        for length, ppm in initial_queue
+        if float(length) > 0.0
+    ]
     for rec in best_state['records']:
         result.update(rec)
 
@@ -6253,6 +6568,9 @@ def solve_pipeline(
 
     linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
     result['linefill'] = linefill_from_queue
+    if collect_state_audit:
+        result['state_audit'] = state_audit_log
+        result['state_audit_total_candidates'] = total_candidates_checked
     floor_summary: list[dict[str, float | str]] = []
     for key, value in result.items():
         if not key.startswith('floor_injection_applied_'):
@@ -6394,8 +6712,10 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
+    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
+    collect_state_audit: bool = False,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -6498,8 +6818,10 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
+                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
                 )
                 if result.get("error"):
                     continue

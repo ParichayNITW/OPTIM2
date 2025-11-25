@@ -51,6 +51,12 @@ if "search_state_top_k" not in st.session_state:
     st.session_state["search_state_top_k"] = 50
 if "search_state_cost_margin" not in st.session_state:
     st.session_state["search_state_cost_margin"] = 5000.0
+if "search_state_cost_margin_pct" not in st.session_state:
+    st.session_state["search_state_cost_margin_pct"] = 1.0
+if "search_collect_state_audit" not in st.session_state:
+    st.session_state["search_collect_state_audit"] = True
+if "show_dp_audit" not in st.session_state:
+    st.session_state["show_dp_audit"] = False
 if "baseline_input_mode" not in st.session_state:
     st.session_state["baseline_input_mode"] = "auto"
 if "baseline_input_mode_prev" not in st.session_state:
@@ -1550,6 +1556,7 @@ with st.sidebar:
         coarse_multiplier_default = 2.0
         state_top_k_default = 50
         state_cost_margin_default = 5000.0
+        state_cost_margin_pct_default = 1.0
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
@@ -1591,6 +1598,21 @@ with st.sidebar:
             value=float(st.session_state.get("search_state_cost_margin", state_cost_margin_default)),
             step=100.0,
             key="search_state_cost_margin",
+        )
+        st.number_input(
+            "DP cost margin (% of best)",
+            min_value=0.0,
+            value=float(st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)),
+            step=0.1,
+            format="%.1f",
+            key="search_state_cost_margin_pct",
+            help="Keeps any DP state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
+        )
+        st.checkbox(
+            "Capture DP candidate log (for raw output)",
+            value=bool(st.session_state.get("search_collect_state_audit", True)),
+            key="search_collect_state_audit",
+            help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing DP states, so overhead is minimal.",
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -2661,8 +2683,10 @@ def _append_zero_plan_segments_to_result(
         if head_ppm <= 0.0:
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
-        else:
-            queue_entries = [(zero_length, 0.0)] + queue_entries
+        elif zero_length > 1e-9:
+            # Preserve treated head segments by appending untreated plan slices
+            # to the back of the queue rather than prepending them.
+            queue_entries.append((zero_length, 0.0))
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -3755,13 +3779,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            outlet_ppm = 0.0
-            for length_val, ppm_val in reversed(profile_entries):
-                if float(ppm_val or 0.0) > 0.0:
-                    outlet_ppm = float(ppm_val)
-                    break
+            if profile_entries:
+                outlet_ppm = float(profile_entries[-1][1])
             else:
-                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
+                outlet_ppm = 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -3892,6 +3913,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -3922,12 +3944,24 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
+    state_cost_margin_pct = float(
+        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+        or state_cost_margin_pct_default
+    )
+    if state_cost_margin_pct < 0:
+        state_cost_margin_pct = 0.0
+    state_cost_margin_pct /= 100.0
+
+    collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
+
     return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
+        "state_cost_margin_pct": state_cost_margin_pct,
+        "collect_state_audit": collect_state_audit,
     }
 
 
@@ -4562,7 +4596,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
@@ -4627,17 +4661,15 @@ def _enforce_minimum_origin_dra(
         min_length = max(float(min_fraction) * float(total_length_km), 0.0)
     except (TypeError, ValueError):
         min_length = 0.0
-    if min_length <= 0.0:
-        min_length = 1.0
 
     try:
         total_length_value = float(total_length_km)
     except (TypeError, ValueError):
         total_length_value = 0.0
     if total_length_value > 0.0:
-        min_length = min(total_length_value, max(min_length, 1.0))
+        min_length = min(total_length_value, max(min_length, 0.0))
     else:
-        min_length = max(min_length, 1.0)
+        min_length = max(min_length, 0.0)
 
     segments_source = _collect_segment_floors(baseline_requirement, min_ppm=floor_ppm)
     segments_to_enforce = [dict(seg) for seg in segments_source]
@@ -5314,6 +5346,7 @@ def _execute_time_series_solver(
                 break
 
             backtracked = True
+            error_msg = None
             if detail_note:
                 backtrack_notes.append(detail_note)
             else:
@@ -6551,6 +6584,42 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     st.caption(
                         "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                     )
+
+            audit_log = res.get("state_audit") or []
+            if audit_log:
+                st.markdown("#### Candidate search log (cost-sorted)")
+                st.caption(
+                    "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun the solver."
+                )
+                col_audit = st.columns(2)
+                total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
+                col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
+                col_audit[1].metric("Stations logged", f"{len(audit_log)}")
+                toggle_cols = st.columns(2)
+                if toggle_cols[0].button("Show raw DP candidates", key="show_dp_audit_btn"):
+                    st.session_state["show_dp_audit"] = True
+                if st.session_state.get("show_dp_audit") and toggle_cols[1].button(
+                    "Hide raw DP candidates", key="hide_dp_audit_btn"
+                ):
+                    st.session_state["show_dp_audit"] = False
+                if st.session_state.get("show_dp_audit"):
+                    for entry in audit_log:
+                        station_name = entry.get("name", "Station")
+                        evaluated = int(entry.get("evaluated", 0) or 0)
+                        carried = int(entry.get("carried_forward", 0) or 0)
+                        unique_after = int(entry.get("unique_after_pareto", 0) or 0)
+                        st.markdown(
+                            f"**{station_name}** — checked {evaluated} candidates, {unique_after} unique after Pareto trim, {carried} carried forward."
+                        )
+                        candidates_df = pd.DataFrame(entry.get("states") or [])
+                        if not candidates_df.empty:
+                            st.dataframe(
+                                candidates_df.round(2),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                        else:
+                            st.caption("No candidates recorded for this station.")
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
