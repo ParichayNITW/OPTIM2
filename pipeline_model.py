@@ -6730,7 +6730,6 @@ def solve_pipeline_with_types(
             # Determine available counts for each type
             availA = stn['pump_types'].get('A', {}).get('available', 0)
             availB = stn['pump_types'].get('B', {}).get('available', 0)
-            combos = generate_type_combinations(availA, availB)
             seen_active: set[tuple[int, int]] = set()
             max_station_limit: int | None
             raw_max = stn.get('max_pumps')
@@ -6741,92 +6740,78 @@ def solve_pipeline_with_types(
             raw_min = stn.get('min_pumps')
             min_station_required = int(raw_min) if isinstance(raw_min, (int, float)) and raw_min > 0 else 0
             allow_mixed_types = _station_allows_mixed_pump_types(stn)
-            for numA, numB in combos:
-                total_units = numA + numB
-                if max_station_limit is not None and total_units > max_station_limit:
-                    continue
-                if not allow_mixed_types and numA > 0 and numB > 0:
-                    continue
-                pdataA = stn['pump_types'].get('A', {})
-                pdataB = stn['pump_types'].get('B', {})
-                for actA in range(numA + 1):
-                    for actB in range(numB + 1):
-                        total_active = actA + actB
-                        if max_station_limit is not None and total_active > max_station_limit:
-                            continue
-                        if total_active < min_station_required:
-                            continue
-                        if not allow_mixed_types and actA > 0 and actB > 0:
-                            continue
-                        active_key = (actA, actB)
-                        if active_key in seen_active:
-                            continue
-                        seen_active.add(active_key)
-                        unit = copy.deepcopy(stn)
-                        unit['pump_combo'] = {'A': availA, 'B': availB}
-                        unit['active_combo'] = {'A': actA, 'B': actB}
-                        if actA > 0 and actB == 0:
-                            pdata = pdataA
-                        elif actB > 0 and actA == 0:
-                            pdata = pdataB
-                        else:
-                            pdata = None
-                        if pdata is not None:
-                            for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
-                                unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
-                            unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
-                            unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
-                            unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
-                            unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
-                            unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
-                            unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
-                            unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                            unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
-                        else:
-                            min_map: dict[str, float] = {}
-                            dol_map: dict[str, float] = {}
-                            if actA > 0:
-                                min_map['A'] = _extract_rpm(
-                                    pdataA.get('MinRPM'),
-                                    default=_station_min_rpm(stn, ptype='A'),
-                                    prefer='min',
-                                )
-                                dol_map['A'] = _extract_rpm(
-                                    pdataA.get('DOL'),
-                                    default=_station_max_rpm(stn, ptype='A'),
-                                    prefer='max',
-                                )
-                            if actB > 0:
-                                min_map['B'] = _extract_rpm(
-                                    pdataB.get('MinRPM'),
-                                    default=_station_min_rpm(stn, ptype='B'),
-                                    prefer='min',
-                                )
-                                dol_map['B'] = _extract_rpm(
-                                    pdataB.get('DOL'),
-                                    default=_station_max_rpm(stn, ptype='B'),
-                                    prefer='max',
-                                )
-                            unit['MinRPM'] = min_map
-                            unit['DOL'] = dol_map
-                            unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
-                            unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
-                            unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
-                            unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
-                            unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                            unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
-                        unit['max_pumps'] = total_active
-                        unit['min_pumps'] = total_active
-                        expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
-
-            if min_station_required <= 0:
-                zero_key = (0, 0)
-                if zero_key not in seen_active:
+            pdataA = stn['pump_types'].get('A', {})
+            pdataB = stn['pump_types'].get('B', {})
+            for actA in range(availA + 1):
+                for actB in range(availB + 1):
+                    total_active = actA + actB
+                    if total_active <= 0 and min_station_required > 0:
+                        continue
+                    if max_station_limit is not None and total_active > max_station_limit:
+                        continue
+                    if total_active < min_station_required:
+                        continue
+                    if not allow_mixed_types and actA > 0 and actB > 0:
+                        continue
+                    active_key = (actA, actB)
+                    if active_key in seen_active:
+                        continue
+                    seen_active.add(active_key)
                     unit = copy.deepcopy(stn)
                     unit['pump_combo'] = {'A': availA, 'B': availB}
-                    unit['active_combo'] = {'A': 0, 'B': 0}
-                    unit['max_pumps'] = 0
-                    unit['min_pumps'] = 0
+                    unit['active_combo'] = {'A': actA, 'B': actB}
+                    if actA > 0 and actB == 0:
+                        pdata = pdataA
+                    elif actB > 0 and actA == 0:
+                        pdata = pdataB
+                    else:
+                        pdata = None
+                    if pdata is not None:
+                        for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
+                            unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
+                        unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
+                        unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
+                        unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
+                        unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
+                        unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
+                        unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
+                        unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                        unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
+                    else:
+                        min_map: dict[str, float] = {}
+                        dol_map: dict[str, float] = {}
+                        if actA > 0:
+                            min_map['A'] = _extract_rpm(
+                                pdataA.get('MinRPM'),
+                                default=_station_min_rpm(stn, ptype='A'),
+                                prefer='min',
+                            )
+                            dol_map['A'] = _extract_rpm(
+                                pdataA.get('DOL'),
+                                default=_station_max_rpm(stn, ptype='A'),
+                                prefer='max',
+                            )
+                        if actB > 0:
+                            min_map['B'] = _extract_rpm(
+                                pdataB.get('MinRPM'),
+                                default=_station_min_rpm(stn, ptype='B'),
+                                prefer='min',
+                            )
+                            dol_map['B'] = _extract_rpm(
+                                pdataB.get('DOL'),
+                                default=_station_max_rpm(stn, ptype='B'),
+                                prefer='max',
+                            )
+                        unit['MinRPM'] = min_map
+                        unit['DOL'] = dol_map
+                        unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
+                        unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
+                        unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
+                        unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
+                        unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                        unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
+                    unit['max_pumps'] = total_active
+                    unit['min_pumps'] = total_active
                     expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
         else:
             expand_all(
