@@ -126,16 +126,16 @@ def test_run_all_updates_passes_segment_slices(monkeypatch):
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 10000.0,
+                "Volume (m³)": 10000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": 15000.0,
+                "Volume (m³)": 15000.0,
                 "Viscosity (cSt)": 3.0,
-                "Density (kg/mÂ³)": 830.0,
+                "Density (kg/m³)": 830.0,
                 app.INIT_DRA_COL: 0.0,
             },
         ]
@@ -653,16 +653,16 @@ def test_maximum_flow_fallback_trims_day_plan(monkeypatch):
 
     plan_df = pd.DataFrame(
         [
-            {"Product": "A", "Volume (mÂ³)": 20000.0, "Viscosity (cSt)": 3.0, "Density (kg/mÂ³)": 810.0, app.INIT_DRA_COL: 0.0},
-            {"Product": "B", "Volume (mÂ³)": 30000.0, "Viscosity (cSt)": 4.0, "Density (kg/mÂ³)": 820.0, app.INIT_DRA_COL: 0.0},
-            {"Product": "C", "Volume (mÂ³)": 22000.0, "Viscosity (cSt)": 5.0, "Density (kg/mÂ³)": 830.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "A", "Volume (m³)": 20000.0, "Viscosity (cSt)": 3.0, "Density (kg/m³)": 810.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "B", "Volume (m³)": 30000.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "C", "Volume (m³)": 22000.0, "Viscosity (cSt)": 5.0, "Density (kg/m³)": 830.0, app.INIT_DRA_COL: 0.0},
         ]
     )
     plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
 
     vol_df = pd.DataFrame(
         [
-            {"Product": "LF", "Volume (mÂ³)": 50000.0, "Viscosity (cSt)": 2.0, "Density (kg/mÂ³)": 800.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "LF", "Volume (m³)": 50000.0, "Viscosity (cSt)": 2.0, "Density (kg/m³)": 800.0, app.INIT_DRA_COL: 0.0},
         ]
     )
     vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
@@ -727,8 +727,8 @@ def test_maximum_flow_fallback_trims_day_plan(monkeypatch):
 
     trimmed_plan = fallback["plan_df"]
     assert isinstance(trimmed_plan, pd.DataFrame)
-    assert trimmed_plan["Volume (mÂ³)"].sum() == pytest.approx(2950.0 * 24)
-    assert trimmed_plan.iloc[-1]["Volume (mÂ³)"] == pytest.approx(20800.0)
+    assert trimmed_plan["Volume (m³)"].sum() == pytest.approx(2950.0 * 24)
+    assert trimmed_plan.iloc[-1]["Volume (m³)"] == pytest.approx(20800.0)
 
 
 def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
@@ -736,8 +736,8 @@ def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
 
     plan_df = pd.DataFrame(
         [
-            {"Product": "A", "Volume (mÂ³)": 2400.0, "Viscosity (cSt)": 3.0, "Density (kg/mÂ³)": 810.0, app.INIT_DRA_COL: 0.0},
-            {"Product": "B", "Volume (mÂ³)": 2400.0, "Viscosity (cSt)": 4.0, "Density (kg/mÂ³)": 820.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "A", "Volume (m³)": 2400.0, "Viscosity (cSt)": 3.0, "Density (kg/m³)": 810.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "B", "Volume (m³)": 2400.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
         ]
     )
     plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
@@ -1046,9 +1046,9 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 12000.0,
+                "Volume (m³)": 12000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1170,9 +1170,9 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         [
             {
                 "Product": "Plan Batch",
-                "Volume (mÂ³)": 8000.0,
+                "Volume (m³)": 8000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1208,7 +1208,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
     enforced_ppm = float(enforced_detail.get("dra_ppm", 0.0) or 0.0)
     expected_treatable = app._estimate_treatable_length(
         total_length_km=sum(stn["L"] for stn in stations_base),
-        total_volume_m3=float(vol_df["Volume (mÂ³)"].sum()),
+        total_volume_m3=float(vol_df["Volume (m³)"].sum()),
         flow_m3_per_hour=500.0,
         hours=1.0,
     )
@@ -1236,7 +1236,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
         ppm_val = float(injection.get("dra_ppm", enforced_detail.get("dra_ppm", 0.0)) or 0.0)
         assert label in note_text
-        assert f"{vol_val:.0f} mÂ³" in note_text
+        assert f"{vol_val:.0f} m³" in note_text
         assert f"{ppm_val:.2f} ppm" in note_text
 
     ppm_floor = enforced_ppm
@@ -1276,7 +1276,7 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         vol_val = float(injection.get("volume_m3", 0.0) or 0.0)
         ppm_val = float(injection.get("dra_ppm", enforced_detail.get("dra_ppm", 0.0)) or 0.0)
         assert f"Scheduled {label}" in warning_text
-        assert f"{vol_val:.0f} mÂ³" in warning_text
+        assert f"{vol_val:.0f} m³" in warning_text
         assert f"{ppm_val:.2f} ppm" in warning_text
 
 
@@ -1287,23 +1287,23 @@ def test_enforce_minimum_origin_dra_updates_plan_split():
         [
             {
                 "Product": "Plan Batch 1",
-                "Volume (mÂ³)": 400.0,
+                "Volume (m³)": 400.0,
                 "Viscosity (cSt)": 2.4,
-                "Density (kg/mÂ³)": 818.0,
+                "Density (kg/m³)": 818.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Plan Batch 2",
-                "Volume (mÂ³)": 700.0,
+                "Volume (m³)": 700.0,
                 "Viscosity (cSt)": 2.8,
-                "Density (kg/mÂ³)": 822.0,
+                "Density (kg/m³)": 822.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Plan Batch 3",
-                "Volume (mÂ³)": 600.0,
+                "Volume (m³)": 600.0,
                 "Viscosity (cSt)": 3.0,
-                "Density (kg/mÂ³)": 825.0,
+                "Density (kg/m³)": 825.0,
                 app.INIT_DRA_COL: 0.0,
             },
         ]
@@ -1313,23 +1313,23 @@ def test_enforce_minimum_origin_dra_updates_plan_split():
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 3500.0,
+                "Volume (m³)": 3500.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": 3000.0,
+                "Volume (m³)": 3000.0,
                 "Viscosity (cSt)": 2.9,
-                "Density (kg/mÂ³)": 824.0,
+                "Density (kg/m³)": 824.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 3",
-                "Volume (mÂ³)": 2500.0,
+                "Volume (m³)": 2500.0,
                 "Viscosity (cSt)": 3.1,
-                "Density (kg/mÂ³)": 828.0,
+                "Density (kg/m³)": 828.0,
                 app.INIT_DRA_COL: 0.0,
             },
         ]
@@ -1354,7 +1354,7 @@ def test_enforce_minimum_origin_dra_updates_plan_split():
     enforced_plan = state["plan"]
     assert isinstance(enforced_plan, pd.DataFrame)
     assert len(enforced_plan) == 4
-    enforced_volumes = enforced_plan["Volume (mÂ³)"].tolist()
+    enforced_volumes = enforced_plan["Volume (m³)"].tolist()
     enforced_ppm = enforced_plan[app.INIT_DRA_COL].tolist()
     assert enforced_volumes[:2] == pytest.approx([400.0, 500.0])
     assert all(ppm >= 2.0 for ppm in enforced_ppm[:2])
@@ -1388,9 +1388,9 @@ def test_enforce_minimum_origin_dra_caps_length_by_flow():
         [
             {
                 "Product": "Plan Batch",
-                "Volume (mÂ³)": 1000.0,
+                "Volume (m³)": 1000.0,
                 "Viscosity (cSt)": 2.6,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1400,9 +1400,9 @@ def test_enforce_minimum_origin_dra_caps_length_by_flow():
         [
             {
                 "Product": "Batch",
-                "Volume (mÂ³)": 12000.0,
+                "Volume (m³)": 12000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1421,7 +1421,7 @@ def test_enforce_minimum_origin_dra_caps_length_by_flow():
     hours = 1.0
     treatable_expected = app._estimate_treatable_length(
         total_length_km=total_length,
-        total_volume_m3=float(vol_df["Volume (mÂ³)"].sum()),
+        total_volume_m3=float(vol_df["Volume (m³)"].sum()),
         flow_m3_per_hour=flow_rate,
         hours=hours,
     )
@@ -1457,9 +1457,9 @@ def test_enforce_minimum_origin_dra_uses_queue_volume_when_snapshot_missing():
         [
             {
                 "Product": "Plan Batch",
-                "Volume (mÂ³)": total_volume / 3.0,
+                "Volume (m³)": total_volume / 3.0,
                 "Viscosity (cSt)": 2.8,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1490,7 +1490,7 @@ def test_enforce_minimum_origin_dra_uses_queue_volume_when_snapshot_missing():
         flow_m3_per_hour=flow_rate,
         hours=1.0,
         queue_entries=queue,
-        plan_volume_m3=float(plan_df["Volume (mÂ³)"].sum()),
+        plan_volume_m3=float(plan_df["Volume (m³)"].sum()),
     )
 
     changed = app._enforce_minimum_origin_dra(
@@ -1518,7 +1518,7 @@ def test_enforce_minimum_origin_dra_requires_volume_column():
             {
                 "Product": "Plan Batch 1",
                 "Viscosity (cSt)": 2.4,
-                "Density (kg/mÂ³)": 818.0,
+                "Density (kg/m³)": 818.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1528,9 +1528,9 @@ def test_enforce_minimum_origin_dra_requires_volume_column():
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 3500.0,
+                "Volume (m³)": 3500.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1562,9 +1562,9 @@ def test_enforce_minimum_origin_dra_respects_baseline_requirement():
         [
             {
                 "Product": "Plan Batch",
-                "Volume (mÂ³)": 2000.0,
+                "Volume (m³)": 2000.0,
                 "Viscosity (cSt)": 2.7,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1611,12 +1611,12 @@ def test_enforce_minimum_origin_dra_preserves_segment_floors():
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 3000.0,
+                "Volume (m³)": 3000.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": 2500.0,
+                "Volume (m³)": 2500.0,
                 app.INIT_DRA_COL: 0.0,
             },
         ]
@@ -1626,7 +1626,7 @@ def test_enforce_minimum_origin_dra_preserves_segment_floors():
         [
             {
                 "Product": "Linefill 1",
-                "Volume (mÂ³)": 5000.0,
+                "Volume (m³)": 5000.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -1889,13 +1889,13 @@ def test_compute_minimum_lacing_requirement_respects_single_type_series():
                     "DOL": 3000,
                     "MinRPM": 3000,
                     "head_data": [
-                        {"Flow (mÂ³/hr)": 0.0, "Head (m)": 120.0},
-                        {"Flow (mÂ³/hr)": 500.0, "Head (m)": 110.0},
-                        {"Flow (mÂ³/hr)": 1000.0, "Head (m)": 100.0},
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 120.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 110.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 100.0},
                     ],
                     "eff_data": [
-                        {"Flow (mÂ³/hr)": 0.0, "Efficiency (%)": 0.0},
-                        {"Flow (mÂ³/hr)": 1000.0, "Efficiency (%)": 80.0},
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 80.0},
                     ],
                 },
                 "B": {
@@ -1903,13 +1903,13 @@ def test_compute_minimum_lacing_requirement_respects_single_type_series():
                     "DOL": 3000,
                     "MinRPM": 3000,
                     "head_data": [
-                        {"Flow (mÂ³/hr)": 0.0, "Head (m)": 220.0},
-                        {"Flow (mÂ³/hr)": 500.0, "Head (m)": 210.0},
-                        {"Flow (mÂ³/hr)": 1000.0, "Head (m)": 200.0},
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 210.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
                     ],
                     "eff_data": [
-                        {"Flow (mÂ³/hr)": 0.0, "Efficiency (%)": 0.0},
-                        {"Flow (mÂ³/hr)": 1000.0, "Efficiency (%)": 80.0},
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 0.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 80.0},
                     ],
                 },
             },
@@ -1958,26 +1958,26 @@ def test_compute_minimum_lacing_requirement_matches_sample_case():
     import pipeline_model as model
 
     paradip_head = [
-        {"Flow (mÂ³/hr)": 0.0, "Head (m)": 401.43},
-        {"Flow (mÂ³/hr)": 500.88, "Head (m)": 412.86},
-        {"Flow (mÂ³/hr)": 1007.64, "Head (m)": 409.96},
-        {"Flow (mÂ³/hr)": 1503.24, "Head (m)": 396.29},
-        {"Flow (mÂ³/hr)": 1998.88, "Head (m)": 379.03},
-        {"Flow (mÂ³/hr)": 2497.51, "Head (m)": 351.03},
-        {"Flow (mÂ³/hr)": 2999.07, "Head (m)": 315.86},
-        {"Flow (mÂ³/hr)": 3169.14, "Head (m)": 299.96},
-        {"Flow (mÂ³/hr)": 3336.36, "Head (m)": 285.85},
+        {"Flow (m³/hr)": 0.0, "Head (m)": 401.43},
+        {"Flow (m³/hr)": 500.88, "Head (m)": 412.86},
+        {"Flow (m³/hr)": 1007.64, "Head (m)": 409.96},
+        {"Flow (m³/hr)": 1503.24, "Head (m)": 396.29},
+        {"Flow (m³/hr)": 1998.88, "Head (m)": 379.03},
+        {"Flow (m³/hr)": 2497.51, "Head (m)": 351.03},
+        {"Flow (m³/hr)": 2999.07, "Head (m)": 315.86},
+        {"Flow (m³/hr)": 3169.14, "Head (m)": 299.96},
+        {"Flow (m³/hr)": 3336.36, "Head (m)": 285.85},
     ]
 
     balasore_head = [
-        {"Flow (mÂ³/hr)": 0.0, "Head (m)": 450.0},
-        {"Flow (mÂ³/hr)": 500.0, "Head (m)": 450.0},
-        {"Flow (mÂ³/hr)": 1000.0, "Head (m)": 450.0},
-        {"Flow (mÂ³/hr)": 1500.0, "Head (m)": 440.0},
-        {"Flow (mÂ³/hr)": 2000.0, "Head (m)": 420.0},
-        {"Flow (mÂ³/hr)": 2500.0, "Head (m)": 400.0},
-        {"Flow (mÂ³/hr)": 3000.0, "Head (m)": 360.0},
-        {"Flow (mÂ³/hr)": 3500.0, "Head (m)": 315.0},
+        {"Flow (m³/hr)": 0.0, "Head (m)": 450.0},
+        {"Flow (m³/hr)": 500.0, "Head (m)": 450.0},
+        {"Flow (m³/hr)": 1000.0, "Head (m)": 450.0},
+        {"Flow (m³/hr)": 1500.0, "Head (m)": 440.0},
+        {"Flow (m³/hr)": 2000.0, "Head (m)": 420.0},
+        {"Flow (m³/hr)": 2500.0, "Head (m)": 400.0},
+        {"Flow (m³/hr)": 3000.0, "Head (m)": 360.0},
+        {"Flow (m³/hr)": 3500.0, "Head (m)": 315.0},
     ]
 
     stations = [
@@ -2164,9 +2164,9 @@ def test_shift_vol_linefill_reports_injected_batches():
         [
             {
                 "Product": "In-Line",
-                "Volume (mÂ³)": 4000.0,
+                "Volume (m³)": 4000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -2177,16 +2177,16 @@ def test_shift_vol_linefill_reports_injected_batches():
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 2000.0,
+                "Volume (m³)": 2000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 4.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": 1500.0,
+                "Volume (m³)": 1500.0,
                 "Viscosity (cSt)": 3.0,
-                "Density (kg/mÂ³)": 830.0,
+                "Density (kg/m³)": 830.0,
                 app.INIT_DRA_COL: 1.5,
             },
         ]
@@ -2198,7 +2198,7 @@ def test_shift_vol_linefill_reports_injected_batches():
 
     assert updated_vol.iloc[0][app.INIT_DRA_COL] == pytest.approx(1.5)
     assert updated_vol.iloc[1][app.INIT_DRA_COL] == pytest.approx(4.0)
-    assert remaining_plan.iloc[0]["Volume (mÂ³)"] == pytest.approx(500.0)
+    assert remaining_plan.iloc[0]["Volume (m³)"] == pytest.approx(500.0)
     assert injected
     assert sum(entry["volume"] for entry in injected) == pytest.approx(pumped)
     ppm_order = [entry["dra_ppm"] for entry in injected]
@@ -2225,9 +2225,9 @@ def test_time_series_solver_reports_error_without_plan(monkeypatch):
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 8000.0,
+                "Volume (m³)": 8000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -2337,9 +2337,9 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 6000.0,
+                "Volume (m³)": 6000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -2428,9 +2428,9 @@ def test_time_series_solver_enforces_when_head_untreated(monkeypatch):
         [
             {
                 "Product": "Plan Batch 1",
-                "Volume (mÂ³)": 5000.0,
+                "Volume (m³)": 5000.0,
                 "Viscosity (cSt)": 2.3,
-                "Density (kg/mÂ³)": 818.0,
+                "Density (kg/m³)": 818.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -2494,9 +2494,9 @@ def test_time_series_solver_propagates_plan_dra_into_queue(monkeypatch):
         [
             {
                 "Product": "LF",
-                "Volume (mÂ³)": 5000.0,
+                "Volume (m³)": 5000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -2509,9 +2509,9 @@ def test_time_series_solver_propagates_plan_dra_into_queue(monkeypatch):
         [
             {
                 "Product": "Plan Batch",
-                "Volume (mÂ³)": 5000.0,
+                "Volume (m³)": 5000.0,
                 "Viscosity (cSt)": 2.0,
-                "Density (kg/mÂ³)": 815.0,
+                "Density (kg/m³)": 815.0,
                 app.INIT_DRA_COL: 6.5,
             }
         ]
@@ -2620,9 +2620,9 @@ def test_time_series_solver_extends_zero_plan_injections(monkeypatch):
         [
             {
                 "Product": "LF",
-                "Volume (mÂ³)": 1200.0,
+                "Volume (m³)": 1200.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 4.0,
             }
         ]
@@ -2635,9 +2635,9 @@ def test_time_series_solver_extends_zero_plan_injections(monkeypatch):
         [
             {
                 "Product": "Untreated Batch",
-                "Volume (mÂ³)": 800.0,
+                "Volume (m³)": 800.0,
                 "Viscosity (cSt)": 2.3,
-                "Density (kg/mÂ³)": 818.0,
+                "Density (kg/m³)": 818.0,
                 app.INIT_DRA_COL: 0.0,
             }
         ]
@@ -2710,15 +2710,15 @@ def test_kv_rho_from_vol_returns_segment_slices() -> None:
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 8000.0,
+                "Volume (m³)": 8000.0,
                 "Viscosity (cSt)": 2.0,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": 9000.0,
+                "Volume (m³)": 9000.0,
                 "Viscosity (cSt)": 3.5,
-                "Density (kg/mÂ³)": 835.0,
+                "Density (kg/m³)": 835.0,
             },
         ]
     )
@@ -2768,15 +2768,15 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 9000.0,
+                "Volume (m³)": 9000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 822.0,
+                "Density (kg/m³)": 822.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": 7000.0,
+                "Volume (m³)": 7000.0,
                 "Viscosity (cSt)": 3.2,
-                "Density (kg/mÂ³)": 830.0,
+                "Density (kg/m³)": 830.0,
             },
         ]
     )
@@ -2784,15 +2784,15 @@ def test_scheduler_solver_receives_segment_slices(monkeypatch, mode):
         [
             {
                 "Product": "New Batch",
-                "Volume (mÂ³)": 5000.0,
+                "Volume (m³)": 5000.0,
                 "Viscosity (cSt)": 4.0,
-                "Density (kg/mÂ³)": 840.0,
+                "Density (kg/m³)": 840.0,
             },
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 6000.0,
+                "Volume (m³)": 6000.0,
                 "Viscosity (cSt)": 2.5,
-                "Density (kg/mÂ³)": 822.0,
+                "Density (kg/m³)": 822.0,
             },
         ]
     )
@@ -2897,9 +2897,9 @@ def test_merge_segment_profiles_preserves_heterogeneity():
             rows.append(
                 {
                     "Product": f"{prefix} Batch {idx}",
-                    "Volume (mÂ³)": volume_m3,
+                    "Volume (m³)": volume_m3,
                     "Viscosity (cSt)": kv,
-                    "Density (kg/mÂ³)": rho,
+                    "Density (kg/m³)": rho,
                 }
             )
         return pd.DataFrame(rows)
@@ -3108,23 +3108,23 @@ def test_daily_time_series_solver_finishes_within_budget() -> None:
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": _vol(50.0),
+                "Volume (m³)": _vol(50.0),
                 "Viscosity (cSt)": 2.3,
-                "Density (kg/mÂ³)": 816.0,
+                "Density (kg/m³)": 816.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 2",
-                "Volume (mÂ³)": _vol(30.0),
+                "Volume (m³)": _vol(30.0),
                 "Viscosity (cSt)": 2.9,
-                "Density (kg/mÂ³)": 824.0,
+                "Density (kg/m³)": 824.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Batch 3",
-                "Volume (mÂ³)": _vol(20.0),
+                "Volume (m³)": _vol(20.0),
                 "Viscosity (cSt)": 3.2,
-                "Density (kg/mÂ³)": 829.0,
+                "Density (kg/m³)": 829.0,
                 app.INIT_DRA_COL: 0.0,
             },
         ]
@@ -3143,23 +3143,23 @@ def test_daily_time_series_solver_finishes_within_budget() -> None:
         [
             {
                 "Product": "Plan Batch 1",
-                "Volume (mÂ³)": _vol(30.0),
+                "Volume (m³)": _vol(30.0),
                 "Viscosity (cSt)": 2.1,
-                "Density (kg/mÂ³)": 814.0,
+                "Density (kg/m³)": 814.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Plan Batch 2",
-                "Volume (mÂ³)": _vol(35.0),
+                "Volume (m³)": _vol(35.0),
                 "Viscosity (cSt)": 2.7,
-                "Density (kg/mÂ³)": 822.0,
+                "Density (kg/m³)": 822.0,
                 app.INIT_DRA_COL: 0.0,
             },
             {
                 "Product": "Plan Batch 3",
-                "Volume (mÂ³)": _vol(35.0),
+                "Volume (m³)": _vol(35.0),
                 "Viscosity (cSt)": 3.0,
-                "Density (kg/mÂ³)": 827.0,
+                "Density (kg/m³)": 827.0,
                 app.INIT_DRA_COL: 0.0,
             },
         ]
@@ -4964,9 +4964,9 @@ def test_time_series_solver_uses_cached_baseline(monkeypatch):
         [
             {
                 "Product": "Batch 1",
-                "Volume (mÂ³)": 8000.0,
+                "Volume (m³)": 8000.0,
                 "Viscosity (cSt)": 5.0,
-                "Density (kg/mÂ³)": 820.0,
+                "Density (kg/m³)": 820.0,
                 app.INIT_DRA_COL: 2.0,
             }
         ]
