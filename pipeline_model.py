@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Mapping, Sequence
-from functools import lru_cache
 from itertools import product
 import math
 
@@ -135,28 +134,6 @@ def _max_dr_int(value, *, fallback: float | None = None) -> int:
     """Return the integer drag-reduction cap for optimisation loops."""
 
     return int(_normalise_max_dr(value, fallback=fallback))
-
-
-def _cap_ppm(ppm: float) -> float:
-    """Clamp a PPM value to the configured ceiling."""
-
-    if ppm <= 0.0:
-        return 0.0
-    return float(min(ppm, DRA_PPM_CEILING))
-
-
-def _dr_limit_from_ppm(visc: float, ppm: float) -> int | None:
-    """Return the maximum %DR corresponding to a PPM ceiling for ``visc``."""
-
-    if visc <= 0.0 or ppm <= 0.0:
-        return None
-    try:
-        dr_val = float(get_dr_for_ppm(visc, ppm))
-    except Exception:
-        return None
-    if dr_val <= 0.0:
-        return None
-    return int(math.ceil(dr_val))
 
 
 def _extract_rpm(
@@ -426,7 +403,6 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 25
 DRA_STEP = 2
-DRA_PPM_CEILING = 12.0
 MAX_DRA_KM = 250.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
@@ -444,47 +420,26 @@ V_MIN = 0.5
 V_MAX = 2.5
 
 # Limit the number of dynamic-programming states carried forward after
-# each station.  ``STATE_COST_MARGIN_PCT`` keeps any state within this percent
-# of the best to avoid losing near-ties on expensive scenarios. ``STATE_TOP_K``
-# bounds the total states retained while ``STATE_COST_MARGIN`` allows keeping
-# any state whose cost lies within this many currency units of the best state
-# for the current station.
+# each station.  ``STATE_TOP_K`` bounds the total states retained while
+# ``STATE_COST_MARGIN`` allows keeping any state whose cost lies within
+# this many currency units of the best state for the current station.
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
-STATE_COST_MARGIN_PCT = 0.01
 # Limit refinement passes to a smaller state budget so the narrowed search
 # completes quickly even when invoked repeatedly (e.g. within scheduling
 # loops).  The coarse and exhaustive passes retain the broader defaults.
 REFINE_STATE_TOP_K = 30
 REFINE_STATE_COST_MARGIN = 2000.0
 REFINE_MAX_DRA_VALUES = 15
-# Allow a limited number of materially different DRA queues to coexist inside
-# the same residual bucket during dynamic programming.  Each additional variant
-# represents a meaningfully higher chemical commitment that may be required to
-# keep downstream hours feasible even if it costs more than the cheapest state
-# with the same residual head.
-STATE_MAX_BUCKET_VARIANTS = 3
-# Tolerances used when comparing DRA queue signatures.  Differences smaller than
-# these thresholds are treated as equivalent so we do not explode the search
-# space with near-identical queues.
-DRA_SIGNATURE_LEN_TOL = 0.1  # km
-DRA_SIGNATURE_PPM_TOL = 0.5  # ppm
 
-@lru_cache(maxsize=2048)
-def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
-    """Return the inclusive integer grid between ``min_val`` and ``max_val``.
-
-    Results are memoised so repeated lookups with the same bounds and step size
-    reuse a shared tuple instead of allocating a fresh list every time.  The
-    grid keeps the lower bound even when the step is enlarged so that "no
-    chemical" or minimum-speed options remain available during coarse passes.
-    """
+def _allowed_values(min_val: int, max_val: int, step: int) -> list[int]:
+    """Return the inclusive integer grid between ``min_val`` and ``max_val``."""
 
     if min_val > max_val:
         # ``min_val`` can legitimately exceed ``max_val`` when a caller narrows the
         # window to a single point (e.g. zero DRA enforced by a floor).  Always
         # return the lone value so downstream loops still evaluate the candidate.
-        return (min_val,)
+        return [min_val]
 
     # ``range`` already includes the lower bound.  Keeping the left edge in the
     # grid is important for cases where the minimum allows 0 ppm; the coarse pass
@@ -493,7 +448,7 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
     vals = list(range(min_val, max_val + 1, step))
     if vals[-1] != max_val:
         vals.append(max_val)
-    return tuple(vals)
+    return vals
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
@@ -576,10 +531,6 @@ _QUEUE_CONSUMPTION_CACHE: dict[
     tuple,
     tuple[float, tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]],
 ] = {}
-
-# Preserve the most recent SDH value per station so repeated solves with a
-# slowly decaying DRA slug cannot report increasing heads.
-_SDH_HISTORY: dict[str, float] = {}
 
 
 def _prepare_dra_queue_consumption(
@@ -1048,42 +999,6 @@ def _queue_total_length(
     return total
 
 
-def _queue_signature(
-    queue_entries: list[tuple[float, float]] | tuple[tuple[float, float], ...] | None,
-) -> tuple[float, float, float]:
-    """Return a coarse signature capturing the chemical commitment of a queue."""
-
-    if not queue_entries:
-        return (0.0, 0.0, 0.0)
-
-    total_positive = 0.0
-    head_ppm = 0.0
-    max_ppm = 0.0
-    head_found = False
-    for length, ppm in queue_entries:
-        try:
-            length_val = float(length or 0.0)
-        except (TypeError, ValueError):
-            length_val = 0.0
-        try:
-            ppm_val = float(ppm or 0.0)
-        except (TypeError, ValueError):
-            ppm_val = 0.0
-        if not head_found and length_val > 0:
-            head_ppm = ppm_val
-            head_found = True
-        if ppm_val > 0.0 and length_val > 0.0:
-            total_positive += length_val
-            if ppm_val > max_ppm:
-                max_ppm = ppm_val
-
-    return (
-        round(total_positive, 3),
-        round(head_ppm, 2),
-        round(max_ppm, 2),
-    )
-
-
 def _queue_leading_zero_length(
     queue_entries: list[dict] | list[tuple] | tuple | None,
 ) -> float:
@@ -1390,7 +1305,7 @@ def _predict_effective_injection(
     injector_pos = str(injector_position or "").lower()
     apply_injection_shear = pump_running and injector_pos == "upstream"
     if not pump_running or not apply_injection_shear:
-        return _cap_ppm(max(inj_requested, 0.0))
+        return max(inj_requested, 0.0)
 
     inj_dr = 0.0
     if kv_val > 0.0:
@@ -1404,17 +1319,17 @@ def _predict_effective_injection(
         if dr_use <= 0.0:
             return 0.0
         try:
-            return _cap_ppm(float(get_ppm_for_dr(kv_val, dr_use)))
+            return float(get_ppm_for_dr(kv_val, dr_use))
         except Exception:
             multiplier = 1.0 - shear if shear > 0 else 1.0
             if multiplier < 0.0:
                 multiplier = 0.0
-            return _cap_ppm(inj_requested * multiplier)
+            return inj_requested * multiplier
 
     multiplier = 1.0 - shear if shear > 0 else 1.0
     if multiplier < 0.0:
         multiplier = 0.0
-    return _cap_ppm(inj_requested * multiplier)
+    return inj_requested * multiplier
 
 
 def _update_mainline_dra(
@@ -1538,7 +1453,7 @@ def _update_mainline_dra(
         except (TypeError, ValueError):
             floor_length = 0.0
         try:
-            floor_ppm = _cap_ppm(float(segment_floor.get('dra_ppm', 0.0) or 0.0))
+            floor_ppm = float(segment_floor.get('dra_ppm', 0.0) or 0.0)
         except (TypeError, ValueError):
             floor_ppm = 0.0
         if floor_ppm <= 0.0:
@@ -1548,7 +1463,7 @@ def _update_mainline_dra(
                 floor_perc = 0.0
             if floor_perc > 0.0 and kv > 0.0:
                 try:
-                    floor_ppm = _cap_ppm(float(get_ppm_for_dr(kv, floor_perc)))
+                    floor_ppm = float(get_ppm_for_dr(kv, floor_perc))
                 except Exception:
                     floor_ppm = 0.0
         seg_floor_raw = segment_floor.get('segments')
@@ -1561,7 +1476,7 @@ def _update_mainline_dra(
                 except (TypeError, ValueError):
                     seg_length = 0.0
                 try:
-                    seg_ppm = _cap_ppm(float(seg_entry.get('dra_ppm', 0.0) or 0.0))
+                    seg_ppm = float(seg_entry.get('dra_ppm', 0.0) or 0.0)
                 except (TypeError, ValueError):
                     seg_ppm = 0.0
                 if seg_ppm <= 0.0:
@@ -1571,7 +1486,7 @@ def _update_mainline_dra(
                         seg_perc = 0.0
                     if seg_perc > 0.0 and kv > 0.0:
                         try:
-                            seg_ppm = _cap_ppm(float(get_ppm_for_dr(kv, seg_perc)))
+                            seg_ppm = float(get_ppm_for_dr(kv, seg_perc))
                         except Exception:
                             seg_ppm = 0.0
                 if seg_length <= 0.0 or seg_ppm <= 0.0:
@@ -1584,7 +1499,7 @@ def _update_mainline_dra(
         if floor_ppm < 0.0:
             floor_ppm = 0.0
 
-    inj_requested = _cap_ppm(max(float(inj_ppm_main or 0.0), 0.0))
+    inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
     if inj_requested > 0:
         if not pump_running or not apply_injection_shear:
@@ -1602,16 +1517,16 @@ def _update_mainline_dra(
                     dr_use = 0.0
                 if dr_use > 0:
                     try:
-                        inj_effective = _cap_ppm(float(get_ppm_for_dr(kv, dr_use)))
+                        inj_effective = float(get_ppm_for_dr(kv, dr_use))
                     except Exception:
-                        inj_effective = _cap_ppm(inj_requested * (1.0 - shear if shear > 0 else 1.0))
+                        inj_effective = inj_requested * (1.0 - shear if shear > 0 else 1.0)
                 else:
                     inj_effective = 0.0
             else:
                 multiplier = 1.0 - shear if shear > 0 else 1.0
                 if multiplier < 0.0:
                     multiplier = 0.0
-                inj_effective = _cap_ppm(inj_requested * multiplier)
+                inj_effective = inj_requested * multiplier
 
     existing_queue: list[tuple[float, float]] = []
     if queue:
@@ -1703,7 +1618,7 @@ def _update_mainline_dra(
         if ppm_float <= 0.0:
             return 0.0
         if not pump_running or shear_existing <= 0.0:
-            return _cap_ppm(ppm_float)
+            return ppm_float
         dr_value = 0.0
         if kv > 0:
             try:
@@ -1715,10 +1630,10 @@ def _update_mainline_dra(
             if dr_value <= 0.0:
                 return 0.0
             try:
-                return _cap_ppm(float(get_ppm_for_dr(kv, dr_value)))
+                return float(get_ppm_for_dr(kv, dr_value))
             except Exception:
-                return _cap_ppm(max(ppm_float * (1.0 - shear_existing), 0.0))
-        return _cap_ppm(max(ppm_float * (1.0 - shear_existing), 0.0))
+                return max(ppm_float * (1.0 - shear_existing), 0.0)
+        return max(ppm_float * (1.0 - shear_existing), 0.0)
 
     pumped_adjusted: list[tuple[float, float]] = []
     pumped_differs = False
@@ -1741,7 +1656,7 @@ def _update_mainline_dra(
                 ppm_out += inj_effective
             elif not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
-        ppm_out = _cap_ppm(max(ppm_out, 0.0))
+        ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
         pumped_adjusted.append((length_float, ppm_out))
@@ -2494,7 +2409,7 @@ def compute_minimum_lacing_requirement(
 
             try:
                 dra_ppm_needed = (
-                    _cap_ppm(float(get_ppm_for_dr(visc_max, dr_needed)))
+                    float(get_ppm_for_dr(visc_max, dr_needed))
                     if dr_needed > 0
                     else 0.0
                 )
@@ -3544,7 +3459,6 @@ def solve_pipeline(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
-    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     _exhaustive_pass: bool = False,
     refined_retry: bool = False,
     pass_trace: list[str] | None = None,
@@ -3613,13 +3527,6 @@ def solve_pipeline(
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
     try:
-        state_cost_margin_pct = float(state_cost_margin_pct)
-    except (TypeError, ValueError):
-        state_cost_margin_pct = STATE_COST_MARGIN_PCT
-    if state_cost_margin_pct < 0.0:
-        state_cost_margin_pct = 0.0
-
-    try:
         rpm_step = int(rpm_step)
     except (TypeError, ValueError):
         rpm_step = RPM_STEP
@@ -3653,12 +3560,6 @@ def solve_pipeline(
         state_cost_margin = STATE_COST_MARGIN
     if state_cost_margin < 0:
         state_cost_margin = 0.0
-    try:
-        state_cost_margin_pct = float(state_cost_margin_pct)
-    except (TypeError, ValueError):
-        state_cost_margin_pct = STATE_COST_MARGIN_PCT
-    if state_cost_margin_pct < 0.0:
-        state_cost_margin_pct = 0.0
 
     if segment_slices is None:
         segment_slices = [[] for _ in stations]
@@ -3758,7 +3659,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
@@ -3823,7 +3723,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
@@ -4033,7 +3932,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                state_cost_margin_pct=state_cost_margin_pct,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
             )
@@ -4071,7 +3969,6 @@ def solve_pipeline(
                 coarse_multiplier=coarse_multiplier,
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
-                state_cost_margin_pct=state_cost_margin_pct,
                 _exhaustive_pass=True,
                 refined_retry=coarse_failed,
                 pass_trace=None,
@@ -4323,7 +4220,6 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
-                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
@@ -4334,13 +4230,6 @@ def solve_pipeline(
             floor_ranges: dict[int, dict[str, tuple[int, int]]] = {}
             for idx, stn in enumerate(stations):
                 max_dr_main = _max_dr_int(stn.get("max_dr"))
-                if idx < len(KV_list):
-                    try:
-                        dr_cap = _dr_limit_from_ppm(float(KV_list[idx] or 0.0), DRA_PPM_CEILING)
-                    except Exception:
-                        dr_cap = None
-                    if dr_cap is not None:
-                        max_dr_main = min(max_dr_main, dr_cap)
                 if max_dr_main < 0:
                     max_dr_main = 0
                 kv_val = 0.0
@@ -4354,7 +4243,7 @@ def solve_pipeline(
                 floor_entry = segment_floor_lookup.get(idx)
                 if isinstance(floor_entry, Mapping):
                     try:
-                        floor_ppm = max(floor_ppm, _cap_ppm(float(floor_entry.get("dra_ppm", 0.0) or 0.0)))
+                        floor_ppm = max(floor_ppm, float(floor_entry.get("dra_ppm", 0.0) or 0.0))
                     except (TypeError, ValueError):
                         floor_ppm = max(floor_ppm, 0.0)
                     try:
@@ -4364,8 +4253,7 @@ def solve_pipeline(
                 if idx == 0 and isinstance(forced_origin_detail, Mapping):
                     try:
                         floor_ppm = max(
-                            floor_ppm,
-                            _cap_ppm(float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)),
+                            floor_ppm, float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)
                         )
                     except (TypeError, ValueError):
                         floor_ppm = max(floor_ppm, 0.0)
@@ -4382,7 +4270,7 @@ def solve_pipeline(
                         floor_perc = 0.0
                 elif floor_perc > 0.0 and floor_ppm <= 0.0 and kv_val > 0.0:
                     try:
-                        floor_ppm = _cap_ppm(float(get_ppm_for_dr(kv_val, floor_perc)))
+                        floor_ppm = float(get_ppm_for_dr(kv_val, floor_perc))
                     except Exception:
                         floor_ppm = 0.0
                 floor_dr = 0
@@ -4429,7 +4317,6 @@ def solve_pipeline(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
-                    state_cost_margin_pct=state_cost_margin_pct,
                     refined_retry=True,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
@@ -4625,11 +4512,10 @@ def solve_pipeline(
             floor_perc_raw = 0.0
         if floor_ppm_raw < 0.0:
             floor_ppm_raw = 0.0
-        floor_ppm_raw = _cap_ppm(floor_ppm_raw)
         if kv > 0.0:
             if floor_perc_raw > 0.0 and floor_ppm_raw <= 0.0:
                 try:
-                    floor_ppm_raw = _cap_ppm(float(get_ppm_for_dr(kv, floor_perc_raw)))
+                    floor_ppm_raw = float(get_ppm_for_dr(kv, floor_perc_raw))
                 except Exception:
                     floor_ppm_raw = max(floor_ppm_raw, 0.0)
             elif floor_ppm_raw > 0.0 and floor_perc_raw <= 0.0:
@@ -4649,10 +4535,10 @@ def solve_pipeline(
                 floor_perc_min = float(math.ceil(perc_from_ppm))
         if floor_perc_min < 0.0:
             floor_perc_min = 0.0
-        floor_ppm_min = _cap_ppm(floor_ppm_raw) if floor_ppm_raw > 0.0 else 0.0
+        floor_ppm_min = floor_ppm_raw if floor_ppm_raw > 0.0 else 0.0
         if floor_perc_min > 0.0 and kv > 0.0:
             try:
-                floor_ppm_from_min = _cap_ppm(float(get_ppm_for_dr(kv, floor_perc_min)))
+                floor_ppm_from_min = float(get_ppm_for_dr(kv, floor_perc_min))
             except Exception:
                 floor_ppm_from_min = 0.0
             if floor_ppm_from_min > floor_ppm_min:
@@ -4738,13 +4624,10 @@ def solve_pipeline(
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = _max_dr_int(stn.get('max_dr'))
-            dr_cap = _dr_limit_from_ppm(kv, DRA_PPM_CEILING)
-            if dr_cap is not None:
-                max_dr_main = min(max_dr_main, dr_cap)
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
-                    max_ppm_cap = _cap_ppm(float(get_ppm_for_dr(kv, max_dr_main)))
+                    max_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
                 except Exception:
                     max_ppm_cap = 0.0
             floor_limited_local = bool(floor_limited)
@@ -4753,14 +4636,11 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
-            dra_grid_min = 0
-            dra_grid_max = max_dr_main
             if fixed_dr is not None:
                 fixed_val = int(round(fixed_dr))
                 if floor_perc_min_int > 0:
                     fixed_val = max(fixed_val, floor_perc_min_int)
                 dra_main_vals = [fixed_val]
-                dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_main
                 if rng and 'dra_main' in rng:
@@ -4780,7 +4660,7 @@ def solve_pipeline(
                         candidate = dr_min
                         while candidate <= dr_max:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate >= floor_ppm_min - ppm_tol:
@@ -4806,7 +4686,7 @@ def solve_pipeline(
                             continue
                         if kv > 0.0:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate < floor_ppm_min - floor_ppm_tol:
@@ -4814,10 +4694,6 @@ def solve_pipeline(
                         filtered_vals.append(candidate)
                     dra_main_vals = filtered_vals
             max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
-            if loop_dict:
-                dr_cap_loop = _dr_limit_from_ppm(kv, DRA_PPM_CEILING)
-                if dr_cap_loop is not None:
-                    max_dr_loop = min(max_dr_loop, dr_cap_loop)
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
@@ -4853,7 +4729,7 @@ def solve_pipeline(
                     ppm_candidates: list[tuple[int, float]] = []
                     seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
-                        ppm_main = _cap_ppm(float(get_ppm_for_dr(kv, dra_main))) if dra_main > 0 else 0.0
+                        ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                         if floor_ppm_min > 0.0:
                             if ppm_main <= 0.0 and not floor_exceeds_cap:
                                 continue
@@ -4918,9 +4794,9 @@ def solve_pipeline(
                         if dra_use <= 0:
                             dra_use = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 1
                         ppm_candidates.append((dra_use, fallback_ppm))
-                        for dra_main_use, ppm_main in ppm_candidates:
-                            for dra_loop in dra_loop_vals:
-                                ppm_loop = _cap_ppm(float(get_ppm_for_dr(kv, dra_loop))) if dra_loop > 0 else 0.0
+                    for dra_main_use, ppm_main in ppm_candidates:
+                        for dra_loop in dra_loop_vals:
+                            ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
                             inj_effective_est = _predict_effective_injection(
                                 ppm_main,
                                 kv,
@@ -4983,13 +4859,10 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = _max_dr_int(stn.get('max_dr'))
-            dr_cap = _dr_limit_from_ppm(kv, DRA_PPM_CEILING)
-            if dr_cap is not None:
-                max_dr_main = min(max_dr_main, dr_cap)
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
-                    max_ppm_cap = _cap_ppm(float(get_ppm_for_dr(kv, max_dr_main)))
+                    max_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
                 except Exception:
                     max_ppm_cap = 0.0
             floor_limited_local = bool(floor_limited)
@@ -5018,7 +4891,7 @@ def solve_pipeline(
                         candidate = dr_min
                         while candidate <= dr_max:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate >= floor_ppm_min - ppm_tol:
@@ -5041,7 +4914,7 @@ def solve_pipeline(
                             continue
                         if kv > 0.0:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate < floor_ppm_min - floor_ppm_tol:
@@ -5049,7 +4922,7 @@ def solve_pipeline(
                         filtered_vals.append(candidate)
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
-                    ppm_main = _cap_ppm(float(get_ppm_for_dr(kv, dra_main))) if dra_main > 0 else 0.0
+                    ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     if floor_ppm_min > 0.0:
                         if ppm_main <= 0.0 and not floor_exceeds_cap:
                             continue
@@ -5144,8 +5017,6 @@ def solve_pipeline(
             'elev': float(stn.get('elev', 0.0)),
         })
         cum_dist += L
-
-    total_length_km = cum_dist
     # Cache the baseline downstream head requirement for each station using the
     # unmodified segment flows.  Most scenarios reuse this value directly; only
     # bypass cases require recomputing the downstream flow profile.
@@ -5207,12 +5078,7 @@ def solve_pipeline(
         return queue_entries
 
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
-    queue_has_dra = any(ppm_val > 0.0 for _, ppm_val in initial_queue_entries)
-    if not queue_has_dra:
-        _SDH_HISTORY.clear()
     initial_reach = max(float(dra_reach_km), 0.0)
-    if total_length_km > 0.0:
-        initial_reach = min(initial_reach, total_length_km)
     if not initial_queue_entries and initial_reach > 0:
         initial_ppm = 0.0
         if linefill_state:
@@ -5339,35 +5205,12 @@ def solve_pipeline(
             'dra_queue_full': initial_queue,
             'dra_queue_at_inlet': initial_queue,
             'inj_ppm_main': 0,
-            'queue_signature': _queue_signature(initial_queue),
         }
     }
 
-    def _pareto_prune_states(state_map: dict[object, dict]) -> dict[object, dict]:
-        """Drop states that are strictly dominated on residual vs cost."""
-
-        if not state_map:
-            return state_map
-        sorted_states = sorted(
-            state_map.items(),
-            key=lambda kv: (-float(kv[1].get('residual', 0.0)), float(kv[1].get('cost', float('inf')))),
-        )
-        best_cost_seen = float('inf')
-        pruned: dict[object, dict] = {}
-        for key, data in sorted_states:
-            cost_val = float(data.get('cost', float('inf')))
-            if data.get('protected'):
-                pruned[key] = data
-                best_cost_seen = min(best_cost_seen, cost_val)
-                continue
-            if cost_val < best_cost_seen - 1e-9:
-                pruned[key] = data
-                best_cost_seen = cost_val
-        return pruned
-
     for stn_data in station_opts:
         new_states: dict[object, dict] = {}
-        best_by_residual: dict[int, list[object]] = {}
+        best_by_residual: dict[int, object] = {}
         protected_counter = 0
         best_cost_station = float('inf')
         for state in states.values():
@@ -5450,7 +5293,6 @@ def solve_pipeline(
                     for length, ppm in merged_after_full
                     if float(length or 0.0) > 0
                 )
-                queue_signature = _queue_signature(queue_after_full)
                 seg_length_total = float(stn_data.get('L', 0.0) or 0.0)
                 segment_profile_raw = _segment_profile_from_queue(
                     queue_after_full,
@@ -5868,13 +5710,6 @@ def solve_pipeline(
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
-                    sdh_display = sdh if stn_data['is_pump'] else state['residual']
-                    if stn_data['is_pump']:
-                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
-                        if prev_sdh is not None and queue_has_dra:
-                            sdh_display = min(sdh_display, prev_sdh)
-                        _SDH_HISTORY[stn_data['name']] = sdh_display
-
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
                         f"pipeline_flow_in_{stn_data['name']}": flow_total,
@@ -5883,8 +5718,10 @@ def solve_pipeline(
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
                         f"residual_head_{stn_data['name']}": state['residual'],
                         f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
-                        f"sdh_{stn_data['name']}": sdh_display,
-                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
+                        f"sdh_{stn_data['name']}": sdh if stn_data['is_pump'] else state['residual'],
+                        f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(
+                            sdh if stn_data['is_pump'] else state['residual'], stn_data['rho']
+                        ),
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],
@@ -6104,107 +5941,67 @@ def solve_pipeline(
                     else:
                         baseline_option = zero_dra_option
                     is_protected = zero_dra_option or baseline_option
+                    existing_key = best_by_residual.get(bucket)
+                    existing = new_states.get(existing_key) if existing_key is not None else None
                     flow_next = flow_total
-                    existing_keys = best_by_residual.get(bucket, [])
-                    existing_entries: list[tuple[object, dict]] = []
-                    for key in existing_keys:
-                        existing_state = new_states.get(key)
-                        if existing_state is not None:
-                            existing_entries.append((key, existing_state))
-
-                    any_protected_existing = any(
-                        bool(existing_state.get('protected')) for _key, existing_state in existing_entries
-                    )
-
-                    key_to_use: object | None = None
-                    replace_key: object | None = None
-                    allow_variant = False
-                    matched_protected = False
-                    for existing_key, existing_state in existing_entries:
-                        existing_sig = existing_state.get('queue_signature')
-                        if existing_sig is None:
-                            existing_sig = _queue_signature(existing_state.get('dra_queue_full'))
-                            existing_state['queue_signature'] = existing_sig
-                        len_diff = abs(queue_signature[0] - existing_sig[0])
-                        head_diff = abs(queue_signature[1] - existing_sig[1])
-                        max_diff = abs(queue_signature[2] - existing_sig[2])
-                        matches_signature = (
-                            len_diff <= DRA_SIGNATURE_LEN_TOL
-                            and head_diff <= DRA_SIGNATURE_PPM_TOL
-                            and max_diff <= DRA_SIGNATURE_PPM_TOL
-                        )
-                        if matches_signature:
-                            matched_protected = bool(existing_state.get('protected'))
-                            if (
-                                new_cost < existing_state['cost']
-                                or (
-                                    abs(new_cost - existing_state['cost']) < 1e-9
-                                    and residual_next > existing_state['residual']
-                                )
-                            ) and not (matched_protected and not is_protected):
-                                replace_key = existing_key
-                                break
-                        elif len(existing_keys) < STATE_MAX_BUCKET_VARIANTS:
-                            allow_variant = True
-
-                    if not existing_entries:
-                        key_to_use = bucket
-                    elif replace_key is not None:
-                        key_to_use = replace_key
-                    elif is_protected and not any_protected_existing:
-                        protected_counter += 1
-                        key_to_use = (bucket, f"protected_{protected_counter}")
-                        best_by_residual.setdefault(bucket, []).append(key_to_use)
-                    elif (
-                        allow_variant
-                        and len(existing_keys) < STATE_MAX_BUCKET_VARIANTS
-                        and queue_signature[0] > DRA_SIGNATURE_LEN_TOL
-                        and queue_signature[2] > DRA_SIGNATURE_PPM_TOL
-                    ):
-                        variant_index = len(existing_keys) + 1
-                        key_to_use = (bucket, f"variant_{variant_index}")
-                        best_by_residual.setdefault(bucket, []).append(key_to_use)
+                    replace_existing = False
+                    if existing is None:
+                        replace_existing = True
+                        key_to_use: object = bucket
                     else:
-                        key_to_use = None
-
-                    if key_to_use is None:
-                        continue
-
-                    entry = {
-                        'cost': new_cost,
-                        'residual': residual_next,
-                        'records': new_record_list,
-                        'last_maop': stn_data['maop_head'],
-                        'last_maop_kg': stn_data['maop_kgcm2'],
-                        'flow': flow_next,
-                        'carry_loop_dra': new_carry,
-                        'dra_queue_full': queue_after_full,
-                        'dra_queue_at_inlet': queue_after_inlet,
-                        'inj_ppm_main': inj_ppm_main,
-                        'protected': is_protected,
-                        'queue_signature': queue_signature,
-                    }
-
-                    if replace_key is not None:
-                        existing_entry = new_states.get(replace_key)
-                        if existing_entry is not None:
-                            entry['protected'] = is_protected or bool(existing_entry.get('protected'))
-                        new_states[replace_key] = entry
-                    else:
-                        new_states[key_to_use] = entry
-                        if key_to_use == bucket:
-                            best_by_residual[bucket] = [key_to_use]
+                        existing_protected = bool(existing.get('protected'))
+                        if (
+                            new_cost < existing['cost']
+                            or (
+                                abs(new_cost - existing['cost']) < 1e-9
+                                and residual_next > existing['residual']
+                            )
+                        ):
+                            if not (existing_protected and not is_protected):
+                                replace_existing = True
+                                key_to_use = existing_key  # type: ignore[assignment]
+                            else:
+                                replace_existing = False
+                        elif is_protected and not existing_protected:
+                            protected_counter += 1
+                            key_to_use = (bucket, f"protected_{protected_counter}")
+                            new_states[key_to_use] = {
+                                'cost': new_cost,
+                                'residual': residual_next,
+                                'records': new_record_list,
+                                'last_maop': stn_data['maop_head'],
+                                'last_maop_kg': stn_data['maop_kgcm2'],
+                                'flow': flow_next,
+                                'carry_loop_dra': new_carry,
+                                'dra_queue_full': queue_after_full,
+                                'dra_queue_at_inlet': queue_after_inlet,
+                                'inj_ppm_main': inj_ppm_main,
+                                'protected': True,
+                            }
+                            continue
                         else:
-                            bucket_list = best_by_residual.setdefault(bucket, [])
-                            if key_to_use not in bucket_list:
-                                bucket_list.append(key_to_use)
+                            replace_existing = False
+                    if replace_existing:
+                        entry = {
+                            'cost': new_cost,
+                            'residual': residual_next,
+                            'records': new_record_list,
+                            'last_maop': stn_data['maop_head'],
+                            'last_maop_kg': stn_data['maop_kgcm2'],
+                            'flow': flow_next,
+                            'carry_loop_dra': new_carry,
+                            'dra_queue_full': queue_after_full,
+                            'dra_queue_at_inlet': queue_after_inlet,
+                            'inj_ppm_main': inj_ppm_main,
+                            'protected': is_protected,
+                        }
+                        if existing is not None and existing_key is not None:
+                            entry['protected'] = is_protected or bool(existing.get('protected'))
+                            new_states[existing_key] = entry
+                        else:
+                            new_states[key_to_use] = entry
+                            best_by_residual[bucket] = key_to_use
 
-        new_states = _pareto_prune_states(new_states)
-        if new_states:
-            try:
-                best_cost_station = min(best_cost_station, min(data['cost'] for data in new_states.values()))
-            except Exception:
-                best_cost_station = best_cost_station
         if not new_states:
             return {"error": True, "message": f"No feasible operating point for {stn_data['orig_name']}"}
         # After evaluating all options for this station retain only the
@@ -6218,10 +6015,7 @@ def solve_pipeline(
                 (key, data) for key, data in items if data.get('protected')
             ]
             exhaustive_top_k = max(state_top_k, int(state_top_k * 3))
-            relative_margin = 0.0
-            if best_cost_station < float('inf'):
-                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
-            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN, relative_margin)
+            threshold = best_cost_station + max(state_cost_margin, STATE_COST_MARGIN)
             within_threshold: list[tuple[object, dict]] = [
                 (key, data)
                 for key, data in items
@@ -6263,10 +6057,7 @@ def solve_pipeline(
             protected_entries = [
                 (key, data) for key, data in items if data.get('protected')
             ]
-            relative_margin = 0.0
-            if best_cost_station < float('inf'):
-                relative_margin = best_cost_station * max(state_cost_margin_pct, STATE_COST_MARGIN_PCT)
-            threshold = best_cost_station + max(state_cost_margin, relative_margin)
+            threshold = best_cost_station + state_cost_margin
             pruned: dict[object, dict] = {}
             for key, data in protected_entries:
                 pruned[key] = data
@@ -6520,7 +6311,6 @@ def solve_pipeline_with_types(
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
-    state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
 ) -> dict:
@@ -6625,7 +6415,6 @@ def solve_pipeline_with_types(
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=state_top_k,
                     state_cost_margin=state_cost_margin,
-                    state_cost_margin_pct=state_cost_margin_pct,
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                 )
