@@ -32,7 +32,7 @@ DEFAULT_MAX_DR = 70
 # ---------------------------------------------------------------------------
 
 def head_to_kgcm2(head_m: float, rho: float) -> float:
-    """Convert a head value in metres to kg/cm²."""
+    """Convert a head value in metres to kg/cmÂ²."""
     return head_m * rho / 10000.0
 
 
@@ -137,28 +137,6 @@ def _max_dr_int(value, *, fallback: float | None = None) -> int:
     return int(_normalise_max_dr(value, fallback=fallback))
 
 
-def _cap_ppm(ppm: float) -> float:
-    """Clamp a PPM value to the configured ceiling."""
-
-    if ppm <= 0.0:
-        return 0.0
-    return float(min(ppm, DRA_PPM_CEILING))
-
-
-def _dr_limit_from_ppm(visc: float, ppm: float) -> int | None:
-    """Return the maximum %DR corresponding to a PPM ceiling for ``visc``."""
-
-    if visc <= 0.0 or ppm <= 0.0:
-        return None
-    try:
-        dr_val = float(get_dr_for_ppm(visc, ppm))
-    except Exception:
-        return None
-    if dr_val <= 0.0:
-        return None
-    return int(math.ceil(dr_val))
-
-
 def _extract_rpm(
     value,
     *,
@@ -251,10 +229,10 @@ def _generate_loop_cases(num_loops: int) -> list[list[int]]:
     pipe diameters.  Each element in a returned list corresponds to a looped
     segment and takes one of the following values:
 
-      * ``0`` – loop disabled (flow only through the mainline)
-      * ``1`` – loop used in parallel with the mainline (flows split)
-      * ``2`` – loop used in bypass mode (loop rejoins downstream of the next pump)
-      * ``3`` – loop-only mode (flow only through the loopline)
+      * ``0`` â loop disabled (flow only through the mainline)
+      * ``1`` â loop used in parallel with the mainline (flows split)
+      * ``2`` â loop used in bypass mode (loop rejoins downstream of the next pump)
+      * ``3`` â loop-only mode (flow only through the loopline)
 
     The enumeration intentionally limits the number of combinations so that
     optimisation remains tractable.  When there is only a single looped
@@ -306,15 +284,15 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
     """Generate loop usage patterns tailored to pipe diameter equality.
 
     When ``equal_diameter`` is ``True`` the returned cases correspond to
-    combinations required by Case‑1 in the problem description: no loops,
+    combinations required by Caseâ1 in the problem description: no loops,
     parallel loops on all segments and each individual loop in parallel.  For
     instance, with two loops this yields four cases: `[0, 0]`, `[1, 1]`,
-    `[0, 1]` and `[1, 0]`.  Bypass and loop‑only modes are not returned
+    `[0, 1]` and `[1, 0]`.  Bypass and loopâonly modes are not returned
     because they are irrelevant when the loop and mainline diameters are
     identical.
 
-    When ``equal_diameter`` is ``False`` the returned cases reflect Case‑2:
-    no loops, loop‑only across the entire pipeline and a bypass case.  With
+    When ``equal_diameter`` is ``False`` the returned cases reflect Caseâ2:
+    no loops, loopâonly across the entire pipeline and a bypass case.  With
     multiple loops the bypass directive applies only to the first looped
     segment because the specification assumes that the loop bypasses the
     next pump and rejoins the mainline downstream of that station.  Additional
@@ -326,7 +304,7 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
     if num_loops <= 0:
         return [[]]
     if equal_diameter:
-        # Case‑1: only consider off/on combinations without bypass or loop-only.
+        # Caseâ1: only consider off/on combinations without bypass or loop-only.
         cases: list[list[int]] = []
         # All loops off
         cases.append([0] * num_loops)
@@ -340,11 +318,11 @@ def _generate_loop_cases_by_diameter(num_loops: int, equal_diameter: bool) -> li
                 cases.append(c)
         return cases
     else:
-        # Case‑2: consider mainline‑only, loop‑only and bypass for first loop.
+        # Caseâ2: consider mainlineâonly, loopâonly and bypass for first loop.
         cases: list[list[int]] = []
         # All loops off (mainline only)
         cases.append([0] * num_loops)
-        # All loops loop‑only
+        # All loops loopâonly
         cases.append([3] * num_loops)
         # Bypass on first loop and others off
         c = [0] * num_loops
@@ -364,11 +342,11 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
     Behaviour follows the two cases described in the problem statement:
 
-    * **Case‑1** – When all flags are ``True`` the returned patterns are the
+    * **Caseâ1** â When all flags are ``True`` the returned patterns are the
       same as :func:`_generate_loop_cases_by_diameter` with
       ``equal_diameter=True``: all loops off, all parallel and each loop
       individually in parallel.
-    * **Case‑2** – When at least one flag is ``False`` the solver considers
+    * **Caseâ2** â When at least one flag is ``False`` the solver considers
       only three global scenarios for the differing loops: all loops off
       (mainline only), all differing loops in loop-only mode with equal-diameter
       loops disabled, and a bypass on the first differing loop with all other
@@ -382,7 +360,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
     if not flags:
         return [[]]
     if all(flags):
-        # All loops have equal diameter → reuse simpler helper
+        # All loops have equal diameter â reuse simpler helper
         return _generate_loop_cases_by_diameter(len(flags), True)
 
     combos: list[list[int]] = []
@@ -426,7 +404,6 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 25
 DRA_STEP = 2
-DRA_PPM_CEILING = 12.0
 MAX_DRA_KM = 250.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
@@ -1390,7 +1367,7 @@ def _predict_effective_injection(
     injector_pos = str(injector_position or "").lower()
     apply_injection_shear = pump_running and injector_pos == "upstream"
     if not pump_running or not apply_injection_shear:
-        return _cap_ppm(max(inj_requested, 0.0))
+        return max(inj_requested, 0.0)
 
     inj_dr = 0.0
     if kv_val > 0.0:
@@ -1404,17 +1381,17 @@ def _predict_effective_injection(
         if dr_use <= 0.0:
             return 0.0
         try:
-            return _cap_ppm(float(get_ppm_for_dr(kv_val, dr_use)))
+            return float(get_ppm_for_dr(kv_val, dr_use))
         except Exception:
             multiplier = 1.0 - shear if shear > 0 else 1.0
             if multiplier < 0.0:
                 multiplier = 0.0
-            return _cap_ppm(inj_requested * multiplier)
+            return inj_requested * multiplier
 
     multiplier = 1.0 - shear if shear > 0 else 1.0
     if multiplier < 0.0:
         multiplier = 0.0
-    return _cap_ppm(inj_requested * multiplier)
+    return inj_requested * multiplier
 
 
 def _update_mainline_dra(
@@ -1538,7 +1515,7 @@ def _update_mainline_dra(
         except (TypeError, ValueError):
             floor_length = 0.0
         try:
-            floor_ppm = _cap_ppm(float(segment_floor.get('dra_ppm', 0.0) or 0.0))
+            floor_ppm = float(segment_floor.get('dra_ppm', 0.0) or 0.0)
         except (TypeError, ValueError):
             floor_ppm = 0.0
         if floor_ppm <= 0.0:
@@ -1548,7 +1525,7 @@ def _update_mainline_dra(
                 floor_perc = 0.0
             if floor_perc > 0.0 and kv > 0.0:
                 try:
-                    floor_ppm = _cap_ppm(float(get_ppm_for_dr(kv, floor_perc)))
+                    floor_ppm = float(get_ppm_for_dr(kv, floor_perc))
                 except Exception:
                     floor_ppm = 0.0
         seg_floor_raw = segment_floor.get('segments')
@@ -1561,7 +1538,7 @@ def _update_mainline_dra(
                 except (TypeError, ValueError):
                     seg_length = 0.0
                 try:
-                    seg_ppm = _cap_ppm(float(seg_entry.get('dra_ppm', 0.0) or 0.0))
+                    seg_ppm = float(seg_entry.get('dra_ppm', 0.0) or 0.0)
                 except (TypeError, ValueError):
                     seg_ppm = 0.0
                 if seg_ppm <= 0.0:
@@ -1571,7 +1548,7 @@ def _update_mainline_dra(
                         seg_perc = 0.0
                     if seg_perc > 0.0 and kv > 0.0:
                         try:
-                            seg_ppm = _cap_ppm(float(get_ppm_for_dr(kv, seg_perc)))
+                            seg_ppm = float(get_ppm_for_dr(kv, seg_perc))
                         except Exception:
                             seg_ppm = 0.0
                 if seg_length <= 0.0 or seg_ppm <= 0.0:
@@ -1584,7 +1561,7 @@ def _update_mainline_dra(
         if floor_ppm < 0.0:
             floor_ppm = 0.0
 
-    inj_requested = _cap_ppm(max(float(inj_ppm_main or 0.0), 0.0))
+    inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
     if inj_requested > 0:
         if not pump_running or not apply_injection_shear:
@@ -1602,16 +1579,16 @@ def _update_mainline_dra(
                     dr_use = 0.0
                 if dr_use > 0:
                     try:
-                        inj_effective = _cap_ppm(float(get_ppm_for_dr(kv, dr_use)))
+                        inj_effective = float(get_ppm_for_dr(kv, dr_use))
                     except Exception:
-                        inj_effective = _cap_ppm(inj_requested * (1.0 - shear if shear > 0 else 1.0))
+                        inj_effective = inj_requested * (1.0 - shear if shear > 0 else 1.0)
                 else:
                     inj_effective = 0.0
             else:
                 multiplier = 1.0 - shear if shear > 0 else 1.0
                 if multiplier < 0.0:
                     multiplier = 0.0
-                inj_effective = _cap_ppm(inj_requested * multiplier)
+                inj_effective = inj_requested * multiplier
 
     existing_queue: list[tuple[float, float]] = []
     if queue:
@@ -1703,7 +1680,7 @@ def _update_mainline_dra(
         if ppm_float <= 0.0:
             return 0.0
         if not pump_running or shear_existing <= 0.0:
-            return _cap_ppm(ppm_float)
+            return ppm_float
         dr_value = 0.0
         if kv > 0:
             try:
@@ -1715,10 +1692,10 @@ def _update_mainline_dra(
             if dr_value <= 0.0:
                 return 0.0
             try:
-                return _cap_ppm(float(get_ppm_for_dr(kv, dr_value)))
+                return float(get_ppm_for_dr(kv, dr_value))
             except Exception:
-                return _cap_ppm(max(ppm_float * (1.0 - shear_existing), 0.0))
-        return _cap_ppm(max(ppm_float * (1.0 - shear_existing), 0.0))
+                return max(ppm_float * (1.0 - shear_existing), 0.0)
+        return max(ppm_float * (1.0 - shear_existing), 0.0)
 
     pumped_adjusted: list[tuple[float, float]] = []
     pumped_differs = False
@@ -1741,7 +1718,7 @@ def _update_mainline_dra(
                 ppm_out += inj_effective
             elif not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
-        ppm_out = _cap_ppm(max(ppm_out, 0.0))
+        ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
         pumped_adjusted.append((length_float, ppm_out))
@@ -2135,12 +2112,12 @@ def compute_minimum_lacing_requirement(
     Whenever the available head is insufficient the required drag reduction is
     computed from ``%DR = 100 * (SDH - (residual + max_head - suction)) / SDH``
     with the upstream residual assumed to stay at the suction reference, which
-    defaults to ``0 m`` but may be overridden with ``min_suction_head``.  The
+    defaults to ``0Â m`` but may be overridden with ``min_suction_head``.  The
     returned dictionary provides both the treated length (equal to the total
     pipeline length) and the minimum concentration in PPM.  When the inputs are
     insufficient to derive a value the helper falls back to a zero requirement.
 
-    ``fluid_density`` may be supplied to convert MAOP/MOP limits from kg/cm² to
+    ``fluid_density`` may be supplied to convert MAOP/MOP limits from kg/cmÂ² to
     metres using the operator-provided value instead of per-station defaults.
     ``mop_kgcm2`` lets callers impose a global operating pressure limit when an
     explicit value is not stored on the station or terminal records.
@@ -2263,7 +2240,7 @@ def compute_minimum_lacing_requirement(
         return maop_head
 
     def _collect_mop_kgcm2(data: Mapping[str, object]) -> float:
-        for key in ('MOP_kgcm2', 'mop_kgcm2', 'MOP', 'MOP (kg/cm²)'):
+        for key in ('MOP_kgcm2', 'mop_kgcm2', 'MOP', 'MOP (kg/cmÂ²)'):
             if key in data:
                 val = _coerce_float_local(data.get(key), 0.0)
                 if val > 0.0:
@@ -2494,7 +2471,7 @@ def compute_minimum_lacing_requirement(
 
             try:
                 dra_ppm_needed = (
-                    _cap_ppm(float(get_ppm_for_dr(visc_max, dr_needed)))
+                    float(get_ppm_for_dr(visc_max, dr_needed))
                     if dr_needed > 0
                     else 0.0
                 )
@@ -2828,7 +2805,7 @@ def _parallel_segment_hydraulics(
     return best
 
 # ---------------------------------------------------------------------------
-# Multi‑segment parallel flow splitting
+# Multiâsegment parallel flow splitting
 # ---------------------------------------------------------------------------
 @njit(cache=True, fastmath=True)
 def _split_flow_two_segments(
@@ -2906,7 +2883,7 @@ def _pump_curve_lookup(
         if not isinstance(entry, Mapping):
             continue
         flow_keys = (
-            "Flow (m³/hr)",
+            "Flow (mÂ³/hr)",
             "Flow (m3/hr)",
             "Flow (m3ph)",
             "Flow",
@@ -3127,7 +3104,7 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
     # Step 2: engine power based on operating speed
     engine_power = rated_power * (rpm / rated_rpm) if rated_rpm > 0 else 0.0
     # Step 3: determine ISO 3046 power adjustment factor (formula ref. D)
-    T_ref = 298.15  # 25 °C in kelvin
+    T_ref = 298.15  # 25 Â°C in kelvin
     T_K = ambient_temp + 273.15
     m = 0.7
     n = 1.2
@@ -3145,7 +3122,7 @@ def _compute_iso_sfc(pdata: dict, rpm: float, pump_bkw_total: float, rated_rpm: 
         sfc_tb = sfc75 + (sfc100 - sfc75) * (load_perc - 75) / 25.0
     else:
         sfc_tb = sfc100
-    # ISO 3046 fuel consumption adjustment factor (β) ~ 1/α for ref. D
+    # ISO 3046 fuel consumption adjustment factor (Î²) ~ 1/Î± for ref. D
     beta = 1.0 / alpha if alpha > 0 else 1.0
     sfc_site = sfc_tb * beta
     return sfc_site
@@ -3422,7 +3399,7 @@ def _downstream_requirement(
         # residual head at the peak itself.  Consider whichever peak demands the
         # highest pressure.
         # Helper to compute the residual head requirement at intermediate peaks.
-        # ``flow_rate`` is the volumetric flow rate (m³/h) used to compute friction to the peak.
+        # ``flow_rate`` is the volumetric flow rate (mÂ³/h) used to compute friction to the peak.
         def peak_requirement(flow_rate: float, peaks, d_pipe: float, rough_pipe: float, dra_perc: float, slices_local) -> float:
             req_local = 0.0
             for peak in peaks or []:
@@ -3561,7 +3538,7 @@ def solve_pipeline(
     corresponding ``KV_list`` and ``rho_list`` values.
 
     ``linefill`` describes the current batches in the pipeline as a sequence of
-    dictionaries with at least ``volume`` (m³) and ``dra_ppm`` keys.  The
+    dictionaries with at least ``volume`` (mÂ³) and ``dra_ppm`` keys.  The
     leading batch's concentration is used as the upstream DRA level for the
     first station.  The function returns the updated linefill after pumping
     under the key ``"linefill"``.  ``segment_floors`` optionally supplies a
@@ -3576,7 +3553,7 @@ def solve_pipeline(
 
     The solver operates in two passes.  A coarse search first evaluates
     the pipeline using large step sizes for pump speed and drag-reduction
-    percentage to identify a near‑optimal operating point.  A refinement
+    percentage to identify a nearâoptimal operating point.  A refinement
     pass then narrows the RPM and DRA ranges around that coarse solution
     and re-solves using the user-provided ``rpm_step`` and ``dra_step``.
     ``narrow_ranges`` is an internal helper used to restrict the values
@@ -3588,7 +3565,7 @@ def solve_pipeline(
     This function supports optional loop-use directives.  When
     ``enumerate_loops`` is ``True`` and no explicit
     ``loop_usage_by_station`` is provided the solver will automatically
-    build a small set of loop-use patterns (e.g. Cases A–E) and run the
+    build a small set of loop-use patterns (e.g. Cases AâE) and run the
     optimisation for each.  The best result is returned.  When
     ``loop_usage_by_station`` is supplied the solver restricts which
     loop scenarios are considered at each station: 0=disabled, 1=parallel,
@@ -3766,8 +3743,8 @@ def solve_pipeline(
         # Determine per-loop diameter equality flags.  For each looped
         # segment compute whether the inner diameters of the mainline and
         # loopline match within a small tolerance.  This allows the
-        # optimiser to apply Case‑1 logic on loops with equal pipes and
-        # Case‑2 logic on those with differing pipes independently.
+        # optimiser to apply Caseâ1 logic on loops with equal pipes and
+        # Caseâ2 logic on those with differing pipes independently.
         default_t_local = 0.007
         flags: list[bool] = []
         for idx in loop_positions:
@@ -3833,7 +3810,7 @@ def solve_pipeline(
             if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
                 # Track which loop usage produced the best result.  Store a
                 # copy to avoid mutating the result of nested calls.  Users
-                # can inspect this field to derive human‑friendly names.
+                # can inspect this field to derive humanâfriendly names.
                 res_with_usage = res.copy()
                 res_with_usage['loop_usage'] = usage.copy()
                 best_res = res_with_usage
@@ -3848,7 +3825,7 @@ def solve_pipeline(
     linefill_state: list[dict] = []
     if linefill:
         if isinstance(linefill, dict):
-            vols = linefill.get('volume') or linefill.get('Volume (m³)') or linefill.get('Volume')
+            vols = linefill.get('volume') or linefill.get('Volume (mÂ³)') or linefill.get('Volume')
             ppms = (
                 linefill.get('dra_ppm')
                 or linefill.get('DRA ppm')
@@ -3880,7 +3857,7 @@ def solve_pipeline(
         elif isinstance(linefill, list):
             for ent in linefill:
                 try:
-                    vol = float(ent.get('volume') or ent.get('Volume (m³)') or ent.get('Volume') or 0.0)
+                    vol = float(ent.get('volume') or ent.get('Volume (mÂ³)') or ent.get('Volume') or 0.0)
                 except Exception:
                     continue
                 if vol <= 0:
@@ -4334,13 +4311,6 @@ def solve_pipeline(
             floor_ranges: dict[int, dict[str, tuple[int, int]]] = {}
             for idx, stn in enumerate(stations):
                 max_dr_main = _max_dr_int(stn.get("max_dr"))
-                if idx < len(KV_list):
-                    try:
-                        dr_cap = _dr_limit_from_ppm(float(KV_list[idx] or 0.0), DRA_PPM_CEILING)
-                    except Exception:
-                        dr_cap = None
-                    if dr_cap is not None:
-                        max_dr_main = min(max_dr_main, dr_cap)
                 if max_dr_main < 0:
                     max_dr_main = 0
                 kv_val = 0.0
@@ -4354,7 +4324,7 @@ def solve_pipeline(
                 floor_entry = segment_floor_lookup.get(idx)
                 if isinstance(floor_entry, Mapping):
                     try:
-                        floor_ppm = max(floor_ppm, _cap_ppm(float(floor_entry.get("dra_ppm", 0.0) or 0.0)))
+                        floor_ppm = max(floor_ppm, float(floor_entry.get("dra_ppm", 0.0) or 0.0))
                     except (TypeError, ValueError):
                         floor_ppm = max(floor_ppm, 0.0)
                     try:
@@ -4364,8 +4334,7 @@ def solve_pipeline(
                 if idx == 0 and isinstance(forced_origin_detail, Mapping):
                     try:
                         floor_ppm = max(
-                            floor_ppm,
-                            _cap_ppm(float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)),
+                            floor_ppm, float(forced_origin_detail.get("dra_ppm", 0.0) or 0.0)
                         )
                     except (TypeError, ValueError):
                         floor_ppm = max(floor_ppm, 0.0)
@@ -4382,7 +4351,7 @@ def solve_pipeline(
                         floor_perc = 0.0
                 elif floor_perc > 0.0 and floor_ppm <= 0.0 and kv_val > 0.0:
                     try:
-                        floor_ppm = _cap_ppm(float(get_ppm_for_dr(kv_val, floor_perc)))
+                        floor_ppm = float(get_ppm_for_dr(kv_val, floor_perc))
                     except Exception:
                         floor_ppm = 0.0
                 floor_dr = 0
@@ -4488,8 +4457,8 @@ def solve_pipeline(
     # no linefill information and defaults all entries to zero.  To ensure the
     # optimisation can progress we substitute conservative defaults when
     # encountering these values.  The defaults represent a moderately light
-    # refined product at 25 °C: 1.0 cSt (~1×10⁻⁶ m²/s) for viscosity and
-    # 850 kg/m³ for density.  Negative values are also treated as invalid.
+    # refined product at 25Â Â°C: 1.0Â cSt (~1Ã10â»â¶Â mÂ²/s) for viscosity and
+    # 850Â kg/mÂ³ for density.  Negative values are also treated as invalid.
     #
     KV_list = [float(kv) if (kv is not None and kv > 0) else 1.0 for kv in KV_list]
     rho_list = [float(rho) if (rho is not None and rho > 0) else 850.0 for rho in rho_list]
@@ -4541,7 +4510,7 @@ def solve_pipeline(
             thickness = stn.get('t', default_t)
             # ``outer_d`` may be ``None`` if ``D`` exists but is explicitly
             # null.  Guard against this by falling back to the internal
-            # diameter ``d`` if provided, otherwise the default 0.7 m.
+            # diameter ``d`` if provided, otherwise the default 0.7Â m.
             outer_d = stn['D'] if stn['D'] is not None else stn.get('d', 0.7)
             d_inner = outer_d - 2 * thickness
         else:
@@ -4625,11 +4594,10 @@ def solve_pipeline(
             floor_perc_raw = 0.0
         if floor_ppm_raw < 0.0:
             floor_ppm_raw = 0.0
-        floor_ppm_raw = _cap_ppm(floor_ppm_raw)
         if kv > 0.0:
             if floor_perc_raw > 0.0 and floor_ppm_raw <= 0.0:
                 try:
-                    floor_ppm_raw = _cap_ppm(float(get_ppm_for_dr(kv, floor_perc_raw)))
+                    floor_ppm_raw = float(get_ppm_for_dr(kv, floor_perc_raw))
                 except Exception:
                     floor_ppm_raw = max(floor_ppm_raw, 0.0)
             elif floor_ppm_raw > 0.0 and floor_perc_raw <= 0.0:
@@ -4649,10 +4617,10 @@ def solve_pipeline(
                 floor_perc_min = float(math.ceil(perc_from_ppm))
         if floor_perc_min < 0.0:
             floor_perc_min = 0.0
-        floor_ppm_min = _cap_ppm(floor_ppm_raw) if floor_ppm_raw > 0.0 else 0.0
+        floor_ppm_min = floor_ppm_raw if floor_ppm_raw > 0.0 else 0.0
         if floor_perc_min > 0.0 and kv > 0.0:
             try:
-                floor_ppm_from_min = _cap_ppm(float(get_ppm_for_dr(kv, floor_perc_min)))
+                floor_ppm_from_min = float(get_ppm_for_dr(kv, floor_perc_min))
             except Exception:
                 floor_ppm_from_min = 0.0
             if floor_ppm_from_min > floor_ppm_min:
@@ -4738,13 +4706,10 @@ def solve_pipeline(
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = _max_dr_int(stn.get('max_dr'))
-            dr_cap = _dr_limit_from_ppm(kv, DRA_PPM_CEILING)
-            if dr_cap is not None:
-                max_dr_main = min(max_dr_main, dr_cap)
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
-                    max_ppm_cap = _cap_ppm(float(get_ppm_for_dr(kv, max_dr_main)))
+                    max_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
                 except Exception:
                     max_ppm_cap = 0.0
             floor_limited_local = bool(floor_limited)
@@ -4780,7 +4745,7 @@ def solve_pipeline(
                         candidate = dr_min
                         while candidate <= dr_max:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate >= floor_ppm_min - ppm_tol:
@@ -4806,7 +4771,7 @@ def solve_pipeline(
                             continue
                         if kv > 0.0:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate < floor_ppm_min - floor_ppm_tol:
@@ -4814,10 +4779,6 @@ def solve_pipeline(
                         filtered_vals.append(candidate)
                     dra_main_vals = filtered_vals
             max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
-            if loop_dict:
-                dr_cap_loop = _dr_limit_from_ppm(kv, DRA_PPM_CEILING)
-                if dr_cap_loop is not None:
-                    max_dr_loop = min(max_dr_loop, dr_cap_loop)
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
                 dr_loop_min = max(0, rng['dra_loop'][0])
@@ -4853,7 +4814,7 @@ def solve_pipeline(
                     ppm_candidates: list[tuple[int, float]] = []
                     seen_ppm_keys: set[int] = set()
                     for dra_main in dra_main_vals:
-                        ppm_main = _cap_ppm(float(get_ppm_for_dr(kv, dra_main))) if dra_main > 0 else 0.0
+                        ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                         if floor_ppm_min > 0.0:
                             if ppm_main <= 0.0 and not floor_exceeds_cap:
                                 continue
@@ -4918,9 +4879,9 @@ def solve_pipeline(
                         if dra_use <= 0:
                             dra_use = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 1
                         ppm_candidates.append((dra_use, fallback_ppm))
-                        for dra_main_use, ppm_main in ppm_candidates:
-                            for dra_loop in dra_loop_vals:
-                                ppm_loop = _cap_ppm(float(get_ppm_for_dr(kv, dra_loop))) if dra_loop > 0 else 0.0
+                    for dra_main_use, ppm_main in ppm_candidates:
+                        for dra_loop in dra_loop_vals:
+                            ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
                             inj_effective_est = _predict_effective_injection(
                                 ppm_main,
                                 kv,
@@ -4983,13 +4944,10 @@ def solve_pipeline(
             # upstream PPM simply carries forward.
             non_pump_opts: list[dict] = []
             max_dr_main = _max_dr_int(stn.get('max_dr'))
-            dr_cap = _dr_limit_from_ppm(kv, DRA_PPM_CEILING)
-            if dr_cap is not None:
-                max_dr_main = min(max_dr_main, dr_cap)
             max_ppm_cap = 0.0
             if kv > 0.0 and max_dr_main > 0:
                 try:
-                    max_ppm_cap = _cap_ppm(float(get_ppm_for_dr(kv, max_dr_main)))
+                    max_ppm_cap = float(get_ppm_for_dr(kv, max_dr_main))
                 except Exception:
                     max_ppm_cap = 0.0
             floor_limited_local = bool(floor_limited)
@@ -5018,7 +4976,7 @@ def solve_pipeline(
                         candidate = dr_min
                         while candidate <= dr_max:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate >= floor_ppm_min - ppm_tol:
@@ -5041,7 +4999,7 @@ def solve_pipeline(
                             continue
                         if kv > 0.0:
                             try:
-                                ppm_candidate = _cap_ppm(float(get_ppm_for_dr(kv, candidate)))
+                                ppm_candidate = float(get_ppm_for_dr(kv, candidate))
                             except Exception:
                                 ppm_candidate = 0.0
                             if ppm_candidate < floor_ppm_min - floor_ppm_tol:
@@ -5049,7 +5007,7 @@ def solve_pipeline(
                         filtered_vals.append(candidate)
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
-                    ppm_main = _cap_ppm(float(get_ppm_for_dr(kv, dra_main))) if dra_main > 0 else 0.0
+                    ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     if floor_ppm_min > 0.0:
                         if ppm_main <= 0.0 and not floor_exceeds_cap:
                             continue
@@ -5165,7 +5123,7 @@ def solve_pipeline(
     # Dynamic programming over stations
 
     init_residual = int(stations[0].get('min_residual', 50))
-    # Initial dynamic‑programming state.  Each state carries the cumulative
+    # Initial dynamicâprogramming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
     # sequence of record dictionaries (one per station), the last MAOP
     # limits, the current flow into the next segment and, importantly, a
@@ -5396,9 +5354,9 @@ def solve_pipeline(
             for opt in stn_data['options']:
                 # -----------------------------------------------------------------
                 # Enforce bypass rules on loopline injection:
-                # if the previous station operated in bypass mode (Case‑G)
+                # if the previous station operated in bypass mode (CaseâG)
                 # then no loopline DRA injection is permitted at this
-                # station (dra_loop must be zero).  The upstream carry‑over
+                # station (dra_loop must be zero).  The upstream carryâover
                 # drag reduction is used instead.  We detect bypass using
                 # ``loop_usage_by_station`` when provided.
                 if stn_data['idx'] > 0 and loop_usage_by_station is not None:
@@ -5548,7 +5506,7 @@ def solve_pipeline(
                         'maop_loop_kg': loop['maop_kgcm2'],
                         'bypass_next': True,
                     })
-                    # Loop‑only scenario: entire flow goes through loopline only.
+                    # Loopâonly scenario: entire flow goes through loopline only.
                     # Only include when diameters differ; otherwise the parallel
                     # scenario already captures equal pipes.
                     if abs(stn_data['d_inner'] - loop['d_inner']) > 1e-6:
@@ -5767,7 +5725,7 @@ def solve_pipeline(
                         sc['bypass_next'] = True
 
                     # Determine the effective drag reduction on the loopline.  In bypass
-                    # mode (Condition‑G) the DRA injection at this station is not
+                    # mode (ConditionâG) the DRA injection at this station is not
                     # performed on the loopline; instead the drag reduction from the
                     # upstream station persists.  Otherwise use the station's
                     # prescribed DRA for the loopline.  When there is no loop flow
