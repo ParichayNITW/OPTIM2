@@ -25,6 +25,7 @@ from pipeline_model import (
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
+    _queue_head_ppm,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -4601,6 +4602,18 @@ def test_queue_floor_preserves_downstream_slug() -> None:
     assert len(downstream_profile) == 1
     assert downstream_profile[0][0] == pytest.approx(152.0, rel=1e-9)
     assert downstream_profile[0][1] == pytest.approx(4.0, rel=1e-9)
+
+
+def test_queue_head_ppm_ignores_zero_length_prefixes() -> None:
+    queue = (
+        (0.0, 9.0),
+        {"length_km": 3.0, "dra_ppm": 7.0},
+        (2.0, 4.0),
+    )
+
+    head_ppm = _queue_head_ppm(queue)
+
+    assert head_ppm == pytest.approx(7.0, rel=1e-9)
 
 
 def test_queue_floor_splices_segment_requirements() -> None:
