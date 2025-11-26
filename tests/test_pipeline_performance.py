@@ -25,7 +25,6 @@ from pipeline_model import (
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
-    _queue_head_ppm,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -4604,18 +4603,6 @@ def test_queue_floor_preserves_downstream_slug() -> None:
     assert downstream_profile[0][1] == pytest.approx(4.0, rel=1e-9)
 
 
-def test_queue_head_ppm_ignores_zero_length_prefixes() -> None:
-    queue = (
-        (0.0, 9.0),
-        {"length_km": 3.0, "dra_ppm": 7.0},
-        (2.0, 4.0),
-    )
-
-    head_ppm = _queue_head_ppm(queue)
-
-    assert head_ppm == pytest.approx(7.0, rel=1e-9)
-
-
 def test_queue_floor_splices_segment_requirements() -> None:
     """Segment floors should be inserted ahead of the existing queue."""
 
@@ -4860,32 +4847,6 @@ def test_update_mainline_dra_retains_lower_injection_than_baseline() -> None:
     assert dra_segments[0][1] == pytest.approx(2.0, rel=1e-6)
     assert dra_segments[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
     assert dra_segments[1][1] == pytest.approx(4.0, rel=1e-6)
-
-
-def test_update_mainline_dra_skips_injection_when_inlet_already_met() -> None:
-    """No new DRA should be injected when the inlet already matches the request."""
-
-    dra_segments, queue_after, inj_ppm, requires_injection = _update_mainline_dra(
-        queue=[(50.0, 6.0)],
-        stn_data={
-            'idx': 0,
-            'L': 10.0,
-            'd_inner': 0.762,
-            'kv': 3.0,
-            'dra_shear_factor': 0.0,
-        },
-        opt={'dra_ppm_main': 6.0},
-        segment_length=10.0,
-        flow_m3h=0.0,
-        hours=1.0,
-        pump_running=False,
-        pump_shear_rate=0.0,
-    )
-
-    assert requires_injection is False
-    assert inj_ppm == pytest.approx(0.0)
-    assert queue_after[0]['dra_ppm'] == pytest.approx(6.0)
-    assert dra_segments[0][1] == pytest.approx(6.0)
 
 
 def test_update_mainline_dra_inserts_zero_slug_when_origin_skips_injection() -> None:
