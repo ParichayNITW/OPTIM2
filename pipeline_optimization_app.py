@@ -5502,7 +5502,14 @@ def _find_maximum_feasible_flow(
         )
     else:
         initial_total = base_flow * hours_count
-    flow_candidate = base_flow - step
+    # Align the initial candidate with the step size so we don't skip feasible
+    # flows that sit just below the requested rate (e.g. 2,833 -> 2,800 for
+    # a 50 m³/h step).  Otherwise the search would jump straight to
+    # ``base_flow - step`` (2,783 in the example) and potentially miss a
+    # narrow feasible window.
+    remainder = base_flow % step
+    initial_decrement = remainder if remainder > 0 else step
+    flow_candidate = base_flow - initial_decrement
     while flow_candidate > 0.0:
         candidate_total = flow_candidate * hours_count
         if not is_hourly:
