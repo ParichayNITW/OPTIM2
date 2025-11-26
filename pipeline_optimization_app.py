@@ -51,8 +51,6 @@ if "search_state_top_k" not in st.session_state:
     st.session_state["search_state_top_k"] = 50
 if "search_state_cost_margin" not in st.session_state:
     st.session_state["search_state_cost_margin"] = 5000.0
-if "search_state_cost_margin_pct" not in st.session_state:
-    st.session_state["search_state_cost_margin_pct"] = 1.0
 if "baseline_input_mode" not in st.session_state:
     st.session_state["baseline_input_mode"] = "auto"
 if "baseline_input_mode_prev" not in st.session_state:
@@ -358,10 +356,6 @@ def _manual_baseline_to_requirement(
             ppm_val = 0.0
 
         ppm_val = max(ppm_val, 0.0)
-        try:
-            ppm_val = min(ppm_val, float(getattr(pipeline_model, "DRA_PPM_CEILING", ppm_val)))
-        except Exception:
-            ppm_val = min(ppm_val, 0.0) if ppm_val < 0.0 else ppm_val
 
         if seg_length > 0.0 and ppm_val > 0.0:
             segments.append(
@@ -1556,7 +1550,6 @@ with st.sidebar:
         coarse_multiplier_default = 2.0
         state_top_k_default = 50
         state_cost_margin_default = 5000.0
-        state_cost_margin_pct_default = 1.0
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
@@ -1598,15 +1591,6 @@ with st.sidebar:
             value=float(st.session_state.get("search_state_cost_margin", state_cost_margin_default)),
             step=100.0,
             key="search_state_cost_margin",
-        )
-        st.number_input(
-            "DP cost margin (% of best)",
-            min_value=0.0,
-            value=float(st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)),
-            step=0.1,
-            format="%.1f",
-            key="search_state_cost_margin_pct",
-            help="Keeps any DP state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -2677,10 +2661,8 @@ def _append_zero_plan_segments_to_result(
         if head_ppm <= 0.0:
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
-        elif zero_length > 1e-9:
-            # Preserve treated head segments by appending untreated plan slices
-            # to the back of the queue rather than prepending them.
-            queue_entries.append((zero_length, 0.0))
+        else:
+            queue_entries = [(zero_length, 0.0)] + queue_entries
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -3773,10 +3755,13 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             )
         outlet_ppm = _float_or_none(outlet_ppm_val)
         if outlet_ppm is None:
-            if profile_entries:
-                outlet_ppm = float(profile_entries[-1][1])
+            outlet_ppm = 0.0
+            for length_val, ppm_val in reversed(profile_entries):
+                if float(ppm_val or 0.0) > 0.0:
+                    outlet_ppm = float(ppm_val)
+                    break
             else:
-                outlet_ppm = 0.0
+                outlet_ppm = profile_entries[-1][1] if profile_entries else 0.0
         if profile_entries:
             profile_str = "; ".join(
                 f"{length:.2f} km @ {ppm:.2f} ppm" for length, ppm in profile_entries
@@ -3907,7 +3892,6 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
-    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -3938,21 +3922,12 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
-    state_cost_margin_pct = float(
-        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
-        or state_cost_margin_pct_default
-    )
-    if state_cost_margin_pct < 0:
-        state_cost_margin_pct = 0.0
-    state_cost_margin_pct /= 100.0
-
     return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
-        "state_cost_margin_pct": state_cost_margin_pct,
     }
 
 
@@ -4184,6 +4159,11 @@ if auto_batch:
     Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
     Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
     Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
+    st.session_state["FLOW"] = FLOW
+    st.session_state["RateDRA"] = RateDRA
+    st.session_state["Price_HSD"] = Price_HSD
+    st.session_state["Fuel_density"] = Fuel_density
+    st.session_state["Ambient_temp"] = Ambient_temp
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
     product_table = data_editor_copy(
         pd.DataFrame({
@@ -4207,11 +4187,9 @@ if auto_batch:
                 "elev": st.session_state.get("terminal_elev", 0.0),
                 "min_residual": st.session_state.get("terminal_head", 50.0)
             }
-            flow_value = FLOW
-            dra_rate = RateDRA
-            diesel_price = Price_HSD
-            fuel_density = Fuel_density
-            ambient_temp = Ambient_temp
+            FLOW = st.session_state.get("FLOW", 1000.0)
+            RateDRA = st.session_state.get("RateDRA", 500.0)
+            Price_HSD = st.session_state.get("Price_HSD", 70.0)
             result_rows = []
             segs = int(100 // step_size)
             try:
@@ -4264,14 +4242,14 @@ if auto_batch:
                     res = solve_pipeline(
                         stations_data,
                         term_data,
-                        flow_value,
+                        FLOW,
                         kv_list,
                         rho_list,
                         None,
-                        dra_rate,
-                        diesel_price,
-                        fuel_density,
-                        ambient_temp,
+                        RateDRA,
+                        Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
                         {},
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                     )
@@ -4298,14 +4276,14 @@ if auto_batch:
                     res = solve_pipeline(
                         stations_data,
                         term_data,
-                        flow_value,
+                        FLOW,
                         kv_list,
                         rho_list,
                         None,
-                        dra_rate,
-                        diesel_price,
-                        fuel_density,
-                        ambient_temp,
+                        RateDRA,
+                        Price_HSD,
+                        st.session_state.get("Fuel_density", 820.0),
+                        st.session_state.get("Ambient_temp", 25.0),
                         {},
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                     )
@@ -4343,14 +4321,14 @@ if auto_batch:
                         res = solve_pipeline(
                             stations_data,
                             term_data,
-                            flow_value,
+                            FLOW,
                             kv_list,
                             rho_list,
                             None,
-                            dra_rate,
-                            diesel_price,
-                            fuel_density,
-                            ambient_temp,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         )
@@ -4382,14 +4360,14 @@ if auto_batch:
                         res = solve_pipeline(
                             stations_data,
                             term_data,
-                            flow_value,
+                            FLOW,
                             kv_list,
                             rho_list,
                             None,
-                            dra_rate,
-                            diesel_price,
-                            fuel_density,
-                            ambient_temp,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         )
@@ -4434,14 +4412,14 @@ if auto_batch:
                         res = solve_pipeline(
                             stations_data,
                             term_data,
-                            flow_value,
+                            FLOW,
                             kv_list,
                             rho_list,
                             None,
-                            dra_rate,
-                            diesel_price,
-                            fuel_density,
-                            ambient_temp,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
                             {},
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         )
@@ -4587,7 +4565,7 @@ def _estimate_treatable_length(
     if not km_per_m3_candidates:
         return 0.0
 
-    km_per_m3 = min(val for val in km_per_m3_candidates if val > 0.0)
+    km_per_m3 = max(val for val in km_per_m3_candidates if val > 0.0)
     if km_per_m3 <= 0.0:
         return 0.0
 
@@ -4652,15 +4630,17 @@ def _enforce_minimum_origin_dra(
         min_length = max(float(min_fraction) * float(total_length_km), 0.0)
     except (TypeError, ValueError):
         min_length = 0.0
+    if min_length <= 0.0:
+        min_length = 1.0
 
     try:
         total_length_value = float(total_length_km)
     except (TypeError, ValueError):
         total_length_value = 0.0
     if total_length_value > 0.0:
-        min_length = min(total_length_value, max(min_length, 0.0))
+        min_length = min(total_length_value, max(min_length, 1.0))
     else:
-        min_length = max(min_length, 0.0)
+        min_length = max(min_length, 1.0)
 
     segments_source = _collect_segment_floors(baseline_requirement, min_ppm=floor_ppm)
     segments_to_enforce = [dict(seg) for seg in segments_source]
@@ -5337,7 +5317,6 @@ def _execute_time_series_solver(
                 break
 
             backtracked = True
-            error_msg = None
             if detail_note:
                 backtrack_notes.append(detail_note)
             else:
