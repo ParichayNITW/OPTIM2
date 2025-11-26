@@ -1554,6 +1554,10 @@ def _update_mainline_dra(
         if isinstance(idx_val, (int, float)):
             is_origin = int(idx_val) == 0
 
+    inlet_ppm_main = _queue_head_ppm(queue)
+    if inj_ppm_main > 0.0 and inj_ppm_main <= inlet_ppm_main + 1e-6:
+        inj_ppm_main = 0.0
+
     segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
     flow_m3h = float(flow_m3h or 0.0)
     hours = max(float(hours or 0.0), 0.0)
