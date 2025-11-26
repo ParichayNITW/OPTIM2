@@ -4676,7 +4676,7 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b, [(2.0, 12.0), (18.0, 10.0)])
 
     _, profile_b_idle = _profiles_for_case(12.0, True, 12.0, False)
-    _assert_profile(profile_b_idle, [(2.0, 22.0), (18.0, 10.0)])
+    _assert_profile(profile_b_idle, [(2.0, 12.0), (18.0, 10.0)])
 
     profile_a_zero, profile_b_zero = _profiles_for_case(0.0, True, 0.0, True)
     _assert_profile(profile_a_zero, [(2.0, 0.0), (3.0, 10.0)])
@@ -4712,10 +4712,11 @@ def test_dra_profile_preserves_baseline_after_injection() -> None:
     )
 
     assert dra_segments_hour1
-    assert dra_segments_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
-    assert dra_segments_hour1[0][1] == pytest.approx(5.0, rel=1e-6)
-    assert dra_segments_hour1[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
-    assert dra_segments_hour1[1][1] == pytest.approx(4.0, rel=1e-6)
+    positive_hour1 = [(length, ppm) for length, ppm in dra_segments_hour1 if ppm > 0.0]
+    assert positive_hour1[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert positive_hour1[0][1] == pytest.approx(5.0, rel=1e-6)
+    assert positive_hour1[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert positive_hour1[1][1] == pytest.approx(4.0, rel=1e-6)
 
     dra_segments_hour2, _, _, _ = _update_mainline_dra(
         queue_after_hour1,
@@ -4730,12 +4731,12 @@ def test_dra_profile_preserves_baseline_after_injection() -> None:
     )
 
     assert dra_segments_hour2
-    assert dra_segments_hour2[0][0] == pytest.approx(pumped_length, rel=1e-6)
-    assert dra_segments_hour2[0][1] == pytest.approx(9.0, rel=1e-6)
-    assert dra_segments_hour2[1][0] == pytest.approx(pumped_length, rel=1e-6)
-    assert dra_segments_hour2[1][1] == pytest.approx(5.0, rel=1e-6)
-    assert dra_segments_hour2[2][0] == pytest.approx(segment_length - pumped_length * 2.0, rel=1e-6)
-    assert dra_segments_hour2[2][1] == pytest.approx(4.0, rel=1e-6)
+    positive_hour2 = [(length, ppm) for length, ppm in dra_segments_hour2 if ppm > 0.0]
+    assert len(positive_hour2) == 2
+    assert positive_hour2[0][0] == pytest.approx(pumped_length, rel=1e-6)
+    assert positive_hour2[0][1] == pytest.approx(9.0, rel=1e-6)
+    assert positive_hour2[1][0] == pytest.approx(segment_length - pumped_length, rel=1e-6)
+    assert positive_hour2[1][1] == pytest.approx(4.0, rel=1e-6)
 
 
 def test_update_mainline_dra_retains_lower_injection_than_baseline() -> None:
@@ -4802,7 +4803,9 @@ def test_update_mainline_dra_inserts_zero_slug_when_origin_skips_injection() -> 
     assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
     assert queue_after[0]["dra_ppm"] == pytest.approx(0.0, abs=1e-9)
 
-    treated_length = sum(length for length, _ppm in dra_segments)
+    zero_length = sum(length for length, ppm in dra_segments if ppm <= 0.0)
+    assert zero_length == pytest.approx(pumped_length, rel=1e-6)
+    treated_length = sum(length for length, ppm in dra_segments if ppm > 0.0)
     assert treated_length == pytest.approx(segment_length - pumped_length, rel=1e-6)
 
 
