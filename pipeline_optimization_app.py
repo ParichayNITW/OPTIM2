@@ -358,6 +358,10 @@ def _manual_baseline_to_requirement(
             ppm_val = 0.0
 
         ppm_val = max(ppm_val, 0.0)
+        try:
+            ppm_val = min(ppm_val, float(getattr(pipeline_model, "DRA_PPM_CEILING", ppm_val)))
+        except Exception:
+            ppm_val = min(ppm_val, 0.0) if ppm_val < 0.0 else ppm_val
 
         if seg_length > 0.0 and ppm_val > 0.0:
             segments.append(
