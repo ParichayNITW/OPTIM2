@@ -126,37 +126,37 @@ div[data-testid="stDownloadButton"] > button:active {
 button[aria-label="Logout"],
 div[data-testid="stFileUploader"] button,
 button[aria-label="Browse files"],
-button[aria-label="ð¾ Save Case"] {
+button[aria-label="💾 Save Case"] {
     background-color: #C62828 !important;
     color: #ffffff !important;
 }
 button[aria-label="Logout"]:hover,
 div[data-testid="stFileUploader"] button:hover,
 button[aria-label="Browse files"]:hover,
-button[aria-label="ð¾ Save Case"]:hover {
+button[aria-label="💾 Save Case"]:hover {
     background-color: #AB2020 !important;
 }
 button[aria-label="Logout"]:active,
 div[data-testid="stFileUploader"] button:active,
 button[aria-label="Browse files"]:active,
-button[aria-label="ð¾ Save Case"]:active {
+button[aria-label="💾 Save Case"]:active {
     background-color: #8E1A1A !important;
 }
 
 button[aria-label="Hydraulic feasibility check"],
-button[aria-label="â Add Station"],
-button[aria-label="ðï¸ Remove Station"] {
+button[aria-label="➕ Add Station"],
+button[aria-label="🗑️ Remove Station"] {
     background-color: #1B5E20 !important;
     color: #ffffff !important;
 }
 button[aria-label="Hydraulic feasibility check"]:hover,
-button[aria-label="â Add Station"]:hover,
-button[aria-label="ðï¸ Remove Station"]:hover {
+button[aria-label="➕ Add Station"]:hover,
+button[aria-label="🗑️ Remove Station"]:hover {
     background-color: #154A19 !important;
 }
 button[aria-label="Hydraulic feasibility check"]:active,
-button[aria-label="â Add Station"]:active,
-button[aria-label="ðï¸ Remove Station"]:active {
+button[aria-label="➕ Add Station"]:active,
+button[aria-label="🗑️ Remove Station"]:active {
     background-color: #0F3612 !important;
 }
 </style>
@@ -358,6 +358,10 @@ def _manual_baseline_to_requirement(
             ppm_val = 0.0
 
         ppm_val = max(ppm_val, 0.0)
+        try:
+            ppm_val = min(ppm_val, float(getattr(pipeline_model, "DRA_PPM_CEILING", ppm_val)))
+        except Exception:
+            ppm_val = min(ppm_val, 0.0) if ppm_val < 0.0 else ppm_val
 
         if seg_length > 0.0 and ppm_val > 0.0:
             segments.append(
@@ -552,10 +556,10 @@ def map_linefill_to_segments(
     cols = set(linefill_df.columns)
 
     if "Start (km)" not in cols or "End (km)" not in cols:
-        if "Volume (mÂ³)" in cols or "Volume" in cols:
+        if "Volume (m³)" in cols or "Volume" in cols:
             return map_vol_linefill_to_segments(linefill_df, stations)
         kv = float(linefill_df.iloc[-1].get("Viscosity (cSt)", 0.0))
-        rho = float(linefill_df.iloc[-1].get("Density (kg/mÂ³)", 0.0))
+        rho = float(linefill_df.iloc[-1].get("Density (kg/m³)", 0.0))
         kv_list = [kv] * len(stations)
         rho_list = [rho] * len(stations)
         segment_slices = _default_segment_slices(stations, kv_list, rho_list)
@@ -573,18 +577,18 @@ def map_linefill_to_segments(
         for _, row in linefill_df.iterrows():
             if row["Start (km)"] <= seg_start < row["End (km)"]:
                 viscs.append(row["Viscosity (cSt)"])
-                dens.append(row["Density (kg/mÂ³)"])
+                dens.append(row["Density (kg/m³)"])
                 found = True
                 break
         if not found:
             viscs.append(linefill_df.iloc[-1]["Viscosity (cSt)"])
-            dens.append(linefill_df.iloc[-1]["Density (kg/mÂ³)"])
+            dens.append(linefill_df.iloc[-1]["Density (kg/m³)"])
     segment_slices = _default_segment_slices(stations, viscs, dens)
     return viscs, dens, segment_slices
 
 
 def pipe_cross_section_area_m2(stations: list[dict]) -> float:
-    """Return pipe internal cross-sectional area (mÂ²) using the first station."""
+    """Return pipe internal cross-sectional area (m²) using the first station."""
 
     if not stations:
         return 0.0
@@ -608,7 +612,7 @@ def map_vol_linefill_to_segments(
     batches: list[dict[str, float]] = []
     for _, r in vol_table.iterrows():
         try:
-            vol_raw = r.get("Volume (mÂ³)")
+            vol_raw = r.get("Volume (m³)")
         except AttributeError:
             vol_raw = None
         if vol_raw in (None, ""):
@@ -625,7 +629,7 @@ def map_vol_linefill_to_segments(
         except (TypeError, ValueError):
             visc = 0.0
         try:
-            dens = float(r.get("Density (kg/mÂ³)", 0.0))
+            dens = float(r.get("Density (kg/m³)", 0.0))
         except (TypeError, ValueError):
             dens = 0.0
 
@@ -1047,7 +1051,7 @@ def _get_linefill_snapshot_for_hour(
 
     return snapshot.copy(deep=True)
 
-st.set_page_config(page_title="Pipeline Optimaâ¢", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
 #Custom Styles
 st.markdown("""
@@ -1103,7 +1107,7 @@ def check_login():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        st.title("ð User Login")
+        st.title("🔒 User Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         if st.button("Login", key="login_btn"):
@@ -1116,7 +1120,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optimaâ¢ v1.1.2. Developed by IOCL Pipelines Division.
+            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
             </div>
             """,
             unsafe_allow_html=True
@@ -1223,7 +1227,7 @@ def restore_case_dict(loaded_data):
         st.session_state["proj_flow_df"] = df_flow
     if loaded_data.get("proj_plan"):
         df_proj = pd.DataFrame(loaded_data["proj_plan"])
-        cols_to_drop = [c for c in ["Start", "End", "Flow", "Flow (mÂ³/h)"] if c in df_proj.columns]
+        cols_to_drop = [c for c in ["Start", "End", "Flow", "Flow (m³/h)"] if c in df_proj.columns]
         if cols_to_drop:
             df_proj = df_proj.drop(columns=cols_to_drop)
         st.session_state["proj_plan_df"] = df_proj
@@ -1276,7 +1280,7 @@ def restore_case_dict(loaded_data):
                 st.session_state[f"peak_data_{i}{ptype}"] = df_peak_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['peak_data'] = peak_pt
 
-uploaded_case = st.sidebar.file_uploader("ð Load Case", type="json", key="casefile")
+uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
 if uploaded_case is None:
     st.session_state["case_loaded"] = False
     st.session_state["case_loaded_name"] = None
@@ -1298,10 +1302,10 @@ if st.session_state.get("should_rerun", False):
 
 # ==== 2. MAIN INPUT UI ====
 with st.sidebar:
-    st.title("ð§ Pipeline Inputs")
+    st.title("🔧 Pipeline Inputs")
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW = st.number_input(
-            "Flow rate (mÂ³/hr)",
+            "Flow rate (m³/hr)",
             value=st.session_state.get("FLOW", 1000.0),
             step=10.0,
             key="FLOW",
@@ -1319,13 +1323,13 @@ with st.sidebar:
             key="Price_HSD",
         )
         Fuel_density = st.number_input(
-            "Fuel density (kg/mÂ³)",
+            "Fuel density (kg/m³)",
             value=st.session_state.get("Fuel_density", 820.0),
             step=1.0,
             key="Fuel_density",
         )
         Ambient_temp = st.number_input(
-            "Ambient temperature (Â°C)",
+            "Ambient temperature (°C)",
             value=st.session_state.get("Ambient_temp", 25.0),
             step=1.0,
             key="Ambient_temp",
@@ -1343,11 +1347,11 @@ with st.sidebar:
             ),
         )
         st.caption(
-            "**Carry-over reference:** 0.0 â downstream batches keep their DRA (100% carry-over); "
-            "1.0 â pumps strip all DRA (0% carry-over)."
+            "**Carry-over reference:** 0.0 ⇒ downstream batches keep their DRA (100% carry-over); "
+            "1.0 ⇒ pumps strip all DRA (0% carry-over)."
         )
         st.number_input(
-            "MOP (kg/cmÂ²)",
+            "MOP (kg/cm²)",
             value=st.session_state.get("MOP_kgcm2", 100.0),
             step=1.0,
             key="MOP_kgcm2",
@@ -1365,7 +1369,7 @@ with st.sidebar:
         manual_baseline = baseline_mode == "manual"
 
         st.number_input(
-            "Target laced flow (mÂ³/h)",
+            "Target laced flow (m³/h)",
             min_value=0.0,
             value=float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))),
             step=10.0,
@@ -1397,13 +1401,13 @@ with st.sidebar:
             disabled=manual_baseline,
         )
         st.number_input(
-            "Fluid density for lacing (kg/mÂ³)",
+            "Fluid density for lacing (kg/m³)",
             min_value=0.0,
             value=float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))),
             step=1.0,
             key="laced_density_kgm3",
             help=(
-                "Density used to convert MOP/MAOP limits from kg/cmÂ² to metres when "
+                "Density used to convert MOP/MAOP limits from kg/cm² to metres when "
                 "evaluating baseline lacing floors."
             ),
             disabled=manual_baseline,
@@ -1465,7 +1469,7 @@ with st.sidebar:
                         elif station_idx >= len(stations_ctx):
                             start_name = stations_ctx[-1].get("name", f"Station {len(stations_ctx)}")
                         segment_label = (
-                            f"{start_name} â {end_name}"
+                            f"{start_name} → {end_name}"
                             if start_name and end_name
                             else start_name or end_name
                         )
@@ -1620,7 +1624,7 @@ with st.sidebar:
             "Start (km)": [0.0],
             "End (km)": [100.0],
             "Viscosity (cSt)": [10.0],
-            "Density (kg/mÂ³)": [850.0],
+            "Density (kg/m³)": [850.0],
             INIT_DRA_COL: [0.0],
         })
     input_modes = ["Flow rate", "Daily Pumping Schedule", "Pumping planner"]
@@ -1639,9 +1643,9 @@ with st.sidebar:
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1"],
-                "Volume (mÂ³)": [50000.0],
+                "Volume (m³)": [50000.0],
                 "Viscosity (cSt)": [5.0],
-                "Density (kg/mÂ³)": [810.0],
+                "Density (kg/m³)": [810.0],
                 INIT_DRA_COL: [0.0],
             })
         else:
@@ -1661,9 +1665,9 @@ with st.sidebar:
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1", "Product-2", "Product-3"],
-                "Volume (mÂ³)": [50000.0, 40000.0, 15000.0],
+                "Volume (m³)": [50000.0, 40000.0, 15000.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
-                "Density (kg/mÂ³)": [810.0, 825.0, 865.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 INIT_DRA_COL: [0.0] * 3,
             })
         else:
@@ -1680,9 +1684,9 @@ with st.sidebar:
         if "day_plan_df" not in st.session_state:
             st.session_state["day_plan_df"] = pd.DataFrame({
                 "Product": ["Product-4", "Product-5", "Product-6", "Product-7"],
-                "Volume (mÂ³)": [12000.0, 6000.0, 10000.0, 8000.0],
+                "Volume (m³)": [12000.0, 6000.0, 10000.0, 8000.0],
                 "Viscosity (cSt)": [3.0, 10.0, 15.0, 4.0],
-                "Density (kg/mÂ³)": [800.0, 840.0, 880.0, 770.0],
+                "Density (kg/m³)": [800.0, 840.0, 880.0, 770.0],
                 INIT_DRA_COL: [0.0] * 4,
             })
         else:
@@ -1694,7 +1698,7 @@ with st.sidebar:
         )
         st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
         hourly_flow = st.number_input(
-            "Hourly flow rate (mÂ³/hr)",
+            "Hourly flow rate (m³/hr)",
             value=st.session_state.get("hourly_flow", 1000.0),
             step=10.0,
         )
@@ -1704,9 +1708,9 @@ with st.sidebar:
         if "linefill_vol_df" not in st.session_state:
             st.session_state["linefill_vol_df"] = pd.DataFrame({
                 "Product": ["Product-1", "Product-2", "Product-3"],
-                "Volume (mÂ³)": [50000.0, 40000.0, 15000.0],
+                "Volume (m³)": [50000.0, 40000.0, 15000.0],
                 "Viscosity (cSt)": [5.0, 12.0, 15.0],
-                "Density (kg/mÂ³)": [810.0, 825.0, 865.0],
+                "Density (kg/m³)": [810.0, 825.0, 865.0],
                 INIT_DRA_COL: [0.0] * 3,
             })
         else:
@@ -1731,7 +1735,7 @@ with st.sidebar:
             st.session_state["proj_flow_df"] = pd.DataFrame({
                 "Start": [now],
                 "End": [now + pd.Timedelta(hours=24)],
-                "Flow (mÂ³/h)": [1000.0],
+                "Flow (m³/h)": [1000.0],
             })
         flow_df = data_editor_copy(
             st.session_state["proj_flow_df"],
@@ -1740,7 +1744,7 @@ with st.sidebar:
             column_config={
                 "Start": st.column_config.DatetimeColumn("Start", format="DD/MM/YY HH:mm"),
                 "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm"),
-                "Flow (mÂ³/h)": st.column_config.NumberColumn("Flow (mÂ³/h)"),
+                "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)"),
             },
         )
         st.session_state["proj_flow_df"] = flow_df
@@ -1748,9 +1752,9 @@ with st.sidebar:
         if "proj_plan_df" not in st.session_state:
             st.session_state["proj_plan_df"] = pd.DataFrame({
                 "Product": ["Product-4", "Product-5"],
-                "Volume (mÂ³)": [12000.0, 8000.0],
+                "Volume (m³)": [12000.0, 8000.0],
                 "Viscosity (cSt)": [3.0, 10.0],
-                "Density (kg/mÂ³)": [800.0, 840.0],
+                "Density (kg/m³)": [800.0, 840.0],
             })
         proj_df = data_editor_copy(
             st.session_state["proj_plan_df"],
@@ -1758,9 +1762,9 @@ with st.sidebar:
             key="proj_plan_editor",
             column_config={
                 "Product": st.column_config.TextColumn("Product"),
-                "Volume (mÂ³)": st.column_config.NumberColumn("Volume (mÂ³)"),
+                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)"),
                 "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)"),
-                "Density (kg/mÂ³)": st.column_config.NumberColumn("Density (kg/mÂ³)"),
+                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)"),
             },
         )
         st.session_state["proj_plan_df"] = proj_df
@@ -1796,7 +1800,7 @@ st.markdown(
         letter-spacing:0.5px;
         font-family: inherit;
     '>
-        Pipeline Optimaâ¢: Pipeline Network Optimization System
+        Pipeline Optima™: Pipeline Network Optimization System
     </h1>
     """,
     unsafe_allow_html=True
@@ -1834,7 +1838,7 @@ if "stations" not in st.session_state:
 with st.sidebar:
     st.markdown("### Stations")
     add_col, rem_col = st.columns(2)
-    if add_col.button("â Add Station", key="add_station"):
+    if add_col.button("➕ Add Station", key="add_station"):
         n = len(st.session_state.get('stations', [])) + 1
         default = {
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
@@ -1847,7 +1851,7 @@ with st.sidebar:
             'supply': 0.0
         }
         st.session_state.stations.append(default)
-    if rem_col.button("ðï¸ Remove Station", key="rem_station"):
+    if rem_col.button("🗑️ Remove Station", key="rem_station"):
         if st.session_state.get('stations'):
             st.session_state.stations.pop()
 
@@ -1876,8 +1880,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.7f", step=0.0000001, key=f"rough{idx}")
         with col3:
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
-            stn['delivery'] = st.number_input("Delivery (mÂ³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
-            stn['supply'] = st.number_input("Supply (mÂ³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
+            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
+            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
         st.markdown("**Loopline (optional)**")
         has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag{idx}")
         if has_loop:
@@ -1960,7 +1964,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 
                             key_head = f"head_data_{idx}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
-                                st.session_state[key_head] = pd.DataFrame({"Flow (mÂ³/hr)": [0.0], "Head (m)": [0.0]})
+                                st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                             df_head = data_editor_copy(
                                 st.session_state[key_head],
                                 num_rows="dynamic",
@@ -1970,7 +1974,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 
                             key_eff = f"eff_data_{idx}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
-                                st.session_state[key_eff] = pd.DataFrame({"Flow (mÂ³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                                st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                             df_eff = data_editor_copy(
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
@@ -2075,7 +2079,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         key=f"sfc_mode{idx}{ptype}"
                                     )
                                     if sfc_mode == "Enter manually":
-                                        sfc = st.number_input("SFC (gm/bhpÂ·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
                                         engine_params = {}
                                     else:
                                         engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake{idx}{ptype}")
@@ -2097,7 +2101,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                             st.session_state[f"sfc_display{idx}{ptype}"] = sfc_calc
                                         sfc = st.session_state.get(f"sfc_display{idx}{ptype}", 0.0)
                                         if sfc:
-                                            st.write(f"Computed SFC at 100% load: {sfc:.2f} gm/bhpÂ·hr")
+                                            st.write(f"Computed SFC at 100% load: {sfc:.2f} gm/bhp·hr")
                                         engine_params = {
                                             'make': engine_make,
                                             'model': engine_model,
@@ -2150,7 +2154,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             st.session_state[key_peak] = peak_df
 
 st.markdown("---")
-st.subheader("ð Terminal Station")
+st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
@@ -2335,7 +2339,7 @@ def get_full_case_dict():
 
 case_data = get_full_case_dict()
 st.sidebar.download_button(
-    label="ð¾ Save Case",
+    label="💾 Save Case",
     data=json.dumps(case_data, indent=2),
     file_name="pipeline_case.json",
     mime="application/json"
@@ -2515,26 +2519,26 @@ def shift_vol_linefill(
     pumped_m3: float,
     day_plan: pd.DataFrame | None,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
-    """Update ``vol_table`` after ``pumped_m3`` mÂ³ has left the pipeline.
+    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
 
     Fluid is removed from the terminal end of ``vol_table`` and the same volume
     is injected at the origin from ``day_plan`` if provided.  The updated
     ``vol_table`` together with the shortened ``day_plan`` and a list of
-    injected DRA batches ``[{"volume": mÂ³, "dra_ppm": ppm}, ...]`` are
+    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
     returned.
     """
 
     # Remove delivered volume from downstream end
     vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
-    vol_table["Volume (mÂ³)"] = vol_table["Volume (mÂ³)"].astype(float)
+    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
     remaining = pumped_m3
     idx = len(vol_table) - 1
     while remaining > 1e-9 and idx >= 0:
-        v = vol_table.at[idx, "Volume (mÂ³)"]
+        v = vol_table.at[idx, "Volume (m³)"]
         take = min(v, remaining)
-        vol_table.at[idx, "Volume (mÂ³)"] = v - take
+        vol_table.at[idx, "Volume (m³)"] = v - take
         remaining -= take
-        if vol_table.at[idx, "Volume (mÂ³)"] <= 1e-9:
+        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
             vol_table = vol_table.drop(index=idx)
         idx -= 1
     vol_table = vol_table.reset_index(drop=True)
@@ -2544,17 +2548,17 @@ def shift_vol_linefill(
     # Inject new product at upstream end according to day plan
     if day_plan is not None:
         day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-        day_plan["Volume (mÂ³)"] = day_plan["Volume (mÂ³)"].astype(float)
+        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
         added = pumped_m3
         j = 0
         while added > 1e-9 and j < len(day_plan):
-            v = day_plan.at[j, "Volume (mÂ³)"]
+            v = day_plan.at[j, "Volume (m³)"]
             take = min(v, added)
             batch = {
                 "Product": day_plan.at[j, "Product"],
-                "Volume (mÂ³)": take,
+                "Volume (m³)": take,
                 "Viscosity (cSt)": day_plan.at[j, "Viscosity (cSt)"],
-                "Density (kg/mÂ³)": day_plan.at[j, "Density (kg/mÂ³)"],
+                "Density (kg/m³)": day_plan.at[j, "Density (kg/m³)"],
             }
             ppm_value = day_plan.at[j, INIT_DRA_COL] if INIT_DRA_COL in day_plan.columns else 0.0
             try:
@@ -2567,11 +2571,11 @@ def shift_vol_linefill(
             if "DRA ppm" in vol_table.columns or "DRA ppm" in day_plan.columns:
                 batch["DRA ppm"] = ppm_value
             vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
-            day_plan.at[j, "Volume (mÂ³)"] = v - take
+            day_plan.at[j, "Volume (m³)"] = v - take
             added -= take
             if take > 1e-9:
                 injected_batches.append({"volume": float(take), "dra_ppm": ppm_value})
-            if day_plan.at[j, "Volume (mÂ³)"] <= 1e-9:
+            if day_plan.at[j, "Volume (m³)"] <= 1e-9:
                 j += 1
         day_plan = day_plan.iloc[j:].reset_index(drop=True)
 
@@ -2868,28 +2872,28 @@ def _truncate_day_plan_volume(
         return pd.DataFrame(columns=day_plan.columns)
 
     trimmed = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-    if "Volume (mÂ³)" not in trimmed.columns:
+    if "Volume (m³)" not in trimmed.columns:
         return trimmed
 
-    trimmed["Volume (mÂ³)"] = pd.to_numeric(trimmed["Volume (mÂ³)"], errors="coerce").fillna(0.0)
-    total = float(trimmed["Volume (mÂ³)"].sum())
+    trimmed["Volume (m³)"] = pd.to_numeric(trimmed["Volume (m³)"], errors="coerce").fillna(0.0)
+    total = float(trimmed["Volume (m³)"].sum())
     if total <= target + 1e-6:
         return trimmed
 
     excess = total - target
     idx = len(trimmed) - 1
     while excess > 1e-6 and idx >= 0:
-        current = float(trimmed.iloc[idx]["Volume (mÂ³)"])
+        current = float(trimmed.iloc[idx]["Volume (m³)"])
         take = min(current, excess)
-        trimmed.at[idx, "Volume (mÂ³)"] = current - take
+        trimmed.at[idx, "Volume (m³)"] = current - take
         excess -= take
-        if trimmed.at[idx, "Volume (mÂ³)"] <= 1e-6:
+        if trimmed.at[idx, "Volume (m³)"] <= 1e-6:
             trimmed = trimmed.drop(index=idx)
         idx -= 1
 
     trimmed = trimmed.reset_index(drop=True)
-    if "Volume (mÂ³)" in trimmed.columns:
-        trimmed["Volume (mÂ³)"] = trimmed["Volume (mÂ³)"].clip(lower=0.0)
+    if "Volume (m³)" in trimmed.columns:
+        trimmed["Volume (m³)"] = trimmed["Volume (m³)"].clip(lower=0.0)
     return trimmed
 
 
@@ -2897,7 +2901,7 @@ def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
     """Convert a volumetric linefill dataframe to a list of DRA batches."""
     if df is None or len(df) == 0:
         return []
-    col_vol = "Volume (mÂ³)" if "Volume (mÂ³)" in df.columns else "Volume"
+    col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
     col_ppm = None
     for candidate in (INIT_DRA_COL, "DRA ppm", "dra_ppm"):
         if candidate in df.columns:
@@ -2949,7 +2953,7 @@ def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
     if "DRA ppm" not in df.columns:
         df["DRA ppm"] = df[INIT_DRA_COL]
 
-    col_vol = "Volume (mÂ³)" if "Volume (mÂ³)" in df.columns else "Volume"
+    col_vol = "Volume (m³)" if "Volume (m³)" in df.columns else "Volume"
 
     queue: list[tuple[float, float]] = []
     for batch in dra_batches or []:
@@ -3263,7 +3267,7 @@ def gather_pump_curve_sources(
             )
             sources.append(
                 {
-                    "label": f"{stn.get('name', f'Station {idx}')} â Type {ptype}",
+                    "label": f"{stn.get('name', f'Station {idx}')} — Type {ptype}",
                     "ptype": ptype,
                     "head_df": df_head,
                     "eff_df": df_eff,
@@ -3383,14 +3387,14 @@ def build_summary_dataframe(
                 seen_suffixes.add(suffix)
 
     params_pre = [
-        "Pipeline Flow (mÂ³/hr)", "Loopline Flow (mÂ³/hr)", "Pump Flow (mÂ³/hr)", "Bypass Next?",
+        "Pipeline Flow (m³/hr)", "Loopline Flow (m³/hr)", "Pump Flow (m³/hr)", "Bypass Next?",
         "Power & Fuel Cost (INR)", "DRA Cost (INR)", "DRA PPM",
         "Baseline Floor Length (km)", "Baseline Floor PPM", "Baseline Floor %DR", "No. of Pumps",
     ]
     params_post = [
         "Pump Eff (%)", "Pump BKW (kW)", "Motor Input (kW)", "Reynolds No.", "Head Loss (m)",
-        "Head Loss (kg/cmÂ²)", "Vel (m/s)", "Residual Head (m)", "Residual Head (kg/cmÂ²)",
-        "SDH (m)", "SDH (kg/cmÂ²)", "MAOP (m)", "MAOP (kg/cmÂ²)", "Drag Reduction (%)"
+        "Head Loss (kg/cm²)", "Vel (m/s)", "Residual Head (m)", "Residual Head (kg/cm²)",
+        "SDH (m)", "SDH (kg/cm²)", "MAOP (m)", "MAOP (kg/cm²)", "Drag Reduction (%)"
     ]
     params = params_pre + [f"Pump Speed {suffix} (rpm)" for suffix in speed_suffixes] + params_post
     summary = {"Parameters": params}
@@ -3657,9 +3661,9 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         row = {
             'Station': station_display,
             'Pump Name': pump_name,
-            'Pipeline Flow (mÂ³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
-            'Loopline Flow (mÂ³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
-            'Pump Flow (mÂ³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
+            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
+            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
+            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
             'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
             'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
             'DRA PPM': res.get(f"dra_ppm_{key}", 0.0),
@@ -3670,14 +3674,14 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
             'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
             'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
-            'Head Loss (kg/cmÂ²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
+            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
             'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
             'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
-            'Residual Head (kg/cmÂ²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
             'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
-            'SDH (kg/cmÂ²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
+            'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
             'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
-            'MAOP (kg/cmÂ²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
+            'MAOP (kg/cm²)': float(res.get(f"maop_kgcm2_{key}", 0.0) or 0.0),
             'Drag Reduction (%)': float(res.get(f"drag_reduction_{key}", 0.0) or 0.0),
             'Loop Drag Reduction (%)': float(res.get(f"drag_reduction_loop_{key}", 0.0) or 0.0),
         }
@@ -3803,10 +3807,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         # Available suction head only needs to be reported at the origin suction
         if idx == 0:
             row['Available Suction Head (m)'] = row['Residual Head (m)']
-            row['Available Suction Head (kg/cmÂ²)'] = row['Residual Head (kg/cmÂ²)']
+            row['Available Suction Head (kg/cm²)'] = row['Residual Head (kg/cm²)']
         else:
             row['Available Suction Head (m)'] = np.nan
-            row['Available Suction Head (kg/cmÂ²)'] = np.nan
+            row['Available Suction Head (kg/cm²)'] = np.nan
 
         rows.append(row)
 
@@ -3889,11 +3893,11 @@ def lock_dra_in_stations_from_result(stations: list[dict], res: dict, kv_list: l
     return new_stations
 
 def fmt_pressure(res, key_m, key_kg):
-    """Format pressure values stored in metres and kg/cmÂ²."""
+    """Format pressure values stored in metres and kg/cm²."""
 
     m = res.get(key_m, 0.0) or 0.0
     kg = res.get(key_kg, 0.0) or 0.0
-    return f"{m:.2f} m / {kg:.2f} kg/cmÂ²"
+    return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
 def _collect_search_depth_kwargs() -> dict[str, float | int]:
     """Return validated search-depth parameters for backend solvers."""
@@ -4144,7 +4148,7 @@ def solve_pipeline(
                 # Looplines are associated with the segment connecting this station to the next
                 if stn.get('loopline') and idx < len(stations) - 1:
                     uval = usage[idx] if idx < len(usage) else 0
-                    seg_label = f"{stn['name']}â{stations[idx+1]['name']}"
+                    seg_label = f"{stn['name']}–{stations[idx+1]['name']}"
                     if uval == 1:
                         seg_names.append(f"Parallel on {seg_label}")
                     elif uval == 2:
@@ -4175,17 +4179,17 @@ if auto_batch:
         st.info("Define pipeline stations above to enable batch optimisation.")
         st.stop()
     total_length = sum(stn["L"] for stn in st.session_state.stations)
-    FLOW = st.number_input("Flow rate (mÂ³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="batch_flow")
+    FLOW = st.number_input("Flow rate (m³/hr)", value=st.session_state.get("FLOW", 1000.0), step=10.0, key="batch_flow")
     RateDRA = st.number_input("DRA Cost (INR/L)", value=st.session_state.get("RateDRA", 500.0), step=1.0, key="batch_dra")
     Price_HSD = st.number_input("Fuel Price (INR/L)", value=st.session_state.get("Price_HSD", 70.0), step=0.5, key="batch_diesel")
-    Fuel_density = st.number_input("Fuel density (kg/mÂ³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
-    Ambient_temp = st.number_input("Ambient temperature (Â°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
+    Fuel_density = st.number_input("Fuel density (kg/m³)", value=st.session_state.get("Fuel_density", 820.0), step=1.0, key="batch_fuel_density")
+    Ambient_temp = st.number_input("Ambient temperature (°C)", value=st.session_state.get("Ambient_temp", 25.0), step=1.0, key="batch_amb_temp")
     num_products = st.number_input("Number of Products", min_value=2, max_value=3, value=2)
     product_table = data_editor_copy(
         pd.DataFrame({
             "Product": [f"Product {i+1}" for i in range(num_products)],
             "Viscosity (cSt)": [1.0 + i for i in range(num_products)],
-            "Density (kg/mÂ³)": [800 + 40*i for i in range(num_products)],
+            "Density (kg/m³)": [800 + 40*i for i in range(num_products)],
         }),
         num_rows="dynamic", key="batch_prod_tbl"
     )
@@ -4256,7 +4260,7 @@ if auto_batch:
                     for i in range(len(stations_data)):
                         prod_row = product_table.iloc[0]
                         kv_list.append(prod_row["Viscosity (cSt)"])
-                        rho_list.append(prod_row["Density (kg/mÂ³)"])
+                        rho_list.append(prod_row["Density (kg/m³)"])
                     res = solve_pipeline(
                         stations_data,
                         term_data,
@@ -4290,7 +4294,7 @@ if auto_batch:
                     for i in range(len(stations_data)):
                         prod_row = product_table.iloc[1]
                         kv_list.append(prod_row["Viscosity (cSt)"])
-                        rho_list.append(prod_row["Density (kg/mÂ³)"])
+                        rho_list.append(prod_row["Density (kg/m³)"])
                     res = solve_pipeline(
                         stations_data,
                         term_data,
@@ -4335,7 +4339,7 @@ if auto_batch:
                             else:
                                 prod_row = product_table.iloc[1]
                             kv_list.append(prod_row["Viscosity (cSt)"])
-                            rho_list.append(prod_row["Density (kg/mÂ³)"])
+                            rho_list.append(prod_row["Density (kg/m³)"])
                         res = solve_pipeline(
                             stations_data,
                             term_data,
@@ -4371,7 +4375,7 @@ if auto_batch:
                         for i in range(len(stations_data)):
                             prod_row = product_table.iloc[first]
                             kv_list.append(prod_row["Viscosity (cSt)"])
-                            rho_list.append(prod_row["Density (kg/mÂ³)"])
+                            rho_list.append(prod_row["Density (kg/m³)"])
                         scenario_labels = ["0%"] * 3
                         scenario_labels[first] = "100%"
                         row = {"Scenario": f"{scenario_labels[0]} {product_table.iloc[0]['Product']}, {scenario_labels[1]} {product_table.iloc[1]['Product']}, {scenario_labels[2]} {product_table.iloc[2]['Product']}"}
@@ -4423,7 +4427,7 @@ if auto_batch:
                                 else:
                                     prod_row = product_table.iloc[2]
                                 kv_list.append(prod_row["Viscosity (cSt)"])
-                                rho_list.append(prod_row["Density (kg/mÂ³)"])
+                                rho_list.append(prod_row["Density (kg/m³)"])
                             row = {
                                 "Scenario": f"{pct_A}% {product_table.iloc[0]['Product']}, {pct_B}% {product_table.iloc[1]['Product']}, {pct_C}% {product_table.iloc[2]['Product']}"
                             }
@@ -4691,8 +4695,8 @@ def _enforce_minimum_origin_dra(
     plan_df = ensure_initial_dra_column(plan_df.copy(), default=0.0, fill_blanks=True)
     plan_df = plan_df.reset_index(drop=True)
     plan_columns = list(plan_df.columns)
-    if "Volume (mÂ³)" in plan_df.columns:
-        plan_col_vol = "Volume (mÂ³)"
+    if "Volume (m³)" in plan_df.columns:
+        plan_col_vol = "Volume (m³)"
     elif "Volume" in plan_df.columns:
         plan_col_vol = "Volume"
     else:
@@ -4712,19 +4716,19 @@ def _enforce_minimum_origin_dra(
     total_volume = 0.0
     if isinstance(vol_df, pd.DataFrame) and len(vol_df) > 0:
         vol_df = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
-        col_vol = "Volume (mÂ³)" if "Volume (mÂ³)" in vol_df.columns else "Volume"
+        col_vol = "Volume (m³)" if "Volume (m³)" in vol_df.columns else "Volume"
         try:
             total_volume = float(pd.to_numeric(vol_df[col_vol], errors="coerce").fillna(0.0).sum())
         except Exception:
             total_volume = 0.0
     else:
-        col_vol = "Volume (mÂ³)"
+        col_vol = "Volume (m³)"
 
     if total_volume <= 0.0:
         snapshot_df = state.get("linefill_snapshot")
         if isinstance(snapshot_df, pd.DataFrame) and len(snapshot_df) > 0:
             snapshot_df = ensure_initial_dra_column(snapshot_df.copy(), default=0.0, fill_blanks=True)
-            snap_col = "Volume (mÂ³)" if "Volume (mÂ³)" in snapshot_df.columns else "Volume"
+            snap_col = "Volume (m³)" if "Volume (m³)" in snapshot_df.columns else "Volume"
             try:
                 total_volume = float(
                     pd.to_numeric(snapshot_df[snap_col], errors="coerce").fillna(0.0).sum()
@@ -5309,7 +5313,7 @@ def _execute_time_series_solver(
                     length_fmt = detail_record["length_km"]
                     backtrack_hour = hours[ti - 1] % 24
                     detail_note = (
-                        f"Origin queue updated: {volume_fmt:.0f} mÂ³ @ {ppm_fmt:.2f} ppm scheduled at "
+                        f"Origin queue updated: {volume_fmt:.0f} m³ @ {ppm_fmt:.2f} ppm scheduled at "
                         f"{backtrack_hour:02d}:00 to restore feasibility. This request will treat approximately "
                         f"{length_fmt:.1f} km once pumped downstream."
                     )
@@ -5322,7 +5326,7 @@ def _execute_time_series_solver(
                             ppm_val = float(
                                 injection.get("dra_ppm", detail_record.get("dra_ppm", 0.0)) or 0.0
                             )
-                            slices.append(f"{label}: {vol_val:.0f} mÂ³ @ {ppm_val:.2f} ppm")
+                            slices.append(f"{label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm")
                         if slices:
                             detail_note += " Scheduled plan slices: " + "; ".join(slices) + "."
                 else:
@@ -5482,10 +5486,10 @@ def _find_maximum_feasible_flow(
     if (
         not is_hourly
         and isinstance(plan_df, pd.DataFrame)
-        and "Volume (mÂ³)" in plan_df.columns
+        and "Volume (m³)" in plan_df.columns
     ):
         initial_total = float(
-            pd.to_numeric(plan_df["Volume (mÂ³)"], errors="coerce").fillna(0.0).sum()
+            pd.to_numeric(plan_df["Volume (m³)"], errors="coerce").fillna(0.0).sum()
         )
     else:
         initial_total = base_flow * hours_count
@@ -5501,9 +5505,9 @@ def _find_maximum_feasible_flow(
         plan_for_solver = plan_candidate.copy() if isinstance(plan_candidate, pd.DataFrame) else None
         dra_candidate = _copy.deepcopy(dra_linefill)
 
-        if isinstance(plan_candidate, pd.DataFrame) and "Volume (mÂ³)" in plan_candidate.columns:
+        if isinstance(plan_candidate, pd.DataFrame) and "Volume (m³)" in plan_candidate.columns:
             plan_candidate_total = float(
-                pd.to_numeric(plan_candidate["Volume (mÂ³)"], errors="coerce").fillna(0.0).sum()
+                pd.to_numeric(plan_candidate["Volume (m³)"], errors="coerce").fillna(0.0).sum()
             )
         else:
             plan_candidate_total = candidate_total
@@ -5577,13 +5581,13 @@ def _build_enforced_origin_warning(
                     injection.get("dra_ppm", entry.get("dra_ppm", 0.0)) or 0.0
                 )
                 detail_parts.append(
-                    f"{hour_label} â Scheduled {label}: {vol_val:.0f} mÂ³ @ {ppm_val:.2f} ppm"
+                    f"{hour_label} – Scheduled {label}: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
                 )
         else:
             vol_val = float(entry.get("volume_m3", 0.0) or 0.0)
             ppm_val = float(entry.get("dra_ppm", 0.0) or 0.0)
             detail_parts.append(
-                f"{hour_label} â Scheduled origin slug: {vol_val:.0f} mÂ³ @ {ppm_val:.2f} ppm"
+                f"{hour_label} – Scheduled origin slug: {vol_val:.0f} m³ @ {ppm_val:.2f} ppm"
             )
 
     if detail_parts:
@@ -5895,7 +5899,7 @@ if not auto_batch:
         if is_hourly:
             FLOW_sched = st.session_state.get("hourly_flow", st.session_state.get("FLOW", 1000.0))
         else:
-            daily_m3 = float(plan_df["Volume (mÂ³)"].astype(float).sum()) if len(plan_df) else 0.0
+            daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
             FLOW_sched = daily_m3 / 24.0
 
         RateDRA = st.session_state.get("RateDRA", 500.0)
@@ -6009,16 +6013,16 @@ if not auto_batch:
                     hours_count = max(len(hours), 1)
                     if is_hourly:
                         fallback_note = (
-                            f"Requested {original_total:,.0f} mÂ³ was infeasible; "
-                            f"optimized maximum achievable throughput is {total_throughput:,.0f} mÂ³ "
-                            f"({FLOW_sched:,.0f} mÂ³/h)."
+                            f"Requested {original_total:,.0f} m³ was infeasible; "
+                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³ "
+                            f"({FLOW_sched:,.0f} m³/h)."
                         )
                     else:
                         fallback_note = (
-                            f"Requested {original_total:,.0f} mÂ³/day "
-                            f"({original_total / hours_count:,.0f} mÂ³/h) was infeasible; "
-                            f"optimized maximum achievable throughput is {total_throughput:,.0f} mÂ³/day "
-                            f"({FLOW_sched:,.0f} mÂ³/h)."
+                            f"Requested {original_total:,.0f} m³/day "
+                            f"({original_total / hours_count:,.0f} m³/h) was infeasible; "
+                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³/day "
+                            f"({FLOW_sched:,.0f} m³/h)."
                         )
             if error_msg:
                 st.session_state["linefill_next_day"] = pd.DataFrame()
@@ -6250,7 +6254,7 @@ if not auto_batch:
             dra_reach_km = 200.0
 
             for _, row in flow_df.iterrows():
-                flow = float(row.get("Flow (mÂ³/h)", row.get("Flow", 0.0)) or 0.0)
+                flow = float(row.get("Flow (m³/h)", row.get("Flow", 0.0)) or 0.0)
                 start_ts = row["Start"]
                 end_ts = row["End"]
                 if flow <= 0 or end_ts <= start_ts:
@@ -6391,9 +6395,9 @@ if not auto_batch:
 
 if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
-        "ð Summary", "ð° Costs", "âï¸ Performance", "ð System Curves",
-        "ð Pump-System", "ð DRA Curves", "ð§ 3D Analysis and Surface Plots", "ð§® 3D Pressure Profile",
-        "ð Sensitivity", "ð Benchmarking", "ð¡ Savings Simulator"
+        "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
+        "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
+        "📈 Sensitivity", "📊 Benchmarking", "💡 Savings Simulator"
     ])
     
 
@@ -6446,7 +6450,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
-                "ð¥ Download CSV",
+                "📥 Download CSV",
                 df_sum.round(2).to_csv(index=False, float_format="%.2f").encode(),
                 file_name="results.csv",
             )
@@ -6466,7 +6470,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
             base_cols = st.columns(3)
             base_cols[0].metric(
-                "Target laced flow (mÂ³/h)",
+                "Target laced flow (m³/h)",
                 f"{baseline_flow:,.2f}" if baseline_flow is not None else "N/A",
             )
             base_cols[1].metric(
@@ -6530,7 +6534,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     else:
                         start_name = f"Station {idx + 1}" if idx >= 0 else "Unknown"
                         end_name = st.session_state.get("terminal_name", "Terminal")
-                    seg_label = f"{start_name} â {end_name}" if start_name else end_name
+                    seg_label = f"{start_name} → {end_name}" if start_name else end_name
                     try:
                         seg_length = float(entry.get("length_km", 0.0) or 0.0)
                     except (TypeError, ValueError):
@@ -6759,7 +6763,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.dataframe(df_cost_fmt, width='stretch', hide_index=True)
     
             st.download_button(
-                "ð¥ Download Station Cost (CSV)",
+                "📥 Download Station Cost (CSV)",
                 df_cost.to_csv(index=False).encode(),
                 file_name="station_cost.csv"
             )
@@ -6870,8 +6874,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     trace_defs: list[dict[str, object]] = []
                     for src_idx, source in enumerate(sources):
                         df_head = source.get("head_df")
-                        if isinstance(df_head, pd.DataFrame) and "Flow (mÂ³/hr)" in df_head.columns and len(df_head) > 1:
-                            flow_user = np.array(df_head["Flow (mÂ³/hr)"], dtype=float)
+                        if isinstance(df_head, pd.DataFrame) and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                            flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
                             max_flow = float(np.max(flow_user))
                         else:
                             max_flow = float(st.session_state.get("FLOW", 1000.0))
@@ -6912,7 +6916,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                                     y=trace["y"],
                                     mode='lines',
                                     name=trace["label"],
-                                    hovertemplate="Flow: %{x:.2f} mÂ³/hr<br>Head: %{y:.2f} m",
+                                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Head: %{y:.2f} m",
                                     line=dict(color=color, width=2.3),
                                 )
                             )
@@ -6922,7 +6926,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         continue
                     fig.update_layout(
                         title=f"Head vs Flow: {stn['name']}",
-                        xaxis_title="Flow (mÂ³/hr)",
+                        xaxis_title="Flow (m³/hr)",
                         yaxis_title="Head (m)",
                         font=dict(size=15),
                         legend=dict(font=dict(size=13)),
@@ -6949,7 +6953,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     for source in sources:
                         Qe = source.get("eff_df")
                         if isinstance(Qe, pd.DataFrame) and len(Qe) > 1:
-                            flow_user = np.array(Qe['Flow (mÂ³/hr)'], dtype=float)
+                            flow_user = np.array(Qe['Flow (m³/hr)'], dtype=float)
                             eff_user = np.array(Qe['Efficiency (%)'], dtype=float)
                             flow_max = float(np.max(flow_user))
                             max_user_eff = float(np.max(eff_user)) if eff_user.size else 100.0
@@ -6992,7 +6996,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                                     y=trace["y"],
                                     mode='lines',
                                     name=trace["label"],
-                                    hovertemplate="Flow: %{x:.2f} mÂ³/hr<br>Eff: %{y:.2f} %",
+                                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Eff: %{y:.2f} %",
                                     line=dict(color=color, width=2.3),
                                 )
                             )
@@ -7002,7 +7006,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         continue
                     fig.update_layout(
                         title=f"Efficiency vs Flow: {stn['name']}",
-                        xaxis_title="Flow (mÂ³/hr)",
+                        xaxis_title="Flow (m³/hr)",
                         yaxis_title="Efficiency (%)",
                         font=dict(size=15),
                         legend=dict(font=dict(size=13)),
@@ -7026,7 +7030,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 names = [s['name'] for s in stations_data] + [terminal["name"]]
                 keys = [n.lower().replace(' ', '_') for n in names]
             
-                # Elevation profile (stations + peaks) converted to kg/cmÂ²
+                # Elevation profile (stations + peaks) converted to kg/cm²
                 elev_x, elev_y = [], []
                 for i, stn in enumerate(stations_data):
                     rho_i = res.get(f"rho_{keys[i]}", 850.0)
@@ -7041,7 +7045,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 elev_x.append(lengths[-1])
                 elev_y.append(terminal['elev'] * rho_term / 10000.0)
 
-                # RH and SDH at stations/terminal in kg/cmÂ²
+                # RH and SDH at stations/terminal in kg/cm²
                 rh_list = [res.get(f"rh_kgcm2_{k}", 0.0) for k in keys]
                 sdh_list = [res.get(f"sdh_kgcm2_{k}", 0.0) for k in keys]
 
@@ -7123,7 +7127,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig.update_layout(
                     title="Pipeline Hydraulics Profile: Pressure Optimization & Elevation",
                     xaxis_title="Pipeline Length (km)",
-                    yaxis_title="Elevation / Pressure (kg/cmÂ²)",
+                    yaxis_title="Elevation / Pressure (kg/cm²)",
                     font=dict(size=15, family="Segoe UI, Arial"),
                     legend=dict(font=dict(size=12), bgcolor="rgba(255,255,255,0.95)", bordercolor="#bbb", borderwidth=1, x=0.78, y=0.98),
                     height=560,
@@ -7142,7 +7146,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 # Fetch summary DataFrame for pump flows
                 df_summary = st.session_state.get("summary_table", None)
                 if df_summary is not None:
-                    pump_flow_dict = dict(zip(df_summary.columns[1:], df_summary.loc[df_summary['Parameters'] == 'Pump Flow (mÂ³/hr)'].values[0,1:]))
+                    pump_flow_dict = dict(zip(df_summary.columns[1:], df_summary.loc[df_summary['Parameters'] == 'Pump Flow (m³/hr)'].values[0,1:]))
                 else:
                     # fallback: use optimized flow from results
                     pump_flow_dict = {}
@@ -7200,8 +7204,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             added_speed = True
 
                         df_head = source.get("head_df")
-                        if isinstance(df_head, pd.DataFrame) and "Flow (mÂ³/hr)" in df_head.columns and len(df_head) > 1:
-                            flow_user = np.array(df_head["Flow (mÂ³/hr)"], dtype=float)
+                        if isinstance(df_head, pd.DataFrame) and "Flow (m³/hr)" in df_head.columns and len(df_head) > 1:
+                            flow_user = np.array(df_head["Flow (m³/hr)"], dtype=float)
                             flow_max = float(np.max(flow_user))
                         else:
                             flow_max = pump_flow
@@ -7235,7 +7239,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                                     y=trace["y"],
                                     mode='lines',
                                     name=trace["label"],
-                                    hovertemplate="Flow: %{x:.2f} mÂ³/hr<br>Power: %{y:.2f} kW",
+                                    hovertemplate="Flow: %{x:.2f} m³/hr<br>Power: %{y:.2f} kW",
                                     line=dict(color=color, width=2.3),
                                 )
                             )
@@ -7243,7 +7247,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 
                     if added_speed:
                         fig_pwr.update_layout(
-                            title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} mÂ³/hr): {stn['name']}",
+                            title=f"Power vs Speed (at Pump Flow = {pump_flow:.2f} m³/hr): {stn['name']}",
                             xaxis_title="Speed (rpm)",
                             yaxis_title="Power (kW)",
                             font=dict(size=16),
@@ -7256,7 +7260,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     if added_flow:
                         fig_pwr2.update_layout(
                             title=f"Power vs Flow at Various Speeds: {stn['name']}",
-                            xaxis_title="Flow (mÂ³/hr)",
+                            xaxis_title="Flow (m³/hr)",
                             yaxis_title="Power (kW)",
                             font=dict(size=16),
                             height=400,
@@ -7328,11 +7332,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         line=dict(width=4, color=color),
                         opacity=0.82,
                         name=f"DRA {dra}%",
-                        hovertemplate=f"DRA: {dra}%<br>Flow: %{{x:.2f}} mÂ³/hr<br>Head: %{{y:.2f}} m"
+                        hovertemplate=f"DRA: {dra}%<br>Flow: %{{x:.2f}} m³/hr<br>Head: %{{y:.2f}} m"
                     ))
                 fig_sys.update_layout(
-                    title=f"System Curve (Head vs Flow) â {stn['name']}",
-                    xaxis_title="Flow (mÂ³/hr)",
+                    title=f"System Curve (Head vs Flow) — {stn['name']}",
+                    xaxis_title="Flow (m³/hr)",
                     yaxis_title="Dynamic Head (m)",
                     font=dict(size=18, family="Segoe UI"),
                     legend=dict(font=dict(size=14), title="DRA Dosage"),
@@ -7382,8 +7386,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 head_dfs = [src.get("head_df") for src in sources if isinstance(src.get("head_df"), pd.DataFrame)]
                 flow_candidates: list[float] = []
                 for df_head in head_dfs:
-                    if df_head is not None and "Flow (mÂ³/hr)" in df_head.columns and len(df_head) > 0:
-                        flow_arr = np.array(df_head["Flow (mÂ³/hr)"], dtype=float)
+                    if df_head is not None and "Flow (m³/hr)" in df_head.columns and len(df_head) > 0:
+                        flow_arr = np.array(df_head["Flow (m³/hr)"], dtype=float)
                         if flow_arr.size:
                             flow_candidates.append(float(np.max(flow_arr)))
                 if flow_candidates:
@@ -7571,7 +7575,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 # -------- Layout Polish: Bright, Vivid, Clean --------
                 fig.update_layout(
                     title=f"<b style='color:#222'>Pump-System Curves: {stn['name']}</b>",
-                    xaxis_title="Flow (mÂ³/hr)",
+                    xaxis_title="Flow (m³/hr)",
                     yaxis_title="Head (m)",
                     font=dict(size=23, family="Segoe UI, Arial"),
                     legend=dict(font=dict(size=17), itemsizing="constant", borderwidth=1, bordercolor="#ddd"),
@@ -7924,7 +7928,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     Z[i,j] = get_total_cost(flow_opt, speed_opt, Yv[i,j], int(Xv[i,j]))
     
         axis_labels = {
-            "Flow": "X: Flow (mÂ³/hr)",
+            "Flow": "X: Flow (m³/hr)",
             "Speed": "Y: Pump Speed (rpm)",
             "Head": "Z: Head (m)",
             "Efficiency": "Z: Efficiency (%)",
@@ -8180,7 +8184,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.info("Run optimization first to enable sensitivity analysis.")
         else:
             param = st.selectbox("Parameter to vary", [
-                "Flowrate (mÂ³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Fuel Price (INR/L)", "DRA Cost (INR/L)"
+                "Flowrate (m³/hr)", "Viscosity (cSt)", "Drag Reduction (%)", "Fuel Price (INR/L)", "DRA Cost (INR/L)"
             ])
             output = st.selectbox("Output metric", [
                 "Total Cost (INR)", "Power Cost (INR)", "DRA Cost (INR)",
@@ -8192,7 +8196,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 Price_HSD = st.session_state["Price_HSD"]
                 linefill_df = st.session_state.get("linefill_df", pd.DataFrame())
                 N = 10
-                if param == "Flowrate (mÂ³/hr)":
+                if param == "Flowrate (m³/hr)":
                     pvals = np.linspace(max(10, 0.5*FLOW), 1.5*FLOW, N)
                 elif param == "Viscosity (cSt)":
                     first_visc = linefill_df.iloc[0]["Viscosity (cSt)"] if not linefill_df.empty else 10
@@ -8218,7 +8222,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     this_RateDRA = RateDRA
                     this_Price_HSD = Price_HSD
                     this_linefill_df = linefill_df.copy()
-                    if param == "Flowrate (mÂ³/hr)":
+                    if param == "Flowrate (m³/hr)":
                         this_FLOW = val
                     elif param == "Viscosity (cSt)":
                         this_linefill_df["Viscosity (cSt)"] = val
@@ -8286,14 +8290,14 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 benchmarks = {
                     "Total Cost per km (INR/day/km)": 12000,
                     "Pump Efficiency (%)": 70,
-                    "Specific Energy (kWh/mÂ³)": 0.065,
+                    "Specific Energy (kWh/m³)": 0.065,
                     "Max Velocity (m/s)": 2.1
                 }
                 for k, v in benchmarks.items():
                     benchmarks[k] = st.number_input(f"{k}", value=float(v))
             elif b_mode == "Edit Benchmarks":
                 bdf = pd.DataFrame({
-                    "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/mÂ³)", "Max Velocity (m/s)"],
+                    "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/m³)", "Max Velocity (m/s)"],
                     "Benchmark Value": [12000, 70, 0.065, 2.1]
                 })
                 bdf = data_editor_copy(bdf)
@@ -8337,14 +8341,14 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 comp = {
                     "Total Cost per km (INR/day/km)": my_cost_per_km,
                     "Pump Efficiency (%)": my_avg_eff,
-                    "Specific Energy (kWh/mÂ³)": my_spec_energy,
+                    "Specific Energy (kWh/m³)": my_spec_energy,
                     "Max Velocity (m/s)": max_velocity
                 }
                 rows = []
                 for k, v in comp.items():
                     bench = benchmarks.get(k, None)
                     if bench is not None:
-                        status = "â" if (k != "Pump Efficiency (%)" and v <= bench) or (k == "Pump Efficiency (%)" and v >= bench) else "ð´"
+                        status = "✅" if (k != "Pump Efficiency (%)" and v <= bench) or (k == "Pump Efficiency (%)" and v >= bench) else "🔴"
                         rows.append((k, f"{v:.2f}", f"{bench:.2f}", status))
                 df_bench = pd.DataFrame(rows, columns=["Parameter", "Pipeline", "Benchmark", "Status"])
                 st.dataframe(df_bench, width='stretch', hide_index=True)
@@ -8411,7 +8415,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optimaâ¢ v1.1.2. Developed by IOCL Pipelines Division.
+    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
     </div>
     """,
     unsafe_allow_html=True
