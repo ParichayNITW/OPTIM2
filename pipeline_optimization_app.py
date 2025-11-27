@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 from pathlib import Path
 import time
 import base64
@@ -1027,6 +1028,47 @@ def _build_hourly_segment_averages(
     return hourly_snapshots
 
 
+def _estimate_travel_hours(
+    baseline_flow_m3h: float,
+    *,
+    linefill_vol: pd.DataFrame | None,
+    stations: list[dict],
+) -> float:
+    """Estimate how many hours of fluid sit in the line at the design flow."""
+
+    if baseline_flow_m3h <= 0.0:
+        return 1.0
+
+    total_volume_m3 = 0.0
+    if isinstance(linefill_vol, pd.DataFrame) and len(linefill_vol) > 0:
+        vol_col = "Volume (m³)" if "Volume (m³)" in linefill_vol.columns else "Volume"
+        try:
+            total_volume_m3 = float(pd.to_numeric(linefill_vol[vol_col], errors="coerce").fillna(0.0).sum())
+        except Exception:
+            total_volume_m3 = 0.0
+
+    if total_volume_m3 <= 0.0:
+        for stn in stations:
+            try:
+                length_km = float(stn.get("L", stn.get("length_km", 0.0)) or 0.0)
+                diameter_m = float(stn.get("D", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if length_km <= 0.0 or diameter_m <= 0.0:
+                continue
+            area = math.pi * (diameter_m / 2.0) ** 2
+            total_volume_m3 += area * length_km * 1000.0
+
+    if total_volume_m3 <= 0.0:
+        return 1.0
+
+    travel_hours = total_volume_m3 / baseline_flow_m3h
+    if travel_hours <= 0.0:
+        return 1.0
+
+    return float(travel_hours)
+
+
 def shift_vol_linefill(
     vol_table: pd.DataFrame,
     pumped_m3: float,
@@ -1182,15 +1224,18 @@ def _estimate_worst_case_segment_profiles(
     return worst_kv, worst_rho, worst_slices, worst_hours
 
 
-def _collapse_hourly_baselines(hourly_requirements: list[dict[str, object]], stations: list[dict]) -> dict:
+def _collapse_hourly_baselines(
+    hourly_requirements: list[dict[str, object]],
+    stations: list[dict],
+    *,
+    travel_hours: float,
+) -> dict:
     """Collapse hour-by-hour baseline checks into a single enforceable floor.
 
-    The reducer keeps the *highest* ppm seen for each segment across the 24-hour
-    replay, tagging which hour drove that need plus the matching viscosity and
-    density snapshot.  This yields the smallest constant baseline that still
-    avoids late-hour spikes: if a segment never needs DRA, its baseline stays
-    zero; if it needs DRA only at one tough hour, the maximum from that hour is
-    preserved.
+    The reducer blends the hourly needs using a rolling mean sized to the line's
+    travel time (hours of fluid in the line at the design flow).  By taking the
+    highest rolling mean instead of the single worst spike, the baseline stays
+    as low as possible while still smoothing out late-hour surges.
     """
 
     aggregate = {
@@ -1212,6 +1257,8 @@ def _collapse_hourly_baselines(hourly_requirements: list[dict[str, object]], sta
     for req in hourly_requirements:
         warnings.extend(req.get("warnings") or [])
 
+    window = max(1, int(math.ceil(travel_hours)))
+
     for idx in range(num_segments):
         seg_length = 0.0
         try:
@@ -1219,7 +1266,7 @@ def _collapse_hourly_baselines(hourly_requirements: list[dict[str, object]], sta
         except Exception:
             seg_length = 0.0
 
-        best_state: dict[str, object] | None = None
+        per_hour: list[dict[str, object]] = []
 
         for req in hourly_requirements:
             segs = req.get("segments") if isinstance(req.get("segments"), Sequence) else []
@@ -1244,20 +1291,39 @@ def _collapse_hourly_baselines(hourly_requirements: list[dict[str, object]], sta
                 except (TypeError, ValueError):
                     perc_val = 0.0
 
-                if best_state is None or ppm_val > best_state.get("dra_ppm", 0.0):
-                    best_state = {
-                        "station_idx": idx,
-                        "length_km": seg_length,
+                per_hour.append(
+                    {
                         "dra_ppm": ppm_val,
                         "dra_perc": perc_val,
                         "hour": int(hour_idx) if isinstance(hour_idx, (int, float)) else -1,
+                        "worst_kv": float(avg_kv[seg_idx]) if seg_idx < len(avg_kv) else 0.0,
+                        "worst_rho": float(avg_rho[seg_idx]) if seg_idx < len(avg_rho) else 0.0,
                         "suction_head": seg.get("suction_head", 0.0),
                         "sdh_required": seg.get("sdh_required", 0.0),
                         "max_head_available": seg.get("max_head_available", 0.0),
                         "limited_by_station": bool(seg.get("limited_by_station")),
-                        "worst_kv": float(avg_kv[seg_idx]) if seg_idx < len(avg_kv) else 0.0,
-                        "worst_rho": float(avg_rho[seg_idx]) if seg_idx < len(avg_rho) else 0.0,
                     }
+                )
+
+        per_hour.sort(key=lambda entry: entry.get("hour", 0))
+        if not per_hour:
+            continue
+
+        best_state: dict[str, object] | None = None
+        for idx_end in range(len(per_hour)):
+            window_entries = per_hour[max(0, idx_end - window + 1) : idx_end + 1]
+            if not window_entries:
+                continue
+            avg_ppm = sum(e.get("dra_ppm", 0.0) for e in window_entries) / len(window_entries)
+            avg_perc = sum(e.get("dra_perc", 0.0) for e in window_entries) / len(window_entries)
+            candidate = dict(window_entries[-1])
+            candidate["dra_ppm"] = avg_ppm
+            candidate["dra_perc"] = avg_perc
+
+            if best_state is None or avg_ppm > best_state.get("dra_ppm", 0.0):
+                candidate["station_idx"] = idx
+                candidate["length_km"] = seg_length
+                best_state = candidate
 
         if best_state and (best_state.get("dra_ppm", 0.0) > 0.0 or best_state.get("dra_perc", 0.0) > 0.0):
             aggregate["segments"].append(best_state)
@@ -1324,6 +1390,12 @@ def _compute_and_store_baseline_requirement(
         hourly_flow_m3h=baseline_flow,
         kv_fallback=fallback_kv,
         rho_fallback=fallback_rho,
+    )
+
+    travel_hours = _estimate_travel_hours(
+        baseline_flow,
+        linefill_vol=linefill_vol_df,
+        stations=stations_data,
     )
 
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
@@ -1430,6 +1502,7 @@ def _compute_and_store_baseline_requirement(
         baseline_requirement = _collapse_hourly_baselines(
             hourly_requirements,
             stations_data,
+            travel_hours=travel_hours,
         )
         warnings = list(baseline_requirement.get("warnings", [])) if isinstance(baseline_requirement, Mapping) else []
         if persist_targets:
@@ -1496,14 +1569,46 @@ def _compute_and_store_baseline_requirement(
             st.error(f"Failed to compute baseline DRA floors: {exc}")
             baseline_requirement = None
 
+    design_kv = list(worst_kv)
+    design_rho = list(worst_rho)
+    design_hours = list(worst_hours)
+    if isinstance(baseline_requirement, Mapping) and isinstance(baseline_requirement.get("segments"), Sequence):
+        for seg in baseline_requirement.get("segments", []):
+            if not isinstance(seg, Mapping):
+                continue
+            try:
+                seg_idx = int(seg.get("station_idx", -1))
+            except (TypeError, ValueError):
+                seg_idx = -1
+            if seg_idx < 0:
+                continue
+            while len(design_kv) <= seg_idx:
+                design_kv.append(0.0)
+            while len(design_rho) <= seg_idx:
+                design_rho.append(0.0)
+            while len(design_hours) <= seg_idx:
+                design_hours.append(-1)
+            try:
+                design_kv[seg_idx] = float(seg.get("worst_kv", design_kv[seg_idx]))
+            except Exception:
+                pass
+            try:
+                design_rho[seg_idx] = float(seg.get("worst_rho", design_rho[seg_idx]))
+            except Exception:
+                pass
+            try:
+                design_hours[seg_idx] = int(seg.get("hour", design_hours[seg_idx]))
+            except Exception:
+                pass
+
     st.session_state["baseline_design_inputs"] = {
         "design_flow_m3h": baseline_flow,
-        "design_visc_cst": max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0),
-        "design_density_kgm3": max(worst_rho) if worst_rho else density_default,
+        "design_visc_cst": max(design_kv) if design_kv else st.session_state.get("max_laced_visc_cst", 0.0),
+        "design_density_kgm3": max(design_rho) if design_rho else density_default,
         "design_min_suction_m": min_suction,
-        "worst_hours": list(worst_hours),
-        "worst_kv": list(worst_kv),
-        "worst_rho": list(worst_rho),
+        "worst_hours": list(design_hours),
+        "worst_kv": list(design_kv),
+        "worst_rho": list(design_rho),
         "hourly_requirements": hourly_requirements,
     }
 
@@ -2006,7 +2111,7 @@ with st.sidebar:
                                     "1. **Target laced flow** is set to the pumping-plan volume ÷ 24 hours (or falls back to your entered lacing flow).",
                                     "2. The app replays 24 hourly linefill states, converts each hour's volume to segment lengths, and computes a **length-weighted average viscosity and density** per segment using ∑(length × property)/∑length.",
                                     "3. Every hour is checked: the head required at that hour's average viscosity/density is compared against the available head at DOL (after MOP/MAOP). Any shortfall is translated to %DR and PPM for that hour.",
-                                    "4. Per segment, the baseline keeps the **highest hourly PPM** found across the day. This creates the smallest constant floor that still prevents late-hour spikes in DRA demand.",
+                                    "4. Per segment, the baseline takes a rolling mean over a window equal to the line's travel time (hours of fluid in the pipe) and keeps the highest of those rolling averages. This smooths single-hour spikes while keeping the floor low.",
                                     "5. If no hour shows a shortfall, the recommended baseline PPM for that segment stays at zero.",
                                 ]
                             )
@@ -2133,9 +2238,10 @@ with st.sidebar:
                             "and the resulting shortfall that drives the recommended ppm."
                         )
                     st.caption(
-                        "Numbers come from the worst-hour averages: the hour column shows when the highest length-weighted "
-                        "viscosity occurred for that segment, and the matching density and design flow are used to translate "
-                        "the head shortfall into %DR and baseline PPM."
+                        "Numbers come from the rolling travel-time window: the hour column marks when the highest rolling "
+                        "average (over the hours of fluid in the line) occurred for that segment. The matching viscosity, "
+                        "density, and design flow from that window are used to translate the head shortfall into %DR and "
+                        "baseline PPM."
                     )
                 else:
                     st.info("No segment-level floors were generated.")
