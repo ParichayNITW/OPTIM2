@@ -4,20 +4,9 @@ from pathlib import Path
 import time
 import base64
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
 import altair as alt
 import pipeline_model
 import datetime as dt
-
-
-def _safe_set_session_state(key, value):
-    """Attempt to write into session state without throwing Streamlit errors."""
-
-    try:
-        st.session_state[key] = value
-        return True
-    except StreamlitAPIException:
-        return False
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -947,241 +936,6 @@ def _prepare_pipeline_context():
     return stations_data, term_data, linefill_df, kv_list, rho_list, segment_slices
 
 
-def _length_weighted_average(entries: list[Mapping[str, object]], *, key: str, default: float) -> float:
-    """Return the length-weighted average for ``key`` across ``entries``."""
-
-    total_len = 0.0
-    weighted = 0.0
-    for entry in entries or []:
-        try:
-            seg_len = float(entry.get("length_km", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            seg_len = 0.0
-        if seg_len <= 0.0:
-            continue
-
-        try:
-            value = float(entry.get(key, default) or default)
-        except (TypeError, ValueError):
-            value = default
-
-        total_len += seg_len
-        weighted += seg_len * value
-
-    if total_len <= 0.0:
-        return float(default)
-
-    return float(weighted / total_len)
-
-
-def _build_hourly_segment_averages(
-    stations: list[dict],
-    *,
-    linefill_vol: pd.DataFrame | None,
-    day_plan: pd.DataFrame | None,
-    hourly_flow_m3h: float,
-    kv_fallback: Sequence[float],
-    rho_fallback: Sequence[float],
-) -> list[dict[str, object]]:
-    """Simulate 24 hourly linefill states and capture segment averages per hour."""
-
-    num_segments = len(stations)
-    if num_segments == 0:
-        return []
-
-    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
-    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
-
-    hourly_snapshots: list[dict[str, object]] = []
-    pumped_per_hour = float(hourly_flow_m3h or 0.0)
-    if pumped_per_hour <= 0.0:
-        pumped_per_hour = 0.0
-
-    for hour in range(24):
-        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(current_vol, stations)
-
-        avg_kv: list[float] = []
-        avg_rho: list[float] = []
-        for idx in range(num_segments):
-            kv_default = kv_list[idx] if idx < len(kv_list) else kv_fallback[idx]
-            rho_default = rho_list[idx] if idx < len(rho_list) else rho_fallback[idx]
-            slices = segment_slices[idx] if idx < len(segment_slices) else []
-
-            avg_kv.append(_length_weighted_average(slices, key="kv", default=kv_default))
-            avg_rho.append(_length_weighted_average(slices, key="rho", default=rho_default))
-
-        hourly_snapshots.append(
-            {
-                "hour": hour,
-                "avg_kv": avg_kv,
-                "avg_rho": avg_rho,
-                "slices": segment_slices,
-            }
-        )
-
-        if pumped_per_hour > 0.0:
-            current_vol, plan_local, _ = shift_vol_linefill(
-                current_vol.copy(), pumped_per_hour, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
-            )
-
-    return hourly_snapshots
-
-
-def shift_vol_linefill(
-    vol_table: pd.DataFrame,
-    pumped_m3: float,
-    day_plan: pd.DataFrame | None,
-) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
-    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
-
-    Fluid is removed from the terminal end of ``vol_table`` and the same volume
-    is injected at the origin from ``day_plan`` if provided. The updated
-    ``vol_table`` together with the shortened ``day_plan`` and a list of
-    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
-    returned.
-    """
-
-    vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
-    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
-
-    remaining = pumped_m3
-    idx = len(vol_table) - 1
-    while remaining > 1e-9 and idx >= 0:
-        v = vol_table.at[idx, "Volume (m³)"]
-        take = min(v, remaining)
-        vol_table.at[idx, "Volume (m³)"] = v - take
-        remaining -= take
-        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
-            vol_table = vol_table.drop(index=idx)
-        idx -= 1
-    vol_table = vol_table.reset_index(drop=True)
-
-    injected_batches: list[dict[str, float]] = []
-
-    if day_plan is not None:
-        day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
-        injected = 0.0
-
-        while remaining > 1e-9 and len(day_plan) > 0:
-            v = day_plan.iloc[0]["Volume (m³)"]
-            take = min(v, remaining)
-            injected += take
-
-            vol_table = pd.concat(
-                [
-                    pd.DataFrame(
-                        [
-                            {
-                                "Product": day_plan.iloc[0].get("Product", ""),
-                                "Volume (m³)": take,
-                                "Viscosity (cSt)": day_plan.iloc[0]["Viscosity (cSt)"],
-                                "Density (kg/m³)": day_plan.iloc[0]["Density (kg/m³)"],
-                                "Initial DRA (ppm)": day_plan.iloc[0].get("Initial DRA (ppm)", 0.0),
-                            }
-                        ]
-                    ),
-                    vol_table,
-                ],
-                ignore_index=True,
-            )
-
-            remaining -= take
-            if take >= v:
-                day_plan = day_plan.drop(index=0).reset_index(drop=True)
-            else:
-                day_plan.at[0, "Volume (m³)"] = v - take
-
-        if injected > 0:
-            injected_batches.append(
-                {
-                    "volume": float(injected),
-                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)) if len(day_plan) else 0.0,
-                }
-            )
-
-    vol_table = vol_table.reset_index(drop=True)
-
-    return vol_table, day_plan, injected_batches
-
-
-def _estimate_worst_case_segment_profiles(
-    stations: list[dict],
-    *,
-    linefill_vol: pd.DataFrame | None,
-    day_plan: pd.DataFrame | None,
-    design_flow_m3h: float,
-    fallback_kv: Sequence[float] | None,
-    fallback_rho: Sequence[float] | None,
-    fallback_slices: Sequence[Sequence[Mapping[str, object]]] | None,
-) -> tuple[list[float], list[float], list[list[dict]], list[int]]:
-    """Return segment-wise worst-case kv/rho profiles over 24 hours."""
-
-    num_segments = len(stations)
-    if num_segments == 0:
-        return [], [], [], []
-
-    lengths = [float(stn.get("L", 0.0) or 0.0) for stn in stations]
-
-    kv_fallback = [float(val) for val in fallback_kv] if fallback_kv else [1.0] * num_segments
-    rho_fallback = [float(val) for val in fallback_rho] if fallback_rho else [850.0] * num_segments
-    slices_fallback = [list(entry) for entry in (fallback_slices or [])]
-    if len(slices_fallback) < num_segments:
-        for idx in range(len(slices_fallback), num_segments):
-            slices_fallback.append(
-                [
-                    {
-                        "length_km": lengths[idx] if idx < len(lengths) else 0.0,
-                        "kv": kv_fallback[idx] if idx < len(kv_fallback) else 1.0,
-                        "rho": rho_fallback[idx] if idx < len(rho_fallback) else 850.0,
-                    }
-                ]
-            )
-
-    if design_flow_m3h <= 0.0:
-        return kv_fallback, rho_fallback, slices_fallback, [-1] * num_segments
-
-    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
-    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
-
-    hourly_flow = st.session_state.get("hourly_flow", design_flow_m3h)
-    try:
-        hourly_flow = float(hourly_flow)
-    except (TypeError, ValueError):
-        hourly_flow = float(design_flow_m3h)
-
-    snapshots = _build_hourly_segment_averages(
-        stations,
-        linefill_vol=linefill_vol,
-        day_plan=plan_local,
-        hourly_flow_m3h=hourly_flow,
-        kv_fallback=kv_fallback,
-        rho_fallback=rho_fallback,
-    )
-
-    worst_kv = list(kv_fallback)
-    worst_rho = list(rho_fallback)
-    worst_slices: list[list[dict]] = [list(entry) for entry in slices_fallback]
-    worst_hours: list[int] = [-1] * num_segments
-
-    for snap in snapshots:
-        avg_kv = snap.get("avg_kv", [])
-        avg_rho = snap.get("avg_rho", [])
-        slices_now = snap.get("slices", [])
-        for idx in range(num_segments):
-            kv_now = avg_kv[idx] if idx < len(avg_kv) else kv_fallback[idx]
-            rho_now = avg_rho[idx] if idx < len(avg_rho) else rho_fallback[idx]
-            if kv_now > worst_kv[idx]:
-                worst_kv[idx] = kv_now
-                worst_rho[idx] = rho_now
-                worst_slices[idx] = (
-                    list(slices_now[idx]) if idx < len(slices_now) and isinstance(slices_now[idx], list) else worst_slices[idx]
-                )
-                worst_hours[idx] = int(snap.get("hour", -1))
-
-    return worst_kv, worst_rho, worst_slices, worst_hours
-
-
 def _compute_and_store_baseline_requirement(
     stations_data,
     term_data,
@@ -1191,84 +945,23 @@ def _compute_and_store_baseline_requirement(
 ):
     """Recompute the DRA baseline using the current lacing inputs."""
 
-    plan_df = st.session_state.get("day_plan_df")
-    if isinstance(plan_df, pd.DataFrame):
-        plan_df = ensure_initial_dra_column(plan_df.copy(), default=0.0, fill_blanks=True)
-    else:
-        plan_df = None
-
-    plan_total_vol = 0.0
-    if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0:
-        plan_col = "Volume (m³)" if "Volume (m³)" in plan_df.columns else "Volume"
-        try:
-            plan_total_vol = float(pd.to_numeric(plan_df[plan_col], errors="coerce").fillna(0.0).sum())
-        except Exception:
-            plan_total_vol = 0.0
-
-    persist_targets = st.session_state.get("baseline_input_mode") == "auto"
-
     baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
-    flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
-    if flow_from_plan > 0.0:
-        baseline_flow = flow_from_plan
-        if persist_targets:
-            _safe_set_session_state("max_laced_flow_m3h", baseline_flow)
-
-    fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
-    fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
-    fallback_slices = list(segment_slices) if isinstance(segment_slices, Sequence) else []
-
-    linefill_vol_df = st.session_state.get("linefill_vol_df")
-    if isinstance(linefill_vol_df, pd.DataFrame):
-        linefill_vol_df = ensure_initial_dra_column(linefill_vol_df.copy(), default=0.0, fill_blanks=True)
-    else:
-        linefill_vol_df = None
-
-    worst_kv, worst_rho, worst_slices, worst_hours = _estimate_worst_case_segment_profiles(
-        stations_data,
-        linefill_vol=linefill_vol_df,
-        day_plan=plan_df,
-        design_flow_m3h=baseline_flow,
-        fallback_kv=fallback_kv,
-        fallback_rho=fallback_rho,
-        fallback_slices=fallback_slices,
-    )
-
-    baseline_visc_raw = max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0)
+    baseline_visc_raw = st.session_state.get("max_laced_visc_cst", 0.0)
     try:
         baseline_visc = float(baseline_visc_raw)
     except (TypeError, ValueError):
         baseline_visc = 0.0
     if baseline_visc <= 0.0:
         try:
-            baseline_visc = float(max(worst_kv or fallback_kv or [1.0]))
+            baseline_visc = float(max(kv_list or [1.0]))
         except (TypeError, ValueError):
             baseline_visc = 1.0
 
-    if persist_targets and worst_kv:
-        _safe_set_session_state("max_laced_visc_cst", baseline_visc)
-
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
-    density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
-    fluid_density = float(max(worst_rho) if worst_rho else density_default or 0.0)
-    if fluid_density <= 0.0:
-        try:
-            fluid_density = float(density_default)
-        except (TypeError, ValueError):
-            fluid_density = 0.0
-    if persist_targets and worst_rho:
-        _safe_set_session_state("laced_density_kgm3", fluid_density)
+    fluid_density = float(
+        st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0
+    )
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
-
-    st.session_state["baseline_design_inputs"] = {
-        "design_flow_m3h": baseline_flow,
-        "design_visc_cst": baseline_visc,
-        "design_density_kgm3": fluid_density,
-        "design_min_suction_m": min_suction,
-        "worst_hours": list(worst_hours),
-        "worst_kv": list(worst_kv),
-        "worst_rho": list(worst_rho),
-    }
 
     baseline_requirement: dict | None = None
     warnings: list = []
@@ -1278,9 +971,7 @@ def _compute_and_store_baseline_requirement(
             term_data,
             max_flow_m3h=baseline_flow,
             max_visc_cst=baseline_visc,
-            segment_slices=worst_slices,
-            kv_list=worst_kv,
-            rho_list=worst_rho,
+            segment_slices=segment_slices,
             min_suction_head=min_suction,
             fluid_density=fluid_density,
             mop_kgcm2=mop_kgcm2,
@@ -1757,38 +1448,7 @@ with st.sidebar:
                 st.success(
                     f"Baseline DRA floors updated. Minimum enforced origin injection is {floor_ppm:.2f} ppm."
                 )
-                design_inputs = st.session_state.get("baseline_design_inputs", {})
-                if isinstance(design_inputs, Mapping):
-                    try:
-                        flow_msg = float(design_inputs.get("design_flow_m3h", 0.0))
-                    except (TypeError, ValueError):
-                        flow_msg = 0.0
-                    try:
-                        visc_msg = float(design_inputs.get("design_visc_cst", 0.0))
-                    except (TypeError, ValueError):
-                        visc_msg = 0.0
-                    try:
-                        rho_msg = float(design_inputs.get("design_density_kgm3", 0.0))
-                    except (TypeError, ValueError):
-                        rho_msg = 0.0
-                    try:
-                        suction_msg = float(design_inputs.get("design_min_suction_m", 0.0))
-                    except (TypeError, ValueError):
-                        suction_msg = 0.0
-                    st.info(
-                        f"Baseline inputs used: target laced flow = {flow_msg:.2f} m³/h; "
-                        f"worst-case segment viscosity = {visc_msg:.2f} cSt; "
-                        f"density at that hour = {rho_msg:.2f} kg/m³; "
-                        f"minimum suction head = {suction_msg:.2f} m."
-                    )
                 segment_rows: list[dict[str, object]] = []
-                worst_hours_list = []
-                worst_kv_list = []
-                worst_rho_list = []
-                if isinstance(design_inputs, Mapping):
-                    worst_hours_list = design_inputs.get("worst_hours") or []
-                    worst_kv_list = design_inputs.get("worst_kv") or []
-                    worst_rho_list = design_inputs.get("worst_rho") or []
                 if isinstance(segments_detail, Sequence):
                     terminal_name = term_ctx.get("name") if isinstance(term_ctx, Mapping) else "Terminal"
                     for seg in segments_detail:
@@ -1829,18 +1489,6 @@ with st.sidebar:
                             seg_suction = float(seg.get("suction_head", 0.0) or 0.0)
                         except (TypeError, ValueError):
                             seg_suction = 0.0
-                        try:
-                            worst_hour = int(worst_hours_list[station_idx]) if station_idx < len(worst_hours_list) else -1
-                        except (TypeError, ValueError, IndexError):
-                            worst_hour = -1
-                        try:
-                            worst_kv_val = float(worst_kv_list[station_idx]) if station_idx < len(worst_kv_list) else 0.0
-                        except (TypeError, ValueError, IndexError):
-                            worst_kv_val = 0.0
-                        try:
-                            worst_rho_val = float(worst_rho_list[station_idx]) if station_idx < len(worst_rho_list) else 0.0
-                        except (TypeError, ValueError, IndexError):
-                            worst_rho_val = 0.0
                         segment_rows.append(
                             {
                                 "Segment": segment_label,
@@ -1848,9 +1496,6 @@ with st.sidebar:
                                 "Baseline PPM": seg_ppm,
                                 "Baseline %DR": seg_perc,
                                 "Suction head (m)": seg_suction,
-                                "Worst-hour (h)": worst_hour,
-                                "Worst avg visc (cSt)": worst_kv_val,
-                                "Density @ worst hour (kg/m³)": worst_rho_val,
                             }
                         )
                 if segment_rows:
@@ -1861,8 +1506,6 @@ with st.sidebar:
                             "Baseline PPM": 2,
                             "Baseline %DR": 2,
                             "Suction head (m)": 2,
-                            "Worst avg visc (cSt)": 2,
-                            "Density @ worst hour (kg/m³)": 2,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
@@ -2878,6 +2521,83 @@ def combine_volumetric_profiles(
         rho_list.append(rho_max)
 
     return kv_list, rho_list, segment_slices
+
+
+def shift_vol_linefill(
+    vol_table: pd.DataFrame,
+    pumped_m3: float,
+    day_plan: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
+    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
+
+    Fluid is removed from the terminal end of ``vol_table`` and the same volume
+    is injected at the origin from ``day_plan`` if provided.  The updated
+    ``vol_table`` together with the shortened ``day_plan`` and a list of
+    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
+    returned.
+    """
+
+    # Remove delivered volume from downstream end
+    vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
+    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
+    remaining = pumped_m3
+    idx = len(vol_table) - 1
+    while remaining > 1e-9 and idx >= 0:
+        v = vol_table.at[idx, "Volume (m³)"]
+        take = min(v, remaining)
+        vol_table.at[idx, "Volume (m³)"] = v - take
+        remaining -= take
+        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
+            vol_table = vol_table.drop(index=idx)
+        idx -= 1
+    vol_table = vol_table.reset_index(drop=True)
+
+    injected_batches: list[dict[str, float]] = []
+
+    # Inject new product at upstream end according to day plan
+    if day_plan is not None:
+        day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
+        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
+        added = pumped_m3
+        j = 0
+        while added > 1e-9 and j < len(day_plan):
+            v = day_plan.at[j, "Volume (m³)"]
+            take = min(v, added)
+            batch = {
+                "Product": day_plan.at[j, "Product"],
+                "Volume (m³)": take,
+                "Viscosity (cSt)": day_plan.at[j, "Viscosity (cSt)"],
+                "Density (kg/m³)": day_plan.at[j, "Density (kg/m³)"],
+            }
+            ppm_value = day_plan.at[j, INIT_DRA_COL] if INIT_DRA_COL in day_plan.columns else 0.0
+            try:
+                ppm_value = float(ppm_value)
+            except (TypeError, ValueError):
+                ppm_value = 0.0
+            if pd.isna(ppm_value):
+                ppm_value = 0.0
+            batch[INIT_DRA_COL] = ppm_value
+            if "DRA ppm" in vol_table.columns or "DRA ppm" in day_plan.columns:
+                batch["DRA ppm"] = ppm_value
+            vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
+            day_plan.at[j, "Volume (m³)"] = v - take
+            added -= take
+            if take > 1e-9:
+                injected_batches.append({"volume": float(take), "dra_ppm": ppm_value})
+            if day_plan.at[j, "Volume (m³)"] <= 1e-9:
+                j += 1
+        day_plan = day_plan.iloc[j:].reset_index(drop=True)
+
+    if injected_batches:
+        injected_batches = [
+            {
+                "volume": float(batch.get("volume", 0.0)),
+                "dra_ppm": float(batch.get("dra_ppm", 0.0)),
+            }
+            for batch in reversed(injected_batches)
+        ]
+
+    return vol_table, day_plan, injected_batches
 
 
 def _append_zero_plan_segments_to_result(
@@ -6490,35 +6210,6 @@ if not auto_batch:
                 )
                 if audit_log:
                     st.markdown("#### Candidate search log (cost-sorted)")
-                    with st.expander("What do residual, queue_km, and protected mean?", expanded=False):
-                        st.markdown(
-                            """
-                            - **Residual:** pressure head left at the station outlet after the pumps and friction/elevation. It is the
-                              head margin available to drive flow to the next station/terminal.
-                            - **queue_km:** total length of treated fluid the optimizer is tracking for that candidate. It equals the
-                              sum of all segments in the DRA queue (upstream carry + current segment) and can be **longer than the
-                              steel** when upstream treated batches are still entering.
-                            - **Protected:** candidates that use either zero DRA or the station's minimum RPM. These are marked to
-                              survive pruning so the search always keeps low-chemical and low-RPM anchors.
-
-                            **Worked example (generic numbers)**
-                            1. **Setup:** 300 km pipeline split into 180 km (Station A) + 120 km (Station B). Manual floor: 3 ppm
-                               everywhere. A 20 km slug at 8 ppm is still upstream from the prior hour.
-                            2. **Starting queue at Station A inlet:** [20 km @ 8 ppm] + [180 km @ 3 ppm] + [120 km @ 3 ppm] =
-                               **320 km queue_km** (300 km in-line + 20 km upstream).
-                            3. **Station A candidate:** run pumps at 2,200 rpm, inject +5 ppm for the first 40 km.
-                               - Residual after A: suppose 150 m above minimum → residual = **150** in the log.
-                               - Queue update: advance 180 km. Consume the 20 km@8 + 20 km of the 3 ppm floor, leaving
-                                 [160 km @ 3 ppm]. Add the new slug [40 km @ (3+5=8 ppm)]. The queue passed to Station B is
-                                 [40 km @ 8 ppm] + [160 km @ 3 ppm] + [120 km @ 3 ppm] = **320 km queue_km**.
-                            4. **Station B candidate:** pumps at 2,600 rpm, no extra DRA.
-                               - Residual after B: suppose 110 m → residual = **110**.
-                               - Queue update: advance 120 km. Consume the 40 km@8 + 80 km@3, leaving [120 km @ 3 ppm]. The
-                                 log shows queue_km = **120** for this candidate.
-                            5. **Protected flag:** if Station A tried 0 ppm or the exact minimum RPM, that row would show
-                               `protected=True` so it is never trimmed away during cost/rate pruning.
-                            """
-                        )
                     st.caption(
                         "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun "
                         "the solver."
