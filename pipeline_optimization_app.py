@@ -1797,10 +1797,15 @@ with st.sidebar:
                 worst_hours_list = []
                 worst_kv_list = []
                 worst_rho_list = []
+                baseline_flow: float | None = None
                 if isinstance(design_inputs, Mapping):
                     worst_hours_list = design_inputs.get("worst_hours") or []
                     worst_kv_list = design_inputs.get("worst_kv") or []
                     worst_rho_list = design_inputs.get("worst_rho") or []
+                    try:
+                        baseline_flow = float(design_inputs.get("design_flow_m3h", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        baseline_flow = None
                 if isinstance(segments_detail, Sequence):
                     terminal_name = term_ctx.get("name") if isinstance(term_ctx, Mapping) else "Terminal"
                     for seg in segments_detail:
@@ -1862,6 +1867,14 @@ with st.sidebar:
                         except (TypeError, ValueError):
                             head_available = 0.0
                         head_gap = max(sdh_required - head_available, 0.0)
+                        try:
+                            design_flow_val = (
+                                float(baseline_flow)
+                                if baseline_flow is not None
+                                else float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 0.0)) or 0.0)
+                            )
+                        except (TypeError, ValueError):
+                            design_flow_val = 0.0
                         segment_rows.append(
                             {
                                 "Segment": segment_label,
@@ -1875,7 +1888,7 @@ with st.sidebar:
                                 "Worst hour (h)": worst_hour,
                                 "Worst-hour avg visc (cSt)": worst_kv_val,
                                 "Density @ worst hour (kg/m³)": worst_rho_val,
-                                "Design flow (m³/h)": baseline_flow,
+                                "Design flow (m³/h)": design_flow_val,
                             }
                         )
                 if segment_rows:
