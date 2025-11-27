@@ -936,6 +936,116 @@ def _prepare_pipeline_context():
     return stations_data, term_data, linefill_df, kv_list, rho_list, segment_slices
 
 
+def _length_weighted_average(entries: list[Mapping[str, object]], *, key: str, default: float) -> float:
+    """Return the length-weighted average for ``key`` across ``entries``."""
+
+    total_len = 0.0
+    weighted = 0.0
+    for entry in entries or []:
+        try:
+            seg_len = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_len = 0.0
+        if seg_len <= 0.0:
+            continue
+
+        try:
+            value = float(entry.get(key, default) or default)
+        except (TypeError, ValueError):
+            value = default
+
+        total_len += seg_len
+        weighted += seg_len * value
+
+    if total_len <= 0.0:
+        return float(default)
+
+    return float(weighted / total_len)
+
+
+def _estimate_worst_case_segment_profiles(
+    stations: list[dict],
+    *,
+    linefill_vol: pd.DataFrame | None,
+    day_plan: pd.DataFrame | None,
+    design_flow_m3h: float,
+    fallback_kv: Sequence[float] | None,
+    fallback_rho: Sequence[float] | None,
+    fallback_slices: Sequence[Sequence[Mapping[str, object]]] | None,
+) -> tuple[list[float], list[float], list[list[dict]]]:
+    """Return segment-wise worst-case kv/rho profiles over 24 hours."""
+
+    num_segments = len(stations)
+    if num_segments == 0:
+        return [], [], []
+
+    lengths = [float(stn.get("L", 0.0) or 0.0) for stn in stations]
+
+    kv_fallback = [float(val) for val in fallback_kv] if fallback_kv else [1.0] * num_segments
+    rho_fallback = [float(val) for val in fallback_rho] if fallback_rho else [850.0] * num_segments
+    slices_fallback = [list(entry) for entry in (fallback_slices or [])]
+    if len(slices_fallback) < num_segments:
+        for idx in range(len(slices_fallback), num_segments):
+            slices_fallback.append(
+                [
+                    {
+                        "length_km": lengths[idx] if idx < len(lengths) else 0.0,
+                        "kv": kv_fallback[idx] if idx < len(kv_fallback) else 1.0,
+                        "rho": rho_fallback[idx] if idx < len(rho_fallback) else 850.0,
+                    }
+                ]
+            )
+
+    if design_flow_m3h <= 0.0:
+        return kv_fallback, rho_fallback, slices_fallback
+
+    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
+    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
+
+    worst_kv = list(kv_fallback)
+    worst_rho = list(rho_fallback)
+
+    for _ in range(24):
+        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(current_vol, stations)
+
+        for idx in range(num_segments):
+            seg_len = lengths[idx] if idx < len(lengths) else 0.0
+            slices = segment_slices[idx] if idx < len(segment_slices) else []
+            kv_default = kv_list[idx] if idx < len(kv_list) else kv_fallback[idx]
+            rho_default = rho_list[idx] if idx < len(rho_list) else rho_fallback[idx]
+
+            avg_kv = _length_weighted_average(slices, key="kv", default=kv_default)
+            avg_rho = _length_weighted_average(slices, key="rho", default=rho_default)
+
+            if avg_kv > worst_kv[idx]:
+                worst_kv[idx] = avg_kv
+            if avg_rho > worst_rho[idx]:
+                worst_rho[idx] = avg_rho
+
+        current_vol, plan_local, _ = shift_vol_linefill(
+            current_vol.copy(),
+            design_flow_m3h,
+            plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
+        )
+
+    worst_slices: list[list[dict]] = []
+    for idx in range(num_segments):
+        seg_len = lengths[idx] if idx < len(lengths) else 0.0
+        seg_kv = worst_kv[idx] if idx < len(worst_kv) else kv_fallback[idx]
+        seg_rho = worst_rho[idx] if idx < len(worst_rho) else rho_fallback[idx]
+        worst_slices.append(
+            [
+                {
+                    "length_km": float(seg_len),
+                    "kv": float(seg_kv if seg_kv > 0 else kv_fallback[idx]),
+                    "rho": float(seg_rho if seg_rho > 0 else rho_fallback[idx]),
+                }
+            ]
+        )
+
+    return worst_kv, worst_rho, worst_slices
+
+
 def _compute_and_store_baseline_requirement(
     stations_data,
     term_data,
@@ -945,22 +1055,70 @@ def _compute_and_store_baseline_requirement(
 ):
     """Recompute the DRA baseline using the current lacing inputs."""
 
+    plan_df = st.session_state.get("day_plan_df")
+    if isinstance(plan_df, pd.DataFrame):
+        plan_df = ensure_initial_dra_column(plan_df.copy(), default=0.0, fill_blanks=True)
+    else:
+        plan_df = None
+
+    plan_total_vol = 0.0
+    if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0:
+        plan_col = "Volume (m³)" if "Volume (m³)" in plan_df.columns else "Volume"
+        try:
+            plan_total_vol = float(pd.to_numeric(plan_df[plan_col], errors="coerce").fillna(0.0).sum())
+        except Exception:
+            plan_total_vol = 0.0
+
     baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
-    baseline_visc_raw = st.session_state.get("max_laced_visc_cst", 0.0)
+    flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
+    if flow_from_plan > 0.0:
+        baseline_flow = flow_from_plan
+        st.session_state["max_laced_flow_m3h"] = baseline_flow
+
+    fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
+    fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
+    fallback_slices = list(segment_slices) if isinstance(segment_slices, Sequence) else []
+
+    linefill_vol_df = st.session_state.get("linefill_vol_df")
+    if isinstance(linefill_vol_df, pd.DataFrame):
+        linefill_vol_df = ensure_initial_dra_column(linefill_vol_df.copy(), default=0.0, fill_blanks=True)
+    else:
+        linefill_vol_df = None
+
+    worst_kv, worst_rho, worst_slices = _estimate_worst_case_segment_profiles(
+        stations_data,
+        linefill_vol=linefill_vol_df,
+        day_plan=plan_df,
+        design_flow_m3h=baseline_flow,
+        fallback_kv=fallback_kv,
+        fallback_rho=fallback_rho,
+        fallback_slices=fallback_slices,
+    )
+
+    baseline_visc_raw = max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0)
     try:
         baseline_visc = float(baseline_visc_raw)
     except (TypeError, ValueError):
         baseline_visc = 0.0
     if baseline_visc <= 0.0:
         try:
-            baseline_visc = float(max(kv_list or [1.0]))
+            baseline_visc = float(max(worst_kv or fallback_kv or [1.0]))
         except (TypeError, ValueError):
             baseline_visc = 1.0
 
+    if worst_kv:
+        st.session_state["max_laced_visc_cst"] = baseline_visc
+
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
-    fluid_density = float(
-        st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0
-    )
+    density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
+    fluid_density = float(max(worst_rho) if worst_rho else density_default or 0.0)
+    if fluid_density <= 0.0:
+        try:
+            fluid_density = float(density_default)
+        except (TypeError, ValueError):
+            fluid_density = 0.0
+    if worst_rho:
+        st.session_state["laced_density_kgm3"] = fluid_density
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
 
     baseline_requirement: dict | None = None
@@ -971,7 +1129,9 @@ def _compute_and_store_baseline_requirement(
             term_data,
             max_flow_m3h=baseline_flow,
             max_visc_cst=baseline_visc,
-            segment_slices=segment_slices,
+            segment_slices=worst_slices,
+            kv_list=worst_kv,
+            rho_list=worst_rho,
             min_suction_head=min_suction,
             fluid_density=fluid_density,
             mop_kgcm2=mop_kgcm2,
