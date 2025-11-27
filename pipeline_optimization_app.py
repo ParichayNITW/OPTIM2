@@ -1615,7 +1615,7 @@ with st.sidebar:
             help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing DP states, so overhead is minimal.",
         )
         st.caption(
-            "DP candidate logs, when captured, are shown in the results panel under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
+            "After running optimization, open the Summary tab in the Optimization Results section and scroll below the main results table. The DP candidate log is listed there under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -6467,6 +6467,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             numeric_cols = df_sum.select_dtypes(include=[np.number]).columns
             df_display = df_sum.style.format(fmt_cols, na_rep="NIL")
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+            st.caption(
+                "Results for the latest solve are shown in this Summary tab. Scroll below the main table to find the DP candidate log under 'Candidate search log (cost-sorted)'."
+            )
             st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
                 "📥 Download CSV",
