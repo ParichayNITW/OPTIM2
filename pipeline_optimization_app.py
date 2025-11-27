@@ -1443,6 +1443,27 @@ def _compute_and_store_baseline_requirement(
     fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
     fallback_slices = list(segment_slices) if isinstance(segment_slices, Sequence) else []
 
+    num_segments = len(stations_data)
+    design_kv = [baseline_visc if baseline_visc > 0.0 else (fallback_kv[i] if i < len(fallback_kv) else 1.0)
+                 for i in range(num_segments)]
+    design_rho = [fluid_density if fluid_density > 0.0 else (fallback_rho[i] if i < len(fallback_rho) else 0.0)
+                  for i in range(num_segments)]
+    design_slices: list[list[dict]] = []
+    for idx in range(num_segments):
+        try:
+            seg_length = float(stations_data[idx].get("L", stations_data[idx].get("length_km", 0.0)) or 0.0)
+        except Exception:
+            seg_length = 0.0
+        design_slices.append(
+            [
+                {
+                    "length_km": seg_length,
+                    "kv": design_kv[idx] if idx < len(design_kv) else baseline_visc,
+                    "rho": design_rho[idx] if idx < len(design_rho) else fluid_density,
+                }
+            ]
+        )
+
     baseline_requirement: dict | None = None
     warnings: list = []
 
@@ -1452,9 +1473,9 @@ def _compute_and_store_baseline_requirement(
             term_data,
             max_flow_m3h=baseline_flow,
             max_visc_cst=baseline_visc,
-            segment_slices=fallback_slices,
-            kv_list=fallback_kv,
-            rho_list=fallback_rho,
+            segment_slices=design_slices,
+            kv_list=design_kv,
+            rho_list=design_rho,
             min_suction_head=min_suction,
             fluid_density=fluid_density,
             mop_kgcm2=mop_kgcm2,
@@ -1469,8 +1490,8 @@ def _compute_and_store_baseline_requirement(
         "design_density_kgm3": fluid_density,
         "design_min_suction_m": min_suction,
         "worst_hours": [],
-        "worst_kv": fallback_kv,
-        "worst_rho": fallback_rho,
+        "worst_kv": design_kv,
+        "worst_rho": design_rho,
         "hourly_requirements": [],
     }
 
