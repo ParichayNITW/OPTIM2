@@ -6210,6 +6210,35 @@ if not auto_batch:
                 )
                 if audit_log:
                     st.markdown("#### Candidate search log (cost-sorted)")
+                    with st.expander("What do residual, queue_km, and protected mean?", expanded=False):
+                        st.markdown(
+                            """
+                            - **Residual:** pressure head left at the station outlet after the pumps and friction/elevation. It is the
+                              head margin available to drive flow to the next station/terminal.
+                            - **queue_km:** total length of treated fluid the optimizer is tracking for that candidate. It equals the
+                              sum of all segments in the DRA queue (upstream carry + current segment) and can be **longer than the
+                              steel** when upstream treated batches are still entering.
+                            - **Protected:** candidates that use either zero DRA or the station's minimum RPM. These are marked to
+                              survive pruning so the search always keeps low-chemical and low-RPM anchors.
+
+                            **Worked example (generic numbers)**
+                            1. **Setup:** 300 km pipeline split into 180 km (Station A) + 120 km (Station B). Manual floor: 3 ppm
+                               everywhere. A 20 km slug at 8 ppm is still upstream from the prior hour.
+                            2. **Starting queue at Station A inlet:** [20 km @ 8 ppm] + [180 km @ 3 ppm] + [120 km @ 3 ppm] =
+                               **320 km queue_km** (300 km in-line + 20 km upstream).
+                            3. **Station A candidate:** run pumps at 2,200 rpm, inject +5 ppm for the first 40 km.
+                               - Residual after A: suppose 150 m above minimum → residual = **150** in the log.
+                               - Queue update: advance 180 km. Consume the 20 km@8 + 20 km of the 3 ppm floor, leaving
+                                 [160 km @ 3 ppm]. Add the new slug [40 km @ (3+5=8 ppm)]. The queue passed to Station B is
+                                 [40 km @ 8 ppm] + [160 km @ 3 ppm] + [120 km @ 3 ppm] = **320 km queue_km**.
+                            4. **Station B candidate:** pumps at 2,600 rpm, no extra DRA.
+                               - Residual after B: suppose 110 m → residual = **110**.
+                               - Queue update: advance 120 km. Consume the 40 km@8 + 80 km@3, leaving [120 km @ 3 ppm]. The
+                                 log shows queue_km = **120** for this candidate.
+                            5. **Protected flag:** if Station A tried 0 ppm or the exact minimum RPM, that row would show
+                               `protected=True` so it is never trimmed away during cost/rate pruning.
+                            """
+                        )
                     st.caption(
                         "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun "
                         "the solver."

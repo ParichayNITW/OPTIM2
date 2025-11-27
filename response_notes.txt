@@ -1,6 +1,12 @@
 This repository contains optimization logic that depends on runtime data and solver configuration. Producing hour-by-hour numeric outputs outside the application requires the full solver execution and intermediate state traces, which are not derived analytically from the JSON example alone. Use the application's reporting utilities or dedicated tracing to obtain exact numbers for specific hourly scenarios.
 DP candidate audit logs show queue_km as the treated-length commitment, which can exceed the physical line length when upstream segments are still carrying chemical from prior injections; the total reflects in-line plus upstream commitments preserved across stations.
 
+Generic step example (two stations)
+- Pipeline: 300 km total, split as 180 km (Station A) + 120 km (Station B). Manual floor: 3 ppm everywhere. Carryover: 20 km at 8 ppm still upstream from the previous hour.
+- Starting queue at Station A inlet: [20 km @ 8 ppm] + [180 km @ 3 ppm] + [120 km @ 3 ppm] = 320 km queue_km (300 km in-line + 20 km upstream).
+- Station A candidate: run pumps at 2,200 rpm, inject +5 ppm for the first 40 km. Residual after A = 150 m. Queue advancement over 180 km consumes the 20 km@8 plus 20 km@3, leaving [160 km @ 3 ppm]. Adding the new slug gives [40 km @ 8 ppm] + [160 km @ 3 ppm] + [120 km @ 3 ppm] = 320 km queue_km passed to Station B.
+- Station B candidate: pumps at 2,600 rpm, no extra DRA. Residual after B = 110 m. Advancing 120 km consumes the 40 km@8 and 80 km@3, leaving [120 km @ 3 ppm]; the log shows queue_km = 120 for this candidate.
+
 Detailed step example (Paradip → Balasore → Haldia)
 - Line length: 328 km (Paradip 158 km + Balasore 170 km). Manual floor: 4 ppm over the whole 328 km. Upstream carryover: 14 km of 6 ppm from the prior hour/day still approaching Paradip.
 - Initial queue at 07:00: [14 km @ 6 ppm] + [158 km @ 4 ppm] + [170 km @ 4 ppm] = 342 km total. This is why the first DP log row can show queue_km = 342 km even though the steel is 328 km; the extra 14 km is the treated fluid that has not yet entered Paradip.
