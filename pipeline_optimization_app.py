@@ -6101,85 +6101,153 @@ if not auto_batch:
         st.session_state["day_stations"] = stations_base
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
+        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+        st.caption(
+            "A Summary tab is generated automatically after the schedule optimizer runs. The tables below show the latest "
+            "hour/day outputs; switch to the 'Candidate search log' tab to view the DP candidates for any solved hour."
+        )
+
         df_day_numeric = st.session_state["day_df"]
         reports = st.session_state.get("day_reports", [])
         stations_base = st.session_state.get("day_stations", [])
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
-        transpose_view = st.checkbox("Transpose output table", key="transpose_day")
-        df_display = df_day_numeric.T if transpose_view else df_day_numeric
-        if transpose_view:
-            numeric_rows_mask = df_display.apply(
-                lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
-            )
-            num_rows_disp = df_display.index[numeric_rows_mask].tolist()
-            df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
-                pd.to_numeric, errors="coerce"
-            )
-            df_disp_style = df_display.style.format(
-                "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
-            )
-            if num_rows_disp:
-                df_disp_style = df_disp_style.background_gradient(
-                    cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
-                )
-        else:
-            num_cols_disp = [
-                c
-                for c in df_display.columns
-                if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
-            ]
-            fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
-            df_disp_style = df_display.style.format(fmt_disp)
-            if num_cols_disp:
-                df_disp_style = df_disp_style.background_gradient(
-                    cmap="Blues", subset=num_cols_disp
-                )
-        st.dataframe(
-            df_disp_style,
-            width='stretch',
-            hide_index=not transpose_view,
-        )
-        label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
-        first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
-        last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
-        st.download_button(
-            f"Download {label_prefix} Optimizer Output data",
-            df_day.to_csv(index=False, float_format="%.2f"),
-            file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
-        )
+        tab_summary, tab_log = st.tabs(["Summary", "Candidate search log"])
 
-        # Display total cost per time slice and global sum
-        cost_rows = [
-            {
-                "Time": f"{rec['time']:02d}:00",
-                "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
-            }
-            for rec in reports
-        ]
-        df_cost = pd.DataFrame(cost_rows)
-        df_cost["Total Cost (INR)"] = pd.to_numeric(
-            df_cost["Total Cost (INR)"], errors="coerce",
-        )
-        df_cost = df_cost.round(2)
-        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-        st.dataframe(df_cost_style, width='stretch', hide_index=True)
-        if st.session_state.get("run_mode") == "hourly":
-            total_label = f"1h ({first_label})" if hours else "1h"
-        else:
-            total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
-        total_cost_value = df_cost["Total Cost (INR)"].sum()
-        st.markdown(
-            f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
-        )
-        for rec in reports:
-            display_pump_type_details(
-                rec["result"],
-                stations_base,
-                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+        with tab_summary:
+            transpose_view = st.checkbox("Transpose output table", key="transpose_day")
+            df_display = df_day_numeric.T if transpose_view else df_day_numeric
+            if transpose_view:
+                numeric_rows_mask = df_display.apply(
+                    lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
+                )
+                num_rows_disp = df_display.index[numeric_rows_mask].tolist()
+                df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
+                    pd.to_numeric, errors="coerce"
+                )
+                df_disp_style = df_display.style.format(
+                    "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
+                )
+                if num_rows_disp:
+                    df_disp_style = df_disp_style.background_gradient(
+                        cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
+                    )
+            else:
+                num_cols_disp = [
+                    c
+                    for c in df_display.columns
+                    if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
+                ]
+                fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
+                df_disp_style = df_display.style.format(fmt_disp)
+                if num_cols_disp:
+                    df_disp_style = df_disp_style.background_gradient(
+                        cmap="Blues", subset=num_cols_disp
+                    )
+            st.dataframe(
+                df_disp_style,
+                width='stretch',
+                hide_index=not transpose_view,
             )
+            label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
+            first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+            last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
+            st.download_button(
+                f"Download {label_prefix} Optimizer Output data",
+                df_day.to_csv(index=False, float_format="%.2f"),
+                file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
+            )
+
+            # Display total cost per time slice and global sum
+            cost_rows = [
+                {
+                    "Time": f"{rec['time']:02d}:00",
+                    "Pattern": rec["result"].get("flow_pattern_name", ""),
+                    "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
+                }
+                for rec in reports
+            ]
+            df_cost = pd.DataFrame(cost_rows)
+            df_cost["Total Cost (INR)"] = pd.to_numeric(
+                df_cost["Total Cost (INR)"], errors="coerce",
+            )
+            df_cost = df_cost.round(2)
+            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+            st.dataframe(df_cost_style, width='stretch', hide_index=True)
+            if st.session_state.get("run_mode") == "hourly":
+                total_label = f"1h ({first_label})" if hours else "1h"
+            else:
+                total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
+            total_cost_value = df_cost["Total Cost (INR)"].sum()
+            st.markdown(
+                f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
+            )
+            for rec in reports:
+                display_pump_type_details(
+                    rec["result"],
+                    stations_base,
+                    heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+                )
+
+        with tab_log:
+            if not reports:
+                st.info("No solver outputs are available yet.")
+            else:
+                hour_options = [f"{rec['time']:02d}:00" for rec in reports]
+                default_idx = 0
+                selected_label = st.selectbox(
+                    "Select hour to inspect DP candidate log",
+                    options=hour_options,
+                    index=default_idx if len(hour_options) > default_idx else 0,
+                )
+                selected_rec = reports[hour_options.index(selected_label)]
+                res = selected_rec["result"]
+                audit_log = res.get("state_audit") or []
+                st.caption(
+                    "The candidate log below reflects the solver search for the selected hour. Scroll to view per-station "
+                    "DP states and download the raw JSON."
+                )
+                if audit_log:
+                    st.markdown("#### Candidate search log (cost-sorted)")
+                    st.caption(
+                        "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun "
+                        "the solver."
+                    )
+                    col_audit = st.columns(3)
+                    total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
+                    col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
+                    col_audit[1].metric("Stations logged", f"{len(audit_log)}")
+                    col_audit[2].download_button(
+                        "Download DP log (JSON)",
+                        data=json.dumps(audit_log, indent=2, default=str),
+                        file_name="dp_candidate_log.json",
+                        help="Exports the raw DP candidate states that were collected during the solve.",
+                    )
+
+                    for entry in audit_log:
+                        station_name = entry.get("name", "Station")
+                        evaluated = int(entry.get("evaluated", 0) or 0)
+                        carried = int(entry.get("carried_forward", 0) or 0)
+                        unique_after = int(entry.get("unique_after_pareto", 0) or 0)
+                        with st.expander(
+                            f"{station_name}: {evaluated:,} checked, {unique_after:,} unique after Pareto trim, {carried:,} carried forward",
+                            expanded=False,
+                        ):
+                            candidates_df = pd.DataFrame(entry.get("states") or [])
+                            if not candidates_df.empty:
+                                st.dataframe(
+                                    candidates_df.round(2),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                            else:
+                                st.caption("No candidates recorded for this station.")
+                else:
+                    st.markdown("#### Candidate search log (cost-sorted)")
+                    st.info(
+                        "No DP candidate log is available for this solve. Enable 'Capture DP candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
+                    )
 
         combined = []
         for idx, df_line in enumerate(linefill_snaps):
