@@ -1614,6 +1614,9 @@ with st.sidebar:
             key="search_collect_state_audit",
             help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing DP states, so overhead is minimal.",
         )
+        st.caption(
+            "DP candidate logs, when captured, are shown in the results panel under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
+        )
 
     last_label = st.session_state.get("last_run_label")
     last_duration = st.session_state.get("last_run_duration")
@@ -6659,6 +6662,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             )
                         else:
                             st.caption("No candidates recorded for this station.")
+            else:
+                st.markdown("#### Candidate search log (cost-sorted)")
+                st.info(
+                    "No DP candidate log is available for this solve. Enable 'Capture DP candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
+                )
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
