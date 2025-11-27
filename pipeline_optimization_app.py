@@ -9,6 +9,19 @@ import altair as alt
 import pipeline_model
 import datetime as dt
 
+
+def _safe_set_session_state(key, value):
+    """Attempt to write into session state without throwing Streamlit errors."""
+
+    if key not in st.session_state:
+        return False
+
+    try:
+        st.session_state[key] = value
+        return True
+    except StreamlitAPIException:
+        return False
+
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
     st.session_state["stations"] = []
@@ -964,6 +977,59 @@ def _length_weighted_average(entries: list[Mapping[str, object]], *, key: str, d
     return float(weighted / total_len)
 
 
+def _build_hourly_segment_averages(
+    stations: list[dict],
+    *,
+    linefill_vol: pd.DataFrame | None,
+    day_plan: pd.DataFrame | None,
+    hourly_flow_m3h: float,
+    kv_fallback: Sequence[float],
+    rho_fallback: Sequence[float],
+) -> list[dict[str, object]]:
+    """Simulate 24 hourly linefill states and capture segment averages per hour."""
+
+    num_segments = len(stations)
+    if num_segments == 0:
+        return []
+
+    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
+    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
+
+    hourly_snapshots: list[dict[str, object]] = []
+    pumped_per_hour = float(hourly_flow_m3h or 0.0)
+    if pumped_per_hour <= 0.0:
+        pumped_per_hour = 0.0
+
+    for hour in range(24):
+        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(current_vol, stations)
+
+        avg_kv: list[float] = []
+        avg_rho: list[float] = []
+        for idx in range(num_segments):
+            kv_default = kv_list[idx] if idx < len(kv_list) else kv_fallback[idx]
+            rho_default = rho_list[idx] if idx < len(rho_list) else rho_fallback[idx]
+            slices = segment_slices[idx] if idx < len(segment_slices) else []
+
+            avg_kv.append(_length_weighted_average(slices, key="kv", default=kv_default))
+            avg_rho.append(_length_weighted_average(slices, key="rho", default=rho_default))
+
+        hourly_snapshots.append(
+            {
+                "hour": hour,
+                "avg_kv": avg_kv,
+                "avg_rho": avg_rho,
+                "slices": segment_slices,
+            }
+        )
+
+        if pumped_per_hour > 0.0:
+            current_vol, plan_local, _ = shift_vol_linefill(
+                current_vol.copy(), pumped_per_hour, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
+            )
+
+    return hourly_snapshots
+
+
 def shift_vol_linefill(
     vol_table: pd.DataFrame,
     pumped_m3: float,
@@ -1081,46 +1147,38 @@ def _estimate_worst_case_segment_profiles(
     current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
     plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
 
+    hourly_flow = st.session_state.get("hourly_flow", design_flow_m3h)
+    try:
+        hourly_flow = float(hourly_flow)
+    except (TypeError, ValueError):
+        hourly_flow = float(design_flow_m3h)
+
+    snapshots = _build_hourly_segment_averages(
+        stations,
+        linefill_vol=linefill_vol,
+        day_plan=plan_local,
+        hourly_flow_m3h=hourly_flow,
+        kv_fallback=kv_fallback,
+        rho_fallback=rho_fallback,
+    )
+
     worst_kv = list(kv_fallback)
     worst_rho = list(rho_fallback)
+    worst_slices: list[list[dict]] = [list(entry) for entry in slices_fallback]
 
-    for _ in range(24):
-        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(current_vol, stations)
-
+    for snap in snapshots:
+        avg_kv = snap.get("avg_kv", [])
+        avg_rho = snap.get("avg_rho", [])
+        slices_now = snap.get("slices", [])
         for idx in range(num_segments):
-            seg_len = lengths[idx] if idx < len(lengths) else 0.0
-            slices = segment_slices[idx] if idx < len(segment_slices) else []
-            kv_default = kv_list[idx] if idx < len(kv_list) else kv_fallback[idx]
-            rho_default = rho_list[idx] if idx < len(rho_list) else rho_fallback[idx]
-
-            avg_kv = _length_weighted_average(slices, key="kv", default=kv_default)
-            avg_rho = _length_weighted_average(slices, key="rho", default=rho_default)
-
-            if avg_kv > worst_kv[idx]:
-                worst_kv[idx] = avg_kv
-            if avg_rho > worst_rho[idx]:
-                worst_rho[idx] = avg_rho
-
-        current_vol, plan_local, _ = shift_vol_linefill(
-            current_vol.copy(),
-            design_flow_m3h,
-            plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
-        )
-
-    worst_slices: list[list[dict]] = []
-    for idx in range(num_segments):
-        seg_len = lengths[idx] if idx < len(lengths) else 0.0
-        seg_kv = worst_kv[idx] if idx < len(worst_kv) else kv_fallback[idx]
-        seg_rho = worst_rho[idx] if idx < len(worst_rho) else rho_fallback[idx]
-        worst_slices.append(
-            [
-                {
-                    "length_km": float(seg_len),
-                    "kv": float(seg_kv if seg_kv > 0 else kv_fallback[idx]),
-                    "rho": float(seg_rho if seg_rho > 0 else rho_fallback[idx]),
-                }
-            ]
-        )
+            kv_now = avg_kv[idx] if idx < len(avg_kv) else kv_fallback[idx]
+            rho_now = avg_rho[idx] if idx < len(avg_rho) else rho_fallback[idx]
+            if kv_now > worst_kv[idx]:
+                worst_kv[idx] = kv_now
+                worst_rho[idx] = rho_now
+                worst_slices[idx] = (
+                    list(slices_now[idx]) if idx < len(slices_now) and isinstance(slices_now[idx], list) else worst_slices[idx]
+                )
 
     return worst_kv, worst_rho, worst_slices
 
@@ -1148,17 +1206,14 @@ def _compute_and_store_baseline_requirement(
         except Exception:
             plan_total_vol = 0.0
 
+    persist_targets = st.session_state.get("baseline_input_mode") == "auto"
+
     baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
     flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
     if flow_from_plan > 0.0:
         baseline_flow = flow_from_plan
-        try:
-            st.session_state["max_laced_flow_m3h"] = baseline_flow
-        except StreamlitAPIException:
-            st.warning(
-                "Could not persist the auto-calculated target laced flow; using the runtime "
-                "value for this calculation."
-            )
+        if persist_targets:
+            _safe_set_session_state("max_laced_flow_m3h", baseline_flow)
 
     fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
     fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
@@ -1191,14 +1246,8 @@ def _compute_and_store_baseline_requirement(
         except (TypeError, ValueError):
             baseline_visc = 1.0
 
-    if worst_kv:
-        try:
-            st.session_state["max_laced_visc_cst"] = baseline_visc
-        except StreamlitAPIException:
-            st.warning(
-                "Could not persist the auto-calculated target laced viscosity; using the runtime "
-                "value for this calculation."
-            )
+    if persist_targets and worst_kv:
+        _safe_set_session_state("max_laced_visc_cst", baseline_visc)
 
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
     density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
@@ -1208,14 +1257,8 @@ def _compute_and_store_baseline_requirement(
             fluid_density = float(density_default)
         except (TypeError, ValueError):
             fluid_density = 0.0
-    if worst_rho:
-        try:
-            st.session_state["laced_density_kgm3"] = fluid_density
-        except StreamlitAPIException:
-            st.warning(
-                "Could not persist the auto-calculated target laced density; using the runtime "
-                "value for this calculation."
-            )
+    if persist_targets and worst_rho:
+        _safe_set_session_state("laced_density_kgm3", fluid_density)
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
 
     baseline_requirement: dict | None = None
