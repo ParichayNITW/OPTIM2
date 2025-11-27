@@ -1781,6 +1781,18 @@ with st.sidebar:
                         f"density at that hour = {rho_msg:.2f} kg/m³; "
                         f"minimum suction head = {suction_msg:.2f} m."
                     )
+                    with st.expander("How these inputs drive the automatic baseline"):
+                        st.markdown(
+                            "\n".join(
+                                [
+                                    "1. **Target laced flow** is set to the pumping-plan volume ÷ 24 hours (or falls back to your entered lacing flow).",
+                                    "2. The app replays 24 hourly linefill states, converts each hour's volume to segment lengths, and computes a **length-weighted average viscosity and density** per segment using ∑(length × property)/∑length.",
+                                    "3. For each segment, it picks the hour with the **highest average viscosity**; that hour's viscosity and density become the design properties for the baseline check.",
+                                    "4. At those design conditions, it compares the **required head** (to meet SDH and suction) against the **available head** at DOL after MOP/MAOP limits. Any head shortfall is converted to %DR and then to baseline PPM.",
+                                    "5. If no shortfall exists, the recommended baseline PPM for that segment stays at zero.",
+                                ]
+                            )
+                        )
                 segment_rows: list[dict[str, object]] = []
                 worst_hours_list = []
                 worst_kv_list = []
@@ -1860,9 +1872,10 @@ with st.sidebar:
                                 "Required head (m)": sdh_required,
                                 "Available head (m)": head_available,
                                 "Head shortfall (m)": head_gap,
-                                "Worst-hour (h)": worst_hour,
-                                "Worst avg visc (cSt)": worst_kv_val,
+                                "Worst hour (h)": worst_hour,
+                                "Worst-hour avg visc (cSt)": worst_kv_val,
                                 "Density @ worst hour (kg/m³)": worst_rho_val,
+                                "Design flow (m³/h)": baseline_flow,
                             }
                         )
                 if segment_rows:
@@ -1876,8 +1889,9 @@ with st.sidebar:
                             "Required head (m)": 2,
                             "Available head (m)": 2,
                             "Head shortfall (m)": 2,
-                            "Worst avg visc (cSt)": 2,
+                            "Worst-hour avg visc (cSt)": 2,
                             "Density @ worst hour (kg/m³)": 2,
+                            "Design flow (m³/h)": 2,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
@@ -1887,6 +1901,11 @@ with st.sidebar:
                             "The table above shows the required head, the available head at DOL (after MOP/MAOP limits), "
                             "and the resulting shortfall that drives the recommended ppm."
                         )
+                    st.caption(
+                        "Numbers come from the worst-hour averages: the hour column shows when the highest length-weighted "
+                        "viscosity occurred for that segment, and the matching density and design flow are used to translate "
+                        "the head shortfall into %DR and baseline PPM."
+                    )
                 else:
                     st.info("No segment-level floors were generated.")
             else:
