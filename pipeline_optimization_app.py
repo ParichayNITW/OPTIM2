@@ -6582,12 +6582,12 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 seg_df = seg_df.round(
                     {
                         "Length (km)": 2,
-                            "Floor PPM": 2,
-                            "Floor %DR": 2,
-                            "Suction head (m)": 2,
-                        }
-                    )
-                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                        "Floor PPM": 2,
+                        "Floor %DR": 2,
+                        "Suction head (m)": 2,
+                    }
+                )
+                st.dataframe(seg_df, use_container_width=True, hide_index=True)
                 st.caption(
                     "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                 )
