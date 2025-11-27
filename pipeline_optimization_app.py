@@ -1192,7 +1192,13 @@ def _compute_and_store_baseline_requirement(
             baseline_visc = 1.0
 
     if worst_kv:
-        st.session_state["max_laced_visc_cst"] = baseline_visc
+        try:
+            st.session_state["max_laced_visc_cst"] = baseline_visc
+        except StreamlitAPIException:
+            st.warning(
+                "Could not persist the auto-calculated target laced viscosity; using the runtime "
+                "value for this calculation."
+            )
 
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
     density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
@@ -1203,7 +1209,13 @@ def _compute_and_store_baseline_requirement(
         except (TypeError, ValueError):
             fluid_density = 0.0
     if worst_rho:
-        st.session_state["laced_density_kgm3"] = fluid_density
+        try:
+            st.session_state["laced_density_kgm3"] = fluid_density
+        except StreamlitAPIException:
+            st.warning(
+                "Could not persist the auto-calculated target laced density; using the runtime "
+                "value for this calculation."
+            )
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
 
     baseline_requirement: dict | None = None
