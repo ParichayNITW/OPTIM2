@@ -20,6 +20,67 @@ def _safe_set_session_state(key, value):
     except StreamlitAPIException:
         return False
 
+
+def _auto_seed_lacing_inputs():
+    """Pre-populate auto lacing inputs from the pumping plan and current profiles."""
+
+    if st.session_state.get("baseline_input_mode") != "auto":
+        return
+
+    plan_df = st.session_state.get("day_plan_df")
+    if isinstance(plan_df, pd.DataFrame):
+        plan_df = ensure_initial_dra_column(plan_df.copy(), default=0.0, fill_blanks=True)
+    else:
+        plan_df = None
+
+    plan_total_vol = 0.0
+    if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0:
+        plan_col = "Volume (m³)" if "Volume (m³)" in plan_df.columns else "Volume"
+        try:
+            plan_total_vol = float(pd.to_numeric(plan_df[plan_col], errors="coerce").fillna(0.0).sum())
+        except Exception:
+            plan_total_vol = 0.0
+
+    baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 0.0)) or 0.0)
+    flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
+    if flow_from_plan > 0.0:
+        baseline_flow = flow_from_plan
+    if baseline_flow > 0.0:
+        _safe_set_session_state("max_laced_flow_m3h", baseline_flow)
+
+    stations_ctx, term_ctx, linefill_ctx, kv_ctx, rho_ctx, segment_ctx = _prepare_pipeline_context()
+
+    max_visc = 0.0
+    if isinstance(kv_ctx, Sequence):
+        try:
+            max_visc = float(max(kv_ctx))
+        except Exception:
+            max_visc = 0.0
+    if max_visc > 0.0:
+        _safe_set_session_state("max_laced_visc_cst", max_visc)
+
+    max_rho = 0.0
+    if isinstance(rho_ctx, Sequence):
+        try:
+            max_rho = float(max(rho_ctx))
+        except Exception:
+            max_rho = 0.0
+    if max_rho > 0.0:
+        _safe_set_session_state("laced_density_kgm3", max_rho)
+
+    min_suction_candidates = []
+    for stn in stations_ctx:
+        try:
+            min_suction_candidates.append(float(stn.get("min_residual", 0.0) or 0.0))
+        except Exception:
+            continue
+    if min_suction_candidates:
+        try:
+            min_suction = float(min(min_suction_candidates))
+            _safe_set_session_state("min_laced_suction_m", min_suction)
+        except Exception:
+            pass
+
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
     st.session_state["stations"] = []
@@ -2022,6 +2083,8 @@ with st.sidebar:
         )
         _handle_baseline_mode_switch(st.session_state.get("stations", []))
         manual_baseline = baseline_mode == "manual"
+
+        _auto_seed_lacing_inputs()
 
         st.number_input(
             "Target laced flow (m³/h)",
