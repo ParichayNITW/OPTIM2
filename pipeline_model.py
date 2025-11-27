@@ -1499,8 +1499,9 @@ def _update_mainline_dra(
         unless ``injector_position`` explicitly marks the injector as
         "upstream".
     is_origin:
-        ``True`` when handling the origin station.  A running origin pump with
-        no injection outputs untreated fluid.
+        ``True`` when handling the origin station.  When pumping without
+        injection the upstream linefill is preserved rather than overwritten
+        with untreated fluid.
 
     Returns
     -------
@@ -1755,11 +1756,8 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if is_origin and inj_effective <= 0.0:
-            if pump_running:
-                zero_output = True
-            elif flow_m3h <= 0.0:
-                zero_output = True
+        if is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0:
+            zero_output = True
         if zero_output:
             ppm_out = 0.0
         else:
