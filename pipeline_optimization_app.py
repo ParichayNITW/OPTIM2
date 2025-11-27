@@ -539,6 +539,7 @@ def _default_segment_slices(
                     "length_km": length,
                     "kv": float(kv),
                     "rho": float(rho),
+                    "dra_ppm": 0.0,
                 }
             ]
         )
@@ -645,7 +646,12 @@ def map_vol_linefill_to_segments(
         except (TypeError, ValueError):
             dens = 0.0
 
-        batches.append({"volume_m3": vol, "kv": visc, "rho": dens})
+        try:
+            dra_ppm = float(r.get("Initial DRA (ppm)", 0.0) or r.get("DRA ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            dra_ppm = 0.0
+
+        batches.append({"volume_m3": vol, "kv": visc, "rho": dens, "dra_ppm": dra_ppm})
 
     if not batches:
         fallback_kv = 1.0
@@ -678,6 +684,7 @@ def map_vol_linefill_to_segments(
     remaining = batches[0]["len_km"] if batches else 0.0
     kv_cur = batches[0]["kv"] if batches else 1.0
     rho_cur = batches[0]["rho"] if batches else 850.0
+    ppm_cur = batches[0].get("dra_ppm", 0.0) if batches else 0.0
 
     for L in seg_lengths:
         need = L
@@ -702,6 +709,7 @@ def map_vol_linefill_to_segments(
                 remaining = batches[i_batch]["len_km"]
                 kv_cur = batches[i_batch]["kv"]
                 rho_cur = batches[i_batch]["rho"]
+                ppm_cur = batches[i_batch].get("dra_ppm", ppm_cur)
                 if remaining <= 1e-9:
                     continue
 
@@ -710,13 +718,13 @@ def map_vol_linefill_to_segments(
                 break
 
             segment_entries.append(
-                {"length_km": take, "kv": kv_cur, "rho": rho_cur}
+                {"length_km": take, "kv": kv_cur, "rho": rho_cur, "dra_ppm": ppm_cur}
             )
             need -= take
             remaining -= take
 
         if not segment_entries:
-            segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur})
+            segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur, "dra_ppm": ppm_cur})
 
         seg_slices.append(segment_entries)
         seg_kv.append(segment_entries[0]["kv"])
@@ -1003,6 +1011,7 @@ def _build_hourly_segment_averages(
 
         avg_kv: list[float] = []
         avg_rho: list[float] = []
+        avg_ppm: list[float] = []
         for idx in range(num_segments):
             kv_default = kv_list[idx] if idx < len(kv_list) else kv_fallback[idx]
             rho_default = rho_list[idx] if idx < len(rho_list) else rho_fallback[idx]
@@ -1010,12 +1019,14 @@ def _build_hourly_segment_averages(
 
             avg_kv.append(_length_weighted_average(slices, key="kv", default=kv_default))
             avg_rho.append(_length_weighted_average(slices, key="rho", default=rho_default))
+            avg_ppm.append(_length_weighted_average(slices, key="dra_ppm", default=0.0))
 
         hourly_snapshots.append(
             {
                 "hour": hour,
                 "avg_kv": avg_kv,
                 "avg_rho": avg_rho,
+                "avg_ppm": avg_ppm,
                 "slices": segment_slices,
             }
         )
@@ -1272,6 +1283,7 @@ def _collapse_hourly_baselines(
             segs = req.get("segments") if isinstance(req.get("segments"), Sequence) else []
             avg_kv = req.get("avg_kv") if isinstance(req.get("avg_kv"), Sequence) else []
             avg_rho = req.get("avg_rho") if isinstance(req.get("avg_rho"), Sequence) else []
+            avg_ppm = req.get("avg_ppm") if isinstance(req.get("avg_ppm"), Sequence) else []
             hour_idx = req.get("hour", -1)
             for seg in segs:
                 if not isinstance(seg, Mapping):
@@ -1291,6 +1303,12 @@ def _collapse_hourly_baselines(
                 except (TypeError, ValueError):
                     perc_val = 0.0
 
+                base_ppm = 0.0
+                try:
+                    base_ppm = float(avg_ppm[seg_idx]) if seg_idx < len(avg_ppm) else 0.0
+                except Exception:
+                    base_ppm = 0.0
+
                 per_hour.append(
                     {
                         "dra_ppm": ppm_val,
@@ -1298,6 +1316,7 @@ def _collapse_hourly_baselines(
                         "hour": int(hour_idx) if isinstance(hour_idx, (int, float)) else -1,
                         "worst_kv": float(avg_kv[seg_idx]) if seg_idx < len(avg_kv) else 0.0,
                         "worst_rho": float(avg_rho[seg_idx]) if seg_idx < len(avg_rho) else 0.0,
+                        "base_ppm": base_ppm,
                         "suction_head": seg.get("suction_head", 0.0),
                         "sdh_required": seg.get("sdh_required", 0.0),
                         "max_head_available": seg.get("max_head_available", 0.0),
@@ -1314,10 +1333,12 @@ def _collapse_hourly_baselines(
             window_entries = per_hour[max(0, idx_end - window + 1) : idx_end + 1]
             if not window_entries:
                 continue
-            avg_ppm = sum(e.get("dra_ppm", 0.0) for e in window_entries) / len(window_entries)
+            avg_shortfall = sum(
+                max(0.0, e.get("dra_ppm", 0.0) - e.get("base_ppm", 0.0)) for e in window_entries
+            ) / len(window_entries)
             avg_perc = sum(e.get("dra_perc", 0.0) for e in window_entries) / len(window_entries)
             candidate = dict(window_entries[-1])
-            candidate["dra_ppm"] = avg_ppm
+            candidate["dra_ppm"] = avg_shortfall
             candidate["dra_perc"] = avg_perc
 
             if best_state is None or avg_ppm > best_state.get("dra_ppm", 0.0):
@@ -1443,6 +1464,7 @@ def _compute_and_store_baseline_requirement(
             hourly_req["hour"] = hour_idx
             hourly_req["avg_kv"] = list(avg_kv) if isinstance(avg_kv, Sequence) else list(fallback_kv)
             hourly_req["avg_rho"] = list(avg_rho) if isinstance(avg_rho, Sequence) else list(fallback_rho)
+            hourly_req["avg_ppm"] = snap.get("avg_ppm") if isinstance(snap.get("avg_ppm"), Sequence) else []
             hourly_requirements.append(hourly_req)
 
     worst_kv: list[float] = []
