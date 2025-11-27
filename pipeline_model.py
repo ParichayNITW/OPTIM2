@@ -2146,6 +2146,8 @@ def compute_minimum_lacing_requirement(
     max_flow_m3h: float,
     max_visc_cst: float,
     segment_slices: list[list[dict]] | None = None,
+    kv_list: list[float] | None = None,
+    rho_list: list[float] | None = None,
     dra_upper_bound: float = 70.0,
     min_suction_head: float = 0.0,
     fluid_density: float | None = None,
@@ -2366,14 +2368,55 @@ def compute_minimum_lacing_requirement(
                 max_head = head_val
         return max_head
 
+    num_segments = len(stations)
+    kv_defaults = []
+    if isinstance(kv_list, (list, tuple)) and len(kv_list):
+        kv_defaults = [float(val) if _coerce_float_local(val, -1.0) > 0.0 else float(max_visc_cst or 1.0) for val in kv_list]
+
+    rho_defaults = []
+    if isinstance(rho_list, (list, tuple)) and len(rho_list):
+        rho_defaults = [float(val) if _coerce_float_local(val, -1.0) > 0.0 else default_rho for val in rho_list]
+
+    cleaned_slices: list[list[dict]] = []
+    if segment_slices is None:
+        segment_slices = [[] for _ in stations]
+    if segment_slices:
+        for idx in range(num_segments):
+            if idx < len(segment_slices):
+                seq = segment_slices[idx] or []
+            else:
+                seq = []
+            cleaned_seq: list[dict] = []
+            for entry in seq:
+                if not isinstance(entry, Mapping):
+                    continue
+                try:
+                    seg_len = float(entry.get('length_km', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_len = 0.0
+                if seg_len <= 0.0:
+                    continue
+                try:
+                    seg_kv = float(entry.get('kv', kv_defaults[idx] if idx < len(kv_defaults) else max_visc_cst) or 0.0)
+                except (TypeError, ValueError):
+                    seg_kv = kv_defaults[idx] if idx < len(kv_defaults) else max_visc_cst
+                try:
+                    seg_rho = float(entry.get('rho', rho_defaults[idx] if idx < len(rho_defaults) else default_rho) or 0.0)
+                except (TypeError, ValueError):
+                    seg_rho = rho_defaults[idx] if idx < len(rho_defaults) else default_rho
+                cleaned_seq.append({'length_km': seg_len, 'kv': seg_kv, 'rho': seg_rho})
+            cleaned_slices.append(cleaned_seq)
+
     total_length = 0.0
     stations_copy: list[dict] = []
-    for stn in stations:
+    for idx, stn in enumerate(stations):
         entry = copy.deepcopy(stn)
         try:
             total_length += float(entry.get('L', 0.0) or 0.0)
         except (TypeError, ValueError):
             total_length += 0.0
+        if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
+            entry['rho'] = rho_defaults[idx]
         stations_copy.append(entry)
     if total_length <= 0.0:
         total_length = 0.0
@@ -2388,6 +2431,10 @@ def compute_minimum_lacing_requirement(
 
     kv_list = [visc_max for _ in stations_copy]
     slices_use: list[list[dict]] = [[] for _ in stations_copy]
+    if kv_defaults:
+        kv_list = [kv_defaults[i] if i < len(kv_defaults) else visc_max for i in range(len(stations_copy))]
+    if cleaned_slices:
+        slices_use = cleaned_slices
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
     cumulative_min = max(terminal_min_residual, 0.0)
@@ -2521,7 +2568,7 @@ def compute_minimum_lacing_requirement(
 
             try:
                 dra_ppm_needed = (
-                    float(get_ppm_for_dr(visc_max, dr_needed))
+                    float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_needed))
                     if dr_needed > 0
                     else 0.0
                 )
