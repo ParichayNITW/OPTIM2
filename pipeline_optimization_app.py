@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 import base64
 import streamlit as st
+from streamlit.errors import StreamlitAPIException
 import altair as alt
 import pipeline_model
 import datetime as dt
@@ -1073,7 +1074,13 @@ def _compute_and_store_baseline_requirement(
     flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
     if flow_from_plan > 0.0:
         baseline_flow = flow_from_plan
-        st.session_state["max_laced_flow_m3h"] = baseline_flow
+        try:
+            st.session_state["max_laced_flow_m3h"] = baseline_flow
+        except StreamlitAPIException:
+            st.warning(
+                "Could not persist the auto-calculated target laced flow; using the runtime "
+                "value for this calculation."
+            )
 
     fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
     fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
