@@ -1841,6 +1841,15 @@ with st.sidebar:
                             worst_rho_val = float(worst_rho_list[station_idx]) if station_idx < len(worst_rho_list) else 0.0
                         except (TypeError, ValueError, IndexError):
                             worst_rho_val = 0.0
+                        try:
+                            sdh_required = float(seg.get("sdh_required", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            sdh_required = 0.0
+                        try:
+                            head_available = float(seg.get("max_head_available", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            head_available = 0.0
+                        head_gap = max(sdh_required - head_available, 0.0)
                         segment_rows.append(
                             {
                                 "Segment": segment_label,
@@ -1848,6 +1857,9 @@ with st.sidebar:
                                 "Baseline PPM": seg_ppm,
                                 "Baseline %DR": seg_perc,
                                 "Suction head (m)": seg_suction,
+                                "Required head (m)": sdh_required,
+                                "Available head (m)": head_available,
+                                "Head shortfall (m)": head_gap,
                                 "Worst-hour (h)": worst_hour,
                                 "Worst avg visc (cSt)": worst_kv_val,
                                 "Density @ worst hour (kg/m³)": worst_rho_val,
@@ -1861,11 +1873,20 @@ with st.sidebar:
                             "Baseline PPM": 2,
                             "Baseline %DR": 2,
                             "Suction head (m)": 2,
+                            "Required head (m)": 2,
+                            "Available head (m)": 2,
+                            "Head shortfall (m)": 2,
                             "Worst avg visc (cSt)": 2,
                             "Density @ worst hour (kg/m³)": 2,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                    if (seg_df["Head shortfall (m)"].fillna(0.0) > 0.0).any():
+                        st.info(
+                            "DRA floors only appear when the design flow/viscosity create a head shortfall. "
+                            "The table above shows the required head, the available head at DOL (after MOP/MAOP limits), "
+                            "and the resulting shortfall that drives the recommended ppm."
+                        )
                 else:
                     st.info("No segment-level floors were generated.")
             else:
