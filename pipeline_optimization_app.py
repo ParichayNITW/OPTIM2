@@ -6577,20 +6577,52 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             "Suction head (m)": seg_suction,
                         }
                     )
-                if seg_rows:
-                    seg_df = pd.DataFrame(seg_rows)
-                    seg_df = seg_df.round(
-                        {
-                            "Length (km)": 2,
+            if seg_rows:
+                seg_df = pd.DataFrame(seg_rows)
+                seg_df = seg_df.round(
+                    {
+                        "Length (km)": 2,
                             "Floor PPM": 2,
                             "Floor %DR": 2,
                             "Suction head (m)": 2,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
-                    st.caption(
-                        "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
-                    )
+                st.caption(
+                    "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
+                )
+
+            # Show cost objective components so users can verify RPM vs DRA trade-offs
+            cost_rows: list[dict[str, float | str]] = []
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ', '_')
+                power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+                dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
+                if power_cost == 0.0 and dra_cost == 0.0:
+                    continue
+                cost_rows.append(
+                    {
+                        "Station": stn['name'],
+                        "Power cost": power_cost,
+                        "DRA cost": dra_cost,
+                        "Total cost": power_cost + dra_cost,
+                    }
+                )
+
+            if cost_rows:
+                cost_df = pd.DataFrame(cost_rows)
+                total_row = {
+                    "Station": "Total",
+                    "Power cost": cost_df["Power cost"].sum(),
+                    "DRA cost": cost_df["DRA cost"].sum(),
+                    "Total cost": cost_df["Total cost"].sum(),
+                }
+                cost_df = pd.concat([cost_df, pd.DataFrame([total_row])], ignore_index=True)
+                st.markdown("#### Cost objective (power + DRA)")
+                st.dataframe(cost_df.round(2), use_container_width=True, hide_index=True)
+                st.caption(
+                    "The optimizer minimizes the summed station power and DRA costs shown above for the hour/day."
+                )
 
             audit_log = res.get("state_audit") or []
             if audit_log:
@@ -6598,26 +6630,26 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 st.caption(
                     "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun the solver."
                 )
-                col_audit = st.columns(2)
+                col_audit = st.columns(3)
                 total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
                 col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
                 col_audit[1].metric("Stations logged", f"{len(audit_log)}")
-                toggle_cols = st.columns(2)
-                if toggle_cols[0].button("Show raw DP candidates", key="show_dp_audit_btn"):
-                    st.session_state["show_dp_audit"] = True
-                if st.session_state.get("show_dp_audit") and toggle_cols[1].button(
-                    "Hide raw DP candidates", key="hide_dp_audit_btn"
-                ):
-                    st.session_state["show_dp_audit"] = False
-                if st.session_state.get("show_dp_audit"):
-                    for entry in audit_log:
-                        station_name = entry.get("name", "Station")
-                        evaluated = int(entry.get("evaluated", 0) or 0)
-                        carried = int(entry.get("carried_forward", 0) or 0)
-                        unique_after = int(entry.get("unique_after_pareto", 0) or 0)
-                        st.markdown(
-                            f"**{station_name}** — checked {evaluated} candidates, {unique_after} unique after Pareto trim, {carried} carried forward."
-                        )
+                col_audit[2].download_button(
+                    "Download DP log (JSON)",
+                    data=json.dumps(audit_log, indent=2, default=str),
+                    file_name="dp_candidate_log.json",
+                    help="Exports the raw DP candidate states that were collected during the solve.",
+                )
+
+                for entry in audit_log:
+                    station_name = entry.get("name", "Station")
+                    evaluated = int(entry.get("evaluated", 0) or 0)
+                    carried = int(entry.get("carried_forward", 0) or 0)
+                    unique_after = int(entry.get("unique_after_pareto", 0) or 0)
+                    with st.expander(
+                        f"{station_name}: {evaluated:,} checked, {unique_after:,} unique after Pareto trim, {carried:,} carried forward",
+                        expanded=False,
+                    ):
                         candidates_df = pd.DataFrame(entry.get("states") or [])
                         if not candidates_df.empty:
                             st.dataframe(
