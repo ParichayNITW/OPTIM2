@@ -964,6 +964,84 @@ def _length_weighted_average(entries: list[Mapping[str, object]], *, key: str, d
     return float(weighted / total_len)
 
 
+def shift_vol_linefill(
+    vol_table: pd.DataFrame,
+    pumped_m3: float,
+    day_plan: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
+    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
+
+    Fluid is removed from the terminal end of ``vol_table`` and the same volume
+    is injected at the origin from ``day_plan`` if provided. The updated
+    ``vol_table`` together with the shortened ``day_plan`` and a list of
+    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
+    returned.
+    """
+
+    vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
+    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
+
+    remaining = pumped_m3
+    idx = len(vol_table) - 1
+    while remaining > 1e-9 and idx >= 0:
+        v = vol_table.at[idx, "Volume (m³)"]
+        take = min(v, remaining)
+        vol_table.at[idx, "Volume (m³)"] = v - take
+        remaining -= take
+        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
+            vol_table = vol_table.drop(index=idx)
+        idx -= 1
+    vol_table = vol_table.reset_index(drop=True)
+
+    injected_batches: list[dict[str, float]] = []
+
+    if day_plan is not None:
+        day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
+        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
+        injected = 0.0
+
+        while remaining > 1e-9 and len(day_plan) > 0:
+            v = day_plan.iloc[0]["Volume (m³)"]
+            take = min(v, remaining)
+            injected += take
+
+            vol_table = pd.concat(
+                [
+                    pd.DataFrame(
+                        [
+                            {
+                                "Product": day_plan.iloc[0].get("Product", ""),
+                                "Volume (m³)": take,
+                                "Viscosity (cSt)": day_plan.iloc[0]["Viscosity (cSt)"],
+                                "Density (kg/m³)": day_plan.iloc[0]["Density (kg/m³)"],
+                                "Initial DRA (ppm)": day_plan.iloc[0].get("Initial DRA (ppm)", 0.0),
+                            }
+                        ]
+                    ),
+                    vol_table,
+                ],
+                ignore_index=True,
+            )
+
+            remaining -= take
+            if take >= v:
+                day_plan = day_plan.drop(index=0).reset_index(drop=True)
+            else:
+                day_plan.at[0, "Volume (m³)"] = v - take
+
+        if injected > 0:
+            injected_batches.append(
+                {
+                    "volume": float(injected),
+                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)) if len(day_plan) else 0.0,
+                }
+            )
+
+    vol_table = vol_table.reset_index(drop=True)
+
+    return vol_table, day_plan, injected_batches
+
+
 def _estimate_worst_case_segment_profiles(
     stations: list[dict],
     *,
@@ -2688,83 +2766,6 @@ def combine_volumetric_profiles(
         rho_list.append(rho_max)
 
     return kv_list, rho_list, segment_slices
-
-
-def shift_vol_linefill(
-    vol_table: pd.DataFrame,
-    pumped_m3: float,
-    day_plan: pd.DataFrame | None,
-) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
-    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
-
-    Fluid is removed from the terminal end of ``vol_table`` and the same volume
-    is injected at the origin from ``day_plan`` if provided.  The updated
-    ``vol_table`` together with the shortened ``day_plan`` and a list of
-    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
-    returned.
-    """
-
-    # Remove delivered volume from downstream end
-    vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
-    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
-    remaining = pumped_m3
-    idx = len(vol_table) - 1
-    while remaining > 1e-9 and idx >= 0:
-        v = vol_table.at[idx, "Volume (m³)"]
-        take = min(v, remaining)
-        vol_table.at[idx, "Volume (m³)"] = v - take
-        remaining -= take
-        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
-            vol_table = vol_table.drop(index=idx)
-        idx -= 1
-    vol_table = vol_table.reset_index(drop=True)
-
-    injected_batches: list[dict[str, float]] = []
-
-    # Inject new product at upstream end according to day plan
-    if day_plan is not None:
-        day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
-        added = pumped_m3
-        j = 0
-        while added > 1e-9 and j < len(day_plan):
-            v = day_plan.at[j, "Volume (m³)"]
-            take = min(v, added)
-            batch = {
-                "Product": day_plan.at[j, "Product"],
-                "Volume (m³)": take,
-                "Viscosity (cSt)": day_plan.at[j, "Viscosity (cSt)"],
-                "Density (kg/m³)": day_plan.at[j, "Density (kg/m³)"],
-            }
-            ppm_value = day_plan.at[j, INIT_DRA_COL] if INIT_DRA_COL in day_plan.columns else 0.0
-            try:
-                ppm_value = float(ppm_value)
-            except (TypeError, ValueError):
-                ppm_value = 0.0
-            if pd.isna(ppm_value):
-                ppm_value = 0.0
-            batch[INIT_DRA_COL] = ppm_value
-            if "DRA ppm" in vol_table.columns or "DRA ppm" in day_plan.columns:
-                batch["DRA ppm"] = ppm_value
-            vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
-            day_plan.at[j, "Volume (m³)"] = v - take
-            added -= take
-            if take > 1e-9:
-                injected_batches.append({"volume": float(take), "dra_ppm": ppm_value})
-            if day_plan.at[j, "Volume (m³)"] <= 1e-9:
-                j += 1
-        day_plan = day_plan.iloc[j:].reset_index(drop=True)
-
-    if injected_batches:
-        injected_batches = [
-            {
-                "volume": float(batch.get("volume", 0.0)),
-                "dra_ppm": float(batch.get("dra_ppm", 0.0)),
-            }
-            for batch in reversed(injected_batches)
-        ]
-
-    return vol_table, day_plan, injected_batches
 
 
 def _append_zero_plan_segments_to_result(
