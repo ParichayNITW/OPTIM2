@@ -1341,7 +1341,8 @@ def _collapse_hourly_baselines(
             candidate["dra_ppm"] = avg_shortfall
             candidate["dra_perc"] = avg_perc
 
-            if best_state is None or avg_ppm > best_state.get("dra_ppm", 0.0):
+            candidate_ppm = float(candidate.get("dra_ppm", 0.0) or 0.0)
+            if best_state is None or candidate_ppm > float(best_state.get("dra_ppm", 0.0) or 0.0):
                 candidate["station_idx"] = idx
                 candidate["length_km"] = seg_length
                 best_state = candidate
