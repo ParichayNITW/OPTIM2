@@ -1182,6 +1182,99 @@ def _estimate_worst_case_segment_profiles(
     return worst_kv, worst_rho, worst_slices, worst_hours
 
 
+def _collapse_hourly_baselines(hourly_requirements: list[dict[str, object]], stations: list[dict]) -> dict:
+    """Collapse hour-by-hour baseline checks into a single enforceable floor.
+
+    The reducer keeps the *highest* ppm seen for each segment across the 24-hour
+    replay, tagging which hour drove that need plus the matching viscosity and
+    density snapshot.  This yields the smallest constant baseline that still
+    avoids late-hour spikes: if a segment never needs DRA, its baseline stays
+    zero; if it needs DRA only at one tough hour, the maximum from that hour is
+    preserved.
+    """
+
+    aggregate = {
+        "dra_perc": 0.0,
+        "dra_ppm": 0.0,
+        "length_km": 0.0,
+        "dra_perc_uncapped": 0.0,
+        "warnings": [],
+        "enforceable": True,
+        "segments": [],
+    }
+
+    if not hourly_requirements:
+        aggregate["enforceable"] = False
+        return aggregate
+
+    num_segments = len(stations)
+    warnings: list = []
+    for req in hourly_requirements:
+        warnings.extend(req.get("warnings") or [])
+
+    for idx in range(num_segments):
+        seg_length = 0.0
+        try:
+            seg_length = float(stations[idx].get("L", stations[idx].get("length_km", 0.0)) or 0.0)
+        except Exception:
+            seg_length = 0.0
+
+        best_state: dict[str, object] | None = None
+
+        for req in hourly_requirements:
+            segs = req.get("segments") if isinstance(req.get("segments"), Sequence) else []
+            avg_kv = req.get("avg_kv") if isinstance(req.get("avg_kv"), Sequence) else []
+            avg_rho = req.get("avg_rho") if isinstance(req.get("avg_rho"), Sequence) else []
+            hour_idx = req.get("hour", -1)
+            for seg in segs:
+                if not isinstance(seg, Mapping):
+                    continue
+                try:
+                    seg_idx = int(seg.get("station_idx", -1))
+                except (TypeError, ValueError):
+                    seg_idx = -1
+                if seg_idx != idx:
+                    continue
+                try:
+                    ppm_val = float(seg.get("dra_ppm", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    ppm_val = 0.0
+                try:
+                    perc_val = float(seg.get("dra_perc", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    perc_val = 0.0
+
+                if best_state is None or ppm_val > best_state.get("dra_ppm", 0.0):
+                    best_state = {
+                        "station_idx": idx,
+                        "length_km": seg_length,
+                        "dra_ppm": ppm_val,
+                        "dra_perc": perc_val,
+                        "hour": int(hour_idx) if isinstance(hour_idx, (int, float)) else -1,
+                        "suction_head": seg.get("suction_head", 0.0),
+                        "sdh_required": seg.get("sdh_required", 0.0),
+                        "max_head_available": seg.get("max_head_available", 0.0),
+                        "limited_by_station": bool(seg.get("limited_by_station")),
+                        "worst_kv": float(avg_kv[seg_idx]) if seg_idx < len(avg_kv) else 0.0,
+                        "worst_rho": float(avg_rho[seg_idx]) if seg_idx < len(avg_rho) else 0.0,
+                    }
+
+        if best_state and (best_state.get("dra_ppm", 0.0) > 0.0 or best_state.get("dra_perc", 0.0) > 0.0):
+            aggregate["segments"].append(best_state)
+            aggregate["dra_ppm"] = max(aggregate["dra_ppm"], float(best_state.get("dra_ppm", 0.0) or 0.0))
+            aggregate["dra_perc"] = max(aggregate["dra_perc"], float(best_state.get("dra_perc", 0.0) or 0.0))
+            aggregate["dra_perc_uncapped"] = max(
+                aggregate["dra_perc_uncapped"], float(best_state.get("dra_perc", 0.0) or 0.0)
+            )
+            aggregate["length_km"] += max(seg_length, 0.0)
+
+    aggregate["warnings"] = warnings
+    if aggregate["dra_ppm"] <= 0.0 and aggregate["dra_perc"] <= 0.0:
+        aggregate["enforceable"] = False
+
+    return aggregate
+
+
 def _compute_and_store_baseline_requirement(
     stations_data,
     term_data,
@@ -1224,70 +1317,195 @@ def _compute_and_store_baseline_requirement(
     else:
         linefill_vol_df = None
 
-    worst_kv, worst_rho, worst_slices, worst_hours = _estimate_worst_case_segment_profiles(
+    hourly_snapshots = _build_hourly_segment_averages(
         stations_data,
         linefill_vol=linefill_vol_df,
         day_plan=plan_df,
-        design_flow_m3h=baseline_flow,
-        fallback_kv=fallback_kv,
-        fallback_rho=fallback_rho,
-        fallback_slices=fallback_slices,
+        hourly_flow_m3h=baseline_flow,
+        kv_fallback=fallback_kv,
+        rho_fallback=fallback_rho,
     )
-
-    baseline_visc_raw = max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0)
-    try:
-        baseline_visc = float(baseline_visc_raw)
-    except (TypeError, ValueError):
-        baseline_visc = 0.0
-    if baseline_visc <= 0.0:
-        try:
-            baseline_visc = float(max(worst_kv or fallback_kv or [1.0]))
-        except (TypeError, ValueError):
-            baseline_visc = 1.0
-
-    if persist_targets and worst_kv:
-        _safe_set_session_state("max_laced_visc_cst", baseline_visc)
 
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
     density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
-    fluid_density = float(max(worst_rho) if worst_rho else density_default or 0.0)
-    if fluid_density <= 0.0:
-        try:
-            fluid_density = float(density_default)
-        except (TypeError, ValueError):
-            fluid_density = 0.0
-    if persist_targets and worst_rho:
-        _safe_set_session_state("laced_density_kgm3", fluid_density)
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
+
+    hourly_requirements: list[dict[str, object]] = []
+    if hourly_snapshots:
+        for snap in hourly_snapshots:
+            hour_idx = int(snap.get("hour", 0))
+            avg_kv = snap.get("avg_kv") if isinstance(snap.get("avg_kv"), Sequence) else fallback_kv
+            avg_rho = snap.get("avg_rho") if isinstance(snap.get("avg_rho"), Sequence) else fallback_rho
+            slices = snap.get("slices") if isinstance(snap.get("slices"), Sequence) else fallback_slices
+            try:
+                visc_for_hour = float(max(avg_kv or [0.0]))
+            except Exception:
+                visc_for_hour = 0.0
+            if visc_for_hour <= 0.0:
+                try:
+                    visc_for_hour = float(max(fallback_kv or [1.0]))
+                except Exception:
+                    visc_for_hour = 1.0
+            try:
+                rho_for_hour = float(max(avg_rho or [0.0]))
+            except Exception:
+                rho_for_hour = 0.0
+            if rho_for_hour <= 0.0:
+                try:
+                    rho_for_hour = float(max(fallback_rho or [density_default or 0.0]))
+                except Exception:
+                    rho_for_hour = float(density_default or 0.0)
+
+            hourly_req = pipeline_model.compute_minimum_lacing_requirement(
+                stations_data,
+                term_data,
+                max_flow_m3h=baseline_flow,
+                max_visc_cst=visc_for_hour,
+                segment_slices=slices,
+                kv_list=list(avg_kv) if isinstance(avg_kv, Sequence) else fallback_kv,
+                rho_list=list(avg_rho) if isinstance(avg_rho, Sequence) else fallback_rho,
+                min_suction_head=min_suction,
+                fluid_density=rho_for_hour,
+                mop_kgcm2=mop_kgcm2,
+            )
+            hourly_req["hour"] = hour_idx
+            hourly_req["avg_kv"] = list(avg_kv) if isinstance(avg_kv, Sequence) else list(fallback_kv)
+            hourly_req["avg_rho"] = list(avg_rho) if isinstance(avg_rho, Sequence) else list(fallback_rho)
+            hourly_requirements.append(hourly_req)
+
+    worst_kv: list[float] = []
+    worst_rho: list[float] = []
+    worst_hours: list[int] = []
+    baseline_requirement: dict | None = None
+    warnings: list = []
+
+    if hourly_requirements:
+        num_segments = len(stations_data)
+        segment_max_kv = [0.0] * num_segments
+        segment_max_rho = [0.0] * num_segments
+        for req in hourly_requirements:
+            avg_kv_req = req.get("avg_kv") if isinstance(req.get("avg_kv"), Sequence) else []
+            avg_rho_req = req.get("avg_rho") if isinstance(req.get("avg_rho"), Sequence) else []
+            for idx in range(num_segments):
+                try:
+                    segment_max_kv[idx] = max(segment_max_kv[idx], float(avg_kv_req[idx]))
+                except Exception:
+                    pass
+                try:
+                    segment_max_rho[idx] = max(segment_max_rho[idx], float(avg_rho_req[idx]))
+                except Exception:
+                    pass
+
+        for idx in range(num_segments):
+            best_ppm = 0.0
+            best_kv = segment_max_kv[idx] if idx < len(segment_max_kv) else 0.0
+            best_rho = segment_max_rho[idx] if idx < len(segment_max_rho) else 0.0
+            best_hour = -1
+            for req in hourly_requirements:
+                avg_kv = req.get("avg_kv") if isinstance(req.get("avg_kv"), Sequence) else []
+                avg_rho = req.get("avg_rho") if isinstance(req.get("avg_rho"), Sequence) else []
+                segs = req.get("segments") if isinstance(req.get("segments"), Sequence) else []
+                for seg in segs:
+                    if not isinstance(seg, Mapping):
+                        continue
+                    try:
+                        seg_idx = int(seg.get("station_idx", -1))
+                    except (TypeError, ValueError):
+                        seg_idx = -1
+                    if seg_idx != idx:
+                        continue
+                    try:
+                        ppm_val = float(seg.get("dra_ppm", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        ppm_val = 0.0
+                    if ppm_val >= best_ppm:
+                        best_ppm = ppm_val
+                        best_hour = int(req.get("hour", -1))
+                        best_kv = float(avg_kv[seg_idx]) if seg_idx < len(avg_kv) else 0.0
+                        best_rho = float(avg_rho[seg_idx]) if seg_idx < len(avg_rho) else 0.0
+            worst_kv.append(best_kv)
+            worst_rho.append(best_rho)
+            worst_hours.append(best_hour)
+
+        baseline_requirement = _collapse_hourly_baselines(
+            hourly_requirements,
+            stations_data,
+        )
+        warnings = list(baseline_requirement.get("warnings", [])) if isinstance(baseline_requirement, Mapping) else []
+        if persist_targets:
+            try:
+                max_kv = float(max(worst_kv))
+            except Exception:
+                max_kv = 0.0
+            try:
+                max_rho = float(max(worst_rho))
+            except Exception:
+                max_rho = 0.0
+            if max_kv > 0.0:
+                _safe_set_session_state("max_laced_visc_cst", max_kv)
+            if max_rho > 0.0:
+                _safe_set_session_state("laced_density_kgm3", max_rho)
+    else:
+        worst_kv, worst_rho, worst_slices, worst_hours = _estimate_worst_case_segment_profiles(
+            stations_data,
+            linefill_vol=linefill_vol_df,
+            day_plan=plan_df,
+            design_flow_m3h=baseline_flow,
+            fallback_kv=fallback_kv,
+            fallback_rho=fallback_rho,
+            fallback_slices=fallback_slices,
+        )
+
+        baseline_visc_raw = max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0)
+        try:
+            baseline_visc = float(baseline_visc_raw)
+        except (TypeError, ValueError):
+            baseline_visc = 0.0
+        if baseline_visc <= 0.0:
+            try:
+                baseline_visc = float(max(worst_kv or fallback_kv or [1.0]))
+            except (TypeError, ValueError):
+                baseline_visc = 1.0
+
+        if persist_targets and worst_kv:
+            _safe_set_session_state("max_laced_visc_cst", baseline_visc)
+
+        fluid_density = float(max(worst_rho) if worst_rho else density_default or 0.0)
+        if fluid_density <= 0.0:
+            try:
+                fluid_density = float(density_default)
+            except (TypeError, ValueError):
+                fluid_density = 0.0
+        if persist_targets and worst_rho:
+            _safe_set_session_state("laced_density_kgm3", fluid_density)
+
+        try:
+            baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
+                stations_data,
+                term_data,
+                max_flow_m3h=baseline_flow,
+                max_visc_cst=baseline_visc,
+                segment_slices=worst_slices,
+                kv_list=worst_kv,
+                rho_list=worst_rho,
+                min_suction_head=min_suction,
+                fluid_density=fluid_density,
+                mop_kgcm2=mop_kgcm2,
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard
+            st.error(f"Failed to compute baseline DRA floors: {exc}")
+            baseline_requirement = None
 
     st.session_state["baseline_design_inputs"] = {
         "design_flow_m3h": baseline_flow,
-        "design_visc_cst": baseline_visc,
-        "design_density_kgm3": fluid_density,
+        "design_visc_cst": max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0),
+        "design_density_kgm3": max(worst_rho) if worst_rho else density_default,
         "design_min_suction_m": min_suction,
         "worst_hours": list(worst_hours),
         "worst_kv": list(worst_kv),
         "worst_rho": list(worst_rho),
+        "hourly_requirements": hourly_requirements,
     }
-
-    baseline_requirement: dict | None = None
-    warnings: list = []
-    try:
-        baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
-            stations_data,
-            term_data,
-            max_flow_m3h=baseline_flow,
-            max_visc_cst=baseline_visc,
-            segment_slices=worst_slices,
-            kv_list=worst_kv,
-            rho_list=worst_rho,
-            min_suction_head=min_suction,
-            fluid_density=fluid_density,
-            mop_kgcm2=mop_kgcm2,
-        )
-    except Exception as exc:  # pragma: no cover - defensive guard
-        st.error(f"Failed to compute baseline DRA floors: {exc}")
-        baseline_requirement = None
 
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
     enforceable = False
@@ -1787,9 +2005,9 @@ with st.sidebar:
                                 [
                                     "1. **Target laced flow** is set to the pumping-plan volume ÷ 24 hours (or falls back to your entered lacing flow).",
                                     "2. The app replays 24 hourly linefill states, converts each hour's volume to segment lengths, and computes a **length-weighted average viscosity and density** per segment using ∑(length × property)/∑length.",
-                                    "3. For each segment, it picks the hour with the **highest average viscosity**; that hour's viscosity and density become the design properties for the baseline check.",
-                                    "4. At those design conditions, it compares the **required head** (to meet SDH and suction) against the **available head** at DOL after MOP/MAOP limits. Any head shortfall is converted to %DR and then to baseline PPM.",
-                                    "5. If no shortfall exists, the recommended baseline PPM for that segment stays at zero.",
+                                    "3. Every hour is checked: the head required at that hour's average viscosity/density is compared against the available head at DOL (after MOP/MAOP). Any shortfall is translated to %DR and PPM for that hour.",
+                                    "4. Per segment, the baseline keeps the **highest hourly PPM** found across the day. This creates the smallest constant floor that still prevents late-hour spikes in DRA demand.",
+                                    "5. If no hour shows a shortfall, the recommended baseline PPM for that segment stays at zero.",
                                 ]
                             )
                         )
@@ -1847,16 +2065,16 @@ with st.sidebar:
                         except (TypeError, ValueError):
                             seg_suction = 0.0
                         try:
-                            worst_hour = int(worst_hours_list[station_idx]) if station_idx < len(worst_hours_list) else -1
-                        except (TypeError, ValueError, IndexError):
+                            worst_hour = int(seg.get("hour", -1))
+                        except (TypeError, ValueError):
                             worst_hour = -1
                         try:
-                            worst_kv_val = float(worst_kv_list[station_idx]) if station_idx < len(worst_kv_list) else 0.0
-                        except (TypeError, ValueError, IndexError):
+                            worst_kv_val = float(seg.get("worst_kv", 0.0) or 0.0)
+                        except (TypeError, ValueError):
                             worst_kv_val = 0.0
                         try:
-                            worst_rho_val = float(worst_rho_list[station_idx]) if station_idx < len(worst_rho_list) else 0.0
-                        except (TypeError, ValueError, IndexError):
+                            worst_rho_val = float(seg.get("worst_rho", 0.0) or 0.0)
+                        except (TypeError, ValueError):
                             worst_rho_val = 0.0
                         try:
                             sdh_required = float(seg.get("sdh_required", 0.0) or 0.0)
