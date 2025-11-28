@@ -2146,6 +2146,8 @@ def compute_minimum_lacing_requirement(
     max_flow_m3h: float,
     max_visc_cst: float,
     segment_slices: list[list[dict]] | None = None,
+    kv_list: list[float] | None = None,
+    rho_list: list[float] | None = None,
     dra_upper_bound: float = 70.0,
     min_suction_head: float = 0.0,
     fluid_density: float | None = None,
@@ -2366,14 +2368,55 @@ def compute_minimum_lacing_requirement(
                 max_head = head_val
         return max_head
 
+    num_segments = len(stations)
+    kv_defaults = []
+    if isinstance(kv_list, (list, tuple)) and len(kv_list):
+        kv_defaults = [float(val) if _coerce_float_local(val, -1.0) > 0.0 else float(max_visc_cst or 1.0) for val in kv_list]
+
+    rho_defaults = []
+    if isinstance(rho_list, (list, tuple)) and len(rho_list):
+        rho_defaults = [float(val) if _coerce_float_local(val, -1.0) > 0.0 else default_rho for val in rho_list]
+
+    cleaned_slices: list[list[dict]] = []
+    if segment_slices is None:
+        segment_slices = [[] for _ in stations]
+    if segment_slices:
+        for idx in range(num_segments):
+            if idx < len(segment_slices):
+                seq = segment_slices[idx] or []
+            else:
+                seq = []
+            cleaned_seq: list[dict] = []
+            for entry in seq:
+                if not isinstance(entry, Mapping):
+                    continue
+                try:
+                    seg_len = float(entry.get('length_km', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_len = 0.0
+                if seg_len <= 0.0:
+                    continue
+                try:
+                    seg_kv = float(entry.get('kv', kv_defaults[idx] if idx < len(kv_defaults) else max_visc_cst) or 0.0)
+                except (TypeError, ValueError):
+                    seg_kv = kv_defaults[idx] if idx < len(kv_defaults) else max_visc_cst
+                try:
+                    seg_rho = float(entry.get('rho', rho_defaults[idx] if idx < len(rho_defaults) else default_rho) or 0.0)
+                except (TypeError, ValueError):
+                    seg_rho = rho_defaults[idx] if idx < len(rho_defaults) else default_rho
+                cleaned_seq.append({'length_km': seg_len, 'kv': seg_kv, 'rho': seg_rho})
+            cleaned_slices.append(cleaned_seq)
+
     total_length = 0.0
     stations_copy: list[dict] = []
-    for stn in stations:
+    for idx, stn in enumerate(stations):
         entry = copy.deepcopy(stn)
         try:
             total_length += float(entry.get('L', 0.0) or 0.0)
         except (TypeError, ValueError):
             total_length += 0.0
+        if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
+            entry['rho'] = rho_defaults[idx]
         stations_copy.append(entry)
     if total_length <= 0.0:
         total_length = 0.0
@@ -2388,6 +2431,10 @@ def compute_minimum_lacing_requirement(
 
     kv_list = [visc_max for _ in stations_copy]
     slices_use: list[list[dict]] = [[] for _ in stations_copy]
+    if kv_defaults:
+        kv_list = [kv_defaults[i] if i < len(kv_defaults) else visc_max for i in range(len(stations_copy))]
+    if cleaned_slices:
+        slices_use = cleaned_slices
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
     cumulative_min = max(terminal_min_residual, 0.0)
@@ -2521,7 +2568,7 @@ def compute_minimum_lacing_requirement(
 
             try:
                 dra_ppm_needed = (
-                    float(get_ppm_for_dr(visc_max, dr_needed))
+                    float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_needed))
                     if dr_needed > 0
                     else 0.0
                 )
@@ -3562,6 +3609,7 @@ def solve_pipeline(
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
     *,
+    dra_ppm_cap: float | None = None,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
     _internal_pass: bool = False,
@@ -3639,6 +3687,13 @@ def solve_pipeline(
     except (TypeError, ValueError):
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
+
+    try:
+        dra_ppm_cap_val = float(dra_ppm_cap)
+    except (TypeError, ValueError):
+        dra_ppm_cap_val = 0.0
+    if math.isnan(dra_ppm_cap_val) or dra_ppm_cap_val <= 0.0:
+        dra_ppm_cap_val = 0.0
 
     try:
         state_cost_margin_pct = float(state_cost_margin_pct)
@@ -4346,6 +4401,7 @@ def solve_pipeline(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
+                    dra_ppm_cap=dra_ppm_cap_val,
                     loop_usage_by_station=loop_usage_by_station,
                     enumerate_loops=False,
                     _internal_pass=True,
@@ -4445,6 +4501,7 @@ def solve_pipeline(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
+                    dra_ppm_cap=dra_ppm_cap_val,
                     loop_usage_by_station=loop_usage_by_station,
                     enumerate_loops=False,
                     _internal_pass=True,
@@ -4937,6 +4994,8 @@ def solve_pipeline(
                             dra_use = int(math.ceil(floor_dr_min_float)) if floor_dr_min_float > 0.0 else 1
                         ppm_candidates.append((dra_use, fallback_ppm))
                     for dra_main_use, ppm_main in ppm_candidates:
+                        if dra_ppm_cap_val > 0.0 and ppm_main > dra_ppm_cap_val:
+                            ppm_main = dra_ppm_cap_val
                         for dra_loop in dra_loop_vals:
                             ppm_loop = float(get_ppm_for_dr(kv, dra_loop)) if dra_loop > 0 else 0.0
                             inj_effective_est = _predict_effective_injection(
@@ -5065,6 +5124,8 @@ def solve_pipeline(
                     dra_vals = filtered_vals
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
+                    if dra_ppm_cap_val > 0.0 and ppm_main > dra_ppm_cap_val:
+                        ppm_main = dra_ppm_cap_val
                     if floor_ppm_min > 0.0:
                         if ppm_main <= 0.0 and not floor_exceeds_cap:
                             continue
@@ -5261,13 +5322,13 @@ def solve_pipeline(
     )
 
     fallback_by_segment: list[float] = []
-    if initial_queue:
+    if initial_queue or segment_floor_lookup:
         base_queue_tuple = tuple(initial_queue)
         offset = 0.0
-        for stn in stations:
+        for idx, stn in enumerate(stations):
             seg_length = float(stn.get('L', 0.0) or 0.0)
             fallback_val = 0.0
-            if seg_length > 0.0:
+            if seg_length > 0.0 and base_queue_tuple:
                 profile = _segment_profile_from_queue(base_queue_tuple, offset, seg_length)
                 if profile:
                     for entry in reversed(profile):
@@ -5280,6 +5341,14 @@ def solve_pipeline(
                         if ppm_entry > 0.0:
                             fallback_val = ppm_entry
                             break
+            floor_entry = segment_floor_lookup.get(idx)
+            if floor_entry:
+                try:
+                    floor_ppm = float(floor_entry.get('dra_ppm', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    floor_ppm = 0.0
+                if floor_ppm > 0.0:
+                    fallback_val = max(fallback_val, floor_ppm)
             fallback_by_segment.append(fallback_val)
             offset += seg_length
     else:
@@ -6553,6 +6622,7 @@ def solve_pipeline_with_types(
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
+    dra_ppm_cap: float | None = None,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     coarse_multiplier: float = COARSE_MULTIPLIER,
@@ -6657,6 +6727,7 @@ def solve_pipeline_with_types(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
+                    dra_ppm_cap=dra_ppm_cap,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                     rpm_step=rpm_step,
