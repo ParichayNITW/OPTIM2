@@ -5746,15 +5746,20 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
             executed = [str(p).lower() for p in passes]
         detail_msg = str(detail.get("message") or "")
 
-    if "exhaustive" in executed:
-        return True
-
     combined_msg = f"{error_msg} {detail_msg}".lower()
     infeasible_keywords = (
         "no feasible",
         "infeasible",
         "not feasible",
     )
+
+    # Only consider a max-flow fallback when the solver exhausted its internal
+    # search passes or when the backend explicitly reports infeasibility.
+    # This avoids prematurely dropping the requested rate for transient
+    # backtracking errors that do not indicate a true feasibility limit.
+    if executed and "exhaustive" not in executed:
+        return any(keyword in combined_msg for keyword in infeasible_keywords)
+
     return any(keyword in combined_msg for keyword in infeasible_keywords)
 
 
@@ -5857,10 +5862,7 @@ def _try_with_expanded_search_depth(
     """Re-run the solver with a widened search space before dropping flow."""
 
     overrides = _build_expanded_search_depth_overrides()
-    if not overrides:
-        return None
-
-    with _temporary_search_depth_overrides(overrides):
+    def _run_solver():
         return _execute_time_series_solver(
             stations_base,
             term_data,
@@ -5879,6 +5881,12 @@ def _try_with_expanded_search_depth(
             total_length=total_length,
             sub_steps=sub_steps,
         )
+
+    if not overrides:
+        return _run_solver()
+
+    with _temporary_search_depth_overrides(overrides):
+        return _run_solver()
 
 
 def _find_maximum_feasible_flow(
@@ -6422,26 +6430,25 @@ if not auto_batch:
             fallback_note: str | None = None
             fallback: dict | None = None
             expanded_solver_result: dict | None = None
-            if _should_attempt_max_flow_fallback(solver_result):
-                with st.spinner("Expanding search depth before reducing flow..."):
-                    expanded_solver_result = _try_with_expanded_search_depth(
-                        flow_rate=FLOW_sched,
-                        stations_base=stations_base,
-                        term_data=term_data,
-                        hours=hours,
-                        plan_df=base_plan_df,
-                        current_vol=base_current_vol,
-                        dra_linefill=base_dra_linefill,
-                        dra_reach_km=base_dra_reach,
-                        RateDRA=RateDRA,
-                        Price_HSD=Price_HSD,
-                        fuel_density=st.session_state.get("Fuel_density", 820.0),
-                        ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                        mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                        total_length=total_length,
-                        sub_steps=sub_steps,
-                    )
+            with st.spinner("Expanding search depth before reducing flow..."):
+                expanded_solver_result = _try_with_expanded_search_depth(
+                    flow_rate=FLOW_sched,
+                    stations_base=stations_base,
+                    term_data=term_data,
+                    hours=hours,
+                    plan_df=base_plan_df,
+                    current_vol=base_current_vol,
+                    dra_linefill=base_dra_linefill,
+                    dra_reach_km=base_dra_reach,
+                    RateDRA=RateDRA,
+                    Price_HSD=Price_HSD,
+                    fuel_density=st.session_state.get("Fuel_density", 820.0),
+                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    total_length=total_length,
+                    sub_steps=sub_steps,
+                )
             if expanded_solver_result and not expanded_solver_result.get("error"):
                 solver_result = expanded_solver_result
                 reports = solver_result["reports"]
@@ -6451,7 +6458,7 @@ if not auto_batch:
                 dra_linefill = solver_result["final_dra_linefill"]
                 dra_reach_km = solver_result["final_dra_reach"]
                 error_msg = None
-            elif error_msg and _should_attempt_max_flow_fallback(solver_result):
+            elif error_msg and _should_attempt_max_flow_fallback(expanded_solver_result or solver_result):
                 with st.spinner("Computing max achievable flow..."):
                     fallback = _find_maximum_feasible_flow(
                         flow_rate=FLOW_sched,
