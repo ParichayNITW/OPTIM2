@@ -4525,7 +4525,7 @@ def solve_pipeline(
             if length_floor > 0.0:
                 base_detail["length_km"] = length_floor
         if base_detail:
-            base_detail["enforce_queue"] = False
+            base_detail["enforce_queue"] = True
             baseline_for_enforcement = base_detail
     baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
