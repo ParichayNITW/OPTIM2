@@ -1,12 +1,85 @@
 import os
 import sys
+import math
 from pathlib import Path
 import time
 import base64
 import streamlit as st
+from streamlit.errors import StreamlitAPIException
 import altair as alt
 import pipeline_model
 import datetime as dt
+
+
+def _safe_set_session_state(key, value):
+    """Attempt to write into session state without throwing Streamlit errors."""
+
+    try:
+        st.session_state[key] = value
+        return True
+    except StreamlitAPIException:
+        return False
+
+
+def _auto_seed_lacing_inputs():
+    """Pre-populate auto lacing inputs from the pumping plan and current profiles."""
+
+    if st.session_state.get("baseline_input_mode") != "auto":
+        return
+
+    plan_df = st.session_state.get("day_plan_df")
+    if isinstance(plan_df, pd.DataFrame):
+        plan_df = ensure_initial_dra_column(plan_df.copy(), default=0.0, fill_blanks=True)
+    else:
+        plan_df = None
+
+    plan_total_vol = 0.0
+    if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0:
+        plan_col = "Volume (m³)" if "Volume (m³)" in plan_df.columns else "Volume"
+        try:
+            plan_total_vol = float(pd.to_numeric(plan_df[plan_col], errors="coerce").fillna(0.0).sum())
+        except Exception:
+            plan_total_vol = 0.0
+
+    baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 0.0)) or 0.0)
+    flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
+    if flow_from_plan > 0.0:
+        baseline_flow = flow_from_plan
+    if baseline_flow > 0.0:
+        _safe_set_session_state("max_laced_flow_m3h", baseline_flow)
+
+    stations_ctx, term_ctx, linefill_ctx, kv_ctx, rho_ctx, segment_ctx = _prepare_pipeline_context()
+
+    max_visc = 0.0
+    if isinstance(kv_ctx, Sequence):
+        try:
+            max_visc = float(max(kv_ctx))
+        except Exception:
+            max_visc = 0.0
+    if max_visc > 0.0:
+        _safe_set_session_state("max_laced_visc_cst", max_visc)
+
+    max_rho = 0.0
+    if isinstance(rho_ctx, Sequence):
+        try:
+            max_rho = float(max(rho_ctx))
+        except Exception:
+            max_rho = 0.0
+    if max_rho > 0.0:
+        _safe_set_session_state("laced_density_kgm3", max_rho)
+
+    min_suction_candidates = []
+    for stn in stations_ctx:
+        try:
+            min_suction_candidates.append(float(stn.get("min_residual", 0.0) or 0.0))
+        except Exception:
+            continue
+    if min_suction_candidates:
+        try:
+            min_suction = float(min(min_suction_candidates))
+            _safe_set_session_state("min_laced_suction_m", min_suction)
+        except Exception:
+            pass
 
 # --- SAFE DEFAULTS (session state guards) ---
 if "stations" not in st.session_state or not isinstance(st.session_state.get("stations"), list):
@@ -527,6 +600,7 @@ def _default_segment_slices(
                     "length_km": length,
                     "kv": float(kv),
                     "rho": float(rho),
+                    "dra_ppm": 0.0,
                 }
             ]
         )
@@ -633,7 +707,12 @@ def map_vol_linefill_to_segments(
         except (TypeError, ValueError):
             dens = 0.0
 
-        batches.append({"volume_m3": vol, "kv": visc, "rho": dens})
+        try:
+            dra_ppm = float(r.get("Initial DRA (ppm)", 0.0) or r.get("DRA ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            dra_ppm = 0.0
+
+        batches.append({"volume_m3": vol, "kv": visc, "rho": dens, "dra_ppm": dra_ppm})
 
     if not batches:
         fallback_kv = 1.0
@@ -666,6 +745,7 @@ def map_vol_linefill_to_segments(
     remaining = batches[0]["len_km"] if batches else 0.0
     kv_cur = batches[0]["kv"] if batches else 1.0
     rho_cur = batches[0]["rho"] if batches else 850.0
+    ppm_cur = batches[0].get("dra_ppm", 0.0) if batches else 0.0
 
     for L in seg_lengths:
         need = L
@@ -690,6 +770,7 @@ def map_vol_linefill_to_segments(
                 remaining = batches[i_batch]["len_km"]
                 kv_cur = batches[i_batch]["kv"]
                 rho_cur = batches[i_batch]["rho"]
+                ppm_cur = batches[i_batch].get("dra_ppm", ppm_cur)
                 if remaining <= 1e-9:
                     continue
 
@@ -698,13 +779,13 @@ def map_vol_linefill_to_segments(
                 break
 
             segment_entries.append(
-                {"length_km": take, "kv": kv_cur, "rho": rho_cur}
+                {"length_km": take, "kv": kv_cur, "rho": rho_cur, "dra_ppm": ppm_cur}
             )
             need -= take
             remaining -= take
 
         if not segment_entries:
-            segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur})
+            segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur, "dra_ppm": ppm_cur})
 
         seg_slices.append(segment_entries)
         seg_kv.append(segment_entries[0]["kv"])
@@ -936,6 +1017,413 @@ def _prepare_pipeline_context():
     return stations_data, term_data, linefill_df, kv_list, rho_list, segment_slices
 
 
+def _length_weighted_average(entries: list[Mapping[str, object]], *, key: str, default: float) -> float:
+    """Return the length-weighted average for ``key`` across ``entries``."""
+
+    total_len = 0.0
+    weighted = 0.0
+    for entry in entries or []:
+        try:
+            seg_len = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_len = 0.0
+        if seg_len <= 0.0:
+            continue
+
+        try:
+            value = float(entry.get(key, default) or default)
+        except (TypeError, ValueError):
+            value = default
+
+        total_len += seg_len
+        weighted += seg_len * value
+
+    if total_len <= 0.0:
+        return float(default)
+
+    return float(weighted / total_len)
+
+
+def _build_hourly_segment_averages(
+    stations: list[dict],
+    *,
+    linefill_vol: pd.DataFrame | None,
+    day_plan: pd.DataFrame | None,
+    hourly_flow_m3h: float,
+    kv_fallback: Sequence[float],
+    rho_fallback: Sequence[float],
+) -> list[dict[str, object]]:
+    """Simulate 24 hourly linefill states and capture segment averages per hour."""
+
+    num_segments = len(stations)
+    if num_segments == 0:
+        return []
+
+    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
+    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
+
+    hourly_snapshots: list[dict[str, object]] = []
+    pumped_per_hour = float(hourly_flow_m3h or 0.0)
+    if pumped_per_hour <= 0.0:
+        pumped_per_hour = 0.0
+
+    for hour in range(24):
+        kv_list, rho_list, segment_slices = map_vol_linefill_to_segments(current_vol, stations)
+
+        avg_kv: list[float] = []
+        avg_rho: list[float] = []
+        avg_ppm: list[float] = []
+        for idx in range(num_segments):
+            kv_default = kv_list[idx] if idx < len(kv_list) else kv_fallback[idx]
+            rho_default = rho_list[idx] if idx < len(rho_list) else rho_fallback[idx]
+            slices = segment_slices[idx] if idx < len(segment_slices) else []
+
+            avg_kv.append(_length_weighted_average(slices, key="kv", default=kv_default))
+            avg_rho.append(_length_weighted_average(slices, key="rho", default=rho_default))
+            avg_ppm.append(_length_weighted_average(slices, key="dra_ppm", default=0.0))
+
+        hourly_snapshots.append(
+            {
+                "hour": hour,
+                "avg_kv": avg_kv,
+                "avg_rho": avg_rho,
+                "avg_ppm": avg_ppm,
+                "slices": segment_slices,
+            }
+        )
+
+        if pumped_per_hour > 0.0:
+            current_vol, plan_local, _ = shift_vol_linefill(
+                current_vol.copy(), pumped_per_hour, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
+            )
+
+    return hourly_snapshots
+
+
+def _estimate_travel_hours(
+    baseline_flow_m3h: float,
+    *,
+    linefill_vol: pd.DataFrame | None,
+    stations: list[dict],
+) -> float:
+    """Estimate how many hours of fluid sit in the line at the design flow."""
+
+    if baseline_flow_m3h <= 0.0:
+        return 1.0
+
+    total_volume_m3 = 0.0
+    if isinstance(linefill_vol, pd.DataFrame) and len(linefill_vol) > 0:
+        vol_col = "Volume (m³)" if "Volume (m³)" in linefill_vol.columns else "Volume"
+        try:
+            total_volume_m3 = float(pd.to_numeric(linefill_vol[vol_col], errors="coerce").fillna(0.0).sum())
+        except Exception:
+            total_volume_m3 = 0.0
+
+    if total_volume_m3 <= 0.0:
+        for stn in stations:
+            try:
+                length_km = float(stn.get("L", stn.get("length_km", 0.0)) or 0.0)
+                diameter_m = float(stn.get("D", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if length_km <= 0.0 or diameter_m <= 0.0:
+                continue
+            area = math.pi * (diameter_m / 2.0) ** 2
+            total_volume_m3 += area * length_km * 1000.0
+
+    if total_volume_m3 <= 0.0:
+        return 1.0
+
+    travel_hours = total_volume_m3 / baseline_flow_m3h
+    if travel_hours <= 0.0:
+        return 1.0
+
+    return float(travel_hours)
+
+
+def shift_vol_linefill(
+    vol_table: pd.DataFrame,
+    pumped_m3: float,
+    day_plan: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
+    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
+
+    Fluid is removed from the terminal end of ``vol_table`` and the same volume
+    is injected at the origin from ``day_plan`` if provided. The updated
+    ``vol_table`` together with the shortened ``day_plan`` and a list of
+    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
+    returned.
+    """
+
+    vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
+    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
+
+    remaining = pumped_m3
+    idx = len(vol_table) - 1
+    while remaining > 1e-9 and idx >= 0:
+        v = vol_table.at[idx, "Volume (m³)"]
+        take = min(v, remaining)
+        vol_table.at[idx, "Volume (m³)"] = v - take
+        remaining -= take
+        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
+            vol_table = vol_table.drop(index=idx)
+        idx -= 1
+    vol_table = vol_table.reset_index(drop=True)
+
+    injected_batches: list[dict[str, float]] = []
+
+    if day_plan is not None:
+        day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
+        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
+        injected = 0.0
+
+        while remaining > 1e-9 and len(day_plan) > 0:
+            v = day_plan.iloc[0]["Volume (m³)"]
+            take = min(v, remaining)
+            injected += take
+
+            vol_table = pd.concat(
+                [
+                    pd.DataFrame(
+                        [
+                            {
+                                "Product": day_plan.iloc[0].get("Product", ""),
+                                "Volume (m³)": take,
+                                "Viscosity (cSt)": day_plan.iloc[0]["Viscosity (cSt)"],
+                                "Density (kg/m³)": day_plan.iloc[0]["Density (kg/m³)"],
+                                "Initial DRA (ppm)": day_plan.iloc[0].get("Initial DRA (ppm)", 0.0),
+                            }
+                        ]
+                    ),
+                    vol_table,
+                ],
+                ignore_index=True,
+            )
+
+            remaining -= take
+            if take >= v:
+                day_plan = day_plan.drop(index=0).reset_index(drop=True)
+            else:
+                day_plan.at[0, "Volume (m³)"] = v - take
+
+        if injected > 0:
+            injected_batches.append(
+                {
+                    "volume": float(injected),
+                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)) if len(day_plan) else 0.0,
+                }
+            )
+
+    vol_table = vol_table.reset_index(drop=True)
+
+    return vol_table, day_plan, injected_batches
+
+
+def _estimate_worst_case_segment_profiles(
+    stations: list[dict],
+    *,
+    linefill_vol: pd.DataFrame | None,
+    day_plan: pd.DataFrame | None,
+    design_flow_m3h: float,
+    fallback_kv: Sequence[float] | None,
+    fallback_rho: Sequence[float] | None,
+    fallback_slices: Sequence[Sequence[Mapping[str, object]]] | None,
+) -> tuple[list[float], list[float], list[list[dict]], list[int]]:
+    """Return segment-wise worst-case kv/rho profiles over 24 hours."""
+
+    num_segments = len(stations)
+    if num_segments == 0:
+        return [], [], [], []
+
+    lengths = [float(stn.get("L", 0.0) or 0.0) for stn in stations]
+
+    kv_fallback = [float(val) for val in fallback_kv] if fallback_kv else [1.0] * num_segments
+    rho_fallback = [float(val) for val in fallback_rho] if fallback_rho else [850.0] * num_segments
+    slices_fallback = [list(entry) for entry in (fallback_slices or [])]
+    if len(slices_fallback) < num_segments:
+        for idx in range(len(slices_fallback), num_segments):
+            slices_fallback.append(
+                [
+                    {
+                        "length_km": lengths[idx] if idx < len(lengths) else 0.0,
+                        "kv": kv_fallback[idx] if idx < len(kv_fallback) else 1.0,
+                        "rho": rho_fallback[idx] if idx < len(rho_fallback) else 850.0,
+                    }
+                ]
+            )
+
+    if design_flow_m3h <= 0.0:
+        return kv_fallback, rho_fallback, slices_fallback, [-1] * num_segments
+
+    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
+    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
+
+    hourly_flow = st.session_state.get("hourly_flow", design_flow_m3h)
+    try:
+        hourly_flow = float(hourly_flow)
+    except (TypeError, ValueError):
+        hourly_flow = float(design_flow_m3h)
+
+    snapshots = _build_hourly_segment_averages(
+        stations,
+        linefill_vol=linefill_vol,
+        day_plan=plan_local,
+        hourly_flow_m3h=hourly_flow,
+        kv_fallback=kv_fallback,
+        rho_fallback=rho_fallback,
+    )
+
+    worst_kv = list(kv_fallback)
+    worst_rho = list(rho_fallback)
+    worst_slices: list[list[dict]] = [list(entry) for entry in slices_fallback]
+    worst_hours: list[int] = [-1] * num_segments
+
+    for snap in snapshots:
+        avg_kv = snap.get("avg_kv", [])
+        avg_rho = snap.get("avg_rho", [])
+        slices_now = snap.get("slices", [])
+        for idx in range(num_segments):
+            kv_now = avg_kv[idx] if idx < len(avg_kv) else kv_fallback[idx]
+            rho_now = avg_rho[idx] if idx < len(avg_rho) else rho_fallback[idx]
+            if kv_now > worst_kv[idx]:
+                worst_kv[idx] = kv_now
+                worst_rho[idx] = rho_now
+                worst_slices[idx] = (
+                    list(slices_now[idx]) if idx < len(slices_now) and isinstance(slices_now[idx], list) else worst_slices[idx]
+                )
+                worst_hours[idx] = int(snap.get("hour", -1))
+
+    return worst_kv, worst_rho, worst_slices, worst_hours
+
+
+def _collapse_hourly_baselines(
+    hourly_requirements: list[dict[str, object]],
+    stations: list[dict],
+    *,
+    travel_hours: float,
+) -> dict:
+    """Collapse hour-by-hour baseline checks into a single enforceable floor.
+
+    The reducer blends the hourly needs using a rolling mean sized to the line's
+    travel time (hours of fluid in the line at the design flow).  By taking the
+    highest rolling mean instead of the single worst spike, the baseline stays
+    as low as possible while still smoothing out late-hour surges.
+    """
+
+    aggregate = {
+        "dra_perc": 0.0,
+        "dra_ppm": 0.0,
+        "length_km": 0.0,
+        "dra_perc_uncapped": 0.0,
+        "warnings": [],
+        "enforceable": True,
+        "segments": [],
+    }
+
+    if not hourly_requirements:
+        aggregate["enforceable"] = False
+        return aggregate
+
+    num_segments = len(stations)
+    warnings: list = []
+    for req in hourly_requirements:
+        warnings.extend(req.get("warnings") or [])
+
+    window = max(1, int(math.ceil(travel_hours)))
+
+    for idx in range(num_segments):
+        seg_length = 0.0
+        try:
+            seg_length = float(stations[idx].get("L", stations[idx].get("length_km", 0.0)) or 0.0)
+        except Exception:
+            seg_length = 0.0
+
+        per_hour: list[dict[str, object]] = []
+
+        for req in hourly_requirements:
+            segs = req.get("segments") if isinstance(req.get("segments"), Sequence) else []
+            avg_kv = req.get("avg_kv") if isinstance(req.get("avg_kv"), Sequence) else []
+            avg_rho = req.get("avg_rho") if isinstance(req.get("avg_rho"), Sequence) else []
+            avg_ppm = req.get("avg_ppm") if isinstance(req.get("avg_ppm"), Sequence) else []
+            hour_idx = req.get("hour", -1)
+            for seg in segs:
+                if not isinstance(seg, Mapping):
+                    continue
+                try:
+                    seg_idx = int(seg.get("station_idx", -1))
+                except (TypeError, ValueError):
+                    seg_idx = -1
+                if seg_idx != idx:
+                    continue
+                try:
+                    ppm_val = float(seg.get("dra_ppm", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    ppm_val = 0.0
+                try:
+                    perc_val = float(seg.get("dra_perc", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    perc_val = 0.0
+
+                base_ppm = 0.0
+                try:
+                    base_ppm = float(avg_ppm[seg_idx]) if seg_idx < len(avg_ppm) else 0.0
+                except Exception:
+                    base_ppm = 0.0
+
+                per_hour.append(
+                    {
+                        "dra_ppm": ppm_val,
+                        "dra_perc": perc_val,
+                        "hour": int(hour_idx) if isinstance(hour_idx, (int, float)) else -1,
+                        "worst_kv": float(avg_kv[seg_idx]) if seg_idx < len(avg_kv) else 0.0,
+                        "worst_rho": float(avg_rho[seg_idx]) if seg_idx < len(avg_rho) else 0.0,
+                        "base_ppm": base_ppm,
+                        "suction_head": seg.get("suction_head", 0.0),
+                        "sdh_required": seg.get("sdh_required", 0.0),
+                        "max_head_available": seg.get("max_head_available", 0.0),
+                        "limited_by_station": bool(seg.get("limited_by_station")),
+                    }
+                )
+
+        per_hour.sort(key=lambda entry: entry.get("hour", 0))
+        if not per_hour:
+            continue
+
+        best_state: dict[str, object] | None = None
+        for idx_end in range(len(per_hour)):
+            window_entries = per_hour[max(0, idx_end - window + 1) : idx_end + 1]
+            if not window_entries:
+                continue
+            avg_shortfall = sum(
+                max(0.0, e.get("dra_ppm", 0.0) - e.get("base_ppm", 0.0)) for e in window_entries
+            ) / len(window_entries)
+            avg_perc = sum(e.get("dra_perc", 0.0) for e in window_entries) / len(window_entries)
+            candidate = dict(window_entries[-1])
+            candidate["dra_ppm"] = avg_shortfall
+            candidate["dra_perc"] = avg_perc
+
+            candidate_ppm = float(candidate.get("dra_ppm", 0.0) or 0.0)
+            if best_state is None or candidate_ppm > float(best_state.get("dra_ppm", 0.0) or 0.0):
+                candidate["station_idx"] = idx
+                candidate["length_km"] = seg_length
+                best_state = candidate
+
+        if best_state and (best_state.get("dra_ppm", 0.0) > 0.0 or best_state.get("dra_perc", 0.0) > 0.0):
+            aggregate["segments"].append(best_state)
+            aggregate["dra_ppm"] = max(aggregate["dra_ppm"], float(best_state.get("dra_ppm", 0.0) or 0.0))
+            aggregate["dra_perc"] = max(aggregate["dra_perc"], float(best_state.get("dra_perc", 0.0) or 0.0))
+            aggregate["dra_perc_uncapped"] = max(
+                aggregate["dra_perc_uncapped"], float(best_state.get("dra_perc", 0.0) or 0.0)
+            )
+            aggregate["length_km"] += max(seg_length, 0.0)
+
+    aggregate["warnings"] = warnings
+    if aggregate["dra_ppm"] <= 0.0 and aggregate["dra_perc"] <= 0.0:
+        aggregate["enforceable"] = False
+
+    return aggregate
+
+
 def _compute_and_store_baseline_requirement(
     stations_data,
     term_data,
@@ -943,35 +1431,51 @@ def _compute_and_store_baseline_requirement(
     rho_list,
     segment_slices,
 ):
-    """Recompute the DRA baseline using the current lacing inputs."""
+    """Recompute the DRA baseline using user-supplied lacing inputs only."""
 
     baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
-    baseline_visc_raw = st.session_state.get("max_laced_visc_cst", 0.0)
-    try:
-        baseline_visc = float(baseline_visc_raw)
-    except (TypeError, ValueError):
-        baseline_visc = 0.0
-    if baseline_visc <= 0.0:
-        try:
-            baseline_visc = float(max(kv_list or [1.0]))
-        except (TypeError, ValueError):
-            baseline_visc = 1.0
-
+    baseline_visc = float(st.session_state.get("max_laced_visc_cst", 0.0) or 0.0)
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
-    fluid_density = float(
-        st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0
-    )
+    fluid_density = float(st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0)) or 0.0)
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
+
+    fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
+    fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
+    fallback_slices = list(segment_slices) if isinstance(segment_slices, Sequence) else []
+
+    num_segments = len(stations_data)
+    design_kv = [baseline_visc if baseline_visc > 0.0 else (fallback_kv[i] if i < len(fallback_kv) else 1.0)
+                 for i in range(num_segments)]
+    design_rho = [fluid_density if fluid_density > 0.0 else (fallback_rho[i] if i < len(fallback_rho) else 0.0)
+                  for i in range(num_segments)]
+    design_slices: list[list[dict]] = []
+    for idx in range(num_segments):
+        try:
+            seg_length = float(stations_data[idx].get("L", stations_data[idx].get("length_km", 0.0)) or 0.0)
+        except Exception:
+            seg_length = 0.0
+        design_slices.append(
+            [
+                {
+                    "length_km": seg_length,
+                    "kv": design_kv[idx] if idx < len(design_kv) else baseline_visc,
+                    "rho": design_rho[idx] if idx < len(design_rho) else fluid_density,
+                }
+            ]
+        )
 
     baseline_requirement: dict | None = None
     warnings: list = []
+
     try:
         baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
             stations_data,
             term_data,
             max_flow_m3h=baseline_flow,
             max_visc_cst=baseline_visc,
-            segment_slices=segment_slices,
+            segment_slices=design_slices,
+            kv_list=design_kv,
+            rho_list=design_rho,
             min_suction_head=min_suction,
             fluid_density=fluid_density,
             mop_kgcm2=mop_kgcm2,
@@ -979,6 +1483,17 @@ def _compute_and_store_baseline_requirement(
     except Exception as exc:  # pragma: no cover - defensive guard
         st.error(f"Failed to compute baseline DRA floors: {exc}")
         baseline_requirement = None
+
+    st.session_state["baseline_design_inputs"] = {
+        "design_flow_m3h": baseline_flow,
+        "design_visc_cst": baseline_visc,
+        "design_density_kgm3": fluid_density,
+        "design_min_suction_m": min_suction,
+        "worst_hours": [],
+        "worst_kv": design_kv,
+        "worst_rho": design_rho,
+        "hourly_requirements": [],
+    }
 
     baseline_summary = _summarise_baseline_requirement(baseline_requirement)
     enforceable = False
@@ -1375,7 +1890,6 @@ with st.sidebar:
             step=10.0,
             key="max_laced_flow_m3h",
             help="Defines the maximum flow rate that DRA lacing is tuned to support.",
-            disabled=manual_baseline,
         )
         st.number_input(
             "Target laced viscosity (cSt)",
@@ -1385,7 +1899,6 @@ with st.sidebar:
             format="%.2f",
             key="max_laced_visc_cst",
             help="Viscosity reference used when evaluating DRA lacing performance.",
-            disabled=manual_baseline,
         )
         st.number_input(
             "Minimum suction pressure (m)",
@@ -1398,7 +1911,6 @@ with st.sidebar:
                 "Headroom to reserve at the suction reference when enforcing downstream"
                 " SDH requirements."
             ),
-            disabled=manual_baseline,
         )
         st.number_input(
             "Fluid density for lacing (kg/m³)",
@@ -1410,7 +1922,6 @@ with st.sidebar:
                 "Density used to convert MOP/MAOP limits from kg/cm² to metres when "
                 "evaluating baseline lacing floors."
             ),
-            disabled=manual_baseline,
         )
 
         if st.button("Calculate baseline DRA PPM", key="compute_baseline_dra", type="primary", disabled=manual_baseline):
@@ -1485,17 +1996,12 @@ with st.sidebar:
                             seg_perc = float(seg.get("dra_perc", 0.0) or 0.0)
                         except (TypeError, ValueError):
                             seg_perc = 0.0
-                        try:
-                            seg_suction = float(seg.get("suction_head", 0.0) or 0.0)
-                        except (TypeError, ValueError):
-                            seg_suction = 0.0
                         segment_rows.append(
                             {
                                 "Segment": segment_label,
                                 "Length (km)": seg_length,
                                 "Baseline PPM": seg_ppm,
                                 "Baseline %DR": seg_perc,
-                                "Suction head (m)": seg_suction,
                             }
                         )
                 if segment_rows:
@@ -1505,7 +2011,6 @@ with st.sidebar:
                             "Length (km)": 2,
                             "Baseline PPM": 2,
                             "Baseline %DR": 2,
-                            "Suction head (m)": 2,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
@@ -1613,6 +2118,9 @@ with st.sidebar:
             value=bool(st.session_state.get("search_collect_state_audit", True)),
             key="search_collect_state_audit",
             help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing DP states, so overhead is minimal.",
+        )
+        st.caption(
+            "After running optimization, open the Summary tab in the Optimization Results section and scroll below the main results table. The DP candidate log is listed there under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -2520,83 +3028,6 @@ def combine_volumetric_profiles(
     return kv_list, rho_list, segment_slices
 
 
-def shift_vol_linefill(
-    vol_table: pd.DataFrame,
-    pumped_m3: float,
-    day_plan: pd.DataFrame | None,
-) -> tuple[pd.DataFrame, pd.DataFrame | None, list[dict[str, float]]]:
-    """Update ``vol_table`` after ``pumped_m3`` m³ has left the pipeline.
-
-    Fluid is removed from the terminal end of ``vol_table`` and the same volume
-    is injected at the origin from ``day_plan`` if provided.  The updated
-    ``vol_table`` together with the shortened ``day_plan`` and a list of
-    injected DRA batches ``[{"volume": m³, "dra_ppm": ppm}, ...]`` are
-    returned.
-    """
-
-    # Remove delivered volume from downstream end
-    vol_table = ensure_initial_dra_column(vol_table.copy(), default=0.0, fill_blanks=True)
-    vol_table["Volume (m³)"] = vol_table["Volume (m³)"].astype(float)
-    remaining = pumped_m3
-    idx = len(vol_table) - 1
-    while remaining > 1e-9 and idx >= 0:
-        v = vol_table.at[idx, "Volume (m³)"]
-        take = min(v, remaining)
-        vol_table.at[idx, "Volume (m³)"] = v - take
-        remaining -= take
-        if vol_table.at[idx, "Volume (m³)"] <= 1e-9:
-            vol_table = vol_table.drop(index=idx)
-        idx -= 1
-    vol_table = vol_table.reset_index(drop=True)
-
-    injected_batches: list[dict[str, float]] = []
-
-    # Inject new product at upstream end according to day plan
-    if day_plan is not None:
-        day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-        day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
-        added = pumped_m3
-        j = 0
-        while added > 1e-9 and j < len(day_plan):
-            v = day_plan.at[j, "Volume (m³)"]
-            take = min(v, added)
-            batch = {
-                "Product": day_plan.at[j, "Product"],
-                "Volume (m³)": take,
-                "Viscosity (cSt)": day_plan.at[j, "Viscosity (cSt)"],
-                "Density (kg/m³)": day_plan.at[j, "Density (kg/m³)"],
-            }
-            ppm_value = day_plan.at[j, INIT_DRA_COL] if INIT_DRA_COL in day_plan.columns else 0.0
-            try:
-                ppm_value = float(ppm_value)
-            except (TypeError, ValueError):
-                ppm_value = 0.0
-            if pd.isna(ppm_value):
-                ppm_value = 0.0
-            batch[INIT_DRA_COL] = ppm_value
-            if "DRA ppm" in vol_table.columns or "DRA ppm" in day_plan.columns:
-                batch["DRA ppm"] = ppm_value
-            vol_table = pd.concat([pd.DataFrame([batch]), vol_table], ignore_index=True)
-            day_plan.at[j, "Volume (m³)"] = v - take
-            added -= take
-            if take > 1e-9:
-                injected_batches.append({"volume": float(take), "dra_ppm": ppm_value})
-            if day_plan.at[j, "Volume (m³)"] <= 1e-9:
-                j += 1
-        day_plan = day_plan.iloc[j:].reset_index(drop=True)
-
-    if injected_batches:
-        injected_batches = [
-            {
-                "volume": float(batch.get("volume", 0.0)),
-                "dra_ppm": float(batch.get("dra_ppm", 0.0)),
-            }
-            for batch in reversed(injected_batches)
-        ]
-
-    return vol_table, day_plan, injected_batches
-
-
 def _append_zero_plan_segments_to_result(
     result: Mapping[str, object] | None,
     injected_batches: Sequence[Mapping[str, object]] | None,
@@ -2859,6 +3290,64 @@ def _merge_forced_origin_details(
     merged["enforce_queue"] = bool(merged.get("enforce_queue", True)) and bool(addition.get("enforce_queue", True))
 
     return merged
+
+
+def _derive_dra_cap(
+    linefill: list[dict] | dict | None,
+    baseline_requirement: Mapping[str, object] | None = None,
+    *,
+    margin_ppm: float = 20.0,
+) -> float:
+    """Return a soft cap for injected DRA based on existing queue and floors."""
+
+    front_ppm = 0.0
+    if isinstance(linefill, list):
+        for entry in linefill:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                ppm_val = float(entry.get("dra_ppm", entry.get(INIT_DRA_COL, 0.0)) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            if ppm_val > 0.0:
+                front_ppm = ppm_val
+                break
+    elif isinstance(linefill, Mapping):
+        try:
+            front_ppm = float(linefill.get("dra_ppm", linefill.get(INIT_DRA_COL, 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            front_ppm = 0.0
+
+    baseline_floor = 0.0
+    if isinstance(baseline_requirement, Mapping):
+        try:
+            baseline_floor = max(baseline_floor, float(baseline_requirement.get("dra_ppm", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+        segs = baseline_requirement.get("segments") if isinstance(baseline_requirement, Mapping) else None
+        if isinstance(segs, list):
+            for seg in segs:
+                if not isinstance(seg, Mapping):
+                    continue
+                try:
+                    seg_ppm = float(seg.get("dra_ppm", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_ppm = 0.0
+                if seg_ppm > baseline_floor:
+                    baseline_floor = seg_ppm
+
+    cap_base = max(front_ppm, baseline_floor)
+    try:
+        margin_val = float(margin_ppm)
+    except (TypeError, ValueError):
+        margin_val = 0.0
+    if math.isnan(margin_val) or margin_val <= 0.0:
+        margin_val = 0.0
+
+    if cap_base <= 0.0 or margin_val <= 0.0:
+        return 0.0
+
+    return cap_base + margin_val
 
 
 def _truncate_day_plan_volume(
@@ -4094,12 +4583,14 @@ def solve_pipeline(
             if length_floor > 0.0:
                 base_detail["length_km"] = length_floor
         if base_detail:
-            base_detail["enforce_queue"] = False
+            base_detail["enforce_queue"] = True
             baseline_for_enforcement = base_detail
     baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
+
+    dra_cap = _derive_dra_cap(linefill, baseline_for_enforcement)
 
     try:
         # Delegate to the backend optimiser
@@ -4122,6 +4613,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                dra_ppm_cap=dra_cap,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -4144,6 +4636,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                dra_ppm_cap=dra_cap,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -5200,6 +5693,9 @@ def _execute_time_series_solver(
                     forced_detail = _merge_forced_origin_details(forced_detail, plan_forced_detail)
                 else:
                     forced_detail = copy.deepcopy(plan_forced_detail)
+            dra_cap = _derive_dra_cap(
+                dra_linefill_local, st.session_state.get("origin_lacing_baseline")
+            )
             res = solve_pipeline(
                 stns_run,
                 term_data,
@@ -5217,6 +5713,7 @@ def _execute_time_series_solver(
                 hours=1.0,
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
+                dra_ppm_cap=dra_cap,
                 forced_origin_detail=forced_detail,
             )
 
@@ -6098,85 +6595,182 @@ if not auto_batch:
         st.session_state["day_stations"] = stations_base
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
+        st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+        st.caption(
+            "A Summary tab is generated automatically after the schedule optimizer runs. The tables below show the latest "
+            "hour/day outputs; switch to the 'Candidate search log' tab to view the DP candidates for any solved hour."
+        )
+
         df_day_numeric = st.session_state["day_df"]
         reports = st.session_state.get("day_reports", [])
         stations_base = st.session_state.get("day_stations", [])
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
-        transpose_view = st.checkbox("Transpose output table", key="transpose_day")
-        df_display = df_day_numeric.T if transpose_view else df_day_numeric
-        if transpose_view:
-            numeric_rows_mask = df_display.apply(
-                lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
-            )
-            num_rows_disp = df_display.index[numeric_rows_mask].tolist()
-            df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
-                pd.to_numeric, errors="coerce"
-            )
-            df_disp_style = df_display.style.format(
-                "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
-            )
-            if num_rows_disp:
-                df_disp_style = df_disp_style.background_gradient(
-                    cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
-                )
-        else:
-            num_cols_disp = [
-                c
-                for c in df_display.columns
-                if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
-            ]
-            fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
-            df_disp_style = df_display.style.format(fmt_disp)
-            if num_cols_disp:
-                df_disp_style = df_disp_style.background_gradient(
-                    cmap="Blues", subset=num_cols_disp
-                )
-        st.dataframe(
-            df_disp_style,
-            width='stretch',
-            hide_index=not transpose_view,
-        )
-        label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
-        first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
-        last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
-        st.download_button(
-            f"Download {label_prefix} Optimizer Output data",
-            df_day.to_csv(index=False, float_format="%.2f"),
-            file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
-        )
+        tab_summary, tab_log = st.tabs(["Summary", "Candidate search log"])
 
-        # Display total cost per time slice and global sum
-        cost_rows = [
-            {
-                "Time": f"{rec['time']:02d}:00",
-                "Pattern": rec["result"].get("flow_pattern_name", ""),
-                "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
-            }
-            for rec in reports
-        ]
-        df_cost = pd.DataFrame(cost_rows)
-        df_cost["Total Cost (INR)"] = pd.to_numeric(
-            df_cost["Total Cost (INR)"], errors="coerce",
-        )
-        df_cost = df_cost.round(2)
-        df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
-        st.dataframe(df_cost_style, width='stretch', hide_index=True)
-        if st.session_state.get("run_mode") == "hourly":
-            total_label = f"1h ({first_label})" if hours else "1h"
-        else:
-            total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
-        total_cost_value = df_cost["Total Cost (INR)"].sum()
-        st.markdown(
-            f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
-        )
-        for rec in reports:
-            display_pump_type_details(
-                rec["result"],
-                stations_base,
-                heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+        with tab_summary:
+            transpose_view = st.checkbox("Transpose output table", key="transpose_day")
+            df_display = df_day_numeric.T if transpose_view else df_day_numeric
+            if transpose_view:
+                numeric_rows_mask = df_display.apply(
+                    lambda row: pd.to_numeric(row, errors="coerce").notna().all(), axis=1
+                )
+                num_rows_disp = df_display.index[numeric_rows_mask].tolist()
+                df_display.loc[num_rows_disp] = df_display.loc[num_rows_disp].apply(
+                    pd.to_numeric, errors="coerce"
+                )
+                df_disp_style = df_display.style.format(
+                    "{:.2f}", subset=pd.IndexSlice[num_rows_disp, :]
+                )
+                if num_rows_disp:
+                    df_disp_style = df_disp_style.background_gradient(
+                        cmap="Blues", subset=pd.IndexSlice[num_rows_disp, :]
+                    )
+            else:
+                num_cols_disp = [
+                    c
+                    for c in df_display.columns
+                    if c not in ["Time", "Pattern", "Station", "Pump Name", "DRA Profile (km@ppm)"]
+                ]
+                fmt_disp = {c: "{:.2f}" for c in num_cols_disp}
+                df_disp_style = df_display.style.format(fmt_disp)
+                if num_cols_disp:
+                    df_disp_style = df_disp_style.background_gradient(
+                        cmap="Blues", subset=num_cols_disp
+                    )
+            st.dataframe(
+                df_disp_style,
+                width='stretch',
+                hide_index=not transpose_view,
             )
+            label_prefix = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
+            first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
+            last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
+            st.download_button(
+                f"Download {label_prefix} Optimizer Output data",
+                df_day.to_csv(index=False, float_format="%.2f"),
+                file_name="hourly_schedule_results.csv" if st.session_state.get("run_mode") == "hourly" else "daily_schedule_results.csv",
+            )
+
+            # Display total cost per time slice and global sum
+            cost_rows = [
+                {
+                    "Time": f"{rec['time']:02d}:00",
+                    "Pattern": rec["result"].get("flow_pattern_name", ""),
+                    "Total Cost (INR)": float(rec["result"].get("total_cost", 0.0)),
+                }
+                for rec in reports
+            ]
+            df_cost = pd.DataFrame(cost_rows)
+            df_cost["Total Cost (INR)"] = pd.to_numeric(
+                df_cost["Total Cost (INR)"], errors="coerce",
+            )
+            df_cost = df_cost.round(2)
+            df_cost_style = df_cost.style.format({"Total Cost (INR)": "{:.2f}"})
+            st.dataframe(df_cost_style, width='stretch', hide_index=True)
+            if st.session_state.get("run_mode") == "hourly":
+                total_label = f"1h ({first_label})" if hours else "1h"
+            else:
+                total_label = f"24h ({first_label} to {last_label})" if hours else "24h"
+            total_cost_value = df_cost["Total Cost (INR)"].sum()
+            st.markdown(
+                f"**Total Optimized Cost ({total_label}): {total_cost_value:,.2f} INR**",
+            )
+            for rec in reports:
+                display_pump_type_details(
+                    rec["result"],
+                    stations_base,
+                    heading=f"Pump Details by Type ({rec['time']:02d}:00)",
+                )
+
+        with tab_log:
+            if not reports:
+                st.info("No solver outputs are available yet.")
+            else:
+                hour_options = [f"{rec['time']:02d}:00" for rec in reports]
+                default_idx = 0
+                selected_label = st.selectbox(
+                    "Select hour to inspect DP candidate log",
+                    options=hour_options,
+                    index=default_idx if len(hour_options) > default_idx else 0,
+                )
+                selected_rec = reports[hour_options.index(selected_label)]
+                res = selected_rec["result"]
+                audit_log = res.get("state_audit") or []
+                st.caption(
+                    "The candidate log below reflects the solver search for the selected hour. Scroll to view per-station "
+                    "DP states and download the raw JSON."
+                )
+                if audit_log:
+                    st.markdown("#### Candidate search log (cost-sorted)")
+                    with st.expander("What do residual, queue_km, and protected mean?", expanded=False):
+                        st.markdown(
+                            """
+                            - **Residual:** pressure head left at the station outlet after the pumps and friction/elevation. It is the
+                              head margin available to drive flow to the next station/terminal.
+                            - **queue_km:** total length of treated fluid the optimizer is tracking for that candidate. It equals the
+                              sum of all segments in the DRA queue (upstream carry + current segment) and can be **longer than the
+                              steel** when upstream treated batches are still entering.
+                            - **Protected:** candidates that use either zero DRA or the station's minimum RPM. These are marked to
+                              survive pruning so the search always keeps low-chemical and low-RPM anchors.
+
+                            **Worked example (generic numbers)**
+                            1. **Setup:** 300 km pipeline split into 180 km (Station A) + 120 km (Station B). Manual floor: 3 ppm
+                               everywhere. A 20 km slug at 8 ppm is still upstream from the prior hour.
+                            2. **Starting queue at Station A inlet:** [20 km @ 8 ppm] + [180 km @ 3 ppm] + [120 km @ 3 ppm] =
+                               **320 km queue_km** (300 km in-line + 20 km upstream).
+                            3. **Station A candidate:** run pumps at 2,200 rpm, inject +5 ppm for the first 40 km.
+                               - Residual after A: suppose 150 m above minimum → residual = **150** in the log.
+                               - Queue update: advance 180 km. Consume the 20 km@8 + 20 km of the 3 ppm floor, leaving
+                                 [160 km @ 3 ppm]. Add the new slug [40 km @ (3+5=8 ppm)]. The queue passed to Station B is
+                                 [40 km @ 8 ppm] + [160 km @ 3 ppm] + [120 km @ 3 ppm] = **320 km queue_km**.
+                            4. **Station B candidate:** pumps at 2,600 rpm, no extra DRA.
+                               - Residual after B: suppose 110 m → residual = **110**.
+                               - Queue update: advance 120 km. Consume the 40 km@8 + 80 km@3, leaving [120 km @ 3 ppm]. The
+                                 log shows queue_km = **120** for this candidate.
+                            5. **Protected flag:** if Station A tried 0 ppm or the exact minimum RPM, that row would show
+                               `protected=True` so it is never trimmed away during cost/rate pruning.
+                            """
+                        )
+                    st.caption(
+                        "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun "
+                        "the solver."
+                    )
+                    col_audit = st.columns(3)
+                    total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
+                    col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
+                    col_audit[1].metric("Stations logged", f"{len(audit_log)}")
+                    col_audit[2].download_button(
+                        "Download DP log (JSON)",
+                        data=json.dumps(audit_log, indent=2, default=str),
+                        file_name="dp_candidate_log.json",
+                        help="Exports the raw DP candidate states that were collected during the solve.",
+                    )
+
+                    for entry in audit_log:
+                        station_name = entry.get("name", "Station")
+                        evaluated = int(entry.get("evaluated", 0) or 0)
+                        carried = int(entry.get("carried_forward", 0) or 0)
+                        unique_after = int(entry.get("unique_after_pareto", 0) or 0)
+                        with st.expander(
+                            f"{station_name}: {evaluated:,} checked, {unique_after:,} unique after Pareto trim, {carried:,} carried forward",
+                            expanded=False,
+                        ):
+                            candidates_df = pd.DataFrame(entry.get("states") or [])
+                            if not candidates_df.empty:
+                                st.dataframe(
+                                    candidates_df.round(2),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                            else:
+                                st.caption("No candidates recorded for this station.")
+                else:
+                    st.markdown("#### Candidate search log (cost-sorted)")
+                    st.info(
+                        "No DP candidate log is available for this solve. Enable 'Capture DP candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
+                    )
 
         combined = []
         for idx, df_line in enumerate(linefill_snaps):
@@ -6464,6 +7058,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             numeric_cols = df_sum.select_dtypes(include=[np.number]).columns
             df_display = df_sum.style.format(fmt_cols, na_rep="NIL")
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
+            st.caption(
+                "Results for the latest solve are shown in this Summary tab. Scroll below the main table to find the DP candidate log under 'Candidate search log (cost-sorted)'."
+            )
             st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
                 "📥 Download CSV",
@@ -6577,20 +7174,52 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             "Suction head (m)": seg_suction,
                         }
                     )
-                if seg_rows:
-                    seg_df = pd.DataFrame(seg_rows)
-                    seg_df = seg_df.round(
-                        {
-                            "Length (km)": 2,
-                            "Floor PPM": 2,
-                            "Floor %DR": 2,
-                            "Suction head (m)": 2,
-                        }
-                    )
-                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
-                    st.caption(
-                        "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
-                    )
+            if seg_rows:
+                seg_df = pd.DataFrame(seg_rows)
+                seg_df = seg_df.round(
+                    {
+                        "Length (km)": 2,
+                        "Floor PPM": 2,
+                        "Floor %DR": 2,
+                        "Suction head (m)": 2,
+                    }
+                )
+                st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
+                )
+
+            # Show cost objective components so users can verify RPM vs DRA trade-offs
+            cost_rows: list[dict[str, float | str]] = []
+            for stn in stations_data:
+                key = stn['name'].lower().replace(' ', '_')
+                power_cost = float(res.get(f"power_cost_{key}", 0.0) or 0.0)
+                dra_cost = float(res.get(f"dra_cost_{key}", 0.0) or 0.0)
+                if power_cost == 0.0 and dra_cost == 0.0:
+                    continue
+                cost_rows.append(
+                    {
+                        "Station": stn['name'],
+                        "Power cost": power_cost,
+                        "DRA cost": dra_cost,
+                        "Total cost": power_cost + dra_cost,
+                    }
+                )
+
+            if cost_rows:
+                cost_df = pd.DataFrame(cost_rows)
+                total_row = {
+                    "Station": "Total",
+                    "Power cost": cost_df["Power cost"].sum(),
+                    "DRA cost": cost_df["DRA cost"].sum(),
+                    "Total cost": cost_df["Total cost"].sum(),
+                }
+                cost_df = pd.concat([cost_df, pd.DataFrame([total_row])], ignore_index=True)
+                st.markdown("#### Cost objective (power + DRA)")
+                st.dataframe(cost_df.round(2), use_container_width=True, hide_index=True)
+                st.caption(
+                    "The optimizer minimizes the summed station power and DRA costs shown above for the hour/day."
+                )
 
             audit_log = res.get("state_audit") or []
             if audit_log:
@@ -6598,26 +7227,26 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 st.caption(
                     "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun the solver."
                 )
-                col_audit = st.columns(2)
+                col_audit = st.columns(3)
                 total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
                 col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
                 col_audit[1].metric("Stations logged", f"{len(audit_log)}")
-                toggle_cols = st.columns(2)
-                if toggle_cols[0].button("Show raw DP candidates", key="show_dp_audit_btn"):
-                    st.session_state["show_dp_audit"] = True
-                if st.session_state.get("show_dp_audit") and toggle_cols[1].button(
-                    "Hide raw DP candidates", key="hide_dp_audit_btn"
-                ):
-                    st.session_state["show_dp_audit"] = False
-                if st.session_state.get("show_dp_audit"):
-                    for entry in audit_log:
-                        station_name = entry.get("name", "Station")
-                        evaluated = int(entry.get("evaluated", 0) or 0)
-                        carried = int(entry.get("carried_forward", 0) or 0)
-                        unique_after = int(entry.get("unique_after_pareto", 0) or 0)
-                        st.markdown(
-                            f"**{station_name}** — checked {evaluated} candidates, {unique_after} unique after Pareto trim, {carried} carried forward."
-                        )
+                col_audit[2].download_button(
+                    "Download DP log (JSON)",
+                    data=json.dumps(audit_log, indent=2, default=str),
+                    file_name="dp_candidate_log.json",
+                    help="Exports the raw DP candidate states that were collected during the solve.",
+                )
+
+                for entry in audit_log:
+                    station_name = entry.get("name", "Station")
+                    evaluated = int(entry.get("evaluated", 0) or 0)
+                    carried = int(entry.get("carried_forward", 0) or 0)
+                    unique_after = int(entry.get("unique_after_pareto", 0) or 0)
+                    with st.expander(
+                        f"{station_name}: {evaluated:,} checked, {unique_after:,} unique after Pareto trim, {carried:,} carried forward",
+                        expanded=False,
+                    ):
                         candidates_df = pd.DataFrame(entry.get("states") or [])
                         if not candidates_df.empty:
                             st.dataframe(
@@ -6627,6 +7256,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             )
                         else:
                             st.caption("No candidates recorded for this station.")
+            else:
+                st.markdown("#### Candidate search log (cost-sorted)")
+                st.info(
+                    "No DP candidate log is available for this solve. Enable 'Capture DP candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
+                )
 
             # --- Detailed pump information when multiple pump types run ---
             display_pump_type_details(res, stations_data)
