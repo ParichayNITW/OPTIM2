@@ -3292,6 +3292,64 @@ def _merge_forced_origin_details(
     return merged
 
 
+def _derive_dra_cap(
+    linefill: list[dict] | dict | None,
+    baseline_requirement: Mapping[str, object] | None = None,
+    *,
+    margin_ppm: float = 20.0,
+) -> float:
+    """Return a soft cap for injected DRA based on existing queue and floors."""
+
+    front_ppm = 0.0
+    if isinstance(linefill, list):
+        for entry in linefill:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                ppm_val = float(entry.get("dra_ppm", entry.get(INIT_DRA_COL, 0.0)) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            if ppm_val > 0.0:
+                front_ppm = ppm_val
+                break
+    elif isinstance(linefill, Mapping):
+        try:
+            front_ppm = float(linefill.get("dra_ppm", linefill.get(INIT_DRA_COL, 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            front_ppm = 0.0
+
+    baseline_floor = 0.0
+    if isinstance(baseline_requirement, Mapping):
+        try:
+            baseline_floor = max(baseline_floor, float(baseline_requirement.get("dra_ppm", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+        segs = baseline_requirement.get("segments") if isinstance(baseline_requirement, Mapping) else None
+        if isinstance(segs, list):
+            for seg in segs:
+                if not isinstance(seg, Mapping):
+                    continue
+                try:
+                    seg_ppm = float(seg.get("dra_ppm", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    seg_ppm = 0.0
+                if seg_ppm > baseline_floor:
+                    baseline_floor = seg_ppm
+
+    cap_base = max(front_ppm, baseline_floor)
+    try:
+        margin_val = float(margin_ppm)
+    except (TypeError, ValueError):
+        margin_val = 0.0
+    if math.isnan(margin_val) or margin_val <= 0.0:
+        margin_val = 0.0
+
+    if cap_base <= 0.0 or margin_val <= 0.0:
+        return 0.0
+
+    return cap_base + margin_val
+
+
 def _truncate_day_plan_volume(
     day_plan: pd.DataFrame | None,
     target_volume_m3: float,
@@ -4532,6 +4590,8 @@ def solve_pipeline(
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    dra_cap = _derive_dra_cap(linefill, baseline_for_enforcement)
+
     try:
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
@@ -4553,6 +4613,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                dra_ppm_cap=dra_cap,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -4575,6 +4636,7 @@ def solve_pipeline(
                 hours,
                 start_time=start_time,
                 pump_shear_rate=pump_shear_rate,
+                dra_ppm_cap=dra_cap,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
                 **search_kwargs,
@@ -5631,6 +5693,9 @@ def _execute_time_series_solver(
                     forced_detail = _merge_forced_origin_details(forced_detail, plan_forced_detail)
                 else:
                     forced_detail = copy.deepcopy(plan_forced_detail)
+            dra_cap = _derive_dra_cap(
+                dra_linefill_local, st.session_state.get("origin_lacing_baseline")
+            )
             res = solve_pipeline(
                 stns_run,
                 term_data,
@@ -5648,6 +5713,7 @@ def _execute_time_series_solver(
                 hours=1.0,
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
+                dra_ppm_cap=dra_cap,
                 forced_origin_detail=forced_detail,
             )
 
