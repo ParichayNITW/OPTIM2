@@ -5308,13 +5308,13 @@ def solve_pipeline(
     )
 
     fallback_by_segment: list[float] = []
-    if initial_queue:
+    if initial_queue or segment_floor_lookup:
         base_queue_tuple = tuple(initial_queue)
         offset = 0.0
-        for stn in stations:
+        for idx, stn in enumerate(stations):
             seg_length = float(stn.get('L', 0.0) or 0.0)
             fallback_val = 0.0
-            if seg_length > 0.0:
+            if seg_length > 0.0 and base_queue_tuple:
                 profile = _segment_profile_from_queue(base_queue_tuple, offset, seg_length)
                 if profile:
                     for entry in reversed(profile):
@@ -5327,6 +5327,14 @@ def solve_pipeline(
                         if ppm_entry > 0.0:
                             fallback_val = ppm_entry
                             break
+            floor_entry = segment_floor_lookup.get(idx)
+            if floor_entry:
+                try:
+                    floor_ppm = float(floor_entry.get('dra_ppm', 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    floor_ppm = 0.0
+                if floor_ppm > 0.0:
+                    fallback_val = max(fallback_val, floor_ppm)
             fallback_by_segment.append(fallback_val)
             offset += seg_length
     else:
