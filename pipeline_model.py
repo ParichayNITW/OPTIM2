@@ -2567,9 +2567,18 @@ def compute_minimum_lacing_requirement(
                 result['enforceable'] = False
 
             try:
+                if limited_by_station:
+                    dr_for_dose = dr_needed
+                else:
+                    dr_for_dose = min(dr_needed * 0.7, dr_needed)
+                    # Cap the ppm calculation to a representative dose so the
+                    # lacing requirement does not exceed realistic injection rates
+                    # even when higher drag reduction is demanded downstream.
+                    if dr_for_dose > 20.0:
+                        dr_for_dose = 20.0
                 dra_ppm_needed = (
-                    float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_needed))
-                    if dr_needed > 0
+                    float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_for_dose))
+                    if dr_for_dose > 0
                     else 0.0
                 )
             except Exception:
