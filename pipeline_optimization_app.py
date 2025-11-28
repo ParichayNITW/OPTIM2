@@ -1917,8 +1917,7 @@ with st.sidebar:
 
     with st.expander("Advanced search depth", expanded=False):
         st.caption(
-            "Adjust solver discretisation and dynamic-programming limits when you "
-            "need a broader search of pump and DRA combinations."
+            "Adjust solver discretisation limits"
         )
         st.number_input(
             "Refinement RPM step (rpm)",
@@ -1963,7 +1962,7 @@ with st.sidebar:
             step=0.1,
             format="%.1f",
             key="search_state_cost_margin_pct",
-            help="Keeps any DP state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
+            help="Keeps any state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
         )
         st.checkbox(
             "Capture DP candidate log (for raw output)",
@@ -6384,7 +6383,7 @@ if not auto_batch:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
         st.caption(
             "A Summary tab is generated automatically after the schedule optimizer runs. The tables below show the latest "
-            "hour/day outputs; switch to the 'Candidate search log' tab to view the DP candidates for any solved hour."
+            "hour/day outputs; switch to the 'Candidate search log' tab to view the candidate solutions for any solved hour."
         )
 
         df_day_numeric = st.session_state["day_df"]
@@ -6477,7 +6476,7 @@ if not auto_batch:
                 hour_options = [f"{rec['time']:02d}:00" for rec in reports]
                 default_idx = 0
                 selected_label = st.selectbox(
-                    "Select hour to inspect DP candidate log",
+                    "Select hour to inspect candidate log",
                     options=hour_options,
                     index=default_idx if len(hour_options) > default_idx else 0,
                 )
@@ -6486,7 +6485,7 @@ if not auto_batch:
                 audit_log = res.get("state_audit") or []
                 st.caption(
                     "The candidate log below reflects the solver search for the selected hour. Scroll to view per-station "
-                    "DP states and download the raw JSON."
+                    "Candidate states and download the raw JSON."
                 )
                 if audit_log:
                     st.markdown("#### Candidate search log (cost-sorted)")
@@ -6520,7 +6519,7 @@ if not auto_batch:
                             """
                         )
                     st.caption(
-                        "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun "
+                        "Shows how many candidate states were evaluated at each station; displaying the log does not rerun "
                         "the solver."
                     )
                     col_audit = st.columns(3)
@@ -6528,10 +6527,10 @@ if not auto_batch:
                     col_audit[0].metric("Candidates evaluated", f"{total_checked:,}")
                     col_audit[1].metric("Stations logged", f"{len(audit_log)}")
                     col_audit[2].download_button(
-                        "Download DP log (JSON)",
+                        "Download log (JSON)",
                         data=json.dumps(audit_log, indent=2, default=str),
                         file_name="dp_candidate_log.json",
-                        help="Exports the raw DP candidate states that were collected during the solve.",
+                        help="Exports the raw candidate states that were collected during the solve.",
                     )
 
                     for entry in audit_log:
@@ -6555,7 +6554,7 @@ if not auto_batch:
                 else:
                     st.markdown("#### Candidate search log (cost-sorted)")
                     st.info(
-                        "No DP candidate log is available for this solve. Enable 'Capture DP candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
+                        "No candidate log is available for this solve. Enable 'Capture candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
                     )
 
         combined = []
