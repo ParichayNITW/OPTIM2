@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import time
 import base64
+from contextlib import contextmanager
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
@@ -5757,6 +5758,129 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
     return any(keyword in combined_msg for keyword in infeasible_keywords)
 
 
+def _build_expanded_search_depth_overrides() -> dict[str, float | int]:
+    """Return more aggressive search-depth settings for infeasible runs.
+
+    The overrides tighten RPM and DRA step sizes while widening the state search
+    breadth and cost margins.  They are only applied when they meaningfully
+    expand the search space to avoid unnecessary reruns.
+    """
+
+    rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
+    dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
+    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
+    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", None)
+
+    overrides: dict[str, float | int] = {}
+
+    rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
+    rpm_step_tighter = max(1, int(round(rpm_step / 2)))
+    if rpm_step_tighter < rpm_step:
+        overrides["search_rpm_step"] = rpm_step_tighter
+
+    dra_step = int(st.session_state.get("search_dra_step", dra_step_default) or dra_step_default)
+    dra_step_tighter = max(1, int(round(dra_step / 2)))
+    if dra_step_tighter < dra_step:
+        overrides["search_dra_step"] = dra_step_tighter
+
+    coarse_multiplier = float(
+        st.session_state.get("search_coarse_multiplier", getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0))
+        or getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
+    )
+    coarse_tighter = max(1.0, coarse_multiplier / 2.0)
+    if coarse_tighter < coarse_multiplier:
+        overrides["search_coarse_multiplier"] = coarse_tighter
+
+    state_top_k = int(
+        st.session_state.get("search_state_top_k", state_top_k_default)
+        or state_top_k_default
+    )
+    widened_top_k = max(state_top_k_default, state_top_k * 2)
+    if widened_top_k > state_top_k:
+        overrides["search_state_top_k"] = widened_top_k
+
+    state_cost_margin = float(
+        st.session_state.get("search_state_cost_margin", state_cost_margin_default)
+        or state_cost_margin_default
+    )
+    widened_margin = max(state_cost_margin_default, state_cost_margin * 2.0)
+    if widened_margin > state_cost_margin:
+        overrides["search_state_cost_margin"] = widened_margin
+
+    if state_cost_margin_pct_default is not None:
+        state_cost_margin_pct = float(
+            st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+            or state_cost_margin_pct_default
+        )
+        widened_margin_pct = max(state_cost_margin_pct_default, state_cost_margin_pct * 2.0)
+        if widened_margin_pct > state_cost_margin_pct:
+            overrides["search_state_cost_margin_pct"] = min(widened_margin_pct, 100.0)
+
+    return overrides
+
+
+@contextmanager
+def _temporary_search_depth_overrides(overrides: Mapping[str, object]):
+    """Apply search-depth overrides for the duration of the context."""
+
+    saved: dict[str, object] = {}
+    for key, val in overrides.items():
+        saved[key] = st.session_state.get(key) if key in st.session_state else None
+        _safe_set_session_state(key, val)
+    try:
+        yield
+    finally:
+        for key, prev in saved.items():
+            _safe_set_session_state(key, prev)
+
+
+def _try_with_expanded_search_depth(
+    *,
+    flow_rate: float,
+    stations_base: list[dict],
+    term_data: dict,
+    hours: list[int],
+    plan_df: pd.DataFrame | None,
+    current_vol: pd.DataFrame,
+    dra_linefill: list[dict],
+    dra_reach_km: float,
+    RateDRA: float,
+    Price_HSD: float,
+    fuel_density: float,
+    ambient_temp: float,
+    mop_kgcm2: float | None,
+    pump_shear_rate: float,
+    total_length: float,
+    sub_steps: int,
+) -> dict | None:
+    """Re-run the solver with a widened search space before dropping flow."""
+
+    overrides = _build_expanded_search_depth_overrides()
+    if not overrides:
+        return None
+
+    with _temporary_search_depth_overrides(overrides):
+        return _execute_time_series_solver(
+            stations_base,
+            term_data,
+            hours,
+            flow_rate=flow_rate,
+            plan_df=plan_df,
+            current_vol=current_vol,
+            dra_linefill=dra_linefill,
+            dra_reach_km=dra_reach_km,
+            RateDRA=RateDRA,
+            Price_HSD=Price_HSD,
+            fuel_density=fuel_density,
+            ambient_temp=ambient_temp,
+            mop_kgcm2=mop_kgcm2,
+            pump_shear_rate=pump_shear_rate,
+            total_length=total_length,
+            sub_steps=sub_steps,
+        )
+
+
 def _find_maximum_feasible_flow(
     *,
     flow_rate: float,
@@ -6297,7 +6421,37 @@ if not auto_batch:
         if error_msg:
             fallback_note: str | None = None
             fallback: dict | None = None
+            expanded_solver_result: dict | None = None
             if _should_attempt_max_flow_fallback(solver_result):
+                with st.spinner("Expanding search depth before reducing flow..."):
+                    expanded_solver_result = _try_with_expanded_search_depth(
+                        flow_rate=FLOW_sched,
+                        stations_base=stations_base,
+                        term_data=term_data,
+                        hours=hours,
+                        plan_df=base_plan_df,
+                        current_vol=base_current_vol,
+                        dra_linefill=base_dra_linefill,
+                        dra_reach_km=base_dra_reach,
+                        RateDRA=RateDRA,
+                        Price_HSD=Price_HSD,
+                        fuel_density=st.session_state.get("Fuel_density", 820.0),
+                        ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                        mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        total_length=total_length,
+                        sub_steps=sub_steps,
+                    )
+            if expanded_solver_result and not expanded_solver_result.get("error"):
+                solver_result = expanded_solver_result
+                reports = solver_result["reports"]
+                linefill_snaps = solver_result["linefill_snaps"]
+                current_vol = solver_result["final_vol"]
+                plan_df = solver_result["final_plan"]
+                dra_linefill = solver_result["final_dra_linefill"]
+                dra_reach_km = solver_result["final_dra_reach"]
+                error_msg = None
+            elif error_msg and _should_attempt_max_flow_fallback(solver_result):
                 with st.spinner("Computing max achievable flow..."):
                     fallback = _find_maximum_feasible_flow(
                         flow_rate=FLOW_sched,
