@@ -1058,15 +1058,18 @@ def shift_vol_linefill(
 
     injected_batches: list[dict[str, float]] = []
 
+    # Inject the pumped volume back into the queue using the day plan.  The
+    # injection volume must equal the requested pump-out volume even when the
+    # existing linefill was sufficient to satisfy ``pumped_m3`` on its own.
+    remaining = float(pumped_m3)
     if day_plan is not None:
         day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
+        day_plan["Volume (m³)"] = day_plan["Volume (m³)"]
         day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
-        injected = 0.0
 
         while remaining > 1e-9 and len(day_plan) > 0:
             v = day_plan.iloc[0]["Volume (m³)"]
             take = min(v, remaining)
-            injected += take
 
             vol_table = pd.concat(
                 [
@@ -1086,19 +1089,21 @@ def shift_vol_linefill(
                 ignore_index=True,
             )
 
+            injected_batches.append(
+                {
+                    "volume": float(take),
+                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)),
+                }
+            )
+
             remaining -= take
             if take >= v:
                 day_plan = day_plan.drop(index=0).reset_index(drop=True)
             else:
                 day_plan.at[0, "Volume (m³)"] = v - take
 
-        if injected > 0:
-            injected_batches.append(
-                {
-                    "volume": float(injected),
-                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)) if len(day_plan) else 0.0,
-                }
-            )
+        if injected_batches:
+            injected_batches = list(reversed(injected_batches))
 
     vol_table = vol_table.reset_index(drop=True)
 
@@ -4195,7 +4200,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
-    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", None)
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -4226,25 +4231,28 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
-    state_cost_margin_pct = float(
-        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
-        or state_cost_margin_pct_default
-    )
-    if state_cost_margin_pct < 0:
-        state_cost_margin_pct = 0.0
-    state_cost_margin_pct /= 100.0
-
-    collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
-
-    return {
+    result = {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
-        "state_cost_margin_pct": state_cost_margin_pct,
-        "collect_state_audit": collect_state_audit,
     }
+
+    if state_cost_margin_pct_default is not None:
+        state_cost_margin_pct = float(
+            st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+            or state_cost_margin_pct_default
+        )
+        if state_cost_margin_pct < 0:
+            state_cost_margin_pct = 0.0
+        result["state_cost_margin_pct"] = state_cost_margin_pct / 100.0
+
+    if hasattr(pipeline_model, "STATE_COLLECT_AUDIT"):
+        collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
+        result["collect_state_audit"] = collect_state_audit
+
+    return result
 
 
 
@@ -5461,6 +5469,24 @@ def _execute_time_series_solver(
             future_vol, future_plan, injected_batches = shift_vol_linefill(
                 current_vol_local.copy(), pumped_tmp, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
             )
+
+            if injected_batches:
+                injected_linefill = []
+                for batch in injected_batches:
+                    try:
+                        vol_val = float(batch.get("volume", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        vol_val = 0.0
+                    if vol_val <= 0.0:
+                        continue
+                    try:
+                        ppm_val = float(batch.get("dra_ppm", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        ppm_val = 0.0
+                    injected_linefill.append({"volume": vol_val, "dra_ppm": ppm_val})
+                if injected_linefill:
+                    dra_linefill_local = injected_linefill + dra_linefill_local
+
             plan_forced_detail = _build_forced_detail_from_batches(
                 injected_batches,
                 stations_base,
@@ -5576,6 +5602,7 @@ def _execute_time_series_solver(
             origin_error = None
             detail_note: str | None = None
             if untreated_head_km > untreated_tolerance or prev_front <= untreated_tolerance:
+                prev_state.pop("origin_enforced", None)
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
