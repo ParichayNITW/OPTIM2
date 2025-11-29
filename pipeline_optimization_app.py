@@ -7029,12 +7029,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.markdown("#### DRA Lacing Baseline")
             baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
             try:
-                baseline_suction = float(
-                    (baseline_detail or {}).get(
-                        "suction_head", st.session_state.get("min_laced_suction_m", 0.0)
-                    )
-                    or 0.0
-                )
+                baseline_suction = float((baseline_detail or {}).get("suction_head", 0.0) or 0.0)
             except (TypeError, ValueError):
                 baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
             base_cols = st.columns(3)
