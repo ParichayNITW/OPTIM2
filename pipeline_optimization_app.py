@@ -2608,6 +2608,12 @@ def get_full_case_dict():
         manual_baseline_table = []
 
     stations = st.session_state.get('stations', [])
+    # Insert this block to set a fixed suction_head for each station:
+    for stn in stations:
+        # If suction_head is not already specified, copy min_residual
+        # so the solver treats that value as the available suction at the pump.
+        if not stn.get('suction_head'):
+            stn['suction_head'] = float(stn.get('min_residual', 0.0) or 0.0)
     first_station = stations[0] if stations else {}
     return {
         "stations": stations,
