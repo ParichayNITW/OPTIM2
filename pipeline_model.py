@@ -2418,14 +2418,14 @@ def compute_minimum_lacing_requirement(
         if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
             entry['rho'] = rho_defaults[idx]
         try:
+            # Use the suction_head provided in the station record, if any
             suction_val = float(entry.get('suction_head', 0.0) or 0.0)
         except (TypeError, ValueError):
             suction_val = 0.0
-        if suction_val <= 0.0 and entry.get('is_pump'):
-            try:
-                suction_val = float(entry.get('min_residual', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                suction_val = 0.0
+        
+        # Do NOT fall back to min_residual here.  If suction_head is not provided,
+        # leave it at zero so the solver calculates the suction pressure from
+        # upstream head rather than fixing it to min_residual.
         entry['suction_head'] = max(suction_val, 0.0)
         try:
             residual_floor = float(entry.get('residual_floor', entry.get('min_residual', 0.0)) or 0.0)
