@@ -39,18 +39,74 @@ schedule.
    returned as the "maximum achievable flow". The app also reports how much
    throughput was reduced versus the original request.
 
-## Example using the app’s logic
-Suppose a 24-hour schedule requests **3,000 m³/h** (72,000 m³ total) but the
-solver declares it infeasible even after widening the search depth. With the
-50 m³/h decrement:
-- The search starts at 2,950 m³/h (because the request was an exact multiple of
-  50, the first step is one full decrement).
-- If 2,950 m³/h still violates the pressure envelope, the solver tries 2,900,
-  then 2,850 m³/h, and so on, each time running the full hydraulic profile and
-  pump checks.
-- Imagine 2,850 m³/h is the first feasible rate; the app reports that as the
-  maximum achievable flow with a total of 68,400 m³ delivered, a reduction of
-  3,600 m³ from the request.
+## Feasibility logic (rechecked)
+For any candidate flow, the solver treats it as **infeasible** if any of the
+following fails during the hour-by-hour hydraulic run:
 
-This is the same iterative hydraulic search the app performs when you click the
-"Compute max achievable flow" action—no shortcuts, and no simplified formulas.
+1) **Insufficient head vs. losses.** Pump head available at the candidate flow
+   (after accounting for the number and type of pumps that can be started in the
+   hour) must exceed total head demand: static lift, terminal residual, station
+   residuals, and friction/minor losses along each segment.【F:pipeline_model.py†L2245-L2310】【F:pipeline_model.py†L3616-L3905】
+2) **Pressure envelope exceeded.** The computed pressure at no point in the
+   profile may cross MAOP or the user-provided MOP (converted to head). The
+   solver clips the acceptable range to the tighter of these limits, so a single
+   point above the envelope invalidates the flow.【F:pipeline_model.py†L2259-L2295】
+3) **Pump operating limits.** The required head must be reachable using pumps
+   that respect minimum speed, DOL limits, maximum pump count per station, and
+   the configured pump selection rules. If no combination supplies the needed
+   head at the candidate flow, the rate is rejected.【F:pipeline_model.py†L2482-L2559】
+
+The max-flow search walks down through candidate rates and returns the first one
+that satisfies **all** three at every time step.
+
+## Worked check on the user JSON (why 2,708 m³/h fails)
+Below is a strict hydraulic check using the supplied pipeline and pump data. The
+candidate rate in question is **2,708 m³/h** (0.752 m³/s).
+
+1) **Velocity and Reynolds number**
+   - Pipe ID: 0.762 m → cross-sectional area A ≈ π·D²/4 ≈ 0.456 m².
+   - Velocity v = Q/A ≈ 0.752 / 0.456 ≈ **1.65 m/s**.
+   - With kinematic viscosity near 1×10⁻⁵ m²/s (4–16 cSt products), Reynolds
+     Re ≈ v·D/ν ≈ 1.65·0.762 / 1e-5 ≈ **1.3×10⁵** → fully turbulent.
+
+2) **Friction factor (Swamee–Jain)**
+   - Relative roughness ε/D = 4×10⁻⁵ / 0.762 ≈ 5.25×10⁻⁵.
+   - f ≈ 0.25 / [log₁₀(ε/(3.7D) + 5.74/Re⁰·⁹)]² ≈ **0.017** (turbulent steel pipe).
+
+3) **Friction head**
+   - Total length L = 328 km → L/D ≈ 328,000 / 0.762 ≈ 4.31×10⁵.
+   - Velocity head v²/2g ≈ 1.65² / (2·9.81) ≈ **0.14 m**.
+   - Darcy–Weisbach loss h_f = f·(L/D)·(v²/2g) ≈ 0.017·4.31×10⁵·0.14 ≈
+     **1,000–1,020 m** of head.
+
+4) **Available pump head at 2,708 m³/h**
+   - Paradip station (2 pumps allowed). Best-case is two **MP4/MP5** type B
+     pumps in series: head ≈ 351 m per pump at 2,500–2,700 m³/h → **≈ 700 m**
+     combined.
+   - Balasore station (1 pump max). Its **MP3** pump gives ≈ 400 m at
+     2,500–2,700 m³/h.
+   - Total available head in the hour is therefore **≈ 1,100 m** before any
+     surge allowance.
+
+5) **Other head requirements**
+   - Elevation: about **2 m** lift to Haldia.
+   - Residual pressures: minimum **125 m** at Paradip suction, **50 m** at
+     Balasore discharge, and **75 m** at the terminal → roughly **250 m** of
+     residual head that must remain after friction.
+
+6) **Head balance**
+   - Required head ≈ friction (1,000 m) + elevation (2 m) + residual (250 m)
+     ≈ **1,252 m**.
+   - Available head ≈ **1,100 m** (step 4).
+   - **Gap:** available head is short by roughly **150 m**, so the solver marks
+     2,708 m³/h as infeasible even before checking pressure envelope margins.
+
+7) **Pressure envelope cross-check**
+   - Because the total head is short, suction pressures would drop below the
+     enforced residuals; boosting RPM to fix this would push discharge pressures
+     above MAOP at the upstream station, also violating the envelope. Either
+     way, the hydraulic run fails the feasibility test.
+
+This numeric walk-through mirrors the app’s checks: at 2,708 m³/h the pipeline
+demands more head than the pumps can safely supply while keeping residuals and
+MAOP within limits, so the solver correctly labels the rate as **not feasible**.
