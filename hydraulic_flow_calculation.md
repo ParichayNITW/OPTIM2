@@ -1,59 +1,56 @@
-# Calculating Maximum Achievable Flow in a Pipeline
+# How the App Computes Maximum Achievable Flow
 
-This note walks through how to estimate the maximum steady-state flow a pipeline can sustain given a pressure limit at the inlet and outlet. It uses only hydraulic principles and hand-calculable formulas.
+This note describes the same hydraulic logic the app uses when it says it is
+"Computing max achievable flow". It follows the pipeline model and solver logic
+that run inside the optimization workflow, not a standalone textbook example.
 
-## Key Relationships
-- **Energy balance**: Available pressure drop drives the flow. The allowable pressure drop is the difference between inlet and outlet pressures after accounting for elevation changes.
-- **Friction losses**: The Darcy–Weisbach equation relates friction head loss to flow rate: 
-  
-  \[ h_f = f \cdot \frac{L}{D} \cdot \frac{V^2}{2g} \]
-  
-  where:
-  - \(h_f\): friction head loss (m)
-  - \(f\): friction factor (dimensionless, from Moody chart or Colebrook-White)
-  - \(L\): pipe length (m)
-  - \(D\): internal diameter (m)
-  - \(V\): fluid velocity (m/s), related to flow rate by \(V = Q/A\)
-  - \(g\): gravitational acceleration (9.81 m/s²)
-- **Minor losses**: Valves, bends, and fittings add extra loss: \(h_m = K \cdot V^2/(2g)\), where \(K\) is the sum of loss coefficients.
-- **Total head loss**: \(h_{total} = h_f + h_m\) must not exceed the available head drop \(\Delta H\) from pressure limits and elevation.
+## What the solver checks
+- **Pressure envelope:** Each station has a maximum allowable operating pressure
+  (MAOP). When a global MOP is provided, the app converts that pressure limit to
+  head and clamps it against each station's MAOP so the solver never accepts a
+  profile that would over-stress the pipe wall.【F:pipeline_model.py†L2259-L2295】
+- **Available head vs. required head:** For a trial flow, the solver builds the
+  hydraulic profile along the full length of the pipe, accounting for diameter,
+  elevation, friction, temperature, and any drag-reducing agent (DRA) that is
+  scheduled. The profile must stay within the pressure envelope while still
+  meeting delivery pressure at the terminal.【F:pipeline_model.py†L2245-L2310】【F:pipeline_model.py†L3616-L3905】
+- **Pump capability:** The solver evaluates pump curves and combinations to see
+  whether enough head can be produced at the requested flow without exceeding
+  pump limits or minimum allowable speeds.【F:pipeline_model.py†L2482-L2559】
 
-## Solving for Maximum Flow
-1. **Compute available head drop** (\(\Delta H\)): 
-   \[ \Delta H = \frac{P_{in} - P_{out}}{\rho g} + (z_{in} - z_{out}) \]
-   where \(P\) is pressure (Pa), \(\rho\) is fluid density (kg/m³), and \(z\) is elevation (m).
-2. **Assume a flow rate** and find velocity \(V = Q/A\) using cross-sectional area \(A = \pi D^2/4\).
-3. **Estimate friction factor** \(f\) using Reynolds number \(Re = VD/\nu\) and pipe roughness. Iterate if needed because \(f\) depends on \(V\).
-4. **Calculate head losses**:
-   - Friction: \(h_f = f (L/D) (V^2/2g)\).
-   - Minor: \(h_m = K (V^2/2g)\).
-   - Sum to get \(h_{total}\).
-5. **Compare with available head**: Increase or decrease the trial flow until \(h_{total}\) matches \(\Delta H\). The corresponding \(Q\) is the maximum achievable flow without exceeding the pressure limits.
+A flow is **feasible** only if all these checks succeed across every hour of the
+schedule.
 
-## Worked Example
-Consider water at 20°C flowing through a 1 km steel pipeline with 0.3 m internal diameter. The inlet pressure is 700 kPa, outlet pressure is 200 kPa, and elevations are equal. Assume an absolute roughness of 0.000045 m and minor loss coefficient sum \(K = 5\).
+## How the max-flow search runs in the app
+1. **Run the requested plan.** The time-series solver is run at the user’s
+   requested flow. If it is feasible, no further action is needed.
+2. **Broaden the search if necessary.** When the run fails, the app first widens
+   the solver search depth (tighter RPM/DRA steps, broader state space) to avoid
+   dropping flow prematurely.【F:pipeline_optimization_app.py†L5850-L5886】
+3. **Step down the flow.** If the wider search still reports the plan as
+   infeasible, the app starts a controlled search for the highest feasible rate:
+   - It aligns the starting candidate to the configured decrement (50 m³/h by
+     default) so it does not skip just-below-the-request rates.
+   - It reduces the flow in fixed steps and reruns the full hydraulic solver for
+     each candidate until the first feasible solution is found.
+   - For day schedules, the requested total volume is trimmed to match the
+     candidate rate so throughput numbers stay consistent.【F:pipeline_optimization_app.py†L5892-L6074】
+4. **Report the limit.** The first candidate that passes all hydraulic checks is
+   returned as the "maximum achievable flow". The app also reports how much
+   throughput was reduced versus the original request.
 
-1. **Available head drop**:
-   \[ \Delta H = \frac{700{,}000 - 200{,}000}{1000 \times 9.81} \approx 51.0 \text{ m} \]
-2. **First flow guess**: try \(Q = 0.20\) m³/s.
-   - Area: \(A = \pi (0.3)^2 / 4 \approx 0.0707\) m².
-   - Velocity: \(V = Q/A \approx 2.83\) m/s.
-   - Reynolds number: \(Re = V D / \nu \approx 2.83 \times 0.3 / (1.0\times10^{-6}) \approx 8.5\times10^{5}\) (turbulent).
-   - Relative roughness: \(\epsilon/D = 0.000045 / 0.3 \approx 1.5\times10^{-4}\).
-   - Friction factor from Moody/Colebrook: \(f \approx 0.018\).
-3. **Head losses at this flow**:
-   - Friction: \(h_f = 0.018 \times (1000/0.3) \times (2.83^2 / (2 \times 9.81)) \approx 24.4 \text{ m}\).
-   - Minor: \(h_m = 5 \times (2.83^2 / (2 \times 9.81)) \approx 2.0 \text{ m}\).
-   - Total: \(h_{total} \approx 26.4 \text{ m}\), which is below the available 51 m. Flow can increase.
-4. **Adjusted flow guess**: try \(Q = 0.28\) m³/s (40% higher).
-   - Velocity: \(V \approx 3.96\) m/s, \(Re \approx 1.2\times10^{6}\), updated \(f \approx 0.017\).
-   - Friction: \(h_f \approx 44.0 \text{ m}\).
-   - Minor: \(h_m \approx 4.0 \text{ m}\).
-   - Total: \(h_{total} \approx 48.0 \text{ m}\), just under \(\Delta H = 51\) m.
-5. **Result**: The maximum achievable flow is about 0.28 m³/s. Pushing higher would increase losses beyond the available head, violating the pressure limits.
+## Example using the app’s logic
+Suppose a 24-hour schedule requests **3,000 m³/h** (72,000 m³ total) but the
+solver declares it infeasible even after widening the search depth. With the
+50 m³/h decrement:
+- The search starts at 2,950 m³/h (because the request was an exact multiple of
+  50, the first step is one full decrement).
+- If 2,950 m³/h still violates the pressure envelope, the solver tries 2,900,
+  then 2,850 m³/h, and so on, each time running the full hydraulic profile and
+  pump checks.
+- Imagine 2,850 m³/h is the first feasible rate; the app reports that as the
+  maximum achievable flow with a total of 68,400 m³ delivered, a reduction of
+  3,600 m³ from the request.
 
-## Practical Notes
-- Include safety margin (e.g., 5–10%) below the theoretical limit to account for temperature changes, fouling, or roughness uncertainty.
-- For systems with pumps, ensure pump head curves intersect the system curve near the operating point; otherwise, adjust pump speed or configuration.
-- If elevation changes are significant, compute \(\Delta H\) segment by segment and sum the head gains/losses.
-- Compressible fluids require accounting for density changes; the same head-loss logic applies but with iterative density updates along the line.
+This is the same iterative hydraulic search the app performs when you click the
+"Compute max achievable flow" action—no shortcuts, and no simplified formulas.
