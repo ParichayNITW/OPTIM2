@@ -2417,6 +2417,21 @@ def compute_minimum_lacing_requirement(
             total_length += 0.0
         if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
             entry['rho'] = rho_defaults[idx]
+        try:
+            suction_val = float(entry.get('suction_head', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            suction_val = 0.0
+        if suction_val <= 0.0 and entry.get('is_pump'):
+            try:
+                suction_val = float(entry.get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                suction_val = 0.0
+        entry['suction_head'] = max(suction_val, 0.0)
+        try:
+            residual_floor = float(entry.get('residual_floor', entry.get('min_residual', 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            residual_floor = 0.0
+        entry['residual_floor'] = max(residual_floor, 0.0)
         stations_copy.append(entry)
     if total_length <= 0.0:
         total_length = 0.0
@@ -2441,7 +2456,7 @@ def compute_minimum_lacing_requirement(
     for idx in range(len(stations_copy) - 1, -1, -1):
         downstream_requirements[idx] = cumulative_min
         try:
-            stn_min = float(stations_copy[idx].get('min_residual', 0.0) or 0.0)
+            stn_min = float(stations_copy[idx].get('residual_floor', stations_copy[idx].get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
             stn_min = 0.0
         cumulative_min = max(cumulative_min, stn_min)
@@ -2495,7 +2510,7 @@ def compute_minimum_lacing_requirement(
         downstream_residual = downstream_requirements[idx] if idx < len(downstream_requirements) else terminal_min_residual
         downstream_residual = max(downstream_residual, 0.0)
         try:
-            station_min_residual = float(stn.get('min_residual', 0.0) or 0.0)
+            station_min_residual = float(stn.get('residual_floor', stn.get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
             station_min_residual = 0.0
         station_min_residual = max(station_min_residual, 0.0)
@@ -2518,9 +2533,14 @@ def compute_minimum_lacing_requirement(
         dr_unbounded = 0.0
         limited_by_station = False
         suction_requirement = min_suction if stn.get('is_pump') else 0.0
-        suction_head = residual_head
-        if stn.get('is_pump'):
-            suction_head = max(residual_head, suction_requirement)
+        suction_head = stn.get('suction_head', residual_head)
+        if suction_head is None:
+            suction_head = residual_head
+        try:
+            suction_head = float(suction_head)
+        except (TypeError, ValueError):
+            suction_head = residual_head
+        suction_head = max(suction_head, residual_head if stn.get('is_pump') else 0.0, suction_requirement)
         available_head_before_limit = max_head + suction_head
         maop_head = 0.0
         rho_val = _station_density(stn)
@@ -3551,6 +3571,11 @@ def _downstream_requirement(
             peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
+        suction_head = 0.0
+        try:
+            suction_head = float(stn.get('suction_head', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            suction_head = 0.0
         if stn.get('is_pump', False):
             rpm_max_val = _station_max_rpm(stn)
             if rpm_max_val <= 0:
@@ -3591,7 +3616,12 @@ def _downstream_requirement(
             else:
                 tdh_max = 0.0
             req -= tdh_max
-        req = max(req, int(stn.get('min_residual', 0)))
+        req -= suction_head
+        try:
+            min_residual_req = float(stn.get('residual_floor', stn.get('min_residual', 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            min_residual_req = 0.0
+        req = max(req, min_residual_req)
         return int(round(req))
     return int(req_entry(idx + 1))
 
@@ -5213,6 +5243,8 @@ def solve_pipeline(
             'sfc_mode': stn.get('sfc_mode', 'manual'),
             'engine_params': stn.get('engine_params', {}),
             'elev': float(stn.get('elev', 0.0)),
+            'suction_head': float(stn.get('suction_head', 0.0)),
+            'residual_floor': float(stn.get('residual_floor', stn.get('min_residual', 0.0))),
         })
         cum_dist += L
 
@@ -5235,7 +5267,20 @@ def solve_pipeline(
     # -----------------------------------------------------------------------
     # Dynamic programming over stations
 
-    init_residual = int(stations[0].get('min_residual', 50))
+    origin_floor = 0.0
+    origin_suction = 0.0
+    if station_opts:
+        try:
+            origin_floor = float(station_opts[0].get('residual_floor', station_opts[0].get('min_residual', 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            origin_floor = float(stations[0].get('min_residual', 50) or 0.0)
+        try:
+            origin_suction = float(station_opts[0].get('suction_head', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            origin_suction = 0.0
+    else:
+        origin_floor = float(stations[0].get('min_residual', 50) or 0.0)
+    init_residual = int(round(max(origin_floor - origin_suction, 0.0)))
     # Initial dynamic‑programming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
     # sequence of record dictionaries (one per station), the last MAOP
@@ -5872,8 +5917,9 @@ def solve_pipeline(
 
                     # Compute the resulting superimposed discharge head after the pump and
                     # check MAOP constraints.  Use the head delivered by the pumps on
-                    # this segment.
-                    sdh = state['residual'] + tdh
+                    # this segment and add any available suction head.
+                    suction_head = max(float(stn_data.get('suction_head', 0.0) or 0.0), 0.0)
+                    sdh = state['residual'] + suction_head + tdh
                     if sdh > stn_data['maop_head'] or (
                         sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
                     ):
