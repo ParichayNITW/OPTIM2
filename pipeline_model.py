@@ -6661,7 +6661,6 @@ def solve_pipeline_with_types(
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
     state_cost_margin_pct: float = STATE_COST_MARGIN_PCT,
-    refined_retry: bool = False,
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
@@ -6688,265 +6687,225 @@ def solve_pipeline_with_types(
     best_result = None
     best_cost = float('inf')
     best_stations = None
-    last_error: dict | None = None
     N = len(stations)
 
-    def run_search(
-        rpm_step_local: int,
-        dra_step_local: int,
-        state_top_k_local: int,
-        state_cost_margin_local: float,
-        state_cost_margin_pct_local: float,
-        refined_retry_local: bool,
-    ) -> None:
-        """Enumerate pump-type combinations with the provided search params."""
-
-        nonlocal best_result, best_cost, best_stations, last_error
-
-        def expand_all(
-            pos: int,
-            stn_acc: list[dict],
-            kv_acc: list[float],
-            rho_acc: list[float],
-            slices_acc: list[list[dict]],
-        ):
-            nonlocal best_result, best_cost, best_stations, last_error
-            if pos >= N:
-                # When all stations have been expanded into individual pump units,
-                # perform loop-case enumeration explicitly.  We determine the
-                # positions of units with looplines (typically the last unit of each
-                # physical station) and then build loop usage directives for each
-                # representative case.  This avoids relying on the internal
-                # loop-enumeration of ``solve_pipeline``, which can behave
-                # unpredictably when stations are split into multiple units.
-                loop_positions = [idx for idx, u in enumerate(stn_acc) if u.get('loopline')]
-                # Always run at least once even if no loops exist
-                if not loop_positions:
-                    cases = [[]]
-                else:
-                    # Determine per-loop diameter equality flags for the expanded stations.
-                    default_t_local = 0.007
-                    flags_expanded: list[bool] = []
-                    for pidx in loop_positions:
-                        stn_e = stn_acc[pidx]
-                        # Inner diameter of the mainline segment
-                        if stn_e.get('D') is not None:
-                            d_main_outer = stn_e['D']
-                            t_main = stn_e.get('t', default_t_local)
-                            d_inner_main = d_main_outer - 2 * t_main
+    def expand_all(
+        pos: int,
+        stn_acc: list[dict],
+        kv_acc: list[float],
+        rho_acc: list[float],
+        slices_acc: list[list[dict]],
+    ):
+        nonlocal best_result, best_cost, best_stations
+        if pos >= N:
+            # When all stations have been expanded into individual pump units,
+            # perform loop-case enumeration explicitly.  We determine the
+            # positions of units with looplines (typically the last unit of each
+            # physical station) and then build loop usage directives for each
+            # representative case.  This avoids relying on the internal
+            # loop-enumeration of ``solve_pipeline``, which can behave
+            # unpredictably when stations are split into multiple units.
+            loop_positions = [idx for idx, u in enumerate(stn_acc) if u.get('loopline')]
+            # Always run at least once even if no loops exist
+            if not loop_positions:
+                cases = [[]]
+            else:
+                # Determine per-loop diameter equality flags for the expanded stations.
+                default_t_local = 0.007
+                flags_expanded: list[bool] = []
+                for pidx in loop_positions:
+                    stn_e = stn_acc[pidx]
+                    # Inner diameter of the mainline segment
+                    if stn_e.get('D') is not None:
+                        d_main_outer = stn_e['D']
+                        t_main = stn_e.get('t', default_t_local)
+                        d_inner_main = d_main_outer - 2 * t_main
+                    else:
+                        d_inner_main = stn_e.get('d', 0.0)
+                    lp = stn_e.get('loopline') or {}
+                    if lp:
+                        if lp.get('D') is not None:
+                            d_loop_outer = lp['D']
+                            t_loop = lp.get('t', stn_e.get('t', default_t_local))
+                            d_inner_loop = d_loop_outer - 2 * t_loop
                         else:
-                            d_inner_main = stn_e.get('d', 0.0)
-                        lp = stn_e.get('loopline') or {}
-                        if lp:
-                            if lp.get('D') is not None:
-                                d_loop_outer = lp['D']
-                                t_loop = lp.get('t', stn_e.get('t', default_t_local))
-                                d_inner_loop = d_loop_outer - 2 * t_loop
-                            else:
-                                d_inner_loop = lp.get('d', d_inner_main)
-                        else:
-                            d_inner_loop = d_inner_main
-                        flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
-                    # Generate loop-case combinations based on flags
-                    cases = _generate_loop_cases_by_flags(flags_expanded)
-                for case in cases:
-                    usage = [0] * len(stn_acc)
-                    for pidx, val in zip(loop_positions, case):
-                        usage[pidx] = val
-                    # Call solve_pipeline with explicit loop usage and disable
-                    # internal enumeration.  This ensures the provided directives
-                    # are respected even for split stations.
-                    result = solve_pipeline(
-                        stn_acc,
-                        terminal,
-                        FLOW,
-                        kv_acc,
-                        rho_acc,
-                        slices_acc,
-                        RateDRA,
-                        Price_HSD,
-                        Fuel_density,
-                        Ambient_temp,
-                        linefill,
-                        dra_reach_km,
-                        mop_kgcm2,
-                        hours,
-                        start_time,
-                        pump_shear_rate=pump_shear_rate,
-                        loop_usage_by_station=usage,
-                        enumerate_loops=False,
-                        rpm_step=rpm_step_local,
-                        dra_step=dra_step_local,
-                        coarse_multiplier=coarse_multiplier,
-                        state_top_k=state_top_k_local,
-                        state_cost_margin=state_cost_margin_local,
-                        state_cost_margin_pct=state_cost_margin_pct_local,
-                        refined_retry=refined_retry_local,
-                        forced_origin_detail=forced_origin_detail,
-                        segment_floors=segment_floors,
-                        collect_state_audit=collect_state_audit,
-                    )
-                    if result.get("error"):
-                        if last_error is None:
-                            last_error = result
-                        continue
-                    cost = result.get("total_cost", float('inf'))
-                    if cost < best_cost:
-                        # Preserve usage directive for later labelling
-                        result_with_usage = result.copy()
-                        result_with_usage['loop_usage'] = usage.copy()
-                        best_cost = cost
-                        best_result = result_with_usage
-                        best_stations = stn_acc
-                return
+                            d_inner_loop = lp.get('d', d_inner_main)
+                    else:
+                        d_inner_loop = d_inner_main
+                    flags_expanded.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
+                # Generate loop-case combinations based on flags
+                cases = _generate_loop_cases_by_flags(flags_expanded)
+            for case in cases:
+                usage = [0] * len(stn_acc)
+                for pidx, val in zip(loop_positions, case):
+                    usage[pidx] = val
+                # Call solve_pipeline with explicit loop usage and disable
+                # internal enumeration.  This ensures the provided directives
+                # are respected even for split stations.
+                result = solve_pipeline(
+                    stn_acc,
+                    terminal,
+                    FLOW,
+                    kv_acc,
+                    rho_acc,
+                    slices_acc,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    loop_usage_by_station=usage,
+                    enumerate_loops=False,
+                    rpm_step=rpm_step,
+                    dra_step=dra_step,
+                    coarse_multiplier=coarse_multiplier,
+                    state_top_k=state_top_k,
+                    state_cost_margin=state_cost_margin,
+                    state_cost_margin_pct=state_cost_margin_pct,
+                    forced_origin_detail=forced_origin_detail,
+                    segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
+                )
+                if result.get("error"):
+                    continue
+                cost = result.get("total_cost", float('inf'))
+                if cost < best_cost:
+                    # Preserve usage directive for later labelling
+                    result_with_usage = result.copy()
+                    result_with_usage['loop_usage'] = usage.copy()
+                    best_cost = cost
+                    best_result = result_with_usage
+                    best_stations = stn_acc
+            return
 
-            stn = stations[pos]
-            kv = KV_list[pos]
-            rho = rho_list[pos]
-            current_slices = list(segment_slices[pos] if pos < len(segment_slices) else [])
+        stn = stations[pos]
+        kv = KV_list[pos]
+        rho = rho_list[pos]
+        current_slices = list(segment_slices[pos] if pos < len(segment_slices) else [])
 
-            if stn.get('pump_types'):
-                # Determine available counts for each type
-                availA = stn['pump_types'].get('A', {}).get('available', 0)
-                availB = stn['pump_types'].get('B', {}).get('available', 0)
-                combos = generate_type_combinations(availA, availB)
-                seen_active: set[tuple[int, int]] = set()
-                max_station_limit: int | None
-                raw_max = stn.get('max_pumps')
-                if isinstance(raw_max, (int, float)) and raw_max > 0:
-                    max_station_limit = int(raw_max)
-                else:
-                    max_station_limit = None
-                raw_min = stn.get('min_pumps')
-                min_station_required = int(raw_min) if isinstance(raw_min, (int, float)) and raw_min > 0 else 0
-                allow_mixed_types = _station_allows_mixed_pump_types(stn)
-                for numA, numB in combos:
-                    total_units = numA + numB
-                    if max_station_limit is not None and total_units > max_station_limit:
-                        continue
-                    if not allow_mixed_types and numA > 0 and numB > 0:
-                        continue
-                    pdataA = stn['pump_types'].get('A', {})
-                    pdataB = stn['pump_types'].get('B', {})
-                    for actA in range(numA + 1):
-                        for actB in range(numB + 1):
-                            total_active = actA + actB
-                            if max_station_limit is not None and total_active > max_station_limit:
-                                continue
-                            if total_active < min_station_required:
-                                continue
-                            if not allow_mixed_types and actA > 0 and actB > 0:
-                                continue
-                            active_key = (actA, actB)
-                            if active_key in seen_active:
-                                continue
-                            seen_active.add(active_key)
-                            unit = copy.deepcopy(stn)
-                            unit['pump_combo'] = {'A': availA, 'B': availB}
-                            unit['active_combo'] = {'A': actA, 'B': actB}
-                            if actA > 0 and actB == 0:
-                                pdata = pdataA
-                            elif actB > 0 and actA == 0:
-                                pdata = pdataB
-                            else:
-                                pdata = None
-                            if pdata is not None:
-                                for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
-                                    unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
-                                unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
-                                unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
-                                unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
-                                unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
-                                unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
-                                unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
-                                unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                                unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
-                            else:
-                                min_map: dict[str, float] = {}
-                                dol_map: dict[str, float] = {}
-                                if actA > 0:
-                                    min_map['A'] = _extract_rpm(
-                                        pdataA.get('MinRPM'),
-                                        default=_station_min_rpm(stn, ptype='A'),
-                                        prefer='min',
-                                    )
-                                    dol_map['A'] = _extract_rpm(
-                                        pdataA.get('DOL'),
-                                        default=_station_max_rpm(stn, ptype='A'),
-                                        prefer='max',
-                                    )
-                                if actB > 0:
-                                    min_map['B'] = _extract_rpm(
-                                        pdataB.get('MinRPM'),
-                                        default=_station_min_rpm(stn, ptype='B'),
-                                        prefer='min',
-                                    )
-                                    dol_map['B'] = _extract_rpm(
-                                        pdataB.get('DOL'),
-                                        default=_station_max_rpm(stn, ptype='B'),
-                                        prefer='max',
-                                    )
-                                unit['MinRPM'] = min_map
-                                unit['DOL'] = dol_map
-                                unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
-                                unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
-                                unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
-                                unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
-                                unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
-                                unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
-                            unit['max_pumps'] = total_active
-                            unit['min_pumps'] = total_active
-                            expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
-
-                if min_station_required <= 0:
-                    zero_key = (0, 0)
-                    if zero_key not in seen_active:
+        if stn.get('pump_types'):
+            # Determine available counts for each type
+            availA = stn['pump_types'].get('A', {}).get('available', 0)
+            availB = stn['pump_types'].get('B', {}).get('available', 0)
+            combos = generate_type_combinations(availA, availB)
+            seen_active: set[tuple[int, int]] = set()
+            max_station_limit: int | None
+            raw_max = stn.get('max_pumps')
+            if isinstance(raw_max, (int, float)) and raw_max > 0:
+                max_station_limit = int(raw_max)
+            else:
+                max_station_limit = None
+            raw_min = stn.get('min_pumps')
+            min_station_required = int(raw_min) if isinstance(raw_min, (int, float)) and raw_min > 0 else 0
+            allow_mixed_types = _station_allows_mixed_pump_types(stn)
+            for numA, numB in combos:
+                total_units = numA + numB
+                if max_station_limit is not None and total_units > max_station_limit:
+                    continue
+                if not allow_mixed_types and numA > 0 and numB > 0:
+                    continue
+                pdataA = stn['pump_types'].get('A', {})
+                pdataB = stn['pump_types'].get('B', {})
+                for actA in range(numA + 1):
+                    for actB in range(numB + 1):
+                        total_active = actA + actB
+                        if max_station_limit is not None and total_active > max_station_limit:
+                            continue
+                        if total_active < min_station_required:
+                            continue
+                        if not allow_mixed_types and actA > 0 and actB > 0:
+                            continue
+                        active_key = (actA, actB)
+                        if active_key in seen_active:
+                            continue
+                        seen_active.add(active_key)
                         unit = copy.deepcopy(stn)
                         unit['pump_combo'] = {'A': availA, 'B': availB}
-                        unit['active_combo'] = {'A': 0, 'B': 0}
-                        unit['max_pumps'] = 0
-                        unit['min_pumps'] = 0
+                        unit['active_combo'] = {'A': actA, 'B': actB}
+                        if actA > 0 and actB == 0:
+                            pdata = pdataA
+                        elif actB > 0 and actA == 0:
+                            pdata = pdataB
+                        else:
+                            pdata = None
+                        if pdata is not None:
+                            for coef in ['A', 'B', 'C', 'P', 'Q', 'R', 'S', 'T']:
+                                unit[coef] = pdata.get(coef, unit.get(coef, 0.0))
+                            unit['MinRPM'] = pdata.get('MinRPM', unit.get('MinRPM', 0.0))
+                            unit['DOL'] = pdata.get('DOL', unit.get('DOL', 0.0))
+                            unit['power_type'] = pdata.get('power_type', unit.get('power_type', 'Grid'))
+                            unit['rate'] = pdata.get('rate', unit.get('rate', 0.0))
+                            unit['tariffs'] = pdata.get('tariffs', unit.get('tariffs'))
+                            unit['sfc'] = pdata.get('sfc', unit.get('sfc', 0.0))
+                            unit['sfc_mode'] = pdata.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                            unit['engine_params'] = pdata.get('engine_params', unit.get('engine_params', {}))
+                        else:
+                            min_map: dict[str, float] = {}
+                            dol_map: dict[str, float] = {}
+                            if actA > 0:
+                                min_map['A'] = _extract_rpm(
+                                    pdataA.get('MinRPM'),
+                                    default=_station_min_rpm(stn, ptype='A'),
+                                    prefer='min',
+                                )
+                                dol_map['A'] = _extract_rpm(
+                                    pdataA.get('DOL'),
+                                    default=_station_max_rpm(stn, ptype='A'),
+                                    prefer='max',
+                                )
+                            if actB > 0:
+                                min_map['B'] = _extract_rpm(
+                                    pdataB.get('MinRPM'),
+                                    default=_station_min_rpm(stn, ptype='B'),
+                                    prefer='min',
+                                )
+                                dol_map['B'] = _extract_rpm(
+                                    pdataB.get('DOL'),
+                                    default=_station_max_rpm(stn, ptype='B'),
+                                    prefer='max',
+                                )
+                            unit['MinRPM'] = min_map
+                            unit['DOL'] = dol_map
+                            unit['power_type'] = pdataA.get('power_type', unit.get('power_type', 'Grid'))
+                            unit['rate'] = pdataA.get('rate', unit.get('rate', 0.0))
+                            unit['tariffs'] = pdataA.get('tariffs', unit.get('tariffs'))
+                            unit['sfc'] = pdataA.get('sfc', unit.get('sfc', 0.0))
+                            unit['sfc_mode'] = pdataA.get('sfc_mode', unit.get('sfc_mode', 'manual'))
+                            unit['engine_params'] = pdataA.get('engine_params', unit.get('engine_params', {}))
+                        unit['max_pumps'] = total_active
+                        unit['min_pumps'] = total_active
                         expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
-            else:
-                expand_all(
-                    pos + 1,
-                    stn_acc + [copy.deepcopy(stn)],
-                    kv_acc + [kv],
-                    rho_acc + [rho],
-                    slices_acc + [current_slices],
-                )
 
-        expand_all(0, [], [], [], [])
+            if min_station_required <= 0:
+                zero_key = (0, 0)
+                if zero_key not in seen_active:
+                    unit = copy.deepcopy(stn)
+                    unit['pump_combo'] = {'A': availA, 'B': availB}
+                    unit['active_combo'] = {'A': 0, 'B': 0}
+                    unit['max_pumps'] = 0
+                    unit['min_pumps'] = 0
+                    expand_all(pos + 1, stn_acc + [unit], kv_acc + [kv], rho_acc + [rho], slices_acc + [current_slices])
+        else:
+            expand_all(
+                pos + 1,
+                stn_acc + [copy.deepcopy(stn)],
+                kv_acc + [kv],
+                rho_acc + [rho],
+                slices_acc + [current_slices],
+            )
 
-    run_search(
-        rpm_step,
-        dra_step,
-        state_top_k,
-        state_cost_margin,
-        state_cost_margin_pct,
-        refined_retry,
-    )
-
-    if best_result is None:
-        fallback_rpm_step = max(1, min(rpm_step, 5))
-        fallback_dra_step = max(1, min(dra_step, 1))
-        fallback_top_k = max(int(state_top_k * 10), 1000)
-        fallback_margin = state_cost_margin * 10 if state_cost_margin > 0 else 1_000_000.0
-        fallback_margin_pct = max(state_cost_margin_pct * 5, 0.2)
-        run_search(
-            fallback_rpm_step,
-            fallback_dra_step,
-            fallback_top_k,
-            fallback_margin,
-            fallback_margin_pct,
-            True,
-        )
+    expand_all(0, [], [], [], [])
 
     if best_result is None:
-        error_res = last_error.copy() if isinstance(last_error, dict) else {}
-        error_res.setdefault("error", True)
-        error_res.setdefault("message", "No feasible pump combination found for stations.")
-        return error_res
+        return {
+            "error": True,
+            "message": "No feasible pump combination found for stations.",
+        }
 
     best_result['stations_used'] = best_stations
     return best_result
