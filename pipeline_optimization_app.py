@@ -4267,6 +4267,7 @@ def solve_pipeline(
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
+    **solver_kwargs,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4386,6 +4387,8 @@ def solve_pipeline(
     try:
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
+        if solver_kwargs:
+            search_kwargs.update(solver_kwargs)
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
