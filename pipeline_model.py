@@ -1152,6 +1152,40 @@ def _queue_leading_zero_length(
     return total
 
 
+def _queue_head_ppm(queue_entries: list[dict] | list[tuple] | tuple | None) -> float:
+    """Return the first non-zero-length slice's PPM, or ``0.0`` when absent."""
+
+    if not queue_entries:
+        return 0.0
+
+    for raw in queue_entries:
+        if isinstance(raw, Mapping):
+            try:
+                length_val = float(raw.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                ppm_val = float(raw.get("dra_ppm", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+        elif isinstance(raw, (list, tuple)) and raw:
+            try:
+                length_val = float(raw[0] if len(raw) > 0 else 0.0)
+            except (TypeError, ValueError):
+                length_val = 0.0
+            try:
+                ppm_val = float(raw[1] if len(raw) > 1 else 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+        else:
+            continue
+
+        if length_val > 0.0:
+            return ppm_val
+
+    return 0.0
+
+
 def _trim_queue_front(
     queue_entries: list[tuple[float, float]]
     | tuple[tuple[float, float], ...],
@@ -1519,6 +1553,10 @@ def _update_mainline_dra(
         idx_val = stn_data.get('idx')
         if isinstance(idx_val, (int, float)):
             is_origin = int(idx_val) == 0
+
+    inlet_ppm_main = _queue_head_ppm(queue)
+    if inj_ppm_main > 0.0 and inj_ppm_main <= inlet_ppm_main + 1e-6:
+        inj_ppm_main = 0.0
 
     segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
     flow_m3h = float(flow_m3h or 0.0)
@@ -5974,8 +6012,10 @@ def solve_pipeline(
                     # separately and loopline cost is incurred only when
                     # an injection is made.
                     dra_cost = 0.0
-                    if inj_ppm_main > 0:
-                        dra_cost += inj_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
+                    inlet_ppm_main = _queue_head_ppm(dra_queue_prev_inlet)
+                    delta_ppm_main = max(inj_ppm_main - inlet_ppm_main, 0.0)
+                    if delta_ppm_main > 0.0:
+                        dra_cost += delta_ppm_main * (sc['flow_main'] * 1000.0 * hours / 1e6) * RateDRA
                     # Loopline injection uses ``inj_ppm_loop`` computed
                     # earlier.  Charge cost only when an actual injection is
                     # performed at this station.
