@@ -1942,21 +1942,21 @@ with st.sidebar:
             key="search_coarse_multiplier",
         )
         st.number_input(
-            "Max DP states retained",
+            "Max states",
             min_value=1,
             value=int(st.session_state.get("search_state_top_k", state_top_k_default)),
             step=1,
             key="search_state_top_k",
         )
         st.number_input(
-            "DP cost margin (currency)",
+            "Cost margin (currency)",
             min_value=0.0,
             value=float(st.session_state.get("search_state_cost_margin", state_cost_margin_default)),
             step=100.0,
             key="search_state_cost_margin",
         )
         st.number_input(
-            "DP cost margin (% of best)",
+            "Cost margin (% of best)",
             min_value=0.0,
             value=float(st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)),
             step=0.1,
@@ -1965,13 +1965,13 @@ with st.sidebar:
             help="Keeps any state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
         )
         st.checkbox(
-            "Capture DP candidate log (for raw output)",
+            "Capture candidate log (for raw output)",
             value=bool(st.session_state.get("search_collect_state_audit", True)),
             key="search_collect_state_audit",
-            help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing DP states, so overhead is minimal.",
+            help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing states, so overhead is minimal.",
         )
         st.caption(
-            "After running optimization, open the Summary tab in the Optimization Results section and scroll below the main results table. The DP candidate log is listed there under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
+            "After running optimization, open the Summary tab in the Optimization Results section and scroll below the main results table. The candidate log is listed there under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -6844,7 +6844,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             df_display = df_sum.style.format(fmt_cols, na_rep="NIL")
             st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
             st.caption(
-                "Results for the latest solve are shown in this Summary tab. Scroll below the main table to find the DP candidate log under 'Candidate search log (cost-sorted)'."
+                "Results for the latest solve are shown in this Summary tab. Scroll below the main table to find the candidate log under 'Candidate search log (cost-sorted)'."
             )
             st.dataframe(df_display, width='stretch', hide_index=True)
             st.download_button(
@@ -7010,7 +7010,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             if audit_log:
                 st.markdown("#### Candidate search log (cost-sorted)")
                 st.caption(
-                    "Shows how many candidate DP states were evaluated at each station; displaying the log does not rerun the solver."
+                    "Shows how many candidate states were evaluated at each station; displaying the log does not rerun the solver."
                 )
                 col_audit = st.columns(3)
                 total_checked = int(res.get("state_audit_total_candidates", 0) or 0)
@@ -7020,7 +7020,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     "Download DP log (JSON)",
                     data=json.dumps(audit_log, indent=2, default=str),
                     file_name="dp_candidate_log.json",
-                    help="Exports the raw DP candidate states that were collected during the solve.",
+                    help="Exports the raw candidate states that were collected during the solve.",
                 )
 
                 for entry in audit_log:
@@ -7044,7 +7044,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             else:
                 st.markdown("#### Candidate search log (cost-sorted)")
                 st.info(
-                    "No DP candidate log is available for this solve. Enable 'Capture DP candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
+                    "No candidate log is available for this solve. Enable 'Capture candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
                 )
 
             # --- Detailed pump information when multiple pump types run ---
