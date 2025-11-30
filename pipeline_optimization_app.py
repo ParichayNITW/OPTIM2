@@ -6270,7 +6270,7 @@ if not auto_batch:
         if error_msg:
             fallback_note: str | None = None
             fallback: dict | None = None
-            if _should_attempt_max_flow_fallback(solver_result):
+            if is_hourly and _should_attempt_max_flow_fallback(solver_result):
                 with st.spinner("Computing max achievable flow..."):
                     fallback = _find_maximum_feasible_flow(
                         flow_rate=FLOW_sched,
