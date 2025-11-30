@@ -5422,6 +5422,9 @@ def _execute_time_series_solver(
     backtracked = False
     backtrack_notes: list[str] = []
     enforced_actions: list[dict] = []
+    search_kwargs = _collect_search_depth_kwargs()
+    base_state_cost_margin = float(search_kwargs.get("state_cost_margin", 0.0) or 0.0)
+    base_state_cost_margin_pct = float(search_kwargs.get("state_cost_margin_pct", 0.0) or 0.0)
 
     error_msg: str | None = None
     failure_detail: dict[str, object] | None = None
@@ -5456,6 +5459,7 @@ def _execute_time_series_solver(
         error_msg = None
 
         forced_detail_used: dict | None = None
+        retry_used = False
         for sub in range(sub_steps):
             pumped_tmp = flow_rate * 1.0
             future_vol, future_plan, injected_batches = shift_vol_linefill(
@@ -5500,7 +5504,40 @@ def _execute_time_series_solver(
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail,
+                **search_kwargs,
             )
+
+            if (
+                res.get("error")
+                and not retry_used
+                and isinstance(res.get("message"), str)
+                and "no feasible pump combination" in res["message"].lower()
+            ):
+                retry_used = True
+                res = solve_pipeline(
+                    stns_run,
+                    term_data,
+                    flow_rate,
+                    kv_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    fuel_density,
+                    ambient_temp,
+                    dra_linefill_local,
+                    dra_reach_local,
+                    mop_kgcm2,
+                    hours=1.0,
+                    start_time=start_str,
+                    pump_shear_rate=pump_shear_rate,
+                    forced_origin_detail=forced_detail,
+                    coarse_multiplier=1.0,
+                    state_top_k=max(int(search_kwargs.get("state_top_k", 50)) * 2, 200),
+                    state_cost_margin=base_state_cost_margin * 5 if base_state_cost_margin > 0 else 10000.0,
+                    state_cost_margin_pct=max(base_state_cost_margin_pct * 2, 0.05),
+                    collect_state_audit=True,
+                )
 
             block_cost += res.get("total_cost", 0.0)
 
