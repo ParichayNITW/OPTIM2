@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 import time
 import base64
-from contextlib import contextmanager
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
@@ -1059,18 +1058,15 @@ def shift_vol_linefill(
 
     injected_batches: list[dict[str, float]] = []
 
-    # Inject the pumped volume back into the queue using the day plan.  The
-    # injection volume must equal the requested pump-out volume even when the
-    # existing linefill was sufficient to satisfy ``pumped_m3`` on its own.
-    remaining = float(pumped_m3)
     if day_plan is not None:
         day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-        day_plan["Volume (m³)"] = day_plan["Volume (m³)"]
         day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
+        injected = 0.0
 
         while remaining > 1e-9 and len(day_plan) > 0:
             v = day_plan.iloc[0]["Volume (m³)"]
             take = min(v, remaining)
+            injected += take
 
             vol_table = pd.concat(
                 [
@@ -1090,21 +1086,19 @@ def shift_vol_linefill(
                 ignore_index=True,
             )
 
-            injected_batches.append(
-                {
-                    "volume": float(take),
-                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)),
-                }
-            )
-
             remaining -= take
             if take >= v:
                 day_plan = day_plan.drop(index=0).reset_index(drop=True)
             else:
                 day_plan.at[0, "Volume (m³)"] = v - take
 
-        if injected_batches:
-            injected_batches = list(reversed(injected_batches))
+        if injected > 0:
+            injected_batches.append(
+                {
+                    "volume": float(injected),
+                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)) if len(day_plan) else 0.0,
+                }
+            )
 
     vol_table = vol_table.reset_index(drop=True)
 
@@ -2608,12 +2602,6 @@ def get_full_case_dict():
         manual_baseline_table = []
 
     stations = st.session_state.get('stations', [])
-    # Insert this block to set a fixed suction_head for each station:
-    for stn in stations:
-        # If suction_head is not already specified, copy min_residual
-        # so the solver treats that value as the available suction at the pump.
-        if not stn.get('suction_head'):
-            stn['suction_head'] = float(stn.get('min_residual', 0.0) or 0.0)
     first_station = stations[0] if stations else {}
     return {
         "stations": stations,
@@ -4207,7 +4195,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
-    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", None)
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -4238,28 +4226,25 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
-    result = {
+    state_cost_margin_pct = float(
+        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+        or state_cost_margin_pct_default
+    )
+    if state_cost_margin_pct < 0:
+        state_cost_margin_pct = 0.0
+    state_cost_margin_pct /= 100.0
+
+    collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
+
+    return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
+        "state_cost_margin_pct": state_cost_margin_pct,
+        "collect_state_audit": collect_state_audit,
     }
-
-    if state_cost_margin_pct_default is not None:
-        state_cost_margin_pct = float(
-            st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
-            or state_cost_margin_pct_default
-        )
-        if state_cost_margin_pct < 0:
-            state_cost_margin_pct = 0.0
-        result["state_cost_margin_pct"] = state_cost_margin_pct / 100.0
-
-    if hasattr(pipeline_model, "STATE_COLLECT_AUDIT"):
-        collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
-        result["collect_state_audit"] = collect_state_audit
-
-    return result
 
 
 
@@ -5476,24 +5461,6 @@ def _execute_time_series_solver(
             future_vol, future_plan, injected_batches = shift_vol_linefill(
                 current_vol_local.copy(), pumped_tmp, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
             )
-
-            if injected_batches:
-                injected_linefill = []
-                for batch in injected_batches:
-                    try:
-                        vol_val = float(batch.get("volume", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        vol_val = 0.0
-                    if vol_val <= 0.0:
-                        continue
-                    try:
-                        ppm_val = float(batch.get("dra_ppm", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        ppm_val = 0.0
-                    injected_linefill.append({"volume": vol_val, "dra_ppm": ppm_val})
-                if injected_linefill:
-                    dra_linefill_local = injected_linefill + dra_linefill_local
-
             plan_forced_detail = _build_forced_detail_from_batches(
                 injected_batches,
                 stations_base,
@@ -5609,7 +5576,6 @@ def _execute_time_series_solver(
             origin_error = None
             detail_note: str | None = None
             if untreated_head_km > untreated_tolerance or prev_front <= untreated_tolerance:
-                prev_state.pop("origin_enforced", None)
                 tightened = _enforce_minimum_origin_dra(
                     prev_state,
                     total_length_km=total_length,
@@ -5752,147 +5718,16 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
             executed = [str(p).lower() for p in passes]
         detail_msg = str(detail.get("message") or "")
 
+    if "exhaustive" in executed:
+        return True
+
     combined_msg = f"{error_msg} {detail_msg}".lower()
     infeasible_keywords = (
         "no feasible",
         "infeasible",
         "not feasible",
     )
-
-    # Only consider a max-flow fallback when the solver exhausted its internal
-    # search passes or when the backend explicitly reports infeasibility.
-    # This avoids prematurely dropping the requested rate for transient
-    # backtracking errors that do not indicate a true feasibility limit.
-    if executed and "exhaustive" not in executed:
-        return any(keyword in combined_msg for keyword in infeasible_keywords)
-
     return any(keyword in combined_msg for keyword in infeasible_keywords)
-
-
-def _build_expanded_search_depth_overrides() -> dict[str, float | int]:
-    """Return more aggressive search-depth settings for infeasible runs.
-
-    The overrides tighten RPM and DRA step sizes while widening the state search
-    breadth and cost margins.  They are only applied when they meaningfully
-    expand the search space to avoid unnecessary reruns.
-    """
-
-    rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
-    dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
-    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
-    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
-    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", None)
-
-    overrides: dict[str, float | int] = {}
-
-    rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
-    rpm_step_tighter = max(1, int(round(rpm_step / 2)))
-    if rpm_step_tighter < rpm_step:
-        overrides["search_rpm_step"] = rpm_step_tighter
-
-    dra_step = int(st.session_state.get("search_dra_step", dra_step_default) or dra_step_default)
-    dra_step_tighter = max(1, int(round(dra_step / 2)))
-    if dra_step_tighter < dra_step:
-        overrides["search_dra_step"] = dra_step_tighter
-
-    coarse_multiplier = float(
-        st.session_state.get("search_coarse_multiplier", getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0))
-        or getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
-    )
-    coarse_tighter = max(1.0, coarse_multiplier / 2.0)
-    if coarse_tighter < coarse_multiplier:
-        overrides["search_coarse_multiplier"] = coarse_tighter
-
-    state_top_k = int(
-        st.session_state.get("search_state_top_k", state_top_k_default)
-        or state_top_k_default
-    )
-    widened_top_k = max(state_top_k_default, state_top_k * 2)
-    if widened_top_k > state_top_k:
-        overrides["search_state_top_k"] = widened_top_k
-
-    state_cost_margin = float(
-        st.session_state.get("search_state_cost_margin", state_cost_margin_default)
-        or state_cost_margin_default
-    )
-    widened_margin = max(state_cost_margin_default, state_cost_margin * 2.0)
-    if widened_margin > state_cost_margin:
-        overrides["search_state_cost_margin"] = widened_margin
-
-    if state_cost_margin_pct_default is not None:
-        state_cost_margin_pct = float(
-            st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
-            or state_cost_margin_pct_default
-        )
-        widened_margin_pct = max(state_cost_margin_pct_default, state_cost_margin_pct * 2.0)
-        if widened_margin_pct > state_cost_margin_pct:
-            overrides["search_state_cost_margin_pct"] = min(widened_margin_pct, 100.0)
-
-    return overrides
-
-
-@contextmanager
-def _temporary_search_depth_overrides(overrides: Mapping[str, object]):
-    """Apply search-depth overrides for the duration of the context."""
-
-    saved: dict[str, object] = {}
-    for key, val in overrides.items():
-        saved[key] = st.session_state.get(key) if key in st.session_state else None
-        _safe_set_session_state(key, val)
-    try:
-        yield
-    finally:
-        for key, prev in saved.items():
-            _safe_set_session_state(key, prev)
-
-
-def _try_with_expanded_search_depth(
-    *,
-    flow_rate: float,
-    stations_base: list[dict],
-    term_data: dict,
-    hours: list[int],
-    plan_df: pd.DataFrame | None,
-    current_vol: pd.DataFrame,
-    dra_linefill: list[dict],
-    dra_reach_km: float,
-    RateDRA: float,
-    Price_HSD: float,
-    fuel_density: float,
-    ambient_temp: float,
-    mop_kgcm2: float | None,
-    pump_shear_rate: float,
-    total_length: float,
-    sub_steps: int,
-) -> dict | None:
-    """Re-run the solver with a widened search space before dropping flow."""
-
-    overrides = _build_expanded_search_depth_overrides()
-    def _run_solver():
-        return _execute_time_series_solver(
-            stations_base,
-            term_data,
-            hours,
-            flow_rate=flow_rate,
-            plan_df=plan_df,
-            current_vol=current_vol,
-            dra_linefill=dra_linefill,
-            dra_reach_km=dra_reach_km,
-            RateDRA=RateDRA,
-            Price_HSD=Price_HSD,
-            fuel_density=fuel_density,
-            ambient_temp=ambient_temp,
-            mop_kgcm2=mop_kgcm2,
-            pump_shear_rate=pump_shear_rate,
-            total_length=total_length,
-            sub_steps=sub_steps,
-        )
-
-    if not overrides:
-        return _run_solver()
-
-    with _temporary_search_depth_overrides(overrides):
-        return _run_solver()
 
 
 def _find_maximum_feasible_flow(
@@ -6435,28 +6270,31 @@ if not auto_batch:
         if error_msg:
             fallback_note: str | None = None
             fallback: dict | None = None
-            expanded_solver_result: dict | None = None
-            with st.spinner("Expanding search depth before reducing flow..."):
-                expanded_solver_result = _try_with_expanded_search_depth(
-                    flow_rate=FLOW_sched,
-                    stations_base=stations_base,
-                    term_data=term_data,
-                    hours=hours,
-                    plan_df=base_plan_df,
-                    current_vol=base_current_vol,
-                    dra_linefill=base_dra_linefill,
-                    dra_reach_km=base_dra_reach,
-                    RateDRA=RateDRA,
-                    Price_HSD=Price_HSD,
-                    fuel_density=st.session_state.get("Fuel_density", 820.0),
-                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                    total_length=total_length,
-                    sub_steps=sub_steps,
-                )
-            if expanded_solver_result and not expanded_solver_result.get("error"):
-                solver_result = expanded_solver_result
+            if _should_attempt_max_flow_fallback(solver_result):
+                with st.spinner("Computing max achievable flow..."):
+                    fallback = _find_maximum_feasible_flow(
+                        flow_rate=FLOW_sched,
+                        stations_base=stations_base,
+                        term_data=term_data,
+                        hours=hours,
+                        plan_df=base_plan_df,
+                        current_vol=base_current_vol,
+                        dra_linefill=base_dra_linefill,
+                        dra_reach_km=base_dra_reach,
+                        RateDRA=RateDRA,
+                        Price_HSD=Price_HSD,
+                        fuel_density=st.session_state.get("Fuel_density", 820.0),
+                        ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                        mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                        total_length=total_length,
+                        sub_steps=sub_steps,
+                        flow_step=50.0,
+                        is_hourly=is_hourly,
+                    )
+            if fallback:
+                FLOW_sched = fallback["flow_rate"]
+                solver_result = fallback["solver_result"]
                 reports = solver_result["reports"]
                 linefill_snaps = solver_result["linefill_snaps"]
                 current_vol = solver_result["final_vol"]
@@ -6464,11 +6302,32 @@ if not auto_batch:
                 dra_linefill = solver_result["final_dra_linefill"]
                 dra_reach_km = solver_result["final_dra_reach"]
                 error_msg = None
-
+                reduction = float(fallback.get("reduction", 0.0) or 0.0)
+                total_throughput = float(fallback.get("total_throughput", 0.0) or 0.0)
+                if isinstance(fallback.get("plan_df"), pd.DataFrame):
+                    plan_df = fallback["plan_df"]
+                if reduction > 0.0:
+                    original_total = reduction + total_throughput
+                    hours_count = max(len(hours), 1)
+                    if is_hourly:
+                        fallback_note = (
+                            f"Requested {original_total:,.0f} m³ was infeasible; "
+                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³ "
+                            f"({FLOW_sched:,.0f} m³/h)."
+                        )
+                    else:
+                        fallback_note = (
+                            f"Requested {original_total:,.0f} m³/day "
+                            f"({original_total / hours_count:,.0f} m³/h) was infeasible; "
+                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³/day "
+                            f"({FLOW_sched:,.0f} m³/h)."
+                        )
             if error_msg:
                 st.session_state["linefill_next_day"] = pd.DataFrame()
                 st.error(error_msg)
                 st.stop()
+            if fallback_note:
+                st.info(fallback_note)
         _store_run_duration(
             "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
             elapsed,
@@ -6640,6 +6499,23 @@ if not auto_batch:
                               steel** when upstream treated batches are still entering.
                             - **Protected:** candidates that use either zero DRA or the station's minimum RPM. These are marked to
                               survive pruning so the search always keeps low-chemical and low-RPM anchors.
+
+                            **Worked example (generic numbers)**
+                            1. **Setup:** 300 km pipeline split into 180 km (Station A) + 120 km (Station B). Manual floor: 3 ppm
+                               everywhere. A 20 km slug at 8 ppm is still upstream from the prior hour.
+                            2. **Starting queue at Station A inlet:** [20 km @ 8 ppm] + [180 km @ 3 ppm] + [120 km @ 3 ppm] =
+                               **320 km queue_km** (300 km in-line + 20 km upstream).
+                            3. **Station A candidate:** run pumps at 2,200 rpm, inject +5 ppm for the first 40 km.
+                               - Residual after A: suppose 150 m above minimum → residual = **150** in the log.
+                               - Queue update: advance 180 km. Consume the 20 km@8 + 20 km of the 3 ppm floor, leaving
+                                 [160 km @ 3 ppm]. Add the new slug [40 km @ (3+5=8 ppm)]. The queue passed to Station B is
+                                 [40 km @ 8 ppm] + [160 km @ 3 ppm] + [120 km @ 3 ppm] = **320 km queue_km**.
+                            4. **Station B candidate:** pumps at 2,600 rpm, no extra DRA.
+                               - Residual after B: suppose 110 m → residual = **110**.
+                               - Queue update: advance 120 km. Consume the 40 km@8 + 80 km@3, leaving [120 km @ 3 ppm]. The
+                                 log shows queue_km = **120** for this candidate.
+                            5. **Protected flag:** if Station A tried 0 ppm or the exact minimum RPM, that row would show
+                               `protected=True` so it is never trimmed away during cost/rate pruning.
                             """
                         )
                     st.caption(
@@ -6982,7 +6858,12 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.markdown("#### DRA Lacing Baseline")
             baseline_detail = st.session_state.get("origin_lacing_baseline") or {}
             try:
-                baseline_suction = float((baseline_detail or {}).get("suction_head", 0.0) or 0.0)
+                baseline_suction = float(
+                    (baseline_detail or {}).get(
+                        "suction_head", st.session_state.get("min_laced_suction_m", 0.0)
+                    )
+                    or 0.0
+                )
             except (TypeError, ValueError):
                 baseline_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
             base_cols = st.columns(3)
