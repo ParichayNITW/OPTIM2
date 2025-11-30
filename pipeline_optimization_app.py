@@ -6464,64 +6464,11 @@ if not auto_batch:
                 dra_linefill = solver_result["final_dra_linefill"]
                 dra_reach_km = solver_result["final_dra_reach"]
                 error_msg = None
-            elif error_msg and _should_attempt_max_flow_fallback(expanded_solver_result or solver_result):
-                with st.spinner("Computing max achievable flow..."):
-                    fallback = _find_maximum_feasible_flow(
-                        flow_rate=FLOW_sched,
-                        stations_base=stations_base,
-                        term_data=term_data,
-                        hours=hours,
-                        plan_df=base_plan_df,
-                        current_vol=base_current_vol,
-                        dra_linefill=base_dra_linefill,
-                        dra_reach_km=base_dra_reach,
-                        RateDRA=RateDRA,
-                        Price_HSD=Price_HSD,
-                        fuel_density=st.session_state.get("Fuel_density", 820.0),
-                        ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                        mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                        pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                        total_length=total_length,
-                        sub_steps=sub_steps,
-                        flow_step=50.0,
-                        is_hourly=is_hourly,
-                    )
-            if fallback:
-                FLOW_sched = fallback["flow_rate"]
-                solver_result = fallback["solver_result"]
-                reports = solver_result["reports"]
-                linefill_snaps = solver_result["linefill_snaps"]
-                current_vol = solver_result["final_vol"]
-                plan_df = solver_result["final_plan"]
-                dra_linefill = solver_result["final_dra_linefill"]
-                dra_reach_km = solver_result["final_dra_reach"]
-                error_msg = None
-                reduction = float(fallback.get("reduction", 0.0) or 0.0)
-                total_throughput = float(fallback.get("total_throughput", 0.0) or 0.0)
-                if isinstance(fallback.get("plan_df"), pd.DataFrame):
-                    plan_df = fallback["plan_df"]
-                if reduction > 0.0:
-                    original_total = reduction + total_throughput
-                    hours_count = max(len(hours), 1)
-                    if is_hourly:
-                        fallback_note = (
-                            f"Requested {original_total:,.0f} m³ was infeasible; "
-                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³ "
-                            f"({FLOW_sched:,.0f} m³/h)."
-                        )
-                    else:
-                        fallback_note = (
-                            f"Requested {original_total:,.0f} m³/day "
-                            f"({original_total / hours_count:,.0f} m³/h) was infeasible; "
-                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³/day "
-                            f"({FLOW_sched:,.0f} m³/h)."
-                        )
+
             if error_msg:
                 st.session_state["linefill_next_day"] = pd.DataFrame()
                 st.error(error_msg)
                 st.stop()
-            if fallback_note:
-                st.info(fallback_note)
         _store_run_duration(
             "Run Hourly Flow Rate Optimizer" if is_hourly else "Run Daily Pumping Schedule Optimizer",
             elapsed,
