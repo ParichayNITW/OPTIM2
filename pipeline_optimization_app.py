@@ -4267,7 +4267,6 @@ def solve_pipeline(
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
-    **solver_kwargs,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4387,8 +4386,6 @@ def solve_pipeline(
     try:
         # Delegate to the backend optimiser
         search_kwargs = _collect_search_depth_kwargs()
-        if solver_kwargs:
-            search_kwargs.update(solver_kwargs)
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
@@ -5425,17 +5422,6 @@ def _execute_time_series_solver(
     backtracked = False
     backtrack_notes: list[str] = []
     enforced_actions: list[dict] = []
-    search_kwargs = _collect_search_depth_kwargs()
-    base_state_cost_margin = float(search_kwargs.get("state_cost_margin", 0.0) or 0.0)
-    base_state_cost_margin_pct = float(search_kwargs.get("state_cost_margin_pct", 0.0) or 0.0)
-    base_rpm_step = int(
-        search_kwargs.get("rpm_step", getattr(pipeline_model, "RPM_STEP", 25))
-        or getattr(pipeline_model, "RPM_STEP", 25)
-    )
-    base_dra_step = int(
-        search_kwargs.get("dra_step", getattr(pipeline_model, "DRA_STEP", 2))
-        or getattr(pipeline_model, "DRA_STEP", 2)
-    )
 
     error_msg: str | None = None
     failure_detail: dict[str, object] | None = None
@@ -5470,8 +5456,6 @@ def _execute_time_series_solver(
         error_msg = None
 
         forced_detail_used: dict | None = None
-        retry_used = False
-        deep_retry_used = False
         for sub in range(sub_steps):
             pumped_tmp = flow_rate * 1.0
             future_vol, future_plan, injected_batches = shift_vol_linefill(
@@ -5516,72 +5500,7 @@ def _execute_time_series_solver(
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail,
-                **search_kwargs,
             )
-
-            if (
-                res.get("error")
-                and not retry_used
-                and isinstance(res.get("message"), str)
-                and "no feasible pump combination" in res["message"].lower()
-            ):
-                retry_used = True
-                res = solve_pipeline(
-                    stns_run,
-                    term_data,
-                    flow_rate,
-                    kv_list,
-                    rho_list,
-                    segment_slices,
-                    RateDRA,
-                    Price_HSD,
-                    fuel_density,
-                    ambient_temp,
-                    dra_linefill_local,
-                    dra_reach_local,
-                    mop_kgcm2,
-                    hours=1.0,
-                    start_time=start_str,
-                    pump_shear_rate=pump_shear_rate,
-                    forced_origin_detail=forced_detail,
-                    coarse_multiplier=1.0,
-                    state_top_k=max(int(search_kwargs.get("state_top_k", 50)) * 2, 200),
-                    state_cost_margin=base_state_cost_margin * 5 if base_state_cost_margin > 0 else 10000.0,
-                    state_cost_margin_pct=max(base_state_cost_margin_pct * 2, 0.05),
-                    collect_state_audit=True,
-                )
-
-            if res.get("error") and not deep_retry_used:
-                error_text = str(res.get("message") or "").lower()
-                if "no feasible pump combination" in error_text or "infeasible" in error_text:
-                    deep_retry_used = True
-                    res = solve_pipeline(
-                        stns_run,
-                        term_data,
-                        flow_rate,
-                        kv_list,
-                        rho_list,
-                        segment_slices,
-                        RateDRA,
-                        Price_HSD,
-                        fuel_density,
-                        ambient_temp,
-                        dra_linefill_local,
-                        dra_reach_local,
-                        mop_kgcm2,
-                        hours=1.0,
-                        start_time=start_str,
-                        pump_shear_rate=pump_shear_rate,
-                        forced_origin_detail=forced_detail,
-                        rpm_step=max(5, min(base_rpm_step, getattr(pipeline_model, "RPM_STEP", base_rpm_step))),
-                        dra_step=max(1, min(base_dra_step, getattr(pipeline_model, "DRA_STEP", base_dra_step))),
-                        coarse_multiplier=1.0,
-                        state_top_k=max(int(search_kwargs.get("state_top_k", 50)) * 5, 500),
-                        state_cost_margin=base_state_cost_margin * 10 if base_state_cost_margin > 0 else 50000.0,
-                        state_cost_margin_pct=max(base_state_cost_margin_pct * 5, 0.1),
-                        collect_state_audit=True,
-                        refined_retry=True,
-                    )
 
             block_cost += res.get("total_cost", 0.0)
 
@@ -6351,7 +6270,7 @@ if not auto_batch:
         if error_msg:
             fallback_note: str | None = None
             fallback: dict | None = None
-            if is_hourly and _should_attempt_max_flow_fallback(solver_result):
+            if _should_attempt_max_flow_fallback(solver_result):
                 with st.spinner("Computing max achievable flow..."):
                     fallback = _find_maximum_feasible_flow(
                         flow_rate=FLOW_sched,
