@@ -5748,7 +5748,7 @@ def _find_maximum_feasible_flow(
     pump_shear_rate: float,
     total_length: float,
     sub_steps: int,
-    flow_step: float = 50.0,
+    flow_step: float = 10.0,
     is_hourly: bool = False,
 ) -> dict | None:
     """Return the first feasible solution below ``flow_rate`` reducing in ``flow_step`` increments."""
@@ -5760,9 +5760,9 @@ def _find_maximum_feasible_flow(
     try:
         step = abs(float(flow_step))
     except (TypeError, ValueError):
-        step = 50.0
+        step = 10.0
     if step <= 0.0:
-        step = 50.0
+        step = 10.0
 
     hours_count = len(hours) if hours else 0
     if base_flow <= 0.0 or hours_count <= 0:
@@ -6289,7 +6289,7 @@ if not auto_batch:
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         total_length=total_length,
                         sub_steps=sub_steps,
-                        flow_step=50.0,
+                        flow_step=10.0,
                         is_hourly=is_hourly,
                     )
             if fallback:
