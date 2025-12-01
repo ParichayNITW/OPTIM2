@@ -1861,20 +1861,7 @@ def _update_mainline_dra(
 
     if fallback_ppm > 0.0:
         fallback_length = target_length if target_length > 0 else segment_length
-        if fallback_length > 0.0 and merged_queue:
-            merged_with_fallback = _ensure_queue_floor(
-                merged_queue,
-                fallback_length,
-                fallback_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_fallback
-                if float(length or 0.0) > 0.0
-            )
-        elif fallback_length > 0.0 and not merged_queue:
+        if fallback_length > 0.0 and not merged_queue:
             merged_queue = (
                 (
                     float(fallback_length),
@@ -6046,21 +6033,19 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    try:
-                        inlet_ppm_profile = float(inj_ppm_main or 0.0)
-                    except (TypeError, ValueError):
-                        inlet_ppm_profile = 0.0
-                    if inlet_ppm_profile <= 0.0:
+                    inlet_ppm_profile = 0.0
+                    if profile_entries:
                         for entry in profile_entries:
                             if entry['dra_ppm'] > 0.0:
                                 inlet_ppm_profile = entry['dra_ppm']
                                 break
 
                     outlet_ppm_profile = 0.0
-                    for entry in reversed(profile_entries):
-                        if entry['dra_ppm'] > 0.0:
-                            outlet_ppm_profile = entry['dra_ppm']
-                            break
+                    if profile_entries:
+                        for entry in reversed(profile_entries):
+                            if entry['dra_ppm'] > 0.0:
+                                outlet_ppm_profile = entry['dra_ppm']
+                                break
 
                     if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
                         treated_profile_length = 0.0
