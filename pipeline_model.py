@@ -3557,6 +3557,7 @@ def solve_pipeline(
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
+    priority_feasibility: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -4297,11 +4298,15 @@ def solve_pipeline(
                                 lower_bound = int(bounds_entry[0])
                             except (TypeError, ValueError):
                                 lower_bound = 0
-                        if lower_bound <= 0:
-                            dmin = 0
+                        if priority_feasibility:
+                            dmin = max(lower_bound, 0)
+                            dmax = max_dr
                         else:
-                            dmin = max(lower_bound, coarse_dr_main - span)
-                        dmax = min(max_dr, coarse_dr_main + span)
+                            if lower_bound <= 0:
+                                dmin = 0
+                            else:
+                                dmin = max(lower_bound, coarse_dr_main - span)
+                            dmax = min(max_dr, coarse_dr_main + span)
                         if dmax < dmin:
                             dmax = dmin
                         if dmin > 0 or dmax < max_dr:
@@ -4331,6 +4336,7 @@ def solve_pipeline(
                     rpm_step=rpm_step,
                     dra_step=dra_step,
                     narrow_ranges=ranges,
+                    priority_feasibility=priority_feasibility,
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
@@ -4430,6 +4436,7 @@ def solve_pipeline(
                     rpm_step=rpm_step,
                     dra_step=dra_step,
                     narrow_ranges=floor_ranges,
+                    priority_feasibility=priority_feasibility,
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
