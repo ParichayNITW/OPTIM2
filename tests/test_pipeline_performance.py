@@ -13,6 +13,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import dra_utils
+import pipeline_optimization_app
 
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
@@ -4438,6 +4439,24 @@ def test_consecutive_injections_extend_dra_slug() -> None:
         initial_queue[0]["length_km"] - pumped_length * 2.0,
         rel=1e-6,
     )
+
+
+def test_build_profiles_from_queue_respects_queue_and_zero_padding() -> None:
+    """Profiles sliced from a queue should clip to segments and pad with zeros."""
+
+    queue_segments = [
+        {"length_km": 10.0, "dra_ppm": 5.0},
+        {"length_km": 5.0, "dra_ppm": 0.0},
+    ]
+    stations = [
+        {"name": "Station A", "L": 8.0, "fallback_dra_ppm": 4.0},
+        {"name": "Station B", "L": 10.0, "fallback_dra_ppm": 7.0},
+    ]
+
+    profiles = pipeline_optimization_app._build_profiles_from_queue(queue_segments, stations)
+
+    assert profiles["station_a"] == [(8.0, 5.0)]
+    assert profiles["station_b"] == [(2.0, 5.0), (8.0, 0.0)]
 
 
 def test_update_mainline_dra_ignores_non_enforced_floor() -> None:
