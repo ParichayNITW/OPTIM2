@@ -6554,6 +6554,7 @@ def solve_pipeline_with_types(
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
+    priority_feasibility: bool = False,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -6660,6 +6661,7 @@ def solve_pipeline_with_types(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
+                    priority_feasibility=priority_feasibility,
                 )
                 if result.get("error"):
                     continue
