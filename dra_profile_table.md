@@ -28,7 +28,7 @@ Assumptions used to mirror the provided scenario:
   - 5.880 km @ 6 ppm (new injection at Paradip)
   - 152.120 km @ 6.26 ppm (remaining m1)
 - **Balasore→Haldia (170 km window):**
-  - 3.959 km @ 6.26 ppm (tail of m1)
+  - 3.959 km @ 0 ppm (tail of m1 stripped to 0 ppm by Balasore pumps; shear factor = 1)
   - 72.031 km @ 0 ppm (m2)
   - 91.234 km @ 0 ppm (m3)
   - 3.173 km @ 5 ppm (m4 after 5.88 km delivery)
@@ -39,6 +39,6 @@ Assumptions used to mirror the provided scenario:
   - 5.880 km @ 6 ppm (08:00 injection now partway down the segment)
   - 146.240 km @ 6.26 ppm (remaining m1)
 - **Balasore→Haldia (170 km window):**
-  - 9.839 km @ 6.26 ppm (tail of m1)
+  - 9.839 km @ 0 ppm (tail of m1 stripped to 0 ppm by Balasore pumps; shear factor = 1)
   - 72.031 km @ 0 ppm (m2)
   - 88.527 km @ 0 ppm (m3 after 2.707 km delivered)
