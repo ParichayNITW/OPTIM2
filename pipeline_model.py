@@ -404,6 +404,7 @@ def _generate_loop_cases_by_flags(flags: list[bool]) -> list[list[int]]:
 
 RPM_STEP = 25
 DRA_STEP = 2
+DRA_PPM_STEP = 1
 MAX_DRA_KM = 250.0
 # Limit the total number of per-type RPM combinations explored when the solver
 # performs a refined retry pass.  This keeps the cartesian product of
@@ -471,6 +472,50 @@ def _allowed_values(min_val: int, max_val: int, step: int) -> tuple[int, ...]:
     if vals[-1] != max_val:
         vals.append(max_val)
     return tuple(vals)
+
+
+def _ppm_aligned_dra_values(
+    kv: float,
+    dr_min: int,
+    dr_max: int,
+    dra_step: int,
+    dra_ppm_step: int,
+) -> tuple[int, ...]:
+    """Return a %DR grid that also aligns with 1 ppm increments.
+
+    The primary grid uses ``dra_step`` in %DR space to preserve legacy
+    behaviour.  To ensure low baseline PPM inputs cannot mask feasible
+    solutions at higher chemical levels, the grid is augmented with the %DR
+    values produced by every ``dra_ppm_step`` increment in PPM between the
+    bounds implied by ``dr_min``/``dr_max`` for the station viscosity.
+    """
+
+    base_grid = set(_allowed_values(dr_min, dr_max, dra_step))
+    if kv > 0.0 and dra_ppm_step > 0 and dr_max > dr_min:
+        try:
+            ppm_min = float(get_ppm_for_dr(kv, dr_min)) if dr_min > 0 else 0.0
+        except Exception:
+            ppm_min = 0.0
+        try:
+            ppm_max = float(get_ppm_for_dr(kv, dr_max))
+        except Exception:
+            ppm_max = ppm_min
+        ppm_step = max(1, int(dra_ppm_step))
+        start_ppm = int(math.floor(ppm_min))
+        stop_ppm = int(math.ceil(ppm_max))
+        for ppm in range(start_ppm, stop_ppm + 1, ppm_step):
+            if ppm <= 0:
+                continue
+            try:
+                dr_from_ppm = int(math.ceil(get_dr_for_ppm(kv, ppm)))
+            except Exception:
+                continue
+            if dr_min <= dr_from_ppm <= dr_max:
+                base_grid.add(dr_from_ppm)
+
+    if not base_grid:
+        return (dr_max,)
+    return tuple(sorted(base_grid))
 
 
 def _downsample_evenly(values: list[int], target_len: int) -> list[int]:
@@ -4791,7 +4836,9 @@ def solve_pipeline(
                             dr_min = dr_max
                 if dr_min > dr_max:
                     dr_min = dr_max
-                dra_main_vals = _allowed_values(dr_min, dr_max, dra_step)
+                dra_main_vals = _ppm_aligned_dra_values(
+                    kv, dr_min, dr_max, dra_step, DRA_PPM_STEP
+                )
                 dra_grid_min = dra_main_vals[0] if dra_main_vals else dr_min
                 dra_grid_max = dra_main_vals[-1] if dra_main_vals else dr_max
                 if not dra_main_vals and dr_max >= 0:
@@ -6652,6 +6699,7 @@ def solve_pipeline_with_types(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
+                    pass_trace=[],
                 )
                 if result.get("error"):
                     continue

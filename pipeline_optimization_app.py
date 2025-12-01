@@ -5717,16 +5717,30 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
     if not error_msg:
         return False
 
-    detail = result.get("failure_detail")
     executed: list[str] = []
     detail_msg: str = ""
+
+    def _normalise_passes(value: object) -> list[str]:
+        if isinstance(value, Sequence):
+            return [str(p).lower() for p in value]
+        return []
+
+    result_level_passes = _normalise_passes(result.get("executed_passes"))
+    detail = result.get("failure_detail")
     if isinstance(detail, Mapping):
-        passes = detail.get("executed_passes")
-        if isinstance(passes, Sequence):
-            executed = [str(p).lower() for p in passes]
+        executed = _normalise_passes(detail.get("executed_passes"))
         detail_msg = str(detail.get("message") or "")
 
-    if "exhaustive" in executed:
+    if result_level_passes:
+        executed = list(dict.fromkeys(result_level_passes + executed))
+
+    if executed:
+        # Only consider the optimisation infeasible after the exhaustive grid
+        # search has been attempted.  Coarse/refinement passes alone may skip
+        # valid pump-speed/DRA combinations, so defer fallback logic until the
+        # exhaustive sweep is confirmed.
+        if "exhaustive" not in executed:
+            return False
         return True
 
     combined_msg = f"{error_msg} {detail_msg}".lower()
