@@ -5441,7 +5441,10 @@ def solve_pipeline(
                     precomputed=precomputed_queue,
                     segment_floor=stn_data.get('baseline_floor'),
                 )
-                if floor_requires_injection:
+                # When prioritising feasibility, allow options that would
+                # otherwise be skipped for lacking floor injection so the
+                # solver can explore higher-DRA combinations downstream.
+                if floor_requires_injection and not priority_feasibility:
                     continue
                 queue_after_body = tuple(
                     (
