@@ -630,6 +630,46 @@ def test_segment_profile_from_queue_origin_segment() -> None:
     assert profile[1][1] == pytest.approx(10.0, rel=1e-9)
 
 
+def test_downstream_running_pump_mixes_injection_into_pumped_slice() -> None:
+    """Injected ppm at downstream stations should mix with the pumped head."""
+
+    diameter = 0.7
+    pumped_length = 5.0
+    flow_m3h = _volume_from_km(pumped_length, diameter)
+    hours = 1.0
+
+    initial_queue = [
+        {"length_km": pumped_length, "dra_ppm": 0.0},
+        {"length_km": 135.0, "dra_ppm": 5.0},
+        {"length_km": 60.0, "dra_ppm": 0.0},
+    ]
+
+    dra_segments, queue_after, inj_ppm, _ = _update_mainline_dra(
+        initial_queue,
+        {"idx": 1, "is_pump": True, "d_inner": diameter},
+        {"nop": 1, "dra_ppm_main": 6.0},
+        60.0,
+        flow_m3h,
+        hours,
+        pump_running=True,
+    )
+
+    assert inj_ppm == 6.0
+    assert dra_segments
+    assert queue_after
+
+    assert queue_after[0]["length_km"] == pytest.approx(pumped_length, rel=1e-6)
+    assert queue_after[0]["dra_ppm"] == pytest.approx(6.0, rel=1e-6)
+
+    assert queue_after[1]["length_km"] == pytest.approx(135.0, rel=1e-6)
+    assert queue_after[1]["dra_ppm"] == pytest.approx(5.0, rel=1e-6)
+
+    assert queue_after[2]["length_km"] == pytest.approx(60.0, rel=1e-6)
+    assert queue_after[2]["dra_ppm"] == pytest.approx(0.0, rel=1e-6)
+
+    assert len(queue_after) == 3
+
+
 def test_segment_profile_from_queue_downstream_segment() -> None:
     """Downstream segments should ignore the upstream prefix before slicing."""
 
