@@ -6234,8 +6234,6 @@ if not auto_batch:
             spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
-        dra_reach_km = 200.0 if _has_positive_dra(dra_linefill) else 0.0
-
         current_vol = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
         if "DRA ppm" not in current_vol.columns:
             current_vol["DRA ppm"] = current_vol[INIT_DRA_COL]
@@ -6247,6 +6245,7 @@ if not auto_batch:
             if ppm_blank.any():
                 current_vol.loc[ppm_blank, "DRA ppm"] = current_vol.loc[ppm_blank, INIT_DRA_COL]
         dra_linefill = df_to_dra_linefill(current_vol)
+        dra_reach_km = 200.0 if _has_positive_dra(dra_linefill) else 0.0
         current_vol = apply_dra_ppm(current_vol, dra_linefill)
 
         base_current_vol = current_vol.copy()
