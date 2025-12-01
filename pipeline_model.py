@@ -1550,16 +1550,9 @@ def _update_mainline_dra(
         if isinstance(fallback_raw, (int, float)):
             fallback_ppm = float(fallback_raw or 0.0)
 
-    floor_length = 0.0
-    floor_ppm = 0.0
-    floor_segments: list[tuple[float, float]] = []
-    floor_specified = isinstance(segment_floor, Mapping)
-    enforce_queue_floor = True
-    if floor_specified:
-        enforce_queue_floor = bool(segment_floor.get('enforce_queue', True))
-        if not enforce_queue_floor:
-            floor_specified = False
-    if floor_specified:
+    floor_ppm_limit = 0.0
+    floor_requires_injection = False
+    if isinstance(segment_floor, Mapping):
         try:
             floor_length = float(segment_floor.get('length_km', segment_length) or 0.0)
         except (TypeError, ValueError):
@@ -1568,16 +1561,7 @@ def _update_mainline_dra(
             floor_ppm = float(segment_floor.get('dra_ppm', 0.0) or 0.0)
         except (TypeError, ValueError):
             floor_ppm = 0.0
-        if floor_ppm <= 0.0:
-            try:
-                floor_perc = float(segment_floor.get('dra_perc', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                floor_perc = 0.0
-            if floor_perc > 0.0 and kv > 0.0:
-                try:
-                    floor_ppm = float(get_ppm_for_dr(kv, floor_perc))
-                except Exception:
-                    floor_ppm = 0.0
+        floor_segments: list[tuple[float, float]] = []
         seg_floor_raw = segment_floor.get('segments')
         if isinstance(seg_floor_raw, Sequence):
             for seg_entry in seg_floor_raw:
@@ -1601,15 +1585,18 @@ def _update_mainline_dra(
                             seg_ppm = float(get_ppm_for_dr(kv, seg_perc))
                         except Exception:
                             seg_ppm = 0.0
-                if seg_length <= 0.0 or seg_ppm <= 0.0:
+                if seg_length <= 0.0 or seg_ppm < 0.0:
                     continue
                 floor_segments.append((seg_length, seg_ppm))
-        if segment_length > 0.0 and floor_length > segment_length:
-            floor_length = segment_length
-        if floor_length < 0.0:
-            floor_length = 0.0
-        if floor_ppm < 0.0:
-            floor_ppm = 0.0
+        ppm_candidates = [ppm for ppm in (floor_ppm, *(ppm for _, ppm in floor_segments)) if ppm > 0.0]
+        if ppm_candidates:
+            floor_ppm_limit = max(ppm_candidates)
+        enforce_floor = bool((floor_length > 0.0 or floor_segments) and segment_floor.get('enforce_queue', True))
+        if enforce_floor:
+            if inj_ppm_main <= 0.0:
+                floor_requires_injection = True
+            elif floor_ppm_limit > 0.0 and inj_ppm_main + 1e-9 < floor_ppm_limit:
+                floor_requires_injection = True
 
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
@@ -1773,58 +1760,6 @@ def _update_mainline_dra(
             pumped_differs = True
         pumped_adjusted.append((length_float, ppm_out))
 
-    pumped_length_total = sum(
-        float(length or 0.0)
-        for length, _ppm in pumped_portion
-        if float(length or 0.0) > 0.0
-    )
-    segments_defined = bool(floor_segments)
-    floor_defined = bool(floor_specified and (floor_length > 0.0 or segments_defined))
-    enforceable_floor = bool(
-        floor_specified
-        and enforce_queue_floor
-        and inj_effective > 0.0
-        and ((floor_length > 0.0 and floor_ppm > 0.0) or segments_defined)
-    )
-    floor_requires_injection = bool(floor_defined and enforce_queue_floor and inj_effective <= 0.0)
-    if segments_defined and enforce_queue_floor and inj_effective <= 0.0:
-        floor_requires_injection = True
-    enforce_floor = enforceable_floor and not floor_requires_injection
-    if enforce_floor:
-        available_length = max(
-            sum(length for length, _ppm in pumped_portion if float(length or 0.0) > 0.0),
-            sum(length for length, _ppm in pumped_adjusted if float(length or 0.0) > 0.0),
-        )
-        if segments_defined:
-            targets = []
-            for seg_length, seg_ppm in floor_segments:
-                if seg_length > 0.0 and seg_ppm > 0.0:
-                    targets.append((min(seg_length, available_length), seg_ppm))
-            if targets:
-                applied_segment = False
-                remaining_length = available_length
-                for seg_length, seg_ppm in targets:
-                    if remaining_length <= 0.0:
-                        break
-                    target_length = min(seg_length, remaining_length)
-                    if target_length <= 0.0:
-                        continue
-                    pumped_portion = _overlay_queue_floor(pumped_portion, target_length, seg_ppm)
-                    pumped_adjusted = _overlay_queue_floor(pumped_adjusted, target_length, seg_ppm)
-                    remaining_length -= target_length
-                    applied_segment = True
-                if not pumped_differs and applied_segment:
-                    pumped_differs = True
-        else:
-            floor_target = min(floor_length, available_length) if available_length > 0.0 else 0.0
-            if floor_target > 0.0:
-                updated_portion = _overlay_queue_floor(pumped_portion, floor_target, floor_ppm)
-                updated_adjusted = _overlay_queue_floor(pumped_adjusted, floor_target, floor_ppm)
-                if not pumped_differs and updated_adjusted != pumped_adjusted:
-                    pumped_differs = True
-                pumped_portion = updated_portion
-                pumped_adjusted = updated_adjusted
-
     tail_queue: list[tuple[float, float]]
     if pump_running:
         advected_portion = [
@@ -1923,24 +1858,6 @@ def _update_mainline_dra(
                 adjusted_entries.append((target_zero_length, 0.0))
             adjusted_entries.extend(trimmed_rest)
             merged_queue = _merge_queue(adjusted_entries)
-
-    if enforce_floor and (floor_defined or segments_defined):
-        segment_requirements: list[dict[str, float]] = []
-        if floor_segments:
-            for seg_length, seg_ppm in floor_segments:
-                if seg_length > 0.0 and seg_ppm > 0.0:
-                    segment_requirements.append({'length_km': seg_length, 'dra_ppm': seg_ppm})
-        merged_with_floor = _ensure_queue_floor(
-            merged_queue,
-            floor_length if floor_length > 0.0 else segment_length,
-            floor_ppm,
-            segment_requirements,
-        )
-        merged_queue = tuple(
-            (float(length), float(ppm))
-            for length, ppm in merged_with_floor
-            if float(length or 0.0) > 0.0
-        )
 
     if fallback_ppm > 0.0:
         fallback_length = target_length if target_length > 0 else segment_length
@@ -5412,14 +5329,6 @@ def solve_pipeline(
             }
             if segment_floor_norm:
                 baseline_floor['segments'] = segment_floor_norm
-
-    if baseline_floor and baseline_floor.get('enforce_queue', True):
-        initial_queue = _ensure_queue_floor(
-            initial_queue,
-            baseline_floor.get('length_km', 0.0),
-            baseline_floor.get('dra_ppm', 0.0),
-            baseline_floor.get('segments'),
-        )
 
     states: dict[int, dict] = {
         init_residual: {
