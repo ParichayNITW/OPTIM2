@@ -1861,20 +1861,7 @@ def _update_mainline_dra(
 
     if fallback_ppm > 0.0:
         fallback_length = target_length if target_length > 0 else segment_length
-        if fallback_length > 0.0 and merged_queue:
-            merged_with_fallback = _ensure_queue_floor(
-                merged_queue,
-                fallback_length,
-                fallback_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_fallback
-                if float(length or 0.0) > 0.0
-            )
-        elif fallback_length > 0.0 and not merged_queue:
+        if fallback_length > 0.0 and not merged_queue:
             merged_queue = (
                 (
                     float(fallback_length),
@@ -1939,6 +1926,8 @@ def _update_mainline_dra(
 
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
+    suppress_zero_profile = bool(pump_running and is_origin and inj_effective <= 0.0)
+    has_positive = False
     for entry in profile_source:
         if not entry:
             continue
@@ -1948,6 +1937,11 @@ def _update_mainline_dra(
         profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
 
+        if suppress_zero_profile and ppm_val <= 0.0:
+            continue
+        if ppm_val > 0.0:
+            has_positive = True
+
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -1955,12 +1949,15 @@ def _update_mainline_dra(
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9:
+    if remaining_length > 1e-9 and not suppress_zero_profile:
         if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
         else:
             dra_segments.append((remaining_length, 0.0))
+
+    if not has_positive:
+        dra_segments = []
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
@@ -6036,21 +6033,19 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    try:
-                        inlet_ppm_profile = float(inj_ppm_main or 0.0)
-                    except (TypeError, ValueError):
-                        inlet_ppm_profile = 0.0
-                    if inlet_ppm_profile <= 0.0:
+                    inlet_ppm_profile = 0.0
+                    if profile_entries:
                         for entry in profile_entries:
                             if entry['dra_ppm'] > 0.0:
                                 inlet_ppm_profile = entry['dra_ppm']
                                 break
 
                     outlet_ppm_profile = 0.0
-                    for entry in reversed(profile_entries):
-                        if entry['dra_ppm'] > 0.0:
-                            outlet_ppm_profile = entry['dra_ppm']
-                            break
+                    if profile_entries:
+                        for entry in reversed(profile_entries):
+                            if entry['dra_ppm'] > 0.0:
+                                outlet_ppm_profile = entry['dra_ppm']
+                                break
 
                     if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
                         treated_profile_length = 0.0
