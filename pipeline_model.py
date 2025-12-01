@@ -1767,16 +1767,16 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        # Always advance the queue by the pumped distance; do not reattach the
+        # untrimmed head when shear alters the pumped slice, otherwise the
+        # pipeline artificially retains distance that has already moved past the
+        # station.
+        tail_queue = list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        # For idle pumps the queue still advances by the pumped portion (if any)
+        # so the remaining downstream queue should exclude the removed head.
+        tail_queue = list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
     if pump_running and inj_effective > 0.0 and head_length > 0.0:
