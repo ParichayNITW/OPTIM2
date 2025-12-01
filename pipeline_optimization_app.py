@@ -5515,8 +5515,9 @@ def _execute_time_series_solver(
             )
 
             if res.get("error") and retry_with_max_dra:
+                stns_retry = copy.deepcopy(stations_base)
                 res_retry = solve_pipeline(
-                    stns_run,
+                    stns_retry,
                     term_data,
                     flow_rate,
                     kv_list,
