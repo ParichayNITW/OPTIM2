@@ -3225,6 +3225,23 @@ def df_to_dra_linefill(df: pd.DataFrame) -> list[dict]:
     return batches
 
 
+def _has_positive_dra(dra_batches: list[dict] | None) -> bool:
+    """Return ``True`` when any batch in ``dra_batches`` has ``dra_ppm`` > 0."""
+
+    if not dra_batches:
+        return False
+    for batch in dra_batches:
+        try:
+            ppm_val = float(batch.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        if pd.isna(ppm_val):
+            continue
+        if ppm_val > 0.0:
+            return True
+    return False
+
+
 def apply_dra_ppm(df: pd.DataFrame, dra_batches: list[dict]) -> pd.DataFrame:
     """Assign ``dra_ppm`` values from ``dra_batches`` onto ``df`` by volume.
 
@@ -3798,8 +3815,7 @@ def _build_profiles_from_queue(
         return {}
 
     queue = _normalise_queue_segments(queue_segments)
-    if not queue:
-        return {}
+    queue_present = bool(queue)
 
     profiles: dict[str, list[tuple[float, float]]] = {}
     offset = 0.0
@@ -3833,17 +3849,18 @@ def _build_profiles_from_queue(
         treated = sum(length for length, _ppm in entries)
         untreated = max(seg_length - treated, 0.0)
         if untreated > 1e-6:
-            fallback = stn.get("fallback_dra_ppm", 0.0)
-            try:
-                fallback_val = float(fallback or 0.0)
-            except (TypeError, ValueError):
-                fallback_val = 0.0
-            if pd.isna(fallback_val) or fallback_val < 0.0:
-                fallback_val = 0.0
-            if fallback_val > 0.0:
-                entries.append((untreated, fallback_val))
-            else:
-                entries.append((untreated, 0.0))
+            # When no upstream queue exists, keep the remainder explicit at 0 ppm
+            # instead of fabricating fallback injection.
+            fallback_val = 0.0
+            if queue_present:
+                fallback = stn.get("fallback_dra_ppm", 0.0)
+                try:
+                    fallback_val = float(fallback or 0.0)
+                except (TypeError, ValueError):
+                    fallback_val = 0.0
+                if pd.isna(fallback_val) or fallback_val < 0.0:
+                    fallback_val = 0.0
+            entries.append((untreated, fallback_val))
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
@@ -6217,7 +6234,7 @@ if not auto_batch:
             spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
-        dra_reach_km = 200.0
+        dra_reach_km = 200.0 if _has_positive_dra(dra_linefill) else 0.0
 
         current_vol = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
         if "DRA ppm" not in current_vol.columns:
@@ -6646,7 +6663,7 @@ if not auto_batch:
             current_vol = apply_dra_ppm(current_vol, dra_linefill)
             reports = []
             linefill_snaps = []
-            dra_reach_km = 200.0
+            dra_reach_km = 200.0 if _has_positive_dra(dra_linefill) else 0.0
 
             for _, row in flow_df.iterrows():
                 flow = float(row.get("Flow (m³/h)", row.get("Flow", 0.0)) or 0.0)
