@@ -705,7 +705,7 @@ def _normalise_segment_requirements(
         except (TypeError, ValueError):
             ppm_val = 0.0
 
-        if length_val <= 0.0 or ppm_val <= 0.0:
+        if length_val <= 0.0:
             continue
         normalised.append((length_val, ppm_val))
 
@@ -2020,22 +2020,6 @@ def _update_mainline_dra(
                 has_explicit_zero = True
                 break
 
-    zero_fill_ppm = 0.0
-    if not floor_requires_injection and not queue_contains_zero:
-        if floor_segments:
-            for _seg_length, seg_ppm in floor_segments:
-                if seg_ppm > zero_fill_ppm:
-                    zero_fill_ppm = seg_ppm
-        if zero_fill_ppm <= 0.0 and floor_ppm > 0.0:
-            zero_fill_ppm = floor_ppm
-        if zero_fill_ppm <= 0.0 and existing_queue:
-            for _length_existing, ppm_existing in reversed(existing_queue):
-                if ppm_existing > 0.0:
-                    zero_fill_ppm = ppm_existing
-                    break
-        if zero_fill_ppm <= 0.0 and fallback_ppm > 0.0:
-            zero_fill_ppm = fallback_ppm
-
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
     for entry in profile_source:
@@ -2046,13 +2030,7 @@ def _update_mainline_dra(
             continue
         profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
-        if ppm_val <= 0.0:
-            if zero_fill_ppm > 0.0 and not has_explicit_zero:
-                ppm_val = zero_fill_ppm
-            else:
-                ppm_val = 0.0
-        if ppm_val <= 0.0:
-            continue
+
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -2060,12 +2038,12 @@ def _update_mainline_dra(
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9 and zero_fill_ppm > 0.0 and not has_explicit_zero:
-        if dra_segments and abs(dra_segments[-1][1] - zero_fill_ppm) <= 1e-9:
-            prev_len, _ = dra_segments[-1]
-            dra_segments[-1] = (prev_len + remaining_length, zero_fill_ppm)
+    if remaining_length > 1e-9:
+        if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
+            prev_len, prev_ppm = dra_segments[-1]
+            dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
         else:
-            dra_segments.append((remaining_length, zero_fill_ppm))
+            dra_segments.append((remaining_length, 0.0))
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
