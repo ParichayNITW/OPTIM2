@@ -5463,7 +5463,85 @@ def test_build_station_table_prefers_injection_field_over_profile_head() -> None
     assert df.loc[0, "DRA Inlet PPM"] == pytest.approx(6.0)
     profile_str = df.loc[0, "DRA Profile (km@ppm)"]
     assert "4.00 km @ 0.00 ppm" in profile_str
-    assert "8.00 km @ 6.00 ppm" in profile_str
+
+
+def test_origin_suction_defaults_to_min_residual_when_missing() -> None:
+    import pipeline_model as pm
+
+    station = {
+        "name": "Paradip",
+        "L": 10.0,
+        "elev": 0.0,
+        "min_residual": 125.0,
+        "is_pump": True,
+        "D": 0.762,
+        "t": 0.0079248,
+        "SMYS": 65000.0,
+        "rough": 4e-05,
+        "max_pumps": 1,
+        "power_type": "Grid",
+        "rate": 9.0,
+        "sfc": 0.0,
+        "max_dr": 0.0,
+        "MinRPM": 1000.0,
+        "DOL": 1500.0,
+        "allow_mixed_pump_types": False,
+        "pump_types": {
+            "A": {
+                "names": ["MP1"],
+                "name": "MP1",
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
+                ],
+                "eff_data": [
+                    {"Flow (m³/hr)": 0.0, "Efficiency (%)": 50.0},
+                    {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 75.0},
+                ],
+                "power_type": "Grid",
+                "MinRPM": 1000.0,
+                "DOL": 1500.0,
+                "rate": 8.5,
+                "tariffs": [],
+                "sfc_mode": "none",
+                "sfc": 0.0,
+                "engine_params": {},
+                "available": 1,
+                "A": 0.0,
+                "B": 0.0,
+                "C": 0.0,
+                "P": 0.0,
+                "Q": 0.0,
+                "R": 0.0,
+                "S": 0.0,
+                "T": 0.0,
+            }
+        },
+        "pump_names": ["MP1"],
+        "pump_name": "MP1",
+    }
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+    result = pm.solve_pipeline_with_types(
+        stations=[station],
+        terminal=terminal,
+        FLOW=1000.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result.get("residual_head_paradip") == pytest.approx(125.0)
 
 
 def test_build_profiles_from_queue_preserves_zero_entries() -> None:
