@@ -2311,14 +2311,20 @@ def compute_minimum_lacing_requirement(
         if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
             entry['rho'] = rho_defaults[idx]
         try:
-            # Use the suction_head provided in the station record, if any
+            # Use the suction_head provided in the station record, if any.
             suction_val = float(entry.get('suction_head', 0.0) or 0.0)
         except (TypeError, ValueError):
             suction_val = 0.0
-        
-        # Do NOT fall back to min_residual here.  If suction_head is not provided,
-        # leave it at zero so the solver calculates the suction pressure from
-        # upstream head rather than fixing it to min_residual.
+
+        # If the origin station has no explicit suction_head, fall back to the
+        # user-entered minimum residual (available suction head) so the display
+        # reflects the provided inlet pressure instead of zero.
+        if idx == 0 and suction_val <= 0.0:
+            try:
+                suction_val = float(entry.get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                suction_val = 0.0
+
         entry['suction_head'] = max(suction_val, 0.0)
         try:
             residual_floor = float(entry.get('residual_floor', entry.get('min_residual', 0.0)) or 0.0)
@@ -5099,6 +5105,10 @@ def solve_pipeline(
                 })
             opts.extend(non_pump_opts)
 
+        suction_head_val = stn.get('suction_head', 0.0)
+        if suction_head_val in (None, 0, 0.0) and i == 1:
+            suction_head_val = stn.get('min_residual', 0.0)
+
         station_opts.append({
             'name': name,
             'orig_name': stn['name'],
@@ -5143,7 +5153,7 @@ def solve_pipeline(
             'sfc_mode': stn.get('sfc_mode', 'manual'),
             'engine_params': stn.get('engine_params', {}),
             'elev': float(stn.get('elev', 0.0)),
-            'suction_head': float(stn.get('suction_head', 0.0)),
+            'suction_head': float(suction_head_val or 0.0),
             'residual_floor': float(stn.get('residual_floor', stn.get('min_residual', 0.0))),
         })
         cum_dist += L
