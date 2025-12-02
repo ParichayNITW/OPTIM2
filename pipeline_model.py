@@ -5896,8 +5896,12 @@ def solve_pipeline(
                         f"loopline_flow_{stn_data['name']}": sc['flow_loop'],
                         f"head_loss_{stn_data['name']}": sc['head_loss'],
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
-                        f"residual_head_{stn_data['name']}": state['residual'],
-                        f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
+                        # Use downstream residual so SDH - losses - elevation = residual holds for this segment.
+                        f"residual_head_{stn_data['name']}": residual_next,
+                        f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(residual_next, stn_data['rho']),
+                        # Preserve inlet residual for reference/QA alongside downstream residual.
+                        f"residual_head_in_{stn_data['name']}": state['residual'],
+                        f"rh_in_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
                         f"sdh_{stn_data['name']}": sdh_display,
                         f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
                         f"rho_{stn_data['name']}": stn_data['rho'],
