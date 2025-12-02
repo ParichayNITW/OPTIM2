@@ -5112,8 +5112,16 @@ def solve_pipeline(
             opts.extend(non_pump_opts)
 
         suction_head_val = stn.get('suction_head', 0.0)
-        if suction_head_val in (None, 0, 0.0) and i == 1:
-            suction_head_val = stn.get('min_residual', 0.0)
+        try:
+            suction_head_val = float(suction_head_val or 0.0)
+        except (TypeError, ValueError):
+            suction_head_val = 0.0
+
+        if i == 1 and suction_head_val <= 0.0:
+            try:
+                suction_head_val = float(stn.get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                suction_head_val = 0.0
 
         station_opts.append({
             'name': name,
