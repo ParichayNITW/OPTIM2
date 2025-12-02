@@ -5890,15 +5890,28 @@ def solve_pipeline(
                             sdh_display = min(sdh_display, prev_sdh)
                         _SDH_HISTORY[stn_data['name']] = sdh_display
 
+                    residual_display = residual_next
+                    rh_display = head_to_kgcm2(residual_display, stn_data['rho'])
+
+                    # For the origin station, the user-provided available suction head
+                    # is what should be shown as the residual head. Keep the
+                    # downstream residual as a separate QA field.
+                    if stn_data['idx'] == 0:
+                        residual_display = max(float(stn_data.get('suction_head', 0.0) or 0.0), 0.0)
+                        rh_display = head_to_kgcm2(residual_display, stn_data['rho'])
+
                     record = {
                         f"pipeline_flow_{stn_data['name']}": sc['flow_main'],
                         f"pipeline_flow_in_{stn_data['name']}": flow_total,
                         f"loopline_flow_{stn_data['name']}": sc['flow_loop'],
                         f"head_loss_{stn_data['name']}": sc['head_loss'],
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
-                        # Use downstream residual so SDH - losses - elevation = residual holds for this segment.
-                        f"residual_head_{stn_data['name']}": residual_next,
-                        f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(residual_next, stn_data['rho']),
+                        # Display residual head; for origin this is the available suction head.
+                        f"residual_head_{stn_data['name']}": residual_display,
+                        f"rh_kgcm2_{stn_data['name']}": rh_display,
+                        # Preserve downstream residual for QA across all stations.
+                        f"residual_head_out_{stn_data['name']}": residual_next,
+                        f"rh_out_kgcm2_{stn_data['name']}": head_to_kgcm2(residual_next, stn_data['rho']),
                         # Preserve inlet residual for reference/QA alongside downstream residual.
                         f"residual_head_in_{stn_data['name']}": state['residual'],
                         f"rh_in_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
