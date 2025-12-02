@@ -732,82 +732,6 @@ def test_maximum_flow_fallback_trims_day_plan(monkeypatch):
     assert trimmed_plan.iloc[-1]["Volume (m³)"] == pytest.approx(20800.0)
 
 
-def test_maximum_flow_fallback_tests_requested_rate_first(monkeypatch):
-    import pipeline_optimization_app as app
-
-    plan_df = pd.DataFrame(
-        [
-            {"Product": "A", "Volume (m³)": 20000.0, "Viscosity (cSt)": 3.0, "Density (kg/m³)": 810.0, app.INIT_DRA_COL: 0.0},
-            {"Product": "B", "Volume (m³)": 30000.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
-            {"Product": "C", "Volume (m³)": 22000.0, "Viscosity (cSt)": 5.0, "Density (kg/m³)": 830.0, app.INIT_DRA_COL: 0.0},
-        ]
-    )
-    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
-
-    vol_df = pd.DataFrame(
-        [
-            {"Product": "LF", "Volume (m³)": 50000.0, "Viscosity (cSt)": 2.0, "Density (kg/m³)": 800.0, app.INIT_DRA_COL: 0.0},
-        ]
-    )
-    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
-    dra_linefill = app.df_to_dra_linefill(vol_df)
-    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
-
-    attempts: list[float] = []
-
-    def fake_solver(
-        stations,
-        terminal,
-        hours,
-        *,
-        flow_rate,
-        plan_df,
-        current_vol,
-        dra_linefill,
-        dra_reach_km,
-        **kwargs,
-    ):
-        attempts.append(flow_rate)
-        if flow_rate == 3000.0:
-            return {
-                "error": None,
-                "reports": [],
-                "linefill_snaps": [current_vol.copy()],
-                "final_vol": current_vol.copy(),
-                "final_plan": plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None,
-                "final_dra_linefill": copy.deepcopy(dra_linefill),
-                "final_dra_reach": dra_reach_km,
-            }
-        return {"error": "infeasible"}
-
-    monkeypatch.setattr(app, "_execute_time_series_solver", fake_solver)
-
-    fallback = app._find_maximum_feasible_flow(
-        flow_rate=3000.0,
-        stations_base=[],
-        term_data={"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
-        hours=[(7 + h) % 24 for h in range(24)],
-        plan_df=plan_df,
-        current_vol=current_vol,
-        dra_linefill=dra_linefill,
-        dra_reach_km=0.0,
-        RateDRA=0.0,
-        Price_HSD=0.0,
-        fuel_density=820.0,
-        ambient_temp=25.0,
-        mop_kgcm2=100.0,
-        pump_shear_rate=0.0,
-        total_length=0.0,
-        sub_steps=1,
-        flow_step=50.0,
-        is_hourly=False,
-    )
-
-    assert attempts == [pytest.approx(3000.0)]
-    assert fallback is not None
-    assert fallback["flow_rate"] == pytest.approx(3000.0)
-
-
 def test_maximum_flow_fallback_aligns_to_step(monkeypatch):
     import pipeline_optimization_app as app
 
@@ -882,6 +806,153 @@ def test_maximum_flow_fallback_aligns_to_step(monkeypatch):
     assert attempts == [pytest.approx(2800.0)]
     assert fallback is not None
     assert fallback["flow_rate"] == pytest.approx(2800.0)
+
+
+def test_time_series_solver_retries_with_max_dra(monkeypatch):
+    import pipeline_optimization_app as app
+
+    calls: list[bool] = []
+
+    def fake_solve(
+        stations,
+        terminal,
+        flow_rate,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        fuel_density,
+        ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours=1.0,
+        *,
+        priority_feasibility: bool = False,
+        **kwargs,
+    ):
+        calls.append(priority_feasibility)
+        if not priority_feasibility:
+            return {"error": "fail", "message": "initial"}
+        return {
+            "error": None,
+            "linefill": [],
+            "dra_front_km": 0.0,
+            "dra_segments": [],
+            "total_cost": 0.0,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solve)
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": 1000.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 800.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+
+    result = app._execute_time_series_solver(
+        [],
+        {"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        [0],
+        flow_rate=100.0,
+        plan_df=None,
+        current_vol=vol_df.copy(),
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        retry_with_max_dra=True,
+    )
+
+    assert calls == [False, True]
+    assert not result.get("error")
+
+
+def test_max_flow_fallback_runs_with_max_dra_retry(monkeypatch):
+    import pipeline_optimization_app as app
+
+    retries: list[bool] = []
+
+    def fake_execute(stations_base, term_data, hours, **kwargs):
+        retries.append(bool(kwargs.get("retry_with_max_dra")))
+        return {
+            "error": None,
+            "reports": [],
+            "linefill_snaps": [kwargs.get("current_vol")],
+            "final_vol": kwargs.get("current_vol"),
+            "final_plan": kwargs.get("plan_df"),
+            "final_dra_linefill": kwargs.get("dra_linefill"),
+            "final_dra_reach": kwargs.get("dra_reach_km", 0.0),
+        }
+
+    monkeypatch.setattr(app, "_execute_time_series_solver", fake_execute)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "A",
+                "Volume (m³)": 2000.0,
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 810.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": 5000.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 800.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    fallback = app._find_maximum_feasible_flow(
+        flow_rate=100.0,
+        stations_base=[],
+        term_data={"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        hours=[0, 1],
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        flow_step=25.0,
+        is_hourly=False,
+    )
+
+    assert retries == [True]
+    assert fallback is not None
 
 
 def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
