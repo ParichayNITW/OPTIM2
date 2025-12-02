@@ -3036,7 +3036,10 @@ def _pump_head(
                 dol = _station_max_rpm(stn, ptype=ptype, default=rpm_val)
             if dol <= 0:
                 dol = rpm_val
-            Q_equiv = flow_m3h * dol / rpm_val if rpm_val > 0 else flow_m3h
+            # Pumps in a station operate in series: each pump sees the full flow,
+            # and heads add across the running units.
+            flow_per_pump = flow_m3h
+            Q_equiv = flow_per_pump * dol / rpm_val if rpm_val > 0 else flow_per_pump
             A = pdata.get("A", 0.0)
             B = pdata.get("B", 0.0)
             C = pdata.get("C", 0.0)
@@ -3084,7 +3087,10 @@ def _pump_head(
     dol = _station_max_rpm(stn, default=rpm_single if rpm_single > 0 else default_rpm)
     if dol <= 0:
         dol = rpm_single if rpm_single > 0 else default_rpm
-    Q_equiv = flow_m3h * dol / rpm_single if rpm_single > 0 else flow_m3h
+    # Series operation: head scales with the number of pumps; each pump handles
+    # the full station flow.
+    flow_per_pump = flow_m3h
+    Q_equiv = flow_per_pump * dol / rpm_single if rpm_single > 0 else flow_per_pump
     head_curve = _pump_curve_lookup(stn.get("head_data"), Q_equiv, "Head (m)")
     if head_curve is None:
         A = stn.get("A", 0.0)
@@ -5188,8 +5194,14 @@ def solve_pipeline(
             origin_suction = float(station_opts[0].get('suction_head', 0.0) or 0.0)
         except (TypeError, ValueError):
             origin_suction = 0.0
+        if origin_suction <= 0.0:
+            try:
+                origin_suction = float(stations[0].get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                origin_suction = 0.0
     else:
         origin_floor = float(stations[0].get('min_residual', 50) or 0.0)
+        origin_suction = float(stations[0].get('min_residual', 0.0) or 0.0)
     init_residual = int(round(max(origin_floor - origin_suction, 0.0)))
     # Initial dynamic‑programming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
@@ -5232,10 +5244,9 @@ def solve_pipeline(
                 queue_entries.append((length_val, ppm_val))
         return queue_entries
 
+    _SDH_HISTORY.clear()
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
     queue_has_dra = any(ppm_val > 0.0 for _, ppm_val in initial_queue_entries)
-    if not queue_has_dra:
-        _SDH_HISTORY.clear()
     initial_reach = max(float(dra_reach_km), 0.0)
     if total_length_km > 0.0:
         initial_reach = min(initial_reach, total_length_km)
@@ -5894,20 +5905,21 @@ def solve_pipeline(
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
                     sdh_display = sdh if stn_data['is_pump'] else state['residual']
-                    if stn_data['is_pump']:
-                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
-                        if prev_sdh is not None and queue_has_dra:
-                            sdh_display = min(sdh_display, prev_sdh)
-                        _SDH_HISTORY[stn_data['name']] = sdh_display
-
                     residual_display = residual_next
                     rh_display = head_to_kgcm2(residual_display, stn_data['rho'])
 
                     # For the origin station, the user-provided available suction head
                     # is what should be shown as the residual head. Keep the
                     # downstream residual as a separate QA field.
+                    origin_suction_display = None
                     if stn_data['idx'] == 0:
-                        residual_display = max(float(stn_data.get('suction_head', 0.0) or 0.0), 0.0)
+                        origin_suction_display = max(float(stn_data.get('suction_head', 0.0) or 0.0), 0.0)
+                        if origin_suction_display <= 0.0:
+                            try:
+                                origin_suction_display = max(float(stn_data.get('min_residual', 0.0) or 0.0), 0.0)
+                            except (TypeError, ValueError):
+                                origin_suction_display = 0.0
+                        residual_display = origin_suction_display
                         rh_display = head_to_kgcm2(residual_display, stn_data['rho'])
 
                     record = {
@@ -5923,8 +5935,13 @@ def solve_pipeline(
                         f"residual_head_out_{stn_data['name']}": residual_next,
                         f"rh_out_kgcm2_{stn_data['name']}": head_to_kgcm2(residual_next, stn_data['rho']),
                         # Preserve inlet residual for reference/QA alongside downstream residual.
-                        f"residual_head_in_{stn_data['name']}": state['residual'],
-                        f"rh_in_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
+                        f"residual_head_in_{stn_data['name']}": origin_suction_display
+                        if stn_data['idx'] == 0
+                        else state['residual'],
+                        f"rh_in_kgcm2_{stn_data['name']}": head_to_kgcm2(
+                            origin_suction_display if stn_data['idx'] == 0 else state['residual'],
+                            stn_data['rho'],
+                        ),
                         f"sdh_{stn_data['name']}": sdh_display,
                         f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
                         f"rho_{stn_data['name']}": stn_data['rho'],
@@ -6593,6 +6610,20 @@ def solve_pipeline_with_types(
     except (TypeError, ValueError):
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
+
+    if stations:
+        try:
+            origin_suction_val = float(stations[0].get('suction_head', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            origin_suction_val = 0.0
+        if origin_suction_val <= 0.0:
+            try:
+                origin_suction_val = float(stations[0].get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                origin_suction_val = 0.0
+            if origin_suction_val > 0.0:
+                stations = copy.deepcopy(stations)
+                stations[0]['suction_head'] = origin_suction_val
 
     if segment_slices is None:
         segment_slices = [[] for _ in stations]
