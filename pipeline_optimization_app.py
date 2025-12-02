@@ -3815,7 +3815,6 @@ def _build_profiles_from_queue(
         return {}
 
     queue = _normalise_queue_segments(queue_segments)
-    queue_present = bool(queue)
 
     profiles: dict[str, list[tuple[float, float]]] = {}
     offset = 0.0
@@ -3829,38 +3828,36 @@ def _build_profiles_from_queue(
             offset += 0.0
             continue
 
-        seg_start = offset
-        seg_end = offset + seg_length
-        entries: list[tuple[float, float]] = []
+        profile_slice = pipeline_model._segment_profile_from_queue(  # type: ignore[attr-defined]
+            queue,
+            offset,
+            seg_length,
+        )
 
-        cursor = 0.0
-        for length_val, ppm_val in queue:
-            next_cursor = cursor + length_val
-            overlap_start = max(cursor, seg_start)
-            overlap_end = min(next_cursor, seg_end)
-            overlap = overlap_end - overlap_start
-            if overlap > 1e-9:
-                ppm_clean = ppm_val if ppm_val > 0.0 else 0.0
-                entries.append((overlap, ppm_clean))
-            cursor = next_cursor
-            if cursor >= seg_end - 1e-9:
-                break
+        entries: list[tuple[float, float]] = []
+        for length_val, ppm_val in profile_slice:
+            try:
+                length_clean = float(length_val or 0.0)
+            except (TypeError, ValueError):
+                length_clean = 0.0
+            if length_clean <= 0.0:
+                continue
+            try:
+                ppm_clean = float(ppm_val or 0.0)
+            except (TypeError, ValueError):
+                ppm_clean = 0.0
+            if pd.isna(ppm_clean) or ppm_clean < 0.0:
+                ppm_clean = 0.0
+            entries.append((length_clean, ppm_clean))
 
         treated = sum(length for length, _ppm in entries)
         untreated = max(seg_length - treated, 0.0)
-        if untreated > 1e-6:
-            # When no upstream queue exists, keep the remainder explicit at 0 ppm
-            # instead of fabricating fallback injection.
-            fallback_val = 0.0
-            if queue_present:
-                fallback = stn.get("fallback_dra_ppm", 0.0)
-                try:
-                    fallback_val = float(fallback or 0.0)
-                except (TypeError, ValueError):
-                    fallback_val = 0.0
-                if pd.isna(fallback_val) or fallback_val < 0.0:
-                    fallback_val = 0.0
-            entries.append((untreated, fallback_val))
+        if untreated > 1e-9:
+            if entries and abs(entries[-1][1]) <= 1e-9:
+                prev_len, prev_ppm = entries[-1]
+                entries[-1] = (prev_len + untreated, prev_ppm)
+            else:
+                entries.append((untreated, 0.0))
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
@@ -4278,6 +4275,7 @@ def solve_pipeline(
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
+    priority_feasibility: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4417,6 +4415,7 @@ def solve_pipeline(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
+                priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
         else:
@@ -4439,6 +4438,7 @@ def solve_pipeline(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
+                priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
@@ -5410,6 +5410,7 @@ def _execute_time_series_solver(
     pump_shear_rate: float,
     total_length: float,
     sub_steps: int = 1,
+    retry_with_max_dra: bool = False,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5512,6 +5513,33 @@ def _execute_time_series_solver(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail,
             )
+
+            if res.get("error") and retry_with_max_dra:
+                stns_retry = copy.deepcopy(stations_base)
+                res_retry = solve_pipeline(
+                    stns_retry,
+                    term_data,
+                    flow_rate,
+                    kv_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    fuel_density,
+                    ambient_temp,
+                    dra_linefill_local,
+                    dra_reach_local,
+                    mop_kgcm2,
+                    hours=1.0,
+                    start_time=start_str,
+                    pump_shear_rate=pump_shear_rate,
+                    forced_origin_detail=forced_detail,
+                    priority_feasibility=True,
+                )
+                if not res_retry.get("error"):
+                    res = res_retry
+                else:
+                    res = res_retry
 
             block_cost += res.get("total_cost", 0.0)
 
@@ -5838,6 +5866,7 @@ def _find_maximum_feasible_flow(
             pump_shear_rate=pump_shear_rate,
             total_length=total_length,
             sub_steps=sub_steps,
+            retry_with_max_dra=True,
         )
 
         if not solver_result.get("error"):
@@ -6266,6 +6295,7 @@ if not auto_batch:
                 pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                 total_length=total_length,
                 sub_steps=sub_steps,
+                retry_with_max_dra=True,
             )
         elapsed = time.perf_counter() - start_time
 

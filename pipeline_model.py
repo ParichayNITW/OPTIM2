@@ -1751,10 +1751,11 @@ def _update_mainline_dra(
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
-            if not pump_running and inj_effective > 0.0:
-                ppm_out += inj_effective
-            elif not pump_running and inj_effective <= 0.0:
-                ppm_out = ppm_input
+            if inj_effective > 0.0:
+                if not is_origin:
+                    ppm_out += inj_effective
+                elif not pump_running:
+                    ppm_out += inj_effective
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
@@ -1767,19 +1768,19 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        # Always advance the queue by the pumped distance; do not reattach the
+        # untrimmed head when shear alters the pumped slice, otherwise the
+        # pipeline artificially retains distance that has already moved past the
+        # station.
+        tail_queue = list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        # For idle pumps the queue still advances by the pumped portion (if any)
+        # so the remaining downstream queue should exclude the removed head.
+        tail_queue = list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and inj_effective > 0.0 and head_length > 0.0:
+    if pump_running and is_origin and inj_effective > 0.0 and head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
 
     combined_entries.extend(advected_portion)
@@ -1861,20 +1862,7 @@ def _update_mainline_dra(
 
     if fallback_ppm > 0.0:
         fallback_length = target_length if target_length > 0 else segment_length
-        if fallback_length > 0.0 and merged_queue:
-            merged_with_fallback = _ensure_queue_floor(
-                merged_queue,
-                fallback_length,
-                fallback_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_fallback
-                if float(length or 0.0) > 0.0
-            )
-        elif fallback_length > 0.0 and not merged_queue:
+        if fallback_length > 0.0 and not merged_queue:
             merged_queue = (
                 (
                     float(fallback_length),
@@ -1939,6 +1927,8 @@ def _update_mainline_dra(
 
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
+    suppress_zero_profile = bool(pump_running and is_origin and inj_effective <= 0.0)
+    has_positive = False
     for entry in profile_source:
         if not entry:
             continue
@@ -1948,6 +1938,11 @@ def _update_mainline_dra(
         profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
 
+        if suppress_zero_profile and ppm_val <= 0.0:
+            continue
+        if ppm_val > 0.0:
+            has_positive = True
+
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -1955,12 +1950,15 @@ def _update_mainline_dra(
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9:
+    if remaining_length > 1e-9 and not suppress_zero_profile:
         if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
         else:
             dra_segments.append((remaining_length, 0.0))
+
+    if not has_positive:
+        dra_segments = []
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
@@ -3559,6 +3557,7 @@ def solve_pipeline(
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
+    priority_feasibility: bool = False,
 ) -> dict:
     """Enumerate feasible options across all stations to find the lowest-cost
     operating strategy.
@@ -4299,11 +4298,15 @@ def solve_pipeline(
                                 lower_bound = int(bounds_entry[0])
                             except (TypeError, ValueError):
                                 lower_bound = 0
-                        if lower_bound <= 0:
-                            dmin = 0
+                        if priority_feasibility:
+                            dmin = max(lower_bound, 0)
+                            dmax = max_dr
                         else:
-                            dmin = max(lower_bound, coarse_dr_main - span)
-                        dmax = min(max_dr, coarse_dr_main + span)
+                            if lower_bound <= 0:
+                                dmin = 0
+                            else:
+                                dmin = max(lower_bound, coarse_dr_main - span)
+                            dmax = min(max_dr, coarse_dr_main + span)
                         if dmax < dmin:
                             dmax = dmin
                         if dmin > 0 or dmax < max_dr:
@@ -4333,6 +4336,7 @@ def solve_pipeline(
                     rpm_step=rpm_step,
                     dra_step=dra_step,
                     narrow_ranges=ranges,
+                    priority_feasibility=priority_feasibility,
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
@@ -4432,6 +4436,7 @@ def solve_pipeline(
                     rpm_step=rpm_step,
                     dra_step=dra_step,
                     narrow_ranges=floor_ranges,
+                    priority_feasibility=priority_feasibility,
                     coarse_multiplier=coarse_multiplier,
                     state_top_k=min(state_top_k, REFINE_STATE_TOP_K),
                     state_cost_margin=min(state_cost_margin, REFINE_STATE_COST_MARGIN),
@@ -5436,7 +5441,10 @@ def solve_pipeline(
                     precomputed=precomputed_queue,
                     segment_floor=stn_data.get('baseline_floor'),
                 )
-                if floor_requires_injection:
+                # When prioritising feasibility, allow options that would
+                # otherwise be skipped for lacking floor injection so the
+                # solver can explore higher-DRA combinations downstream.
+                if floor_requires_injection and not priority_feasibility:
                     continue
                 queue_after_body = tuple(
                     (
@@ -5888,8 +5896,12 @@ def solve_pipeline(
                         f"loopline_flow_{stn_data['name']}": sc['flow_loop'],
                         f"head_loss_{stn_data['name']}": sc['head_loss'],
                         f"head_loss_kgcm2_{stn_data['name']}": head_to_kgcm2(sc['head_loss'], stn_data['rho']),
-                        f"residual_head_{stn_data['name']}": state['residual'],
-                        f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
+                        # Use downstream residual so SDH - losses - elevation = residual holds for this segment.
+                        f"residual_head_{stn_data['name']}": residual_next,
+                        f"rh_kgcm2_{stn_data['name']}": head_to_kgcm2(residual_next, stn_data['rho']),
+                        # Preserve inlet residual for reference/QA alongside downstream residual.
+                        f"residual_head_in_{stn_data['name']}": state['residual'],
+                        f"rh_in_kgcm2_{stn_data['name']}": head_to_kgcm2(state['residual'], stn_data['rho']),
                         f"sdh_{stn_data['name']}": sdh_display,
                         f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
                         f"rho_{stn_data['name']}": stn_data['rho'],
@@ -6036,21 +6048,19 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    try:
-                        inlet_ppm_profile = float(inj_ppm_main or 0.0)
-                    except (TypeError, ValueError):
-                        inlet_ppm_profile = 0.0
-                    if inlet_ppm_profile <= 0.0:
+                    inlet_ppm_profile = 0.0
+                    if profile_entries:
                         for entry in profile_entries:
                             if entry['dra_ppm'] > 0.0:
                                 inlet_ppm_profile = entry['dra_ppm']
                                 break
 
                     outlet_ppm_profile = 0.0
-                    for entry in reversed(profile_entries):
-                        if entry['dra_ppm'] > 0.0:
-                            outlet_ppm_profile = entry['dra_ppm']
-                            break
+                    if profile_entries:
+                        for entry in reversed(profile_entries):
+                            if entry['dra_ppm'] > 0.0:
+                                outlet_ppm_profile = entry['dra_ppm']
+                                break
 
                     if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
                         treated_profile_length = 0.0
@@ -6551,6 +6561,7 @@ def solve_pipeline_with_types(
     forced_origin_detail: dict | None = None,
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
+    priority_feasibility: bool = False,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -6657,6 +6668,7 @@ def solve_pipeline_with_types(
                     forced_origin_detail=forced_origin_detail,
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
+                    priority_feasibility=priority_feasibility,
                 )
                 if result.get("error"):
                     continue
