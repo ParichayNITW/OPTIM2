@@ -2099,6 +2099,36 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry.get("dra_ppm") == pytest.approx(rounded_ppm)
 
 
+def test_pump_head_scales_with_series_pumps():
+    import pipeline_model as model
+
+    stn = {
+        "name": "Series Station",
+        "is_pump": True,
+        "min_pumps": 1,
+        "max_pumps": 2,
+        "pump_type": "type1",
+        "MinRPM": 1000,
+        "DOL": 1000,
+        "A": 0.0,
+        "B": 0.0,
+        "C": 100.0,
+        "P": 0.0,
+        "Q": 0.0,
+        "R": 0.0,
+        "S": 0.0,
+        "T": 0.0,
+    }
+
+    flow = 1200.0
+    pump_info = model._pump_head(stn, flow, {"*": stn["DOL"]}, 2)
+
+    assert len(pump_info) == 1
+    assert pump_info[0]["count"] == 2
+    # Series operation should add head across the two pumps.
+    assert pump_info[0]["tdh"] == pytest.approx(200.0)
+
+
 def test_compute_minimum_lacing_requirement_respects_single_type_series():
     import pipeline_model as model
 

@@ -3036,7 +3036,9 @@ def _pump_head(
                 dol = _station_max_rpm(stn, ptype=ptype, default=rpm_val)
             if dol <= 0:
                 dol = rpm_val
-            flow_per_pump = flow_m3h / count if count > 0 else flow_m3h
+            # Pumps in a station operate in series: each pump sees the full flow,
+            # and heads add across the running units.
+            flow_per_pump = flow_m3h
             Q_equiv = flow_per_pump * dol / rpm_val if rpm_val > 0 else flow_per_pump
             A = pdata.get("A", 0.0)
             B = pdata.get("B", 0.0)
@@ -3049,9 +3051,7 @@ def _pump_head(
                 head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
             tdh_single = max(float(head_curve or 0.0), 0.0)
             speed_ratio_sq = (rpm_val / dol) ** 2 if dol else 0.0
-            # Pumps at a station operate in parallel; head does not scale with count.
-            # Use the per-pump flow for the curve lookup and keep head per type.
-            tdh_type = tdh_single * speed_ratio_sq
+            tdh_type = tdh_single * speed_ratio_sq * count
             eff_curve = _pump_curve_lookup(pdata.get("eff_data"), Q_equiv, "Efficiency (%)")
             if eff_curve is None:
                 P = pdata.get("P", 0.0)
@@ -3087,7 +3087,9 @@ def _pump_head(
     dol = _station_max_rpm(stn, default=rpm_single if rpm_single > 0 else default_rpm)
     if dol <= 0:
         dol = rpm_single if rpm_single > 0 else default_rpm
-    flow_per_pump = flow_m3h / nop if nop > 0 else flow_m3h
+    # Series operation: head scales with the number of pumps; each pump handles
+    # the full station flow.
+    flow_per_pump = flow_m3h
     Q_equiv = flow_per_pump * dol / rpm_single if rpm_single > 0 else flow_per_pump
     head_curve = _pump_curve_lookup(stn.get("head_data"), Q_equiv, "Head (m)")
     if head_curve is None:
@@ -3097,8 +3099,7 @@ def _pump_head(
         head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
     tdh_single = max(float(head_curve or 0.0), 0.0)
     speed_ratio_sq = (rpm_single / dol) ** 2 if dol else 0.0
-    # Pumps in a station add flow in parallel; head remains that of one pump.
-    tdh = tdh_single * speed_ratio_sq
+    tdh = tdh_single * speed_ratio_sq * nop
     eff_curve = _pump_curve_lookup(stn.get("eff_data"), Q_equiv, "Efficiency (%)")
     if eff_curve is None:
         P = stn.get("P", 0.0)
