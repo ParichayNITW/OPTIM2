@@ -559,6 +559,27 @@ _QUEUE_CONSUMPTION_CACHE: dict[
 _SDH_HISTORY: dict[str, float] = {}
 
 
+def _apply_sdh_history(station_name: str, sdh_value: float, queue_has_dra: bool, is_pump: bool) -> float:
+    """Return the SDH to use for hydraulics while updating history.
+
+    When DRA is present in the linefill queue, clamp the station's SDH to the
+    previously observed value so downstream residual head calculations align
+    with the displayed SDH history.  Non‑pump stations bypass history tracking
+    entirely because they do not contribute additional head.
+    """
+
+    if not is_pump:
+        return sdh_value
+
+    prev_sdh = _SDH_HISTORY.get(station_name)
+    effective_sdh = sdh_value
+    if prev_sdh is not None and queue_has_dra:
+        effective_sdh = min(effective_sdh, prev_sdh)
+
+    _SDH_HISTORY[station_name] = effective_sdh
+    return effective_sdh
+
+
 def _prepare_dra_queue_consumption(
     queue: list[dict] | list[tuple] | tuple | None,
     segment_length: float,
@@ -3540,6 +3561,7 @@ def solve_pipeline(
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
+    priority_feasibility: bool | None = None,
     *,
     loop_usage_by_station: list[int] | None = None,
     enumerate_loops: bool = True,
@@ -3759,6 +3781,7 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
+                priority_feasibility=priority_feasibility,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -3825,6 +3848,7 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
+                priority_feasibility=priority_feasibility,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -5814,14 +5838,23 @@ def solve_pipeline(
                     # check MAOP constraints.  Use the head delivered by the pumps on
                     # this segment and add any available suction head.
                     suction_head = max(float(stn_data.get('suction_head', 0.0) or 0.0), 0.0)
-                    sdh = state['residual'] + suction_head + tdh
-                    if sdh > stn_data['maop_head'] or (
-                        sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
+                    sdh_raw = state['residual'] + suction_head + tdh
+                    if sdh_raw > stn_data['maop_head'] or (
+                        sc['flow_loop'] > 0 and sdh_raw > stn_data['loopline']['maop_head']
                     ):
                         continue
 
-                    # Compute downstream residual head after segment loss and elevation
-                    residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
+                    # Clamp SDH to the historical value when DRA is present so the
+                    # propagated downstream residual head matches the displayed SDH.
+                    if stn_data['is_pump']:
+                        sdh_effective = _apply_sdh_history(
+                            stn_data['name'], sdh_raw, queue_has_dra, True
+                        )
+                    else:
+                        sdh_effective = state['residual']
+
+                    # Compute downstream residual head after segment loss and elevation.
+                    residual_next = sdh_effective - sc['head_loss'] - stn_data['elev_delta']
 
                     # Compute minimum downstream requirement.  Use the cached baseline
                     # unless bypassing the next station, in which case recompute with
@@ -5883,12 +5916,7 @@ def solve_pipeline(
                     # information based on the scenario.  Use the effective drag
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
-                    sdh_display = sdh if stn_data['is_pump'] else state['residual']
-                    if stn_data['is_pump']:
-                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
-                        if prev_sdh is not None and queue_has_dra:
-                            sdh_display = min(sdh_display, prev_sdh)
-                        _SDH_HISTORY[stn_data['name']] = sdh_display
+                    sdh_display = sdh_effective
 
                     residual_display = residual_next
                     rh_display = head_to_kgcm2(residual_display, stn_data['rho'])
@@ -6090,7 +6118,7 @@ def solve_pipeline(
                     new_cost = state['cost'] + total_cost
                     if new_cost < best_cost_station:
                         best_cost_station = new_cost
-                    bucket = residual_next
+                    bucket = int(round(residual_next))
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
                     new_record_list = state['records'] + [record]
                     zero_dra_option = (
@@ -6565,6 +6593,7 @@ def solve_pipeline_with_types(
     hours: float = 24.0,
     start_time: str = "00:00",
     pump_shear_rate: float = 0.0,
+    priority_feasibility: bool | None = None,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
     coarse_multiplier: float = COARSE_MULTIPLIER,
@@ -6670,6 +6699,7 @@ def solve_pipeline_with_types(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
+                    priority_feasibility=priority_feasibility,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                     rpm_step=rpm_step,
