@@ -3036,7 +3036,8 @@ def _pump_head(
                 dol = _station_max_rpm(stn, ptype=ptype, default=rpm_val)
             if dol <= 0:
                 dol = rpm_val
-            Q_equiv = flow_m3h * dol / rpm_val if rpm_val > 0 else flow_m3h
+            flow_per_pump = flow_m3h / count if count > 0 else flow_m3h
+            Q_equiv = flow_per_pump * dol / rpm_val if rpm_val > 0 else flow_per_pump
             A = pdata.get("A", 0.0)
             B = pdata.get("B", 0.0)
             C = pdata.get("C", 0.0)
@@ -3048,7 +3049,9 @@ def _pump_head(
                 head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
             tdh_single = max(float(head_curve or 0.0), 0.0)
             speed_ratio_sq = (rpm_val / dol) ** 2 if dol else 0.0
-            tdh_type = tdh_single * speed_ratio_sq * count
+            # Pumps at a station operate in parallel; head does not scale with count.
+            # Use the per-pump flow for the curve lookup and keep head per type.
+            tdh_type = tdh_single * speed_ratio_sq
             eff_curve = _pump_curve_lookup(pdata.get("eff_data"), Q_equiv, "Efficiency (%)")
             if eff_curve is None:
                 P = pdata.get("P", 0.0)
@@ -3084,7 +3087,8 @@ def _pump_head(
     dol = _station_max_rpm(stn, default=rpm_single if rpm_single > 0 else default_rpm)
     if dol <= 0:
         dol = rpm_single if rpm_single > 0 else default_rpm
-    Q_equiv = flow_m3h * dol / rpm_single if rpm_single > 0 else flow_m3h
+    flow_per_pump = flow_m3h / nop if nop > 0 else flow_m3h
+    Q_equiv = flow_per_pump * dol / rpm_single if rpm_single > 0 else flow_per_pump
     head_curve = _pump_curve_lookup(stn.get("head_data"), Q_equiv, "Head (m)")
     if head_curve is None:
         A = stn.get("A", 0.0)
@@ -3093,7 +3097,8 @@ def _pump_head(
         head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
     tdh_single = max(float(head_curve or 0.0), 0.0)
     speed_ratio_sq = (rpm_single / dol) ** 2 if dol else 0.0
-    tdh = tdh_single * speed_ratio_sq * nop
+    # Pumps in a station add flow in parallel; head remains that of one pump.
+    tdh = tdh_single * speed_ratio_sq
     eff_curve = _pump_curve_lookup(stn.get("eff_data"), Q_equiv, "Efficiency (%)")
     if eff_curve is None:
         P = stn.get("P", 0.0)
@@ -5238,10 +5243,9 @@ def solve_pipeline(
                 queue_entries.append((length_val, ppm_val))
         return queue_entries
 
+    _SDH_HISTORY.clear()
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
     queue_has_dra = any(ppm_val > 0.0 for _, ppm_val in initial_queue_entries)
-    if not queue_has_dra:
-        _SDH_HISTORY.clear()
     initial_reach = max(float(dra_reach_km), 0.0)
     if total_length_km > 0.0:
         initial_reach = min(initial_reach, total_length_km)
@@ -5900,12 +5904,6 @@ def solve_pipeline(
                     # reduction for loopline in display.  Note: drag_reduction_loop
                     # reflects the value used in this segment (carry over for bypass).
                     sdh_display = sdh if stn_data['is_pump'] else state['residual']
-                    if stn_data['is_pump']:
-                        prev_sdh = _SDH_HISTORY.get(stn_data['name'])
-                        if prev_sdh is not None and queue_has_dra:
-                            sdh_display = min(sdh_display, prev_sdh)
-                        _SDH_HISTORY[stn_data['name']] = sdh_display
-
                     residual_display = residual_next
                     rh_display = head_to_kgcm2(residual_display, stn_data['rho'])
 
