@@ -5210,7 +5210,11 @@ def solve_pipeline(
     else:
         origin_floor = float(stations[0].get('min_residual', 50) or 0.0)
         origin_suction = float(stations[0].get('min_residual', 0.0) or 0.0)
-    init_residual = int(round(max(origin_floor - origin_suction, 0.0)))
+    # Seed the DP with the available suction head at the origin (or its
+    # minimum residual requirement, whichever is larger). This prevents the
+    # origin residual from being zeroed out and keeps SDH/loss/residual
+    # balances consistent downstream.
+    init_residual = int(round(max(origin_suction, origin_floor, 0.0)))
     # Initial dynamic‑programming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
     # sequence of record dictionaries (one per station), the last MAOP
@@ -5843,6 +5847,10 @@ def solve_pipeline(
                     # check MAOP constraints.  Use the head delivered by the pumps on
                     # this segment and add any available suction head.
                     suction_head = max(float(stn_data.get('suction_head', 0.0) or 0.0), 0.0)
+                    # For the origin station the DP state already carries the
+                    # available suction head, so avoid double-counting it here.
+                    if stn_data['idx'] == 0:
+                        suction_head = 0.0
                     sdh = state['residual'] + suction_head + tdh
                     if sdh > stn_data['maop_head'] or (
                         sc['flow_loop'] > 0 and sdh > stn_data['loopline']['maop_head']
