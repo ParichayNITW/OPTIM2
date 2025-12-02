@@ -4275,6 +4275,7 @@ def solve_pipeline(
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
+    priority_feasibility: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4414,6 +4415,7 @@ def solve_pipeline(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
+                priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
         else:
@@ -4436,6 +4438,7 @@ def solve_pipeline(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
+                priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
@@ -5407,6 +5410,7 @@ def _execute_time_series_solver(
     pump_shear_rate: float,
     total_length: float,
     sub_steps: int = 1,
+    retry_with_max_dra: bool = False,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5509,6 +5513,33 @@ def _execute_time_series_solver(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail,
             )
+
+            if res.get("error") and retry_with_max_dra:
+                stns_retry = copy.deepcopy(stations_base)
+                res_retry = solve_pipeline(
+                    stns_retry,
+                    term_data,
+                    flow_rate,
+                    kv_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    fuel_density,
+                    ambient_temp,
+                    dra_linefill_local,
+                    dra_reach_local,
+                    mop_kgcm2,
+                    hours=1.0,
+                    start_time=start_str,
+                    pump_shear_rate=pump_shear_rate,
+                    forced_origin_detail=forced_detail,
+                    priority_feasibility=True,
+                )
+                if not res_retry.get("error"):
+                    res = res_retry
+                else:
+                    res = res_retry
 
             block_cost += res.get("total_cost", 0.0)
 
@@ -5835,6 +5866,7 @@ def _find_maximum_feasible_flow(
             pump_shear_rate=pump_shear_rate,
             total_length=total_length,
             sub_steps=sub_steps,
+            retry_with_max_dra=True,
         )
 
         if not solver_result.get("error"):
@@ -6263,6 +6295,7 @@ if not auto_batch:
                 pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                 total_length=total_length,
                 sub_steps=sub_steps,
+                retry_with_max_dra=True,
             )
         elapsed = time.perf_counter() - start_time
 
