@@ -5799,7 +5799,8 @@ def _find_maximum_feasible_flow(
     # narrow feasible window.
     remainder = base_flow % step
     initial_decrement = remainder if remainder > 0 else step
-    flow_candidate = base_flow - initial_decrement
+    flow_candidate = base_flow
+    first_attempt = True
     while flow_candidate > 0.0:
         candidate_total = flow_candidate * hours_count
         if not is_hourly:
@@ -5849,7 +5850,11 @@ def _find_maximum_feasible_flow(
                 "reduction": reduction,
             }
 
-        flow_candidate -= step
+        if first_attempt:
+            flow_candidate = base_flow - initial_decrement
+            first_attempt = False
+        else:
+            flow_candidate -= step
 
     return None
 
