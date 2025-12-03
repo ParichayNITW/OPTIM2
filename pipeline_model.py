@@ -5863,12 +5863,7 @@ def solve_pipeline(
                         elev_to = float(stations[stn_data['idx'] + 1].get('elev', 0.0) or 0.0)
                     else:
                         elev_to = float(terminal.get('elev', 0.0) or 0.0)
-                    rho_val = float(stn_data.get('rho', 0.0) or 0.0)
-                    elevation_loss = (
-                        max((elev_to - elev_from) * rho_val / 10000.0, 0.0)
-                        if rho_val > 0.0
-                        else 0.0
-                    )
+                    elevation_loss = max(elev_to - elev_from, 0.0)
 
                     residual_next = int(round(sdh - sc['head_loss'] - elevation_loss))
 
