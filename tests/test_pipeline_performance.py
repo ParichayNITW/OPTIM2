@@ -26,6 +26,7 @@ from pipeline_model import (
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
+    _refine_rpm_window,
 )
 from schedule_utils import kv_rho_from_vol
 
@@ -881,6 +882,30 @@ def test_time_series_solver_retries_with_max_dra(monkeypatch):
 
     assert calls == [False, True]
     assert not result.get("error")
+
+
+def test_refine_rpm_window_widens_for_priority_feasibility():
+    low, high, trimmed = _refine_rpm_window(
+        st_rpm_min=1000,
+        upper_bound=2000,
+        coarse_rpm=1400,
+        coarse_nop=1,
+        window=100,
+        priority_feasibility=True,
+    )
+    assert (low, high) == (1000, 2000)
+    assert trimmed is True
+
+    low2, high2, trimmed2 = _refine_rpm_window(
+        st_rpm_min=1000,
+        upper_bound=2000,
+        coarse_rpm=1400,
+        coarse_nop=1,
+        window=100,
+        priority_feasibility=False,
+    )
+    assert (low2, high2) == (1300, 1500)
+    assert trimmed2 is True
 
 
 def test_max_flow_fallback_runs_with_max_dra_retry(monkeypatch):
