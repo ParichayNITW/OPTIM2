@@ -3724,6 +3724,8 @@ def build_summary_dataframe(
         else:
             speed_map = OrderedDict()
         speed_values = [speed_map.get(suffix, np.nan) for suffix in speed_suffixes]
+        rh_m, rh_kg = residual_pair(res, key, is_origin=idx == 0)
+
         post_values = [
             res.get(f"efficiency_{key}", 0.0),
             res.get(f"pump_bkw_{key}", 0.0),
@@ -3732,8 +3734,8 @@ def build_summary_dataframe(
             res.get(f"head_loss_{key}", 0.0),
             res.get(f"head_loss_kgcm2_{key}", 0.0),
             res.get(f"velocity_{key}", 0.0),
-            res.get(f"residual_head_{key}", 0.0),
-            res.get(f"rh_kgcm2_{key}", 0.0),
+            rh_m,
+            rh_kg,
             res.get(f"sdh_{key}", 0.0),
             res.get(f"sdh_kgcm2_{key}", 0.0),
             res.get(f"maop_{key}", 0.0),
@@ -3960,6 +3962,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
 
+        res_m, res_kg = residual_pair(res, key, is_origin=idx == 0)
+
         row = {
             'Station': station_display,
             'Pump Name': pump_name,
@@ -3978,8 +3982,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
             'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
             'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
-            'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
-            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+            'Residual Head (m)': res_m,
+            'Residual Head (kg/cm²)': res_kg,
             'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
             'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
             'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
@@ -4193,6 +4197,31 @@ def fmt_pressure(res, key_m, key_kg):
 
     m = res.get(key_m, 0.0) or 0.0
     kg = res.get(key_kg, 0.0) or 0.0
+    return f"{m:.2f} m / {kg:.2f} kg/cm²"
+
+
+def residual_pair(res: Mapping, key: str, is_origin: bool) -> tuple[float, float]:
+    """Return residual head (m, kg/cm²) preferring downstream values for non-origin stations."""
+
+    if is_origin:
+        return (
+            float(res.get(f"residual_head_{key}", 0.0) or 0.0),
+            float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+        )
+
+    m = res.get(f"residual_head_out_{key}")
+    kg = res.get(f"rh_out_kgcm2_{key}")
+    if m is None:
+        m = res.get(f"residual_head_{key}", 0.0)
+    if kg is None:
+        kg = res.get(f"rh_kgcm2_{key}", 0.0)
+    return float(m or 0.0), float(kg or 0.0)
+
+
+def fmt_residual(res: Mapping, key: str, is_origin: bool) -> str:
+    """Format residual head, using downstream values for non-origin stations."""
+
+    m, kg = residual_pair(res, key, is_origin)
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
 def _collect_search_depth_kwargs() -> dict[str, float | int]:
@@ -4583,7 +4612,7 @@ if auto_batch:
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                         add_speed_columns(row, res, stn)
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                        row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                        row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                         _ppm = res.get(f"dra_ppm_{key}", 0.0)
                         row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4617,7 +4646,7 @@ if auto_batch:
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                         add_speed_columns(row, res, stn)
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                        row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                        row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                         _ppm = res.get(f"dra_ppm_{key}", 0.0)
                         row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4662,7 +4691,7 @@ if auto_batch:
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
                             row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4700,7 +4729,7 @@ if auto_batch:
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
                             row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4752,7 +4781,7 @@ if auto_batch:
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
                             row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -8535,7 +8564,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     key = candidates[-1] if candidates else base_key
                 else:
                     key = base_key
-                rh_val = res.get(f'residual_head_{key}', 0.0)
+                rh_val, _ = residual_pair(res, key, is_origin=i == 0)
                 rh.append(rh_val)
                 names.append(base)
                 mesh_x.append(chainages[i])
@@ -8767,7 +8796,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         dra_cost_i = float(resi.get(f"dra_cost_{key}", 0.0) or 0.0)
                         power_cost_i = float(resi.get(f"power_cost_{key}", 0.0) or 0.0)
                         eff_i = float(resi.get(f"efficiency_{key}", 100.0))
-                        rh_i = float(resi.get(f"residual_head_{key}", 0.0) or 0.0)
+                        rh_i, _ = residual_pair(resi, key, is_origin=idx == 0)
                         total_cost += dra_cost_i + power_cost_i
                         power_cost += power_cost_i
                         dra_cost += dra_cost_i
