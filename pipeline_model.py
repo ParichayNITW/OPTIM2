@@ -1733,7 +1733,20 @@ def _update_mainline_dra(
 
     pumped_portion: list[tuple[float, float]] = []
     remaining_queue: list[tuple[float, float]] = []
-    if precomputed is not None and len(precomputed) >= 3:
+    preserve_head_for_idle_origin = (
+        is_origin and not pump_running and flow_m3h <= 0.0 and pumped_length > 0.0
+    )
+    preserve_head_for_idle_station = (
+        not is_origin and not pump_running and pumped_length > 0.0 and inj_effective <= 0.0
+    )
+    if preserve_head_for_idle_origin:
+        pumped_portion = [(pumped_length, 0.0)]
+        remaining_queue = list(existing_queue)
+    elif preserve_head_for_idle_station:
+        head_ppm = existing_queue[0][1] if existing_queue else 0.0
+        pumped_portion = [(pumped_length, float(head_ppm or 0.0))]
+        remaining_queue = list(existing_queue)
+    elif precomputed is not None and len(precomputed) >= 3:
         pumped_portion = [
             (float(length or 0.0), float(ppm or 0.0))
             for length, ppm in precomputed[1]
@@ -1784,8 +1797,6 @@ def _update_mainline_dra(
             pumped_portion.append((pumped_remaining, 0.0))
 
     shear_existing = shear
-    if pump_running and shear_existing > 0.0 and is_origin and not apply_injection_shear:
-        shear_existing = 0.0
 
     def _apply_shear(ppm_val: float) -> float:
         ppm_float = float(ppm_val or 0.0)
@@ -1817,19 +1828,24 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if is_origin and inj_effective <= 0.0:
-            if pump_running:
-                zero_output = True
-            elif flow_m3h <= 0.0:
-                zero_output = True
+        if is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0:
+            zero_output = True
+        elif (
+            is_origin
+            and pump_running
+            and inj_effective <= 0.0
+            and pumped_length >= segment_length - 1e-9
+        ):
+            zero_output = True
         if zero_output:
             ppm_out = 0.0
         else:
             ppm_out = _apply_shear(ppm_input)
             if inj_effective > 0.0:
-                ppm_out += inj_effective
-            elif not pump_running and inj_effective <= 0.0:
-                ppm_out = ppm_input
+                if not is_origin:
+                    ppm_out += inj_effective
+                elif not pump_running:
+                    ppm_out += inj_effective
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
@@ -1842,18 +1858,21 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        # Always advance the queue by the pumped distance; do not reattach the
+        # untrimmed head when shear alters the pumped slice, otherwise the
+        # pipeline artificially retains distance that has already moved past the
+        # station.
+        tail_queue = list(remaining_queue)
     else:
         advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        # For idle pumps the queue still advances by the pumped portion (if any)
+        # so the remaining downstream queue should exclude the removed head.
+        tail_queue = list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
+    if pump_running and is_origin and inj_effective > 0.0 and head_length > 0.0:
+        combined_entries.append((head_length, max(inj_effective, 0.0)))
+
     combined_entries.extend(advected_portion)
     combined_entries.extend(tail_queue)
 
@@ -1865,6 +1884,19 @@ def _update_mainline_dra(
 
     trimmed_queue, _leftover = _trim_queue_tail(combined_entries, excess_length)
     merged_queue = _merge_queue(trimmed_queue)
+
+    # Preserve the pumped head length as an explicit front slice so freshly
+    # advanced fluid remains visible even when its ppm matches the downstream
+    # queue (preventing the head from being merged into a longer segment).
+    if head_length > 0.0 and merged_queue and is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0:
+        head_len_current, head_ppm_current = merged_queue[0]
+        if head_len_current - head_length > 1e-9:
+            remainder = head_len_current - head_length
+            merged_queue = [
+                (head_length, head_ppm_current),
+                (remainder, head_ppm_current),
+                *merged_queue[1:]
+            ]
 
     queue_contains_zero = any(
         float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
@@ -1933,20 +1965,7 @@ def _update_mainline_dra(
 
     if fallback_ppm > 0.0:
         fallback_length = target_length if target_length > 0 else segment_length
-        if fallback_length > 0.0 and merged_queue:
-            merged_with_fallback = _ensure_queue_floor(
-                merged_queue,
-                fallback_length,
-                fallback_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_fallback
-                if float(length or 0.0) > 0.0
-            )
-        elif fallback_length > 0.0 and not merged_queue:
+        if fallback_length > 0.0 and not merged_queue:
             merged_queue = (
                 (
                     float(fallback_length),
@@ -2011,6 +2030,11 @@ def _update_mainline_dra(
 
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
+    suppress_zero_profile = bool(
+        (is_origin and inj_effective <= 0.0 and (pump_running or flow_m3h <= 0.0))
+        or (not is_origin and not pump_running and inj_effective <= 0.0)
+    )
+    has_positive = False
     for entry in profile_source:
         if not entry:
             continue
@@ -2020,6 +2044,11 @@ def _update_mainline_dra(
         profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
 
+        if suppress_zero_profile and ppm_val <= 0.0:
+            continue
+        if ppm_val > 0.0:
+            has_positive = True
+
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -2027,23 +2056,28 @@ def _update_mainline_dra(
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9:
+    if remaining_length > 1e-9 and not suppress_zero_profile:
         if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
         else:
             dra_segments.append((remaining_length, 0.0))
 
-    has_positive = any(float(ppm_val) > 0.0 for _length, ppm_val in dra_segments)
     if not has_positive:
         dra_segments = []
 
+    # For origin stations running without injection, suppress the profile to
+    # reflect that the upstream slug is not being actively maintained by the
+    # injector even if residual queue entries still carry DRA.
+    if is_origin and pump_running and inj_effective <= 0.0 and pumped_length >= segment_length - 1e-9:
+        dra_segments = []
+
     if floor_requires_injection and inj_effective <= 0.0:
+        has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
         if not has_positive:
             dra_segments = []
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
-
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
