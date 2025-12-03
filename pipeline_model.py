@@ -4186,6 +4186,13 @@ def solve_pipeline(
                     )
                     refinement_needed = refinement_needed or rpm_trimmed
                     max_dr_main = _max_dr_int(stn.get("max_dr"))
+                    lower_bound = 0
+                    dra_bounds = bounds.get('dra_main')
+                    if isinstance(dra_bounds, tuple) and len(dra_bounds) >= 1:
+                        try:
+                            lower_bound = int(dra_bounds[0])
+                        except (TypeError, ValueError):
+                            lower_bound = 0
                     if max_dr_main <= 0:
                         dmin = dmax = 0
                     elif coarse_dr_main <= 0:
@@ -4194,6 +4201,10 @@ def solve_pipeline(
                             if rmin != st_rpm_min:
                                 rmin = st_rpm_min
                                 refinement_needed = True
+                        refinement_needed = True
+                    elif priority_feasibility:
+                        dmin = max(lower_bound, 0)
+                        dmax = max_dr_main
                         refinement_needed = True
                     elif coarse_dr_main >= max_dr_main:
                         span = max(dra_step, coarse_dra_step)
@@ -4206,22 +4217,11 @@ def solve_pipeline(
                         refinement_needed = True
                     else:
                         span = max(dra_step, 1)
-                        lower_bound = 0
-                        dra_bounds = bounds.get('dra_main')
-                        if isinstance(dra_bounds, tuple) and len(dra_bounds) >= 1:
-                            try:
-                                lower_bound = int(dra_bounds[0])
-                            except (TypeError, ValueError):
-                                lower_bound = 0
-                        if priority_feasibility:
-                            dmin = max(lower_bound, 0)
-                            dmax = max_dr_main
+                        if lower_bound <= 0:
+                            dmin = 0
                         else:
-                            if lower_bound <= 0:
-                                dmin = 0
-                            else:
-                                dmin = max(lower_bound, coarse_dr_main - span)
-                            dmax = min(max_dr_main, coarse_dr_main + span)
+                            dmin = max(lower_bound, coarse_dr_main - span)
+                        dmax = min(max_dr_main, coarse_dr_main + span)
                         if dmax < dmin:
                             dmax = dmin
                         if dmin > 0 or dmax < max_dr_main:
