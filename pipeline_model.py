@@ -4206,25 +4206,15 @@ def solve_pipeline(
                         dmin = max(lower_bound, 0)
                         dmax = max_dr_main
                         refinement_needed = True
-                    elif coarse_dr_main >= max_dr_main:
-                        span = max(dra_step, coarse_dra_step)
-                        dmin = max(0, max_dr_main - span)
-                        dmax = max_dr_main
-                        if coarse_nop > 0 and max_dr_main > 0:
-                            if rmax != upper_bound:
-                                rmax = upper_bound
-                                refinement_needed = True
-                        refinement_needed = True
                     else:
-                        span = max(dra_step, 1)
-                        if lower_bound <= 0:
-                            dmin = 0
-                        else:
-                            dmin = max(lower_bound, coarse_dr_main - span)
-                        dmax = min(max_dr_main, coarse_dr_main + span)
+                        # Always allow the refinement pass to explore the full
+                        # floor→max window for pump DRA so feasibility checks are
+                        # not constrained to the coarse solution's neighbourhood.
+                        dmin = max(lower_bound, 0)
+                        dmax = max_dr_main
                         if dmax < dmin:
                             dmax = dmin
-                        if dmin > 0 or dmax < max_dr_main:
+                        if dmin > 0 or dmax < max_dr_main or coarse_dr_main not in (dmin, dmax):
                             refinement_needed = True
                     entry: dict[str, tuple[int, int]] = {
                         "rpm": (rmin, rmax),
@@ -4330,13 +4320,14 @@ def solve_pipeline(
                     elif coarse_dr_main <= 0:
                         dmin, dmax = 0, max_dr
                         refinement_needed = True
-                    elif coarse_dr_main >= max_dr:
-                        span = max(dra_step, coarse_dra_step)
-                        dmin = max(0, max_dr - span)
+                    elif priority_feasibility:
+                        dmin = max(0, lower_bound)
                         dmax = max_dr
                         refinement_needed = True
                     else:
-                        span = max(dra_step, 1)
+                        # Non-pump stations should also open DRA to the full
+                        # allowable window during refinement so feasibility is
+                        # not restricted to the coarse ±span neighbourhood.
                         bounds_entry = bounds.get('dra_main')
                         lower_bound = 0
                         if isinstance(bounds_entry, tuple) and len(bounds_entry) >= 1:
@@ -4344,18 +4335,11 @@ def solve_pipeline(
                                 lower_bound = int(bounds_entry[0])
                             except (TypeError, ValueError):
                                 lower_bound = 0
-                        if priority_feasibility:
-                            dmin = max(lower_bound, 0)
-                            dmax = max_dr
-                        else:
-                            if lower_bound <= 0:
-                                dmin = 0
-                            else:
-                                dmin = max(lower_bound, coarse_dr_main - span)
-                            dmax = min(max_dr, coarse_dr_main + span)
+                        dmin = max(lower_bound, 0)
+                        dmax = max_dr
                         if dmax < dmin:
                             dmax = dmin
-                        if dmin > 0 or dmax < max_dr:
+                        if dmin > 0 or dmax < max_dr or coarse_dr_main not in (dmin, dmax):
                             refinement_needed = True
                     ranges[idx] = {"dra_main": (dmin, dmax)}
             if refinement_needed and ranges:

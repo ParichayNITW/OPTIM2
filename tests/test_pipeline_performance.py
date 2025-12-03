@@ -966,6 +966,9 @@ def test_priority_feasibility_widens_pump_dra_window_to_max() -> None:
     original_solve = pm.solve_pipeline
     original_solve = pm.solve_pipeline
     original_solve = pm.solve_pipeline
+    original_solve = pm.solve_pipeline
+    original_solve = pm.solve_pipeline
+    original_solve = pm.solve_pipeline
 
     def fake_solve(*args, **kwargs):  # type: ignore[override]
         _ensure_segment_slices(args, kwargs)
@@ -989,6 +992,84 @@ def test_priority_feasibility_widens_pump_dra_window_to_max() -> None:
     assert captured_ranges, "Refinement pass did not capture ranges"
     dra_range = captured_ranges[0][0]["dra_main"]
     assert dra_range == (0, 35)
+
+
+def test_refine_pump_dra_window_not_clamped_without_priority(monkeypatch) -> None:
+    """Even cost-mode refinement should open pump DRA to floor→max."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "Origin Pump",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "MinRPM": 1200,
+            "DOL": 1600,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 200.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 85.0,
+            "L": 10.0,
+            "d": 0.7,
+            "rough": 4.0e-05,
+            "elev": 0.0,
+            "min_residual": 30,
+            "max_dr": 35,
+            "power_type": "Grid",
+            "rate": 5.0,
+        }
+    ]
+    terminal = {"name": "Terminal", "min_residual": 30.0, "elev": 0.0}
+
+    common_kwargs = dict(
+        FLOW=1400.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[] for _ in stations],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=6.0,
+        start_time="00:00",
+        dra_step=2,
+        rpm_step=50,
+        enumerate_loops=False,
+    )
+
+    captured_ranges: list[dict[int, dict[str, tuple[int, int]]]] = []
+    original_solve = pm.solve_pipeline
+
+    def fake_solve(*args, **kwargs):  # type: ignore[override]
+        _ensure_segment_slices(args, kwargs)
+        if kwargs.get("_internal_pass"):
+            narrow = kwargs.get("narrow_ranges")
+            if narrow is None:
+                return {
+                    "error": False,
+                    "num_pumps_origin_pump": 1,
+                    "drag_reduction_origin_pump": 5,
+                    "speed_origin_pump": 1400,
+                }
+            captured_ranges.append(narrow)
+            return {"error": False}
+        return original_solve(*args, **kwargs)
+
+    with patch.object(pm, "solve_pipeline", new=fake_solve):
+        res = pm.solve_pipeline(stations, terminal, **common_kwargs)
+
+    assert not res.get("error")
+    assert captured_ranges, "Expected refinement ranges to be captured"
+    assert captured_ranges[0][0]["dra_main"] == (0, 35)
 
 
 def test_priority_feasibility_dra_window_uses_floor_to_max(monkeypatch) -> None:
