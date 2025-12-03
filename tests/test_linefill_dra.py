@@ -17,6 +17,7 @@ import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
+    _queue_total_length,
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
@@ -1718,3 +1719,45 @@ def test_origin_injection_overrides_zero_head_batch() -> None:
     first_len, first_ppm = dra_segments[0]
     assert first_ppm > 0.0 and first_len > 0.0
     assert queue_after[0]["dra_ppm"] > 0.0
+
+
+def test_origin_injection_does_not_double_head_length() -> None:
+    """Origin injection should not duplicate the pumped head length."""
+
+    stn = {
+        "idx": 0,
+        "name": "Origin",
+        "L": 20.0,
+        "d_inner": 0.746,
+        "kv": 3.0,
+    }
+    opt = {
+        "dra_ppm_main": 10.0,
+        "nop": 1,
+    }
+
+    pumped_length = _km_from_volume(2833.0, stn["d_inner"])
+
+    dra_segments, queue_after, inj_ppm_main, floor_req = _update_mainline_dra(
+        [],
+        stn,
+        opt,
+        stn["L"],
+        flow_m3h=2833.0,
+        hours=1.0,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert inj_ppm_main == pytest.approx(10.0)
+    assert not floor_req
+    assert dra_segments, "Segment profile should not be empty"
+    assert queue_after, "Queue after pumping should not be empty"
+
+    queue_length = _queue_total_length(
+        [(entry.get("length_km", 0.0), entry.get("dra_ppm", 0.0)) for entry in queue_after]
+    )
+    assert queue_length == pytest.approx(pumped_length)
+    first_len, first_ppm = dra_segments[0]
+    assert first_len == pytest.approx(pumped_length)
+    assert first_ppm > 0.0
