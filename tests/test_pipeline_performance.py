@@ -5495,7 +5495,7 @@ def test_build_station_table_prefers_injection_field_over_profile_head() -> None
     assert "4.00 km @ 0.00 ppm" in profile_str
 
 
-def test_build_station_table_uses_downstream_residual_for_non_origin() -> None:
+def test_build_station_table_uses_inlet_residual_for_non_origin() -> None:
     import pipeline_optimization_app as app
     import pandas as pd
 
@@ -5540,6 +5540,8 @@ def test_build_station_table_uses_downstream_residual_for_non_origin() -> None:
         "velocity_balasore": 0.0,
         "residual_head_balasore": 81.0,
         "rh_kgcm2_balasore": 8.1,
+        "residual_head_in_balasore": 201.0,
+        "rh_in_kgcm2_balasore": 20.1,
         "residual_head_out_balasore": 241.0,
         "rh_out_kgcm2_balasore": 24.1,
         "sdh_balasore": 0.0,
@@ -5557,10 +5559,10 @@ def test_build_station_table_uses_downstream_residual_for_non_origin() -> None:
 
     assert isinstance(df, pd.DataFrame)
     assert df.loc[0, "Residual Head (m)"] == pytest.approx(125.0)
-    assert df.loc[1, "Residual Head (m)"] == pytest.approx(241.0)
+    assert df.loc[1, "Residual Head (m)"] == pytest.approx(201.0)
 
 
-def test_build_station_table_handles_mixed_case_downstream_keys() -> None:
+def test_build_station_table_handles_mixed_case_inlet_keys() -> None:
     import pipeline_optimization_app as app
     import pandas as pd
 
@@ -5590,9 +5592,11 @@ def test_build_station_table_handles_mixed_case_downstream_keys() -> None:
         "sdh_kgcm2_Paradip": 0.0,
         "maop_Paradip": 0.0,
         "maop_kgcm2_Paradip": 0.0,
-        # Downstream station outputs carry original casing
+        # Station outputs carry original casing
         "residual_head_out_Balasore": 241.0,
         "rh_out_kgcm2_Balasore": 24.1,
+        "residual_head_in_Balasore": 201.0,
+        "rh_in_kgcm2_Balasore": 20.1,
         "residual_head_Balasore": 81.0,
         "rh_kgcm2_Balasore": 8.1,
         "pipeline_flow_Balasore": 0.0,
@@ -5623,7 +5627,7 @@ def test_build_station_table_handles_mixed_case_downstream_keys() -> None:
 
     assert isinstance(df, pd.DataFrame)
     assert df.loc[0, "Residual Head (m)"] == pytest.approx(125.0)
-    assert df.loc[1, "Residual Head (m)"] == pytest.approx(241.0)
+    assert df.loc[1, "Residual Head (m)"] == pytest.approx(201.0)
 
 
 def test_origin_suction_defaults_to_min_residual_when_missing() -> None:
