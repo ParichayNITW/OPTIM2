@@ -3814,7 +3814,9 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 state_cost_margin_pct=state_cost_margin_pct,
-                _exhaustive_pass=_exhaustive_pass,
+                _exhaustive_pass=True,
+                _internal_pass=True,
+                pass_trace=["exhaustive"],
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
                 collect_state_audit=collect_state_audit,
@@ -3880,7 +3882,9 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 state_cost_margin_pct=state_cost_margin_pct,
-                _exhaustive_pass=_exhaustive_pass,
+                _exhaustive_pass=True,
+                _internal_pass=True,
+                pass_trace=["exhaustive"],
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
                 collect_state_audit=collect_state_audit,
@@ -3898,6 +3902,45 @@ def solve_pipeline(
             'error': True,
             'message': 'No feasible pump combination found for stations.',
         }
+
+    if not _internal_pass:
+        trace = ["exhaustive"]
+        result = solve_pipeline(
+            stations,
+            terminal,
+            FLOW,
+            KV_list,
+            rho_list,
+            segment_slices,
+            RateDRA,
+            Price_HSD,
+            Fuel_density,
+            Ambient_temp,
+            linefill,
+            dra_reach_km,
+            mop_kgcm2,
+            hours,
+            start_time,
+            pump_shear_rate=pump_shear_rate,
+            loop_usage_by_station=loop_usage_by_station,
+            enumerate_loops=False,
+            rpm_step=rpm_step,
+            dra_step=dra_step,
+            coarse_multiplier=coarse_multiplier,
+            state_top_k=state_top_k,
+            state_cost_margin=state_cost_margin,
+            state_cost_margin_pct=state_cost_margin_pct,
+            _exhaustive_pass=True,
+            _internal_pass=True,
+            pass_trace=trace,
+            forced_origin_detail=forced_origin_detail,
+            segment_floors=segment_floors,
+            collect_state_audit=collect_state_audit,
+        )
+        if isinstance(result, dict):
+            result = dict(result)
+            result.setdefault("executed_passes", list(trace))
+        return result
     # Normalise linefill input into a list of batches each carrying volume and
     # DRA concentration.  Accepts either a list of dictionaries or a dict of
     # columns as produced by ``DataFrame.to_dict()``.  The linefill is copied
@@ -3964,9 +4007,7 @@ def solve_pipeline(
     # solution using the user-provided steps.  The recursion is controlled
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
-    if _internal_pass:
-        pass_trace = None
-    elif pass_trace is None:
+    if pass_trace is None:
         pass_trace = []
 
     if not _internal_pass:
@@ -6956,10 +6997,17 @@ def solve_pipeline_with_types(
     expand_all(0, [], [], [], [])
 
     if best_result is None:
-        return {
+        failure = {
             "error": True,
             "message": "No feasible pump combination found for stations.",
         }
+        if pass_trace is not None:
+            failure["failure_detail"] = {"executed_passes": list(pass_trace)}
+        return failure
+
+    if pass_trace is not None:
+        best_result = dict(best_result)
+        best_result['executed_passes'] = list(pass_trace)
 
     best_result['stations_used'] = best_stations
     return best_result
