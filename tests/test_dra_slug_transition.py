@@ -2,6 +2,7 @@ from pathlib import Path
 import copy
 import math
 import sys
+import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -340,9 +341,12 @@ def test_zero_injection_advances_profile_by_appending_fresh_front() -> None:
     assert queue_after[-1]["dra_ppm"] == 4.0
     assert math.isclose(queue_after[-1]["length_km"], 49.47, rel_tol=1e-6, abs_tol=1e-6)
 
-    assert len(dra_segments) == 2
-    lengths = [seg[0] for seg in dra_segments]
-    ppm_vals = [seg[1] for seg in dra_segments]
-    assert math.isclose(lengths[0], 2.0, rel_tol=1e-9, abs_tol=1e-9)
-    assert math.isclose(lengths[1], 49.47, rel_tol=1e-6, abs_tol=1e-6)
-    assert ppm_vals == [5.0, 4.0]
+    assert len(dra_segments) == 4
+    assert math.isclose(dra_segments[0][0], pumped_length, rel_tol=1e-9, abs_tol=1e-6)
+    assert dra_segments[0][1] == pytest.approx(0.0)
+    assert math.isclose(dra_segments[1][0], 2.0, rel_tol=1e-9, abs_tol=1e-9)
+    assert dra_segments[1][1] == pytest.approx(5.0)
+    assert math.isclose(dra_segments[2][0], 100.0, rel_tol=1e-9, abs_tol=1e-9)
+    assert dra_segments[2][1] == pytest.approx(0.0)
+    assert math.isclose(dra_segments[3][0], 49.47, rel_tol=1e-6, abs_tol=1e-6)
+    assert dra_segments[3][1] == pytest.approx(4.0)
