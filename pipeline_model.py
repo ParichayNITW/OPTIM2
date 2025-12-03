@@ -6795,6 +6795,10 @@ def solve_pipeline_with_types(
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
+    trace: list[str] | None = None
+    if pass_trace is not None:
+        trace = list(pass_trace)
+
     if stations:
         try:
             origin_suction_val = float(stations[0].get('suction_head', 0.0) or 0.0)
@@ -6907,6 +6911,7 @@ def solve_pipeline_with_types(
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
                     priority_feasibility=priority_feasibility,
+                    pass_trace=trace,
                 )
                 if result.get("error"):
                     continue
