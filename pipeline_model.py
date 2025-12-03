@@ -1867,9 +1867,6 @@ def _update_mainline_dra(
         tail_queue = list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and is_origin and inj_effective > 0.0 and head_length > 0.0:
-        combined_entries.append((head_length, max(inj_effective, 0.0)))
-
     combined_entries.extend(advected_portion)
     combined_entries.extend(tail_queue)
 
