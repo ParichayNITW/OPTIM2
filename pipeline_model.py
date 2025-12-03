@@ -137,6 +137,37 @@ def _max_dr_int(value, *, fallback: float | None = None) -> int:
     return int(_normalise_max_dr(value, fallback=fallback))
 
 
+def _refine_rpm_window(
+    *,
+    st_rpm_min: int,
+    upper_bound: int,
+    coarse_rpm: int,
+    coarse_nop: int,
+    window: int,
+    priority_feasibility: bool,
+) -> tuple[int, int, bool]:
+    """Return the narrowed RPM window for refinement.
+
+    When ``priority_feasibility`` is True we widen the search to the full
+    station bounds so the feasibility retry can explore higher pump speeds
+    instead of staying near the coarse solution.
+    """
+
+    if coarse_nop == 0:
+        return 0, 0, False
+
+    if priority_feasibility:
+        return st_rpm_min, upper_bound, True
+
+    rmin = max(st_rpm_min, coarse_rpm - window)
+    rmax = min(upper_bound, coarse_rpm + window)
+    if rmin < st_rpm_min or rmax > upper_bound:
+        rmin = max(rmin, st_rpm_min)
+        rmax = min(rmax, upper_bound)
+    trimmed = rmin > st_rpm_min or rmax < upper_bound
+    return rmin, rmax, trimmed
+
+
 def _extract_rpm(
     value,
     *,
@@ -4144,17 +4175,16 @@ def solve_pipeline(
                     coarse_dr_main = int(coarse_res.get(f"drag_reduction_{name}", 0))
                     st_rpm_min, st_rpm_max = bounds.get('rpm', (0, 0))  # type: ignore[assignment]
                     upper_bound = st_rpm_max if st_rpm_max > 0 else st_rpm_min
-                    if coarse_nop == 0:
-                        rmin = rmax = 0
-                    else:
-                        coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
-                        rmin = max(st_rpm_min, coarse_rpm - window)
-                        rmax = min(upper_bound, coarse_rpm + window)
-                        if rmin < st_rpm_min or rmax > upper_bound:
-                            rmin = max(rmin, st_rpm_min)
-                            rmax = min(rmax, upper_bound)
-                        if rmin > st_rpm_min or rmax < upper_bound:
-                            refinement_needed = True
+                    coarse_rpm = int(coarse_res.get(f"speed_{name}", st_rpm_min))
+                    rmin, rmax, rpm_trimmed = _refine_rpm_window(
+                        st_rpm_min=st_rpm_min,
+                        upper_bound=upper_bound,
+                        coarse_rpm=coarse_rpm,
+                        coarse_nop=coarse_nop,
+                        window=window,
+                        priority_feasibility=priority_feasibility,
+                    )
+                    refinement_needed = refinement_needed or rpm_trimmed
                     max_dr_main = _max_dr_int(stn.get("max_dr"))
                     if max_dr_main <= 0:
                         dmin = dmax = 0
