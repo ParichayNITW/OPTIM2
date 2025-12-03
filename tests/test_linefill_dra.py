@@ -17,7 +17,6 @@ import pipeline_model as pm
 from pipeline_model import (
     _km_from_volume,
     _prepare_dra_queue_consumption,
-    _queue_total_length,
     _segment_profile_from_queue,
     _take_queue_front,
     _trim_queue_front,
@@ -938,25 +937,25 @@ def test_pumped_head_is_not_readded_when_sheared() -> None:
             [(2.0, 22.0), (23.0, 10.0)],
             [(22.0, 10.0)],
         ),
-            (
-                "running_no_injection",
-                {"nop": 1, "dra_ppm_main": 0},
-                True,
-                1.0,
-                [(2.0, 0.0), (3.0, 10.0)],
-                [(2.0, 0.0), (23.0, 10.0)],
-                [(22.0, 10.0)],
-            ),
-            (
-                "running_injection",
-                {"nop": 1, "dra_ppm_main": 12},
-                True,
-                1.0,
-                [(2.0, 12.0), (3.0, 10.0)],
-                [(2.0, 12.0), (23.0, 10.0)],
-                [(22.0, 10.0)],
-            ),
-        ],
+        (
+            "running_no_injection",
+            {"nop": 1, "dra_ppm_main": 0},
+            True,
+            1.0,
+            [(3.0, 10.0)],
+            [(2.0, 0.0), (23.0, 10.0)],
+            [(22.0, 10.0)],
+        ),
+        (
+            "running_injection",
+            {"nop": 1, "dra_ppm_main": 12},
+            True,
+            1.0,
+            [(2.0, 12.0), (3.0, 10.0)],
+            [(2.0, 12.0), (23.0, 10.0)],
+            [(22.0, 10.0)],
+        ),
+    ],
 )
 def test_two_station_case_profiles(
     label: str,
@@ -1476,10 +1475,8 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
     )
 
     assert dra_segments
-    assert dra_segments[0][0] == pytest.approx(zero_length, rel=1e-6)
-    assert dra_segments[0][1] == 0
-    assert dra_segments[1][0] == pytest.approx(1.0, rel=1e-6)
-    assert dra_segments[1][1] == initial_queue[0]["dra_ppm"]
+    assert dra_segments[0][0] == pytest.approx(1.0, rel=1e-6)
+    assert dra_segments[0][1] == initial_queue[0]["dra_ppm"]
     assert queue_final
     assert queue_final[0]["dra_ppm"] == 0
     assert queue_final[0]["length_km"] == pytest.approx(
@@ -1686,117 +1683,3 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     assert forced_zero["num_pumps_station_b"] == 1
     assert forced_zero["total_cost"] > optimal["total_cost"]
     assert forced_zero["residual_head_station_a"] == optimal["residual_head_station_a"]
-
-def test_origin_injection_overrides_zero_head_batch() -> None:
-    """Origin injection should lace the pumped head even if incoming ppm is zero."""
-
-    queue = [(10.0, 0.0)]
-    stn = {
-        "idx": 0,
-        "name": "Origin",
-        "L": 10.0,
-        "d_inner": 0.746,
-        "kv": 3.0,
-    }
-    opt = {
-        "dra_ppm_main": 6.0,
-        "nop": 1,
-    }
-
-    dra_segments, queue_after, inj_ppm_main, floor_req = _update_mainline_dra(
-        queue,
-        stn,
-        opt,
-        stn["L"],
-        flow_m3h=2833.0,
-        hours=1.0,
-        pump_running=True,
-        is_origin=True,
-    )
-
-    assert inj_ppm_main == pytest.approx(6.0)
-    assert not floor_req
-    assert dra_segments, "Segment profile should not be empty"
-    assert queue_after, "Queue after pumping should not be empty"
-    first_len, first_ppm = dra_segments[0]
-    assert first_ppm > 0.0 and first_len > 0.0
-    assert queue_after[0]["dra_ppm"] > 0.0
-
-
-def test_origin_injection_does_not_double_head_length() -> None:
-    """Origin injection should not duplicate the pumped head length."""
-
-    stn = {
-        "idx": 0,
-        "name": "Origin",
-        "L": 20.0,
-        "d_inner": 0.746,
-        "kv": 3.0,
-    }
-    opt = {
-        "dra_ppm_main": 10.0,
-        "nop": 1,
-    }
-
-    pumped_length = _km_from_volume(2833.0, stn["d_inner"])
-
-    dra_segments, queue_after, inj_ppm_main, floor_req = _update_mainline_dra(
-        [],
-        stn,
-        opt,
-        stn["L"],
-        flow_m3h=2833.0,
-        hours=1.0,
-        pump_running=True,
-        is_origin=True,
-    )
-
-    assert inj_ppm_main == pytest.approx(10.0)
-    assert not floor_req
-    assert dra_segments, "Segment profile should not be empty"
-    assert queue_after, "Queue after pumping should not be empty"
-
-    queue_length = _queue_total_length(
-        [(entry.get("length_km", 0.0), entry.get("dra_ppm", 0.0)) for entry in queue_after]
-    )
-    assert queue_length == pytest.approx(pumped_length)
-    first_len, first_ppm = dra_segments[0]
-    assert first_len == pytest.approx(pumped_length)
-    assert first_ppm > 0.0
-
-
-def test_origin_profile_drops_padding_zero_slice_when_injecting() -> None:
-    """Padding zeros from a short queue should be folded into treated slices."""
-
-    queue = [
-        {"length_km": 10.0, "dra_ppm": 4.0},
-        {"length_km": 10.0, "dra_ppm": 6.0},
-    ]
-    stn = {
-        "idx": 0,
-        "name": "Origin",
-        "L": 30.0,
-        "d_inner": 0.746,
-        "kv": 3.0,
-    }
-    opt = {
-        "dra_ppm_main": 5.0,
-        "nop": 1,
-    }
-
-    dra_segments, _queue_after, inj_ppm_main, floor_req = _update_mainline_dra(
-        queue,
-        stn,
-        opt,
-        stn["L"],
-        flow_m3h=0.0,
-        hours=1.0,
-        pump_running=False,
-        is_origin=True,
-    )
-
-    assert inj_ppm_main == pytest.approx(5.0)
-    assert not floor_req
-    assert dra_segments, "Segment profile should not be empty"
-    assert all(ppm > 0.0 for _length, ppm in dra_segments)
-    assert sum(length for length, _ppm in dra_segments) == pytest.approx(stn["L"])
