@@ -6,8 +6,15 @@ import base64
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
-import pipeline_model
 import datetime as dt
+
+# Ensure local modules are importable when the app is run from an arbitrary
+# working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import pipeline_model
 
 
 def _safe_set_session_state(key, value):
@@ -84,12 +91,6 @@ import copy
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from plotly.colors import qualitative
-
-# Ensure local modules are importable when the app is run from an arbitrary
-# working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 # Hide Vega action buttons globally
 alt.renderers.set_embed_options(actions=False)
