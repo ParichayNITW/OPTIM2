@@ -1402,46 +1402,6 @@ def _normalise_station_profile(
     return normalised
 
 
-def _profile_ppm_metrics(
-    profile_entries: Sequence[Mapping[str, float]] | None,
-    inj_ppm_main: float,
-) -> tuple[float, float, float]:
-    """Return inlet/outlet ppm and treated length for a station profile.
-
-    The inlet ppm falls back to the injected concentration when provided; if no
-    injection is present, the first positive slice in the profile is used.
-    Outlet ppm is taken from the last positive slice.  Treated length sums all
-    positive-ppm slices, and is zeroed when neither injected nor profile ppm is
-    positive.
-    """
-
-    entries = list(profile_entries or [])
-    treated_profile_length = sum(
-        entry.get("length_km", 0.0) for entry in entries if entry.get("dra_ppm", 0.0) > 0.0
-    )
-
-    try:
-        inlet_ppm_profile = float(inj_ppm_main or 0.0)
-    except (TypeError, ValueError):
-        inlet_ppm_profile = 0.0
-    if inlet_ppm_profile <= 0.0:
-        for entry in entries:
-            if entry.get("dra_ppm", 0.0) > 0.0:
-                inlet_ppm_profile = float(entry.get("dra_ppm", 0.0) or 0.0)
-                break
-
-    outlet_ppm_profile = 0.0
-    for entry in reversed(entries):
-        if entry.get("dra_ppm", 0.0) > 0.0:
-            outlet_ppm_profile = float(entry.get("dra_ppm", 0.0) or 0.0)
-            break
-
-    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
-        treated_profile_length = 0.0
-
-    return inlet_ppm_profile, outlet_ppm_profile, treated_profile_length
-
-
 def _predict_effective_injection(
     ppm_requested: float,
     kv: float,
@@ -1718,10 +1678,6 @@ def _update_mainline_dra(
             existing_queue.append((length, ppm_val))
 
     existing_queue = _merge_queue(existing_queue)
-    queue_has_zero_original = any(
-        float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
-        for length, ppm in existing_queue
-    )
     existing_total = _queue_total_length(existing_queue)
 
     if existing_total > 0:
@@ -1831,12 +1787,10 @@ def _update_mainline_dra(
         else:
             ppm_out = _apply_shear(ppm_input)
             if inj_effective > 0.0:
-                if is_origin and pump_running:
-                    ppm_out = inj_effective
-                else:
+                if not is_origin:
                     ppm_out += inj_effective
-            elif not pump_running and inj_effective <= 0.0:
-                ppm_out = ppm_input
+                elif not pump_running:
+                    ppm_out += inj_effective
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
@@ -1849,19 +1803,23 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
+        # Always advance the queue by the pumped distance; do not reattach the
+        # untrimmed head when shear alters the pumped slice, otherwise the
+        # pipeline artificially retains distance that has already moved past the
+        # station.
         tail_queue = list(remaining_queue)
-        combined_entries: list[tuple[float, float]] = []
-        combined_entries.extend(advected_portion)
-        combined_entries.extend(tail_queue)
     else:
         advected_portion = pumped_adjusted
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
-        combined_entries = []
-        combined_entries.extend(advected_portion)
-        combined_entries.extend(tail_queue)
+        # For idle pumps the queue still advances by the pumped portion (if any)
+        # so the remaining downstream queue should exclude the removed head.
+        tail_queue = list(remaining_queue)
+
+    combined_entries: list[tuple[float, float]] = []
+    if pump_running and is_origin and inj_effective > 0.0 and head_length > 0.0:
+        combined_entries.append((head_length, max(inj_effective, 0.0)))
+
+    combined_entries.extend(advected_portion)
+    combined_entries.extend(tail_queue)
 
     combined_total = _queue_total_length(combined_entries)
 
@@ -1939,20 +1897,7 @@ def _update_mainline_dra(
 
     if fallback_ppm > 0.0:
         fallback_length = target_length if target_length > 0 else segment_length
-        if fallback_length > 0.0 and merged_queue:
-            merged_with_fallback = _ensure_queue_floor(
-                merged_queue,
-                fallback_length,
-                fallback_ppm,
-                None,
-                enforce_positive_floor=False,
-            )
-            merged_queue = tuple(
-                (float(length), float(ppm))
-                for length, ppm in merged_with_fallback
-                if float(length or 0.0) > 0.0
-            )
-        elif fallback_length > 0.0 and not merged_queue:
+        if fallback_length > 0.0 and not merged_queue:
             merged_queue = (
                 (
                     float(fallback_length),
@@ -2017,6 +1962,8 @@ def _update_mainline_dra(
 
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
+    suppress_zero_profile = bool(pump_running and is_origin and inj_effective <= 0.0)
+    has_positive = False
     for entry in profile_source:
         if not entry:
             continue
@@ -2026,6 +1973,11 @@ def _update_mainline_dra(
         profile_total += length
         ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
 
+        if suppress_zero_profile and ppm_val <= 0.0:
+            continue
+        if ppm_val > 0.0:
+            has_positive = True
+
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, _ = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, ppm_val)
@@ -2033,57 +1985,22 @@ def _update_mainline_dra(
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9:
+    if remaining_length > 1e-9 and not suppress_zero_profile:
         if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
         else:
             dra_segments.append((remaining_length, 0.0))
 
-    # If the queue originally had no zero-ppm head/tail and we injected DRA at
-    # this station, drop any zero slices introduced purely by padding when the
-    # segment is already fully represented. Skip this when we padded because the
-    # queue is shorter than the segment (remaining_length > 0) so head lengths
-    # are not artificially inflated.
-    if (
-        inj_effective > 0.0
-        and not queue_has_zero_original
-        and dra_segments
-        and (remaining_length <= 1e-9 or bool(existing_queue))
-    ):
-        reclaimed = sum(
-            float(length or 0.0)
-            for length, ppm_val in dra_segments
-            if float(ppm_val or 0.0) <= 1e-9 and float(length or 0.0) > 0.0
-        )
-        dra_segments = [
-            (float(length), float(ppm_val))
-            for length, ppm_val in dra_segments
-            if float(ppm_val or 0.0) > 1e-9 and float(length or 0.0) > 0.0
-        ]
-        if reclaimed > 0.0:
-            if dra_segments:
-                last_len, last_ppm = dra_segments[-1]
-                dra_segments[-1] = (last_len + reclaimed, last_ppm)
-            else:
-                dra_segments = [(reclaimed, float(inj_effective))]
-
-    all_zero_profile = bool(dra_segments) and all(
-        float(ppm_val or 0.0) <= 0.0 for _length, ppm_val in dra_segments
-    )
-
-    # Retain zero-ppm profiles when they originate from the input queue or
-    # explicit zero injection, but discard zeros introduced solely by shear/padding
-    # when the queue previously contained no untreated spans.
-    if all_zero_profile and not queue_has_zero_original and inj_effective <= 0.0:
+    if not has_positive:
         dra_segments = []
 
     if floor_requires_injection and inj_effective <= 0.0:
-        if not any(float(ppm_val) > 0.0 for _length, ppm_val in dra_segments):
+        has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
+        if not has_positive:
             dra_segments = []
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
-
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
@@ -3750,10 +3667,6 @@ def solve_pipeline(
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
-    trace: list[str] | None = None
-    if pass_trace is not None:
-        trace = list(pass_trace)
-
     try:
         state_cost_margin_pct = float(state_cost_margin_pct)
     except (TypeError, ValueError):
@@ -3901,9 +3814,7 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 state_cost_margin_pct=state_cost_margin_pct,
-                _exhaustive_pass=True,
-                _internal_pass=True,
-                pass_trace=["exhaustive"],
+                _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
                 collect_state_audit=collect_state_audit,
@@ -3969,9 +3880,7 @@ def solve_pipeline(
                 state_top_k=state_top_k,
                 state_cost_margin=state_cost_margin,
                 state_cost_margin_pct=state_cost_margin_pct,
-                _exhaustive_pass=True,
-                _internal_pass=True,
-                pass_trace=["exhaustive"],
+                _exhaustive_pass=_exhaustive_pass,
                 forced_origin_detail=forced_origin_detail,
                 segment_floors=segment_floors,
                 collect_state_audit=collect_state_audit,
@@ -3989,45 +3898,6 @@ def solve_pipeline(
             'error': True,
             'message': 'No feasible pump combination found for stations.',
         }
-
-    if not _internal_pass:
-        trace = ["exhaustive"]
-        result = solve_pipeline(
-            stations,
-            terminal,
-            FLOW,
-            KV_list,
-            rho_list,
-            segment_slices,
-            RateDRA,
-            Price_HSD,
-            Fuel_density,
-            Ambient_temp,
-            linefill,
-            dra_reach_km,
-            mop_kgcm2,
-            hours,
-            start_time,
-            pump_shear_rate=pump_shear_rate,
-            loop_usage_by_station=loop_usage_by_station,
-            enumerate_loops=False,
-            rpm_step=rpm_step,
-            dra_step=dra_step,
-            coarse_multiplier=coarse_multiplier,
-            state_top_k=state_top_k,
-            state_cost_margin=state_cost_margin,
-            state_cost_margin_pct=state_cost_margin_pct,
-            _exhaustive_pass=True,
-            _internal_pass=True,
-            pass_trace=trace,
-            forced_origin_detail=forced_origin_detail,
-            segment_floors=segment_floors,
-            collect_state_audit=collect_state_audit,
-        )
-        if isinstance(result, dict):
-            result = dict(result)
-            result.setdefault("executed_passes", list(trace))
-        return result
     # Normalise linefill input into a list of batches each carrying volume and
     # DRA concentration.  Accepts either a list of dictionaries or a dict of
     # columns as produced by ``DataFrame.to_dict()``.  The linefill is copied
@@ -4094,7 +3964,9 @@ def solve_pipeline(
     # solution using the user-provided steps.  The recursion is controlled
     # by the ``_internal_pass`` flag to avoid infinite loops.
     # ------------------------------------------------------------------
-    if pass_trace is None:
+    if _internal_pass:
+        pass_trace = None
+    elif pass_trace is None:
         pass_trace = []
 
     if not _internal_pass:
@@ -6307,9 +6179,28 @@ def solve_pipeline(
                         })
                     profile_entries = _normalise_station_profile(segment_profile_raw)
 
-                    inlet_ppm_profile, outlet_ppm_profile, treated_profile_length = (
-                        _profile_ppm_metrics(profile_entries, inj_ppm_main)
+                    treated_profile_length = sum(
+                        entry['length_km']
+                        for entry in profile_entries
+                        if entry['dra_ppm'] > 0.0
                     )
+
+                    inlet_ppm_profile = 0.0
+                    if profile_entries:
+                        for entry in profile_entries:
+                            if entry['dra_ppm'] > 0.0:
+                                inlet_ppm_profile = entry['dra_ppm']
+                                break
+
+                    outlet_ppm_profile = 0.0
+                    if profile_entries:
+                        for entry in reversed(profile_entries):
+                            if entry['dra_ppm'] > 0.0:
+                                outlet_ppm_profile = entry['dra_ppm']
+                                break
+
+                    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
+                        treated_profile_length = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
@@ -6812,7 +6703,6 @@ def solve_pipeline_with_types(
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
     priority_feasibility: bool = False,
-    pass_trace: list[str] | None = None,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -6821,10 +6711,6 @@ def solve_pipeline_with_types(
     except (TypeError, ValueError):
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
-
-    trace: list[str] | None = None
-    if pass_trace is not None:
-        trace = list(pass_trace)
 
     if stations:
         try:
@@ -6938,7 +6824,6 @@ def solve_pipeline_with_types(
                     segment_floors=segment_floors,
                     collect_state_audit=collect_state_audit,
                     priority_feasibility=priority_feasibility,
-                    pass_trace=trace,
                 )
                 if result.get("error"):
                     continue
@@ -7071,17 +6956,10 @@ def solve_pipeline_with_types(
     expand_all(0, [], [], [], [])
 
     if best_result is None:
-        failure = {
+        return {
             "error": True,
             "message": "No feasible pump combination found for stations.",
         }
-        if trace is not None:
-            failure["failure_detail"] = {"executed_passes": list(trace)}
-        return failure
-
-    if trace is not None:
-        best_result = dict(best_result)
-        best_result['executed_passes'] = list(trace)
 
     best_result['stations_used'] = best_stations
     return best_result
