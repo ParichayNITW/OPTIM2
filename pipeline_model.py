@@ -1842,10 +1842,7 @@ def _update_mainline_dra(
         else:
             ppm_out = _apply_shear(ppm_input)
             if inj_effective > 0.0:
-                if not is_origin:
-                    ppm_out += inj_effective
-                elif not pump_running:
-                    ppm_out += inj_effective
+                ppm_out += inj_effective
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
