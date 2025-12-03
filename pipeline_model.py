@@ -5858,7 +5858,19 @@ def solve_pipeline(
                         continue
 
                     # Compute downstream residual head after segment loss and elevation
-                    residual_next = int(round(sdh - sc['head_loss'] - stn_data['elev_delta']))
+                    elev_from = float(stn_data.get('elev', 0.0) or 0.0)
+                    if stn_data['idx'] + 1 < len(stations):
+                        elev_to = float(stations[stn_data['idx'] + 1].get('elev', 0.0) or 0.0)
+                    else:
+                        elev_to = float(terminal.get('elev', 0.0) or 0.0)
+                    rho_val = float(stn_data.get('rho', 0.0) or 0.0)
+                    elevation_loss = (
+                        max((elev_to - elev_from) * rho_val / 10000.0, 0.0)
+                        if rho_val > 0.0
+                        else 0.0
+                    )
+
+                    residual_next = int(round(sdh - sc['head_loss'] - elevation_loss))
 
                     # Compute minimum downstream requirement.  Use the cached baseline
                     # unless bypassing the next station, in which case recompute with
