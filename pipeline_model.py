@@ -1718,6 +1718,10 @@ def _update_mainline_dra(
             existing_queue.append((length, ppm_val))
 
     existing_queue = _merge_queue(existing_queue)
+    queue_has_zero_original = any(
+        float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+        for length, ppm in existing_queue
+    )
     existing_total = _queue_total_length(existing_queue)
 
     if existing_total > 0:
@@ -1827,7 +1831,10 @@ def _update_mainline_dra(
         else:
             ppm_out = _apply_shear(ppm_input)
             if inj_effective > 0.0:
-                ppm_out += inj_effective
+                if is_origin and pump_running:
+                    ppm_out = inj_effective
+                else:
+                    ppm_out += inj_effective
             elif not pump_running and inj_effective <= 0.0:
                 ppm_out = ppm_input
         ppm_out = max(ppm_out, 0.0)
@@ -2035,10 +2042,16 @@ def _update_mainline_dra(
             dra_segments.append((remaining_length, 0.0))
 
     # If the queue originally had no zero-ppm head/tail and we injected DRA at
-    # this station, drop any zero slices introduced by padding and fold their
-    # length into the last positive slice so the profile reflects only treated
-    # portions moving through the segment.
-    if inj_effective > 0.0 and not queue_contains_zero and dra_segments:
+    # this station, drop any zero slices introduced purely by padding when the
+    # segment is already fully represented. Skip this when we padded because the
+    # queue is shorter than the segment (remaining_length > 0) so head lengths
+    # are not artificially inflated.
+    if (
+        inj_effective > 0.0
+        and not queue_has_zero_original
+        and dra_segments
+        and (remaining_length <= 1e-9 or bool(existing_queue))
+    ):
         reclaimed = sum(
             float(length or 0.0)
             for length, ppm_val in dra_segments
