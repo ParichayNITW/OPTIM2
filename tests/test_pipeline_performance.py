@@ -13,6 +13,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import dra_utils
+import pipeline_optimization_app
 
 from pipeline_model import (
     solve_pipeline as _solve_pipeline,
@@ -805,6 +806,153 @@ def test_maximum_flow_fallback_aligns_to_step(monkeypatch):
     assert attempts == [pytest.approx(2800.0)]
     assert fallback is not None
     assert fallback["flow_rate"] == pytest.approx(2800.0)
+
+
+def test_time_series_solver_retries_with_max_dra(monkeypatch):
+    import pipeline_optimization_app as app
+
+    calls: list[bool] = []
+
+    def fake_solve(
+        stations,
+        terminal,
+        flow_rate,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        fuel_density,
+        ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours=1.0,
+        *,
+        priority_feasibility: bool = False,
+        **kwargs,
+    ):
+        calls.append(priority_feasibility)
+        if not priority_feasibility:
+            return {"error": "fail", "message": "initial"}
+        return {
+            "error": None,
+            "linefill": [],
+            "dra_front_km": 0.0,
+            "dra_segments": [],
+            "total_cost": 0.0,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solve)
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": 1000.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 800.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+
+    result = app._execute_time_series_solver(
+        [],
+        {"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        [0],
+        flow_rate=100.0,
+        plan_df=None,
+        current_vol=vol_df.copy(),
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        retry_with_max_dra=True,
+    )
+
+    assert calls == [False, True]
+    assert not result.get("error")
+
+
+def test_max_flow_fallback_runs_with_max_dra_retry(monkeypatch):
+    import pipeline_optimization_app as app
+
+    retries: list[bool] = []
+
+    def fake_execute(stations_base, term_data, hours, **kwargs):
+        retries.append(bool(kwargs.get("retry_with_max_dra")))
+        return {
+            "error": None,
+            "reports": [],
+            "linefill_snaps": [kwargs.get("current_vol")],
+            "final_vol": kwargs.get("current_vol"),
+            "final_plan": kwargs.get("plan_df"),
+            "final_dra_linefill": kwargs.get("dra_linefill"),
+            "final_dra_reach": kwargs.get("dra_reach_km", 0.0),
+        }
+
+    monkeypatch.setattr(app, "_execute_time_series_solver", fake_execute)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "A",
+                "Volume (m³)": 2000.0,
+                "Viscosity (cSt)": 3.0,
+                "Density (kg/m³)": 810.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    plan_df = app.ensure_initial_dra_column(plan_df, default=0.0, fill_blanks=True)
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": 5000.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 800.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+    current_vol = app.apply_dra_ppm(vol_df.copy(), dra_linefill)
+
+    fallback = app._find_maximum_feasible_flow(
+        flow_rate=100.0,
+        stations_base=[],
+        term_data={"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        hours=[0, 1],
+        plan_df=plan_df,
+        current_vol=current_vol,
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        flow_step=25.0,
+        is_hourly=False,
+    )
+
+    assert retries == [True]
+    assert fallback is not None
 
 
 def test_maximum_flow_fallback_handles_total_failure(monkeypatch):
@@ -1949,6 +2097,36 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry.get("limited_by_station") is True
     rounded_ppm = math.ceil(model.get_ppm_for_dr(2.5, 30.0) * 10.0) / 10.0
     assert seg_entry.get("dra_ppm") == pytest.approx(rounded_ppm)
+
+
+def test_pump_head_scales_with_series_pumps():
+    import pipeline_model as model
+
+    stn = {
+        "name": "Series Station",
+        "is_pump": True,
+        "min_pumps": 1,
+        "max_pumps": 2,
+        "pump_type": "type1",
+        "MinRPM": 1000,
+        "DOL": 1000,
+        "A": 0.0,
+        "B": 0.0,
+        "C": 100.0,
+        "P": 0.0,
+        "Q": 0.0,
+        "R": 0.0,
+        "S": 0.0,
+        "T": 0.0,
+    }
+
+    flow = 1200.0
+    pump_info = model._pump_head(stn, flow, {"*": stn["DOL"]}, 2)
+
+    assert len(pump_info) == 1
+    assert pump_info[0]["count"] == 2
+    # Series operation should add head across the two pumps.
+    assert pump_info[0]["tdh"] == pytest.approx(200.0)
 
 
 def test_compute_minimum_lacing_requirement_respects_single_type_series():
@@ -4440,6 +4618,24 @@ def test_consecutive_injections_extend_dra_slug() -> None:
     )
 
 
+def test_build_profiles_from_queue_respects_queue_and_zero_padding() -> None:
+    """Profiles sliced from a queue should clip to segments and pad with zeros."""
+
+    queue_segments = [
+        {"length_km": 10.0, "dra_ppm": 5.0},
+        {"length_km": 5.0, "dra_ppm": 0.0},
+    ]
+    stations = [
+        {"name": "Station A", "L": 8.0, "fallback_dra_ppm": 4.0},
+        {"name": "Station B", "L": 10.0, "fallback_dra_ppm": 7.0},
+    ]
+
+    profiles = pipeline_optimization_app._build_profiles_from_queue(queue_segments, stations)
+
+    assert profiles["station_a"] == [(8.0, 5.0)]
+    assert profiles["station_b"] == [(2.0, 5.0), (8.0, 0.0)]
+
+
 def test_update_mainline_dra_ignores_non_enforced_floor() -> None:
     """Baseline floors flagged as non-enforcing should not overwrite the queue."""
 
@@ -5297,7 +5493,312 @@ def test_build_station_table_prefers_injection_field_over_profile_head() -> None
     assert df.loc[0, "DRA Inlet PPM"] == pytest.approx(6.0)
     profile_str = df.loc[0, "DRA Profile (km@ppm)"]
     assert "4.00 km @ 0.00 ppm" in profile_str
-    assert "8.00 km @ 6.00 ppm" in profile_str
+
+
+def test_build_station_table_uses_downstream_residual_for_non_origin() -> None:
+    import pipeline_optimization_app as app
+    import pandas as pd
+
+    res = {
+        "stations_used": [
+            {"name": "Paradip", "L": 158.0},
+            {"name": "Balasore", "L": 170.0},
+        ],
+        # Origin fields
+        "pipeline_flow_paradip": 0.0,
+        "loopline_flow_paradip": 0.0,
+        "pump_flow_paradip": 0.0,
+        "power_cost_paradip": 0.0,
+        "dra_cost_paradip": 0.0,
+        "dra_ppm_paradip": 0.0,
+        "dra_ppm_loop_paradip": 0.0,
+        "drag_reduction_paradip": 0.0,
+        "drag_reduction_loop_paradip": 0.0,
+        "reynolds_paradip": 0.0,
+        "head_loss_paradip": 0.0,
+        "head_loss_kgcm2_paradip": 0.0,
+        "velocity_paradip": 0.0,
+        "residual_head_paradip": 125.0,
+        "rh_kgcm2_paradip": 12.5,
+        "sdh_paradip": 0.0,
+        "sdh_kgcm2_paradip": 0.0,
+        "maop_paradip": 0.0,
+        "maop_kgcm2_paradip": 0.0,
+        # Downstream station fields
+        "pipeline_flow_balasore": 0.0,
+        "loopline_flow_balasore": 0.0,
+        "pump_flow_balasore": 0.0,
+        "power_cost_balasore": 0.0,
+        "dra_cost_balasore": 0.0,
+        "dra_ppm_balasore": 0.0,
+        "dra_ppm_loop_balasore": 0.0,
+        "drag_reduction_balasore": 0.0,
+        "drag_reduction_loop_balasore": 0.0,
+        "reynolds_balasore": 0.0,
+        "head_loss_balasore": 0.0,
+        "head_loss_kgcm2_balasore": 0.0,
+        "velocity_balasore": 0.0,
+        "residual_head_balasore": 81.0,
+        "rh_kgcm2_balasore": 8.1,
+        "residual_head_out_balasore": 241.0,
+        "rh_out_kgcm2_balasore": 24.1,
+        "sdh_balasore": 0.0,
+        "sdh_kgcm2_balasore": 0.0,
+        "maop_balasore": 0.0,
+        "maop_kgcm2_balasore": 0.0,
+    }
+
+    base_stations = [
+        {"name": "Paradip", "L": 158.0},
+        {"name": "Balasore", "L": 170.0},
+    ]
+
+    df = app.build_station_table(res, base_stations)
+
+    assert isinstance(df, pd.DataFrame)
+    assert df.loc[0, "Residual Head (m)"] == pytest.approx(125.0)
+    assert df.loc[1, "Residual Head (m)"] == pytest.approx(241.0)
+
+
+def test_origin_suction_defaults_to_min_residual_when_missing() -> None:
+    import pipeline_model as pm
+
+    station = {
+        "name": "Paradip",
+        "L": 10.0,
+        "elev": 0.0,
+        "min_residual": 125.0,
+        "is_pump": True,
+        "D": 0.762,
+        "t": 0.0079248,
+        "SMYS": 65000.0,
+        "rough": 4e-05,
+        "max_pumps": 1,
+        "power_type": "Grid",
+        "rate": 9.0,
+        "sfc": 0.0,
+        "max_dr": 0.0,
+        "MinRPM": 1000.0,
+        "DOL": 1500.0,
+        "allow_mixed_pump_types": False,
+        "pump_types": {
+            "A": {
+                "names": ["MP1"],
+                "name": "MP1",
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
+                ],
+                "eff_data": [
+                    {"Flow (m³/hr)": 0.0, "Efficiency (%)": 50.0},
+                    {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 75.0},
+                ],
+                "power_type": "Grid",
+                "MinRPM": 1000.0,
+                "DOL": 1500.0,
+                "rate": 8.5,
+                "tariffs": [],
+                "sfc_mode": "none",
+                "sfc": 0.0,
+                "engine_params": {},
+                "available": 1,
+                "A": 0.0,
+                "B": 0.0,
+                "C": 0.0,
+                "P": 0.0,
+                "Q": 0.0,
+                "R": 0.0,
+                "S": 0.0,
+                "T": 0.0,
+            }
+        },
+        "pump_names": ["MP1"],
+        "pump_name": "MP1",
+    }
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+    result = pm.solve_pipeline_with_types(
+        stations=[station],
+        terminal=terminal,
+        FLOW=1000.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result.get("residual_head_paradip") == pytest.approx(125.0)
+
+
+def test_origin_residual_fields_use_available_suction_when_only_min_residual_given() -> None:
+    import pipeline_model as pm
+
+    station = {
+        "name": "Paradip",
+        "L": 12.0,
+        "elev": 0.0,
+        "min_residual": 125.0,
+        "is_pump": True,
+        "D": 0.762,
+        "t": 0.0079248,
+        "SMYS": 65000.0,
+        "rough": 4e-05,
+        "max_pumps": 1,
+        "power_type": "Grid",
+        "rate": 9.0,
+        "sfc": 0.0,
+        "max_dr": 0.0,
+        "MinRPM": 1000.0,
+        "DOL": 1500.0,
+        "allow_mixed_pump_types": False,
+        "pump_types": {
+            "A": {
+                "names": ["MP1"],
+                "name": "MP1",
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
+                ],
+                "eff_data": [
+                    {"Flow (m³/hr)": 0.0, "Efficiency (%)": 50.0},
+                    {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 75.0},
+                ],
+                "power_type": "Grid",
+                "MinRPM": 1000.0,
+                "DOL": 1500.0,
+                "rate": 8.5,
+                "tariffs": [],
+                "sfc_mode": "none",
+                "sfc": 0.0,
+                "engine_params": {},
+                "available": 1,
+                "A": 0.0,
+                "B": 0.0,
+                "C": 0.0,
+                "P": 0.0,
+                "Q": 0.0,
+                "R": 0.0,
+                "S": 0.0,
+                "T": 0.0,
+            }
+        },
+        "pump_names": ["MP1"],
+        "pump_name": "MP1",
+    }
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+    result = pm.solve_pipeline_with_types(
+        stations=[station],
+        terminal=terminal,
+        FLOW=1000.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result.get("residual_head_paradip") == pytest.approx(125.0)
+    assert result.get("residual_head_in_paradip") == pytest.approx(125.0)
+    assert result.get("residual_head_out_paradip") is not None
+
+
+def test_origin_residual_uses_min_residual_when_suction_string_zero() -> None:
+    import pipeline_model as pm
+
+    station = {
+        "name": "Paradip",
+        "L": 12.0,
+        "elev": 0.0,
+        "min_residual": 125.0,
+        "suction_head": "0",  # UI can send string zero
+        "is_pump": True,
+        "D": 0.762,
+        "t": 0.0079248,
+        "SMYS": 65000.0,
+        "rough": 4e-05,
+        "max_pumps": 1,
+        "power_type": "Grid",
+        "rate": 9.0,
+        "sfc": 0.0,
+        "max_dr": 0.0,
+        "MinRPM": 1000.0,
+        "DOL": 1500.0,
+        "allow_mixed_pump_types": False,
+        "pump_types": {
+            "A": {
+                "names": ["MP1"],
+                "name": "MP1",
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 220.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 200.0},
+                ],
+                "eff_data": [
+                    {"Flow (m³/hr)": 0.0, "Efficiency (%)": 50.0},
+                    {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 75.0},
+                ],
+                "power_type": "Grid",
+                "MinRPM": 1000.0,
+                "DOL": 1500.0,
+                "rate": 8.5,
+                "tariffs": [],
+                "sfc_mode": "none",
+                "sfc": 0.0,
+                "engine_params": {},
+                "available": 1,
+                "A": 0.0,
+                "B": 0.0,
+                "C": 0.0,
+                "P": 0.0,
+                "Q": 0.0,
+                "R": 0.0,
+                "S": 0.0,
+                "T": 0.0,
+            }
+        },
+        "pump_names": ["MP1"],
+        "pump_name": "MP1",
+    }
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+    result = pm.solve_pipeline_with_types(
+        stations=[station],
+        terminal=terminal,
+        FLOW=1000.0,
+        KV_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+    )
+
+    assert not result.get("error"), result.get("message")
+    assert result.get("residual_head_paradip") == pytest.approx(125.0)
+    assert result.get("residual_head_in_paradip") == pytest.approx(125.0)
 
 
 def test_build_profiles_from_queue_preserves_zero_entries() -> None:

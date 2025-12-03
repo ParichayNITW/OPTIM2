@@ -3724,6 +3724,8 @@ def build_summary_dataframe(
         else:
             speed_map = OrderedDict()
         speed_values = [speed_map.get(suffix, np.nan) for suffix in speed_suffixes]
+        rh_m, rh_kg = residual_pair(res, key, is_origin=idx == 0)
+
         post_values = [
             res.get(f"efficiency_{key}", 0.0),
             res.get(f"pump_bkw_{key}", 0.0),
@@ -3732,8 +3734,8 @@ def build_summary_dataframe(
             res.get(f"head_loss_{key}", 0.0),
             res.get(f"head_loss_kgcm2_{key}", 0.0),
             res.get(f"velocity_{key}", 0.0),
-            res.get(f"residual_head_{key}", 0.0),
-            res.get(f"rh_kgcm2_{key}", 0.0),
+            rh_m,
+            rh_kg,
             res.get(f"sdh_{key}", 0.0),
             res.get(f"sdh_kgcm2_{key}", 0.0),
             res.get(f"maop_{key}", 0.0),
@@ -3815,7 +3817,6 @@ def _build_profiles_from_queue(
         return {}
 
     queue = _normalise_queue_segments(queue_segments)
-    queue_present = bool(queue)
 
     profiles: dict[str, list[tuple[float, float]]] = {}
     offset = 0.0
@@ -3829,38 +3830,36 @@ def _build_profiles_from_queue(
             offset += 0.0
             continue
 
-        seg_start = offset
-        seg_end = offset + seg_length
-        entries: list[tuple[float, float]] = []
+        profile_slice = pipeline_model._segment_profile_from_queue(  # type: ignore[attr-defined]
+            queue,
+            offset,
+            seg_length,
+        )
 
-        cursor = 0.0
-        for length_val, ppm_val in queue:
-            next_cursor = cursor + length_val
-            overlap_start = max(cursor, seg_start)
-            overlap_end = min(next_cursor, seg_end)
-            overlap = overlap_end - overlap_start
-            if overlap > 1e-9:
-                ppm_clean = ppm_val if ppm_val > 0.0 else 0.0
-                entries.append((overlap, ppm_clean))
-            cursor = next_cursor
-            if cursor >= seg_end - 1e-9:
-                break
+        entries: list[tuple[float, float]] = []
+        for length_val, ppm_val in profile_slice:
+            try:
+                length_clean = float(length_val or 0.0)
+            except (TypeError, ValueError):
+                length_clean = 0.0
+            if length_clean <= 0.0:
+                continue
+            try:
+                ppm_clean = float(ppm_val or 0.0)
+            except (TypeError, ValueError):
+                ppm_clean = 0.0
+            if pd.isna(ppm_clean) or ppm_clean < 0.0:
+                ppm_clean = 0.0
+            entries.append((length_clean, ppm_clean))
 
         treated = sum(length for length, _ppm in entries)
         untreated = max(seg_length - treated, 0.0)
-        if untreated > 1e-6:
-            # When no upstream queue exists, keep the remainder explicit at 0 ppm
-            # instead of fabricating fallback injection.
-            fallback_val = 0.0
-            if queue_present:
-                fallback = stn.get("fallback_dra_ppm", 0.0)
-                try:
-                    fallback_val = float(fallback or 0.0)
-                except (TypeError, ValueError):
-                    fallback_val = 0.0
-                if pd.isna(fallback_val) or fallback_val < 0.0:
-                    fallback_val = 0.0
-            entries.append((untreated, fallback_val))
+        if untreated > 1e-9:
+            if entries and abs(entries[-1][1]) <= 1e-9:
+                prev_len, prev_ppm = entries[-1]
+                entries[-1] = (prev_len + untreated, prev_ppm)
+            else:
+                entries.append((untreated, 0.0))
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
@@ -3963,6 +3962,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
 
+        res_m, res_kg = residual_pair(res, key, is_origin=idx == 0)
+
         row = {
             'Station': station_display,
             'Pump Name': pump_name,
@@ -3981,8 +3982,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
             'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
             'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
-            'Residual Head (m)': float(res.get(f"residual_head_{key}", 0.0) or 0.0),
-            'Residual Head (kg/cm²)': float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+            'Residual Head (m)': res_m,
+            'Residual Head (kg/cm²)': res_kg,
             'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
             'SDH (kg/cm²)': float(res.get(f"sdh_kgcm2_{key}", 0.0) or 0.0),
             'MAOP (m)': float(res.get(f"maop_{key}", 0.0) or 0.0),
@@ -4198,6 +4199,31 @@ def fmt_pressure(res, key_m, key_kg):
     kg = res.get(key_kg, 0.0) or 0.0
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
+
+def residual_pair(res: Mapping, key: str, is_origin: bool) -> tuple[float, float]:
+    """Return residual head (m, kg/cm²) preferring downstream values for non-origin stations."""
+
+    if is_origin:
+        return (
+            float(res.get(f"residual_head_{key}", 0.0) or 0.0),
+            float(res.get(f"rh_kgcm2_{key}", 0.0) or 0.0),
+        )
+
+    m = res.get(f"residual_head_out_{key}")
+    kg = res.get(f"rh_out_kgcm2_{key}")
+    if m is None:
+        m = res.get(f"residual_head_{key}", 0.0)
+    if kg is None:
+        kg = res.get(f"rh_kgcm2_{key}", 0.0)
+    return float(m or 0.0), float(kg or 0.0)
+
+
+def fmt_residual(res: Mapping, key: str, is_origin: bool) -> str:
+    """Format residual head, using downstream values for non-origin stations."""
+
+    m, kg = residual_pair(res, key, is_origin)
+    return f"{m:.2f} m / {kg:.2f} kg/cm²"
+
 def _collect_search_depth_kwargs() -> dict[str, float | int]:
     """Return validated search-depth parameters for backend solvers."""
 
@@ -4278,6 +4304,7 @@ def solve_pipeline(
     pump_shear_rate: float | None = None,
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
+    priority_feasibility: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4417,6 +4444,7 @@ def solve_pipeline(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
+                priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
         else:
@@ -4439,6 +4467,7 @@ def solve_pipeline(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail_effective,
                 segment_floors=baseline_segment_floors,
+                priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
         # Append a human-readable flow pattern name based on loop usage
@@ -4583,7 +4612,7 @@ if auto_batch:
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                         add_speed_columns(row, res, stn)
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                        row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                        row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                         _ppm = res.get(f"dra_ppm_{key}", 0.0)
                         row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4617,7 +4646,7 @@ if auto_batch:
                         row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                         add_speed_columns(row, res, stn)
                         row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                        row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                        row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                         _ppm = res.get(f"dra_ppm_{key}", 0.0)
                         row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                         row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4662,7 +4691,7 @@ if auto_batch:
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
                             row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4700,7 +4729,7 @@ if auto_batch:
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
                             row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -4752,7 +4781,7 @@ if auto_batch:
                             row[f"Num Pumps {stn['name']}"] = res.get(f"num_pumps_{key}", "")
                             add_speed_columns(row, res, stn)
                             row[f"SDH {stn['name']}"] = fmt_pressure(res, f"sdh_{key}", f"sdh_kgcm2_{key}")
-                            row[f"RH {stn['name']}"] = fmt_pressure(res, f"residual_head_{key}", f"rh_kgcm2_{key}")
+                            row[f"RH {stn['name']}"] = fmt_residual(res, key, is_origin=idx == 1)
                             _ppm = res.get(f"dra_ppm_{key}", 0.0)
                             row[f"DRA PPM {stn['name']}"] = _ppm if float(_ppm or 0) > 0 else "NIL"
                             row[f"Power Cost {stn['name']}"] = res.get(f"power_cost_{key}", "")
@@ -5410,6 +5439,7 @@ def _execute_time_series_solver(
     pump_shear_rate: float,
     total_length: float,
     sub_steps: int = 1,
+    retry_with_max_dra: bool = False,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5512,6 +5542,33 @@ def _execute_time_series_solver(
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail,
             )
+
+            if res.get("error") and retry_with_max_dra:
+                stns_retry = copy.deepcopy(stations_base)
+                res_retry = solve_pipeline(
+                    stns_retry,
+                    term_data,
+                    flow_rate,
+                    kv_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    fuel_density,
+                    ambient_temp,
+                    dra_linefill_local,
+                    dra_reach_local,
+                    mop_kgcm2,
+                    hours=1.0,
+                    start_time=start_str,
+                    pump_shear_rate=pump_shear_rate,
+                    forced_origin_detail=forced_detail,
+                    priority_feasibility=True,
+                )
+                if not res_retry.get("error"):
+                    res = res_retry
+                else:
+                    res = res_retry
 
             block_cost += res.get("total_cost", 0.0)
 
@@ -5838,6 +5895,7 @@ def _find_maximum_feasible_flow(
             pump_shear_rate=pump_shear_rate,
             total_length=total_length,
             sub_steps=sub_steps,
+            retry_with_max_dra=True,
         )
 
         if not solver_result.get("error"):
@@ -6266,6 +6324,7 @@ if not auto_batch:
                 pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                 total_length=total_length,
                 sub_steps=sub_steps,
+                retry_with_max_dra=True,
             )
         elapsed = time.perf_counter() - start_time
 
@@ -8505,7 +8564,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     key = candidates[-1] if candidates else base_key
                 else:
                     key = base_key
-                rh_val = res.get(f'residual_head_{key}', 0.0)
+                rh_val, _ = residual_pair(res, key, is_origin=i == 0)
                 rh.append(rh_val)
                 names.append(base)
                 mesh_x.append(chainages[i])
@@ -8737,7 +8796,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         dra_cost_i = float(resi.get(f"dra_cost_{key}", 0.0) or 0.0)
                         power_cost_i = float(resi.get(f"power_cost_{key}", 0.0) or 0.0)
                         eff_i = float(resi.get(f"efficiency_{key}", 100.0))
-                        rh_i = float(resi.get(f"residual_head_{key}", 0.0) or 0.0)
+                        rh_i, _ = residual_pair(resi, key, is_origin=idx == 0)
                         total_cost += dra_cost_i + power_cost_i
                         power_cost += power_cost_i
                         dra_cost += dra_cost_i
