@@ -3982,10 +3982,11 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             except (TypeError, ValueError):
                 return float(default)
 
-        # Prefer downstream residuals for non-origin stations.  Use the
-        # available suction head (user input) for the origin.  Look up both the
-        # normalised key and any alternate/original casing so UI tables stay in
-        # sync with solver outputs.
+        # Prefer inlet residuals for non-origin stations so the table shows the
+        # residual head entering each station (previous SDH - losses -
+        # elevation). Use the available suction head (user input) for the
+        # origin. Look up both the normalised key and any alternate/original
+        # casing so UI tables stay in sync with solver outputs.
         if idx == 0:
             res_m = _float_or_none(
                 _get_station_field("residual_head", key, stn.get("orig_name") if isinstance(stn, dict) else None)
@@ -3999,10 +4000,10 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                 res_kg = 0.0
         else:
             res_m = _float_or_none(
-                _get_station_field("residual_head_out", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+                _get_station_field("residual_head_in", key, stn.get("orig_name") if isinstance(stn, dict) else None)
             )
             res_kg = _float_or_none(
-                _get_station_field("rh_out_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+                _get_station_field("rh_in_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
             )
             if res_m is None:
                 res_m = 0.0
