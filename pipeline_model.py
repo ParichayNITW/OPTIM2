@@ -1402,6 +1402,46 @@ def _normalise_station_profile(
     return normalised
 
 
+def _profile_ppm_metrics(
+    profile_entries: Sequence[Mapping[str, float]] | None,
+    inj_ppm_main: float,
+) -> tuple[float, float, float]:
+    """Return inlet/outlet ppm and treated length for a station profile.
+
+    The inlet ppm falls back to the injected concentration when provided; if no
+    injection is present, the first positive slice in the profile is used.
+    Outlet ppm is taken from the last positive slice.  Treated length sums all
+    positive-ppm slices, and is zeroed when neither injected nor profile ppm is
+    positive.
+    """
+
+    entries = list(profile_entries or [])
+    treated_profile_length = sum(
+        entry.get("length_km", 0.0) for entry in entries if entry.get("dra_ppm", 0.0) > 0.0
+    )
+
+    try:
+        inlet_ppm_profile = float(inj_ppm_main or 0.0)
+    except (TypeError, ValueError):
+        inlet_ppm_profile = 0.0
+    if inlet_ppm_profile <= 0.0:
+        for entry in entries:
+            if entry.get("dra_ppm", 0.0) > 0.0:
+                inlet_ppm_profile = float(entry.get("dra_ppm", 0.0) or 0.0)
+                break
+
+    outlet_ppm_profile = 0.0
+    for entry in reversed(entries):
+        if entry.get("dra_ppm", 0.0) > 0.0:
+            outlet_ppm_profile = float(entry.get("dra_ppm", 0.0) or 0.0)
+            break
+
+    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
+        treated_profile_length = 0.0
+
+    return inlet_ppm_profile, outlet_ppm_profile, treated_profile_length
+
+
 def _predict_effective_injection(
     ppm_requested: float,
     kv: float,
@@ -6261,28 +6301,9 @@ def solve_pipeline(
                         })
                     profile_entries = _normalise_station_profile(segment_profile_raw)
 
-                    treated_profile_length = sum(
-                        entry['length_km']
-                        for entry in profile_entries
-                        if entry['dra_ppm'] > 0.0
+                    inlet_ppm_profile, outlet_ppm_profile, treated_profile_length = (
+                        _profile_ppm_metrics(profile_entries, inj_ppm_main)
                     )
-
-                    inlet_ppm_profile = 0.0
-                    if profile_entries:
-                        for entry in profile_entries:
-                            if entry['dra_ppm'] > 0.0:
-                                inlet_ppm_profile = entry['dra_ppm']
-                                break
-
-                    outlet_ppm_profile = 0.0
-                    if profile_entries:
-                        for entry in reversed(profile_entries):
-                            if entry['dra_ppm'] > 0.0:
-                                outlet_ppm_profile = entry['dra_ppm']
-                                break
-
-                    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
-                        treated_profile_length = 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
