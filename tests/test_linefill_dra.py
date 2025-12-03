@@ -1763,3 +1763,40 @@ def test_origin_injection_does_not_double_head_length() -> None:
     first_len, first_ppm = dra_segments[0]
     assert first_len == pytest.approx(pumped_length)
     assert first_ppm > 0.0
+
+
+def test_origin_profile_drops_padding_zero_slice_when_injecting() -> None:
+    """Padding zeros from a short queue should be folded into treated slices."""
+
+    queue = [
+        {"length_km": 10.0, "dra_ppm": 4.0},
+        {"length_km": 10.0, "dra_ppm": 6.0},
+    ]
+    stn = {
+        "idx": 0,
+        "name": "Origin",
+        "L": 30.0,
+        "d_inner": 0.746,
+        "kv": 3.0,
+    }
+    opt = {
+        "dra_ppm_main": 5.0,
+        "nop": 1,
+    }
+
+    dra_segments, _queue_after, inj_ppm_main, floor_req = _update_mainline_dra(
+        queue,
+        stn,
+        opt,
+        stn["L"],
+        flow_m3h=0.0,
+        hours=1.0,
+        pump_running=False,
+        is_origin=True,
+    )
+
+    assert inj_ppm_main == pytest.approx(5.0)
+    assert not floor_req
+    assert dra_segments, "Segment profile should not be empty"
+    assert all(ppm > 0.0 for _length, ppm in dra_segments)
+    assert sum(length for length, _ppm in dra_segments) == pytest.approx(stn["L"])

@@ -2034,6 +2034,28 @@ def _update_mainline_dra(
         else:
             dra_segments.append((remaining_length, 0.0))
 
+    # If the queue originally had no zero-ppm head/tail and we injected DRA at
+    # this station, drop any zero slices introduced by padding and fold their
+    # length into the last positive slice so the profile reflects only treated
+    # portions moving through the segment.
+    if inj_effective > 0.0 and not queue_contains_zero and dra_segments:
+        reclaimed = sum(
+            float(length or 0.0)
+            for length, ppm_val in dra_segments
+            if float(ppm_val or 0.0) <= 1e-9 and float(length or 0.0) > 0.0
+        )
+        dra_segments = [
+            (float(length), float(ppm_val))
+            for length, ppm_val in dra_segments
+            if float(ppm_val or 0.0) > 1e-9 and float(length or 0.0) > 0.0
+        ]
+        if reclaimed > 0.0:
+            if dra_segments:
+                last_len, last_ppm = dra_segments[-1]
+                dra_segments[-1] = (last_len + reclaimed, last_ppm)
+            else:
+                dra_segments = [(reclaimed, float(inj_effective))]
+
     has_positive = any(float(ppm_val) > 0.0 for _length, ppm_val in dra_segments)
     if not has_positive:
         dra_segments = []
