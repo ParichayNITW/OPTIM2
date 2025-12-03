@@ -1849,20 +1849,19 @@ def _update_mainline_dra(
             for length, ppm in pumped_adjusted
             if float(length or 0.0) > 0.0
         ]
-        if inj_effective > 0.0:
-            tail_queue = list(remaining_queue)
-        else:
-            tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
+        tail_queue = list(remaining_queue)
+        combined_entries: list[tuple[float, float]] = []
+        combined_entries.extend(advected_portion)
+        combined_entries.extend(tail_queue)
     else:
         advected_portion = pumped_adjusted
         if inj_effective > 0.0:
             tail_queue = list(remaining_queue)
         else:
             tail_queue = list(existing_queue) if pumped_differs else list(remaining_queue)
-
-    combined_entries: list[tuple[float, float]] = []
-    combined_entries.extend(advected_portion)
-    combined_entries.extend(tail_queue)
+        combined_entries = []
+        combined_entries.extend(advected_portion)
+        combined_entries.extend(tail_queue)
 
     combined_total = _queue_total_length(combined_entries)
 
@@ -2069,12 +2068,18 @@ def _update_mainline_dra(
             else:
                 dra_segments = [(reclaimed, float(inj_effective))]
 
-    has_positive = any(float(ppm_val) > 0.0 for _length, ppm_val in dra_segments)
-    if not has_positive:
+    all_zero_profile = bool(dra_segments) and all(
+        float(ppm_val or 0.0) <= 0.0 for _length, ppm_val in dra_segments
+    )
+
+    # Retain zero-ppm profiles when they originate from the input queue or
+    # explicit zero injection, but discard zeros introduced solely by shear/padding
+    # when the queue previously contained no untreated spans.
+    if all_zero_profile and not queue_has_zero_original and inj_effective <= 0.0:
         dra_segments = []
 
     if floor_requires_injection and inj_effective <= 0.0:
-        if not has_positive:
+        if not any(float(ppm_val) > 0.0 for _length, ppm_val in dra_segments):
             dra_segments = []
 
     return dra_segments, queue_after, inj_requested, floor_requires_injection
