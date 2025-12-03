@@ -4213,11 +4213,15 @@ def solve_pipeline(
                                 lower_bound = int(dra_bounds[0])
                             except (TypeError, ValueError):
                                 lower_bound = 0
-                        if lower_bound <= 0:
-                            dmin = 0
+                        if priority_feasibility:
+                            dmin = max(lower_bound, 0)
+                            dmax = max_dr_main
                         else:
-                            dmin = max(lower_bound, coarse_dr_main - span)
-                        dmax = min(max_dr_main, coarse_dr_main + span)
+                            if lower_bound <= 0:
+                                dmin = 0
+                            else:
+                                dmin = max(lower_bound, coarse_dr_main - span)
+                            dmax = min(max_dr_main, coarse_dr_main + span)
                         if dmax < dmin:
                             dmax = dmin
                         if dmin > 0 or dmax < max_dr_main:
