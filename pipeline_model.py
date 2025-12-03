@@ -3704,6 +3704,10 @@ def solve_pipeline(
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
 
+    trace: list[str] | None = None
+    if pass_trace is not None:
+        trace = list(pass_trace)
+
     try:
         state_cost_margin_pct = float(state_cost_margin_pct)
     except (TypeError, ValueError):
@@ -6781,6 +6785,7 @@ def solve_pipeline_with_types(
     segment_floors: list[dict] | tuple[dict, ...] | None = None,
     collect_state_audit: bool = False,
     priority_feasibility: bool = False,
+    pass_trace: list[str] | None = None,
 ) -> dict:
     """Enumerate pump type combinations at all stations and call ``solve_pipeline``."""
 
@@ -7038,13 +7043,13 @@ def solve_pipeline_with_types(
             "error": True,
             "message": "No feasible pump combination found for stations.",
         }
-        if pass_trace is not None:
-            failure["failure_detail"] = {"executed_passes": list(pass_trace)}
+        if trace is not None:
+            failure["failure_detail"] = {"executed_passes": list(trace)}
         return failure
 
-    if pass_trace is not None:
+    if trace is not None:
         best_result = dict(best_result)
-        best_result['executed_passes'] = list(pass_trace)
+        best_result['executed_passes'] = list(trace)
 
     best_result['stations_used'] = best_stations
     return best_result
