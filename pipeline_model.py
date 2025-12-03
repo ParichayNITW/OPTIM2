@@ -6323,8 +6323,12 @@ def solve_pipeline(
         # lowest-cost state for each residual (already enforced by ``bucket``)
         # and globally prune to the top ``STATE_TOP_K`` states or those within
         # ``STATE_COST_MARGIN`` of the best.  This keeps the search space
-        # manageable while preserving near-optimal candidates.
-        if _exhaustive_pass:
+        # manageable while preserving near-optimal candidates.  When
+        # ``priority_feasibility`` is active we skip this pruning so costly
+        # high-head states remain available for downstream feasibility checks.
+        if priority_feasibility:
+            states = new_states
+        elif _exhaustive_pass:
             items = sorted(new_states.items(), key=lambda kv: kv[1]['cost'])
             protected_items = [
                 (key, data) for key, data in items if data.get('protected')

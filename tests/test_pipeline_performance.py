@@ -5655,6 +5655,123 @@ def test_build_station_table_handles_mixed_case_inlet_keys() -> None:
     assert df.loc[1, "Residual Head (m)"] == pytest.approx(201.0)
 
 
+def test_priority_feasibility_skips_cost_pruning() -> None:
+    """Priority-feasibility runs should keep high-head states available."""
+
+    import pipeline_model as pm
+
+    stations = [
+        {
+            "name": "A",
+            "elev": 0.0,
+            "is_pump": True,
+            "D": 0.5,
+            "t": 0.01,
+            "SMYS": 65000,
+            "rough": 4e-05,
+            "L": 10.0,
+            "max_pumps": 1,
+            "rate": 10.0,
+            "power_type": "Diesel",
+            "MinRPM": 1000,
+            "DOL": 3000,
+            "pump_combo": {"type1": 1},
+            "pump_types": {
+                "type1": {
+                    "power_type": "Diesel",
+                    "MinRPM": 1000,
+                    "DOL": 3000,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 400.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 380.0},
+                    ],
+                    "eff_data": [
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 50.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 55.0},
+                    ],
+                }
+            },
+            "min_residual": 20.0,
+        },
+        {
+            "name": "B",
+            "elev": 0.0,
+            "is_pump": True,
+            "D": 0.5,
+            "t": 0.01,
+            "SMYS": 65000,
+            "rough": 4e-05,
+            "L": 10.0,
+            "max_pumps": 1,
+            "rate": 10.0,
+            "power_type": "Diesel",
+            "MinRPM": 1000,
+            "DOL": 2000,
+            "pump_combo": {"type1": 1},
+            "pump_types": {
+                "type1": {
+                    "power_type": "Diesel",
+                    "MinRPM": 1000,
+                    "DOL": 2000,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 80.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 75.0},
+                    ],
+                    "eff_data": [
+                        {"Flow (m³/hr)": 0.0, "Efficiency (%)": 60.0},
+                        {"Flow (m³/hr)": 1000.0, "Efficiency (%)": 62.0},
+                    ],
+                }
+            },
+            "min_residual": 50.0,
+        },
+    ]
+
+    terminal = {"name": "Terminal", "min_residual": 0.0, "elev": 0.0}
+
+    common_kwargs = dict(
+        FLOW=500.0,
+        KV_list=[0.0, 0.0],
+        rho_list=[850.0, 850.0],
+        RateDRA=0.0,
+        Price_HSD=100.0,
+        Fuel_density=0.85,
+        Ambient_temp=25.0,
+        linefill=[],
+        dra_reach_km=0.0,
+        hours=1.0,
+        start_time="00:00",
+        dra_step=5,
+        rpm_step=500,
+        state_top_k=1,
+        state_cost_margin=0.0,
+        state_cost_margin_pct=0.0,
+        enumerate_loops=False,
+        segment_slices=[[] for _ in stations],
+        collect_state_audit=True,
+    )
+
+    blocked = pm.solve_pipeline(stations, terminal, **common_kwargs)
+    audits_blocked = blocked.get("state_audit") or []
+    assert audits_blocked, "Blocked run should produce audit entries"
+    blocked_states = audits_blocked[0].get("carried_forward", 0)
+    assert blocked_states >= 1
+
+    rescued = pm.solve_pipeline(
+        stations,
+        terminal,
+        **common_kwargs,
+        priority_feasibility=True,
+    )
+
+    assert not rescued.get("error"), rescued.get("message")
+    audits = rescued.get("state_audit") or []
+    assert audits, "State audit should be populated"
+    rescued_states = audits[0].get("carried_forward", 0)
+
+    assert rescued_states >= blocked_states
+
+
 def test_origin_suction_defaults_to_min_residual_when_missing() -> None:
     import pipeline_model as pm
 
