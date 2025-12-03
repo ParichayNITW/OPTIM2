@@ -1683,3 +1683,38 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     assert forced_zero["num_pumps_station_b"] == 1
     assert forced_zero["total_cost"] > optimal["total_cost"]
     assert forced_zero["residual_head_station_a"] == optimal["residual_head_station_a"]
+
+def test_origin_injection_overrides_zero_head_batch() -> None:
+    """Origin injection should lace the pumped head even if incoming ppm is zero."""
+
+    queue = [(10.0, 0.0)]
+    stn = {
+        "idx": 0,
+        "name": "Origin",
+        "L": 10.0,
+        "d_inner": 0.746,
+        "kv": 3.0,
+    }
+    opt = {
+        "dra_ppm_main": 6.0,
+        "nop": 1,
+    }
+
+    dra_segments, queue_after, inj_ppm_main, floor_req = _update_mainline_dra(
+        queue,
+        stn,
+        opt,
+        stn["L"],
+        flow_m3h=2833.0,
+        hours=1.0,
+        pump_running=True,
+        is_origin=True,
+    )
+
+    assert inj_ppm_main == pytest.approx(6.0)
+    assert not floor_req
+    assert dra_segments, "Segment profile should not be empty"
+    assert queue_after, "Queue after pumping should not be empty"
+    first_len, first_ppm = dra_segments[0]
+    assert first_ppm > 0.0 and first_len > 0.0
+    assert queue_after[0]["dra_ppm"] > 0.0
