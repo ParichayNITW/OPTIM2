@@ -5560,6 +5560,72 @@ def test_build_station_table_uses_downstream_residual_for_non_origin() -> None:
     assert df.loc[1, "Residual Head (m)"] == pytest.approx(241.0)
 
 
+def test_build_station_table_handles_mixed_case_downstream_keys() -> None:
+    import pipeline_optimization_app as app
+    import pandas as pd
+
+    # Solver output may retain original station casing. Ensure downstream residual
+    # keys with mixed case are picked up for non-origin stations.
+    res = {
+        "stations_used": [
+            {"name": "Paradip", "L": 158.0},
+            {"name": "Balasore", "L": 170.0},
+        ],
+        "residual_head_Paradip": 125.0,
+        "rh_kgcm2_Paradip": 12.5,
+        "pipeline_flow_Paradip": 0.0,
+        "loopline_flow_Paradip": 0.0,
+        "pump_flow_Paradip": 0.0,
+        "power_cost_Paradip": 0.0,
+        "dra_cost_Paradip": 0.0,
+        "dra_ppm_Paradip": 0.0,
+        "dra_ppm_loop_Paradip": 0.0,
+        "drag_reduction_Paradip": 0.0,
+        "drag_reduction_loop_Paradip": 0.0,
+        "reynolds_Paradip": 0.0,
+        "head_loss_Paradip": 0.0,
+        "head_loss_kgcm2_Paradip": 0.0,
+        "velocity_Paradip": 0.0,
+        "sdh_Paradip": 0.0,
+        "sdh_kgcm2_Paradip": 0.0,
+        "maop_Paradip": 0.0,
+        "maop_kgcm2_Paradip": 0.0,
+        # Downstream station outputs carry original casing
+        "residual_head_out_Balasore": 241.0,
+        "rh_out_kgcm2_Balasore": 24.1,
+        "residual_head_Balasore": 81.0,
+        "rh_kgcm2_Balasore": 8.1,
+        "pipeline_flow_Balasore": 0.0,
+        "loopline_flow_Balasore": 0.0,
+        "pump_flow_Balasore": 0.0,
+        "power_cost_Balasore": 0.0,
+        "dra_cost_Balasore": 0.0,
+        "dra_ppm_Balasore": 0.0,
+        "dra_ppm_loop_Balasore": 0.0,
+        "drag_reduction_Balasore": 0.0,
+        "drag_reduction_loop_Balasore": 0.0,
+        "reynolds_Balasore": 0.0,
+        "head_loss_Balasore": 0.0,
+        "head_loss_kgcm2_Balasore": 0.0,
+        "velocity_Balasore": 0.0,
+        "sdh_Balasore": 0.0,
+        "sdh_kgcm2_Balasore": 0.0,
+        "maop_Balasore": 0.0,
+        "maop_kgcm2_Balasore": 0.0,
+    }
+
+    base_stations = [
+        {"name": "Paradip", "L": 158.0},
+        {"name": "Balasore", "L": 170.0},
+    ]
+
+    df = app.build_station_table(res, base_stations)
+
+    assert isinstance(df, pd.DataFrame)
+    assert df.loc[0, "Residual Head (m)"] == pytest.approx(125.0)
+    assert df.loc[1, "Residual Head (m)"] == pytest.approx(241.0)
+
+
 def test_origin_suction_defaults_to_min_residual_when_missing() -> None:
     import pipeline_model as pm
 
