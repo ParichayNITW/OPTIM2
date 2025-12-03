@@ -4005,14 +4005,6 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
                 _get_station_field("rh_out_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
             )
             if res_m is None:
-                res_m = _float_or_none(
-                    _get_station_field("residual_head", key, stn.get("orig_name") if isinstance(stn, dict) else None)
-                )
-            if res_kg is None:
-                res_kg = _float_or_none(
-                    _get_station_field("rh_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
-                )
-            if res_m is None:
                 res_m = 0.0
             if res_kg is None:
                 res_kg = 0.0
@@ -4264,10 +4256,6 @@ def residual_pair(res: Mapping, key: str, is_origin: bool) -> tuple[float, float
 
     m = res.get(f"residual_head_out_{key}")
     kg = res.get(f"rh_out_kgcm2_{key}")
-    if m is None:
-        m = res.get(f"residual_head_{key}", 0.0)
-    if kg is None:
-        kg = res.get(f"rh_kgcm2_{key}", 0.0)
     return float(m or 0.0), float(kg or 0.0)
 
 
