@@ -938,25 +938,25 @@ def test_pumped_head_is_not_readded_when_sheared() -> None:
             [(2.0, 22.0), (23.0, 10.0)],
             [(22.0, 10.0)],
         ),
-        (
-            "running_no_injection",
-            {"nop": 1, "dra_ppm_main": 0},
-            True,
-            1.0,
-            [(3.0, 10.0)],
-            [(2.0, 0.0), (23.0, 10.0)],
-            [(22.0, 10.0)],
-        ),
-        (
-            "running_injection",
-            {"nop": 1, "dra_ppm_main": 12},
-            True,
-            1.0,
-            [(2.0, 12.0), (3.0, 10.0)],
-            [(2.0, 12.0), (23.0, 10.0)],
-            [(22.0, 10.0)],
-        ),
-    ],
+            (
+                "running_no_injection",
+                {"nop": 1, "dra_ppm_main": 0},
+                True,
+                1.0,
+                [(2.0, 0.0), (3.0, 10.0)],
+                [(2.0, 0.0), (23.0, 10.0)],
+                [(22.0, 10.0)],
+            ),
+            (
+                "running_injection",
+                {"nop": 1, "dra_ppm_main": 12},
+                True,
+                1.0,
+                [(2.0, 22.0), (3.0, 10.0)],
+                [(2.0, 22.0), (23.0, 10.0)],
+                [(22.0, 10.0)],
+            ),
+        ],
 )
 def test_two_station_case_profiles(
     label: str,
@@ -1476,8 +1476,10 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
     )
 
     assert dra_segments
-    assert dra_segments[0][0] == pytest.approx(1.0, rel=1e-6)
-    assert dra_segments[0][1] == initial_queue[0]["dra_ppm"]
+    assert dra_segments[0][0] == pytest.approx(zero_length, rel=1e-6)
+    assert dra_segments[0][1] == 0
+    assert dra_segments[1][0] == pytest.approx(1.0, rel=1e-6)
+    assert dra_segments[1][1] == initial_queue[0]["dra_ppm"]
     assert queue_final
     assert queue_final[0]["dra_ppm"] == 0
     assert queue_final[0]["length_km"] == pytest.approx(
