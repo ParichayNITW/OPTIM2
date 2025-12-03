@@ -3898,6 +3898,8 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
     if not isinstance(override_profiles, Mapping):
         override_profiles = {}
 
+    res_lower = {str(k).lower(): v for k, v in res.items()}
+
     def _candidate_suffixes(primary: str, alternate: str | None = None) -> list[str]:
         names: list[str] = []
         for value in (primary, alternate):
@@ -3918,12 +3920,21 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
             key_variant = f"{prefix}_{suffix}"
             if key_variant in res:
                 return res.get(key_variant)
+            lower_key = key_variant.lower()
+            if lower_key in res_lower:
+                return res_lower.get(lower_key)
         return None
 
     for idx, stn in enumerate(stations_seq):
         name = stn['name'] if isinstance(stn, dict) else str(stn)
         key = name.lower().replace(' ', '_')
-        if f"pipeline_flow_{key}" not in res:
+        alt_name = None
+        if isinstance(stn, dict):
+            alt_name = stn.get("orig_name") or stn.get("name")
+        else:
+            alt_name = name
+        flow_field = _get_station_field("pipeline_flow", key, alt_name)
+        if flow_field is None:
             continue
 
         station_display = stn.get('orig_name', stn.get('name', name)) if isinstance(stn, dict) else name
@@ -3962,26 +3973,68 @@ def build_station_table(res: dict, base_stations: list[dict]) -> pd.DataFrame:
         if origin_name and name != origin_name and name.startswith(origin_name):
             station_display = origin_name
 
-        res_m, res_kg = residual_pair(res, key, is_origin=idx == 0)
+        def _field(prefix: str, default: float = 0.0) -> float:
+            val = _get_station_field(prefix, key, alt_name)
+            try:
+                if val is None:
+                    return float(default)
+                return float(val)
+            except (TypeError, ValueError):
+                return float(default)
+
+        # Prefer downstream residuals for non-origin stations.  Use the
+        # available suction head (user input) for the origin.  Look up both the
+        # normalised key and any alternate/original casing so UI tables stay in
+        # sync with solver outputs.
+        if idx == 0:
+            res_m = _float_or_none(
+                _get_station_field("residual_head", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+            )
+            res_kg = _float_or_none(
+                _get_station_field("rh_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+            )
+            if res_m is None:
+                res_m = 0.0
+            if res_kg is None:
+                res_kg = 0.0
+        else:
+            res_m = _float_or_none(
+                _get_station_field("residual_head_out", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+            )
+            res_kg = _float_or_none(
+                _get_station_field("rh_out_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+            )
+            if res_m is None:
+                res_m = _float_or_none(
+                    _get_station_field("residual_head", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+                )
+            if res_kg is None:
+                res_kg = _float_or_none(
+                    _get_station_field("rh_kgcm2", key, stn.get("orig_name") if isinstance(stn, dict) else None)
+                )
+            if res_m is None:
+                res_m = 0.0
+            if res_kg is None:
+                res_kg = 0.0
 
         row = {
             'Station': station_display,
             'Pump Name': pump_name,
-            'Pipeline Flow (m³/hr)': float(res.get(f"pipeline_flow_{key}", 0.0) or 0.0),
-            'Loopline Flow (m³/hr)': float(res.get(f"loopline_flow_{key}", 0.0) or 0.0),
-            'Pump Flow (m³/hr)': float(res.get(f"pump_flow_{key}", 0.0) or 0.0),
-            'Power & Fuel Cost (INR)': float(res.get(f"power_cost_{key}", 0.0) or 0.0),
-            'DRA Cost (INR)': float(res.get(f"dra_cost_{key}", 0.0) or 0.0),
-            'DRA PPM': res.get(f"dra_ppm_{key}", 0.0),
-            'Loop DRA PPM': res.get(f"dra_ppm_loop_{key}", 0.0),
+            'Pipeline Flow (m³/hr)': _field("pipeline_flow"),
+            'Loopline Flow (m³/hr)': _field("loopline_flow"),
+            'Pump Flow (m³/hr)': _field("pump_flow"),
+            'Power & Fuel Cost (INR)': _field("power_cost"),
+            'DRA Cost (INR)': _field("dra_cost"),
+            'DRA PPM': _field("dra_ppm"),
+            'Loop DRA PPM': _field("dra_ppm_loop"),
             'No. of Pumps': n_pumps,
-            'Pump Eff (%)': float(res.get(f"efficiency_{key}", 0.0) or 0.0),
-            'Pump BKW (kW)': float(res.get(f"pump_bkw_{key}", 0.0) or 0.0),
-            'Motor Input (kW)': float(res.get(f"motor_kw_{key}", 0.0) or 0.0),
-            'Reynolds No.': float(res.get(f"reynolds_{key}", 0.0) or 0.0),
-            'Head Loss (m)': float(res.get(f"head_loss_{key}", 0.0) or 0.0),
-            'Head Loss (kg/cm²)': float(res.get(f"head_loss_kgcm2_{key}", 0.0) or 0.0),
-            'Vel (m/s)': float(res.get(f"velocity_{key}", 0.0) or 0.0),
+            'Pump Eff (%)': _field("efficiency"),
+            'Pump BKW (kW)': _field("pump_bkw"),
+            'Motor Input (kW)': _field("motor_kw"),
+            'Reynolds No.': _field("reynolds"),
+            'Head Loss (m)': _field("head_loss"),
+            'Head Loss (kg/cm²)': _field("head_loss_kgcm2"),
+            'Vel (m/s)': _field("velocity"),
             'Residual Head (m)': res_m,
             'Residual Head (kg/cm²)': res_kg,
             'SDH (m)': float(res.get(f"sdh_{key}", 0.0) or 0.0),
