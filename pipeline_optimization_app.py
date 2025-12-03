@@ -63,6 +63,14 @@ if "search_rpm_step" not in st.session_state:
     st.session_state["search_rpm_step"] = 50
 if "search_dra_step" not in st.session_state:
     st.session_state["search_dra_step"] = 2
+if "search_coarse_multiplier" not in st.session_state:
+    st.session_state["search_coarse_multiplier"] = 2.0
+if "search_state_top_k" not in st.session_state:
+    st.session_state["search_state_top_k"] = 50
+if "search_state_cost_margin" not in st.session_state:
+    st.session_state["search_state_cost_margin"] = 5000.0
+if "search_state_cost_margin_pct" not in st.session_state:
+    st.session_state["search_state_cost_margin_pct"] = 1.0
 if "search_collect_state_audit" not in st.session_state:
     st.session_state["search_collect_state_audit"] = True
 if "show_dp_audit" not in st.session_state:
@@ -1903,30 +1911,68 @@ with st.sidebar:
 
         rpm_step_default = 50
         dra_step_default = 5
+        coarse_multiplier_default = 2.0
+        state_top_k_default = 50
+        state_cost_margin_default = 5000.0
+        state_cost_margin_pct_default = 1.0
 
-    with st.expander("Search grid", expanded=False):
+    with st.expander("Advanced search depth", expanded=False):
         st.caption(
-            "Set the grid spacing for RPM and %DR that will be searched exhaustively."
+            "Adjust solver discretisation limits"
         )
         st.number_input(
-            "Pump speed step (rpm)",
+            "Refinement RPM step (rpm)",
             min_value=1,
             value=int(st.session_state.get("search_rpm_step", rpm_step_default)),
             step=1,
             key="search_rpm_step",
         )
         st.number_input(
-            "DRA step (%DR)",
+            "Refinement DRA step (%DR)",
             min_value=1,
             value=int(st.session_state.get("search_dra_step", dra_step_default)),
             step=1,
             key="search_dra_step",
+        )
+        st.number_input(
+            "Coarse step multiplier",
+            min_value=0.1,
+            value=float(st.session_state.get("search_coarse_multiplier", coarse_multiplier_default)),
+            step=0.1,
+            format="%.1f",
+            key="search_coarse_multiplier",
+        )
+        st.number_input(
+            "Max states",
+            min_value=1,
+            value=int(st.session_state.get("search_state_top_k", state_top_k_default)),
+            step=1,
+            key="search_state_top_k",
+        )
+        st.number_input(
+            "Cost margin (currency)",
+            min_value=0.0,
+            value=float(st.session_state.get("search_state_cost_margin", state_cost_margin_default)),
+            step=100.0,
+            key="search_state_cost_margin",
+        )
+        st.number_input(
+            "Cost margin (% of best)",
+            min_value=0.0,
+            value=float(st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)),
+            step=0.1,
+            format="%.1f",
+            key="search_state_cost_margin_pct",
+            help="Keeps any state whose cost is within this percentage of the current best to avoid pruning near-ties on expensive runs.",
         )
         st.checkbox(
             "Capture candidate log (for raw output)",
             value=bool(st.session_state.get("search_collect_state_audit", True)),
             key="search_collect_state_audit",
             help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing states, so overhead is minimal.",
+        )
+        st.caption(
+            "After running optimization, open the Summary tab in the Optimization Results section and scroll below the main results table. The candidate log is listed there under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
         )
 
     last_label = st.session_state.get("last_run_label")
@@ -4226,6 +4272,10 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
     dra_step_default = getattr(pipeline_model, "DRA_STEP", 2)
+    coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
+    state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
+    state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -4235,11 +4285,44 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if dra_step <= 0:
         dra_step = dra_step_default
 
+    coarse_multiplier = float(
+        st.session_state.get("search_coarse_multiplier", coarse_multiplier_default)
+        or coarse_multiplier_default
+    )
+    if coarse_multiplier <= 0:
+        coarse_multiplier = coarse_multiplier_default
+
+    state_top_k = int(
+        st.session_state.get("search_state_top_k", state_top_k_default)
+        or state_top_k_default
+    )
+    if state_top_k <= 0:
+        state_top_k = state_top_k_default
+
+    state_cost_margin = float(
+        st.session_state.get("search_state_cost_margin", state_cost_margin_default)
+        or state_cost_margin_default
+    )
+    if state_cost_margin < 0:
+        state_cost_margin = 0.0
+
+    state_cost_margin_pct = float(
+        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+        or state_cost_margin_pct_default
+    )
+    if state_cost_margin_pct < 0:
+        state_cost_margin_pct = 0.0
+    state_cost_margin_pct /= 100.0
+
     collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
 
     return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
+        "coarse_multiplier": coarse_multiplier,
+        "state_top_k": state_top_k,
+        "state_cost_margin": state_cost_margin,
+        "state_cost_margin_pct": state_cost_margin_pct,
         "collect_state_audit": collect_state_audit,
     }
 
