@@ -29,7 +29,11 @@ DEFAULT_MAX_DR = 70
 # Upper bound (ppm) for search space; DRA option generation will cap the
 # drag-reduction grid so injected ppm values do not exceed this limit even if
 # a station allows higher drag reduction.
-DRA_PPM_SEARCH_CAP = 20.0
+# Setting this to ``0`` disables the artificial global PPM ceiling and lets the
+# solver explore up to the station-specific maximum DRA limits. The previous
+# value of 20 ppm prevented feasible solutions when hydraulics required higher
+# concentrations.
+DRA_PPM_SEARCH_CAP = 0.0
 
 # ---------------------------------------------------------------------------
 # Helper utilities

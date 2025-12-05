@@ -6993,6 +6993,18 @@ if not auto_batch:
                         if dynamic_req
                         else None
                     )
+                    if dynamic_segment_floors:
+                        dynamic_segment_floors = [
+                            seg
+                            for seg in dynamic_segment_floors
+                            if (
+                                seg.get("dra_ppm", 0.0) > 0
+                                and seg.get("length_km", 0.0) > 0
+                                and 0
+                                <= int(seg.get("station_idx", -1))
+                                < len(stations_base)
+                            )
+                        ] or None
 
                     stns_run = copy.deepcopy(stations_base)
                     res = solve_pipeline(
