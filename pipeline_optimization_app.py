@@ -875,6 +875,182 @@ def _collect_segment_floors(
     return segments
 
 
+def _merge_segment_floors(
+    base_segments: Sequence[Mapping[str, object]] | None,
+    extra_segments: Sequence[Mapping[str, object]] | None,
+) -> list[dict[str, object]]:
+    """
+    Merge two segment-floor lists, taking the maximum dra_ppm / dra_perc
+    for each (station_idx, length_km) key.
+
+    This keeps station-wise floors monotonic: dynamic floors will never
+    reduce an existing manual/auto baseline, only raise it if needed.
+    """
+    from collections.abc import Mapping, Sequence as _Seq
+
+    merged: dict[tuple[int, float], dict[str, object]] = {}
+
+    def _add(seq: _Seq[Mapping[str, object]] | None) -> None:
+        if not isinstance(seq, _Seq):
+            return
+        for entry in seq:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                st_idx = int(entry.get("station_idx", entry.get("idx", 0)))
+            except (TypeError, ValueError):
+                continue
+            try:
+                length = float(entry.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                length = 0.0
+            key = (st_idx, round(length, 3))
+
+            existing = merged.get(key, {})
+            ppm_old = float(existing.get("dra_ppm", 0.0) or 0.0)
+            ppm_new = float(entry.get("dra_ppm", 0.0) or 0.0)
+            perc_old = float(existing.get("dra_perc", 0.0) or 0.0)
+            perc_new = float(entry.get("dra_perc", 0.0) or 0.0)
+
+            merged[key] = {
+                "station_idx": st_idx,
+                "length_km": length,
+                "dra_ppm": max(ppm_old, ppm_new),
+                "dra_perc": max(perc_old, perc_new),
+                "limited_by_station": bool(
+                    existing.get("limited_by_station")
+                    or entry.get("limited_by_station")
+                ),
+            }
+
+    _add(base_segments)
+    _add(extra_segments)
+
+    return [merged[k] for k in sorted(merged.keys(), key=lambda x: (x[0], x[1]))]
+
+
+def _compute_dynamic_segment_baseline_for_slot(
+    stations: Sequence[Mapping[str, object]],
+    terminal: Mapping[str, object],
+    flow_m3h: float,
+    kv_list: Sequence[float],
+    rho_list: Sequence[float],
+    segment_slices: Sequence[Sequence[Mapping[str, object]]],
+) -> dict | None:
+    """
+    For a single slot, compute the minimum DRA lacing requirement for the
+    current linefill snapshot using volume-weighted segment properties.
+    """
+    import copy
+    import pipeline_model
+
+    try:
+        flow = float(flow_m3h)
+    except (TypeError, ValueError):
+        flow = 0.0
+    if flow <= 0.0:
+        return None
+
+    kv_avg_list: list[float] = []
+    rho_avg_list: list[float] = []
+    uniform_slices: list[list[dict[str, object]]] = []
+
+    for idx, stn in enumerate(stations):
+        try:
+            L_seg = float(stn.get("L", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            L_seg = 0.0
+
+        slices = []
+        if isinstance(segment_slices, Sequence) and idx < len(segment_slices):
+            maybe = segment_slices[idx]
+            if isinstance(maybe, Sequence):
+                slices = [s for s in maybe if isinstance(s, Mapping)]
+
+        total_len = 0.0
+        sum_kv = 0.0
+        sum_rho = 0.0
+        for s in slices:
+            try:
+                l = float(s.get("length_km", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                l = 0.0
+            if l <= 0.0:
+                continue
+            total_len += l
+            try:
+                kv_val = float(s.get("kv", kv_list[idx] if idx < len(kv_list) else 1.0))
+            except (TypeError, ValueError):
+                kv_val = kv_list[idx] if idx < len(kv_list) else 1.0
+            try:
+                rho_val = float(s.get("rho", rho_list[idx] if idx < len(rho_list) else 850.0))
+            except (TypeError, ValueError):
+                rho_val = rho_list[idx] if idx < len(rho_list) else 850.0
+            sum_kv += l * kv_val
+            sum_rho += l * rho_val
+
+        if total_len <= 0.0:
+            total_len = max(L_seg, 0.0)
+            try:
+                kv_val = float(kv_list[idx]) if idx < len(kv_list) else 1.0
+            except (TypeError, ValueError):
+                kv_val = 1.0
+            try:
+                rho_val = float(rho_list[idx]) if idx < len(rho_list) else 850.0
+            except (TypeError, ValueError):
+                rho_val = 850.0
+        else:
+            kv_val = sum_kv / total_len
+            rho_val = sum_rho / total_len
+
+        kv_avg_list.append(float(kv_val))
+        rho_avg_list.append(float(rho_val))
+
+        uniform_slices.append(
+            [
+                {
+                    "length_km": float(total_len),
+                    "kv": float(kv_val),
+                    "rho": float(rho_val),
+                }
+            ]
+        )
+
+    design_flow = float(flow)
+    max_visc = max(kv_avg_list) if kv_avg_list else 1.0
+    try:
+        min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        min_suction = 0.0
+    try:
+        fluid_density = float(st.session_state.get("Fuel_density", 820.0) or 820.0)
+    except (TypeError, ValueError):
+        fluid_density = 820.0
+    try:
+        mop = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        mop = 0.0
+
+    try:
+        requirement = pipeline_model.compute_minimum_lacing_requirement(
+            list(copy.deepcopy(stations)),
+            dict(terminal),
+            max_flow_m3h=design_flow,
+            max_visc_cst=max_visc,
+            segment_slices=uniform_slices,
+            kv_list=list(kv_avg_list),
+            rho_list=list(rho_avg_list),
+            min_suction_head=min_suction,
+            fluid_density=fluid_density,
+            mop_kgcm2=mop,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        st.warning(f"Dynamic baseline DRA computation failed for slot: {exc}")
+        return None
+
+    return requirement
+
+
 def _prepare_pipeline_context():
     """Build station, terminal, and linefill data for optimisation helpers."""
 
@@ -4348,6 +4524,7 @@ def solve_pipeline(
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
     priority_feasibility: bool = False,
+    segment_floors_override: Sequence[Mapping[str, object]] | None = None,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4399,6 +4576,19 @@ def solve_pipeline(
             else:
                 baseline_enforceable = False
 
+    if isinstance(segment_floors_override, Sequence) and segment_floors_override:
+        dynamic_segments = [
+            copy.deepcopy(seg)
+            for seg in segment_floors_override
+            if isinstance(seg, Mapping)
+        ]
+        if dynamic_segments:
+            if baseline_segments:
+                baseline_segments = _merge_segment_floors(baseline_segments, dynamic_segments)
+            else:
+                baseline_segments = dynamic_segments
+            baseline_enforceable = True
+
     def _combine_origin_detail(
         base_detail: dict | None,
         user_detail: dict | None,
@@ -4415,13 +4605,49 @@ def solve_pipeline(
         if not base or not user:
             return None
 
-        ppm_floor = float(base.get("dra_ppm", 0.0) or 0.0)
-        length_floor = float(base.get("length_km", 0.0) or 0.0)
-        perc_floor = float(base.get("dra_perc", 0.0) or 0.0)
+        result: dict[str, object] = {}
+        for key in set(base.keys()) | set(user.keys()):
+            if key in ("dra_ppm", "dra_perc"):
+                try:
+                    base_val = float(base.get(key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    base_val = 0.0
+                try:
+                    user_val = float(user.get(key, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    user_val = 0.0
+                result[key] = max(base_val, user_val)
+            else:
+                result[key] = user.get(key, base.get(key))
 
+        return result or None
+
+    baseline_for_enforcement: dict | None = None
+    if baseline_enforceable:
+        base_detail: dict[str, object] = {}
+        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
+        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
+        if ppm_floor > 0.0:
+            base_detail["dra_ppm"] = ppm_floor
+        if perc_floor > 0.0:
+            base_detail["dra_perc"] = perc_floor
+        if base_detail:
+            baseline_for_enforcement = base_detail
+
+    def _extend_user_detail_with_floors(
+        base_detail: dict | None,
+        user_detail: dict | None,
+    ) -> dict | None:
+        if not base_detail:
+            return user_detail or None
+        user = copy.deepcopy(user_detail) if isinstance(user_detail, dict) else {}
+        base = copy.deepcopy(base_detail)
+        ppm_floor = float(base.get("dra_ppm", 0.0) or 0.0)
+        perc_floor = float(base.get("dra_perc", 0.0) or 0.0)
         current_ppm = float(user.get("dra_ppm", 0.0) or 0.0)
-        current_length = float(user.get("length_km", 0.0) or 0.0)
         current_perc = float(user.get("dra_perc", 0.0) or 0.0)
+        length_floor = float(base.get("length_km", 0.0) or 0.0)
+        current_length = float(user.get("length_km", 0.0) or 0.0)
 
         if ppm_floor > 0.0:
             user["dra_ppm"] = max(current_ppm, ppm_floor)
@@ -4438,28 +4664,11 @@ def solve_pipeline(
 
         return user or None
 
-    baseline_for_enforcement: dict | None = None
-    if baseline_enforceable:
-        base_detail: dict[str, object] = {}
-        ppm_floor = float(baseline_summary.get("dra_ppm", 0.0) or 0.0)
-        perc_floor = float(baseline_summary.get("dra_perc", 0.0) or 0.0)
-        if ppm_floor > 0.0:
-            base_detail["dra_ppm"] = ppm_floor
-        if perc_floor > 0.0:
-            base_detail["dra_perc"] = perc_floor
-        if baseline_segments:
-            base_detail["segments"] = copy.deepcopy(baseline_segments)
-            seg_total = sum(float(seg.get("length_km", 0.0) or 0.0) for seg in baseline_segments)
-            if seg_total > 0.0:
-                base_detail["length_km"] = seg_total
-        if "length_km" not in base_detail:
-            length_floor = float(baseline_summary.get("length_km", 0.0) or 0.0)
-            if length_floor > 0.0:
-                base_detail["length_km"] = length_floor
-        if base_detail:
-            base_detail["enforce_queue"] = False
-            baseline_for_enforcement = base_detail
-    baseline_segment_floors = baseline_segments if (baseline_enforceable and baseline_segments) else None
+    baseline_for_enforcement = baseline_for_enforcement
+    baseline_segments_state_local = baseline_segments
+    baseline_segment_floors = (
+        baseline_segments_state_local if (baseline_enforceable and baseline_segments_state_local) else None
+    )
     forced_detail_effective = _combine_origin_detail(baseline_for_enforcement, forced_origin_detail)
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
@@ -6771,6 +6980,20 @@ if not auto_batch:
                     kv_run = [max(a, b) for a, b in zip(kv_now, kv_next)]
                     rho_run = [max(a, b) for a, b in zip(rho_now, rho_next)]
 
+                    dynamic_req = _compute_dynamic_segment_baseline_for_slot(
+                        stations_base,
+                        term_data,
+                        flow,
+                        kv_run,
+                        rho_run,
+                        slices_now,
+                    )
+                    dynamic_segment_floors = (
+                        _collect_segment_floors(dynamic_req)
+                        if dynamic_req
+                        else None
+                    )
+
                     stns_run = copy.deepcopy(stations_base)
                     res = solve_pipeline(
                         stns_run,
@@ -6789,6 +7012,7 @@ if not auto_batch:
                         hours=duration_hr,
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         forced_origin_detail=plan_forced_detail,
+                        segment_floors_override=dynamic_segment_floors,
                     )
                     if res.get("error"):
                         st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
