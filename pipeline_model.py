@@ -4752,7 +4752,12 @@ def solve_pipeline(
             if not origin_enforced:
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
-            rng = narrow_ranges.get(i - 1) if narrow_ranges else None
+            # When priority_feasibility is True we must NOT restrict DRA/RPM
+            # to the coarse solution window; search the full floor→max range.
+            if priority_feasibility:
+                rng = None
+            else:
+                rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             station_rpm_min = int(_station_min_rpm(stn))
             station_rpm_max = int(_station_max_rpm(stn))
             if station_rpm_max <= 0 and station_rpm_min > 0:
