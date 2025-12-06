@@ -6994,19 +6994,20 @@ if not auto_batch:
                         else None
                     )
                     if dynamic_segment_floors:
+                        # Keep only valid, positive floors mapped to real stations
                         dynamic_segment_floors = [
                             seg
                             for seg in dynamic_segment_floors
                             if (
-                                seg.get("dra_ppm", 0.0) > 0
-                                and seg.get("length_km", 0.0) > 0
-                                and 0
-                                <= int(seg.get("station_idx", -1))
-                                < len(stations_base)
+                                seg.get("dra_ppm", 0.0) > 0.0
+                                and seg.get("length_km", 0.0) > 0.0
+                                and 0 <= int(seg.get("station_idx", -1)) < len(stations_base)
                             )
                         ] or None
-
+                    
                     stns_run = copy.deepcopy(stations_base)
+                    
+                    # ---------- FIRST ATTEMPT: with dynamic segment floors ----------
                     res = solve_pipeline(
                         stns_run,
                         term_data,
@@ -7026,8 +7027,37 @@ if not auto_batch:
                         forced_origin_detail=plan_forced_detail,
                         segment_floors_override=dynamic_segment_floors,
                     )
+                    
+                    # ---------- FALLBACK: if dynamic floors make the slot infeasible ----------
+                    if res.get("error") and dynamic_segment_floors:
+                        # Retry the same slot WITHOUT per-slot segment floors,
+                        # letting the solver find any physically feasible combination.
+                        res = solve_pipeline(
+                            copy.deepcopy(stations_base),
+                            term_data,
+                            flow,
+                            kv_run,
+                            rho_run,
+                            slices_now,
+                            RateDRA,
+                            Price_HSD,
+                            st.session_state.get("Fuel_density", 820.0),
+                            st.session_state.get("Ambient_temp", 25.0),
+                            dra_linefill,
+                            dra_reach_km,
+                            st.session_state.get("MOP_kgcm2"),
+                            hours=duration_hr,
+                            pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                            forced_origin_detail=plan_forced_detail,
+                            segment_floors_override=None,
+                        )
+                    
                     if res.get("error"):
-                        st.error(f"Optimization failed for interval starting {seg_start} -> {res.get('message','')}")
+                        # At this point the slot is truly infeasible even without dynamic floors.
+                        st.error(
+                            f"Optimization failed for interval starting {seg_start} "
+                            f"-> {res.get('message','')}"
+                        )
                         st.stop()
 
                     reports.append({"time": seg_start, "result": res})
