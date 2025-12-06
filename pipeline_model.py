@@ -33,7 +33,7 @@ DEFAULT_MAX_DR = 70
 # solver explore up to the station-specific maximum DRA limits. The previous
 # value of 20 ppm prevented feasible solutions when hydraulics required higher
 # concentrations.
-DRA_PPM_SEARCH_CAP = 0.0
+DRA_PPM_SEARCH_CAP = 20.0
 
 # ---------------------------------------------------------------------------
 # Helper utilities
