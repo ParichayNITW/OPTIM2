@@ -5094,7 +5094,12 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
-            rng = narrow_ranges.get(i - 1) if narrow_ranges else None
+            # For pure-DRA stations, also ignore narrow_ranges when
+            # priority_feasibility is True so DRA can go from floor→max.
+            if priority_feasibility:
+                rng = None
+            else:
+                rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_cap > 0:
                 dr_min, dr_max = 0, max_dr_cap
                 if rng and 'dra_main' in rng:
