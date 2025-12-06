@@ -7026,6 +7026,9 @@ if not auto_batch:
                         pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                         forced_origin_detail=plan_forced_detail,
                         segment_floors_override=dynamic_segment_floors,
+                        # IMPORTANT: for multi-interval dynamic plan we want the solver
+                        # to widen search and not get stuck at low-DRA coarse solutions.
+                        priority_feasibility=True,
                     )
                     
                     # ---------- FALLBACK: if dynamic floors make the slot infeasible ----------
@@ -7050,6 +7053,9 @@ if not auto_batch:
                             pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
                             forced_origin_detail=plan_forced_detail,
                             segment_floors_override=None,
+                            # Again, explicitly tell backend to prioritise feasibility
+                            # and widen DRA / RPM search.
+                            priority_feasibility=True,
                         )
                     
                     if res.get("error"):
