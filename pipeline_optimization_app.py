@@ -4679,9 +4679,9 @@ def solve_pipeline(
         forced_detail_effective = None
 
     try:
-        # Delegate to the backend optimiser
+        # Delegate to the backend optimiser (first, normal pass)
         search_kwargs = _collect_search_depth_kwargs()
-        if any(s.get('pump_types') for s in stations):
+        if any(s.get("pump_types") for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
                 terminal,
@@ -4727,14 +4727,92 @@ def solve_pipeline(
                 priority_feasibility=priority_feasibility,
                 **search_kwargs,
             )
-        # Append a human-readable flow pattern name based on loop usage
+
+        # ---------- SECOND PASS: brute-force feasibility if requested ----------
+        if res.get("error") and priority_feasibility:
+            # Build an aggressive search configuration:
+            # - finer RPM / DRA steps
+            # - no segment floors
+            # - no forced origin detail
+            # - wide state space and cost margins so nothing is pruned early
+            aggressive_kwargs = dict(search_kwargs)
+
+            # RPM / DRA step – force fine grid
+            aggressive_kwargs["rpm_step"] = max(1, int(aggressive_kwargs.get("rpm_step", 5)))
+            aggressive_kwargs["dra_step"] = max(1, int(aggressive_kwargs.get("dra_step", 1)))
+
+            # Coarse multiplier – force full refinement
+            try:
+                coarse = float(aggressive_kwargs.get("coarse_multiplier", 1.0))
+            except (TypeError, ValueError):
+                coarse = 1.0
+            aggressive_kwargs["coarse_multiplier"] = min(coarse, 1.0)
+
+            # State space & pruning margins – make them generous
+            aggressive_kwargs["state_top_k"] = max(int(aggressive_kwargs.get("state_top_k", 50)), 300)
+            aggressive_kwargs["state_cost_margin"] = max(
+                float(aggressive_kwargs.get("state_cost_margin", 0.0)),
+                1e7,
+            )
+            if "state_cost_margin_pct" in aggressive_kwargs:
+                aggressive_kwargs["state_cost_margin_pct"] = max(
+                    float(aggressive_kwargs.get("state_cost_margin_pct", 0.0)),
+                    0.5,   # keep any state within 50% of current best
+                )
+
+            if any(s.get("pump_types") for s in stations):
+                res = pipeline_model.solve_pipeline_with_types(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time=start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    forced_origin_detail=None,       # ignore baseline enforcement
+                    segment_floors=None,             # remove floors completely
+                    priority_feasibility=True,       # force feasibility search
+                    **aggressive_kwargs,
+                )
+            else:
+                res = pipeline_model.solve_pipeline(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time=start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    forced_origin_detail=None,
+                    segment_floors=None,
+                    priority_feasibility=True,
+                    **aggressive_kwargs,
+                )
+
+        # ---------- Flow pattern name decoration (unchanged) ----------
         if not res.get("error"):
             usage = res.get("loop_usage", [])
-            # Build segment-based descriptors for each looped section
             seg_names = []
             for idx, stn in enumerate(stations):
-                # Looplines are associated with the segment connecting this station to the next
-                if stn.get('loopline') and idx < len(stations) - 1:
+                if stn.get("loopline") and idx < len(stations) - 1:
                     uval = usage[idx] if idx < len(usage) else 0
                     seg_label = f"{stn['name']}–{stations[idx+1]['name']}"
                     if uval == 1:
@@ -4745,16 +4823,24 @@ def solve_pipeline(
                         seg_names.append(f"Loop only on {seg_label}")
             if not seg_names:
                 pattern_name = "Mainline Only"
-            elif len(seg_names) == sum(1 for stn in stations if stn.get('loopline')) and all('Parallel' in n for n in seg_names):
+            elif len(seg_names) == 1:
+                pattern_name = seg_names[0]
+            elif len(seg_names) == sum(1 for stn in stations if stn.get("loopline")) and all(
+                "Parallel" in n for n in seg_names
+            ):
                 pattern_name = "Parallel on all loop segments"
-            elif len(seg_names) == sum(1 for stn in stations if stn.get('loopline')) and all('Loop only' in n for n in seg_names):
+            elif len(seg_names) == sum(1 for stn in stations if stn.get("loopline")) and all(
+                "Loop only" in n for n in seg_names
+            ):
                 pattern_name = "Loop only on all loop segments"
             else:
-                pattern_name = ' & '.join(seg_names)
-            res['flow_pattern_name'] = pattern_name
+                pattern_name = " & ".join(seg_names)
+            res["flow_pattern_name"] = pattern_name
+
         return res
     except Exception as exc:  # pragma: no cover - diagnostic path
         return {"error": True, "message": str(exc)}
+
 
 # ==== Batch Linefill Scenario Analysis ====
 st.markdown("---")
