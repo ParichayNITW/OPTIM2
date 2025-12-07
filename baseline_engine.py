@@ -4,8 +4,129 @@ import math
 from copy import deepcopy
 from typing import Any, Dict, List
 
-from pipeline_model import _segment_hydraulics, _max_head_at_dol
+from pipeline_model import _segment_hydraulics
 from dra_utils import get_ppm_for_dr
+
+def _single_pump_head_from_coeffs(A: float, B: float, C: float, flow: float) -> float:
+    """
+    Head of a single pump at DOL for the given bulk flow [m3/h],
+    using the exact quadratic curve H(Q) = A*Q^2 + B*Q + C.
+
+    No approximations; this is exactly what you encoded in your JSON.
+    """
+    h = A * flow * flow + B * flow + C
+    return max(h, 0.0)
+
+
+def _single_pump_head_from_pdata(pdata: Dict[str, Any], flow: float) -> float:
+    """
+    Extract A, B, C from a pump-type dictionary and compute head at DOL.
+    """
+    A = float(pdata.get("A", 0.0))
+    B = float(pdata.get("B", 0.0))
+    C = float(pdata.get("C", 0.0))
+    return _single_pump_head_from_coeffs(A, B, C, flow)
+
+
+def _max_head_at_dol(st_up: Dict[str, Any], flow: float) -> float:
+    """
+    Mathematically exact maximum station discharge head at DOL for the given
+    bulk flow [m3/h], based SOLELY on the stored pump curves and pump counts.
+
+    - Uses pump_types[*]["A","B","C"] when present.
+    - Respects per-type "available" and station-level "min_pumps" / "max_pumps".
+    - Assumes pumps at a station are in series (heads add at same flow),
+      which is the same assumption used in the main optimizer.
+
+    No arbitrary limits, no fudge factors.
+    """
+    try:
+        q = float(flow or 0.0)
+    except (TypeError, ValueError):
+        q = 0.0
+
+    if q <= 0.0:
+        return 0.0
+
+    pump_types = st_up.get("pump_types")
+    # ---- MULTI-TYPE PATH (generic) -----------------------------------------
+    if isinstance(pump_types, dict) and pump_types:
+        type_keys: List[str] = list(pump_types.keys())
+        avail_per_type: List[int] = []
+        for k in type_keys:
+            pdata = pump_types.get(k) or {}
+            try:
+                avail = int(pdata.get("available", 0) or 0)
+            except (TypeError, ValueError):
+                avail = 0
+            avail_per_type.append(max(avail, 0))
+
+        # Station-level pump bounds
+        try:
+            max_pumps_total = int(st_up.get("max_pumps", 0) or 0)
+        except (TypeError, ValueError):
+            max_pumps_total = 0
+
+        if max_pumps_total <= 0:
+            max_pumps_total = sum(avail_per_type)  # physical upper bound
+
+        try:
+            min_pumps_total = int(st_up.get("min_pumps", 0) or 0)
+        except (TypeError, ValueError):
+            min_pumps_total = 0
+
+        best_head = 0.0
+
+        # Enumerate all combinations of pump counts per type within availability
+        ranges = [range(av + 1) for av in avail_per_type]
+        for counts in product(*ranges):
+            total_pumps = sum(counts)
+            if total_pumps == 0:
+                continue
+            if total_pumps < min_pumps_total:
+                continue
+            if total_pumps > max_pumps_total:
+                continue
+
+            # All pumps are in series -> total head = sum(head_i)
+            head = 0.0
+            for k, n in zip(type_keys, counts):
+                if n <= 0:
+                    continue
+                pdata = pump_types[k]
+                h_single = _single_pump_head_from_pdata(pdata, q)
+                head += n * h_single
+
+            if head > best_head:
+                best_head = head
+
+        return max(best_head, 0.0)
+
+    # ---- LEGACY SINGLE-TYPE PATH -------------------------------------------
+    # For legacy stations without pump_types: use station-level A,B,C and max_pumps.
+    A = float(st_up.get("A", 0.0))
+    B = float(st_up.get("B", 0.0))
+    C = float(st_up.get("C", 0.0))
+
+    try:
+        max_pumps = int(st_up.get("max_pumps", st_up.get("available", 0)) or 0)
+    except (TypeError, ValueError):
+        max_pumps = 0
+
+    try:
+        min_pumps = int(st_up.get("min_pumps", 0) or 0)
+    except (TypeError, ValueError):
+        min_pumps = 0
+
+    if max_pumps <= 0:
+        return 0.0
+
+    h_single = _single_pump_head_from_coeffs(A, B, C, q)
+    # Baseline engine wants the maximum achievable head -> use max_pumps.
+    n = max(max_pumps, min_pumps, 0)
+    return n * h_single
+
+
 
 def schedule_baseline_injections(
     stations: List[Dict[str, Any]],
