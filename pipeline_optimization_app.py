@@ -7,6 +7,7 @@ import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
 import datetime as dt
+from baseline_engine import schedule_baseline_injections
 
 # Ensure local modules are importable when the app is run from an arbitrary
 # working directory (e.g. `streamlit run path/to/pipeline_optimization_app.py`).
@@ -6954,6 +6955,52 @@ if not auto_batch:
             linefill_snaps = []
             dra_reach_km = 200.0 if _has_positive_dra(dra_linefill) else 0.0
 
+            # === Compute baseline DRA schedule ===
+            # Convert the current linefill DataFrame to a list of dicts as expected by baseline_engine
+            initial_linefill_list = [
+                {
+                    "volume": float(row["Volume (m³)"]),
+                    "viscosity": float(row["Viscosity (cSt)"]),
+                    "density": float(row["Density (kg/m³)"]),
+                    "dra_ppm": float(row.get("DRA ppm", row.get("Initial DRA (ppm)", 0.0))),
+                }
+                for _, row in current_vol.iterrows()
+            ]
+            
+            # Flatten flows out of flow_df in the same order as they will be processed
+            flows_list = [float(row.get("Flow (m³/h)", row.get("Flow", 0.0)) or 0.0) for _, row in flow_df.iterrows()]
+            
+            # Call your baseline engine to plan the injection schedule
+            baseline_actions = schedule_baseline_injections(
+                stations=stations_base,
+                terminal=term_data,
+                initial_linefill=initial_linefill_list,
+                flows=flows_list,
+                hours_per_slot=4.0,
+                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                dra_reach_km=st.session_state.get("dra_reach_km", 0.0),
+            )
+            
+            # Helper to apply baseline injections into the current linefill at the right time
+            def apply_dra_injections(linefill_df, actions, current_hours):
+                for action in actions:
+                    if action["time"] <= current_hours:
+                        # Use the viscosity/density of the leading batch as defaults
+                        head_visc = float(linefill_df.iloc[0]["Viscosity (cSt)"])
+                        head_dens = float(linefill_df.iloc[0]["Density (kg/m³)"])
+                        new_row = {
+                            "Product": "Baseline DRA",
+                            "Volume (m³)": action["volume"],
+                            "Viscosity (cSt)": head_visc,
+                            "Density (kg/m³)": head_dens,
+                            "DRA ppm": action["dra_ppm"],
+                        }
+                        linefill_df.loc[-1] = new_row  # prepend to DataFrame
+                        linefill_df.index = linefill_df.index + 1
+                        linefill_df.sort_index(inplace=True)
+                return linefill_df
+
+
             for _, row in flow_df.iterrows():
                 flow = float(row.get("Flow (m³/h)", row.get("Flow", 0.0)) or 0.0)
                 start_ts = row["Start"]
@@ -6965,6 +7012,11 @@ if not auto_batch:
                     seg_end = min(seg_start + pd.Timedelta(hours=4), end_ts)
                     duration_hr = (seg_end - seg_start).total_seconds() / 3600.0
                     pumped_m3 = flow * duration_hr
+
+                    # Compute the number of hours since the plan started
+                    current_hours = (seg_start - flow_df["Start"].iloc[0]).total_seconds() / 3600.0
+                    # Inject baseline DRA batches scheduled to be in the pipe before this slot
+                    current_vol = apply_dra_injections(current_vol, baseline_actions, current_hours)
 
                     try:
                         kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations_base)
