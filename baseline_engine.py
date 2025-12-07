@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from copy import deepcopy
 from typing import Any, Dict, List
+from itertools import product   # ← THIS MUST BE PRESENT
 
 from pipeline_model import _segment_hydraulics
 from dra_utils import get_ppm_for_dr
