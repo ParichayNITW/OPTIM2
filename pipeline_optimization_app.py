@@ -4451,6 +4451,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     coarse_multiplier_default = getattr(pipeline_model, "COARSE_MULTIPLIER", 5.0)
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
+    supports_margin_pct = hasattr(pipeline_model, "STATE_COST_MARGIN_PCT")
     state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
@@ -4482,25 +4483,28 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     if state_cost_margin < 0:
         state_cost_margin = 0.0
 
-    state_cost_margin_pct = float(
-        st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
-        or state_cost_margin_pct_default
-    )
-    if state_cost_margin_pct < 0:
-        state_cost_margin_pct = 0.0
-    state_cost_margin_pct /= 100.0
-
-    collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
-
-    return {
+    result = {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
         "state_top_k": state_top_k,
         "state_cost_margin": state_cost_margin,
-        "state_cost_margin_pct": state_cost_margin_pct,
-        "collect_state_audit": collect_state_audit,
     }
+
+    if supports_margin_pct:
+        state_cost_margin_pct = float(
+            st.session_state.get("search_state_cost_margin_pct", state_cost_margin_pct_default)
+            or state_cost_margin_pct_default
+        )
+        if state_cost_margin_pct < 0:
+            state_cost_margin_pct = 0.0
+        result["state_cost_margin_pct"] = state_cost_margin_pct / 100.0
+
+    if hasattr(pipeline_model, "STATE_COLLECT_STATE_AUDIT"):
+        collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
+        result["collect_state_audit"] = collect_state_audit
+
+    return result
 
 
 
