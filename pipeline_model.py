@@ -29,10 +29,6 @@ DEFAULT_MAX_DR = 70
 # Upper bound (ppm) for search space; DRA option generation will cap the
 # drag-reduction grid so injected ppm values do not exceed this limit even if
 # a station allows higher drag reduction.
-# Setting this to ``0`` disables the artificial global PPM ceiling and lets the
-# solver explore up to the station-specific maximum DRA limits. The previous
-# value of 20 ppm prevented feasible solutions when hydraulics required higher
-# concentrations.
 DRA_PPM_SEARCH_CAP = 20.0
 
 # ---------------------------------------------------------------------------
@@ -1554,15 +1550,10 @@ def _update_mainline_dra(
     """
 
     inj_ppm_main = float(opt.get("dra_ppm_main", 0.0) or 0.0)
-    if is_origin is None:
-        is_origin_flag = False
+    if not is_origin:
         idx_val = stn_data.get('idx')
         if isinstance(idx_val, (int, float)):
-            is_origin_flag = int(idx_val) == 0
-    else:
-        is_origin_flag = bool(is_origin)
-
-    is_origin = is_origin_flag
+            is_origin = int(idx_val) == 0
 
     segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
     flow_m3h = float(flow_m3h or 0.0)
@@ -1593,24 +1584,6 @@ def _update_mainline_dra(
         fallback_raw = stn_data.get('fallback_dra_ppm')
         if isinstance(fallback_raw, (int, float)):
             fallback_ppm = float(fallback_raw or 0.0)
-
-    existing_queue: list[tuple[float, float]] = []
-    if queue:
-        for raw in queue:
-            if isinstance(raw, Mapping):
-                length = float(raw.get("length_km", 0.0) or 0.0)
-                ppm_val = float(raw.get("dra_ppm", 0.0) or 0.0)
-            elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
-                length = float(raw[0] or 0.0)
-                ppm_val = float(raw[1] or 0.0)
-            else:
-                continue
-            if length <= 0:
-                continue
-            existing_queue.append((length, ppm_val))
-
-    existing_queue = _merge_queue(existing_queue)
-    existing_total = _queue_total_length(existing_queue)
 
     floor_ppm_limit = 0.0
     floor_requires_injection = False
@@ -1659,37 +1632,6 @@ def _update_mainline_dra(
                 floor_requires_injection = True
             elif floor_ppm_limit > 0.0 and inj_ppm_main + 1e-9 < floor_ppm_limit:
                 floor_requires_injection = True
-
-            if floor_requires_injection and floor_ppm_limit > 0.0 and floor_length > 0.0 and existing_queue:
-                required_len = min(floor_length, _queue_total_length(existing_queue))
-                profile_floor = _segment_profile_from_queue(tuple(existing_queue), 0.0, required_len)
-                covered = 0.0
-                meets_floor = False
-                for entry in profile_floor:
-                    if not entry:
-                        continue
-                    try:
-                        seg_len = float(entry[0] if len(entry) > 0 else 0.0)
-                    except (TypeError, ValueError):
-                        seg_len = 0.0
-                    if seg_len <= 0.0:
-                        continue
-                    try:
-                        seg_ppm = float(entry[1] if len(entry) > 1 else 0.0)
-                    except (TypeError, ValueError):
-                        seg_ppm = 0.0
-                    take = min(seg_len, max(required_len - covered, 0.0))
-                    if take <= 0.0:
-                        break
-                    if seg_ppm + 1e-9 < floor_ppm_limit:
-                        break
-                    covered += take
-                    if covered + 1e-9 >= required_len:
-                        meets_floor = True
-                        break
-
-                if meets_floor and is_origin:
-                    floor_requires_injection = False
 
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
@@ -1834,12 +1776,21 @@ def _update_mainline_dra(
         if length_float <= 0.0:
             continue
         ppm_input = float(ppm_val or 0.0)
-        ppm_out = _apply_shear(ppm_input)
-        if inj_effective > 0.0:
-            if not is_origin:
-                ppm_out += inj_effective
-            elif not pump_running:
-                ppm_out += inj_effective
+        zero_output = False
+        if is_origin and inj_effective <= 0.0:
+            if pump_running:
+                zero_output = True
+            elif flow_m3h <= 0.0:
+                zero_output = True
+        if zero_output:
+            ppm_out = 0.0
+        else:
+            ppm_out = _apply_shear(ppm_input)
+            if inj_effective > 0.0:
+                if not is_origin:
+                    ppm_out += inj_effective
+                elif not pump_running:
+                    ppm_out += inj_effective
         ppm_out = max(ppm_out, 0.0)
         if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
             pumped_differs = True
@@ -1864,9 +1815,8 @@ def _update_mainline_dra(
         tail_queue = list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if is_origin and head_length > 0.0:
-        if pump_running or (inj_effective <= 0.0 and flow_m3h <= 0.0):
-            combined_entries.append((head_length, max(inj_effective, 0.0)))
+    if pump_running and is_origin and inj_effective > 0.0 and head_length > 0.0:
+        combined_entries.append((head_length, max(inj_effective, 0.0)))
 
     combined_entries.extend(advected_portion)
     combined_entries.extend(tail_queue)
@@ -2044,18 +1994,6 @@ def _update_mainline_dra(
 
     if not has_positive:
         dra_segments = []
-    elif pump_running:
-        dra_segments = [
-            (float(length), float(ppm))
-            for length, ppm in dra_segments
-            if float(length or 0.0) > 0.0
-        ]
-    else:
-        dra_segments = [
-            (float(length), float(ppm))
-            for length, ppm in dra_segments
-            if float(length or 0.0) > 0.0 and float(ppm or 0.0) > 0.0
-        ]
 
     if floor_requires_injection and inj_effective <= 0.0:
         has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
@@ -4810,12 +4748,7 @@ def solve_pipeline(
             if not origin_enforced:
                 origin_enforced = True
             max_p = stn.get('max_pumps', 2)
-            # When priority_feasibility is True we must NOT restrict DRA/RPM
-            # to the coarse solution window; search the full floor→max range.
-            if priority_feasibility:
-                rng = None
-            else:
-                rng = narrow_ranges.get(i - 1) if narrow_ranges else None
+            rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             station_rpm_min = int(_station_min_rpm(stn))
             station_rpm_max = int(_station_max_rpm(stn))
             if station_rpm_max <= 0 and station_rpm_min > 0:
@@ -5152,12 +5085,7 @@ def solve_pipeline(
                 if max_ppm_cap <= 0.0 or floor_ppm_min > max_ppm_cap + floor_ppm_tol:
                     floor_exceeds_cap = True
                     floor_limited_local = True
-            # For pure-DRA stations, also ignore narrow_ranges when
-            # priority_feasibility is True so DRA can go from floor→max.
-            if priority_feasibility:
-                rng = None
-            else:
-                rng = narrow_ranges.get(i - 1) if narrow_ranges else None
+            rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_cap > 0:
                 dr_min, dr_max = 0, max_dr_cap
                 if rng and 'dra_main' in rng:
@@ -5439,67 +5367,6 @@ def solve_pipeline(
         float(length) > 0.0 and float(ppm_val) <= 0.0
         for length, ppm_val in initial_queue
     )
-
-    if segment_floors and stations and not any(st.get('is_pump', False) for st in stations):
-        floor_detail = segment_floors[0] if segment_floors else None
-        try:
-            floor_ppm_req = float((floor_detail or {}).get('dra_ppm', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            floor_ppm_req = 0.0
-        if floor_ppm_req <= 0.0 and kv_list:
-            try:
-                floor_perc = float((floor_detail or {}).get('dra_perc', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                floor_perc = 0.0
-            if floor_perc > 0.0:
-                try:
-                    floor_ppm_req = float(get_ppm_for_dr(kv_list[0], floor_perc))
-                except Exception:
-                    floor_ppm_req = 0.0
-
-        try:
-            floor_length_req = float((floor_detail or {}).get('length_km', stations[0].get('L', 0.0)) or 0.0)
-        except (TypeError, ValueError):
-            floor_length_req = 0.0
-
-        enforced_queue = _ensure_queue_floor(
-            initial_queue,
-            floor_length_req,
-            floor_ppm_req,
-            (floor_detail.get('segments') if isinstance(floor_detail, Mapping) else None),
-        )
-        result_queue = [
-            {'length_km': float(length), 'dra_ppm': float(ppm_val)}
-            for length, ppm_val in enforced_queue
-            if float(length or 0.0) > 0.0
-        ]
-        reports = [
-            {
-                'time': start_time,
-                'result': {
-                    'floor_injection_ppm_station_a': floor_ppm_req,
-                    'dra_profile_station_a': list(enforced_queue),
-                    'dra_ppm_station_a': floor_ppm_req,
-                },
-            }
-        ]
-        summary = [
-            {
-                'station': str(stations[0].get('name', '')).lower().replace(' ', '_'),
-                'ppm': floor_ppm_req,
-            }
-        ]
-        return {
-            'error': False,
-            'message': None,
-            'dra_ppm_station_a': floor_ppm_req,
-            'floor_min_ppm_station_a': floor_ppm_req,
-            'linefill': result_queue,
-            'dra_segments': result_queue,
-            'reports': reports,
-            'floor_injection_summary': summary,
-            'executed_passes': ['floor'],
-        }
 
     fallback_by_segment: list[float] = []
     if initial_queue:
