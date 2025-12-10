@@ -1626,12 +1626,66 @@ def _update_mainline_dra(
         ppm_candidates = [ppm for ppm in (floor_ppm, *(ppm for _, ppm in floor_segments)) if ppm > 0.0]
         if ppm_candidates:
             floor_ppm_limit = max(ppm_candidates)
+
+        def _queue_meets_floor(
+            queue_entries: Sequence[Mapping[str, object] | Sequence[object]],
+            *,
+            length_km: float,
+            ppm_floor: float,
+        ) -> bool:
+            """Return ``True`` when the head of ``queue_entries`` meets ``ppm_floor``.
+
+            The check walks the queue from the inlet and only succeeds if the
+            first ``length_km`` kilometres are at or above the requested ppm.
+            """
+
+            remaining = max(float(length_km or 0.0), 0.0)
+            if remaining <= 0.0 or ppm_floor <= 0.0:
+                return True
+
+            for entry in queue_entries:
+                if isinstance(entry, Mapping):
+                    raw_len = entry.get('length_km', entry.get(0, 0.0))
+                    raw_ppm = entry.get('dra_ppm', entry.get(1, 0.0))
+                else:
+                    raw_len = entry[0] if len(entry) > 0 else 0.0
+                    raw_ppm = entry[1] if len(entry) > 1 else 0.0
+
+                try:
+                    length_val = float(raw_len or 0.0)
+                except Exception:
+                    length_val = 0.0
+                try:
+                    ppm_val = float(raw_ppm or 0.0)
+                except Exception:
+                    ppm_val = 0.0
+
+                if length_val <= 0.0:
+                    continue
+                if ppm_val + 1e-9 < ppm_floor:
+                    return False
+
+                remaining -= length_val
+                if remaining <= 1e-9:
+                    return True
+
+            return remaining <= 1e-9
+
         enforce_floor = bool((floor_length > 0.0 or floor_segments) and segment_floor.get('enforce_queue', True))
         if enforce_floor:
-            if inj_ppm_main <= 0.0:
-                floor_requires_injection = True
-            elif floor_ppm_limit > 0.0 and inj_ppm_main + 1e-9 < floor_ppm_limit:
-                floor_requires_injection = True
+            floor_length_use = floor_length if floor_length > 0.0 else segment_length
+            satisfied = _queue_meets_floor(queue, length_km=floor_length_use, ppm_floor=floor_ppm_limit)
+            if satisfied and floor_segments:
+                for seg_length, seg_ppm in floor_segments:
+                    satisfied = _queue_meets_floor(queue, length_km=seg_length, ppm_floor=seg_ppm)
+                    if not satisfied:
+                        break
+
+            if not satisfied:
+                if inj_ppm_main <= 0.0:
+                    floor_requires_injection = True
+                elif floor_ppm_limit > 0.0 and inj_ppm_main + 1e-9 < floor_ppm_limit:
+                    floor_requires_injection = True
 
     inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
     inj_effective = 0.0
@@ -4844,9 +4898,17 @@ def solve_pipeline(
                 dra_grid_min = dra_grid_max = fixed_val
             else:
                 dr_min, dr_max = 0, max_dr_cap
-                if rng and 'dra_main' in rng:
-                    dr_min = max(0, rng['dra_main'][0])
-                    dr_max = min(max_dr_cap, rng['dra_main'][1])
+                dra_range = rng
+                if floor_ppm_min > 0.0 and not _exhaustive_pass:
+                    # When a baseline floor is present we must allow the retry
+                    # pass to explore the full injection range instead of
+                    # staying near the coarse solution, otherwise feasible
+                    # higher‑ppm injections can be pruned away while the inlet
+                    # queue still violates the floor.
+                    dra_range = None
+                if dra_range and 'dra_main' in dra_range:
+                    dr_min = max(0, dra_range['dra_main'][0])
+                    dr_max = min(max_dr_cap, dra_range['dra_main'][1])
                 if floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
                 if floor_dr_min_int > 0:
@@ -5088,9 +5150,15 @@ def solve_pipeline(
             rng = narrow_ranges.get(i - 1) if narrow_ranges else None
             if max_dr_cap > 0:
                 dr_min, dr_max = 0, max_dr_cap
-                if rng and 'dra_main' in rng:
-                    dr_min = max(0, rng['dra_main'][0])
-                    dr_max = min(max_dr_cap, rng['dra_main'][1])
+                dra_range = rng
+                if floor_ppm_min > 0.0 and not _exhaustive_pass:
+                    # Keep the full DRA search window when a baseline floor is
+                    # enforced so higher injections remain reachable even if the
+                    # coarse solution clustered near a low-ppm option.
+                    dra_range = None
+                if dra_range and 'dra_main' in dra_range:
+                    dr_min = max(0, dra_range['dra_main'][0])
+                    dr_max = min(max_dr_cap, dra_range['dra_main'][1])
                 if floor_perc_min_int > 0:
                     dr_min = max(dr_min, floor_perc_min_int)
                 if floor_dr_min_int > 0:
