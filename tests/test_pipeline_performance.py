@@ -1857,6 +1857,14 @@ def test_time_series_solver_backtracks_to_enforce_dra(monkeypatch):
         assert f"{ppm_val:.2f} ppm" in warning_text
 
 
+def test_execute_time_series_solver_backtracks(monkeypatch):
+    """Alias the backtracking scenario for direct execution coverage."""
+
+    # Reuse the full scenario to ensure the explicit test target executes
+    # the same backtracking logic exercised elsewhere.
+    test_time_series_solver_backtracks_to_enforce_dra(monkeypatch)
+
+
 def test_enforce_minimum_origin_dra_updates_plan_split():
     import pipeline_optimization_app as app
 
