@@ -1867,7 +1867,7 @@ with st.sidebar:
                             "Density @ worst hour (kg/m³)": 2,
                         }
                     )
-                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                    st.dataframe(seg_df, width="stretch", hide_index=True)
                 else:
                     st.info("No segment-level floors were generated.")
             else:
@@ -4874,7 +4874,7 @@ if auto_batch:
                 height=750,
                 plot_bgcolor='white',
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     st.session_state.pop('batch_df', None)
@@ -5533,7 +5533,11 @@ def _execute_time_series_solver(
         candidates: set[float] = set()
 
         lower_bound = max(min_needed, 0.0)
-        upper_bound = max(max_cap, lower_bound)
+        upper_bound = max_cap if max_cap is not None else lower_bound
+        if upper_bound is None:
+            upper_bound = lower_bound
+        if upper_bound > 0:
+            lower_bound = min(lower_bound, upper_bound)
         step_val = float(flow_step) if flow_step and flow_step > 0 else 0.0
 
         # Allow skipping early hours when variable flow can still satisfy the
@@ -5548,21 +5552,21 @@ def _execute_time_series_solver(
         if step_val > 0 and upper_bound > 0:
             value = lower_bound
             while value <= upper_bound + 1e-9:
-                candidates.add(value)
+                candidates.add(min(value, upper_bound))
                 value += step_val
 
         if min_needed > 0:
-            candidates.add(min_needed)
+            candidates.add(min(min_needed, upper_bound))
         if average_flow > 0:
-            candidates.add(average_flow)
-        if max_cap > 0:
-            candidates.add(max_cap)
+            candidates.add(min(average_flow, upper_bound))
+        if max_cap and max_cap > 0:
+            candidates.add(float(upper_bound))
 
-        if flow_step > 0 and max_cap > 0:
-            candidates.add(min(max_cap, average_flow + flow_step))
-            candidates.add(max(min_needed, average_flow - flow_step))
+        if flow_step > 0 and max_cap and max_cap > 0:
+            candidates.add(min(upper_bound, average_flow + flow_step))
+            candidates.add(min(upper_bound, max(min_needed, average_flow - flow_step)))
 
-        if remaining_decisions == 1 and remaining_volume > 0 and decision_hours > 0:
+        if remaining_decisions == 1 and remaining_volume > 0 and decision_hours > 0 and max_cap:
             candidates.add(min(max_cap, remaining_volume / decision_hours))
 
         return sorted({round(c, 6) for c in candidates if c > 0 or (enable_variable_flow and c == 0.0)})
@@ -5833,11 +5837,6 @@ def _execute_time_series_solver(
                 if remaining_hours <= 1:
                     if remaining_volume > 0.0 and flow_candidate <= 0.0:
                         continue
-                elif remaining_blocks >= 1:
-                    residual_after = max(remaining_volume - flow_candidate * block_size, 0.0)
-                    max_recoverable = max_cap * block_size * (remaining_blocks - 1)
-                    if residual_after - 1e-9 > max_recoverable:
-                        continue
                 future_capacity = max_cap * block_size * max(remaining_blocks - 1, 0)
                 projected_shortfall = max(
                     remaining_volume - flow_candidate * block_size - future_capacity, 0.0
@@ -5859,6 +5858,47 @@ def _execute_time_series_solver(
             )
             option_result["projected_shortfall"] = projected_shortfall
             flow_options.append(option_result)
+
+        if not flow_options:
+            fallback_flow = max_cap if max_cap is not None else default_flow
+            option_state = {
+                "vol": base_state["vol"].copy(),
+                "plan": base_state["plan"].copy() if isinstance(base_state.get("plan"), pd.DataFrame) else None,
+                "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
+                "dra_reach_km": float(base_state.get("dra_reach_km", dra_reach_local)),
+                "origin_enforced_detail": base_state.get("origin_enforced_detail"),
+                "origin_error": base_state.get("origin_error"),
+            }
+            fallback_result = _run_hour_with_flow(
+                flow_value=float(fallback_flow or 0.0),
+                base_state=option_state,
+                hour_value=hr,
+            )
+            remaining_volume = max(target_volume - delivered_total, 0.0) if target_volume else 0.0
+            fallback_result["projected_shortfall"] = max(
+                remaining_volume - float(fallback_flow or 0.0) * block_size, 0.0
+            )
+            flow_options.append(fallback_result)
+
+        if not flow_options:
+            # As a final guard, surface a clear error instead of raising when no
+            # candidates or fallbacks are available (e.g., missing caps or
+            # zero-length hours).
+            flow_options.append(
+                {
+                    "res": {},
+                    "error_msg": "No viable flow options generated for this block",
+                    "projected_shortfall": max(target_volume - delivered_total, 0.0)
+                    if target_volume
+                    else 0.0,
+                    "vol": base_state["vol"].copy(),
+                    "plan": base_state["plan"].copy()
+                    if isinstance(base_state.get("plan"), pd.DataFrame)
+                    else None,
+                    "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
+                    "dra_reach": float(base_state.get("dra_reach_km", dra_reach_local)),
+                }
+            )
 
         chosen: dict | None = None
         for option in flow_options:
@@ -6930,7 +6970,7 @@ if not auto_batch:
                             if not candidates_df.empty:
                                 st.dataframe(
                                     candidates_df.round(2),
-                                    use_container_width=True,
+                                    width="stretch",
                                     hide_index=True,
                                 )
                             else:
@@ -7353,7 +7393,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         "Suction head (m)": 2,
                     }
                 )
-                st.dataframe(seg_df, use_container_width=True, hide_index=True)
+                st.dataframe(seg_df, width="stretch", hide_index=True)
                 st.caption(
                     "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                 )
@@ -7385,7 +7425,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 }
                 cost_df = pd.concat([cost_df, pd.DataFrame([total_row])], ignore_index=True)
                 st.markdown("#### Cost objective (power + DRA)")
-                st.dataframe(cost_df.round(2), use_container_width=True, hide_index=True)
+                st.dataframe(cost_df.round(2), width="stretch", hide_index=True)
                 st.caption(
                     "The optimizer minimizes the summed station power and DRA costs shown above for the hour/day."
                 )
@@ -7420,7 +7460,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         if not candidates_df.empty:
                             st.dataframe(
                                 candidates_df.round(2),
-                                use_container_width=True,
+                                width="stretch",
                                 hide_index=True,
                             )
                         else:
@@ -7544,7 +7584,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 height=430,
                 margin=dict(l=0, r=0, t=40, b=0)
             )
-            st.plotly_chart(fig_grouped, use_container_width=True)
+            st.plotly_chart(fig_grouped, width="stretch")
     
             # DRA cost bar chart only ---
             st.markdown("<h4 style='font-weight:600; margin-top: 2em;'>DRA Cost</h4>", unsafe_allow_html=True)
@@ -7563,7 +7603,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=0, r=0, t=30, b=0)
             )
-            st.plotly_chart(fig_dra, use_container_width=True)
+            st.plotly_chart(fig_dra, width="stretch")
     
             # --- Pie chart: Total cost distribution by station ---
             st.markdown("#### Cost Contribution by Station")
@@ -7581,7 +7621,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=10, r=10, t=40, b=10)
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
     
             # --- Trend line: Total cost vs. chainage ---
             st.markdown("#### Cost Accumulation Along Pipeline")
@@ -7607,7 +7647,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     font=dict(size=15),
                     height=350
                 )
-                st.plotly_chart(fig_line, use_container_width=True)
+                st.plotly_chart(fig_line, width="stretch")
     
             # --- Table: All cost heads, 2-decimal formatted ---
             df_cost_fmt = df_cost.copy()
@@ -7673,7 +7713,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
                 st.plotly_chart(
                     fig_h,
-                    use_container_width=True,
+                    width="stretch",
                     key=f"perf_headloss_{uuid.uuid4().hex[:6]}"
                 )
                 st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), width='stretch', hide_index=True)
@@ -7713,7 +7753,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     legend=dict(font=dict(size=14)),
                     height=420
                 )
-                st.plotly_chart(fig_v, use_container_width=True)
+                st.plotly_chart(fig_v, width="stretch")
                 # Data table
                 st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), width='stretch', hide_index=True)
             
@@ -7789,7 +7829,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     )
                     st.plotly_chart(
                         fig,
-                        use_container_width=True,
+                        width="stretch",
                         key=f"char_curve_{i}_{stn['name'].lower().replace(' ','_')}_{uuid.uuid4().hex[:6]}"
                     )
     
@@ -7867,7 +7907,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
             
             # --- 5. Pressure vs Pipeline Length ---
             with press_tab:
@@ -7993,7 +8033,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig.update_xaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
                 fig.update_yaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
             
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
@@ -8108,7 +8148,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400,
                         )
-                        st.plotly_chart(fig_pwr, use_container_width=True)
+                        st.plotly_chart(fig_pwr, width="stretch")
                     else:
                         st.warning(f"DOL speed not specified for {stn['name']}; skipping Power vs Speed plot.")
 
@@ -8120,7 +8160,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400,
                         )
-                        st.plotly_chart(fig_pwr2, use_container_width=True)
+                        st.plotly_chart(fig_pwr2, width="stretch")
                     else:
                         st.warning(f"Insufficient pump data to plot Power vs Flow curves for {stn['name']}.")
     
@@ -8201,7 +8241,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
                 st.plotly_chart(
                     fig_sys,
-                    use_container_width=True,
+                    width="stretch",
                     key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
                 )
     
@@ -8441,7 +8481,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
                     hovermode="closest",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
     
     
     
@@ -8524,7 +8564,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis_title="% Drag Reduction",
                     legend=dict(orientation="h", y=-0.2),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             else:
                 st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
     
@@ -8818,7 +8858,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             margin=dict(l=30, r=30, b=30, t=80)
         )
     
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown(
             """
@@ -9024,7 +9064,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
             )
     
-            st.plotly_chart(fig3d, use_container_width=True)
+            st.plotly_chart(fig3d, width="stretch")
             st.markdown(
                 "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
                 "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
@@ -9130,7 +9170,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     progress.progress((i+1)/len(pvals))
                 fig = px.line(x=pvals, y=yvals, labels={"x": param, "y": output}, title=f"{output} vs {param} (Sensitivity)")
                 df_sens = pd.DataFrame({param: pvals, output: yvals})
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 st.dataframe(df_sens, width='stretch', hide_index=True)
                 st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
 
