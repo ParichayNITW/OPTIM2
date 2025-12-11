@@ -5900,11 +5900,11 @@ def _execute_time_series_solver(
                 }
             )
 
-        def _dra_ppm_score(option: Mapping[str, object]) -> float:
+        def _dra_ppm_profile(option: Mapping[str, object]) -> dict[str, float]:
             res_map = option.get("res") if isinstance(option, Mapping) else None
+            profile: dict[str, float] = {}
             if not isinstance(res_map, Mapping):
-                return float("inf")
-            total_ppm = 0.0
+                return profile
             for key, val in res_map.items():
                 if not isinstance(key, str) or "dra_ppm_" not in key:
                     continue
@@ -5912,10 +5912,42 @@ def _execute_time_series_solver(
                     ppm_val = float(val or 0.0)
                 except (TypeError, ValueError):
                     ppm_val = 0.0
-                if ppm_val <= 0.0:
-                    continue
-                total_ppm += ppm_val
-            return total_ppm
+                profile[key] = ppm_val
+            return profile
+
+        def _dra_ppm_score(option: Mapping[str, object]) -> float:
+            profile = _dra_ppm_profile(option)
+            total_ppm = sum(ppm for ppm in profile.values() if ppm > 0.0)
+            return float(total_ppm)
+
+        def _dra_uniformity_score(
+            option: Mapping[str, object], baseline_profile: Mapping[str, float] | None
+        ) -> float:
+            profile = _dra_ppm_profile(option)
+            if not profile and not baseline_profile:
+                return 0.0
+
+            spread = 0.0
+            if profile:
+                ppm_values = list(profile.values())
+                spread = max(ppm_values) - min(ppm_values)
+
+            deviation = 0.0
+            keys = set(profile.keys()) | set(baseline_profile.keys()) if baseline_profile else set(
+                profile.keys()
+            )
+            for key in keys:
+                current_val = profile.get(key, 0.0)
+                baseline_val = baseline_profile.get(key, 0.0) if baseline_profile else 0.0
+                deviation += abs(current_val - baseline_val)
+            if keys:
+                deviation /= max(len(keys), 1)
+
+            return spread + deviation
+
+        previous_profile: dict[str, float] | None = None
+        if reports:
+            previous_profile = _dra_ppm_profile(reports[-1].get("result", {}))
 
         chosen: dict | None = None
         for option in flow_options:
@@ -5938,10 +5970,16 @@ def _execute_time_series_solver(
                     chosen = option
                     continue
                 if abs(cost_current - cost_best) <= 1e-6:
-                    ppm_current = _dra_ppm_score(option)
-                    ppm_best = _dra_ppm_score(chosen)
-                    if ppm_current < ppm_best - 1e-6:
+                    uniformity_current = _dra_uniformity_score(option, previous_profile)
+                    uniformity_best = _dra_uniformity_score(chosen, previous_profile)
+                    if uniformity_current < uniformity_best - 1e-6:
                         chosen = option
+                        continue
+                    if abs(uniformity_current - uniformity_best) <= 1e-6:
+                        ppm_current = _dra_ppm_score(option)
+                        ppm_best = _dra_ppm_score(chosen)
+                        if ppm_current < ppm_best - 1e-6:
+                            chosen = option
         if chosen is None:
             chosen = flow_options[0]
 
