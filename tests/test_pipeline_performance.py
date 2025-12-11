@@ -2186,7 +2186,7 @@ def test_variable_flow_prefers_uniform_dra_ppm_in_tie(monkeypatch):
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 60.0
 
 
-def test_variable_flow_can_trade_small_cost_for_uniform_ppm(monkeypatch):
+def test_variable_flow_prioritizes_cost_over_uniformity(monkeypatch):
     import pipeline_optimization_app as app
 
     stations = [
@@ -2267,13 +2267,13 @@ def test_variable_flow_can_trade_small_cost_for_uniform_ppm(monkeypatch):
         for hour_result in result["reports"]
     ]
 
-    # Second hour chooses the slightly higher-cost but more uniform 10 ppm option instead of 16 ppm.
-    assert ppm_values == [8.0, 10.0]
+    # Second hour picks the lowest-cost 16 ppm option even though it is less uniform.
+    assert ppm_values == [8.0, 16.0]
     assert not result.get("error")
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 150.0
 
 
-def test_variable_flow_penalizes_large_ppm_jump_even_if_cheaper(monkeypatch):
+def test_variable_flow_accepts_ppm_jump_when_cheapest(monkeypatch):
     import pipeline_optimization_app as app
 
     stations = [
@@ -2361,7 +2361,7 @@ def test_variable_flow_penalizes_large_ppm_jump_even_if_cheaper(monkeypatch):
         for hour_result in result["reports"]
     ]
 
-    assert ppm_values == [8.0, 10.0]
+    assert ppm_values == [8.0, 16.0]
     assert flows[1] > 0.0
     assert not result.get("error")
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 120.0

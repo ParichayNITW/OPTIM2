@@ -5949,8 +5949,6 @@ def _execute_time_series_solver(
         if reports:
             previous_profile = _dra_ppm_profile(reports[-1].get("result", {}))
 
-        cost_uniformity_penalty_factor = 1e-2
-
         def _option_rank(option: Mapping[str, object]) -> tuple[float, float, float, float]:
             if option.get("error_msg"):
                 # Force errors to the bottom while still reporting the first one.
@@ -5959,9 +5957,8 @@ def _execute_time_series_solver(
             shortfall = float(option.get("projected_shortfall", 0.0) or 0.0)
             cost = float(option.get("block_cost", 0.0) or 0.0)
             uniformity = _dra_uniformity_score(option, previous_profile)
-            effective_cost = cost * (1.0 + cost_uniformity_penalty_factor * uniformity)
             ppm_total = _dra_ppm_score(option)
-            return (shortfall, effective_cost, uniformity, ppm_total)
+            return (shortfall, cost, uniformity, ppm_total)
 
         chosen = min(flow_options, key=_option_rank)
 
