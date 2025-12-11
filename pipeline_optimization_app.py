@@ -5490,6 +5490,7 @@ def _execute_time_series_solver(
     flow_step: float = 25.0,
     flow_schedule: list[float] | None = None,
     block_hours: int = 1,
+    flow_ceiling_factor: float | None = None,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5775,9 +5776,20 @@ def _execute_time_series_solver(
         candidate_flows: list[float] = []
         if enable_variable_flow and not is_block_start and not math.isnan(existing_block_flow):
             candidate_flows = [existing_block_flow]
-        max_cap = max_flow_limit if isinstance(max_flow_limit, (int, float)) else None
-        if max_cap is None or max_cap <= 0:
-            max_cap = default_flow
+        max_cap = None
+        if enable_variable_flow:
+            ceiling_factor = (
+                flow_ceiling_factor if isinstance(flow_ceiling_factor, (int, float)) else 2.0
+            )
+            scaled_cap = flow_rate * max(ceiling_factor, 1.0)
+            if isinstance(max_flow_limit, (int, float)) and max_flow_limit > 0:
+                scaled_cap = max(scaled_cap, float(max_flow_limit))
+            max_cap = max(default_flow, scaled_cap)
+        else:
+            if isinstance(max_flow_limit, (int, float)) and max_flow_limit > 0:
+                max_cap = float(max_flow_limit)
+            else:
+                max_cap = default_flow
 
         if enable_variable_flow and target_volume and target_volume > 0 and is_block_start:
             remaining_hours = len(hours) - ti
@@ -6646,6 +6658,7 @@ if not auto_batch:
                 max_flow_limit=st.session_state.get("max_laced_flow_m3h"),
                 flow_step=st.session_state.get("search_flow_step", 25.0),
                 block_hours=4 if not is_hourly else 1,
+                flow_ceiling_factor=st.session_state.get("search_coarse_multiplier", 2.0),
             )
         elapsed = time.perf_counter() - start_time
 
