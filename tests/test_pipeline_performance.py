@@ -1865,6 +1865,85 @@ def test_execute_time_series_solver_backtracks(monkeypatch):
     test_time_series_solver_backtracks_to_enforce_dra(monkeypatch)
 
 
+def test_variable_flow_schedule_can_skip_hours(monkeypatch):
+    import pipeline_optimization_app as app
+
+    stations = [
+        {"name": "Station A", "L": 10.0, "is_pump": False, "rough": 0.0001, "D": 0.5, "t": 0.0},
+    ]
+    term = {"name": "Terminal", "elev": 0.0, "min_residual": 1.0}
+    hours = [0, 1, 2, 3]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 500.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+                "DRA ppm": 0.0,
+            }
+        ]
+    )
+
+    call_counter = {"i": 0}
+
+    def fake_solve_pipeline(stations_run, term_data, flow_rate, *_, **__):
+        call_counter["i"] += 1
+        key = stations_run[0]["name"].lower().replace(" ", "_")
+        term_key = term_data["name"].lower().replace(" ", "_")
+        penalty = 0.0
+        if call_counter["i"] >= 5 and flow_rate <= 0.0:
+            penalty = 1e6
+        return {
+            "error": False,
+            "message": None,
+            "total_cost": float(flow_rate + penalty),
+            f"power_cost_{key}": 0.0,
+            f"dra_cost_{key}": 0.0,
+            f"sdh_{key}": 1.0,
+            f"sdh_{term_key}": 1.0,
+            "pipeline_flow_station_a": float(flow_rate),
+            "dra_ppm_station_a": 0.0,
+            "linefill": [],
+            "dra_front_km": 0.0,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solve_pipeline)
+
+    result = app._execute_time_series_solver(
+        stations,
+        term,
+        hours,
+        flow_rate=1000.0,
+        target_volume=1000.0,
+        plan_df=None,
+        current_vol=vol_df,
+        dra_linefill=[],
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=50.0,
+        pump_shear_rate=0.0,
+        total_length=10.0,
+        enable_variable_flow=True,
+        max_flow_limit=1000.0,
+        flow_step=500.0,
+    )
+
+    flows = [
+        float(hour_result["result"].get("flow_rate_m3h", -1))
+        for hour_result in result["reports"]
+    ]
+
+    assert any(f == 0.0 for f in flows)
+    assert any(f > 0.0 for f in flows)
+    assert len(flows) == len(hours)
+
+
 def test_enforce_minimum_origin_dra_updates_plan_split():
     import pipeline_optimization_app as app
 

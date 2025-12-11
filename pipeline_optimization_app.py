@@ -5527,6 +5527,26 @@ def _execute_time_series_solver(
         """Return a small set of flow candidates for the current hour."""
 
         candidates: set[float] = set()
+
+        lower_bound = max(min_needed, 0.0)
+        upper_bound = max(max_cap, lower_bound)
+        step_val = float(flow_step) if flow_step and flow_step > 0 else 0.0
+
+        # Allow skipping early hours when variable flow can still satisfy the
+        # target volume (later hours will tighten ``min_needed`` if catch-up is
+        # required).
+        if enable_variable_flow and lower_bound <= 0.0:
+            candidates.add(0.0)
+
+        # Cover the full feasible range using the configured step so we explore
+        # both conservative and aggressive runtimes instead of clustering near
+        # the average requirement.
+        if step_val > 0 and upper_bound > 0:
+            value = lower_bound
+            while value <= upper_bound + 1e-9:
+                candidates.add(value)
+                value += step_val
+
         if min_needed > 0:
             candidates.add(min_needed)
         if average_flow > 0:
@@ -5541,7 +5561,7 @@ def _execute_time_series_solver(
         if remaining_hours == 1 and remaining_volume > 0:
             candidates.add(min(max_cap, remaining_volume))
 
-        return sorted({round(c, 6) for c in candidates if c > 0})
+        return sorted({round(c, 6) for c in candidates if c > 0 or (enable_variable_flow and c == 0.0)})
 
     def _run_hour_with_flow(
         *,
@@ -5767,6 +5787,21 @@ def _execute_time_series_solver(
         # Evaluate all candidate flow options and choose the lowest-cost feasible result
         flow_options: list[dict] = []
         for flow_candidate in candidate_flows:
+            if enable_variable_flow and target_volume and target_volume > 0:
+                remaining_volume = max(target_volume - delivered_total, 0.0)
+                remaining_hours = len(hours) - ti
+                if remaining_hours <= 1:
+                    if remaining_volume > 0.0 and flow_candidate <= 0.0:
+                        continue
+                elif remaining_hours > 1:
+                    residual_after = max(remaining_volume - flow_candidate, 0.0)
+                    max_recoverable = max_cap * (remaining_hours - 1)
+                    if residual_after - 1e-9 > max_recoverable:
+                        continue
+                future_capacity = max_cap * max(remaining_hours - 1, 0)
+                projected_shortfall = max(remaining_volume - flow_candidate - future_capacity, 0.0)
+            else:
+                projected_shortfall = 0.0
             option_state = {
                 "vol": base_state["vol"].copy(),
                 "plan": base_state["plan"].copy() if isinstance(base_state.get("plan"), pd.DataFrame) else None,
@@ -5775,13 +5810,13 @@ def _execute_time_series_solver(
                 "origin_enforced_detail": base_state.get("origin_enforced_detail"),
                 "origin_error": base_state.get("origin_error"),
             }
-            flow_options.append(
-                _run_hour_with_flow(
-                    flow_value=flow_candidate,
-                    base_state=option_state,
-                    hour_value=hr,
-                )
+            option_result = _run_hour_with_flow(
+                flow_value=flow_candidate,
+                base_state=option_state,
+                hour_value=hr,
             )
+            option_result["projected_shortfall"] = projected_shortfall
+            flow_options.append(option_result)
 
         chosen: dict | None = None
         for option in flow_options:
@@ -5789,7 +5824,15 @@ def _execute_time_series_solver(
                 if chosen is None:
                     chosen = option
                 continue
-            if chosen is None or option.get("block_cost", 0.0) < chosen.get("block_cost", 0.0):
+            if chosen is None:
+                chosen = option
+                continue
+            shortfall_current = float(option.get("projected_shortfall", 0.0) or 0.0)
+            shortfall_best = float(chosen.get("projected_shortfall", 0.0) or 0.0)
+            if shortfall_current < shortfall_best - 1e-6:
+                chosen = option
+                continue
+            if shortfall_current <= shortfall_best + 1e-6 and option.get("block_cost", 0.0) < chosen.get("block_cost", 0.0):
                 chosen = option
         if chosen is None:
             chosen = flow_options[0]
