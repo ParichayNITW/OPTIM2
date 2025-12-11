@@ -5533,7 +5533,11 @@ def _execute_time_series_solver(
         candidates: set[float] = set()
 
         lower_bound = max(min_needed, 0.0)
-        upper_bound = max(max_cap, lower_bound)
+        upper_bound = max_cap if max_cap is not None else lower_bound
+        if upper_bound is None:
+            upper_bound = lower_bound
+        if upper_bound > 0:
+            lower_bound = min(lower_bound, upper_bound)
         step_val = float(flow_step) if flow_step and flow_step > 0 else 0.0
 
         # Allow skipping early hours when variable flow can still satisfy the
@@ -5548,21 +5552,21 @@ def _execute_time_series_solver(
         if step_val > 0 and upper_bound > 0:
             value = lower_bound
             while value <= upper_bound + 1e-9:
-                candidates.add(value)
+                candidates.add(min(value, upper_bound))
                 value += step_val
 
         if min_needed > 0:
-            candidates.add(min_needed)
+            candidates.add(min(min_needed, upper_bound))
         if average_flow > 0:
-            candidates.add(average_flow)
-        if max_cap > 0:
-            candidates.add(max_cap)
+            candidates.add(min(average_flow, upper_bound))
+        if max_cap and max_cap > 0:
+            candidates.add(float(upper_bound))
 
-        if flow_step > 0 and max_cap > 0:
-            candidates.add(min(max_cap, average_flow + flow_step))
-            candidates.add(max(min_needed, average_flow - flow_step))
+        if flow_step > 0 and max_cap and max_cap > 0:
+            candidates.add(min(upper_bound, average_flow + flow_step))
+            candidates.add(min(upper_bound, max(min_needed, average_flow - flow_step)))
 
-        if remaining_decisions == 1 and remaining_volume > 0 and decision_hours > 0:
+        if remaining_decisions == 1 and remaining_volume > 0 and decision_hours > 0 and max_cap:
             candidates.add(min(max_cap, remaining_volume / decision_hours))
 
         return sorted({round(c, 6) for c in candidates if c > 0 or (enable_variable_flow and c == 0.0)})
@@ -5833,11 +5837,6 @@ def _execute_time_series_solver(
                 if remaining_hours <= 1:
                     if remaining_volume > 0.0 and flow_candidate <= 0.0:
                         continue
-                elif remaining_blocks >= 1:
-                    residual_after = max(remaining_volume - flow_candidate * block_size, 0.0)
-                    max_recoverable = max_cap * block_size * (remaining_blocks - 1)
-                    if residual_after - 1e-9 > max_recoverable:
-                        continue
                 future_capacity = max_cap * block_size * max(remaining_blocks - 1, 0)
                 projected_shortfall = max(
                     remaining_volume - flow_candidate * block_size - future_capacity, 0.0
@@ -5859,6 +5858,27 @@ def _execute_time_series_solver(
             )
             option_result["projected_shortfall"] = projected_shortfall
             flow_options.append(option_result)
+
+        if not flow_options:
+            fallback_flow = max_cap if max_cap is not None else default_flow
+            option_state = {
+                "vol": base_state["vol"].copy(),
+                "plan": base_state["plan"].copy() if isinstance(base_state.get("plan"), pd.DataFrame) else None,
+                "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
+                "dra_reach_km": float(base_state.get("dra_reach_km", dra_reach_local)),
+                "origin_enforced_detail": base_state.get("origin_enforced_detail"),
+                "origin_error": base_state.get("origin_error"),
+            }
+            fallback_result = _run_hour_with_flow(
+                flow_value=float(fallback_flow or 0.0),
+                base_state=option_state,
+                hour_value=hr,
+            )
+            remaining_volume = max(target_volume - delivered_total, 0.0) if target_volume else 0.0
+            fallback_result["projected_shortfall"] = max(
+                remaining_volume - float(fallback_flow or 0.0) * block_size, 0.0
+            )
+            flow_options.append(fallback_result)
 
         chosen: dict | None = None
         for option in flow_options:
