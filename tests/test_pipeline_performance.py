@@ -2273,6 +2273,100 @@ def test_variable_flow_can_trade_small_cost_for_uniform_ppm(monkeypatch):
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 150.0
 
 
+def test_variable_flow_penalizes_large_ppm_jump_even_if_cheaper(monkeypatch):
+    import pipeline_optimization_app as app
+
+    stations = [
+        {"name": "Station A", "L": 8.0, "is_pump": False, "rough": 0.0001, "D": 0.5, "t": 0.0},
+    ]
+    term = {"name": "Terminal", "elev": 0.0, "min_residual": 1.0}
+    hours = [0, 1]
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 120.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+                "DRA ppm": 0.0,
+            }
+        ]
+    )
+
+    def fake_solve_pipeline(stations_run, term_data, flow_rate, *_, **kwargs):
+        key = stations_run[0]["name"].lower().replace(" ", "_")
+        term_key = term_data["name"].lower().replace(" ", "_")
+        start_time = kwargs.get("start_time") or ""
+        if start_time.startswith("00"):
+            ppm = 8.0
+            total_cost = 100.0
+        else:
+            if flow_rate >= 80.0:
+                ppm = 16.0
+                total_cost = 88.0
+            elif flow_rate >= 40.0:
+                ppm = 10.0
+                total_cost = 90.0
+            else:
+                ppm = 0.0
+                total_cost = 9999.0
+        return {
+            "error": False,
+            "message": None,
+            "total_cost": total_cost,
+            f"power_cost_{key}": 0.0,
+            f"dra_cost_{key}": 0.0,
+            f"sdh_{key}": 1.0,
+            f"sdh_{term_key}": 1.0,
+            "pipeline_flow_station_a": float(flow_rate),
+            "dra_ppm_station_a": ppm,
+            "linefill": [],
+            "dra_front_km": 0.0,
+            "start_time": start_time,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solve_pipeline)
+
+    result = app._execute_time_series_solver(
+        stations,
+        term,
+        hours,
+        flow_rate=100.0,
+        target_volume=120.0,
+        plan_df=None,
+        current_vol=vol_df,
+        dra_linefill=[],
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=50.0,
+        pump_shear_rate=0.0,
+        total_length=8.0,
+        enable_variable_flow=True,
+        max_flow_limit=100.0,
+        flow_step=20.0,
+        block_hours=1,
+    )
+
+    ppm_values = [
+        float(hour_result["result"].get("dra_ppm_station_a", -1))
+        for hour_result in result["reports"]
+    ]
+    flows = [
+        float(hour_result["result"].get("flow_rate_m3h", -1))
+        for hour_result in result["reports"]
+    ]
+
+    assert ppm_values == [8.0, 10.0]
+    assert flows[1] > 0.0
+    assert not result.get("error")
+    assert float(result.get("delivered_volume", 0.0) or 0.0) >= 120.0
+
+
 def test_enforce_minimum_origin_dra_updates_plan_split():
     import pipeline_optimization_app as app
 
