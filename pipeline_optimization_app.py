@@ -5949,6 +5949,7 @@ def _execute_time_series_solver(
         if reports:
             previous_profile = _dra_ppm_profile(reports[-1].get("result", {}))
 
+        cost_uniformity_rel_tol = 1e-3
         chosen: dict | None = None
         for option in flow_options:
             if option.get("error_msg"):
@@ -5966,12 +5967,13 @@ def _execute_time_series_solver(
             if shortfall_current <= shortfall_best + 1e-6:
                 cost_current = float(option.get("block_cost", 0.0) or 0.0)
                 cost_best = float(chosen.get("block_cost", 0.0) or 0.0)
-                if cost_current < cost_best - 1e-6:
+                cost_gap = cost_best - cost_current
+                if cost_gap > cost_best * cost_uniformity_rel_tol + 1e-6:
                     chosen = option
                     continue
-                if abs(cost_current - cost_best) <= 1e-6:
-                    uniformity_current = _dra_uniformity_score(option, previous_profile)
-                    uniformity_best = _dra_uniformity_score(chosen, previous_profile)
+                uniformity_current = _dra_uniformity_score(option, previous_profile)
+                uniformity_best = _dra_uniformity_score(chosen, previous_profile)
+                if cost_current <= cost_best * (1.0 + cost_uniformity_rel_tol) + 1e-6:
                     if uniformity_current < uniformity_best - 1e-6:
                         chosen = option
                         continue
@@ -5980,6 +5982,12 @@ def _execute_time_series_solver(
                         ppm_best = _dra_ppm_score(chosen)
                         if ppm_current < ppm_best - 1e-6:
                             chosen = option
+                            continue
+                if abs(cost_current - cost_best) <= 1e-6:
+                    ppm_current = _dra_ppm_score(option)
+                    ppm_best = _dra_ppm_score(chosen)
+                    if ppm_current < ppm_best - 1e-6:
+                        chosen = option
         if chosen is None:
             chosen = flow_options[0]
 
