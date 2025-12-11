@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import time
 import base64
+import math
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
@@ -5488,6 +5489,7 @@ def _execute_time_series_solver(
     max_flow_limit: float | None = None,
     flow_step: float = 25.0,
     flow_schedule: list[float] | None = None,
+    block_hours: int = 1,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5519,10 +5521,11 @@ def _execute_time_series_solver(
 
     def _build_flow_candidates(
         remaining_volume: float,
-        remaining_hours: int,
+        remaining_decisions: int,
         average_flow: float,
         max_cap: float,
         min_needed: float,
+        decision_hours: int,
     ) -> list[float]:
         """Return a small set of flow candidates for the current hour."""
 
@@ -5558,8 +5561,8 @@ def _execute_time_series_solver(
             candidates.add(min(max_cap, average_flow + flow_step))
             candidates.add(max(min_needed, average_flow - flow_step))
 
-        if remaining_hours == 1 and remaining_volume > 0:
-            candidates.add(min(max_cap, remaining_volume))
+        if remaining_decisions == 1 and remaining_volume > 0 and decision_hours > 0:
+            candidates.add(min(max_cap, remaining_volume / decision_hours))
 
         return sorted({round(c, 6) for c in candidates if c > 0 or (enable_variable_flow and c == 0.0)})
 
@@ -5720,8 +5723,16 @@ def _execute_time_series_solver(
             "forced_detail_used": forced_detail_used,
         }
 
+    block_size = max(int(block_hours or 1), 1)
+    total_blocks = (len(hours) + block_size - 1) // block_size if hours else 0
+    block_flows: list[float] = [float("nan")] * max(total_blocks, 0)
+
     while ti < len(hours):
         hr = hours[ti]
+        block_idx = ti // block_size
+        offset_in_block = ti % block_size
+        existing_block_flow = block_flows[block_idx] if block_idx < len(block_flows) else float("nan")
+        is_block_start = offset_in_block == 0 or math.isnan(existing_block_flow)
 
         if ti >= len(hour_states):
             state = {
@@ -5753,36 +5764,52 @@ def _execute_time_series_solver(
         }
 
         default_flow = flow_rate
-        if isinstance(flow_schedule, list) and ti < len(flow_schedule):
+        if not math.isnan(existing_block_flow):
+            default_flow = existing_block_flow
+        elif isinstance(flow_schedule, list) and ti < len(flow_schedule):
             try:
                 default_flow = float(flow_schedule[ti])
             except (TypeError, ValueError):
                 default_flow = flow_rate
 
         candidate_flows: list[float] = []
+        if enable_variable_flow and not is_block_start and not math.isnan(existing_block_flow):
+            candidate_flows = [existing_block_flow]
         max_cap = max_flow_limit if isinstance(max_flow_limit, (int, float)) else None
         if max_cap is None or max_cap <= 0:
             max_cap = default_flow
 
-        if enable_variable_flow and target_volume and target_volume > 0:
+        if enable_variable_flow and target_volume and target_volume > 0 and is_block_start:
             remaining_hours = len(hours) - ti
             remaining_volume = max(target_volume - delivered_total, 0.0)
+            remaining_blocks = max((remaining_hours + block_size - 1) // block_size, 1)
             if remaining_hours <= 0:
                 candidate_flows = []
             else:
-                avg_needed = remaining_volume / remaining_hours if remaining_hours > 0 else default_flow
+                avg_needed = (
+                    remaining_volume / (remaining_blocks * block_size)
+                    if remaining_blocks > 0 and block_size > 0
+                    else default_flow
+                )
                 min_needed = 0.0
-                if remaining_hours > 1:
-                    min_needed = max(0.0, remaining_volume - max_cap * (remaining_hours - 1))
+                if remaining_blocks > 1 and block_size > 0:
+                    max_recoverable = max_cap * block_size * (remaining_blocks - 1)
+                    min_needed = max(0.0, (remaining_volume - max_recoverable) / block_size)
+                if block_size > 1:
+                    min_needed = max(min_needed, avg_needed)
                 candidate_flows = _build_flow_candidates(
                     remaining_volume,
-                    remaining_hours,
+                    remaining_blocks,
                     avg_needed,
                     max_cap,
                     min_needed,
+                    block_size,
                 )
         if not candidate_flows:
-            candidate_flows = [default_flow]
+            if not is_block_start and block_idx < len(block_flows):
+                candidate_flows = [block_flows[block_idx]]
+            else:
+                candidate_flows = [default_flow]
 
         # Evaluate all candidate flow options and choose the lowest-cost feasible result
         flow_options: list[dict] = []
@@ -5790,16 +5817,19 @@ def _execute_time_series_solver(
             if enable_variable_flow and target_volume and target_volume > 0:
                 remaining_volume = max(target_volume - delivered_total, 0.0)
                 remaining_hours = len(hours) - ti
+                remaining_blocks = max((remaining_hours + block_size - 1) // block_size, 1)
                 if remaining_hours <= 1:
                     if remaining_volume > 0.0 and flow_candidate <= 0.0:
                         continue
-                elif remaining_hours > 1:
-                    residual_after = max(remaining_volume - flow_candidate, 0.0)
-                    max_recoverable = max_cap * (remaining_hours - 1)
+                elif remaining_blocks >= 1:
+                    residual_after = max(remaining_volume - flow_candidate * block_size, 0.0)
+                    max_recoverable = max_cap * block_size * (remaining_blocks - 1)
                     if residual_after - 1e-9 > max_recoverable:
                         continue
-                future_capacity = max_cap * max(remaining_hours - 1, 0)
-                projected_shortfall = max(remaining_volume - flow_candidate - future_capacity, 0.0)
+                future_capacity = max_cap * block_size * max(remaining_blocks - 1, 0)
+                projected_shortfall = max(
+                    remaining_volume - flow_candidate * block_size - future_capacity, 0.0
+                )
             else:
                 projected_shortfall = 0.0
             option_state = {
@@ -5848,6 +5878,11 @@ def _execute_time_series_solver(
         dra_reach_local = float(chosen.get("dra_reach", dra_reach_local))
 
         flow_used = float(res.get("flow_rate_m3h", default_flow) or default_flow)
+        if enable_variable_flow and not is_block_start and not math.isnan(existing_block_flow):
+            flow_used = float(existing_block_flow)
+            res["flow_rate_m3h"] = flow_used
+        if enable_variable_flow and block_idx < len(block_flows):
+            block_flows[block_idx] = flow_used
         delivered_total += flow_used * max(sub_steps, 1)
 
         if forced_detail_used and isinstance(res, dict):
@@ -6023,6 +6058,14 @@ def _execute_time_series_solver(
 
         ti += 1
 
+    if enable_variable_flow and target_volume and target_volume > 0 and not error_msg:
+        remaining_shortfall = target_volume - delivered_total
+        if remaining_shortfall > 1e-3:
+            error_msg = (
+                "Variable-flow search could not meet the target volume; shortfall "
+                f"{remaining_shortfall:.1f} m³."
+            )
+
     result = {
         "reports": reports,
         "linefill_snaps": linefill_snaps,
@@ -6030,6 +6073,7 @@ def _execute_time_series_solver(
         "final_plan": plan_local,
         "final_dra_linefill": dra_linefill_local,
         "final_dra_reach": dra_reach_local,
+        "delivered_volume": delivered_total,
         "error": error_msg,
         "backtracked": backtracked,
         "backtrack_notes": backtrack_notes,
@@ -6601,6 +6645,7 @@ if not auto_batch:
                 enable_variable_flow=not is_hourly,
                 max_flow_limit=st.session_state.get("max_laced_flow_m3h"),
                 flow_step=st.session_state.get("search_flow_step", 25.0),
+                block_hours=4 if not is_hourly else 1,
             )
         elapsed = time.perf_counter() - start_time
 
