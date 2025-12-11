@@ -5900,6 +5900,23 @@ def _execute_time_series_solver(
                 }
             )
 
+        def _dra_ppm_score(option: Mapping[str, object]) -> float:
+            res_map = option.get("res") if isinstance(option, Mapping) else None
+            if not isinstance(res_map, Mapping):
+                return float("inf")
+            total_ppm = 0.0
+            for key, val in res_map.items():
+                if not isinstance(key, str) or "dra_ppm_" not in key:
+                    continue
+                try:
+                    ppm_val = float(val or 0.0)
+                except (TypeError, ValueError):
+                    ppm_val = 0.0
+                if ppm_val <= 0.0:
+                    continue
+                total_ppm += ppm_val
+            return total_ppm
+
         chosen: dict | None = None
         for option in flow_options:
             if option.get("error_msg"):
@@ -5914,8 +5931,17 @@ def _execute_time_series_solver(
             if shortfall_current < shortfall_best - 1e-6:
                 chosen = option
                 continue
-            if shortfall_current <= shortfall_best + 1e-6 and option.get("block_cost", 0.0) < chosen.get("block_cost", 0.0):
-                chosen = option
+            if shortfall_current <= shortfall_best + 1e-6:
+                cost_current = float(option.get("block_cost", 0.0) or 0.0)
+                cost_best = float(chosen.get("block_cost", 0.0) or 0.0)
+                if cost_current < cost_best - 1e-6:
+                    chosen = option
+                    continue
+                if abs(cost_current - cost_best) <= 1e-6:
+                    ppm_current = _dra_ppm_score(option)
+                    ppm_best = _dra_ppm_score(chosen)
+                    if ppm_current < ppm_best - 1e-6:
+                        chosen = option
         if chosen is None:
             chosen = flow_options[0]
 
