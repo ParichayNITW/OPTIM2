@@ -5619,6 +5619,8 @@ def _execute_time_series_solver(
     error_msg: str | None = None
     failure_detail: dict[str, object] | None = None
     ti = 0
+    iterations = 0
+    max_iterations = max(int(len(hours) * 5), 50) if hours else 50
 
     min_origin_hour: int | None = None
     if preforced_hour is not None:
@@ -5631,6 +5633,19 @@ def _execute_time_series_solver(
             min_origin_hour = None
 
     while ti < len(hours):
+        iterations += 1
+        if iterations > max_iterations:
+            error_msg = (
+                "Time-series solver exceeded the maximum iteration guard and was stopped "
+                "to prevent a hang."
+            )
+            failure_detail = {
+                "max_iterations": max_iterations,
+                "hour_index": ti,
+                "hours": list(hours),
+            }
+            break
+
         hr = hours[ti]
 
         if ti >= len(hour_states):
@@ -5956,6 +5971,8 @@ def _execute_time_series_solver(
             }
         )
 
+        # advance to the next hour; previously setting ``ti = 1`` here caused an
+        # infinite loop when multiple hours were processed
         ti += 1
 
     result = {
