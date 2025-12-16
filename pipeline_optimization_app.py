@@ -73,6 +73,8 @@ if "search_state_cost_margin_pct" not in st.session_state:
     st.session_state["search_state_cost_margin_pct"] = 1.0
 if "search_collect_state_audit" not in st.session_state:
     st.session_state["search_collect_state_audit"] = True
+if "searchexhaustivemode" not in st.session_state:
+    st.session_state["searchexhaustivemode"] = False
 if "show_dp_audit" not in st.session_state:
     st.session_state["show_dp_audit"] = False
 if "baseline_input_mode" not in st.session_state:
@@ -1970,6 +1972,15 @@ with st.sidebar:
             value=bool(st.session_state.get("search_collect_state_audit", True)),
             key="search_collect_state_audit",
             help="Stores cost-sorted candidate states per station so you can view the raw list after solving. Uses the existing states, so overhead is minimal.",
+        )
+        st.checkbox(
+            "Exhaustive feasibility mode",
+            value=bool(st.session_state.get("searchexhaustivemode", False)),
+            key="searchexhaustivemode",
+            help=(
+                "When enabled, relaxes pruning and makes the coarse grid equal to the refinement grid "
+                "to approximate a full scan of RPM, DRA and pump states. Use only for small systems or diagnostic runs."
+            ),
         )
         st.caption(
             "After running optimization, open the Summary tab in the Optimization Results section and scroll below the main results table. The candidate log is listed there under 'Candidate search log (cost-sorted)' with per-station expanders and a JSON download button."
@@ -4267,7 +4278,7 @@ def fmt_residual(res: Mapping, key: str, is_origin: bool) -> str:
     m, kg = residual_pair(res, key, is_origin)
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
-def _collect_search_depth_kwargs() -> dict[str, float | int]:
+def _collect_search_depth_kwargs() -> dict[str, float | int | bool | None]:
     """Return validated search-depth parameters for backend solvers."""
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
@@ -4276,6 +4287,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     state_top_k_default = getattr(pipeline_model, "STATE_TOP_K", 50)
     state_cost_margin_default = getattr(pipeline_model, "STATE_COST_MARGIN", 5000.0)
     state_cost_margin_pct_default = getattr(pipeline_model, "STATE_COST_MARGIN_PCT", 0.01) * 100.0
+    exhaustive_mode = bool(st.session_state.get("searchexhaustivemode", False))
 
     rpm_step = int(st.session_state.get("search_rpm_step", rpm_step_default) or rpm_step_default)
     if rpm_step <= 0:
@@ -4312,6 +4324,16 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
     )
     if state_cost_margin_pct < 0:
         state_cost_margin_pct = 0.0
+
+    refined_combo_cap: int | None = None
+
+    if exhaustive_mode:
+        coarse_multiplier = 1.0
+        state_top_k = max(state_top_k, 5000)
+        state_cost_margin = max(state_cost_margin, 1e9)
+        state_cost_margin_pct = max(state_cost_margin_pct, 100.0)
+        refined_combo_cap = 20000
+
     state_cost_margin_pct /= 100.0
 
     collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
@@ -4324,6 +4346,7 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
         "state_cost_margin": state_cost_margin,
         "state_cost_margin_pct": state_cost_margin_pct,
         "collect_state_audit": collect_state_audit,
+        "refined_combo_cap": refined_combo_cap,
     }
 
 
