@@ -5810,6 +5810,158 @@ def _execute_time_series_solver(
     return result
 
 
+def _solve_daily_schedule_with_hourly_flows(
+    stations_base: list[dict],
+    term_data: dict,
+    hours: list[int],
+    *,
+    target_volume_m3: float | None,
+    plan_df: pd.DataFrame | None,
+    current_vol: pd.DataFrame,
+    dra_linefill: list[dict],
+    dra_reach_km: float,
+    RateDRA: float,
+    Price_HSD: float,
+    fuel_density: float,
+    ambient_temp: float,
+    mop_kgcm2: float | None,
+    pump_shear_rate: float,
+    total_length: float,
+    sub_steps: int = 1,
+    flow_step: float = 25.0,
+) -> dict:
+    """Allocate hourly flows to meet a daily volume target with evolving feasibility.
+
+    The helper runs the existing time-series solver one hour at a time, allowing the
+    selected flow to change as the linefill and DRA state evolve.  For each hour it
+    attempts to run at the remaining-average flow; if that fails, it falls back to a
+    one-hour maximum-feasible search.  The loop stops once the target volume is met
+    or all hours are exhausted.
+    """
+
+    import copy
+
+    try:
+        target_volume = float(target_volume_m3)
+    except (TypeError, ValueError):
+        target_volume = 0.0
+
+    if target_volume <= 0.0:
+        if isinstance(plan_df, pd.DataFrame) and "Volume (m³)" in plan_df.columns:
+            target_volume = float(
+                pd.to_numeric(plan_df["Volume (m³)"], errors="coerce").fillna(0.0).sum()
+            )
+
+    reports_all: list[dict] = []
+    linefill_snaps_all: list[pd.DataFrame] = []
+    flow_profile: dict[int, float] = {}
+    failure_detail: dict[str, object] | None = None
+    error_msg: str | None = None
+
+    plan_local = plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None
+    current_vol_local = current_vol.copy()
+    dra_linefill_local = copy.deepcopy(dra_linefill)
+    dra_reach_local = float(dra_reach_km)
+
+    delivered_total = 0.0
+    hours_len = len(hours)
+
+    for idx, hr in enumerate(hours):
+        remaining_hours = hours_len - idx
+        remaining_volume = max(target_volume - delivered_total, 0.0)
+        if remaining_volume <= 1e-6:
+            break
+
+        base_flow = remaining_volume / max(remaining_hours, 1)
+        plan_for_hour = _truncate_day_plan_volume(plan_local, remaining_volume)
+
+        solver_result = _execute_time_series_solver(
+            stations_base,
+            term_data,
+            [hr],
+            flow_rate=base_flow,
+            plan_df=plan_for_hour,
+            current_vol=current_vol_local,
+            dra_linefill=dra_linefill_local,
+            dra_reach_km=dra_reach_local,
+            RateDRA=RateDRA,
+            Price_HSD=Price_HSD,
+            fuel_density=fuel_density,
+            ambient_temp=ambient_temp,
+            mop_kgcm2=mop_kgcm2,
+            pump_shear_rate=pump_shear_rate,
+            total_length=total_length,
+            sub_steps=sub_steps,
+            retry_with_max_dra=True,
+        )
+
+        flow_used = base_flow
+        if solver_result.get("error"):
+            fallback = _find_maximum_feasible_flow(
+                flow_rate=base_flow,
+                stations_base=stations_base,
+                term_data=term_data,
+                hours=[hr],
+                plan_df=plan_for_hour,
+                current_vol=current_vol_local,
+                dra_linefill=dra_linefill_local,
+                dra_reach_km=dra_reach_local,
+                RateDRA=RateDRA,
+                Price_HSD=Price_HSD,
+                fuel_density=fuel_density,
+                ambient_temp=ambient_temp,
+                mop_kgcm2=mop_kgcm2,
+                pump_shear_rate=pump_shear_rate,
+                total_length=total_length,
+                sub_steps=sub_steps,
+                flow_step=flow_step,
+                is_hourly=True,
+            )
+
+            if fallback is None:
+                error_msg = solver_result.get("error") or "Unable to find feasible flow"
+                failure_detail = solver_result.get("failure_detail")
+                break
+
+            solver_result = fallback["solver_result"]
+            flow_used = float(fallback.get("flow_rate", base_flow) or 0.0)
+            plan_for_hour = fallback.get("plan_df")
+
+        reports_all.extend(solver_result.get("reports") or [])
+        linefill_snaps_all.extend(solver_result.get("linefill_snaps") or [])
+        current_vol_local = solver_result.get("final_vol", current_vol_local)
+        plan_local = solver_result.get("final_plan", plan_for_hour)
+        dra_linefill_local = solver_result.get("final_dra_linefill", dra_linefill_local)
+        dra_reach_local = solver_result.get("final_dra_reach", dra_reach_local)
+
+        delivered_total += max(flow_used, 0.0) * 1.0
+        flow_profile[hr] = flow_used
+        failure_detail = solver_result.get("failure_detail")
+        if solver_result.get("error"):
+            error_msg = solver_result.get("error")
+            break
+
+    if error_msg is None and delivered_total + 1e-6 < target_volume:
+        error_msg = (
+            "Daily throughput target not met. Flow allocation exhausted available hours "
+            f"with {delivered_total:.1f} m³ delivered against a target of {target_volume:.1f} m³."
+        )
+        failure_detail = {"delivered": delivered_total, "target": target_volume}
+
+    return {
+        "reports": reports_all,
+        "linefill_snaps": linefill_snaps_all,
+        "final_vol": current_vol_local,
+        "final_plan": plan_local,
+        "final_dra_linefill": dra_linefill_local,
+        "final_dra_reach": dra_reach_local,
+        "error": error_msg,
+        "failure_detail": failure_detail,
+        "flow_profile": flow_profile,
+        "delivered_volume": delivered_total,
+    }
+
+
 def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bool:
     """Return ``True`` when a max-flow search should run for ``result``."""
 
@@ -6350,25 +6502,46 @@ if not auto_batch:
 
         start_time = time.perf_counter()
         with st.spinner(spinner_msg):
-            solver_result = _execute_time_series_solver(
-                stations_base,
-                term_data,
-                hours,
-                flow_rate=FLOW_sched,
-                plan_df=plan_df,
-                current_vol=current_vol,
-                dra_linefill=dra_linefill,
-                dra_reach_km=dra_reach_km,
-                RateDRA=RateDRA,
-                Price_HSD=Price_HSD,
-                fuel_density=st.session_state.get("Fuel_density", 820.0),
-                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
-                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
-                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
-                total_length=total_length,
-                sub_steps=sub_steps,
-                retry_with_max_dra=True,
-            )
+            if is_hourly:
+                solver_result = _execute_time_series_solver(
+                    stations_base,
+                    term_data,
+                    hours,
+                    flow_rate=FLOW_sched,
+                    plan_df=plan_df,
+                    current_vol=current_vol,
+                    dra_linefill=dra_linefill,
+                    dra_reach_km=dra_reach_km,
+                    RateDRA=RateDRA,
+                    Price_HSD=Price_HSD,
+                    fuel_density=st.session_state.get("Fuel_density", 820.0),
+                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    total_length=total_length,
+                    sub_steps=sub_steps,
+                    retry_with_max_dra=True,
+                )
+            else:
+                solver_result = _solve_daily_schedule_with_hourly_flows(
+                    stations_base,
+                    term_data,
+                    hours,
+                    target_volume_m3=daily_m3,
+                    plan_df=plan_df,
+                    current_vol=current_vol,
+                    dra_linefill=dra_linefill,
+                    dra_reach_km=dra_reach_km,
+                    RateDRA=RateDRA,
+                    Price_HSD=Price_HSD,
+                    fuel_density=st.session_state.get("Fuel_density", 820.0),
+                    ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                    mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                    pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                    total_length=total_length,
+                    sub_steps=sub_steps,
+                    flow_step=st.session_state.get("flow_step", 25.0),
+                )
         elapsed = time.perf_counter() - start_time
 
         error_msg = solver_result["error"]
