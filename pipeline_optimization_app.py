@@ -5956,6 +5956,8 @@ def _execute_time_series_solver(
             }
         )
 
+        # advance to the next hour; previously setting ``ti = 1`` here caused an
+        # infinite loop when multiple hours were processed
         ti += 1
 
     result = {
