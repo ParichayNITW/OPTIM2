@@ -4,6 +4,11 @@ from pathlib import Path
 import time
 import base64
 import math
+
+# Prevent Streamlit from registering filesystem watchers (inotify) that can
+# exceed container limits; must be set before importing streamlit.
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
+
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
