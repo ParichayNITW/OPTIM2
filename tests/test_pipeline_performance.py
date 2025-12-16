@@ -2186,7 +2186,7 @@ def test_variable_flow_prefers_uniform_dra_ppm_in_tie(monkeypatch):
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 60.0
 
 
-def test_variable_flow_prioritizes_cost_over_uniformity(monkeypatch):
+def test_variable_flow_prefers_uniformity_before_cost(monkeypatch):
     import pipeline_optimization_app as app
 
     stations = [
@@ -2221,7 +2221,7 @@ def test_variable_flow_prioritizes_cost_over_uniformity(monkeypatch):
                 total_cost = 90.0
             else:
                 ppm = 10.0
-                total_cost = 90.05
+                total_cost = 89.0
         return {
             "error": False,
             "message": None,
@@ -2267,13 +2267,13 @@ def test_variable_flow_prioritizes_cost_over_uniformity(monkeypatch):
         for hour_result in result["reports"]
     ]
 
-    # Second hour picks the lowest-cost 16 ppm option even though it is less uniform.
-    assert ppm_values == [8.0, 16.0]
+    # Second hour accepts the slightly higher cost to keep ppm closer to the first hour.
+    assert ppm_values == [8.0, 10.0]
     assert not result.get("error")
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 150.0
 
 
-def test_variable_flow_accepts_ppm_jump_when_cheapest(monkeypatch):
+def test_variable_flow_still_uses_cost_when_uniformity_tied(monkeypatch):
     import pipeline_optimization_app as app
 
     stations = [
@@ -2295,37 +2295,37 @@ def test_variable_flow_accepts_ppm_jump_when_cheapest(monkeypatch):
         ]
     )
 
-    def fake_solve_pipeline(stations_run, term_data, flow_rate, *_, **kwargs):
-        key = stations_run[0]["name"].lower().replace(" ", "_")
-        term_key = term_data["name"].lower().replace(" ", "_")
-        start_time = kwargs.get("start_time") or ""
-        if start_time.startswith("00"):
-            ppm = 8.0
-            total_cost = 100.0
+def fake_solve_pipeline(stations_run, term_data, flow_rate, *_, **kwargs):
+    key = stations_run[0]["name"].lower().replace(" ", "_")
+    term_key = term_data["name"].lower().replace(" ", "_")
+    start_time = kwargs.get("start_time") or ""
+    if start_time.startswith("00"):
+        ppm = 6.0
+        total_cost = 100.0
+    else:
+        if flow_rate >= 80.0:
+            ppm = 12.0
+            total_cost = 120.0
+        elif flow_rate >= 40.0:
+            ppm = 6.0
+            total_cost = 80.0
         else:
-            if flow_rate >= 80.0:
-                ppm = 16.0
-                total_cost = 88.0
-            elif flow_rate >= 40.0:
-                ppm = 10.0
-                total_cost = 90.0
-            else:
-                ppm = 0.0
-                total_cost = 9999.0
-        return {
-            "error": False,
-            "message": None,
-            "total_cost": total_cost,
-            f"power_cost_{key}": 0.0,
-            f"dra_cost_{key}": 0.0,
-            f"sdh_{key}": 1.0,
-            f"sdh_{term_key}": 1.0,
-            "pipeline_flow_station_a": float(flow_rate),
-            "dra_ppm_station_a": ppm,
-            "linefill": [],
-            "dra_front_km": 0.0,
-            "start_time": start_time,
-        }
+            ppm = 0.0
+            total_cost = 9999.0
+    return {
+        "error": False,
+        "message": None,
+        "total_cost": total_cost,
+        f"power_cost_{key}": 0.0,
+        f"dra_cost_{key}": 0.0,
+        f"sdh_{key}": 1.0,
+        f"sdh_{term_key}": 1.0,
+        "pipeline_flow_station_a": float(flow_rate),
+        "dra_ppm_station_a": ppm,
+        "linefill": [],
+        "dra_front_km": 0.0,
+        "start_time": start_time,
+    }
 
     monkeypatch.setattr(app, "solve_pipeline", fake_solve_pipeline)
 
@@ -2361,7 +2361,7 @@ def test_variable_flow_accepts_ppm_jump_when_cheapest(monkeypatch):
         for hour_result in result["reports"]
     ]
 
-    assert ppm_values == [8.0, 16.0]
+    assert ppm_values == [6.0, 6.0]
     assert flows[1] > 0.0
     assert not result.get("error")
     assert float(result.get("delivered_volume", 0.0) or 0.0) >= 120.0
