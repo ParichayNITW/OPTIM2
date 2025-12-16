@@ -5969,6 +5969,12 @@ def _execute_time_series_solver(
         # DRA usage before choosing the lowest-cost option within that smooth set.
         score_cache: dict[int, tuple[float, float, float, float]] = {}
 
+        def _safe_float(val: object, default: float = 0.0) -> float:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return float(default)
+
         def _option_scores(option: Mapping[str, object]) -> tuple[float, float, float, float]:
             oid = id(option)
             if oid in score_cache:
@@ -5977,14 +5983,31 @@ def _execute_time_series_solver(
             if option.get("error_msg"):
                 scores = (float("inf"), float("inf"), float("inf"), float("inf"))
             else:
-                shortfall = float(option.get("projected_shortfall", 0.0) or 0.0)
-                cost = float(option.get("block_cost", 0.0) or 0.0)
+                shortfall = _safe_float(option.get("projected_shortfall", 0.0), 0.0)
+                cost = _safe_float(option.get("block_cost", 0.0), 0.0)
                 uniformity = _dra_uniformity_score(option, previous_profile)
                 ppm_total = _dra_ppm_score(option)
                 scores = (shortfall, uniformity, cost, ppm_total)
 
             score_cache[oid] = scores
             return scores
+
+        if not flow_options:
+            flow_options = [
+                {
+                    "res": {},
+                    "error_msg": "No viable flow options generated for this block",
+                    "projected_shortfall": max(target_volume - delivered_total, 0.0)
+                    if target_volume
+                    else 0.0,
+                    "vol": base_state["vol"].copy(),
+                    "plan": base_state["plan"].copy()
+                    if isinstance(base_state.get("plan"), pd.DataFrame)
+                    else None,
+                    "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
+                    "dra_reach": float(base_state.get("dra_reach_km", dra_reach_local)),
+                }
+            ]
 
         shortfall_best = min(flow_options, key=lambda o: _option_scores(o)[0])
         best_shortfall = _option_scores(shortfall_best)[0]
