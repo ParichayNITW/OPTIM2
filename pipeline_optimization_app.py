@@ -5950,6 +5950,17 @@ def _execute_time_series_solver(
 
             return spread + deviation
 
+        def _max_ppm_delta(
+            option: Mapping[str, object], baseline_profile: Mapping[str, float] | None
+        ) -> float:
+            profile = _dra_ppm_profile(option)
+            if not profile or not baseline_profile:
+                return 0.0 if profile else float("inf")
+
+            keys = set(profile.keys()) | set(baseline_profile.keys())
+            deltas = [abs(profile.get(key, 0.0) - baseline_profile.get(key, 0.0)) for key in keys]
+            return max(deltas) if deltas else 0.0
+
         previous_profile: dict[str, float] | None = None
         if reports:
             previous_profile = _dra_ppm_profile(reports[-1].get("result", {}))
@@ -5979,12 +5990,32 @@ def _execute_time_series_solver(
         best_shortfall = _option_scores(shortfall_best)[0]
         shortfall_pool = [opt for opt in flow_options if _option_scores(opt)[0] == best_shortfall]
 
-        uniformity_best = min(shortfall_pool, key=lambda o: _option_scores(o)[1])
+        ppm_delta_tol = None
+        if previous_profile:
+            prev_max = max(previous_profile.values()) if previous_profile.values() else 0.0
+            ppm_delta_tol = max(5.0, prev_max * 0.75)
+
+        if ppm_delta_tol is not None:
+            smooth_pool = [
+                opt
+                for opt in shortfall_pool
+                if _max_ppm_delta(opt, previous_profile) <= ppm_delta_tol
+            ]
+        else:
+            smooth_pool = []
+
+        ranking_pool = smooth_pool if smooth_pool else shortfall_pool
+
+        uniformity_best = min(ranking_pool, key=lambda o: _option_scores(o)[1])
         best_uniformity = _option_scores(uniformity_best)[1]
-        uniformity_tol = max(1e-6, best_uniformity * 0.05)
+        uniformity_tol = max(
+            1e-6,
+            best_uniformity * 0.05,
+            (ppm_delta_tol * 0.75) if ppm_delta_tol is not None else 0.0,
+        )
         uniform_pool = [
             opt
-            for opt in shortfall_pool
+            for opt in ranking_pool
             if (_option_scores(opt)[1] - best_uniformity) <= uniformity_tol
         ]
 
@@ -5992,7 +6023,20 @@ def _execute_time_series_solver(
         best_cost = _option_scores(cost_best)[2]
         cost_pool = [opt for opt in uniform_pool if _option_scores(opt)[2] == best_cost]
 
-        chosen = min(cost_pool, key=lambda o: _option_scores(o)[3])
+        def _flow_value(option: Mapping[str, object]) -> float:
+            res_map = option.get("res") if isinstance(option, Mapping) else None
+            if isinstance(res_map, Mapping):
+                try:
+                    return float(res_map.get("flow_rate_m3h", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+            return 0.0
+
+        flow_best = max(cost_pool, key=_flow_value)
+        max_flow = _flow_value(flow_best)
+        flow_pool = [opt for opt in cost_pool if _flow_value(opt) == max_flow]
+
+        chosen = min(flow_pool, key=lambda o: _option_scores(o)[3])
 
         res = chosen.get("res", {})
         error_msg = chosen.get("error_msg")
