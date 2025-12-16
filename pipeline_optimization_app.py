@@ -5949,18 +5949,45 @@ def _execute_time_series_solver(
         if reports:
             previous_profile = _dra_ppm_profile(reports[-1].get("result", {}))
 
-        def _option_rank(option: Mapping[str, object]) -> tuple[float, float, float, float]:
+        # Rank in stages so we first guarantee feasibility, then favor smoother
+        # DRA usage before choosing the lowest-cost option within that smooth set.
+        score_cache: dict[int, tuple[float, float, float, float]] = {}
+
+        def _option_scores(option: Mapping[str, object]) -> tuple[float, float, float, float]:
+            oid = id(option)
+            if oid in score_cache:
+                return score_cache[oid]
+
             if option.get("error_msg"):
-                # Force errors to the bottom while still reporting the first one.
-                return (float("inf"), float("inf"), float("inf"), float("inf"))
+                scores = (float("inf"), float("inf"), float("inf"), float("inf"))
+            else:
+                shortfall = float(option.get("projected_shortfall", 0.0) or 0.0)
+                cost = float(option.get("block_cost", 0.0) or 0.0)
+                uniformity = _dra_uniformity_score(option, previous_profile)
+                ppm_total = _dra_ppm_score(option)
+                scores = (shortfall, uniformity, cost, ppm_total)
 
-            shortfall = float(option.get("projected_shortfall", 0.0) or 0.0)
-            cost = float(option.get("block_cost", 0.0) or 0.0)
-            uniformity = _dra_uniformity_score(option, previous_profile)
-            ppm_total = _dra_ppm_score(option)
-            return (shortfall, cost, uniformity, ppm_total)
+            score_cache[oid] = scores
+            return scores
 
-        chosen = min(flow_options, key=_option_rank)
+        shortfall_best = min(flow_options, key=lambda o: _option_scores(o)[0])
+        best_shortfall = _option_scores(shortfall_best)[0]
+        shortfall_pool = [opt for opt in flow_options if _option_scores(opt)[0] == best_shortfall]
+
+        uniformity_best = min(shortfall_pool, key=lambda o: _option_scores(o)[1])
+        best_uniformity = _option_scores(uniformity_best)[1]
+        uniformity_tol = max(1e-6, best_uniformity * 0.05)
+        uniform_pool = [
+            opt
+            for opt in shortfall_pool
+            if (_option_scores(opt)[1] - best_uniformity) <= uniformity_tol
+        ]
+
+        cost_best = min(uniform_pool, key=lambda o: _option_scores(o)[2])
+        best_cost = _option_scores(cost_best)[2]
+        cost_pool = [opt for opt in uniform_pool if _option_scores(opt)[2] == best_cost]
+
+        chosen = min(cost_pool, key=lambda o: _option_scores(o)[3])
 
         res = chosen.get("res", {})
         error_msg = chosen.get("error_msg")
