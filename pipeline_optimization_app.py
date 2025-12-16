@@ -5487,6 +5487,78 @@ def _format_plan_injection_label(
     return label
 
 
+
+def forecast_sdh_for_schedule(
+    stations_base: list[dict],
+    term_data: dict,
+    hours: list[int],
+    *,
+    flow_rate: float,
+    plan_df: pd.DataFrame | None,
+    current_vol: pd.DataFrame,
+    dra_linefill: list[dict],
+    dra_reach_km: float,
+    RateDRA: float,
+    Price_HSD: float,
+    fuel_density: float,
+    ambient_temp: float,
+    mop_kgcm2: float | None,
+    pump_shear_rate: float,
+    total_length: float,
+) -> list[dict]:
+    """Forecast SDH feasibility across the horizon without new DRA injections."""
+
+    from copy import deepcopy
+
+    queue0 = deepcopy(dra_linefill or [])
+    for entry in queue0:
+        if isinstance(entry, dict):
+            entry["dra_ppm"] = 0.0
+
+    vol0 = current_vol.copy() if isinstance(current_vol, pd.DataFrame) else pd.DataFrame()
+    if isinstance(vol0, pd.DataFrame) and INIT_DRA_COL in vol0.columns:
+        vol0[INIT_DRA_COL] = 0.0
+
+    plan0 = plan_df.copy() if isinstance(plan_df, pd.DataFrame) else None
+    if isinstance(plan0, pd.DataFrame) and INIT_DRA_COL in plan0.columns:
+        plan0[INIT_DRA_COL] = 0.0
+
+    snap = _execute_time_series_solver(
+        stations_base,
+        term_data,
+        hours,
+        flow_rate=flow_rate,
+        plan_df=plan0,
+        current_vol=vol0,
+        dra_linefill=queue0,
+        dra_reach_km=dra_reach_km,
+        RateDRA=RateDRA,
+        Price_HSD=Price_HSD,
+        fuel_density=fuel_density,
+        ambient_temp=ambient_temp,
+        mop_kgcm2=mop_kgcm2,
+        pump_shear_rate=pump_shear_rate,
+        total_length=total_length,
+        sub_steps=1,
+        retry_with_max_dra=False,
+    )
+
+    out: list[dict] = []
+    for rec in snap.get("reports") or []:
+        res = rec.get("result") or {}
+        hr = int(rec.get("time", 0))
+        sdh_vals = rec.get("sdh_hourly") or []
+        sdh_min = min(sdh_vals) if sdh_vals else None
+        out.append(
+            {
+                "hour": hr,
+                "error": bool(res.get("error")),
+                "message": str(res.get("message") or ""),
+                "sdh_min": float(sdh_min) if sdh_min is not None else None,
+            }
+        )
+    return out
+
 def _execute_time_series_solver(
     stations_base: list[dict],
     term_data: dict,
@@ -5506,6 +5578,7 @@ def _execute_time_series_solver(
     total_length: float,
     sub_steps: int = 1,
     retry_with_max_dra: bool = False,
+    preforced_hour: int | None = None,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5534,6 +5607,16 @@ def _execute_time_series_solver(
     failure_detail: dict[str, object] | None = None
     ti = 0
 
+    min_origin_hour: int | None = None
+    if preforced_hour is not None:
+        try:
+            fail_hour = int(preforced_hour)
+            if hours:
+                first_hour = int(hours[0])
+                min_origin_hour = max(first_hour, fail_hour - 1)
+        except (TypeError, ValueError):
+            min_origin_hour = None
+
     while ti < len(hours):
         hr = hours[ti]
 
@@ -5561,6 +5644,51 @@ def _execute_time_series_solver(
         power_cost_acc: dict[str, float] = {}
         dra_cost_acc: dict[str, float] = {}
         error_msg = None
+
+        if min_origin_hour is not None and hr >= min_origin_hour:
+            state_for_enforcement = {
+                "vol": current_vol_local.copy(),
+                "plan": plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
+                "dra_linefill": copy.deepcopy(dra_linefill_local),
+                "dra_reach_km": float(dra_reach_local),
+                "linefill_snapshot": current_vol_local.copy(),
+            }
+            tightened = _enforce_minimum_origin_dra(
+                state_for_enforcement,
+                total_length_km=total_length,
+                min_ppm=None,
+                baseline_requirement=st.session_state.get("origin_lacing_baseline"),
+                hourly_flow_m3=flow_rate,
+                step_hours=1.0 / max(float(sub_steps or 1), 1.0),
+            )
+            if tightened:
+                detail = state_for_enforcement.get("origin_enforced_detail") or {}
+                st.session_state["origin_enforced_detail"] = copy.deepcopy(detail)
+                segments_detail = detail.get("segments") if isinstance(detail, dict) else None
+                if isinstance(segments_detail, list) and segments_detail:
+                    st.session_state["origin_lacing_segment_baseline"] = copy.deepcopy(segments_detail)
+                detail_record = {
+                    "hour": hr % 24,
+                    "dra_ppm": float(detail.get("dra_ppm", 0.0) or 0.0),
+                    "length_km": float(detail.get("length_km", 0.0) or 0.0),
+                    "volume_m3": float(detail.get("volume_m3", 0.0) or 0.0),
+                    "plan_injections": list(detail.get("plan_injections") or []),
+                    "treatable_km": float(detail.get("treatable_km", 0.0) or 0.0),
+                }
+                enforced_actions.append(detail_record)
+                current_vol_local = state_for_enforcement.get("vol", current_vol_local)
+                plan_local = state_for_enforcement.get("plan", plan_local)
+                dra_linefill_local = state_for_enforcement.get("dra_linefill", dra_linefill_local)
+                dra_reach_local = float(state_for_enforcement.get("dra_reach_km", dra_reach_local))
+                state.update(
+                    {
+                        "vol": current_vol_local.copy(),
+                        "plan": plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
+                        "dra_linefill": copy.deepcopy(dra_linefill_local),
+                        "dra_reach_km": float(dra_reach_local),
+                        "origin_enforced_detail": copy.deepcopy(detail),
+                    }
+                )
 
         forced_detail_used: dict | None = None
         for sub in range(sub_steps):
@@ -6523,6 +6651,30 @@ if not auto_batch:
         base_dra_linefill = copy.deepcopy(dra_linefill)
         base_dra_reach = float(dra_reach_km)
 
+        preforced_hour: int | None = None
+        if is_hourly:
+            forecast = forecast_sdh_for_schedule(
+                stations_base=stations_base,
+                term_data=term_data,
+                hours=hours,
+                flow_rate=FLOW_sched,
+                plan_df=plan_df,
+                current_vol=current_vol,
+                dra_linefill=dra_linefill,
+                dra_reach_km=dra_reach_km,
+                RateDRA=RateDRA,
+                Price_HSD=Price_HSD,
+                fuel_density=st.session_state.get("Fuel_density", 820.0),
+                ambient_temp=st.session_state.get("Ambient_temp", 25.0),
+                mop_kgcm2=st.session_state.get("MOP_kgcm2"),
+                pump_shear_rate=st.session_state.get("pump_shear_rate", 0.0),
+                total_length=total_length,
+            )
+            for rec in forecast:
+                if rec.get("error"):
+                    preforced_hour = int(rec.get("hour", 0))
+                    break
+
         start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             if is_hourly:
@@ -6544,6 +6696,7 @@ if not auto_batch:
                     total_length=total_length,
                     sub_steps=sub_steps,
                     retry_with_max_dra=True,
+                    preforced_hour=preforced_hour,
                 )
             else:
                 solver_result = _solve_daily_schedule_with_hourly_flows(
