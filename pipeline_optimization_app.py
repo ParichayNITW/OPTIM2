@@ -5986,6 +5986,8 @@ def _optimize_daily_volume(
 
     states: list[dict] = [initial_state]
 
+    max_state_budget = 200
+
     for idx, hr in enumerate(hours):
         next_states: dict[int, list[dict]] = {}
         for state in states:
@@ -6053,6 +6055,16 @@ def _optimize_daily_volume(
         for bucket in next_states.values():
             bucket_sorted = sorted(bucket, key=lambda s: (s["volume"], s["cost"]))
             pruned_states.extend(bucket_sorted[:max_states_per_bin])
+        pruned_states.sort(
+            key=lambda s: (
+                max(target_volume_m3 - s["volume"], 0.0),
+                s["cost"],
+                -s["volume"],
+            )
+        )
+        if len(pruned_states) > max_state_budget:
+            pruned_states = pruned_states[:max_state_budget]
+
         states = pruned_states
 
         if not states:
