@@ -6067,11 +6067,19 @@ def _solve_daily_schedule_with_hourly_flows(
                 sub_steps=sub_steps,
                 flow_step=flow_step,
                 is_hourly=True,
+                max_candidates=40,
             )
 
-            if fallback is None:
-                error_msg = solver_result.get("error") or "Unable to find feasible flow"
-                failure_detail = solver_result.get("failure_detail")
+            if fallback is None or fallback.get("flow_rate") is None:
+                fallback_result = fallback.get("solver_result") if isinstance(fallback, Mapping) else None
+                error_msg = (
+                    solver_result.get("error")
+                    or (fallback_result.get("error") if isinstance(fallback_result, Mapping) else None)
+                    or "Unable to find feasible flow"
+                )
+                failure_detail = solver_result.get("failure_detail") or (
+                    fallback_result.get("failure_detail") if isinstance(fallback_result, Mapping) else None
+                )
                 break
 
             solver_result = fallback["solver_result"]
@@ -6164,6 +6172,7 @@ def _find_maximum_feasible_flow(
     sub_steps: int,
     flow_step: float = 25.0,
     is_hourly: bool = False,
+    max_candidates: int | None = None,
 ) -> dict | None:
     """Return the first feasible solution below ``flow_rate`` reducing in ``flow_step`` increments."""
 
@@ -6206,6 +6215,7 @@ def _find_maximum_feasible_flow(
     remainder = base_flow % step
     initial_decrement = remainder if remainder > 0 else step
     flow_candidate = base_flow - initial_decrement
+    attempts = 0
     while flow_candidate > 0.0:
         candidate_total = flow_candidate * hours_count
         if not is_hourly:
@@ -6256,7 +6266,26 @@ def _find_maximum_feasible_flow(
                 "reduction": reduction,
             }
 
+        attempts += 1
+        if max_candidates is not None and attempts >= max_candidates:
+            break
+
         flow_candidate -= step
+
+    if max_candidates is not None and attempts >= max_candidates:
+        return {
+            "flow_rate": None,
+            "solver_result": {
+                "error": "Maximum fallback search iterations exceeded",
+                "failure_detail": {
+                    "message": "Reached cap while searching for feasible flow",
+                    "attempts": attempts,
+                },
+            },
+            "plan_df": None,
+            "total_throughput": 0.0,
+            "reduction": max(initial_total, 0.0),
+        }
 
     return None
 
@@ -6752,37 +6781,44 @@ if not auto_batch:
                         sub_steps=sub_steps,
                         flow_step=25.0,
                         is_hourly=is_hourly,
+                        max_candidates=80,
                     )
             if fallback:
-                FLOW_sched = fallback["flow_rate"]
-                solver_result = fallback["solver_result"]
-                reports = solver_result["reports"]
-                linefill_snaps = solver_result["linefill_snaps"]
-                current_vol = solver_result["final_vol"]
-                plan_df = solver_result["final_plan"]
-                dra_linefill = solver_result["final_dra_linefill"]
-                dra_reach_km = solver_result["final_dra_reach"]
-                error_msg = None
-                reduction = float(fallback.get("reduction", 0.0) or 0.0)
-                total_throughput = float(fallback.get("total_throughput", 0.0) or 0.0)
-                if isinstance(fallback.get("plan_df"), pd.DataFrame):
-                    plan_df = fallback["plan_df"]
-                if reduction > 0.0:
-                    original_total = reduction + total_throughput
-                    hours_count = max(len(hours), 1)
-                    if is_hourly:
-                        fallback_note = (
-                            f"Requested {original_total:,.0f} m³ was infeasible; "
-                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³ "
-                            f"({FLOW_sched:,.0f} m³/h)."
-                        )
-                    else:
-                        fallback_note = (
-                            f"Requested {original_total:,.0f} m³/day "
-                            f"({original_total / hours_count:,.0f} m³/h) was infeasible; "
-                            f"optimized maximum achievable throughput is {total_throughput:,.0f} m³/day "
-                            f"({FLOW_sched:,.0f} m³/h)."
-                        )
+                fallback_flow = fallback.get("flow_rate")
+                fallback_solver = fallback.get("solver_result") if isinstance(fallback, Mapping) else None
+                if fallback_flow is not None and isinstance(fallback_solver, Mapping):
+                    FLOW_sched = fallback_flow
+                    solver_result = fallback_solver
+                    reports = solver_result.get("reports", reports)
+                    linefill_snaps = solver_result.get("linefill_snaps", linefill_snaps)
+                    current_vol = solver_result.get("final_vol", current_vol)
+                    plan_df = solver_result.get("final_plan", plan_df)
+                    dra_linefill = solver_result.get("final_dra_linefill", dra_linefill)
+                    dra_reach_km = solver_result.get("final_dra_reach", dra_reach_km)
+                    error_msg = None
+                    reduction = float(fallback.get("reduction", 0.0) or 0.0)
+                    total_throughput = float(fallback.get("total_throughput", 0.0) or 0.0)
+                    if isinstance(fallback.get("plan_df"), pd.DataFrame):
+                        plan_df = fallback["plan_df"]
+                    if reduction > 0.0:
+                        original_total = reduction + total_throughput
+                        hours_count = max(len(hours), 1)
+                        if is_hourly:
+                            fallback_note = (
+                                f"Requested {original_total:,.0f} m³ was infeasible; "
+                                f"optimized maximum achievable throughput is {total_throughput:,.0f} m³ "
+                                f"({FLOW_sched:,.0f} m³/h)."
+                            )
+                        else:
+                            fallback_note = (
+                                f"Requested {original_total:,.0f} m³/day "
+                                f"({original_total / hours_count:,.0f} m³/h) was infeasible; "
+                                f"optimized maximum achievable throughput is {total_throughput:,.0f} m³/day "
+                                f"({FLOW_sched:,.0f} m³/h)."
+                            )
+                elif isinstance(fallback_solver, Mapping):
+                    error_msg = fallback_solver.get("error") or error_msg
+                    failure_detail = fallback_solver.get("failure_detail") or failure_detail
             if error_msg:
                 st.session_state["linefill_next_day"] = pd.DataFrame()
                 st.error(error_msg)
