@@ -5514,6 +5514,8 @@ def forecast_sdh_for_schedule(
     for entry in queue0:
         if isinstance(entry, dict):
             entry["dra_ppm"] = 0.0
+            entry["drappm"] = 0.0  # legacy key guard
+            entry["initial_dra_ppm"] = 0.0
 
     vol0 = current_vol.copy() if isinstance(current_vol, pd.DataFrame) else pd.DataFrame()
     if isinstance(vol0, pd.DataFrame) and INIT_DRA_COL in vol0.columns:
@@ -5557,6 +5559,17 @@ def forecast_sdh_for_schedule(
                 "sdh_min": float(sdh_min) if sdh_min is not None else None,
             }
         )
+
+    if not out and snap.get("error"):
+        out.append(
+            {
+                "hour": int(hours[0]) if hours else 0,
+                "error": True,
+                "message": str(snap.get("error") or ""),
+                "sdh_min": None,
+            }
+        )
+
     return out
 
 def _execute_time_series_solver(
