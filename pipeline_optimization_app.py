@@ -3,12 +3,6 @@ import sys
 from pathlib import Path
 import time
 import base64
-import math
-
-# Prevent Streamlit from registering filesystem watchers (inotify) that can
-# exceed container limits; must be set before importing streamlit.
-os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
-
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 import altair as alt
@@ -1872,7 +1866,7 @@ with st.sidebar:
                             "Density @ worst hour (kg/m³)": 2,
                         }
                     )
-                    st.dataframe(seg_df, width="stretch", hide_index=True)
+                    st.dataframe(seg_df, use_container_width=True, hide_index=True)
                 else:
                     st.info("No segment-level floors were generated.")
             else:
@@ -4879,7 +4873,7 @@ if auto_batch:
                 height=750,
                 plot_bgcolor='white',
             )
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
             st.info("Each line = one scenario. Hover to see full parameter set for each scenario.")
 else:
     st.session_state.pop('batch_df', None)
@@ -5476,7 +5470,6 @@ def _execute_time_series_solver(
     hours: list[int],
     *,
     flow_rate: float,
-    target_volume: float | None = None,
     plan_df: pd.DataFrame | None,
     current_vol: pd.DataFrame,
     dra_linefill: list[dict],
@@ -5490,12 +5483,6 @@ def _execute_time_series_solver(
     total_length: float,
     sub_steps: int = 1,
     retry_with_max_dra: bool = False,
-    enable_variable_flow: bool = False,
-    max_flow_limit: float | None = None,
-    flow_step: float = 25.0,
-    flow_schedule: list[float] | None = None,
-    block_hours: int = 1,
-    flow_ceiling_factor: float | None = None,
 ) -> dict:
     """Run sequential optimisations for the provided ``hours``.
 
@@ -5512,7 +5499,6 @@ def _execute_time_series_solver(
     current_vol_local = current_vol.copy()
     dra_linefill_local = copy.deepcopy(dra_linefill)
     dra_reach_local = float(dra_reach_km)
-    delivered_total = 0.0
 
     reports: list[dict] = []
     linefill_snaps: list[pd.DataFrame] = []
@@ -5525,98 +5511,54 @@ def _execute_time_series_solver(
     failure_detail: dict[str, object] | None = None
     ti = 0
 
-    def _build_flow_candidates(
-        remaining_volume: float,
-        remaining_decisions: int,
-        average_flow: float,
-        max_cap: float,
-        min_needed: float,
-        decision_hours: int,
-    ) -> list[float]:
-        """Return a small set of flow candidates for the current hour."""
+    while ti < len(hours):
+        hr = hours[ti]
 
-        candidates: set[float] = set()
-
-        lower_bound = max(min_needed, 0.0)
-        upper_bound = max_cap if max_cap is not None else lower_bound
-        if upper_bound is None:
-            upper_bound = lower_bound
-        if upper_bound > 0:
-            lower_bound = min(lower_bound, upper_bound)
-        step_val = float(flow_step) if flow_step and flow_step > 0 else 0.0
-
-        # Allow skipping early hours when variable flow can still satisfy the
-        # target volume (later hours will tighten ``min_needed`` if catch-up is
-        # required).
-        if enable_variable_flow and lower_bound <= 0.0:
-            candidates.add(0.0)
-
-        # Cover the full feasible range using the configured step so we explore
-        # both conservative and aggressive runtimes instead of clustering near
-        # the average requirement.
-        if step_val > 0 and upper_bound > 0:
-            value = lower_bound
-            while value <= upper_bound + 1e-9:
-                candidates.add(min(value, upper_bound))
-                value += step_val
-
-        if min_needed > 0:
-            candidates.add(min(min_needed, upper_bound))
-        if average_flow > 0:
-            candidates.add(min(average_flow, upper_bound))
-        if max_cap and max_cap > 0:
-            candidates.add(float(upper_bound))
-
-        if flow_step > 0 and max_cap and max_cap > 0:
-            candidates.add(min(upper_bound, average_flow + flow_step))
-            candidates.add(min(upper_bound, max(min_needed, average_flow - flow_step)))
-
-        if remaining_decisions == 1 and remaining_volume > 0 and decision_hours > 0 and max_cap:
-            candidates.add(min(max_cap, remaining_volume / decision_hours))
-
-        return sorted({round(c, 6) for c in candidates if c > 0 or (enable_variable_flow and c == 0.0)})
-
-    def _run_hour_with_flow(
-        *,
-        flow_value: float,
-        base_state: dict,
-        hour_value: int,
-    ) -> dict:
-        """Execute a single hour block using ``flow_value`` and ``base_state``."""
-
-        local_vol = base_state["vol"].copy()
-        local_plan = base_state["plan"].copy() if isinstance(base_state.get("plan"), pd.DataFrame) else None
-        local_dra_linefill = copy.deepcopy(base_state.get("dra_linefill", []))
-        local_dra_reach = float(base_state.get("dra_reach_km", dra_reach_local))
+        if ti >= len(hour_states):
+            state = {
+                "vol": current_vol_local.copy(),
+                "plan": plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
+                "dra_linefill": copy.deepcopy(dra_linefill_local),
+                "dra_reach_km": float(dra_reach_local),
+                "linefill_snapshot": current_vol_local.copy(),
+            }
+            hour_states.append(state)
+            linefill_snaps.append(current_vol_local.copy())
+        else:
+            state = hour_states[ti]
+            current_vol_local = state["vol"].copy()
+            plan_local = state["plan"].copy() if isinstance(state.get("plan"), pd.DataFrame) else None
+            dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
+            dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
+            linefill_snaps[ti] = state["linefill_snapshot"].copy()
 
         sdh_hourly: list[float] = []
         res: dict = {}
         block_cost = 0.0
         power_cost_acc: dict[str, float] = {}
         dra_cost_acc: dict[str, float] = {}
-        error_msg: str | None = None
-        failure_detail: dict[str, object] | None = None
-        forced_detail_used: dict | None = None
+        error_msg = None
 
+        forced_detail_used: dict | None = None
         for sub in range(sub_steps):
-            pumped_tmp = flow_value * 1.0
+            pumped_tmp = flow_rate * 1.0
             future_vol, future_plan, injected_batches = shift_vol_linefill(
-                local_vol.copy(), pumped_tmp, local_plan.copy() if isinstance(local_plan, pd.DataFrame) else None
+                current_vol_local.copy(), pumped_tmp, plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None
             )
             plan_forced_detail = _build_forced_detail_from_batches(
                 injected_batches,
                 stations_base,
-                plan_df=local_plan if isinstance(local_plan, pd.DataFrame) else None,
+                plan_df=plan_local if isinstance(plan_local, pd.DataFrame) else None,
             )
             kv_list, rho_list, segment_slices = combine_volumetric_profiles(
-                stations_base, local_vol, future_vol
+                stations_base, current_vol_local, future_vol
             )
 
             stns_run = copy.deepcopy(stations_base)
-            start_str = f"{int((hour_value + sub) % 24):02d}:00"
+            start_str = f"{int((hr + sub) % 24):02d}:00"
             forced_detail = None
             if sub == 0:
-                detail_obj = base_state.get("origin_enforced_detail")
+                detail_obj = state.get("origin_enforced_detail")
                 if isinstance(detail_obj, dict):
                     forced_detail = copy.deepcopy(detail_obj)
             if plan_forced_detail:
@@ -5627,7 +5569,7 @@ def _execute_time_series_solver(
             res = solve_pipeline(
                 stns_run,
                 term_data,
-                flow_value,
+                flow_rate,
                 kv_list,
                 rho_list,
                 segment_slices,
@@ -5635,8 +5577,8 @@ def _execute_time_series_solver(
                 Price_HSD,
                 fuel_density,
                 ambient_temp,
-                local_dra_linefill,
-                local_dra_reach,
+                dra_linefill_local,
+                dra_reach_local,
                 mop_kgcm2,
                 hours=1.0,
                 start_time=start_str,
@@ -5649,7 +5591,7 @@ def _execute_time_series_solver(
                 res_retry = solve_pipeline(
                     stns_retry,
                     term_data,
-                    flow_value,
+                    flow_rate,
                     kv_list,
                     rho_list,
                     segment_slices,
@@ -5657,8 +5599,8 @@ def _execute_time_series_solver(
                     Price_HSD,
                     fuel_density,
                     ambient_temp,
-                    local_dra_linefill,
-                    local_dra_reach,
+                    dra_linefill_local,
+                    dra_reach_local,
                     mop_kgcm2,
                     hours=1.0,
                     start_time=start_str,
@@ -5684,7 +5626,7 @@ def _execute_time_series_solver(
                 forced_detail_used = copy.deepcopy(forced_detail)
 
             if res.get("error"):
-                cur_hr = (hour_value + sub) % 24
+                cur_hr = (hr + sub) % 24
                 error_msg = f"Optimization failed at {cur_hr:02d}:00 -> {res.get('message','')}"
                 failure_detail = {
                     "hour": cur_hr,
@@ -5705,379 +5647,10 @@ def _execute_time_series_solver(
             sdh_vals.append(float(res.get(f"sdh_{term_key}", 0.0) or 0.0))
             sdh_hourly.append(max(sdh_vals))
 
-            local_dra_linefill = res.get("linefill", local_dra_linefill)
-            local_vol, local_plan = future_vol, future_plan
-            local_vol = apply_dra_ppm(local_vol, local_dra_linefill)
-            local_dra_reach = res.get("dra_front_km", local_dra_reach)
-
-        if forced_detail_used and isinstance(res, dict):
-            res.setdefault("forced_origin_detail", forced_detail_used)
-
-        for k, val in power_cost_acc.items():
-            res[f"power_cost_{k}"] = val
-        for k, val in dra_cost_acc.items():
-            res[f"dra_cost_{k}"] = val
-        res["total_cost"] = block_cost
-        res["flow_rate_m3h"] = float(flow_value)
-
-        return {
-            "res": res,
-            "error_msg": error_msg,
-            "failure_detail": failure_detail,
-            "sdh_hourly": sdh_hourly,
-            "block_cost": block_cost,
-            "vol": local_vol,
-            "plan": local_plan,
-            "dra_linefill": local_dra_linefill,
-            "dra_reach": local_dra_reach,
-            "forced_detail_used": forced_detail_used,
-        }
-
-    block_size = max(int(block_hours or 1), 1)
-    total_blocks = (len(hours) + block_size - 1) // block_size if hours else 0
-    block_flows: list[float] = [float("nan")] * max(total_blocks, 0)
-
-    while ti < len(hours):
-        hr = hours[ti]
-        block_idx = ti // block_size
-        offset_in_block = ti % block_size
-        existing_block_flow = block_flows[block_idx] if block_idx < len(block_flows) else float("nan")
-        is_block_start = offset_in_block == 0 or math.isnan(existing_block_flow)
-
-        if ti >= len(hour_states):
-            state = {
-                "vol": current_vol_local.copy(),
-                "plan": plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
-                "dra_linefill": copy.deepcopy(dra_linefill_local),
-                "dra_reach_km": float(dra_reach_local),
-                "linefill_snapshot": current_vol_local.copy(),
-                "_initial_linefill_snapshot": current_vol_local.copy(),
-            }
-            hour_states.append(state)
-            linefill_snaps.append(current_vol_local.copy())
-        else:
-            state = hour_states[ti]
-            current_vol_local = state["vol"].copy()
-            plan_local = state["plan"].copy() if isinstance(state.get("plan"), pd.DataFrame) else None
-            dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
-            dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
-            linefill_snaps[ti] = state["linefill_snapshot"].copy()
-
-        # Build a base snapshot for candidate flow evaluation
-        base_state = {
-            "vol": current_vol_local.copy(),
-            "plan": plan_local.copy() if isinstance(plan_local, pd.DataFrame) else None,
-            "dra_linefill": copy.deepcopy(dra_linefill_local),
-            "dra_reach_km": float(dra_reach_local),
-            "origin_enforced_detail": state.get("origin_enforced_detail"),
-            "origin_error": state.get("origin_error"),
-        }
-
-        default_flow = flow_rate
-        if not math.isnan(existing_block_flow):
-            default_flow = existing_block_flow
-        elif isinstance(flow_schedule, list) and ti < len(flow_schedule):
-            try:
-                default_flow = float(flow_schedule[ti])
-            except (TypeError, ValueError):
-                default_flow = flow_rate
-
-        candidate_flows: list[float] = []
-        if enable_variable_flow and not is_block_start and not math.isnan(existing_block_flow):
-            candidate_flows = [existing_block_flow]
-        max_cap = None
-        if enable_variable_flow:
-            ceiling_factor = (
-                flow_ceiling_factor if isinstance(flow_ceiling_factor, (int, float)) else 2.0
-            )
-            scaled_cap = flow_rate * max(ceiling_factor, 1.0)
-            if isinstance(max_flow_limit, (int, float)) and max_flow_limit > 0:
-                scaled_cap = max(scaled_cap, float(max_flow_limit))
-            max_cap = max(default_flow, scaled_cap)
-        else:
-            if isinstance(max_flow_limit, (int, float)) and max_flow_limit > 0:
-                max_cap = float(max_flow_limit)
-            else:
-                max_cap = default_flow
-
-        if enable_variable_flow and target_volume and target_volume > 0 and is_block_start:
-            remaining_hours = len(hours) - ti
-            remaining_volume = max(target_volume - delivered_total, 0.0)
-            remaining_blocks = max((remaining_hours + block_size - 1) // block_size, 1)
-            if remaining_hours <= 0:
-                candidate_flows = []
-            else:
-                avg_needed = (
-                    remaining_volume / (remaining_blocks * block_size)
-                    if remaining_blocks > 0 and block_size > 0
-                    else default_flow
-                )
-                min_needed = 0.0
-                if remaining_blocks > 1 and block_size > 0:
-                    max_recoverable = max_cap * block_size * (remaining_blocks - 1)
-                    min_needed = max(0.0, (remaining_volume - max_recoverable) / block_size)
-                if block_size > 1:
-                    min_needed = max(min_needed, avg_needed)
-                candidate_flows = _build_flow_candidates(
-                    remaining_volume,
-                    remaining_blocks,
-                    avg_needed,
-                    max_cap,
-                    min_needed,
-                    block_size,
-                )
-        if not candidate_flows:
-            if not is_block_start and block_idx < len(block_flows):
-                candidate_flows = [block_flows[block_idx]]
-            else:
-                candidate_flows = [default_flow]
-
-        # Evaluate all candidate flow options and choose the lowest-cost feasible result
-        flow_options: list[dict] = []
-        for flow_candidate in candidate_flows:
-            if enable_variable_flow and target_volume and target_volume > 0:
-                remaining_volume = max(target_volume - delivered_total, 0.0)
-                remaining_hours = len(hours) - ti
-                remaining_blocks = max((remaining_hours + block_size - 1) // block_size, 1)
-                if remaining_hours <= 1:
-                    if remaining_volume > 0.0 and flow_candidate <= 0.0:
-                        continue
-                future_capacity = max_cap * block_size * max(remaining_blocks - 1, 0)
-                projected_shortfall = max(
-                    remaining_volume - flow_candidate * block_size - future_capacity, 0.0
-                )
-            else:
-                projected_shortfall = 0.0
-            option_state = {
-                "vol": base_state["vol"].copy(),
-                "plan": base_state["plan"].copy() if isinstance(base_state.get("plan"), pd.DataFrame) else None,
-                "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
-                "dra_reach_km": float(base_state.get("dra_reach_km", dra_reach_local)),
-                "origin_enforced_detail": base_state.get("origin_enforced_detail"),
-                "origin_error": base_state.get("origin_error"),
-            }
-            option_result = _run_hour_with_flow(
-                flow_value=flow_candidate,
-                base_state=option_state,
-                hour_value=hr,
-            )
-            option_result["projected_shortfall"] = projected_shortfall
-            flow_options.append(option_result)
-
-        if not flow_options:
-            fallback_flow = max_cap if max_cap is not None else default_flow
-            option_state = {
-                "vol": base_state["vol"].copy(),
-                "plan": base_state["plan"].copy() if isinstance(base_state.get("plan"), pd.DataFrame) else None,
-                "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
-                "dra_reach_km": float(base_state.get("dra_reach_km", dra_reach_local)),
-                "origin_enforced_detail": base_state.get("origin_enforced_detail"),
-                "origin_error": base_state.get("origin_error"),
-            }
-            fallback_result = _run_hour_with_flow(
-                flow_value=float(fallback_flow or 0.0),
-                base_state=option_state,
-                hour_value=hr,
-            )
-            remaining_volume = max(target_volume - delivered_total, 0.0) if target_volume else 0.0
-            fallback_result["projected_shortfall"] = max(
-                remaining_volume - float(fallback_flow or 0.0) * block_size, 0.0
-            )
-            flow_options.append(fallback_result)
-
-        if not flow_options:
-            # As a final guard, surface a clear error instead of raising when no
-            # candidates or fallbacks are available (e.g., missing caps or
-            # zero-length hours).
-            flow_options.append(
-                {
-                    "res": {},
-                    "error_msg": "No viable flow options generated for this block",
-                    "projected_shortfall": max(target_volume - delivered_total, 0.0)
-                    if target_volume
-                    else 0.0,
-                    "vol": base_state["vol"].copy(),
-                    "plan": base_state["plan"].copy()
-                    if isinstance(base_state.get("plan"), pd.DataFrame)
-                    else None,
-                    "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
-                    "dra_reach": float(base_state.get("dra_reach_km", dra_reach_local)),
-                }
-            )
-
-        def _dra_ppm_profile(option: Mapping[str, object]) -> dict[str, float]:
-            res_map = option.get("res") if isinstance(option, Mapping) else None
-            profile: dict[str, float] = {}
-            if not isinstance(res_map, Mapping):
-                return profile
-            for key, val in res_map.items():
-                if not isinstance(key, str) or "dra_ppm_" not in key:
-                    continue
-                try:
-                    ppm_val = float(val or 0.0)
-                except (TypeError, ValueError):
-                    ppm_val = 0.0
-                profile[key] = ppm_val
-            return profile
-
-        def _dra_ppm_score(option: Mapping[str, object]) -> float:
-            profile = _dra_ppm_profile(option)
-            total_ppm = sum(ppm for ppm in profile.values() if ppm > 0.0)
-            return float(total_ppm)
-
-        def _dra_uniformity_score(
-            option: Mapping[str, object], baseline_profile: Mapping[str, float] | None
-        ) -> float:
-            profile = _dra_ppm_profile(option)
-            if not profile and not baseline_profile:
-                return 0.0
-
-            spread = 0.0
-            if profile:
-                ppm_values = list(profile.values())
-                spread = max(ppm_values) - min(ppm_values)
-
-            deviation = 0.0
-            keys = set(profile.keys()) | set(baseline_profile.keys()) if baseline_profile else set(
-                profile.keys()
-            )
-            for key in keys:
-                current_val = profile.get(key, 0.0)
-                baseline_val = baseline_profile.get(key, 0.0) if baseline_profile else 0.0
-                deviation += abs(current_val - baseline_val)
-            if keys:
-                deviation /= max(len(keys), 1)
-
-            return spread + deviation
-
-        def _max_ppm_delta(
-            option: Mapping[str, object], baseline_profile: Mapping[str, float] | None
-        ) -> float:
-            profile = _dra_ppm_profile(option)
-            if not profile or not baseline_profile:
-                return 0.0 if profile else float("inf")
-
-            keys = set(profile.keys()) | set(baseline_profile.keys())
-            deltas = [abs(profile.get(key, 0.0) - baseline_profile.get(key, 0.0)) for key in keys]
-            return max(deltas) if deltas else 0.0
-
-        previous_profile: dict[str, float] | None = None
-        if reports:
-            previous_profile = _dra_ppm_profile(reports[-1].get("result", {}))
-
-        # Rank in stages so we first guarantee feasibility, then favor smoother
-        # DRA usage before choosing the lowest-cost option within that smooth set.
-        score_cache: dict[int, tuple[float, float, float, float]] = {}
-
-        def _safe_float(val: object, default: float = 0.0) -> float:
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                return float(default)
-
-        def _option_scores(option: Mapping[str, object]) -> tuple[float, float, float, float]:
-            oid = id(option)
-            if oid in score_cache:
-                return score_cache[oid]
-
-            if option.get("error_msg"):
-                scores = (float("inf"), float("inf"), float("inf"), float("inf"))
-            else:
-                shortfall = _safe_float(option.get("projected_shortfall", 0.0), 0.0)
-                cost = _safe_float(option.get("block_cost", 0.0), 0.0)
-                uniformity = _dra_uniformity_score(option, previous_profile)
-                ppm_total = _dra_ppm_score(option)
-                scores = (shortfall, uniformity, cost, ppm_total)
-
-            score_cache[oid] = scores
-            return scores
-
-        if not flow_options:
-            flow_options = [
-                {
-                    "res": {},
-                    "error_msg": "No viable flow options generated for this block",
-                    "projected_shortfall": max(target_volume - delivered_total, 0.0)
-                    if target_volume
-                    else 0.0,
-                    "vol": base_state["vol"].copy(),
-                    "plan": base_state["plan"].copy()
-                    if isinstance(base_state.get("plan"), pd.DataFrame)
-                    else None,
-                    "dra_linefill": copy.deepcopy(base_state.get("dra_linefill", [])),
-                    "dra_reach": float(base_state.get("dra_reach_km", dra_reach_local)),
-                }
-            ]
-
-        shortfall_best = min(flow_options, key=lambda o: _option_scores(o)[0])
-        best_shortfall = _option_scores(shortfall_best)[0]
-        shortfall_pool = [opt for opt in flow_options if _option_scores(opt)[0] == best_shortfall]
-
-        ppm_delta_tol = None
-        if previous_profile:
-            prev_max = max(previous_profile.values()) if previous_profile.values() else 0.0
-            ppm_delta_tol = max(5.0, prev_max * 0.75)
-
-        if ppm_delta_tol is not None:
-            smooth_pool = [
-                opt
-                for opt in shortfall_pool
-                if _max_ppm_delta(opt, previous_profile) <= ppm_delta_tol
-            ]
-        else:
-            smooth_pool = []
-
-        ranking_pool = smooth_pool if smooth_pool else shortfall_pool
-
-        uniformity_best = min(ranking_pool, key=lambda o: _option_scores(o)[1])
-        best_uniformity = _option_scores(uniformity_best)[1]
-        uniformity_tol = max(
-            1e-6,
-            best_uniformity * 0.05,
-            (ppm_delta_tol * 0.75) if ppm_delta_tol is not None else 0.0,
-        )
-        uniform_pool = [
-            opt
-            for opt in ranking_pool
-            if (_option_scores(opt)[1] - best_uniformity) <= uniformity_tol
-        ]
-
-        cost_best = min(uniform_pool, key=lambda o: _option_scores(o)[2])
-        best_cost = _option_scores(cost_best)[2]
-        cost_pool = [opt for opt in uniform_pool if _option_scores(opt)[2] == best_cost]
-
-        def _flow_value(option: Mapping[str, object]) -> float:
-            res_map = option.get("res") if isinstance(option, Mapping) else None
-            if isinstance(res_map, Mapping):
-                try:
-                    return float(res_map.get("flow_rate_m3h", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    return 0.0
-            return 0.0
-
-        flow_best = max(cost_pool, key=_flow_value)
-        max_flow = _flow_value(flow_best)
-        flow_pool = [opt for opt in cost_pool if _flow_value(opt) == max_flow]
-
-        chosen = min(flow_pool, key=lambda o: _option_scores(o)[3])
-
-        res = chosen.get("res", {})
-        error_msg = chosen.get("error_msg")
-        failure_detail = chosen.get("failure_detail")
-        sdh_hourly = chosen.get("sdh_hourly", [])
-        forced_detail_used = chosen.get("forced_detail_used")
-        current_vol_local = chosen.get("vol", current_vol_local)
-        plan_local = chosen.get("plan") if isinstance(chosen.get("plan"), pd.DataFrame) else None
-        dra_linefill_local = chosen.get("dra_linefill", dra_linefill_local)
-        dra_reach_local = float(chosen.get("dra_reach", dra_reach_local))
-
-        flow_used = float(res.get("flow_rate_m3h", default_flow) or default_flow)
-        if enable_variable_flow and not is_block_start and not math.isnan(existing_block_flow):
-            flow_used = float(existing_block_flow)
-            res["flow_rate_m3h"] = flow_used
-        if enable_variable_flow and block_idx < len(block_flows):
-            block_flows[block_idx] = flow_used
-        delivered_total += flow_used * max(sub_steps, 1)
+            dra_linefill_local = res.get("linefill", dra_linefill_local)
+            current_vol_local, plan_local = future_vol, future_plan
+            current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
+            dra_reach_local = res.get("dra_front_km", dra_reach_local)
 
         if forced_detail_used and isinstance(res, dict):
             res.setdefault("forced_origin_detail", forced_detail_used)
@@ -6119,7 +5692,7 @@ def _execute_time_series_solver(
                     total_length_km=total_length,
                     min_ppm=max(float(pipeline_model.DRA_STEP), 2.0) if hasattr(pipeline_model, "DRA_STEP") else 2.0,
                     baseline_requirement=st.session_state.get("origin_lacing_baseline"),
-                    hourly_flow_m3=flow_used,
+                    hourly_flow_m3=flow_rate,
                     step_hours=1.0 / max(float(sub_steps or 1), 1.0),
                 )
                 if tightened:
@@ -6136,37 +5709,6 @@ def _execute_time_series_solver(
                         "plan_injections": list(detail.get("plan_injections") or []),
                         "treatable_km": float(detail.get("treatable_km", 0.0) or 0.0),
                     }
-                    snapshot_vol_df = None
-                    if isinstance(prev_state, Mapping):
-                        init_snap = prev_state.get("_initial_linefill_snapshot")
-                        if isinstance(init_snap, pd.DataFrame):
-                            snapshot_vol_df = init_snap
-                        elif isinstance(prev_state.get("linefill_snapshot"), pd.DataFrame):
-                            snapshot_vol_df = prev_state.get("linefill_snapshot")
-                    snapshot_total = detail_record["volume_m3"]
-                    if isinstance(snapshot_vol_df, pd.DataFrame) and not snapshot_vol_df.empty:
-                        try:
-                            snapshot_total = float(
-                                pd.to_numeric(
-                                    snapshot_vol_df[
-                                        "Volume (m³)" if "Volume (m³)" in snapshot_vol_df.columns else "Volume"
-                                    ],
-                                    errors="coerce",
-                                )
-                                .fillna(0.0)
-                                .sum()
-                            )
-                        except Exception:
-                            snapshot_total = detail_record["volume_m3"]
-                    if snapshot_total > 0.0:
-                        treatable_override = _estimate_treatable_length(
-                            total_length_km=total_length,
-                            total_volume_m3=snapshot_total,
-                            flow_m3_per_hour=flow_used,
-                            hours=1.0 / max(float(sub_steps or 1), 1.0),
-                        )
-                        detail_record["length_km"] = treatable_override
-                        detail_record["treatable_km"] = treatable_override
                     enforced_actions.append(detail_record)
                     volume_fmt = detail_record["volume_m3"]
                     ppm_fmt = detail_record["dra_ppm"]
@@ -6211,12 +5753,7 @@ def _execute_time_series_solver(
             failure_detail = None
 
             restored = prev_state
-            snapshot_vol = restored.get("linefill_snapshot") if isinstance(restored, Mapping) else None
-            if isinstance(snapshot_vol, pd.DataFrame):
-                restored["vol"] = snapshot_vol.copy()
-                current_vol_local = snapshot_vol.copy()
-            else:
-                current_vol_local = restored["vol"].copy()
+            current_vol_local = restored["vol"].copy()
             plan_local = restored["plan"].copy() if isinstance(restored.get("plan"), pd.DataFrame) else None
             dra_linefill_local = copy.deepcopy(restored.get("dra_linefill", []))
             dra_reach_local = float(restored.get("dra_reach_km", dra_reach_local))
@@ -6231,9 +5768,14 @@ def _execute_time_series_solver(
             state["plan"] = None
         state["dra_linefill"] = copy.deepcopy(dra_linefill_local)
         state["dra_reach_km"] = float(dra_reach_local)
-        if "linefill_snapshot" not in state:
-            state["linefill_snapshot"] = current_vol_local.copy()
+        state["linefill_snapshot"] = current_vol_local.copy()
         linefill_snaps[ti] = current_vol_local.copy()
+
+        for k, val in power_cost_acc.items():
+            res[f"power_cost_{k}"] = val
+        for k, val in dra_cost_acc.items():
+            res[f"dra_cost_{k}"] = val
+        res["total_cost"] = block_cost
 
         queue_segments = res.get("dra_segments") if isinstance(res, Mapping) else None
         if isinstance(queue_segments, list):
@@ -6252,14 +5794,6 @@ def _execute_time_series_solver(
 
         ti += 1
 
-    if enable_variable_flow and target_volume and target_volume > 0 and not error_msg:
-        remaining_shortfall = target_volume - delivered_total
-        if remaining_shortfall > 1e-3:
-            error_msg = (
-                "Variable-flow search could not meet the target volume; shortfall "
-                f"{remaining_shortfall:.1f} m³."
-            )
-
     result = {
         "reports": reports,
         "linefill_snaps": linefill_snaps,
@@ -6267,7 +5801,6 @@ def _execute_time_series_solver(
         "final_plan": plan_local,
         "final_dra_linefill": dra_linefill_local,
         "final_dra_reach": dra_reach_local,
-        "delivered_volume": delivered_total,
         "error": error_msg,
         "backtracked": backtracked,
         "backtrack_notes": backtrack_notes,
@@ -6822,7 +6355,6 @@ if not auto_batch:
                 term_data,
                 hours,
                 flow_rate=FLOW_sched,
-                target_volume=daily_m3 if not is_hourly else None,
                 plan_df=plan_df,
                 current_vol=current_vol,
                 dra_linefill=dra_linefill,
@@ -6836,11 +6368,6 @@ if not auto_batch:
                 total_length=total_length,
                 sub_steps=sub_steps,
                 retry_with_max_dra=True,
-                enable_variable_flow=not is_hourly,
-                max_flow_limit=st.session_state.get("max_laced_flow_m3h"),
-                flow_step=st.session_state.get("search_flow_step", 25.0),
-                block_hours=4 if not is_hourly else 1,
-                flow_ceiling_factor=st.session_state.get("search_coarse_multiplier", 2.0),
             )
         elapsed = time.perf_counter() - start_time
 
@@ -7112,7 +6639,7 @@ if not auto_batch:
                             if not candidates_df.empty:
                                 st.dataframe(
                                     candidates_df.round(2),
-                                    width="stretch",
+                                    use_container_width=True,
                                     hide_index=True,
                                 )
                             else:
@@ -7535,7 +7062,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         "Suction head (m)": 2,
                     }
                 )
-                st.dataframe(seg_df, width="stretch", hide_index=True)
+                st.dataframe(seg_df, use_container_width=True, hide_index=True)
                 st.caption(
                     "Per-segment floors assume the suction head shown in the table when enforcing downstream SDH."
                 )
@@ -7567,7 +7094,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 }
                 cost_df = pd.concat([cost_df, pd.DataFrame([total_row])], ignore_index=True)
                 st.markdown("#### Cost objective (power + DRA)")
-                st.dataframe(cost_df.round(2), width="stretch", hide_index=True)
+                st.dataframe(cost_df.round(2), use_container_width=True, hide_index=True)
                 st.caption(
                     "The optimizer minimizes the summed station power and DRA costs shown above for the hour/day."
                 )
@@ -7602,7 +7129,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         if not candidates_df.empty:
                             st.dataframe(
                                 candidates_df.round(2),
-                                width="stretch",
+                                use_container_width=True,
                                 hide_index=True,
                             )
                         else:
@@ -7726,7 +7253,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 height=430,
                 margin=dict(l=0, r=0, t=40, b=0)
             )
-            st.plotly_chart(fig_grouped, width="stretch")
+            st.plotly_chart(fig_grouped, use_container_width=True)
     
             # DRA cost bar chart only ---
             st.markdown("<h4 style='font-weight:600; margin-top: 2em;'>DRA Cost</h4>", unsafe_allow_html=True)
@@ -7745,7 +7272,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=0, r=0, t=30, b=0)
             )
-            st.plotly_chart(fig_dra, width="stretch")
+            st.plotly_chart(fig_dra, use_container_width=True)
     
             # --- Pie chart: Total cost distribution by station ---
             st.markdown("#### Cost Contribution by Station")
@@ -7763,7 +7290,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 showlegend=False,
                 margin=dict(l=10, r=10, t=40, b=10)
             )
-            st.plotly_chart(fig_pie, width="stretch")
+            st.plotly_chart(fig_pie, use_container_width=True)
     
             # --- Trend line: Total cost vs. chainage ---
             st.markdown("#### Cost Accumulation Along Pipeline")
@@ -7789,7 +7316,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     font=dict(size=15),
                     height=350
                 )
-                st.plotly_chart(fig_line, width="stretch")
+                st.plotly_chart(fig_line, use_container_width=True)
     
             # --- Table: All cost heads, 2-decimal formatted ---
             df_cost_fmt = df_cost.copy()
@@ -7855,7 +7382,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
                 st.plotly_chart(
                     fig_h,
-                    width="stretch",
+                    use_container_width=True,
                     key=f"perf_headloss_{uuid.uuid4().hex[:6]}"
                 )
                 st.dataframe(df_hloss.style.format({"Head Loss (m)": "{:.2f}"}), width='stretch', hide_index=True)
@@ -7895,7 +7422,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     legend=dict(font=dict(size=14)),
                     height=420
                 )
-                st.plotly_chart(fig_v, width="stretch")
+                st.plotly_chart(fig_v, use_container_width=True)
                 # Data table
                 st.dataframe(df_vel.style.format({"Velocity (m/s)":"{:.2f}", "Reynolds Number":"{:.0f}"}), width='stretch', hide_index=True)
             
@@ -7971,7 +7498,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     )
                     st.plotly_chart(
                         fig,
-                        width="stretch",
+                        use_container_width=True,
                         key=f"char_curve_{i}_{stn['name'].lower().replace(' ','_')}_{uuid.uuid4().hex[:6]}"
                     )
     
@@ -8049,7 +7576,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         legend=dict(font=dict(size=13)),
                         height=420
                     )
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
             
             # --- 5. Pressure vs Pipeline Length ---
             with press_tab:
@@ -8175,7 +7702,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 fig.update_xaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
                 fig.update_yaxes(gridcolor="#e0e0e0", zeroline=False, showline=True, linewidth=1.5, linecolor='#1846d2', mirror=True)
             
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
             
             # --- 6. Power vs Speed/Flow ---
             with power_tab:
@@ -8290,7 +7817,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400,
                         )
-                        st.plotly_chart(fig_pwr, width="stretch")
+                        st.plotly_chart(fig_pwr, use_container_width=True)
                     else:
                         st.warning(f"DOL speed not specified for {stn['name']}; skipping Power vs Speed plot.")
 
@@ -8302,7 +7829,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             font=dict(size=16),
                             height=400,
                         )
-                        st.plotly_chart(fig_pwr2, width="stretch")
+                        st.plotly_chart(fig_pwr2, use_container_width=True)
                     else:
                         st.warning(f"Insufficient pump data to plot Power vs Flow curves for {stn['name']}.")
     
@@ -8383,7 +7910,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
                 st.plotly_chart(
                     fig_sys,
-                    width="stretch",
+                    use_container_width=True,
                     key=f"sys_curve_{i}_{key}_{uuid.uuid4().hex[:6]}"
                 )
     
@@ -8623,7 +8150,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(80,100,230,0.13)'),
                     hovermode="closest",
                 )
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
     
     
     
@@ -8706,7 +8233,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     yaxis_title="% Drag Reduction",
                     legend=dict(orientation="h", y=-0.2),
                 )
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info(f"No DRA applied at {stn['name']} (Optimal %DR = 0)")
     
@@ -9000,7 +8527,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             margin=dict(l=30, r=30, b=30, t=80)
         )
     
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown(
             """
@@ -9206,7 +8733,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 )
             )
     
-            st.plotly_chart(fig3d, width="stretch")
+            st.plotly_chart(fig3d, use_container_width=True)
             st.markdown(
                 "<div style='text-align:center;color:#888;margin-top:1.1em;'>"
                 "Z-axis = Residual Head (mcl). Mesh surface interpolates between stations and peaks. <br>"
@@ -9312,7 +8839,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     progress.progress((i+1)/len(pvals))
                 fig = px.line(x=pvals, y=yvals, labels={"x": param, "y": output}, title=f"{output} vs {param} (Sensitivity)")
                 df_sens = pd.DataFrame({param: pvals, output: yvals})
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_sens, width='stretch', hide_index=True)
                 st.download_button("Download CSV", df_sens.to_csv(index=False).encode(), file_name="sensitivity.csv")
 
