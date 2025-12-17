@@ -2405,14 +2405,19 @@ def compute_minimum_lacing_requirement(
         slices_use = cleaned_slices
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
-    cumulative_min = max(terminal_min_residual, 0.0)
     for idx in range(len(stations_copy) - 1, -1, -1):
-        downstream_requirements[idx] = cumulative_min
         try:
-            stn_min = float(stations_copy[idx].get('residual_floor', stations_copy[idx].get('min_residual', 0.0)) or 0.0)
+            if idx + 1 < len(stations_copy):
+                downstream_requirements[idx] = float(
+                    stations_copy[idx + 1].get(
+                        'residual_floor', stations_copy[idx + 1].get('min_residual', 0.0)
+                    )
+                    or 0.0
+                )
+            else:
+                downstream_requirements[idx] = float(terminal_min_residual)
         except (TypeError, ValueError):
-            stn_min = 0.0
-        cumulative_min = max(cumulative_min, stn_min)
+            downstream_requirements[idx] = float(max(terminal_min_residual, 0.0))
 
     try:
         ppm_cap = float(baseline_ppm_cap)
@@ -2544,9 +2549,14 @@ def compute_minimum_lacing_requirement(
             dr_unbounded_local = 0.0
             limited_by_station_local = False
             # The UI-supplied minimum suction head applies only to the
-            # originating station; downstream stations rely on the propagated
-            # residual target and any station-specific residual floors.
-            suction_requirement = min_suction if stn.get('is_pump') and idx == 0 else 0.0
+            # originating station. Downstream stations use their own minimum
+            # residual floor as the inlet/suction requirement so upstream
+            # segments deliver the specified downstream target instead of
+            # inheriting the origin suction.
+            if stn.get('is_pump') and idx == 0:
+                suction_requirement = min_suction
+            else:
+                suction_requirement = station_min_residual
             suction_head_local = stn.get('suction_head', 0.0)
             if suction_head_local is None:
                 suction_head_local = 0.0
@@ -2560,11 +2570,7 @@ def compute_minimum_lacing_requirement(
             # (and hence the inferred DR) for the segment.  Instead, limit the
             # suction floor to the origin-only UI input, any upstream inlet
             # lift, and the downstream target carried into this station.
-            suction_head_local = max(
-                suction_head_local,
-                inlet_floor,
-                suction_requirement,
-            )
+            suction_head_local = max(suction_head_local, inlet_floor, suction_requirement)
             available_head_before_limit = max_head + suction_head_local
             available_head = available_head_before_limit
             if maop_head_val > 0.0:
@@ -2760,7 +2766,7 @@ def compute_minimum_lacing_requirement(
             max_dra_ppm = dra_ppm_needed
 
         head_gap = sdh_required - available_head
-        inlet_head_required = max(inlet_floor, station_min_residual, residual_head)
+        inlet_head_required = max(suction_head, station_min_residual)
 
         segment_requirements.insert(
             0,

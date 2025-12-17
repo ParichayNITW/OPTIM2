@@ -2863,6 +2863,123 @@ def test_pump_head_scales_with_series_pumps():
     assert pump_info[0]["tdh"] == pytest.approx(200.0)
 
 
+def test_user_example_drag_reduction_matches_expected():
+    import pipeline_model as model
+
+    paradip = {
+        "name": "Paradip",
+        "is_pump": True,
+        "max_pumps": 2,
+        "allow_mixed_pump_types": True,
+        "pump_types": {
+            "A": {
+                "available": 2,
+                "DOL": 1480.0,
+                "MinRPM": 1200.0,
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 219.0},
+                    {"Flow (m³/hr)": 500.0, "Head (m)": 210.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 203.0},
+                    {"Flow (m³/hr)": 1500.0, "Head (m)": 200.0},
+                    {"Flow (m³/hr)": 2000.0, "Head (m)": 194.0},
+                    {"Flow (m³/hr)": 2500.0, "Head (m)": 182.0},
+                    {"Flow (m³/hr)": 3000.0, "Head (m)": 170.0},
+                    {"Flow (m³/hr)": 3500.0, "Head (m)": 155.0},
+                ],
+            },
+            "B": {
+                "available": 2,
+                "DOL": 2991.0,
+                "MinRPM": 2200.0,
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 418.0},
+                    {"Flow (m³/hr)": 200.0, "Head (m)": 418.0},
+                    {"Flow (m³/hr)": 400.0, "Head (m)": 418.0},
+                    {"Flow (m³/hr)": 600.0, "Head (m)": 418.0},
+                    {"Flow (m³/hr)": 800.0, "Head (m)": 416.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 413.0},
+                    {"Flow (m³/hr)": 1200.0, "Head (m)": 409.0},
+                    {"Flow (m³/hr)": 1400.0, "Head (m)": 406.0},
+                    {"Flow (m³/hr)": 1600.0, "Head (m)": 405.0},
+                    {"Flow (m³/hr)": 1800.0, "Head (m)": 395.0},
+                    {"Flow (m³/hr)": 2000.0, "Head (m)": 387.0},
+                    {"Flow (m³/hr)": 2200.0, "Head (m)": 378.0},
+                    {"Flow (m³/hr)": 2400.0, "Head (m)": 369.0},
+                    {"Flow (m³/hr)": 2600.0, "Head (m)": 351.0},
+                    {"Flow (m³/hr)": 2800.0, "Head (m)": 337.5},
+                    {"Flow (m³/hr)": 3000.0, "Head (m)": 317.0},
+                    {"Flow (m³/hr)": 3100.0, "Head (m)": 311.0},
+                ],
+            },
+        },
+        "L": 158.0,
+        "D": 0.762,
+        "t": 0.0079248,
+        "rough": 4e-05,
+        "elev": 0.0,
+        "min_residual": 125.0,
+        "max_dr": 50.0,
+    }
+
+    balasore = {
+        "name": "Balasore",
+        "is_pump": True,
+        "max_pumps": 1,
+        "allow_mixed_pump_types": False,
+        "pump_types": {
+            "A": {
+                "available": 1,
+                "DOL": 2991.0,
+                "MinRPM": 2200.0,
+                "head_data": [
+                    {"Flow (m³/hr)": 0.0, "Head (m)": 450.0},
+                    {"Flow (m³/hr)": 500.0, "Head (m)": 450.0},
+                    {"Flow (m³/hr)": 1000.0, "Head (m)": 450.0},
+                    {"Flow (m³/hr)": 1500.0, "Head (m)": 440.0},
+                    {"Flow (m³/hr)": 2000.0, "Head (m)": 420.0},
+                    {"Flow (m³/hr)": 2500.0, "Head (m)": 400.0},
+                    {"Flow (m³/hr)": 3000.0, "Head (m)": 360.0},
+                    {"Flow (m³/hr)": 3500.0, "Head (m)": 315.0},
+                ],
+            }
+        },
+        "L": 170.0,
+        "D": 0.762,
+        "t": 0.0079248,
+        "rough": 4e-05,
+        "elev": 2.0,
+        "min_residual": 50.0,
+        "max_dr": 50.0,
+    }
+
+    terminal = {"min_residual": 60.0, "elev": 2.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        [paradip, balasore],
+        terminal,
+        max_flow_m3h=2500.0,
+        max_visc_cst=7.0,
+        kv_list=[7.0, 7.0],
+        rho_list=[850.0, 850.0],
+        min_suction_head=120.0,
+        fluid_density=850.0,
+        mop_kgcm2=58.0,
+        baseline_ppm_cap=15.0,
+    )
+
+    segments = result.get("segments") or []
+    assert len(segments) == 2
+
+    segments_by_idx = {entry["station_idx"]: entry for entry in segments}
+    paradip_seg = segments_by_idx[0]
+    balasore_seg = segments_by_idx[1]
+
+    assert paradip_seg["suction_head"] == pytest.approx(120.0, abs=1e-2)
+    assert paradip_seg["dra_perc"] == pytest.approx(0.0, abs=1e-3)
+    assert balasore_seg["suction_head"] == pytest.approx(50.0, abs=1e-2)
+    assert balasore_seg["dra_perc"] == pytest.approx(19.22, rel=0.1)
+
+
 def test_compute_minimum_lacing_requirement_respects_single_type_series():
     import pipeline_model as model
 
