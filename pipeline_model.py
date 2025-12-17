@@ -2557,10 +2557,15 @@ def compute_minimum_lacing_requirement(
                 suction_head_local = float(suction_head_local)
             except (TypeError, ValueError):
                 suction_head_local = residual_target
+            # Downstream residual floors are already propagated through
+            # ``residual_target``; including the current station's floor here
+            # would double-count that requirement and inflate the suction head
+            # (and hence the inferred DR) for the segment.  Instead, limit the
+            # suction floor to the origin-only UI input, any upstream inlet
+            # lift, and the downstream target carried into this station.
             suction_head_local = max(
                 suction_head_local,
                 inlet_floor,
-                station_min_residual if stn.get('is_pump') else 0.0,
                 residual_target if stn.get('is_pump') else 0.0,
                 suction_requirement,
             )
