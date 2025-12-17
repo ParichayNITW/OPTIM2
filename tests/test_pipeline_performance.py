@@ -3321,6 +3321,165 @@ def test_compute_minimum_lacing_requirement_exposes_debug_trace():
         assert "max_head_combo" in segment
 
 
+def test_baseline_banks_surplus_into_downstream_inlet(monkeypatch):
+    import pipeline_model as model
+
+    def fake_segment_hydraulics(flow_m3h, L, d_inner, rough, kv, dra_perc, dra_length):
+        # Return modest head loss to ensure surplus at the origin.
+        return (50.0 if L == 158.0 else 120.0, 0.0, 0.0, 0.0)
+
+    monkeypatch.setattr(model, "_segment_hydraulics", fake_segment_hydraulics)
+    monkeypatch.setattr(model, "_segment_hydraulics_composite", fake_segment_hydraulics)
+
+    stations = [
+        {
+            "name": "S1",
+            "is_pump": True,
+            "L": 158.0,
+            "D": 0.7,
+            "t": 0.01,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 1,
+            "max_dr": 50.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 520.0},
+                        {"Flow (m³/hr)": 3000.0, "Head (m)": 500.0},
+                    ],
+                    "eff_data": [],
+                    "DOL": 1500.0,
+                }
+            },
+        },
+        {
+            "name": "S2",
+            "is_pump": True,
+            "L": 120.0,
+            "D": 0.7,
+            "t": 0.01,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 1,
+            "max_dr": 50.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 320.0},
+                        {"Flow (m³/hr)": 3000.0, "Head (m)": 300.0},
+                    ],
+                    "eff_data": [],
+                    "DOL": 1500.0,
+                }
+            },
+        },
+    ]
+    terminal = {"name": "T", "min_residual": 60.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=2500.0,
+        max_visc_cst=7.0,
+        kv_list=[7.0, 7.0],
+        rho_list=[850.0, 850.0],
+        min_suction_head=120.0,
+        baseline_ppm_cap=15.0,
+    )
+
+    seg1, seg2 = result["segments"]
+
+    # Surplus head at the origin should be forwarded to lift the downstream inlet
+    # target beyond the nominal residual floor.
+    assert seg1["downstream_residual_forward"] > seg1["downstream_residual_target"]
+    assert seg1["downstream_residual_forward"] > 50.0
+    # The forwarded value should be material (representing banked surplus head).
+    assert seg1["downstream_residual_forward"] - seg1["downstream_residual_target"] > 1.0
+
+
+def test_baseline_equalises_drag_via_suction_lift(monkeypatch):
+    import pipeline_model as model
+
+    def fake_segment_hydraulics(flow_m3h, L, d_inner, rough, kv, dra_perc, dra_length):
+        head_loss = 80.0 if L == 100.0 else 500.0
+        return (head_loss, 0.0, 0.0, 0.0)
+
+    monkeypatch.setattr(model, "_segment_hydraulics", fake_segment_hydraulics)
+    monkeypatch.setattr(model, "_segment_hydraulics_composite", fake_segment_hydraulics)
+
+    stations = [
+        {
+            "name": "Upstream",
+            "is_pump": True,
+            "L": 100.0,
+            "D": 0.7,
+            "t": 0.01,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 1,
+            "max_dr": 50.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 520.0},
+                        {"Flow (m³/hr)": 3000.0, "Head (m)": 500.0},
+                    ],
+                    "eff_data": [],
+                    "DOL": 1500.0,
+                }
+            },
+        },
+        {
+            "name": "Downstream",
+            "is_pump": True,
+            "L": 150.0,
+            "D": 0.7,
+            "t": 0.01,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 1,
+            "max_dr": 50.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 320.0},
+                        {"Flow (m³/hr)": 3000.0, "Head (m)": 300.0},
+                    ],
+                    "eff_data": [],
+                    "DOL": 1500.0,
+                }
+            },
+        },
+    ]
+
+    terminal = {"name": "Terminal", "min_residual": 60.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=2500.0,
+        max_visc_cst=7.0,
+        kv_list=[7.0, 7.0],
+        rho_list=[850.0, 850.0],
+        min_suction_head=120.0,
+        baseline_ppm_cap=15.0,
+    )
+
+    seg_up, seg_down = result["segments"]
+
+    # The downstream target should be lifted above the nominal 50–60 m floor to
+    # spread the drag reduction requirement across segments.
+    assert seg_up["downstream_residual_target"] > 90.0
+    # With suction lift applied, downstream DR should stay within the cap and
+    # upstream DR should not spike above it.
+    assert seg_down["dra_ppm"] <= 15.0
+    assert seg_down["dra_perc"] <= 40.0
+
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
     import pipeline_model as model
 
