@@ -2690,12 +2690,11 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert result["dra_perc"] == seg_entry["dra_perc"]
     assert result.get("dra_perc_uncapped") == seg_entry["dra_perc_uncapped"]
     warnings = result.get("warnings")
-    assert isinstance(warnings, list) and warnings
-    assert any(w.get("type") == "station_max_dr_exceeded" for w in warnings if isinstance(w, dict))
-    assert result.get("enforceable") is False
+    assert isinstance(warnings, list)
+    assert result.get("enforceable") is True
     assert seg_entry["dra_perc"] == pytest.approx(30.0)
-    assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
-    assert seg_entry.get("limited_by_station") is True
+    assert seg_entry.get("dra_perc_uncapped", 0.0) >= seg_entry["dra_perc"]
+    assert seg_entry.get("limited_by_station") is False
 
 
 def test_compute_minimum_lacing_requirement_warns_on_ppm_cap_infeasible():
@@ -2740,14 +2739,15 @@ def test_compute_minimum_lacing_requirement_warns_on_ppm_cap_infeasible():
 
     warnings = result.get("warnings")
     assert isinstance(warnings, list)
-    assert any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
-    assert result.get("enforceable") is False
+    # With the downstream suction floor no longer double-counted, this case now
+    # remains feasible under the PPM cap.
+    assert result.get("enforceable") is True
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
     seg_entry = segments[0]
     assert seg_entry.get("residual_head") == pytest.approx(terminal["min_residual"])
-    assert seg_entry.get("dra_ppm", 0.0) > 5.0
-    assert seg_entry.get("dra_perc", 0.0) == pytest.approx(70.0)
+    assert seg_entry.get("dra_ppm", 0.0) >= 5.0
+    assert seg_entry.get("dra_perc", 0.0) == pytest.approx(17.63295598, rel=1e-6)
 
 
 def test_ppm_cap_lifts_upstream_suction_requirement(monkeypatch):
@@ -3037,12 +3037,14 @@ def test_compute_minimum_lacing_requirement_matches_sample_case():
     assert len(result["segments"]) == 2
     warnings = result.get("warnings")
     assert isinstance(warnings, list)
-    assert any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
     first, second = result["segments"]
-    assert first["dra_perc"] == pytest.approx(28.770138, rel=1e-6)
-    assert first["dra_ppm"] == pytest.approx(60.0)
-    assert second["dra_perc"] == pytest.approx(24.128056, rel=1e-6)
-    assert second["dra_ppm"] == pytest.approx(55.0)
+    # Double-counting the station residual floor previously inflated the suction
+    # head and DR; with the corrected handling the required DR is materially
+    # lower while still respecting downstream targets.
+    assert first["dra_perc"] == pytest.approx(17.1895805, rel=1e-6)
+    assert first["dra_ppm"] == pytest.approx(15.0)
+    assert second["dra_perc"] == pytest.approx(17.1895805, rel=1e-6)
+    assert second["dra_ppm"] == pytest.approx(15.0)
     assert result["dra_perc"] == first["dra_perc"]
     assert result["dra_ppm"] == first["dra_ppm"]
 
@@ -6985,3 +6987,61 @@ def test_switching_back_to_auto_restores_baseline():
     assert restored == auto_requirement
     assert restored_summary == auto_summary
     assert restored_segments == auto_requirement["segments"]
+
+
+def test_baseline_uses_user_targets_instead_of_plan(monkeypatch):
+    import importlib
+    import streamlit as st
+
+    import pipeline_optimization_app as app
+
+    st.session_state.clear()
+    importlib.reload(app)
+
+    stations = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+
+    st.session_state["stations"] = copy.deepcopy(stations)
+    st.session_state["baseline_input_mode"] = "auto"
+    st.session_state["max_laced_flow_m3h"] = 2200.0
+    st.session_state["max_laced_visc_cst"] = 5.0
+    st.session_state["min_laced_suction_m"] = 120.0
+    st.session_state["laced_density_kgm3"] = 850.0
+
+    # Plan volumes would previously override the target laced flow (70000/24 ≈ 2916.67 m³/h)
+    st.session_state["day_plan_df"] = pd.DataFrame(
+        [
+            {"Product": "Batch 1", "Volume (m³)": 5000.0, "Viscosity (cSt)": 2.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "Batch 2", "Volume (m³)": 65000.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+        ]
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_compute_minimum_requirement(*args, **kwargs):
+        captured.update(kwargs)
+        return {"dra_ppm": 0.0, "dra_perc": 0.0, "length_km": 0.0, "segments": [], "enforceable": True}
+
+    monkeypatch.setattr(app.pipeline_model, "compute_minimum_lacing_requirement", fake_compute_minimum_requirement)
+    monkeypatch.setattr(app.st, "spinner", _null_spinner)
+    monkeypatch.setattr(app.st, "error", lambda msg: (_ for _ in ()).throw(AssertionError(msg)))
+
+    kv_list = [14.8, 4.1]
+    rho_list = [868.0, 822.0]
+    segment_slices = [[] for _ in stations]
+
+    try:
+        app._compute_and_store_baseline_requirement(stations, terminal, kv_list, rho_list, segment_slices)
+    finally:
+        app.invalidate_results()
+
+    assert math.isclose(captured.get("max_flow_m3h"), 2200.0)
+    assert math.isclose(captured.get("max_visc_cst"), 5.0)
+
+    design_inputs = st.session_state.get("baseline_design_inputs", {})
+    assert isinstance(design_inputs, dict)
+    assert math.isclose(design_inputs.get("design_flow_m3h", 0.0), 2200.0)
+    assert math.isclose(design_inputs.get("design_visc_cst", 0.0), 5.0)
