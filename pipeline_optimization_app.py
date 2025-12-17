@@ -1161,14 +1161,19 @@ def _compute_and_store_baseline_requirement(
     baseline_requirement: dict | None = None
     warnings: list = []
     try:
+        station_count = len(stations_data)
+        design_kv_list = [baseline_visc for _ in range(station_count)]
+        design_rho_list = [fluid_density for _ in range(station_count)]
+        design_slices = [[] for _ in range(station_count)]
+
         baseline_requirement = pipeline_model.compute_minimum_lacing_requirement(
             stations_data,
             term_data,
             max_flow_m3h=baseline_flow,
             max_visc_cst=baseline_visc,
-            segment_slices=segment_slices,
-            kv_list=kv_list,
-            rho_list=rho_list,
+            segment_slices=design_slices,
+            kv_list=design_kv_list,
+            rho_list=design_rho_list,
             min_suction_head=min_suction,
             fluid_density=fluid_density,
             mop_kgcm2=mop_kgcm2,
