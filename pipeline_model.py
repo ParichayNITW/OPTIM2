@@ -2107,7 +2107,8 @@ def compute_minimum_lacing_requirement(
     total DRA requirement.  When a downstream segment would exceed this cap the
     upstream residual head is increased just enough to keep the segment at or
     below the allowed PPM while minimising the combined dose across all
-    segments.
+    segments.  This optimisation is applied only to the automatic baseline
+    computation; manually specified dosing schedules are not altered.
     """
 
     result = {
