@@ -2107,7 +2107,8 @@ def compute_minimum_lacing_requirement(
     total DRA requirement.  When a downstream segment would exceed this cap the
     upstream residual head is increased just enough to keep the segment at or
     below the allowed PPM while minimising the combined dose across all
-    segments.
+    segments.  This optimisation is applied only to the automatic baseline
+    computation; manually specified dosing schedules are not altered.
     """
 
     result = {
@@ -2595,6 +2596,8 @@ def compute_minimum_lacing_requirement(
         sdh_required = residual_head + head_loss + elev_delta
         has_injection = _normalise_max_dr(stn.get('max_dr')) > 0.0
 
+        shortfall_prev = None
+        adjust_iterations = 0
         while True:
             (
                 dr_needed,
@@ -2625,6 +2628,11 @@ def compute_minimum_lacing_requirement(
             if shortfall <= 1e-6:
                 break
             residual_head += shortfall
+            adjust_iterations += 1
+            # Prevent infinite adjustment loops when the shortfall does not improve
+            if (shortfall_prev is not None and abs(shortfall - shortfall_prev) <= 1e-6) or adjust_iterations >= 4:
+                break
+            shortfall_prev = shortfall
 
         if dr_unbounded > max_dra_perc_uncapped:
             max_dra_perc_uncapped = dr_unbounded
