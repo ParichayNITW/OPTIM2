@@ -2525,8 +2525,14 @@ def compute_minimum_lacing_requirement(
 
         def _evaluate_segment(
             required_downstream: float,
+            inlet_floor: float = 0.0,
         ) -> tuple[float, float, float, float, bool, bool, float, float, float, bool]:
-            """Return DR/PPM needs and feasibility for a downstream target."""
+            """Return DR/PPM needs and feasibility for a downstream target.
+
+            ``inlet_floor`` allows the station suction requirement to exceed the
+            downstream residual target when upstream pressure must be lifted to
+            satisfy a capped drag-reduction limit.
+            """
 
             residual_target = max(required_downstream, 0.0)
             sdh_required = residual_target + head_loss + elev_delta
@@ -2553,6 +2559,7 @@ def compute_minimum_lacing_requirement(
                 suction_head_local = residual_target
             suction_head_local = max(
                 suction_head_local,
+                inlet_floor,
                 station_min_residual if stn.get('is_pump') else 0.0,
                 residual_target if stn.get('is_pump') else 0.0,
                 suction_requirement,
@@ -2586,23 +2593,6 @@ def compute_minimum_lacing_requirement(
                         )
                     except Exception:
                         dra_ppm_needed_local = 0.0
-
-                if limited_by_station_local:
-                    station_name = stn.get('name')
-                    warning_msg = (
-                        f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded_local:.2f}% DR "
-                        f"but is capped at {station_max_dr_cap:.2f}%."
-                    )
-                    result['warnings'].append(
-                        {
-                            'type': 'station_max_dr_exceeded',
-                            'station': station_name,
-                            'required_dr': dr_unbounded_local,
-                            'max_dr': station_max_dr_cap,
-                            'message': warning_msg,
-                        }
-                    )
-                    result['enforceable'] = False
 
             if has_injection and dra_ppm_needed_local > 0.0:
                 dra_ppm_needed_local = math.ceil(dra_ppm_needed_local * 10.0) / 10.0
@@ -2649,6 +2639,7 @@ def compute_minimum_lacing_requirement(
         shortfall_prev = None
         adjust_iterations = 0
         ppm_cap_warning_added = False
+        inlet_floor = 0.0
         while True:
             (
                 dr_needed,
@@ -2661,15 +2652,51 @@ def compute_minimum_lacing_requirement(
                 available_head_before_limit,
                 sdh_required,
                 has_injection,
-            ) = _evaluate_segment(residual_head)
-            if ppm_feasible:
+            ) = _evaluate_segment(residual_head, inlet_floor)
+
+            # If the chosen drag reduction cannot close the head gap, try to lift
+            # the station suction (fed by the upstream segment) until the capped
+            # DR suffices. This preserves the downstream residual target while
+            # allowing additional inlet head to reduce the DR needed at this
+            # station.
+            effective_head = available_head + head_loss * (dr_needed / 100.0)
+            if ppm_feasible and effective_head + 1e-6 >= sdh_required:
                 break
 
-            # If the PPM cap cannot satisfy the head requirement, record a warning
-            # and propagate the infeasibility upstream instead of inflating the
-            # downstream residual head (which does not reduce the gap when the
-            # suction reference tracks the downstream target).
+            try:
+                dr_cap_ppm = float(get_dr_for_ppm(kv if kv > 0 else visc_max, ppm_cap)) if ppm_cap > 0 else dra_upper
+            except Exception:
+                dr_cap_ppm = dra_upper
+            dr_cap_ppm = min(max(dr_cap_ppm, 0.0), dra_upper)
+
+            dr_limit = dra_upper
+            if station_max_dr_cap > 0.0:
+                dr_limit = min(dr_limit, station_max_dr_cap)
             if has_injection and ppm_cap > 0.0:
+                dr_limit = min(dr_limit, dr_cap_ppm)
+
+            if head_loss <= 0.0:
+                break
+
+            available_head_needed = sdh_required - head_loss * (dr_limit / 100.0)
+            if maop_head_val > 0.0 and available_head_needed > maop_head_val + 1e-6:
+                break
+
+            suction_needed = max(available_head_needed - max_head, 0.0)
+            if suction_needed > inlet_floor + 1e-6:
+                inlet_floor = suction_needed
+                adjust_iterations += 1
+                if (
+                    (shortfall_prev is not None and abs(suction_needed - shortfall_prev) <= 1e-6)
+                    or adjust_iterations >= 6
+                ):
+                    break
+                shortfall_prev = suction_needed
+                continue
+
+            # If we cannot improve suction further and the capped DR still fails,
+            # record infeasibility against the limiting cap.
+            if has_injection and ppm_cap > 0.0 and dr_limit == dr_cap_ppm:
                 if not ppm_cap_warning_added:
                     station_name = stn.get('name') or f'Station {idx + 1}'
                     warning_msg = (
@@ -2688,27 +2715,24 @@ def compute_minimum_lacing_requirement(
                     )
                     result['enforceable'] = False
                     ppm_cap_warning_added = True
-                break
-            # Increase downstream residual just enough to make the capped PPM feasible
-            try:
-                dr_cap = float(get_dr_for_ppm(kv if kv > 0 else visc_max, ppm_cap)) if ppm_cap > 0 else 0.0
-            except Exception:
-                dr_cap = 0.0
-            dr_cap = min(max(dr_cap, 0.0), dra_upper)
-            if head_loss <= 0.0 or dr_cap <= 0.0:
-                break
-            max_head_gain = head_loss * (dr_cap / 100.0)
-            max_head_available = (suction_head + _max_head_at_dol(stn, flow_segment)) + max_head_gain
-            sdh_required = residual_head + head_loss + elev_delta
-            shortfall = sdh_required - max_head_available
-            if shortfall <= 1e-6:
-                break
-            residual_head += shortfall
-            adjust_iterations += 1
-            # Prevent infinite adjustment loops when the shortfall does not improve
-            if (shortfall_prev is not None and abs(shortfall - shortfall_prev) <= 1e-6) or adjust_iterations >= 4:
-                break
-            shortfall_prev = shortfall
+            break
+
+        if limited_by_station:
+            station_name = stn.get('name')
+            warning_msg = (
+                f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded:.2f}% DR "
+                f"but is capped at {station_max_dr_cap:.2f}%."
+            )
+            result['warnings'].append(
+                {
+                    'type': 'station_max_dr_exceeded',
+                    'station': station_name,
+                    'required_dr': dr_unbounded,
+                    'max_dr': station_max_dr_cap,
+                    'message': warning_msg,
+                }
+            )
+            result['enforceable'] = False
 
         if dr_unbounded > max_dra_perc_uncapped:
             max_dra_perc_uncapped = dr_unbounded
@@ -2735,6 +2759,8 @@ def compute_minimum_lacing_requirement(
             max_dra_ppm = dra_ppm_needed
 
         head_gap = sdh_required - available_head
+        inlet_head_required = max(inlet_floor, station_min_residual, residual_head)
+
         segment_requirements.insert(
             0,
             {
@@ -2746,6 +2772,7 @@ def compute_minimum_lacing_requirement(
                 'sdh_required': float(sdh_required),
                 'residual_head': float(max(residual_head, station_min_residual)),
                 'downstream_residual_target': float(residual_head),
+                'inlet_head_required': float(inlet_head_required),
                 'max_head_available': float(available_head),
                 'available_head_before_suction': float(available_head_before_limit),
                 'suction_head': float(suction_head),
@@ -2763,7 +2790,7 @@ def compute_minimum_lacing_requirement(
             },
         )
 
-        downstream_required = max(residual_head, station_min_residual)
+        downstream_required = max(inlet_head_required, station_min_residual)
 
     result['segments'] = segment_requirements
     result['dra_perc'] = float(max_dra_perc)
