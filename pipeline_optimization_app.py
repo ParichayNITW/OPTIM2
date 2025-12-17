@@ -5584,6 +5584,7 @@ def _execute_time_series_solver(
                 start_time=start_str,
                 pump_shear_rate=pump_shear_rate,
                 forced_origin_detail=forced_detail,
+                pass_trace=[],
             )
 
             if res.get("error") and retry_with_max_dra:
@@ -5822,23 +5823,15 @@ def _should_attempt_max_flow_fallback(result: Mapping[str, object] | None) -> bo
 
     detail = result.get("failure_detail")
     executed: list[str] = []
-    detail_msg: str = ""
     if isinstance(detail, Mapping):
         passes = detail.get("executed_passes")
         if isinstance(passes, Sequence):
             executed = [str(p).lower() for p in passes]
-        detail_msg = str(detail.get("message") or "")
 
-    if "exhaustive" in executed:
-        return True
+    if executed:
+        return "exhaustive" in executed
 
-    combined_msg = f"{error_msg} {detail_msg}".lower()
-    infeasible_keywords = (
-        "no feasible",
-        "infeasible",
-        "not feasible",
-    )
-    return any(keyword in combined_msg for keyword in infeasible_keywords)
+    return False
 
 
 def _find_maximum_feasible_flow(
