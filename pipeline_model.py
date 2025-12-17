@@ -2469,14 +2469,14 @@ def compute_minimum_lacing_requirement(
             station_min_residual = 0.0
         station_min_residual = max(station_min_residual, 0.0)
 
-        residual_head = max(downstream_residual, station_min_residual)
+        residual_head = max(downstream_residual, 0.0)
 
         def _evaluate_segment(
             required_downstream: float,
         ) -> tuple[float, float, float, float, bool, bool, float, float, float, bool]:
             """Return DR/PPM needs and feasibility for a downstream target."""
 
-            residual_target = max(required_downstream, station_min_residual)
+            residual_target = max(required_downstream, 0.0)
             sdh_required = residual_target + head_loss + elev_delta
             if sdh_required < residual_target:
                 sdh_required = residual_target
@@ -2500,7 +2500,12 @@ def compute_minimum_lacing_requirement(
                 suction_head_local = float(suction_head_local)
             except (TypeError, ValueError):
                 suction_head_local = residual_target
-            suction_head_local = max(suction_head_local, residual_target if stn.get('is_pump') else 0.0, suction_requirement)
+            suction_head_local = max(
+                suction_head_local,
+                station_min_residual if stn.get('is_pump') else 0.0,
+                residual_target if stn.get('is_pump') else 0.0,
+                suction_requirement,
+            )
             available_head_before_limit = max_head + suction_head_local
             maop_head = 0.0
             rho_val = _station_density(stn)
@@ -2598,6 +2603,7 @@ def compute_minimum_lacing_requirement(
 
         shortfall_prev = None
         adjust_iterations = 0
+        ppm_cap_warning_added = False
         while True:
             (
                 dr_needed,
@@ -2612,6 +2618,31 @@ def compute_minimum_lacing_requirement(
                 has_injection,
             ) = _evaluate_segment(residual_head)
             if ppm_feasible:
+                break
+
+            # If the PPM cap cannot satisfy the head requirement, record a warning
+            # and propagate the infeasibility upstream instead of inflating the
+            # downstream residual head (which does not reduce the gap when the
+            # suction reference tracks the downstream target).
+            if has_injection and ppm_cap > 0.0:
+                if not ppm_cap_warning_added:
+                    station_name = stn.get('name') or f'Station {idx + 1}'
+                    warning_msg = (
+                        f"{station_name} requires {dra_ppm_needed:.2f} ppm to meet SDH "
+                        f"but is capped at {ppm_cap:.2f} ppm."
+                    )
+                    result['warnings'].append(
+                        {
+                            'type': 'baseline_ppm_cap_infeasible',
+                            'station': station_name,
+                            'required_ppm': dra_ppm_needed,
+                            'cap_ppm': ppm_cap,
+                            'required_dr': dr_unbounded,
+                            'message': warning_msg,
+                        }
+                    )
+                    result['enforceable'] = False
+                    ppm_cap_warning_added = True
                 break
             # Increase downstream residual just enough to make the capped PPM feasible
             try:
@@ -2667,7 +2698,7 @@ def compute_minimum_lacing_requirement(
                 'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
                 'dra_perc_uncapped': float(dr_unbounded),
                 'sdh_required': float(sdh_required),
-                'residual_head': float(residual_head),
+                'residual_head': float(max(residual_head, station_min_residual)),
                 'max_head_available': float(available_head),
                 'available_head_before_suction': float(available_head_before_limit),
                 'suction_head': float(suction_head),
@@ -2676,7 +2707,7 @@ def compute_minimum_lacing_requirement(
             },
         )
 
-        downstream_required = residual_head
+        downstream_required = max(residual_head, station_min_residual)
 
     result['segments'] = segment_requirements
     if segment_requirements:

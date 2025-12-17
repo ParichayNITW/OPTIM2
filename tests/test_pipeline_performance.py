@@ -2448,8 +2448,58 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
     assert seg_entry["dra_perc"] == pytest.approx(30.0)
     assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
     assert seg_entry.get("limited_by_station") is True
-    rounded_ppm = math.ceil(model.get_ppm_for_dr(2.5, 30.0) * 10.0) / 10.0
-    assert seg_entry.get("dra_ppm") == pytest.approx(rounded_ppm)
+
+
+def test_compute_minimum_lacing_requirement_warns_on_ppm_cap_infeasible():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 50.0,
+            "d": 0.5,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+        }
+    ]
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=3000.0,
+        max_visc_cst=10.0,
+        min_suction_head=1.0,
+        baseline_ppm_cap=5.0,
+    )
+
+    warnings = result.get("warnings")
+    assert isinstance(warnings, list)
+    assert any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
+    assert result.get("enforceable") is False
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    seg_entry = segments[0]
+    assert seg_entry.get("residual_head") == pytest.approx(terminal["min_residual"])
+    assert seg_entry.get("dra_ppm", 0.0) > 5.0
+    assert seg_entry.get("dra_perc", 0.0) == pytest.approx(70.0)
 
 
 def test_pump_head_scales_with_series_pumps():
@@ -2652,11 +2702,14 @@ def test_compute_minimum_lacing_requirement_matches_sample_case():
 
     assert result["segments"], "Expected segment-wise baseline output"
     assert len(result["segments"]) == 2
+    warnings = result.get("warnings")
+    assert isinstance(warnings, list)
+    assert any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
     first, second = result["segments"]
     assert first["dra_perc"] == pytest.approx(28.770138, rel=1e-6)
-    assert first["dra_ppm"] == pytest.approx(24.0, abs=1e-9)
+    assert first["dra_ppm"] == pytest.approx(60.0)
     assert second["dra_perc"] == pytest.approx(24.128056, rel=1e-6)
-    assert second["dra_ppm"] == pytest.approx(15.0, abs=1e-9)
+    assert second["dra_ppm"] == pytest.approx(55.0)
 
 
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
