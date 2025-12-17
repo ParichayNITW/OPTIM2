@@ -2397,6 +2397,83 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
 
 
+def test_baseline_trace_records_downstream_target_separately():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Paradip",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.762,
+            "t": 0.0079248,
+            "rough": 4e-05,
+            "min_residual": 125.0,
+            "max_pumps": 1,
+            "MinRPM": 1000.0,
+            "DOL": 1500.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "MinRPM": 1000.0,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 300.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 295.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        },
+        {
+            "name": "Balasore",
+            "is_pump": True,
+            "L": 15.0,
+            "D": 0.762,
+            "t": 0.0079248,
+            "rough": 4e-05,
+            "max_pumps": 1,
+            "MinRPM": 1000.0,
+            "DOL": 1500.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "MinRPM": 1000.0,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 200.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 195.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        },
+    ]
+
+    terminal = {"name": "Haldia", "elev": 0.0, "min_residual": 60.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=500.0,
+        max_visc_cst=5.0,
+        min_suction_head=180.0,
+        fluid_density=850.0,
+        mop_kgcm2=0.0,
+    )
+
+    segments = result.get("segments")
+    assert segments and len(segments) == 2
+
+    origin_seg = segments[0]
+    assert "downstream_residual_target" in origin_seg
+    assert origin_seg["downstream_residual_target"] == pytest.approx(terminal["min_residual"])
+    # The recorded downstream target should stay separate from the origin floor
+    # so the UI doesn't misreport the target as the origin suction.
+    assert origin_seg["residual_head"] >= stations[0]["min_residual"]
+    assert origin_seg["residual_head"] >= origin_seg["downstream_residual_target"]
+
+
 def test_minimum_lacing_only_applies_min_suction_to_origin():
     import pipeline_model as model
 

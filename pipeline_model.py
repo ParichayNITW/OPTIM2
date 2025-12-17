@@ -2722,6 +2722,7 @@ def compute_minimum_lacing_requirement(
                 'dra_perc_uncapped': float(dr_unbounded),
                 'sdh_required': float(sdh_required),
                 'residual_head': float(max(residual_head, station_min_residual)),
+                'downstream_residual_target': float(residual_head),
                 'max_head_available': float(available_head),
                 'available_head_before_suction': float(available_head_before_limit),
                 'suction_head': float(suction_head),

@@ -25,11 +25,15 @@ This note summarizes how the automatic baseline DRA solver determines drag-reduc
 5. **Propagate downstream suction**
    - The residual head chosen for this segment becomes the suction head for the next station. If a downstream segment would exceed the PPM cap, increase the upstream residual head and recompute to minimize total PPM while respecting caps and residual floors.
 
+## How downstream residual targets are chosen
+
+For each segment, the downstream residual target comes from the **downstream station’s residual floor**, if any, or the **terminal residual** (whichever is higher as requirements propagate upstream). The UI’s "minimum suction" field only applies at the originating station; it is never reused for downstream targets. The solver now also records this value explicitly as `downstream_residual_target` in the debug trace so you can see the target separate from the originating station’s own minimum residual/suction head.
+
 ## Worked example (two segments)
 Assumptions:
 - Baseline cap = 15 ppm per segment.
 - Terminal residual head = 60 m.
-- Segment 1 (Paradip → Balasore): length 158 km; friction loss at target flow/viscosity = **650 m**; downstream residual head target = **125 m** (Balasore suction floor).
+- Segment 1 (Paradip → Balasore): length 158 km; friction loss at target flow/viscosity = **650 m**; downstream residual head target = **60 m** (no explicit Balasore floor above the terminal requirement).
 - Segment 2 (Balasore → Haldia): length 170 km; friction loss at target flow/viscosity = **520 m**; terminal residual head = **60 m**.
 - Pump options at Paradip (max 2 pumps, mixing allowed):
   - 2×Type B at rated speed → head = **700 m** at target flow (best).
@@ -40,18 +44,18 @@ Assumptions:
 ### Segment 1 (Paradip → Balasore)
 1) **Best pump head**: 2×Type B → 700 m.
 2) **SDH after limits**: suction at origin = 180 m → raw head = 700 + 180 = 880 m; MOP cap = 600 m → **SDH = 600 m**.
-3) **Required head**: friction 650 m + downstream residual 125 m (no peak elevation assumed) = **775 m**.
-4) **Shortfall**: 775 − 600 = **175 m**.
-   - Drag reduction % = 175 / 650 = **26.92%**.
-   - Map 26.92% to ppm using correlation → suppose this yields **9 ppm** (within 15 ppm cap).
-5) **Propagate residual**: Balasore suction = 125 m.
+3) **Required head**: friction 650 m + downstream residual 60 m (no peak elevation assumed) = **710 m**.
+4) **Shortfall**: 710 − 600 = **110 m**.
+   - Drag reduction % = 110 / 650 = **16.92%**.
+   - Map 16.92% to ppm using correlation → suppose this yields **4 ppm** (within 15 ppm cap).
+5) **Propagate residual**: Balasore suction = downstream target **60 m** (still respecting any Balasore floor if provided).
 
 ### Segment 2 (Balasore → Haldia)
 1) **Best pump head**: 1×Type A → **440 m** at target flow.
-2) **SDH after limits**: suction = 125 m → raw head = 565 m; MOP cap 600 m → **SDH = 565 m**.
+2) **SDH after limits**: suction = 60 m → raw head = 500 m; MOP cap 600 m → **SDH = 500 m**.
 3) **Required head**: friction 520 m + terminal residual 60 m = **580 m**.
-4) **Shortfall**: 580 − 565 = **15 m**.
-   - Drag reduction % = 15 / 520 = **2.88%** → correlation gives about **1–2 ppm**, under cap.
-5) **Result**: Total baseline ≈ 9 ppm (seg1) + 2 ppm (seg2) = **~11 ppm**.
+4) **Shortfall**: 580 − 500 = **80 m**.
+   - Drag reduction % = 80 / 520 = **15.38%** → correlation gives about **6–7 ppm**, under cap.
+5) **Result**: Total baseline ≈ 4 ppm (seg1) + 7 ppm (seg2) = **~11 ppm**.
 
 If Segment 2 had needed >15 ppm, the solver would raise Balasore’s residual head (and thus Segment 1’s target) until Segment 2 falls at or below 15 ppm, then recompute Segment 1’s drag reduction to minimize the summed ppm subject to caps and residual floors.
