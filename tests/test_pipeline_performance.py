@@ -7040,8 +7040,88 @@ def test_baseline_uses_user_targets_instead_of_plan(monkeypatch):
 
     assert math.isclose(captured.get("max_flow_m3h"), 2200.0)
     assert math.isclose(captured.get("max_visc_cst"), 5.0)
+    assert math.isclose(captured.get("min_suction_head"), 120.0)
+    assert math.isclose(captured.get("fluid_density"), 850.0)
 
     design_inputs = st.session_state.get("baseline_design_inputs", {})
     assert isinstance(design_inputs, dict)
     assert math.isclose(design_inputs.get("design_flow_m3h", 0.0), 2200.0)
     assert math.isclose(design_inputs.get("design_visc_cst", 0.0), 5.0)
+    assert math.isclose(design_inputs.get("design_min_suction_m", 0.0), 120.0)
+    assert math.isclose(design_inputs.get("design_density_kgm3", 0.0), 850.0)
+    assert "worst_hours" not in design_inputs
+    assert "worst_kv" not in design_inputs
+    assert "worst_rho" not in design_inputs
+
+
+def test_min_suction_applies_only_to_origin():
+    import pipeline_model
+
+    stations = [
+        {
+            "name": "Origin",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 4e-5,
+            "max_pumps": 1,
+            "max_dr": 70.0,
+            "min_residual": 0.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 200.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 180.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        },
+        {
+            "name": "Mid",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 4e-5,
+            "max_pumps": 1,
+            "max_dr": 70.0,
+            "min_residual": 0.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 200.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 180.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        },
+    ]
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+
+    result = pipeline_model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=1000.0,
+        max_visc_cst=5.0,
+        kv_list=[5.0, 5.0],
+        rho_list=[850.0, 850.0],
+        min_suction_head=150.0,
+        fluid_density=850.0,
+        baseline_ppm_cap=15.0,
+    )
+
+    segments = result.get("segments", [])
+    assert len(segments) == 2
+    origin_seg = next(seg for seg in segments if seg.get("station_idx") == 0)
+    downstream_seg = next(seg for seg in segments if seg.get("station_idx") == 1)
+
+    assert origin_seg.get("suction_head") >= 150.0
+    assert downstream_seg.get("suction_head") < origin_seg.get("suction_head")
