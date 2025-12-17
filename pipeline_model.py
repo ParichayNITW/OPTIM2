@@ -2476,7 +2476,30 @@ def compute_minimum_lacing_requirement(
         base_downstream_residual = downstream_required
         if idx < len(downstream_requirements):
             base_downstream_residual = max(base_downstream_residual, downstream_requirements[idx])
-        downstream_residual = max(base_downstream_residual, 0.0)
+
+        # Ensure the downstream target respects the next station's residual floor
+        # (or the terminal requirement).  Without this, the upstream segment may
+        # chase a lower terminal value and understate the drag reduction needed to
+        # keep the downstream station above its own minimum suction/residual
+        # constraint.
+        next_floor = 0.0
+        if idx + 1 < len(stations_copy):
+            try:
+                next_floor = float(
+                    stations_copy[idx + 1].get(
+                        'residual_floor', stations_copy[idx + 1].get('min_residual', 0.0)
+                    )
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                next_floor = 0.0
+        else:
+            try:
+                next_floor = float(terminal.get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                next_floor = 0.0
+
+        downstream_residual = max(base_downstream_residual, next_floor, 0.0)
         try:
             station_min_residual = float(stn.get('residual_floor', stn.get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
