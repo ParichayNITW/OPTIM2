@@ -6987,3 +6987,61 @@ def test_switching_back_to_auto_restores_baseline():
     assert restored == auto_requirement
     assert restored_summary == auto_summary
     assert restored_segments == auto_requirement["segments"]
+
+
+def test_baseline_uses_user_targets_instead_of_plan(monkeypatch):
+    import importlib
+    import streamlit as st
+
+    import pipeline_optimization_app as app
+
+    st.session_state.clear()
+    importlib.reload(app)
+
+    stations = [
+        {"name": "Paradip", "is_pump": True, "L": 158.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+        {"name": "Balasore", "is_pump": True, "L": 170.0, "D": 0.7, "t": 0.007, "max_pumps": 1},
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 50.0}
+
+    st.session_state["stations"] = copy.deepcopy(stations)
+    st.session_state["baseline_input_mode"] = "auto"
+    st.session_state["max_laced_flow_m3h"] = 2200.0
+    st.session_state["max_laced_visc_cst"] = 5.0
+    st.session_state["min_laced_suction_m"] = 120.0
+    st.session_state["laced_density_kgm3"] = 850.0
+
+    # Plan volumes would previously override the target laced flow (70000/24 ≈ 2916.67 m³/h)
+    st.session_state["day_plan_df"] = pd.DataFrame(
+        [
+            {"Product": "Batch 1", "Volume (m³)": 5000.0, "Viscosity (cSt)": 2.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+            {"Product": "Batch 2", "Volume (m³)": 65000.0, "Viscosity (cSt)": 4.0, "Density (kg/m³)": 820.0, app.INIT_DRA_COL: 0.0},
+        ]
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_compute_minimum_requirement(*args, **kwargs):
+        captured.update(kwargs)
+        return {"dra_ppm": 0.0, "dra_perc": 0.0, "length_km": 0.0, "segments": [], "enforceable": True}
+
+    monkeypatch.setattr(app.pipeline_model, "compute_minimum_lacing_requirement", fake_compute_minimum_requirement)
+    monkeypatch.setattr(app.st, "spinner", _null_spinner)
+    monkeypatch.setattr(app.st, "error", lambda msg: (_ for _ in ()).throw(AssertionError(msg)))
+
+    kv_list = [14.8, 4.1]
+    rho_list = [868.0, 822.0]
+    segment_slices = [[] for _ in stations]
+
+    try:
+        app._compute_and_store_baseline_requirement(stations, terminal, kv_list, rho_list, segment_slices)
+    finally:
+        app.invalidate_results()
+
+    assert math.isclose(captured.get("max_flow_m3h"), 2200.0)
+    assert math.isclose(captured.get("max_visc_cst"), 5.0)
+
+    design_inputs = st.session_state.get("baseline_design_inputs", {})
+    assert isinstance(design_inputs, dict)
+    assert math.isclose(design_inputs.get("design_flow_m3h", 0.0), 2200.0)
+    assert math.isclose(design_inputs.get("design_visc_cst", 0.0), 5.0)
