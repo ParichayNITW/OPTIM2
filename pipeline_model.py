@@ -2556,7 +2556,7 @@ def compute_minimum_lacing_requirement(
             if stn.get('is_pump') and idx == 0:
                 suction_requirement = min_suction
             else:
-                suction_requirement = station_min_residual
+                suction_requirement = max(residual_target, station_min_residual)
             suction_head_local = stn.get('suction_head', 0.0)
             if suction_head_local is None:
                 suction_head_local = 0.0
