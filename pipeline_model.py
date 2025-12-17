@@ -2235,7 +2235,9 @@ def compute_minimum_lacing_requirement(
                     return val
         return 0.0
 
-    def _max_head_at_dol(stn: Mapping[str, object], flow: float) -> float:
+    def _max_head_at_dol(
+        stn: Mapping[str, object], flow: float, *, return_combo: bool = False
+    ) -> float | tuple[float, dict]:
         if not stn.get('is_pump'):
             return 0.0
         flow_val = _coerce_float_local(flow, 0.0)
@@ -2243,6 +2245,7 @@ def compute_minimum_lacing_requirement(
             return 0.0
 
         max_head = 0.0
+        best_combo: dict[str, object] | None = None
         max_pumps_limit = int(_coerce_float_local(stn.get('max_pumps'), 0.0))
         min_pumps = int(_coerce_float_local(stn.get('min_pumps'), 0.0))
         if max_pumps_limit <= 0:
@@ -2285,7 +2288,12 @@ def compute_minimum_lacing_requirement(
                 head_val = sum(_coerce_float_local(p.get('tdh'), 0.0) for p in pump_info)
                 if head_val > max_head:
                     max_head = head_val
-            return max_head
+                    best_combo = {
+                        'types': {'A': numA, 'B': numB},
+                        'rpm': rpm_map,
+                        'total_units': total_units,
+                    }
+            return (max_head, best_combo) if return_combo else max_head
 
         # Single-type pump handling
         nop_limit = max_pumps_limit if max_pumps_limit else int(_coerce_float_local(stn.get('max_pumps'), 0.0))
@@ -2302,7 +2310,13 @@ def compute_minimum_lacing_requirement(
             head_val = sum(_coerce_float_local(p.get('tdh'), 0.0) for p in pump_info)
             if head_val > max_head:
                 max_head = head_val
-        return max_head
+                best_combo = {
+                    'nop': nop,
+                    'rpm': rpm_map_single,
+                    'types': {'A': nop, 'B': 0} if allow_mixed_types else {'*': nop},
+                    'total_units': nop,
+                }
+        return (max_head, best_combo) if return_combo else max_head
 
     num_segments = len(stations)
     kv_defaults = []
@@ -2469,14 +2483,29 @@ def compute_minimum_lacing_requirement(
             station_min_residual = 0.0
         station_min_residual = max(station_min_residual, 0.0)
 
-        residual_head = max(downstream_residual, station_min_residual)
+        residual_head = max(downstream_residual, 0.0)
+
+        rho_val = _station_density(stn)
+        mop_station = _collect_mop_kgcm2(stn)
+        mop_use = mop_station if mop_station > 0.0 else mop_global
+        maop_head_val = 0.0
+        if mop_use > 0.0 and rho_val > 0.0:
+            maop_head_val = _station_maop_head(stn, rho_val, mop_use)
+
+        station_max_dr_cap = _normalise_max_dr(stn.get('max_dr'))
+        has_injection = station_max_dr_cap > 0.0
+        max_head_result = _max_head_at_dol(stn, flow_segment, return_combo=True)
+        if isinstance(max_head_result, tuple):
+            max_head, max_head_combo = max_head_result
+        else:
+            max_head, max_head_combo = max_head_result, None
 
         def _evaluate_segment(
             required_downstream: float,
         ) -> tuple[float, float, float, float, bool, bool, float, float, float, bool]:
             """Return DR/PPM needs and feasibility for a downstream target."""
 
-            residual_target = max(required_downstream, station_min_residual)
+            residual_target = max(required_downstream, 0.0)
             sdh_required = residual_target + head_loss + elev_delta
             if sdh_required < residual_target:
                 sdh_required = residual_target
@@ -2484,10 +2513,6 @@ def compute_minimum_lacing_requirement(
             if sdh_required <= 0.0:
                 return 0.0, 0.0, 0.0, residual_target, True, False, 0.0, 0.0, 0.0, False
 
-            station_max_dr_cap = _normalise_max_dr(stn.get('max_dr'))
-            has_injection = station_max_dr_cap > 0.0
-
-            max_head = _max_head_at_dol(stn, flow_segment)
             dr_needed_local = 0.0
             dra_ppm_needed_local = 0.0
             dr_unbounded_local = 0.0
@@ -2500,17 +2525,16 @@ def compute_minimum_lacing_requirement(
                 suction_head_local = float(suction_head_local)
             except (TypeError, ValueError):
                 suction_head_local = residual_target
-            suction_head_local = max(suction_head_local, residual_target if stn.get('is_pump') else 0.0, suction_requirement)
+            suction_head_local = max(
+                suction_head_local,
+                station_min_residual if stn.get('is_pump') else 0.0,
+                residual_target if stn.get('is_pump') else 0.0,
+                suction_requirement,
+            )
             available_head_before_limit = max_head + suction_head_local
-            maop_head = 0.0
-            rho_val = _station_density(stn)
-            mop_station = _collect_mop_kgcm2(stn)
-            mop_use = mop_station if mop_station > 0.0 else mop_global
-            if mop_use > 0.0 and rho_val > 0.0:
-                maop_head = _station_maop_head(stn, rho_val, mop_use)
             available_head = available_head_before_limit
-            if maop_head > 0.0:
-                available_head = min(available_head, maop_head)
+            if maop_head_val > 0.0:
+                available_head = min(available_head, maop_head_val)
 
             gap = sdh_required - available_head
             if gap > 1e-6 and head_loss > 0.0:
@@ -2598,6 +2622,7 @@ def compute_minimum_lacing_requirement(
 
         shortfall_prev = None
         adjust_iterations = 0
+        ppm_cap_warning_added = False
         while True:
             (
                 dr_needed,
@@ -2612,6 +2637,31 @@ def compute_minimum_lacing_requirement(
                 has_injection,
             ) = _evaluate_segment(residual_head)
             if ppm_feasible:
+                break
+
+            # If the PPM cap cannot satisfy the head requirement, record a warning
+            # and propagate the infeasibility upstream instead of inflating the
+            # downstream residual head (which does not reduce the gap when the
+            # suction reference tracks the downstream target).
+            if has_injection and ppm_cap > 0.0:
+                if not ppm_cap_warning_added:
+                    station_name = stn.get('name') or f'Station {idx + 1}'
+                    warning_msg = (
+                        f"{station_name} requires {dra_ppm_needed:.2f} ppm to meet SDH "
+                        f"but is capped at {ppm_cap:.2f} ppm."
+                    )
+                    result['warnings'].append(
+                        {
+                            'type': 'baseline_ppm_cap_infeasible',
+                            'station': station_name,
+                            'required_ppm': dra_ppm_needed,
+                            'cap_ppm': ppm_cap,
+                            'required_dr': dr_unbounded,
+                            'message': warning_msg,
+                        }
+                    )
+                    result['enforceable'] = False
+                    ppm_cap_warning_added = True
                 break
             # Increase downstream residual just enough to make the capped PPM feasible
             try:
@@ -2658,6 +2708,7 @@ def compute_minimum_lacing_requirement(
             max_dra_perc = dr_needed
             max_dra_ppm = dra_ppm_needed
 
+        head_gap = sdh_required - available_head
         segment_requirements.insert(
             0,
             {
@@ -2667,27 +2718,36 @@ def compute_minimum_lacing_requirement(
                 'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
                 'dra_perc_uncapped': float(dr_unbounded),
                 'sdh_required': float(sdh_required),
-                'residual_head': float(residual_head),
+                'residual_head': float(max(residual_head, station_min_residual)),
                 'max_head_available': float(available_head),
                 'available_head_before_suction': float(available_head_before_limit),
                 'suction_head': float(suction_head),
                 'limited_by_station': bool(limited_by_station),
                 'friction_head': float(head_loss),
+                'design_flow_m3h': float(flow_segment),
+                'design_visc_cst': float(kv),
+                'elev_delta': float(elev_delta),
+                'maop_head_limit': float(maop_head_val),
+                'station_max_dr_cap': float(station_max_dr_cap),
+                'head_gap': float(head_gap),
+                'ppm_cap': float(ppm_cap),
+                'max_head_dol': float(max_head),
+                'max_head_combo': max_head_combo,
             },
         )
 
-        downstream_required = residual_head
+        downstream_required = max(residual_head, station_min_residual)
 
     result['segments'] = segment_requirements
-    if segment_requirements:
-        result['dra_perc'] = None
-        result['dra_ppm'] = None
-        result['dra_perc_uncapped'] = None
-        result['length_km'] = None
-    else:
-        result['dra_perc'] = float(max_dra_perc)
-        result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
-        result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
+    result['dra_perc'] = float(max_dra_perc)
+    result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
+    result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
+    result['length_km'] = float(total_length)
+    result['design_flow_m3h'] = float(max_flow)
+    result['design_visc_cst'] = float(visc_max)
+    result['design_suction_head'] = float(min_suction)
+    result['design_density_kgm3'] = float(default_rho)
+    result['design_mop_kgcm2'] = float(mop_global)
     return result
 
 
