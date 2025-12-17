@@ -2750,6 +2750,91 @@ def test_compute_minimum_lacing_requirement_warns_on_ppm_cap_infeasible():
     assert seg_entry.get("dra_perc", 0.0) == pytest.approx(70.0)
 
 
+def test_ppm_cap_lifts_upstream_suction_requirement(monkeypatch):
+    """When the ppm cap limits DR, lift downstream suction instead of warning."""
+
+    import pipeline_model as model
+
+    losses = iter([100.0, 50.0])
+
+    def fake_hydraulics(*args, **kwargs):
+        try:
+            loss = next(losses)
+        except StopIteration:
+            loss = 0.0
+        return loss, 0.0, 0.0, 0.0
+
+    compute_globals = model.compute_minimum_lacing_requirement.__globals__
+    monkeypatch.setitem(compute_globals, "_segment_hydraulics", fake_hydraulics)
+    monkeypatch.setitem(compute_globals, "_segment_hydraulics_composite", fake_hydraulics)
+    monkeypatch.setitem(compute_globals, "get_dr_for_ppm", lambda kv, ppm: ppm)
+    monkeypatch.setitem(compute_globals, "get_ppm_for_dr", lambda kv, dr: dr)
+
+    def fake_max_head(stn, flow, return_combo=False):
+        head = stn.get("max_head", 0.0)
+        return (head, {"head": head}) if return_combo else head
+
+    monkeypatch.setitem(compute_globals, "_max_head_at_dol", fake_max_head)
+
+    stations = [
+        {
+            "name": "Paradip",
+            "is_pump": True,
+            "max_pumps": 1,
+            "pump_types": {},
+            "MinRPM": 1000.0,
+            "DOL": 1000.0,
+            "max_dr": 60.0,
+            "L": 150.0,
+            "D": 0.5,
+            "t": 0.01,
+            "rough": 0.00004,
+            "max_head": 160.0,
+            "min_residual": 0.0,
+        },
+        {
+            "name": "Balasore",
+            "is_pump": True,
+            "max_pumps": 1,
+            "pump_types": {},
+            "MinRPM": 1000.0,
+            "DOL": 1000.0,
+            "max_dr": 50.0,
+            "L": 50.0,
+            "D": 0.5,
+            "t": 0.01,
+            "rough": 0.00004,
+            "max_head": 100.0,
+            "min_residual": 50.0,
+        },
+    ]
+
+    terminal = {"min_residual": 100.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=2000.0,
+        max_visc_cst=5.0,
+        min_suction_head=20.0,
+        baseline_ppm_cap=15.0,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 2
+
+    balasore_seg = next(seg for seg in segments if seg.get("station_idx") == 1)
+    paradip_seg = next(seg for seg in segments if seg.get("station_idx") == 0)
+
+    assert balasore_seg.get("dra_ppm", 0.0) <= 15.0 + 1e-9
+    assert balasore_seg.get("inlet_head_required", 0.0) >= terminal["min_residual"] - 1e-9
+    assert paradip_seg.get("downstream_residual_target", 0.0) >= balasore_seg["inlet_head_required"] - 1e-9
+
+    warnings = result.get("warnings") or []
+    assert not any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
+    assert result.get("enforceable") is True
+
+
 def test_pump_head_scales_with_series_pumps():
     import pipeline_model as model
 
