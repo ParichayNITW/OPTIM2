@@ -3593,7 +3593,6 @@ def solve_pipeline(
     _internal_pass: bool = False,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
-    refined_combo_cap: int | None = None,
     narrow_ranges: dict[int, dict[str, tuple[int, int]]] | None = None,
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
@@ -3667,13 +3666,6 @@ def solve_pipeline(
     except (TypeError, ValueError):
         pump_shear_rate = 0.0
     pump_shear_rate = max(0.0, min(pump_shear_rate, 1.0))
-
-    try:
-        refined_combo_cap_val = int(refined_combo_cap) if refined_combo_cap is not None else None
-    except (TypeError, ValueError):
-        refined_combo_cap_val = None
-    if refined_combo_cap_val is not None and refined_combo_cap_val <= 0:
-        refined_combo_cap_val = None
 
     try:
         state_cost_margin_pct = float(state_cost_margin_pct)
@@ -3814,7 +3806,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                refined_combo_cap=refined_combo_cap_val,
                 loop_usage_by_station=[],
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -3881,7 +3872,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                refined_combo_cap=refined_combo_cap_val,
                 loop_usage_by_station=usage,
                 enumerate_loops=False,
                 rpm_step=rpm_step,
@@ -4092,7 +4082,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                refined_combo_cap=refined_combo_cap_val,
                 loop_usage_by_station=loop_usage_by_station,
                 enumerate_loops=False,
                 _internal_pass=True,
@@ -4131,7 +4120,6 @@ def solve_pipeline(
                 hours,
                 start_time,
                 pump_shear_rate=pump_shear_rate,
-                refined_combo_cap=refined_combo_cap_val,
                 loop_usage_by_station=loop_usage_by_station,
                 enumerate_loops=False,
                 _internal_pass=True,
@@ -4402,7 +4390,6 @@ def solve_pipeline(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
-                    refined_combo_cap=refined_combo_cap_val,
                     loop_usage_by_station=loop_usage_by_station,
                     enumerate_loops=False,
                     _internal_pass=True,
@@ -4503,7 +4490,6 @@ def solve_pipeline(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
-                    refined_combo_cap=refined_combo_cap_val,
                     loop_usage_by_station=loop_usage_by_station,
                     enumerate_loops=False,
                     _internal_pass=True,
@@ -4819,10 +4805,7 @@ def solve_pipeline(
                     type_rpm_lists[ptype] = _allowed_values(p_rpm_min, p_rpm_max, rpm_step)
 
             if refined_retry and type_rpm_lists:
-                _cap_type_rpm_lists(
-                    type_rpm_lists,
-                    refined_combo_cap_val if refined_combo_cap_val is not None else REFINED_RETRY_COMBO_CAP,
-                )
+                _cap_type_rpm_lists(type_rpm_lists, REFINED_RETRY_COMBO_CAP)
 
             fixed_dr = stn.get('fixed_dra_perc', None)
             max_dr_main = _max_dr_int(stn.get('max_dr'))
@@ -6712,7 +6695,6 @@ def solve_pipeline_with_types(
     pump_shear_rate: float = 0.0,
     rpm_step: int = RPM_STEP,
     dra_step: int = DRA_STEP,
-    refined_combo_cap: int | None = None,
     coarse_multiplier: float = COARSE_MULTIPLIER,
     state_top_k: int = STATE_TOP_K,
     state_cost_margin: float = STATE_COST_MARGIN,
@@ -6830,7 +6812,6 @@ def solve_pipeline_with_types(
                     hours,
                     start_time,
                     pump_shear_rate=pump_shear_rate,
-                    refined_combo_cap=refined_combo_cap,
                     loop_usage_by_station=usage,
                     enumerate_loops=False,
                     rpm_step=rpm_step,
