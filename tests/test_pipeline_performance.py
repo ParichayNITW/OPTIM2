@@ -7282,6 +7282,84 @@ def test_downstream_requirement_ignores_downstream_suction_floor():
     assert req == 60
 
 
+def test_downstream_segment_suction_uses_forwarded_inlet_target():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Paradip",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.762,
+            "t": 0.0079248,
+            "rough": 4e-05,
+            "min_residual": 100.0,
+            "max_pumps": 2,
+            "MinRPM": 1000.0,
+            "DOL": 1500.0,
+            "pump_types": {
+                "A": {
+                    "available": 2,
+                    "MinRPM": 1000.0,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 250.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 240.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        },
+        {
+            "name": "Balasore",
+            "is_pump": True,
+            "L": 20.0,
+            "D": 0.762,
+            "t": 0.0079248,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 1,
+            "MinRPM": 1000.0,
+            "DOL": 1500.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "MinRPM": 1000.0,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 180.0},
+                        {"Flow (m³/hr)": 500.0, "Head (m)": 170.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        },
+    ]
+
+    terminal = {"name": "Haldia", "elev": 0.0, "min_residual": 60.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=500.0,
+        max_visc_cst=5.0,
+        min_suction_head=120.0,
+        fluid_density=850.0,
+        mop_kgcm2=0.0,
+    )
+
+    segments = result.get("segments")
+    assert segments and len(segments) == 2
+
+    origin_seg, downstream_seg = segments
+    forwarded = origin_seg.get("downstream_residual_forward", origin_seg.get("downstream_residual_target"))
+    # Forwarded inlet requirement should exceed the downstream station floor
+    assert forwarded > stations[1]["min_residual"]
+    # The downstream suction used in the head balance should match the forwarded inlet
+    # requirement instead of reverting to the downstream station's residual floor.
+    assert downstream_seg["suction_head"] == pytest.approx(max(forwarded, stations[1]["min_residual"]))
+
+
 def test_min_suction_applies_only_to_origin():
     import pipeline_model
 
