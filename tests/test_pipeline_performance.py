@@ -3165,6 +3165,74 @@ def test_compute_minimum_lacing_requirement_matches_sample_case():
     assert result["dra_ppm"] == first["dra_ppm"]
 
 
+def test_compute_minimum_lacing_requirement_tracks_viscosity_in_ppm_mapping():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "S1",
+            "is_pump": True,
+            "L": 180.0,
+            "D": 0.6,
+            "t": 0.008,
+            "rough": 4e-05,
+            "min_residual": 50.0,
+            "max_pumps": 1,
+            "max_dr": 50.0,
+            "pump_types": {
+                "A": {
+                    "available": 1,
+                    "MinRPM": 1500.0,
+                    "DOL": 1500.0,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 210.0},
+                        {"Flow (m³/hr)": 1000.0, "Head (m)": 190.0},
+                        {"Flow (m³/hr)": 2000.0, "Head (m)": 165.0},
+                        {"Flow (m³/hr)": 3000.0, "Head (m)": 130.0},
+                    ],
+                    "eff_data": [],
+                }
+            },
+        }
+    ]
+
+    terminal = {"name": "T", "elev": 0.0, "min_residual": 50.0}
+
+    low_visc = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=2000.0,
+        max_visc_cst=3.0,
+        kv_list=[3.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        min_suction_head=0.0,
+        fluid_density=850.0,
+        mop_kgcm2=58.0,
+    )
+
+    high_visc = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=2000.0,
+        max_visc_cst=12.0,
+        kv_list=[12.0],
+        rho_list=[850.0],
+        segment_slices=[[]],
+        min_suction_head=0.0,
+        fluid_density=850.0,
+        mop_kgcm2=58.0,
+    )
+
+    low_seg = low_visc["segments"][0]
+    high_seg = high_visc["segments"][0]
+
+    assert low_seg["design_visc_cst"] == pytest.approx(3.0)
+    assert high_seg["design_visc_cst"] == pytest.approx(12.0)
+    assert high_seg["dra_perc"] > low_seg["dra_perc"]
+    assert high_seg["dra_ppm"] > low_seg["dra_ppm"]
+
+
 def test_compute_minimum_lacing_requirement_exposes_debug_trace():
     import pipeline_model as model
 
@@ -7158,6 +7226,9 @@ def test_baseline_uses_user_targets_instead_of_plan(monkeypatch):
     assert math.isclose(captured.get("max_visc_cst"), 5.0)
     assert math.isclose(captured.get("min_suction_head"), 120.0)
     assert math.isclose(captured.get("fluid_density"), 850.0)
+    assert captured.get("kv_list") == [5.0, 5.0]
+    assert captured.get("rho_list") == [850.0, 850.0]
+    assert captured.get("segment_slices") == [[], []]
 
     design_inputs = st.session_state.get("baseline_design_inputs", {})
     assert isinstance(design_inputs, dict)
