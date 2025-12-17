@@ -2550,13 +2550,13 @@ def compute_minimum_lacing_requirement(
             # originating station; downstream stations rely on the propagated
             # residual target and any station-specific residual floors.
             suction_requirement = min_suction if stn.get('is_pump') and idx == 0 else 0.0
-            suction_head_local = stn.get('suction_head', residual_target)
+            suction_head_local = stn.get('suction_head', 0.0)
             if suction_head_local is None:
-                suction_head_local = residual_target
+                suction_head_local = 0.0
             try:
                 suction_head_local = float(suction_head_local)
             except (TypeError, ValueError):
-                suction_head_local = residual_target
+                suction_head_local = 0.0
             # Downstream residual floors are already propagated through
             # ``residual_target``; including the current station's floor here
             # would double-count that requirement and inflate the suction head
@@ -2566,7 +2566,6 @@ def compute_minimum_lacing_requirement(
             suction_head_local = max(
                 suction_head_local,
                 inlet_floor,
-                residual_target if stn.get('is_pump') else 0.0,
                 suction_requirement,
             )
             available_head_before_limit = max_head + suction_head_local
