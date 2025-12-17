@@ -1106,83 +1106,6 @@ def shift_vol_linefill(
     return vol_table, day_plan, injected_batches
 
 
-def _estimate_worst_case_segment_profiles(
-    stations: list[dict],
-    *,
-    linefill_vol: pd.DataFrame | None,
-    day_plan: pd.DataFrame | None,
-    design_flow_m3h: float,
-    fallback_kv: Sequence[float] | None,
-    fallback_rho: Sequence[float] | None,
-    fallback_slices: Sequence[Sequence[Mapping[str, object]]] | None,
-) -> tuple[list[float], list[float], list[list[dict]], list[int]]:
-    """Return segment-wise worst-case kv/rho profiles over 24 hours."""
-
-    num_segments = len(stations)
-    if num_segments == 0:
-        return [], [], [], []
-
-    lengths = [float(stn.get("L", 0.0) or 0.0) for stn in stations]
-
-    kv_fallback = [float(val) for val in fallback_kv] if fallback_kv else [1.0] * num_segments
-    rho_fallback = [float(val) for val in fallback_rho] if fallback_rho else [850.0] * num_segments
-    slices_fallback = [list(entry) for entry in (fallback_slices or [])]
-    if len(slices_fallback) < num_segments:
-        for idx in range(len(slices_fallback), num_segments):
-            slices_fallback.append(
-                [
-                    {
-                        "length_km": lengths[idx] if idx < len(lengths) else 0.0,
-                        "kv": kv_fallback[idx] if idx < len(kv_fallback) else 1.0,
-                        "rho": rho_fallback[idx] if idx < len(rho_fallback) else 850.0,
-                    }
-                ]
-            )
-
-    if design_flow_m3h <= 0.0:
-        return kv_fallback, rho_fallback, slices_fallback, [-1] * num_segments
-
-    current_vol = linefill_vol.copy() if isinstance(linefill_vol, pd.DataFrame) else pd.DataFrame()
-    plan_local = day_plan.copy() if isinstance(day_plan, pd.DataFrame) else None
-
-    hourly_flow = st.session_state.get("hourly_flow", design_flow_m3h)
-    try:
-        hourly_flow = float(hourly_flow)
-    except (TypeError, ValueError):
-        hourly_flow = float(design_flow_m3h)
-
-    snapshots = _build_hourly_segment_averages(
-        stations,
-        linefill_vol=linefill_vol,
-        day_plan=plan_local,
-        hourly_flow_m3h=hourly_flow,
-        kv_fallback=kv_fallback,
-        rho_fallback=rho_fallback,
-    )
-
-    worst_kv = list(kv_fallback)
-    worst_rho = list(rho_fallback)
-    worst_slices: list[list[dict]] = [list(entry) for entry in slices_fallback]
-    worst_hours: list[int] = [-1] * num_segments
-
-    for snap in snapshots:
-        avg_kv = snap.get("avg_kv", [])
-        avg_rho = snap.get("avg_rho", [])
-        slices_now = snap.get("slices", [])
-        for idx in range(num_segments):
-            kv_now = avg_kv[idx] if idx < len(avg_kv) else kv_fallback[idx]
-            rho_now = avg_rho[idx] if idx < len(avg_rho) else rho_fallback[idx]
-            if kv_now > worst_kv[idx]:
-                worst_kv[idx] = kv_now
-                worst_rho[idx] = rho_now
-                worst_slices[idx] = (
-                    list(slices_now[idx]) if idx < len(slices_now) and isinstance(slices_now[idx], list) else worst_slices[idx]
-                )
-                worst_hours[idx] = int(snap.get("hour", -1))
-
-    return worst_kv, worst_rho, worst_slices, worst_hours
-
-
 def _compute_and_store_baseline_requirement(
     stations_data,
     term_data,
@@ -1206,50 +1129,26 @@ def _compute_and_store_baseline_requirement(
         except Exception:
             plan_total_vol = 0.0
 
-    persist_targets = st.session_state.get("baseline_input_mode") == "auto"
-
     baseline_flow = float(
         st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))
         or 0.0
     )
 
-    fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
-    fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
-    fallback_slices = list(segment_slices) if isinstance(segment_slices, Sequence) else []
-
-    linefill_vol_df = st.session_state.get("linefill_vol_df")
-    if isinstance(linefill_vol_df, pd.DataFrame):
-        linefill_vol_df = ensure_initial_dra_column(linefill_vol_df.copy(), default=0.0, fill_blanks=True)
-    else:
-        linefill_vol_df = None
-
-    worst_kv, worst_rho, worst_slices, worst_hours = _estimate_worst_case_segment_profiles(
-        stations_data,
-        linefill_vol=linefill_vol_df,
-        day_plan=plan_df,
-        design_flow_m3h=baseline_flow,
-        fallback_kv=fallback_kv,
-        fallback_rho=fallback_rho,
-        fallback_slices=fallback_slices,
-    )
-
     baseline_visc = float(st.session_state.get("max_laced_visc_cst", 0.0) or 0.0)
     if baseline_visc <= 0.0:
         try:
-            baseline_visc = float(max(worst_kv or fallback_kv or [1.0]))
+            baseline_visc = float(max(kv_list or [1.0]))
         except (TypeError, ValueError):
             baseline_visc = 1.0
 
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
     density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
-    fluid_density = float(max(worst_rho) if worst_rho else density_default or 0.0)
+    fluid_density = float(density_default or 0.0)
     if fluid_density <= 0.0:
         try:
-            fluid_density = float(density_default)
+            fluid_density = float(max(rho_list or []))
         except (TypeError, ValueError):
             fluid_density = 0.0
-    if persist_targets and worst_rho:
-        _safe_set_session_state("laced_density_kgm3", fluid_density)
     mop_kgcm2 = float(st.session_state.get("MOP_kgcm2", 0.0) or 0.0)
 
     st.session_state["baseline_design_inputs"] = {
@@ -1257,9 +1156,6 @@ def _compute_and_store_baseline_requirement(
         "design_visc_cst": baseline_visc,
         "design_density_kgm3": fluid_density,
         "design_min_suction_m": min_suction,
-        "worst_hours": list(worst_hours),
-        "worst_kv": list(worst_kv),
-        "worst_rho": list(worst_rho),
     }
 
     baseline_requirement: dict | None = None
@@ -1270,9 +1166,9 @@ def _compute_and_store_baseline_requirement(
             term_data,
             max_flow_m3h=baseline_flow,
             max_visc_cst=baseline_visc,
-            segment_slices=worst_slices,
-            kv_list=worst_kv,
-            rho_list=worst_rho,
+            segment_slices=segment_slices,
+            kv_list=kv_list,
+            rho_list=rho_list,
             min_suction_head=min_suction,
             fluid_density=fluid_density,
             mop_kgcm2=mop_kgcm2,
@@ -1769,18 +1665,11 @@ with st.sidebar:
                         suction_msg = 0.0
                     st.info(
                         f"Baseline inputs used: target laced flow = {flow_msg:.2f} m³/h; "
-                        f"worst-case segment viscosity = {visc_msg:.2f} cSt; "
-                        f"density at that hour = {rho_msg:.2f} kg/m³; "
+                        f"design viscosity = {visc_msg:.2f} cSt; "
+                        f"fluid density = {rho_msg:.2f} kg/m³; "
                         f"minimum suction head = {suction_msg:.2f} m."
                     )
                 segment_rows: list[dict[str, object]] = []
-                worst_hours_list = []
-                worst_kv_list = []
-                worst_rho_list = []
-                if isinstance(design_inputs, Mapping):
-                    worst_hours_list = design_inputs.get("worst_hours") or []
-                    worst_kv_list = design_inputs.get("worst_kv") or []
-                    worst_rho_list = design_inputs.get("worst_rho") or []
                 if isinstance(segments_detail, Sequence):
                     terminal_name = term_ctx.get("name") if isinstance(term_ctx, Mapping) else "Terminal"
                     for seg in segments_detail:
@@ -1821,18 +1710,6 @@ with st.sidebar:
                             seg_suction = float(seg.get("suction_head", 0.0) or 0.0)
                         except (TypeError, ValueError):
                             seg_suction = 0.0
-                        try:
-                            worst_hour = int(worst_hours_list[station_idx]) if station_idx < len(worst_hours_list) else -1
-                        except (TypeError, ValueError, IndexError):
-                            worst_hour = -1
-                        try:
-                            worst_kv_val = float(worst_kv_list[station_idx]) if station_idx < len(worst_kv_list) else 0.0
-                        except (TypeError, ValueError, IndexError):
-                            worst_kv_val = 0.0
-                        try:
-                            worst_rho_val = float(worst_rho_list[station_idx]) if station_idx < len(worst_rho_list) else 0.0
-                        except (TypeError, ValueError, IndexError):
-                            worst_rho_val = 0.0
                         segment_rows.append(
                             {
                                 "Segment": segment_label,
@@ -1840,9 +1717,6 @@ with st.sidebar:
                                 "Baseline PPM": seg_ppm,
                                 "Baseline %DR": seg_perc,
                                 "Suction head (m)": seg_suction,
-                                "Worst-hour (h)": worst_hour,
-                                "Worst avg visc (cSt)": worst_kv_val,
-                                "Density @ worst hour (kg/m³)": worst_rho_val,
                             }
                         )
                 if segment_rows:
@@ -1853,8 +1727,6 @@ with st.sidebar:
                             "Baseline PPM": 2,
                             "Baseline %DR": 2,
                             "Suction head (m)": 2,
-                            "Worst avg visc (cSt)": 2,
-                            "Density @ worst hour (kg/m³)": 2,
                         }
                     )
                     st.dataframe(seg_df, use_container_width=True, hide_index=True)
