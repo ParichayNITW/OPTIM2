@@ -2080,7 +2080,7 @@ def compute_minimum_lacing_requirement(
     min_suction_head: float = 0.0,
     fluid_density: float | None = None,
     mop_kgcm2: float | None = None,
-    baseline_ppm_cap: float = 15.0,
+    baseline_ppm_cap: float | None = None,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -2103,12 +2103,9 @@ def compute_minimum_lacing_requirement(
     ``mop_kgcm2`` lets callers impose a global operating pressure limit when an
     explicit value is not stored on the station or terminal records.
 
-    ``baseline_ppm_cap`` caps the per-segment PPM when searching for the minimum
-    total DRA requirement.  When a downstream segment would exceed this cap the
-    upstream residual head is increased just enough to keep the segment at or
-    below the allowed PPM while minimising the combined dose across all
-    segments.  This optimisation is applied only to the automatic baseline
-    computation; manually specified dosing schedules are not altered.
+    ``baseline_ppm_cap`` is ignored for automatic baseline computation; drag
+    reduction is instead limited only by each station's ``max_dr`` (when
+    provided) and the global ``dra_upper_bound``.
     """
 
     result = {
@@ -2419,12 +2416,7 @@ def compute_minimum_lacing_requirement(
         except (TypeError, ValueError):
             downstream_requirements[idx] = float(max(terminal_min_residual, 0.0))
 
-    try:
-        ppm_cap = float(baseline_ppm_cap)
-    except (TypeError, ValueError):
-        ppm_cap = 0.0
-    if ppm_cap < 0.0:
-        ppm_cap = 0.0
+    ppm_cap = 0.0
 
     mop_global = _coerce_float_local(mop_kgcm2, 0.0)
     if mop_global <= 0.0:
@@ -2601,32 +2593,11 @@ def compute_minimum_lacing_requirement(
             if station_max_dr_cap > 0.0:
                 dr_limit_local = min(dr_limit_local, station_max_dr_cap)
 
-            dr_cap_ppm = dra_upper
-            if has_injection and ppm_cap > 0.0:
-                try:
-                    dr_cap_ppm = float(get_dr_for_ppm(kv if kv > 0 else visc_max, ppm_cap))
-                except Exception:
-                    dr_cap_ppm = dra_upper
-                dr_cap_ppm = min(max(dr_cap_ppm, 0.0), dra_upper)
-                if station_max_dr_cap > 0.0:
-                    dr_cap_ppm = min(dr_cap_ppm, station_max_dr_cap)
-                dr_limit_local = min(dr_limit_local, dr_cap_ppm)
-
             dr_needed = min(dr_unbounded, dr_limit_local)
 
             if dr_unbounded > dr_limit_local + 1e-6 and head_loss > 0.0:
                 available_head_needed = sdh_required - head_loss * (dr_limit_local / 100.0)
                 if maop_head_val > 0.0 and available_head_needed > maop_head_val + 1e-6:
-                    warnings_local.append(
-                        {
-                            'type': 'baseline_ppm_cap_infeasible',
-                            'station': stations_copy[idx].get('name'),
-                            'required_ppm': float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_unbounded)) if has_injection else 0.0,
-                            'cap_ppm': ppm_cap,
-                            'required_dr': dr_unbounded,
-                            'message': 'Available head exceeds MAOP before meeting downstream requirement.',
-                        }
-                    )
                     feasible_local = False
 
                 suction_needed = max(available_head_needed - max_head, 0.0)
@@ -2638,18 +2609,6 @@ def compute_minimum_lacing_requirement(
 
                 gap_after = sdh_required - available_head
                 dr_needed = min(max(gap_after / head_loss * 100.0, 0.0), dr_limit_local)
-                if available_head + head_loss * (dr_limit_local / 100.0) + 1e-6 < sdh_required:
-                    warnings_local.append(
-                        {
-                            'type': 'baseline_ppm_cap_infeasible',
-                            'station': stations_copy[idx].get('name'),
-                            'required_ppm': float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_unbounded)) if has_injection else 0.0,
-                            'cap_ppm': ppm_cap,
-                            'required_dr': dr_unbounded,
-                            'message': 'Downstream head cannot be met within caps even after suction lift.',
-                        }
-                    )
-                    feasible_local = False
 
             if has_injection and dr_needed > 0.0:
                 try:
@@ -2659,18 +2618,6 @@ def compute_minimum_lacing_requirement(
                 if dra_ppm_needed < 0.0:
                     dra_ppm_needed = 0.0
                 dra_ppm_needed = math.ceil(dra_ppm_needed * 10.0) / 10.0
-                if ppm_cap > 0.0 and dra_ppm_needed > ppm_cap + 1e-9:
-                    warnings_local.append(
-                        {
-                            'type': 'baseline_ppm_cap_infeasible',
-                            'station': stations_copy[idx].get('name'),
-                            'required_ppm': dra_ppm_needed,
-                            'cap_ppm': ppm_cap,
-                            'required_dr': dr_needed,
-                            'message': 'PPM requirement exceeds cap.',
-                        }
-                    )
-                    feasible_local = False
 
             if station_max_dr_cap > 0.0 and dr_unbounded > station_max_dr_cap + 1e-6:
                 limited_by_station = True
@@ -2737,9 +2684,7 @@ def compute_minimum_lacing_requirement(
     # Binary search for the lowest feasible maximum %DR to even out dosing
     best_result: tuple | None = None
     last_attempt: tuple | None = None
-    # Descend through candidate caps to find the lowest feasible max %DR. A
-    # simple sweep avoids the non-monotonic feasibility introduced by suction
-    # lifting under PPM caps.
+    # Descend through candidate caps to find the lowest feasible max %DR.
     candidates = [dra_upper * step / 15.0 for step in range(15, -1, -1)]
     for cap in candidates:
         feasible, segments_mid, max_dr_mid, max_ppm_mid, max_uncapped_mid, warnings_mid = _evaluate_with_dr_cap(cap)
