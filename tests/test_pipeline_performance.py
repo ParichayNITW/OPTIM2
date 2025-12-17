@@ -2397,6 +2397,101 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
 
 
+def test_compute_minimum_lacing_requirement_respects_downstream_floor():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 120.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 12.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+            "elev": 0.0,
+        },
+        {
+            "name": "Station B",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 80.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 8.0,
+            "d": 0.7,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "min_residual": 80.0,
+            "max_dr": 70.0,
+            "elev": 0.0,
+        },
+    ]
+
+    terminal = {"min_residual": 10.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=1500.0,
+        max_visc_cst=3.0,
+        min_suction_head=0.0,
+        fluid_density=0.0,
+        mop_kgcm2=0.0,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 2
+    seg0 = segments[0]
+    # Downstream target should honour Station B's floor (80 m) instead of only
+    # the terminal residual (10 m).
+    assert seg0["downstream_residual_target"] == pytest.approx(80.0)
+
+    flow = 1500.0
+    head_loss, *_ = model._segment_hydraulics(
+        flow,
+        stations[0]["L"],
+        stations[0]["d"],
+        stations[0]["rough"],
+        3.0,
+        0.0,
+        0.0,
+    )
+    pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
+    max_head = sum(p.get("tdh", 0.0) for p in pump_info)
+    sdh_required = 80.0 + head_loss
+    available_head = max_head  # no suction at origin in this setup
+    expected_gap = max(sdh_required - available_head, 0.0)
+    expected_unbounded = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
+    assert seg0["dra_perc_uncapped"] == pytest.approx(expected_unbounded)
+
+
 def test_baseline_trace_records_downstream_target_separately():
     import pipeline_model as model
 
