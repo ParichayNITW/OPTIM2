@@ -2368,19 +2368,16 @@ def compute_minimum_lacing_requirement(
         if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
             entry['rho'] = rho_defaults[idx]
         try:
-            # Use the suction_head provided in the station record, if any.
+            # Use the suction_head provided in the station record, if any, and
+            # otherwise the user-entered origin suction. Do **not** fall back
+            # to station residual floors, which represent downstream targets
+            # rather than the inlet head entered in the UI.
             suction_val = float(entry.get('suction_head', 0.0) or 0.0)
         except (TypeError, ValueError):
             suction_val = 0.0
 
-        # If the origin station has no explicit suction_head, fall back to the
-        # user-entered minimum residual (available suction head) so the display
-        # reflects the provided inlet pressure instead of zero.
-        if idx == 0 and suction_val <= 0.0:
-            try:
-                suction_val = float(entry.get('min_residual', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                suction_val = 0.0
+        if idx == 0:
+            suction_val = max(suction_val, min_suction)
 
         entry['suction_head'] = max(suction_val, 0.0)
         try:
