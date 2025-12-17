@@ -2517,7 +2517,10 @@ def compute_minimum_lacing_requirement(
             dra_ppm_needed_local = 0.0
             dr_unbounded_local = 0.0
             limited_by_station_local = False
-            suction_requirement = min_suction if stn.get('is_pump') else 0.0
+            # The UI-supplied minimum suction head applies only to the
+            # originating station; downstream stations rely on the propagated
+            # residual target and any station-specific residual floors.
+            suction_requirement = min_suction if stn.get('is_pump') and idx == 0 else 0.0
             suction_head_local = stn.get('suction_head', residual_target)
             if suction_head_local is None:
                 suction_head_local = residual_target

@@ -4,7 +4,7 @@ This note summarizes how the automatic baseline DRA solver determines drag-reduc
 
 ## Key inputs per station/segment
 - **Pump curves and availability** (can include mixed pump types if allowed)
-- **Max pumps at station** and **minimum suction head** at the originating station; for downstream stations, suction = upstream residual head
+- **Max pumps at station** and **minimum suction head** at the originating station only; downstream stations take suction from the upstream residual head and any station-specific residual floors
 - **Maximum operating pressure (MOP)** limit (converted to head)
 - **Segment properties:** length, diameter, roughness, elevation/peaks, target laced flow/viscosity/density
 - **Residual head target** at the downstream station or terminal (e.g., 50–60 m)

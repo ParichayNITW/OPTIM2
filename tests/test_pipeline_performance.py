@@ -2397,6 +2397,81 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-3, abs=1e-3)
 
 
+def test_minimum_lacing_only_applies_min_suction_to_origin():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Origin",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 6.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 100.0,
+            "L": 8.0,
+            "D": 0.6,
+            "t": 0.008,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+        },
+        {
+            "name": "Midpoint",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 6.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 100.0,
+            "L": 6.0,
+            "D": 0.6,
+            "t": 0.008,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+        },
+    ]
+
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=1500.0,
+        max_visc_cst=5.0,
+        min_suction_head=50.0,
+    )
+
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 2
+    origin_seg, downstream_seg = segments
+
+    assert origin_seg["station_idx"] == 0
+    assert downstream_seg["station_idx"] == 1
+
+    assert origin_seg["suction_head"] >= 50.0
+    assert downstream_seg["suction_head"] == pytest.approx(downstream_seg["residual_head"])
+
+
 def test_compute_minimum_lacing_requirement_flags_station_cap():
     import pipeline_model as model
 
