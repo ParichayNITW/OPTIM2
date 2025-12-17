@@ -2560,7 +2560,14 @@ def test_baseline_trace_records_downstream_target_separately():
 
     origin_seg = segments[0]
     assert "downstream_residual_target" in origin_seg
-    assert origin_seg["downstream_residual_target"] == pytest.approx(terminal["min_residual"])
+    # When the downstream segment has surplus head, the propagated inlet target
+    # for the next station should reflect that uplift while remaining at least
+    # the terminal residual requirement.
+    assert origin_seg["downstream_residual_target"] >= terminal["min_residual"] - 1e-6
+    downstream_seg = segments[1]
+    assert origin_seg["downstream_residual_target"] == pytest.approx(
+        downstream_seg.get("downstream_residual_forward", downstream_seg["residual_head"])
+    )
     # The recorded downstream target should stay separate from the origin floor
     # so the UI doesn't misreport the target as the origin suction.
     assert origin_seg["residual_head"] >= stations[0]["min_residual"]
