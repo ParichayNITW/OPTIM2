@@ -2767,6 +2767,12 @@ def compute_minimum_lacing_requirement(
 
         head_gap = sdh_required - available_head
         inlet_head_required = max(suction_head, station_min_residual)
+        # If this segment can deliver more head than required, bank that
+        # surplus into the downstream station's inlet target so the next
+        # segment can potentially reduce its drag reduction while still
+        # honouring the downstream residual floor.
+        head_surplus = max(available_head - sdh_required, 0.0)
+        downstream_forward = residual_head + head_surplus if head_surplus > 0.0 else residual_head
 
         segment_requirements.insert(
             0,
@@ -2794,10 +2800,11 @@ def compute_minimum_lacing_requirement(
                 'ppm_cap': float(ppm_cap),
                 'max_head_dol': float(max_head),
                 'max_head_combo': max_head_combo,
+                'downstream_residual_forward': float(downstream_forward),
             },
         )
 
-        downstream_required = max(inlet_head_required, station_min_residual)
+        downstream_required = max(inlet_head_required, station_min_residual, downstream_forward)
 
     result['segments'] = segment_requirements
     result['dra_perc'] = float(max_dra_perc)
