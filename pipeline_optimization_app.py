@@ -1208,12 +1208,10 @@ def _compute_and_store_baseline_requirement(
 
     persist_targets = st.session_state.get("baseline_input_mode") == "auto"
 
-    baseline_flow = float(st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0)) or 0.0)
-    flow_from_plan = plan_total_vol / 24.0 if plan_total_vol > 0.0 else 0.0
-    if flow_from_plan > 0.0:
-        baseline_flow = flow_from_plan
-        if persist_targets:
-            _safe_set_session_state("max_laced_flow_m3h", baseline_flow)
+    baseline_flow = float(
+        st.session_state.get("max_laced_flow_m3h", st.session_state.get("FLOW", 1000.0))
+        or 0.0
+    )
 
     fallback_kv = list(kv_list) if isinstance(kv_list, Sequence) else []
     fallback_rho = list(rho_list) if isinstance(rho_list, Sequence) else []
@@ -1235,19 +1233,12 @@ def _compute_and_store_baseline_requirement(
         fallback_slices=fallback_slices,
     )
 
-    baseline_visc_raw = max(worst_kv) if worst_kv else st.session_state.get("max_laced_visc_cst", 0.0)
-    try:
-        baseline_visc = float(baseline_visc_raw)
-    except (TypeError, ValueError):
-        baseline_visc = 0.0
+    baseline_visc = float(st.session_state.get("max_laced_visc_cst", 0.0) or 0.0)
     if baseline_visc <= 0.0:
         try:
             baseline_visc = float(max(worst_kv or fallback_kv or [1.0]))
         except (TypeError, ValueError):
             baseline_visc = 1.0
-
-    if persist_targets and worst_kv:
-        _safe_set_session_state("max_laced_visc_cst", baseline_visc)
 
     min_suction = float(st.session_state.get("min_laced_suction_m", 0.0) or 0.0)
     density_default = st.session_state.get("laced_density_kgm3", st.session_state.get("Fuel_density", 820.0))
