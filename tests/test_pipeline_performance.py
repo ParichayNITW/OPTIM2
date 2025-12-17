@@ -2284,10 +2284,10 @@ def test_compute_minimum_lacing_requirement_finds_floor():
         mop_kgcm2=0.0,
     )
 
-    assert result["length_km"] is None
-    assert result["dra_perc"] is None
-    assert result["dra_ppm"] is None
-    assert result.get("dra_perc_uncapped") is None
+    assert result["length_km"] == pytest.approx(stations[0]["L"])
+    assert result["dra_perc"] == result["segments"][0]["dra_perc"]
+    assert result["dra_ppm"] == result["segments"][0]["dra_ppm"]
+    assert result.get("dra_perc_uncapped") == result["segments"][0]["dra_perc_uncapped"]
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
 
@@ -2436,20 +2436,71 @@ def test_compute_minimum_lacing_requirement_flags_station_cap():
         min_suction_head=1.5,
     )
 
-    assert result["dra_perc"] is None
-    assert result.get("dra_perc_uncapped") is None
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    seg_entry = segments[0]
+
+    assert result["dra_perc"] == seg_entry["dra_perc"]
+    assert result.get("dra_perc_uncapped") == seg_entry["dra_perc_uncapped"]
     warnings = result.get("warnings")
     assert isinstance(warnings, list) and warnings
     assert any(w.get("type") == "station_max_dr_exceeded" for w in warnings if isinstance(w, dict))
     assert result.get("enforceable") is False
-    segments = result.get("segments")
-    assert isinstance(segments, list) and len(segments) == 1
-    seg_entry = segments[0]
     assert seg_entry["dra_perc"] == pytest.approx(30.0)
     assert seg_entry.get("dra_perc_uncapped", 0.0) > seg_entry["dra_perc"]
     assert seg_entry.get("limited_by_station") is True
-    rounded_ppm = math.ceil(model.get_ppm_for_dr(2.5, 30.0) * 10.0) / 10.0
-    assert seg_entry.get("dra_ppm") == pytest.approx(rounded_ppm)
+
+
+def test_compute_minimum_lacing_requirement_warns_on_ppm_cap_infeasible():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Station A",
+            "is_pump": True,
+            "min_pumps": 1,
+            "max_pumps": 1,
+            "pump_type": "type1",
+            "MinRPM": 3000,
+            "DOL": 3000,
+            "A": 0.0,
+            "B": 0.0,
+            "C": 4.0,
+            "P": 0.0,
+            "Q": 0.0,
+            "R": 0.0,
+            "S": 0.0,
+            "T": 75.0,
+            "L": 50.0,
+            "d": 0.5,
+            "t": 0.007,
+            "rough": 0.00004,
+            "delivery": 0.0,
+            "supply": 0.0,
+            "max_dr": 70.0,
+        }
+    ]
+    terminal = {"min_residual": 0.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=3000.0,
+        max_visc_cst=10.0,
+        min_suction_head=1.0,
+        baseline_ppm_cap=5.0,
+    )
+
+    warnings = result.get("warnings")
+    assert isinstance(warnings, list)
+    assert any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
+    assert result.get("enforceable") is False
+    segments = result.get("segments")
+    assert isinstance(segments, list) and len(segments) == 1
+    seg_entry = segments[0]
+    assert seg_entry.get("residual_head") == pytest.approx(terminal["min_residual"])
+    assert seg_entry.get("dra_ppm", 0.0) > 5.0
+    assert seg_entry.get("dra_perc", 0.0) == pytest.approx(70.0)
 
 
 def test_pump_head_scales_with_series_pumps():
@@ -2652,11 +2703,97 @@ def test_compute_minimum_lacing_requirement_matches_sample_case():
 
     assert result["segments"], "Expected segment-wise baseline output"
     assert len(result["segments"]) == 2
+    warnings = result.get("warnings")
+    assert isinstance(warnings, list)
+    assert any(w.get("type") == "baseline_ppm_cap_infeasible" for w in warnings if isinstance(w, dict))
     first, second = result["segments"]
     assert first["dra_perc"] == pytest.approx(28.770138, rel=1e-6)
-    assert first["dra_ppm"] == pytest.approx(24.0, abs=1e-9)
+    assert first["dra_ppm"] == pytest.approx(60.0)
     assert second["dra_perc"] == pytest.approx(24.128056, rel=1e-6)
-    assert second["dra_ppm"] == pytest.approx(15.0, abs=1e-9)
+    assert second["dra_ppm"] == pytest.approx(55.0)
+    assert result["dra_perc"] == first["dra_perc"]
+    assert result["dra_ppm"] == first["dra_ppm"]
+
+
+def test_compute_minimum_lacing_requirement_exposes_debug_trace():
+    import pipeline_model as model
+
+    stations = [
+        {
+            "name": "Origin",
+            "is_pump": True,
+            "L": 10.0,
+            "D": 0.5,
+            "t": 0.01,
+            "rough": 4e-05,
+            "min_residual": 10.0,
+            "max_pumps": 1,
+            "pump_types": {
+                "A": {
+                    "name": "P1",
+                    "available": 1,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 100.0},
+                        {"Flow (m³/hr)": 100.0, "Head (m)": 95.0},
+                        {"Flow (m³/hr)": 200.0, "Head (m)": 90.0},
+                    ],
+                    "eff_data": [],
+                    "DOL": 1500.0,
+                }
+            },
+        },
+        {
+            "name": "Station B",
+            "is_pump": True,
+            "L": 8.0,
+            "D": 0.5,
+            "t": 0.01,
+            "rough": 4e-05,
+            "min_residual": 15.0,
+            "max_dr": 30.0,
+            "max_pumps": 1,
+            "pump_types": {
+                "A": {
+                    "name": "P2",
+                    "available": 1,
+                    "head_data": [
+                        {"Flow (m³/hr)": 0.0, "Head (m)": 120.0},
+                        {"Flow (m³/hr)": 100.0, "Head (m)": 110.0},
+                        {"Flow (m³/hr)": 200.0, "Head (m)": 105.0},
+                    ],
+                    "eff_data": [],
+                    "DOL": 1500.0,
+                }
+            },
+        },
+    ]
+    terminal = {"name": "End", "min_residual": 20.0, "elev": 0.0}
+
+    result = model.compute_minimum_lacing_requirement(
+        stations,
+        terminal,
+        max_flow_m3h=150.0,
+        max_visc_cst=5.0,
+        min_suction_head=12.0,
+        fluid_density=850.0,
+        mop_kgcm2=70.0,
+    )
+
+    assert result["dra_perc"] >= 0.0
+    assert result["design_flow_m3h"] == 150.0
+    assert result["design_visc_cst"] == 5.0
+    assert result["design_suction_head"] == 12.0
+    assert result["design_density_kgm3"] == 850.0
+
+    for segment in result["segments"]:
+        assert "design_flow_m3h" in segment
+        assert "design_visc_cst" in segment
+        assert "elev_delta" in segment
+        assert "maop_head_limit" in segment
+        assert "station_max_dr_cap" in segment
+        assert "head_gap" in segment
+        assert "max_head_dol" in segment
+        assert "max_head_combo" in segment
 
 
 def test_compute_minimum_lacing_requirement_handles_invalid_input():
