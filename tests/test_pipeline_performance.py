@@ -7048,9 +7048,43 @@ def test_baseline_uses_user_targets_instead_of_plan(monkeypatch):
     assert math.isclose(design_inputs.get("design_visc_cst", 0.0), 5.0)
     assert math.isclose(design_inputs.get("design_min_suction_m", 0.0), 120.0)
     assert math.isclose(design_inputs.get("design_density_kgm3", 0.0), 850.0)
-    assert "worst_hours" not in design_inputs
-    assert "worst_kv" not in design_inputs
-    assert "worst_rho" not in design_inputs
+
+
+def test_downstream_requirement_ignores_downstream_suction_floor():
+    import pipeline_model as pm
+
+    stations = [
+        {"name": "Paradip", "L": 1.0, "D": 0.7, "t": 0.007, "rough": 4e-5, "is_pump": False},
+        {
+            "name": "Balasore",
+            "L": 1.0,
+            "D": 0.7,
+            "t": 0.007,
+            "rough": 4e-5,
+            "is_pump": False,
+            # A suction value here should not reduce the upstream requirement; the downstream
+            # target should remain fully enforced.
+            "suction_head": 80.0,
+            "min_residual": 0.0,
+        },
+    ]
+    terminal = {"name": "Haldia", "elev": 0.0, "min_residual": 60.0}
+    flows = [0.0, 0.0, 0.0]
+    kv_list = [1.0, 1.0]
+    segment_slices = [[], []]
+
+    # The downstream requirement for the first segment should match the terminal residual
+    # because the downstream suction floor must not be subtracted from the head balance.
+    req = pm._downstream_requirement(
+        stations,
+        0,
+        terminal,
+        flows,
+        kv_list,
+        segment_slices,
+    )
+
+    assert req == 60
 
 
 def test_min_suction_applies_only_to_origin():

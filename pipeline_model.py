@@ -3724,11 +3724,6 @@ def _downstream_requirement(
             peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
-        suction_head = 0.0
-        try:
-            suction_head = float(stn.get('suction_head', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            suction_head = 0.0
         if stn.get('is_pump', False):
             rpm_max_val = _station_max_rpm(stn)
             if rpm_max_val <= 0:
@@ -3769,7 +3764,6 @@ def _downstream_requirement(
             else:
                 tdh_max = 0.0
             req -= tdh_max
-        req -= suction_head
         try:
             min_residual_req = float(stn.get('residual_floor', stn.get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
