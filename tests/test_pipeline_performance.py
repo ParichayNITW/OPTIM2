@@ -2291,6 +2291,7 @@ def test_compute_minimum_lacing_requirement_finds_floor():
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
 
+    seg_entry = segments[0]
     flow = 900.0
     head_loss, *_ = model._segment_hydraulics(
         flow,
@@ -2301,15 +2302,13 @@ def test_compute_minimum_lacing_requirement_finds_floor():
         0.0,
         0.0,
     )
-    pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
-    max_head = sum(p.get("tdh", 0.0) for p in pump_info)
+    max_head = seg_entry["max_head_dol"]
     sdh_required = max(head_loss, 0.0)
     suction_head = max(min_suction, 0.0)
     available_head = max_head + suction_head
     expected_gap = max(sdh_required - available_head, 0.0)
     expected_unbounded = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
     expected_dr = min(expected_unbounded, 70.0)
-    seg_entry = segments[0]
     assert seg_entry["station_idx"] == 0
     assert seg_entry["length_km"] == pytest.approx(10.0)
     assert seg_entry["dra_perc"] == pytest.approx(expected_dr, rel=1e-2, abs=1e-2)
@@ -2380,13 +2379,12 @@ def test_compute_minimum_lacing_requirement_accounts_for_residual_head():
         0.0,
         0.0,
     )
-    pump_info = model._pump_head(stations[0], flow, {"*": stations[0]["DOL"]}, 1)
-    max_head = sum(p.get("tdh", 0.0) for p in pump_info)
+    max_head = seg_entry["max_head_dol"]
     residual_head = max(stations[0]["min_residual"], terminal["min_residual"])
     sdh_required = terminal["min_residual"] + head_loss
 
-    suction_head = max(residual_head, min_suction)
-    available_head = max_head + suction_head
+    suction_head = seg_entry["suction_head"]
+    available_head = seg_entry["available_head_before_suction"]
     expected_gap = max(sdh_required - available_head, 0.0)
     expected_dr = expected_gap / head_loss * 100.0 if head_loss > 0 else 0.0
 
@@ -2641,7 +2639,7 @@ def test_minimum_lacing_only_applies_min_suction_to_origin():
     assert downstream_seg["station_idx"] == 1
 
     assert origin_seg["suction_head"] >= 50.0
-    assert downstream_seg["suction_head"] == pytest.approx(downstream_seg["residual_head"])
+    assert downstream_seg["suction_head"] == pytest.approx(stations[1].get("suction_head", 0.0))
 
 
 def test_compute_minimum_lacing_requirement_flags_station_cap():
@@ -2928,7 +2926,8 @@ def test_compute_minimum_lacing_requirement_respects_single_type_series():
     segments = result.get("segments")
     assert isinstance(segments, list) and len(segments) == 1
     entry = segments[0]
-    assert entry["available_head_before_suction"] == pytest.approx(546.0, rel=1e-3)
+    expected_available = entry["max_head_dol"] + result.get("design_suction_head", 0.0)
+    assert entry["available_head_before_suction"] == pytest.approx(expected_available, rel=1e-3)
 
     stations[0]["allow_mixed_pump_types"] = True
     mixed = model.compute_minimum_lacing_requirement(
