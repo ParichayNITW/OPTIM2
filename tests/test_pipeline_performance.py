@@ -809,6 +809,131 @@ def test_maximum_flow_fallback_aligns_to_step(monkeypatch):
     assert fallback["flow_rate"] == pytest.approx(2800.0)
 
 
+def test_time_series_respects_hourly_flow_grid(monkeypatch):
+    import pipeline_optimization_app as app
+
+    stations = [{"name": "Station A", "is_pump": False}]
+    term = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+    hours = [0, 1]
+
+    def fake_solver(
+        _stations,
+        _terminal,
+        flow_rate,
+        _kv,
+        _rho,
+        _slices,
+        *_args,
+        **_kwargs,
+    ):
+        if flow_rate > 900:
+            return {
+                "error": "high flow",
+                "message": "too high",
+                "total_cost": 0.0,
+                "linefill": [],
+                "dra_front_km": 0.0,
+                "sdh_station_a": 0.0,
+                "sdh_terminal": 0.0,
+                "power_cost_station_a": 0.0,
+                "dra_cost_station_a": 0.0,
+            }
+        return {
+            "error": False,
+            "total_cost": flow_rate / 10.0,
+            "linefill": [],
+            "dra_front_km": 0.0,
+            "sdh_station_a": 1.0,
+            "sdh_terminal": 1.0,
+            "power_cost_station_a": 0.0,
+            "dra_cost_station_a": 0.0,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solver)
+    monkeypatch.setattr(app, "_append_zero_plan_segments_to_result", lambda *args, **kwargs: None)
+
+    empty_linefill = pd.DataFrame({"Volume (m³)": [0.0], app.INIT_DRA_COL: [0.0]})
+
+    result = app._execute_time_series_solver(
+        stations,
+        term,
+        hours,
+        flow_rate=900.0,
+        hourly_flow_candidates=[[1200.0, 800.0, 700.0], [500.0, 600.0]],
+        plan_df=None,
+        current_vol=empty_linefill.copy(),
+        dra_linefill=[],
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=0.0,
+        ambient_temp=0.0,
+        mop_kgcm2=0.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        flow_step=100.0,
+        coarse_multiplier=2.0,
+        daily_throughput_target=1100.0,
+    )
+
+    assert result.get("error") is None
+    assert result.get("hourly_errors") == []
+    assert result.get("hourly_flows") == [700.0, 500.0]
+    assert result.get("total_throughput") == pytest.approx(1200.0)
+    assert result.get("total_cost") == pytest.approx(70.0 + 50.0)
+
+
+def test_hourly_infeasibility_deferred_until_throughput_failure(monkeypatch):
+    import pipeline_optimization_app as app
+
+    stations = [{"name": "Station A", "is_pump": False}]
+    term = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+    hours = [0]
+
+    def failing_solver(*_args, **_kwargs):
+        return {
+            "error": "unreachable",
+            "message": "infeasible hour",
+            "total_cost": 0.0,
+            "linefill": [],
+            "dra_front_km": 0.0,
+            "sdh_station_a": 0.0,
+            "sdh_terminal": 0.0,
+            "power_cost_station_a": 0.0,
+            "dra_cost_station_a": 0.0,
+        }
+
+    monkeypatch.setattr(app, "solve_pipeline", failing_solver)
+    monkeypatch.setattr(app, "_append_zero_plan_segments_to_result", lambda *args, **kwargs: None)
+
+    empty_linefill = pd.DataFrame({"Volume (m³)": [0.0], app.INIT_DRA_COL: [0.0]})
+
+    result = app._execute_time_series_solver(
+        stations,
+        term,
+        hours,
+        flow_rate=500.0,
+        plan_df=None,
+        current_vol=empty_linefill.copy(),
+        dra_linefill=[],
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=0.0,
+        ambient_temp=0.0,
+        mop_kgcm2=0.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        daily_throughput_target=600.0,
+    )
+
+    assert result.get("error")
+    assert result.get("hourly_errors")
+    assert result.get("total_throughput") == pytest.approx(0.0)
+
+
 def test_time_series_solver_retries_with_max_dra(monkeypatch):
     import pipeline_optimization_app as app
 
