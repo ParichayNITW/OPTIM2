@@ -31,6 +31,54 @@ DEFAULT_MAX_DR = 70
 # a station allows higher drag reduction.
 DRA_PPM_SEARCH_CAP = 20.0
 
+
+def _expand_dra_ppm_grid(
+    existing: list[int],
+    *,
+    kv: float,
+    floor_ppm: float,
+    ppm_cap: float,
+    step: float,
+    max_dr_cap: int,
+    floor_dr_min: float,
+) -> list[int]:
+    """Augment the DRA grid so ppm space is fully explored up to the cap."""
+
+    expanded = list(existing)
+    try:
+        upper_ppm = float(ppm_cap)
+    except (TypeError, ValueError):
+        upper_ppm = 0.0
+    if upper_ppm <= 0.0:
+        return expanded
+
+    ppm_start = max(float(floor_ppm or 0.0), 0.0)
+    ppm_step = float(step) if step and step > 0 else 1.0
+
+    ppm_values: list[float] = []
+    current = ppm_start
+    while current <= upper_ppm + 1e-9:
+        ppm_values.append(current)
+        current += ppm_step
+    if not ppm_values or ppm_values[-1] < upper_ppm - 1e-9:
+        ppm_values.append(upper_ppm)
+
+    for ppm_val in ppm_values:
+        try:
+            dr_val = float(get_dr_for_ppm(kv, ppm_val))
+        except Exception:
+            continue
+        if dr_val <= 0.0 and floor_dr_min > 0.0:
+            dr_val = float(floor_dr_min)
+        dr_int = int(math.ceil(dr_val)) if dr_val > 0.0 else 0
+        if dr_int <= 0:
+            continue
+        if max_dr_cap > 0:
+            dr_int = min(dr_int, max_dr_cap)
+        expanded.append(dr_int)
+
+    return sorted({val for val in expanded if val >= 0})
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -4894,6 +4942,27 @@ def solve_pipeline(
                                 continue
                         filtered_vals.append(candidate)
                     dra_main_vals = filtered_vals
+
+                ppm_cap_effective = max_ppm_cap
+                if ppm_cap_effective <= 0.0 and kv > 0.0 and max_dr_cap > 0:
+                    try:
+                        ppm_cap_effective = float(get_ppm_for_dr(kv, max_dr_cap))
+                    except Exception:
+                        ppm_cap_effective = 0.0
+                dra_main_vals = _expand_dra_ppm_grid(
+                    dra_main_vals,
+                    kv=kv,
+                    floor_ppm=floor_ppm_min,
+                    ppm_cap=ppm_cap_effective if ppm_cap_effective > 0.0 else max_ppm_cap,
+                    step=dra_step,
+                    max_dr_cap=max_dr_cap,
+                    floor_dr_min=floor_dr_min_float,
+                )
+                dra_main_vals = [
+                    val
+                    for val in sorted({int(v) for v in dra_main_vals if v >= 0})
+                    if val >= dr_min and val <= max_dr_cap
+                ]
             max_dr_loop = _max_dr_int(loop_dict.get('max_dr')) if loop_dict else 0
             dr_loop_min, dr_loop_max = 0, max_dr_loop
             if rng and 'dra_loop' in rng:
@@ -5135,6 +5204,26 @@ def solve_pipeline(
                                 continue
                         filtered_vals.append(candidate)
                     dra_vals = filtered_vals
+                ppm_cap_effective = max_ppm_cap
+                if ppm_cap_effective <= 0.0 and kv > 0.0 and max_dr_cap > 0:
+                    try:
+                        ppm_cap_effective = float(get_ppm_for_dr(kv, max_dr_cap))
+                    except Exception:
+                        ppm_cap_effective = 0.0
+                dra_vals = _expand_dra_ppm_grid(
+                    dra_vals,
+                    kv=kv,
+                    floor_ppm=floor_ppm_min,
+                    ppm_cap=ppm_cap_effective if ppm_cap_effective > 0.0 else max_ppm_cap,
+                    step=dra_step,
+                    max_dr_cap=max_dr_cap,
+                    floor_dr_min=floor_dr_min_float,
+                )
+                dra_vals = [
+                    val
+                    for val in sorted({int(v) for v in dra_vals if v >= 0})
+                    if val >= dr_min and val <= max_dr_cap
+                ]
                 for dra_main in dra_vals:
                     ppm_main = float(get_ppm_for_dr(kv, dra_main)) if dra_main > 0 else 0.0
                     if floor_ppm_min > 0.0:
