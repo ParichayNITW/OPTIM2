@@ -2080,7 +2080,6 @@ def compute_minimum_lacing_requirement(
     min_suction_head: float = 0.0,
     fluid_density: float | None = None,
     mop_kgcm2: float | None = None,
-    baseline_ppm_cap: float | None = None,
 ) -> dict:
     """Return the minimum lacing requirement to maintain downstream SDH.
 
@@ -2102,10 +2101,6 @@ def compute_minimum_lacing_requirement(
     metres using the operator-provided value instead of per-station defaults.
     ``mop_kgcm2`` lets callers impose a global operating pressure limit when an
     explicit value is not stored on the station or terminal records.
-
-    ``baseline_ppm_cap`` is ignored for automatic baseline computation; drag
-    reduction is instead limited only by each station's ``max_dr`` (when
-    provided) and the global ``dra_upper_bound``.
     """
 
     result = {
@@ -2232,9 +2227,7 @@ def compute_minimum_lacing_requirement(
                     return val
         return 0.0
 
-    def _max_head_at_dol(
-        stn: Mapping[str, object], flow: float, *, return_combo: bool = False
-    ) -> float | tuple[float, dict]:
+    def _max_head_at_dol(stn: Mapping[str, object], flow: float) -> float:
         if not stn.get('is_pump'):
             return 0.0
         flow_val = _coerce_float_local(flow, 0.0)
@@ -2242,7 +2235,6 @@ def compute_minimum_lacing_requirement(
             return 0.0
 
         max_head = 0.0
-        best_combo: dict[str, object] | None = None
         max_pumps_limit = int(_coerce_float_local(stn.get('max_pumps'), 0.0))
         min_pumps = int(_coerce_float_local(stn.get('min_pumps'), 0.0))
         if max_pumps_limit <= 0:
@@ -2285,12 +2277,7 @@ def compute_minimum_lacing_requirement(
                 head_val = sum(_coerce_float_local(p.get('tdh'), 0.0) for p in pump_info)
                 if head_val > max_head:
                     max_head = head_val
-                    best_combo = {
-                        'types': {'A': numA, 'B': numB},
-                        'rpm': rpm_map,
-                        'total_units': total_units,
-                    }
-            return (max_head, best_combo) if return_combo else max_head
+            return max_head
 
         # Single-type pump handling
         nop_limit = max_pumps_limit if max_pumps_limit else int(_coerce_float_local(stn.get('max_pumps'), 0.0))
@@ -2307,13 +2294,7 @@ def compute_minimum_lacing_requirement(
             head_val = sum(_coerce_float_local(p.get('tdh'), 0.0) for p in pump_info)
             if head_val > max_head:
                 max_head = head_val
-                best_combo = {
-                    'nop': nop,
-                    'rpm': rpm_map_single,
-                    'types': {'A': nop, 'B': 0} if allow_mixed_types else {'*': nop},
-                    'total_units': nop,
-                }
-        return (max_head, best_combo) if return_combo else max_head
+        return max_head
 
     num_segments = len(stations)
     kv_defaults = []
@@ -2365,16 +2346,19 @@ def compute_minimum_lacing_requirement(
         if idx < len(rho_defaults) and rho_defaults[idx] > 0.0:
             entry['rho'] = rho_defaults[idx]
         try:
-            # Use the suction_head provided in the station record, if any, and
-            # otherwise the user-entered origin suction. Do **not** fall back
-            # to station residual floors, which represent downstream targets
-            # rather than the inlet head entered in the UI.
+            # Use the suction_head provided in the station record, if any.
             suction_val = float(entry.get('suction_head', 0.0) or 0.0)
         except (TypeError, ValueError):
             suction_val = 0.0
 
-        if idx == 0:
-            suction_val = max(suction_val, min_suction)
+        # If the origin station has no explicit suction_head, fall back to the
+        # user-entered minimum residual (available suction head) so the display
+        # reflects the provided inlet pressure instead of zero.
+        if idx == 0 and suction_val <= 0.0:
+            try:
+                suction_val = float(entry.get('min_residual', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                suction_val = 0.0
 
         entry['suction_head'] = max(suction_val, 0.0)
         try:
@@ -2402,29 +2386,23 @@ def compute_minimum_lacing_requirement(
         slices_use = cleaned_slices
 
     downstream_requirements: list[float] = [0.0] * len(stations_copy)
+    cumulative_min = max(terminal_min_residual, 0.0)
     for idx in range(len(stations_copy) - 1, -1, -1):
+        downstream_requirements[idx] = cumulative_min
         try:
-            if idx + 1 < len(stations_copy):
-                downstream_requirements[idx] = float(
-                    stations_copy[idx + 1].get(
-                        'residual_floor', stations_copy[idx + 1].get('min_residual', 0.0)
-                    )
-                    or 0.0
-                )
-            else:
-                downstream_requirements[idx] = float(terminal_min_residual)
+            stn_min = float(stations_copy[idx].get('residual_floor', stations_copy[idx].get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
-            downstream_requirements[idx] = float(max(terminal_min_residual, 0.0))
-
-    ppm_cap = 0.0
+            stn_min = 0.0
+        cumulative_min = max(cumulative_min, stn_min)
 
     mop_global = _coerce_float_local(mop_kgcm2, 0.0)
     if mop_global <= 0.0:
         mop_global = _collect_mop_kgcm2(terminal)
 
-    # Precompute segment hydraulics and pump envelopes once; these are reused
-    # during the drag-reduction equalisation search.
-    segment_data: list[dict[str, object]] = []
+    segment_requirements: list[dict[str, float | int]] = []
+    max_dra_perc = 0.0
+    max_dra_ppm = 0.0
+    max_dra_perc_uncapped = 0.0
     for idx, stn in enumerate(stations_copy):
         flow_segment = flows[idx + 1] if idx + 1 < len(flows) else flows[-1]
         flow_segment = max(_coerce_float_local(flow_segment, max_flow), 0.0)
@@ -2463,252 +2441,155 @@ def compute_minimum_lacing_requirement(
                     0.0,
                 )
 
-        rho_val = _station_density(stn)
-        mop_station = _collect_mop_kgcm2(stn)
-        mop_use = mop_station if mop_station > 0.0 else mop_global
-        maop_head_val = 0.0
-        if mop_use > 0.0 and rho_val > 0.0:
-            maop_head_val = _station_maop_head(stn, rho_val, mop_use)
-
-        station_max_dr_cap = _normalise_max_dr(stn.get('max_dr'))
-        has_injection = station_max_dr_cap > 0.0
-        max_head_result = _max_head_at_dol(stn, flow_segment, return_combo=True)
-        if isinstance(max_head_result, tuple):
-            max_head, max_head_combo = max_head_result
-        else:
-            max_head, max_head_combo = max_head_result, None
-
+        downstream_residual = downstream_requirements[idx] if idx < len(downstream_requirements) else terminal_min_residual
+        downstream_residual = max(downstream_residual, 0.0)
         try:
             station_min_residual = float(stn.get('residual_floor', stn.get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
             station_min_residual = 0.0
         station_min_residual = max(station_min_residual, 0.0)
+        residual_head = max(downstream_residual, station_min_residual)
 
-        suction_head_local = stn.get('suction_head', 0.0)
+        sdh_required = downstream_residual + head_loss + elev_delta
+        if sdh_required < downstream_residual:
+            sdh_required = downstream_residual
+
+        sdh_required = max(sdh_required, 0.0)
+        if sdh_required <= 0.0:
+            continue
+
+        station_max_dr_cap = _normalise_max_dr(stn.get('max_dr'))
+        has_injection = station_max_dr_cap > 0.0
+
+        max_head = _max_head_at_dol(stn, flow_segment)
+        dr_needed = 0.0
+        dra_ppm_needed = 0.0
+        dr_unbounded = 0.0
+        limited_by_station = False
+        suction_requirement = min_suction if stn.get('is_pump') else 0.0
+        suction_head = stn.get('suction_head', residual_head)
+        if suction_head is None:
+            suction_head = residual_head
         try:
-            suction_head_local = float(suction_head_local or 0.0)
+            suction_head = float(suction_head)
         except (TypeError, ValueError):
-            suction_head_local = 0.0
+            suction_head = residual_head
+        suction_head = max(suction_head, residual_head if stn.get('is_pump') else 0.0, suction_requirement)
+        available_head_before_limit = max_head + suction_head
+        maop_head = 0.0
+        rho_val = _station_density(stn)
+        mop_station = _collect_mop_kgcm2(stn)
+        mop_use = mop_station if mop_station > 0.0 else mop_global
+        if mop_use > 0.0 and rho_val > 0.0:
+            maop_head = _station_maop_head(stn, rho_val, mop_use)
+        available_head = available_head_before_limit
+        if maop_head > 0.0:
+            available_head = min(available_head, maop_head)
 
-        segment_data.append(
+        gap = sdh_required - available_head
+        if gap > 1e-6 and head_loss > 0.0:
+            dr_unbounded = (gap / head_loss) * 100.0
+            if dr_unbounded < 0.0:
+                dr_unbounded = 0.0
+            if dr_unbounded > max_dra_perc_uncapped:
+                max_dra_perc_uncapped = dr_unbounded
+
+            cap_limit = dra_upper
+            if station_max_dr_cap > 0.0:
+                cap_limit = min(cap_limit, station_max_dr_cap)
+                if dr_unbounded > station_max_dr_cap + 1e-6:
+                    limited_by_station = True
+
+            dr_needed = min(dr_unbounded, cap_limit)
+            dr_needed = min(max(dr_needed, 0.0), dra_upper)
+
+            if limited_by_station:
+                station_name = stn.get('name')
+                warning_msg = (
+                    f"{station_name or f'Station {idx + 1}'} requires {dr_unbounded:.2f}% DR "
+                    f"but is capped at {station_max_dr_cap:.2f}%."
+                )
+                result['warnings'].append(
+                    {
+                        'type': 'station_max_dr_exceeded',
+                        'station': station_name,
+                        'required_dr': dr_unbounded,
+                        'max_dr': station_max_dr_cap,
+                        'message': warning_msg,
+                    }
+                )
+                result['enforceable'] = False
+
+            try:
+                if limited_by_station:
+                    dr_for_dose = dr_needed
+                else:
+                    dr_for_dose = min(dr_needed * 0.7, dr_needed)
+                    # Cap the ppm calculation to a representative dose so the
+                    # lacing requirement does not exceed realistic injection rates
+                    # even when higher drag reduction is demanded downstream.
+                    if dr_for_dose > 20.0:
+                        dr_for_dose = 20.0
+                dra_ppm_needed = (
+                    float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_for_dose))
+                    if dr_for_dose > 0
+                    else 0.0
+                )
+            except Exception:
+                dra_ppm_needed = 0.0
+
+            if dr_needed > max_dra_perc and has_injection:
+                max_dra_perc = dr_needed
+                max_dra_ppm = dra_ppm_needed
+
+        if not has_injection and gap > 1e-6 and head_loss > 0.0:
+            station_name = stn.get('name') or f'Station {idx + 1}'
+            result['warnings'].append(
+                {
+                    'type': 'dra_injection_missing',
+                    'station': station_name,
+                    'required_dr': dr_unbounded,
+                    'message': (
+                        f"{station_name} lacks a DRA facility but requires {dr_unbounded:.2f}% "
+                        "drag reduction to meet SDH."
+                    ),
+                }
+            )
+            result['enforceable'] = False
+
+        if not has_injection:
+            continue
+
+        if dra_ppm_needed > 0.0:
+            dra_ppm_needed = math.ceil(dra_ppm_needed * 10.0) / 10.0
+
+        segment_requirements.append(
             {
-                'idx': idx,
-                'flow_segment': float(flow_segment),
-                'kv': float(kv),
-                'L': float(L),
-                'rough': float(rough),
-                'elev_delta': float(elev_delta),
-                'head_loss': float(head_loss),
-                'maop_head': float(maop_head_val),
-                'station_max_dr_cap': float(station_max_dr_cap),
-                'has_injection': bool(has_injection),
-                'max_head': float(max_head),
-                'max_head_combo': max_head_combo,
-                'station_min_residual': float(station_min_residual),
-                'suction_head': float(suction_head_local),
-                'is_origin': bool(idx == 0 and stn.get('is_pump')),
-                'residual_floor_next': float(downstream_requirements[idx]) if idx < len(downstream_requirements) else 0.0,
+                'station_idx': idx,
+                'length_km': float(L),
+                'dra_perc': float(dr_needed),
+                'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
+                'dra_perc_uncapped': float(dr_unbounded),
+                'sdh_required': float(sdh_required),
+                'residual_head': float(residual_head),
+                'max_head_available': float(available_head),
+                'available_head_before_suction': float(available_head_before_limit),
+                'suction_head': float(suction_head),
+                'limited_by_station': bool(limited_by_station),
+                'friction_head': float(head_loss),
             }
         )
 
-    downstream_floor_cache: list[float] = []
-    for idx in range(len(segment_data)):
-        if idx + 1 < len(stations_copy):
-            try:
-                next_floor = float(
-                    stations_copy[idx + 1].get(
-                        'residual_floor', stations_copy[idx + 1].get('min_residual', 0.0)
-                    )
-                    or 0.0
-                )
-            except (TypeError, ValueError):
-                next_floor = 0.0
-        else:
-            try:
-                next_floor = float(terminal.get('min_residual', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                next_floor = 0.0
-        downstream_floor_cache.append(max(next_floor, 0.0))
-
-    def _evaluate_with_dr_cap(dr_cap_global: float) -> tuple[bool, list[dict[str, object]], float, float, float, list[dict]]:
-        """Evaluate the pipeline with a global DR target.
-
-        The routine increases downstream inlet targets when necessary to keep
-        each segment at or below ``dr_cap_global`` (also respecting station caps
-        and the PPM cap), effectively smoothing the DR profile across segments.
-        """
-
-        downstream_required = max(terminal_min_residual, 0.0)
-        segment_requirements: list[dict[str, object]] = []
-        max_dra_perc_local = 0.0
-        max_dra_ppm_local = 0.0
-        max_dra_uncapped_local = 0.0
-        warnings_local: list[dict] = []
-
-        feasible_local = True
-        for idx in range(len(segment_data) - 1, -1, -1):
-            data = segment_data[idx]
-            head_loss = data['head_loss']
-            elev_delta = data['elev_delta']
-            max_head = data['max_head']
-            station_min_residual = data['station_min_residual']
-            suction_head_local = data['suction_head']
-            kv = data['kv']
-            maop_head_val = data['maop_head']
-            station_max_dr_cap = data['station_max_dr_cap']
-            has_injection = data['has_injection']
-
-            base_downstream_residual = downstream_required
-            if idx < len(downstream_requirements):
-                base_downstream_residual = max(base_downstream_residual, downstream_requirements[idx])
-            residual_target = max(base_downstream_residual, downstream_floor_cache[idx], 0.0)
-
-            sdh_required = residual_target + head_loss + elev_delta
-            if sdh_required < residual_target:
-                sdh_required = residual_target
-            sdh_required = max(sdh_required, 0.0)
-
-            if data['is_origin']:
-                suction_requirement = max(min_suction, residual_target)
-            else:
-                suction_requirement = max(residual_target, station_min_residual)
-
-            suction_head_use = max(suction_head_local, suction_requirement)
-            available_head_before_limit = max_head + suction_head_use
-            available_head = available_head_before_limit
-            if maop_head_val > 0.0:
-                available_head = min(available_head, maop_head_val)
-
-            dr_unbounded = 0.0
-            dr_needed = 0.0
-            dra_ppm_needed = 0.0
-            limited_by_station = False
-
-            if head_loss > 0.0:
-                gap = sdh_required - available_head
-                if gap > 1e-6:
-                    dr_unbounded = max((gap / head_loss) * 100.0, 0.0)
-
-            dr_limit_local = min(dr_cap_global, dra_upper)
-            if station_max_dr_cap > 0.0:
-                dr_limit_local = min(dr_limit_local, station_max_dr_cap)
-
-            dr_needed = min(dr_unbounded, dr_limit_local)
-
-            if dr_unbounded > dr_limit_local + 1e-6 and head_loss > 0.0:
-                available_head_needed = sdh_required - head_loss * (dr_limit_local / 100.0)
-                if maop_head_val > 0.0 and available_head_needed > maop_head_val + 1e-6:
-                    feasible_local = False
-
-                suction_needed = max(available_head_needed - max_head, 0.0)
-                suction_head_use = max(suction_head_use, suction_needed)
-                available_head_before_limit = max_head + suction_head_use
-                available_head = available_head_before_limit
-                if maop_head_val > 0.0:
-                    available_head = min(available_head, maop_head_val)
-
-                gap_after = sdh_required - available_head
-                dr_needed = min(max(gap_after / head_loss * 100.0, 0.0), dr_limit_local)
-
-            if has_injection and dr_needed > 0.0:
-                try:
-                    dra_ppm_needed = float(get_ppm_for_dr(kv if kv > 0 else visc_max, dr_needed))
-                except Exception:
-                    dra_ppm_needed = 0.0
-                if dra_ppm_needed < 0.0:
-                    dra_ppm_needed = 0.0
-                dra_ppm_needed = math.ceil(dra_ppm_needed * 10.0) / 10.0
-
-            if station_max_dr_cap > 0.0 and dr_unbounded > station_max_dr_cap + 1e-6:
-                limited_by_station = True
-
-            if head_loss <= 0.0 and sdh_required > available_head + 1e-6:
-                warnings_local.append(
-                    {
-                        'type': 'dra_injection_missing',
-                        'station': stations_copy[idx].get('name'),
-                        'required_dr': dr_unbounded,
-                        'message': 'Insufficient head with no drag reduction.',
-                    }
-                )
-                feasible_local = False
-
-            if dr_unbounded > max_dra_uncapped_local:
-                max_dra_uncapped_local = dr_unbounded
-            if has_injection and dr_needed > max_dra_perc_local:
-                max_dra_perc_local = dr_needed
-                max_dra_ppm_local = dra_ppm_needed
-
-            head_gap = sdh_required - available_head
-            head_surplus = max(available_head - sdh_required, 0.0)
-            downstream_forward = residual_target + head_surplus if head_surplus > 0.0 else residual_target
-
-            inlet_head_required = max(suction_head_use, station_min_residual)
-            downstream_required = max(inlet_head_required, station_min_residual, downstream_forward)
-
-            segment_requirements.insert(
-                0,
-                {
-                    'station_idx': idx,
-                    'length_km': float(data['L']),
-                    'dra_perc': float(dr_needed),
-                    'dra_ppm': float(dra_ppm_needed) if dr_needed > 0 else 0.0,
-                    'dra_perc_uncapped': float(dr_unbounded),
-                    'sdh_required': float(sdh_required),
-                    'residual_head': float(max(residual_target, station_min_residual)),
-                    'downstream_residual_target': float(residual_target),
-                    'inlet_head_required': float(inlet_head_required),
-                    'max_head_available': float(available_head),
-                    'available_head_before_suction': float(available_head_before_limit),
-                    'suction_head': float(suction_head_use),
-                    'limited_by_station': bool(limited_by_station),
-                    'friction_head': float(head_loss),
-                    'design_flow_m3h': float(data['flow_segment']),
-                    'design_visc_cst': float(kv),
-                    'elev_delta': float(elev_delta),
-                    'maop_head_limit': float(maop_head_val),
-                    'station_max_dr_cap': float(station_max_dr_cap),
-                    'head_gap': float(head_gap),
-                    'ppm_cap': float(ppm_cap),
-                    'max_head_dol': float(max_head),
-                    'max_head_combo': data['max_head_combo'],
-                    'downstream_residual_forward': float(downstream_forward),
-                },
-            )
-
-            if not feasible_local:
-                continue
-
-        return feasible_local, segment_requirements, max_dra_perc_local, max_dra_ppm_local, max_dra_uncapped_local, warnings_local
-
-    # Binary search for the lowest feasible maximum %DR to even out dosing
-    best_result: tuple | None = None
-    last_attempt: tuple | None = None
-    # Descend through candidate caps to find the lowest feasible max %DR.
-    candidates = [dra_upper * step / 15.0 for step in range(15, -1, -1)]
-    for cap in candidates:
-        feasible, segments_mid, max_dr_mid, max_ppm_mid, max_uncapped_mid, warnings_mid = _evaluate_with_dr_cap(cap)
-        last_attempt = (segments_mid, max_dr_mid, max_ppm_mid, max_uncapped_mid, warnings_mid)
-        if feasible:
-            best_result = (segments_mid, max_dr_mid, max_ppm_mid, max_uncapped_mid, warnings_mid)
-            break
-
-    if best_result is None:
-        best_result = last_attempt
-        result['enforceable'] = False
-
-    segments_final, max_dr_final, max_ppm_final, max_uncapped_final, warnings_final = best_result
-    result['segments'] = segments_final
-    result['warnings'].extend(warnings_final)
-    result['dra_perc'] = float(max_dr_final)
-    result['dra_ppm'] = float(max_ppm_final) if max_dr_final > 0 else 0.0
-    result['dra_perc_uncapped'] = float(max_uncapped_final)
-    result['length_km'] = float(total_length)
-    result['design_flow_m3h'] = float(max_flow)
-    result['design_visc_cst'] = float(visc_max)
-    result['design_suction_head'] = float(min_suction)
-    result['design_density_kgm3'] = float(default_rho)
-    result['design_mop_kgcm2'] = float(mop_global)
+    result['segments'] = segment_requirements
+    if segment_requirements:
+        result['dra_perc'] = None
+        result['dra_ppm'] = None
+        result['dra_perc_uncapped'] = None
+        result['length_km'] = None
+    else:
+        result['dra_perc'] = float(max_dra_perc)
+        result['dra_ppm'] = float(max_dra_ppm) if max_dra_perc > 0 else 0.0
+        result['dra_perc_uncapped'] = float(max_dra_perc_uncapped)
     return result
 
 
@@ -3630,6 +3511,11 @@ def _downstream_requirement(
             peak_req = max(peak_req_main, peak_req_loop)
         req = max(req, peak_req)
 
+        suction_head = 0.0
+        try:
+            suction_head = float(stn.get('suction_head', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            suction_head = 0.0
         if stn.get('is_pump', False):
             rpm_max_val = _station_max_rpm(stn)
             if rpm_max_val <= 0:
@@ -3670,6 +3556,7 @@ def _downstream_requirement(
             else:
                 tdh_max = 0.0
             req -= tdh_max
+        req -= suction_head
         try:
             min_residual_req = float(stn.get('residual_floor', stn.get('min_residual', 0.0)) or 0.0)
         except (TypeError, ValueError):
