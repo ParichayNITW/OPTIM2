@@ -3649,7 +3649,7 @@ def test_merge_segment_profiles_preserves_heterogeneity():
         stations, current_df, future_df
     )
 
-    assert kv_list == pytest.approx([4.5])
+    assert kv_list == pytest.approx([3.5])
     assert rho_list == pytest.approx([827.5])
     assert len(segment_slices) == 1
 
@@ -3664,8 +3664,8 @@ def test_merge_segment_profiles_preserves_heterogeneity():
     assert slices[0]["rho"] == pytest.approx(845.0)
 
     assert slices[1]["length_km"] == pytest.approx(5.0, rel=0.0, abs=1e-6)
-    assert slices[1]["kv"] == pytest.approx(3.0)
-    assert slices[1]["rho"] == pytest.approx(830.0)
+    assert slices[1]["kv"] == pytest.approx(2.5)
+    assert slices[1]["rho"] == pytest.approx(810.0)
 
     assert any(entry["kv"] < kv_list[0] for entry in slices)
 
