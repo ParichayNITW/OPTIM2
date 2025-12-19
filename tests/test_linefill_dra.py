@@ -128,15 +128,16 @@ def test_combine_volumetric_profiles_merges_future_batches() -> None:
 
     kv_list, rho_list, segment_slices = combine_volumetric_profiles([station], current, future)
 
-    assert kv_list == [5.0]
-    assert rho_list[0] >= 830.0
+    assert kv_list == [pytest.approx(3.2)]
+    assert rho_list == [pytest.approx(830.0)]
     assert len(segment_slices) == 1
     slices = segment_slices[0]
-    assert len(slices) >= 2
+    assert len(slices) == 3
     assert math.isclose(sum(entry["length_km"] for entry in slices), station["L"], abs_tol=1e-6)
     assert slices[0]["kv"] == pytest.approx(5.0)
     assert slices[0]["rho"] == pytest.approx(840.0)
-    assert slices[-1]["rho"] == pytest.approx(830.0)
+    assert slices[1]["kv"] == pytest.approx(2.0)
+    assert slices[2]["kv"] == pytest.approx(3.0)
 
 
 def test_segment_head_loss_respects_multi_batch_profiles() -> None:

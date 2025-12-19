@@ -2777,75 +2777,45 @@ def _compress_slice_entries(entries: list[dict], tol: float = 1e-9) -> list[dict
     return [entry for entry in compressed if entry.get("length_km", 0.0) > tol]
 
 
-def _merge_segment_profiles(
-    current_entries: list[dict] | None,
-    future_entries: list[dict] | None,
-    kv_max: float,
-    rho_max: float,
+def _weighted_properties(
+    entries: list[dict] | None,
     seg_length: float,
-) -> list[dict]:
-    """Combine two slice sequences into a worst-case profile for a segment."""
+    default_kv: float,
+    default_rho: float,
+) -> tuple[float, float]:
+    """Return length-weighted viscosity and density for a segment profile."""
 
-    tol = 1e-9
-    if seg_length <= tol:
-        return []
+    if seg_length <= 0.0:
+        return 0.0, 0.0
 
-    normalised_now = _normalise_segment_entries(current_entries, seg_length, kv_max, rho_max)
-    normalised_next = _normalise_segment_entries(future_entries, seg_length, kv_max, rho_max)
-    if not normalised_now and not normalised_next:
-        return [{"length_km": seg_length, "kv": kv_max, "rho": rho_max}]
+    total_len = 0.0
+    visc_sum = 0.0
+    rho_sum = 0.0
 
-    idx_now = 0
-    idx_next = 0
-    rem_now = normalised_now[0]["length_km"] if normalised_now else seg_length
-    kv_now = normalised_now[0]["kv"] if normalised_now else kv_max
-    rho_now = normalised_now[0]["rho"] if normalised_now else rho_max
-    rem_next = normalised_next[0]["length_km"] if normalised_next else seg_length
-    kv_next = normalised_next[0]["kv"] if normalised_next else kv_max
-    rho_next = normalised_next[0]["rho"] if normalised_next else rho_max
-    total = 0.0
-    merged: list[dict] = []
+    for entry in entries or []:
+        try:
+            seg_len = float(entry.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            seg_len = 0.0
+        if seg_len <= 0.0:
+            continue
+        try:
+            kv_val = float(entry.get("kv", default_kv) or default_kv)
+        except (TypeError, ValueError):
+            kv_val = default_kv
+        try:
+            rho_val = float(entry.get("rho", default_rho) or default_rho)
+        except (TypeError, ValueError):
+            rho_val = default_rho
 
-    while total < seg_length - tol:
-        if rem_now <= tol:
-            idx_now += 1
-            if idx_now < len(normalised_now):
-                current = normalised_now[idx_now]
-                rem_now = current["length_km"]
-                kv_now = current["kv"]
-                rho_now = current["rho"]
-            else:
-                rem_now = seg_length - total
-                kv_now = kv_max
-                rho_now = rho_max
-        if rem_next <= tol:
-            idx_next += 1
-            if idx_next < len(normalised_next):
-                current = normalised_next[idx_next]
-                rem_next = current["length_km"]
-                kv_next = current["kv"]
-                rho_next = current["rho"]
-            else:
-                rem_next = seg_length - total
-                kv_next = kv_max
-                rho_next = rho_max
+        total_len += seg_len
+        visc_sum += seg_len * kv_val
+        rho_sum += seg_len * rho_val
 
-        step = min(rem_now, rem_next, seg_length - total)
-        if step <= tol:
-            break
+    if total_len <= 0.0:
+        return float(default_kv), float(default_rho)
 
-        kv_entry = max(kv_now, kv_next)
-        rho_entry = max(rho_now, rho_next)
-        merged.append({"length_km": step, "kv": kv_entry, "rho": rho_entry})
-        rem_now -= step
-        rem_next -= step
-        total += step
-
-    remaining = seg_length - total
-    if remaining > tol:
-        merged.append({"length_km": remaining, "kv": kv_max, "rho": rho_max})
-
-    return _compress_slice_entries(merged)
+    return visc_sum / total_len, rho_sum / total_len
 
 
 def combine_volumetric_profiles(
@@ -2853,7 +2823,14 @@ def combine_volumetric_profiles(
     current_vol: pd.DataFrame,
     future_vol: pd.DataFrame,
 ) -> tuple[list[float], list[float], list[list[dict]]]:
-    """Return worst-case viscosity/density lists and slices for scheduling."""
+    """Return per-segment profiles using the higher weighted-hour viscosity.
+
+    For each segment, the current hour's linefill and the next hour's linefill
+    are converted to slices.  Their length-weighted viscosities are compared;
+    whichever hour has the higher weighted viscosity is used in full for both
+    the bulk properties and the slice profile passed to hydraulics.  No
+    cross-hour blending is performed.
+    """
 
     kv_now, rho_now, slices_now = map_vol_linefill_to_segments(current_vol, stations)
     kv_next, rho_next, slices_next = map_vol_linefill_to_segments(future_vol, stations)
@@ -2868,15 +2845,25 @@ def combine_volumetric_profiles(
         kv_future = kv_next[idx] if idx < len(kv_next) else (kv_next[-1] if kv_next else kv_cur)
         rho_cur = rho_now[idx] if idx < len(rho_now) else (rho_now[-1] if rho_now else 850.0)
         rho_future = rho_next[idx] if idx < len(rho_next) else (rho_next[-1] if rho_next else rho_cur)
-        kv_max = max(kv_cur, kv_future)
-        rho_max = max(rho_cur, rho_future)
         seg_length = float(stations[idx].get("L", 0.0) or 0.0)
         entries_now = slices_now[idx] if idx < len(slices_now) else []
         entries_next = slices_next[idx] if idx < len(slices_next) else []
-        merged = _merge_segment_profiles(entries_now, entries_next, kv_max, rho_max, seg_length)
-        segment_slices.append(merged)
-        kv_list.append(kv_max)
-        rho_list.append(rho_max)
+
+        kv_weight_now, rho_weight_now = _weighted_properties(entries_now, seg_length, kv_cur, rho_cur)
+        kv_weight_next, rho_weight_next = _weighted_properties(entries_next, seg_length, kv_future, rho_future)
+
+        if kv_weight_next > kv_weight_now:
+            kv_choice = kv_weight_next
+            rho_choice = rho_weight_next
+            chosen_slices = entries_next
+        else:
+            kv_choice = kv_weight_now
+            rho_choice = rho_weight_now
+            chosen_slices = entries_now
+
+        segment_slices.append(_compress_slice_entries(chosen_slices))
+        kv_list.append(kv_choice)
+        rho_list.append(rho_choice)
 
     return kv_list, rho_list, segment_slices
 
