@@ -1062,12 +1062,6 @@ def shift_vol_linefill(
 
     if day_plan is not None:
         day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
-
-        required_cols = {"Volume (m³)", "Viscosity (cSt)", "Density (kg/m³)"}
-        missing_cols = [col for col in required_cols if col not in day_plan.columns]
-        if missing_cols:
-            return vol_table.reset_index(drop=True), None, injected_batches
-
         day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
         injected = 0.0
 
@@ -4261,9 +4255,7 @@ def fmt_residual(res: Mapping, key: str, is_origin: bool) -> str:
     m, kg = residual_pair(res, key, is_origin)
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
-def _collect_search_depth_kwargs(
-    overrides: Mapping[str, object] | None = None,
-) -> dict[str, float | int | bool]:
+def _collect_search_depth_kwargs() -> dict[str, float | int]:
     """Return validated search-depth parameters for backend solvers."""
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
@@ -4312,60 +4304,7 @@ def _collect_search_depth_kwargs(
 
     collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
 
-    if isinstance(overrides, Mapping):
-        if overrides.get("rpm_step") is not None:
-            try:
-                rpm_step = int(overrides.get("rpm_step"))
-            except (TypeError, ValueError):
-                rpm_step = rpm_step_default
-            if rpm_step <= 0:
-                rpm_step = rpm_step_default
-
-        if overrides.get("dra_step") is not None:
-            try:
-                dra_step = int(overrides.get("dra_step"))
-            except (TypeError, ValueError):
-                dra_step = dra_step_default
-            if dra_step <= 0:
-                dra_step = dra_step_default
-
-        if overrides.get("coarse_multiplier") is not None:
-            try:
-                coarse_multiplier = float(overrides.get("coarse_multiplier"))
-            except (TypeError, ValueError):
-                coarse_multiplier = coarse_multiplier_default
-            if coarse_multiplier <= 0:
-                coarse_multiplier = coarse_multiplier_default
-
-        if overrides.get("state_top_k") is not None:
-            try:
-                state_top_k = int(overrides.get("state_top_k"))
-            except (TypeError, ValueError):
-                state_top_k = state_top_k_default
-            if state_top_k <= 0:
-                state_top_k = state_top_k_default
-
-        if overrides.get("state_cost_margin") is not None:
-            try:
-                state_cost_margin = float(overrides.get("state_cost_margin"))
-            except (TypeError, ValueError):
-                state_cost_margin = state_cost_margin_default
-            if state_cost_margin < 0:
-                state_cost_margin = 0.0
-
-        if overrides.get("state_cost_margin_pct") is not None:
-            try:
-                state_cost_margin_pct = float(overrides.get("state_cost_margin_pct"))
-            except (TypeError, ValueError):
-                state_cost_margin_pct = state_cost_margin_pct_default
-            if state_cost_margin_pct < 0:
-                state_cost_margin_pct = 0.0
-            state_cost_margin_pct /= 100.0
-
-        if overrides.get("collect_state_audit") is not None:
-            collect_state_audit = bool(overrides.get("collect_state_audit"))
-
-    search_kwargs = {
+    return {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
@@ -4374,11 +4313,6 @@ def _collect_search_depth_kwargs(
         "state_cost_margin_pct": state_cost_margin_pct,
         "collect_state_audit": collect_state_audit,
     }
-
-    if isinstance(overrides, Mapping) and "_exhaustive_pass" in overrides:
-        search_kwargs["_exhaustive_pass"] = bool(overrides.get("_exhaustive_pass"))
-
-    return search_kwargs
 
 
 
@@ -4402,14 +4336,6 @@ def solve_pipeline(
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
     priority_feasibility: bool = False,
-    rpm_step: int | None = None,
-    dra_step: int | None = None,
-    coarse_multiplier: float | None = None,
-    state_top_k: int | None = None,
-    state_cost_margin: float | None = None,
-    state_cost_margin_pct: float | None = None,
-    collect_state_audit: bool | None = None,
-    _exhaustive_pass: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4526,23 +4452,9 @@ def solve_pipeline(
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
-    override_args: dict[str, object] = {
-        "rpm_step": rpm_step,
-        "dra_step": dra_step,
-        "coarse_multiplier": coarse_multiplier,
-        "state_top_k": state_top_k,
-        "state_cost_margin": state_cost_margin,
-        "state_cost_margin_pct": state_cost_margin_pct,
-        "collect_state_audit": collect_state_audit,
-    }
-    if _exhaustive_pass:
-        override_args["_exhaustive_pass"] = True
-
-    override_kwargs = {k: v for k, v in override_args.items() if v is not None}
-
     try:
         # Delegate to the backend optimiser
-        search_kwargs = _collect_search_depth_kwargs(override_kwargs or None)
+        search_kwargs = _collect_search_depth_kwargs()
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
@@ -5639,9 +5551,6 @@ def _execute_time_series_solver(
     backtracked = False
     backtrack_notes: list[str] = []
     enforced_actions: list[dict] = []
-    dra_hold_state: dict[str, object] | None = None
-    dra_hold_states: list[dict[str, object] | None] = []
-    dra_hold_window = 4
 
     error_msg: str | None = None
     failure_detail: dict[str, object] | None = None
@@ -5662,7 +5571,6 @@ def _execute_time_series_solver(
             }
             hour_states.append(state)
             linefill_snaps.append(current_vol_local.copy())
-            dra_hold_states.append(copy.deepcopy(dra_hold_state))
         else:
             state = hour_states[ti]
             current_vol_local = state["vol"].copy()
@@ -5670,7 +5578,6 @@ def _execute_time_series_solver(
             dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
             dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
             linefill_snaps[ti] = state["linefill_snapshot"].copy()
-            dra_hold_state = copy.deepcopy(dra_hold_states[ti] if ti < len(dra_hold_states) else None)
 
         sdh_hourly: list[float] = []
         res: dict = {}
@@ -5714,15 +5621,6 @@ def _execute_time_series_solver(
                 )
 
                 stns_run = copy.deepcopy(stations_base)
-                if dra_hold_state and ti < int(dra_hold_state.get("expires_at_idx", -1)):
-                    try:
-                        stns_run = lock_dra_in_stations_from_result(
-                            stns_run,
-                            dra_hold_state.get("result", {}),
-                            kv_list,
-                        )
-                    except Exception:
-                        pass
                 start_str = f"{int((hr + sub * step_hours) % 24):02d}:00"
                 forced_detail = None
                 if sub == 0:
@@ -5776,38 +5674,8 @@ def _execute_time_series_solver(
                         forced_origin_detail=forced_detail,
                         priority_feasibility=True,
                     )
-                    if res_retry.get("error"):
-                        # As a final guard, run an exhaustive feasibility
-                        # search with the full DRA grid before declaring the
-                        # flow infeasible.
-                        stns_retry_full = copy.deepcopy(stations_base)
-                        res_retry_full = solve_pipeline(
-                            stns_retry_full,
-                            term_data,
-                            flow_candidate,
-                            kv_list,
-                            rho_list,
-                            segment_slices,
-                            RateDRA,
-                            Price_HSD,
-                            fuel_density,
-                            ambient_temp,
-                            candidate_state.get("dra_linefill", []),
-                            candidate_state.get("dra_reach_km", 0.0),
-                            mop_kgcm2,
-                            hours=step_hours,
-                            start_time=start_str,
-                            pump_shear_rate=pump_shear_rate,
-                            forced_origin_detail=forced_detail,
-                            priority_feasibility=True,
-                            dra_step=1,
-                            coarse_multiplier=1.0,
-                            _exhaustive_pass=True,
-                        )
-                        if not res_retry_full.get("error"):
-                            res_local = res_retry_full
-                        else:
-                            res_local = res_retry_full
+                    if not res_retry.get("error"):
+                        res_local = res_retry
                     else:
                         res_local = res_retry
 
@@ -5920,11 +5788,6 @@ def _execute_time_series_solver(
                 current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
             dra_reach_local = res.get("dra_front_km", dra_reach_local)
             flows_chosen.append(flow_used)
-            if dra_hold_state is None or ti >= int(dra_hold_state.get("expires_at_idx", -1)):
-                dra_hold_state = {
-                    "result": copy.deepcopy(res),
-                    "expires_at_idx": ti + dra_hold_window,
-                }
             if flow_used:
                 total_throughput += flow_used
 
@@ -6029,8 +5892,6 @@ def _execute_time_series_solver(
             reports = reports[: ti - 1]
             linefill_snaps = linefill_snaps[: ti]
             hour_states = hour_states[: ti]
-            dra_hold_states = dra_hold_states[: ti]
-            dra_hold_state = copy.deepcopy(dra_hold_states[-1]) if dra_hold_states else None
             failure_detail = None
 
             restored = prev_state
@@ -6055,10 +5916,6 @@ def _execute_time_series_solver(
         state["dra_reach_km"] = float(dra_reach_local)
         state["linefill_snapshot"] = current_vol_local.copy()
         linefill_snaps[ti] = current_vol_local.copy()
-        if ti < len(dra_hold_states):
-            dra_hold_states[ti] = copy.deepcopy(dra_hold_state)
-        else:
-            dra_hold_states.append(copy.deepcopy(dra_hold_state))
 
         for k, val in power_cost_acc.items():
             res[f"power_cost_{k}"] = val
