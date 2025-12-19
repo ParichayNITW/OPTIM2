@@ -3148,6 +3148,41 @@ def test_shift_vol_linefill_reports_injected_batches():
     assert ppm_order == pytest.approx([1.5, 4.0])
 
 
+def test_shift_vol_linefill_handles_plan_missing_columns():
+    import pipeline_optimization_app as app
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "In-Line",
+                "Volume (m³)": 3000.0,
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+
+    plan_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Viscosity (cSt)": 2.5,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 2.0,
+            }
+        ]
+    )
+
+    pumped = 500.0
+    updated_vol, remaining_plan, injected = app.shift_vol_linefill(vol_df, pumped, plan_df)
+
+    assert remaining_plan is None
+    assert injected == []
+    assert updated_vol["Volume (m³)"].sum() == pytest.approx(vol_df["Volume (m³)"].sum() - pumped)
+
+
 def test_time_series_solver_reports_error_without_plan(monkeypatch):
     import pipeline_optimization_app as app
 

@@ -1062,6 +1062,12 @@ def shift_vol_linefill(
 
     if day_plan is not None:
         day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
+
+        required_cols = {"Volume (m³)", "Viscosity (cSt)", "Density (kg/m³)"}
+        missing_cols = [col for col in required_cols if col not in day_plan.columns]
+        if missing_cols:
+            return vol_table.reset_index(drop=True), None, injected_batches
+
         day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
         injected = 0.0
 
