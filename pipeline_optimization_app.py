@@ -4261,7 +4261,9 @@ def fmt_residual(res: Mapping, key: str, is_origin: bool) -> str:
     m, kg = residual_pair(res, key, is_origin)
     return f"{m:.2f} m / {kg:.2f} kg/cm²"
 
-def _collect_search_depth_kwargs() -> dict[str, float | int]:
+def _collect_search_depth_kwargs(
+    overrides: Mapping[str, object] | None = None,
+) -> dict[str, float | int | bool]:
     """Return validated search-depth parameters for backend solvers."""
 
     rpm_step_default = getattr(pipeline_model, "RPM_STEP", 25)
@@ -4310,7 +4312,60 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
 
     collect_state_audit = bool(st.session_state.get("search_collect_state_audit", True))
 
-    return {
+    if isinstance(overrides, Mapping):
+        if overrides.get("rpm_step") is not None:
+            try:
+                rpm_step = int(overrides.get("rpm_step"))
+            except (TypeError, ValueError):
+                rpm_step = rpm_step_default
+            if rpm_step <= 0:
+                rpm_step = rpm_step_default
+
+        if overrides.get("dra_step") is not None:
+            try:
+                dra_step = int(overrides.get("dra_step"))
+            except (TypeError, ValueError):
+                dra_step = dra_step_default
+            if dra_step <= 0:
+                dra_step = dra_step_default
+
+        if overrides.get("coarse_multiplier") is not None:
+            try:
+                coarse_multiplier = float(overrides.get("coarse_multiplier"))
+            except (TypeError, ValueError):
+                coarse_multiplier = coarse_multiplier_default
+            if coarse_multiplier <= 0:
+                coarse_multiplier = coarse_multiplier_default
+
+        if overrides.get("state_top_k") is not None:
+            try:
+                state_top_k = int(overrides.get("state_top_k"))
+            except (TypeError, ValueError):
+                state_top_k = state_top_k_default
+            if state_top_k <= 0:
+                state_top_k = state_top_k_default
+
+        if overrides.get("state_cost_margin") is not None:
+            try:
+                state_cost_margin = float(overrides.get("state_cost_margin"))
+            except (TypeError, ValueError):
+                state_cost_margin = state_cost_margin_default
+            if state_cost_margin < 0:
+                state_cost_margin = 0.0
+
+        if overrides.get("state_cost_margin_pct") is not None:
+            try:
+                state_cost_margin_pct = float(overrides.get("state_cost_margin_pct"))
+            except (TypeError, ValueError):
+                state_cost_margin_pct = state_cost_margin_pct_default
+            if state_cost_margin_pct < 0:
+                state_cost_margin_pct = 0.0
+            state_cost_margin_pct /= 100.0
+
+        if overrides.get("collect_state_audit") is not None:
+            collect_state_audit = bool(overrides.get("collect_state_audit"))
+
+    search_kwargs = {
         "rpm_step": rpm_step,
         "dra_step": dra_step,
         "coarse_multiplier": coarse_multiplier,
@@ -4319,6 +4374,11 @@ def _collect_search_depth_kwargs() -> dict[str, float | int]:
         "state_cost_margin_pct": state_cost_margin_pct,
         "collect_state_audit": collect_state_audit,
     }
+
+    if isinstance(overrides, Mapping) and "_exhaustive_pass" in overrides:
+        search_kwargs["_exhaustive_pass"] = bool(overrides.get("_exhaustive_pass"))
+
+    return search_kwargs
 
 
 
@@ -4342,6 +4402,14 @@ def solve_pipeline(
     forced_origin_detail: dict | None = None,
     linefill_dict=None,
     priority_feasibility: bool = False,
+    rpm_step: int | None = None,
+    dra_step: int | None = None,
+    coarse_multiplier: float | None = None,
+    state_top_k: int | None = None,
+    state_cost_margin: float | None = None,
+    state_cost_margin_pct: float | None = None,
+    collect_state_audit: bool | None = None,
+    _exhaustive_pass: bool = False,
 ):
     """Wrapper around :mod:`pipeline_model` with origin pump enforcement."""
 
@@ -4458,9 +4526,23 @@ def solve_pipeline(
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    override_args: dict[str, object] = {
+        "rpm_step": rpm_step,
+        "dra_step": dra_step,
+        "coarse_multiplier": coarse_multiplier,
+        "state_top_k": state_top_k,
+        "state_cost_margin": state_cost_margin,
+        "state_cost_margin_pct": state_cost_margin_pct,
+        "collect_state_audit": collect_state_audit,
+    }
+    if _exhaustive_pass:
+        override_args["_exhaustive_pass"] = True
+
+    override_kwargs = {k: v for k, v in override_args.items() if v is not None}
+
     try:
         # Delegate to the backend optimiser
-        search_kwargs = _collect_search_depth_kwargs()
+        search_kwargs = _collect_search_depth_kwargs(override_kwargs or None)
         if any(s.get('pump_types') for s in stations):
             res = pipeline_model.solve_pipeline_with_types(
                 stations,
