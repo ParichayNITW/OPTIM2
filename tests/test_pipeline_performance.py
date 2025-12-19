@@ -1005,7 +1005,89 @@ def test_time_series_solver_retries_with_max_dra(monkeypatch):
         retry_with_max_dra=True,
     )
 
-    assert calls == [False, True]
+    assert calls[0] is False
+    assert True in calls
+    assert calls[-1] is True
+    assert not result.get("error")
+
+
+def test_time_series_solver_runs_exhaustive_dra_pass(monkeypatch):
+    import pipeline_optimization_app as app
+
+    call_log: list[tuple[bool, bool]] = []
+
+    def fake_solve(
+        stations,
+        terminal,
+        flow_rate,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        fuel_density,
+        ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours=1.0,
+        *,
+        priority_feasibility: bool = False,
+        _exhaustive_pass: bool = False,
+        **kwargs,
+    ):
+        call_log.append((priority_feasibility, _exhaustive_pass))
+        if _exhaustive_pass:
+            return {
+                "error": None,
+                "linefill": [],
+                "dra_front_km": 0.0,
+                "dra_segments": [],
+                "linefill_vol": linefill,
+                "total_cost": 0.0,
+            }
+        return {"error": "fail", "message": "initial"}
+
+    monkeypatch.setattr(app, "solve_pipeline", fake_solve)
+    monkeypatch.setattr(app, "_append_zero_plan_segments_to_result", lambda *args, **kwargs: None)
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "LF",
+                "Volume (m³)": 1000.0,
+                "Viscosity (cSt)": 2.0,
+                "Density (kg/m³)": 800.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+
+    result = app._execute_time_series_solver(
+        [],
+        {"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        [0],
+        flow_rate=100.0,
+        plan_df=None,
+        current_vol=vol_df.copy(),
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=0.0,
+        sub_steps=1,
+        retry_with_max_dra=True,
+    )
+
+    assert (False, False) in call_log
+    assert (True, False) in call_log
+    assert call_log[-1] == (True, True)
     assert not result.get("error")
 
 

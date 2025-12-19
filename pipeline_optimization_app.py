@@ -5688,8 +5688,38 @@ def _execute_time_series_solver(
                         forced_origin_detail=forced_detail,
                         priority_feasibility=True,
                     )
-                    if not res_retry.get("error"):
-                        res_local = res_retry
+                    if res_retry.get("error"):
+                        # As a final guard, run an exhaustive feasibility
+                        # search with the full DRA grid before declaring the
+                        # flow infeasible.
+                        stns_retry_full = copy.deepcopy(stations_base)
+                        res_retry_full = solve_pipeline(
+                            stns_retry_full,
+                            term_data,
+                            flow_candidate,
+                            kv_list,
+                            rho_list,
+                            segment_slices,
+                            RateDRA,
+                            Price_HSD,
+                            fuel_density,
+                            ambient_temp,
+                            candidate_state.get("dra_linefill", []),
+                            candidate_state.get("dra_reach_km", 0.0),
+                            mop_kgcm2,
+                            hours=step_hours,
+                            start_time=start_str,
+                            pump_shear_rate=pump_shear_rate,
+                            forced_origin_detail=forced_detail,
+                            priority_feasibility=True,
+                            dra_step=1,
+                            coarse_multiplier=1.0,
+                            _exhaustive_pass=True,
+                        )
+                        if not res_retry_full.get("error"):
+                            res_local = res_retry_full
+                        else:
+                            res_local = res_retry_full
                     else:
                         res_local = res_retry
 
