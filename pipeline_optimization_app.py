@@ -1431,7 +1431,7 @@ def check_login():
         st.markdown(
             """
             <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das | Indian Oil Corporation
+            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
             </div>
             """,
             unsafe_allow_html=True
@@ -5551,6 +5551,9 @@ def _execute_time_series_solver(
     backtracked = False
     backtrack_notes: list[str] = []
     enforced_actions: list[dict] = []
+    dra_hold_state: dict[str, object] | None = None
+    dra_hold_states: list[dict[str, object] | None] = []
+    dra_hold_window = 4
 
     error_msg: str | None = None
     failure_detail: dict[str, object] | None = None
@@ -5571,6 +5574,7 @@ def _execute_time_series_solver(
             }
             hour_states.append(state)
             linefill_snaps.append(current_vol_local.copy())
+            dra_hold_states.append(copy.deepcopy(dra_hold_state))
         else:
             state = hour_states[ti]
             current_vol_local = state["vol"].copy()
@@ -5578,6 +5582,7 @@ def _execute_time_series_solver(
             dra_linefill_local = copy.deepcopy(state.get("dra_linefill", []))
             dra_reach_local = float(state.get("dra_reach_km", dra_reach_local))
             linefill_snaps[ti] = state["linefill_snapshot"].copy()
+            dra_hold_state = copy.deepcopy(dra_hold_states[ti] if ti < len(dra_hold_states) else None)
 
         sdh_hourly: list[float] = []
         res: dict = {}
@@ -5621,6 +5626,15 @@ def _execute_time_series_solver(
                 )
 
                 stns_run = copy.deepcopy(stations_base)
+                if dra_hold_state and ti < int(dra_hold_state.get("expires_at_idx", -1)):
+                    try:
+                        stns_run = lock_dra_in_stations_from_result(
+                            stns_run,
+                            dra_hold_state.get("result", {}),
+                            kv_list,
+                        )
+                    except Exception:
+                        pass
                 start_str = f"{int((hr + sub * step_hours) % 24):02d}:00"
                 forced_detail = None
                 if sub == 0:
@@ -5674,8 +5688,38 @@ def _execute_time_series_solver(
                         forced_origin_detail=forced_detail,
                         priority_feasibility=True,
                     )
-                    if not res_retry.get("error"):
-                        res_local = res_retry
+                    if res_retry.get("error"):
+                        # As a final guard, run an exhaustive feasibility
+                        # search with the full DRA grid before declaring the
+                        # flow infeasible.
+                        stns_retry_full = copy.deepcopy(stations_base)
+                        res_retry_full = solve_pipeline(
+                            stns_retry_full,
+                            term_data,
+                            flow_candidate,
+                            kv_list,
+                            rho_list,
+                            segment_slices,
+                            RateDRA,
+                            Price_HSD,
+                            fuel_density,
+                            ambient_temp,
+                            candidate_state.get("dra_linefill", []),
+                            candidate_state.get("dra_reach_km", 0.0),
+                            mop_kgcm2,
+                            hours=step_hours,
+                            start_time=start_str,
+                            pump_shear_rate=pump_shear_rate,
+                            forced_origin_detail=forced_detail,
+                            priority_feasibility=True,
+                            dra_step=1,
+                            coarse_multiplier=1.0,
+                            _exhaustive_pass=True,
+                        )
+                        if not res_retry_full.get("error"):
+                            res_local = res_retry_full
+                        else:
+                            res_local = res_retry_full
                     else:
                         res_local = res_retry
 
@@ -5788,6 +5832,11 @@ def _execute_time_series_solver(
                 current_vol_local = apply_dra_ppm(current_vol_local, dra_linefill_local)
             dra_reach_local = res.get("dra_front_km", dra_reach_local)
             flows_chosen.append(flow_used)
+            if dra_hold_state is None or ti >= int(dra_hold_state.get("expires_at_idx", -1)):
+                dra_hold_state = {
+                    "result": copy.deepcopy(res),
+                    "expires_at_idx": ti + dra_hold_window,
+                }
             if flow_used:
                 total_throughput += flow_used
 
@@ -5892,6 +5941,8 @@ def _execute_time_series_solver(
             reports = reports[: ti - 1]
             linefill_snaps = linefill_snaps[: ti]
             hour_states = hour_states[: ti]
+            dra_hold_states = dra_hold_states[: ti]
+            dra_hold_state = copy.deepcopy(dra_hold_states[-1]) if dra_hold_states else None
             failure_detail = None
 
             restored = prev_state
@@ -5916,6 +5967,10 @@ def _execute_time_series_solver(
         state["dra_reach_km"] = float(dra_reach_local)
         state["linefill_snapshot"] = current_vol_local.copy()
         linefill_snaps[ti] = current_vol_local.copy()
+        if ti < len(dra_hold_states):
+            dra_hold_states[ti] = copy.deepcopy(dra_hold_state)
+        else:
+            dra_hold_states.append(copy.deepcopy(dra_hold_state))
 
         for k, val in power_cost_acc.items():
             res[f"power_cost_{k}"] = val
@@ -9142,7 +9197,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 st.markdown(
     """
     <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das | Indian Oil Corporation
+    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
     </div>
     """,
     unsafe_allow_html=True
