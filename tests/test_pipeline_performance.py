@@ -1009,6 +1009,135 @@ def test_time_series_solver_retries_with_max_dra(monkeypatch):
     assert not result.get("error")
 
 
+def test_time_series_solver_holds_dra_ppm_for_four_hours(monkeypatch):
+    import copy
+
+    import pipeline_optimization_app as app
+
+    call_log: list[dict] = []
+
+    def fake_shift(vol, _pumped, plan):
+        return vol, plan, []
+
+    def fake_combine(_stations, cur_vol, _future_vol):
+        # Keep kv/rho simple while exercising the hold logic
+        return [float(cur_vol.iloc[0]["Viscosity (cSt)"])], [float(cur_vol.iloc[0]["Density (kg/m³)"])], [[]]
+
+    def fake_apply(vol_df, _linefill):
+        return vol_df
+
+    def fake_get_dr_for_ppm(_kv, ppm):
+        return ppm
+
+    def fake_solve(
+        stations,
+        terminal,
+        flow_rate,
+        kv_list,
+        rho_list,
+        segment_slices,
+        RateDRA,
+        Price_HSD,
+        fuel_density,
+        ambient_temp,
+        linefill,
+        dra_reach_km,
+        mop_kgcm2,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        forced_origin_detail=None,
+        **kwargs,
+    ):
+        station_snapshot = copy.deepcopy(stations)
+        call_log.append({"start": start_time, "stations": station_snapshot})
+        st_key = station_snapshot[0]["name"].lower().replace(" ", "_")
+        ppm_val = len(call_log)
+        fixed_entry = station_snapshot[0].get("fixed_dra_perc")
+        if fixed_entry is not None:
+            ppm_val = fixed_entry
+        return {
+            "error": None,
+            "linefill": copy.deepcopy(linefill or []),
+            "linefill_vol": vol_df.copy(),
+            "dra_front_km": dra_reach_km,
+            "dra_segments": [],
+            f"dra_ppm_{st_key}": ppm_val,
+            "total_cost": 0.0,
+            "executed_passes": [],
+            "flow_pattern_name": "",
+            "power_cost_{st_key}": 0.0,
+            "dra_cost_{st_key}": 0.0,
+            "sdh_{st_key}": 0.0,
+            "sdh_terminal": 0.0,
+        }
+
+    vol_df = pd.DataFrame(
+        [
+            {
+                "Product": "Batch 1",
+                "Volume (m³)": 1000.0,
+                "Viscosity (cSt)": 5.0,
+                "Density (kg/m³)": 820.0,
+                app.INIT_DRA_COL: 0.0,
+            }
+        ]
+    )
+    vol_df = app.ensure_initial_dra_column(vol_df, default=0.0, fill_blanks=True)
+    dra_linefill = app.df_to_dra_linefill(vol_df)
+
+    monkeypatch.setattr(app, "shift_vol_linefill", fake_shift)
+    monkeypatch.setattr(app, "combine_volumetric_profiles", fake_combine)
+    monkeypatch.setattr(app, "apply_dra_ppm", fake_apply)
+    monkeypatch.setattr(app, "solve_pipeline", fake_solve)
+    monkeypatch.setattr(dra_utils, "get_dr_for_ppm", fake_get_dr_for_ppm)
+
+    hours = [0, 1, 2, 3, 4]
+    stations = [{"name": "Station A", "is_pump": True, "L": 1.0, "D": 0.7, "t": 0.007}]
+
+    result = app._execute_time_series_solver(
+        stations,
+        {"name": "Terminal", "elev": 0.0, "min_residual": 0.0},
+        hours,
+        flow_rate=100.0,
+        plan_df=None,
+        current_vol=vol_df.copy(),
+        dra_linefill=dra_linefill,
+        dra_reach_km=0.0,
+        RateDRA=0.0,
+        Price_HSD=0.0,
+        fuel_density=820.0,
+        ambient_temp=25.0,
+        mop_kgcm2=100.0,
+        pump_shear_rate=0.0,
+        total_length=1.0,
+        sub_steps=1,
+    )
+
+    assert result.get("error") is None
+
+    calls_by_hour: dict[int, list[dict]] = {}
+    for entry in call_log:
+        hour_val = int(str(entry["start"]).split(":")[0])
+        calls_by_hour.setdefault(hour_val, []).append(entry)
+
+    assert 0 in calls_by_hour and 4 in calls_by_hour
+    for entry in calls_by_hour.get(0, []):
+        assert "fixed_dra_perc" not in entry["stations"][0]
+
+    locked_value = None
+    for hour in (1, 2, 3):
+        assert hour in calls_by_hour
+        for call in calls_by_hour[hour]:
+            stn = call["stations"][0]
+            assert "fixed_dra_perc" in stn
+            locked_value = stn["fixed_dra_perc"]
+
+    assert locked_value is not None
+    for entry in calls_by_hour.get(4, []):
+        assert "fixed_dra_perc" not in entry["stations"][0]
+
+
 def test_refine_rpm_window_widens_for_priority_feasibility():
     low, high, trimmed = _refine_rpm_window(
         st_rpm_min=1000,
