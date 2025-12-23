@@ -6478,18 +6478,16 @@ if not auto_batch:
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
 
-        if is_hourly:
-            hours = [7]
-        else:
-            hours = [(7 + h) % 24 for h in range(24)]
+        hours = [(7 + h) % 24 for h in range(1 if is_hourly else 24)]
         sub_steps = 1
         total_runs = len(hours) * sub_steps if hours else 0
         first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
         last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
-        if is_hourly:
-            spinner_msg = f"Running 1 optimization ({first_label})..."
-        else:
-            spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
+        spinner_msg = (
+            f"Running {total_runs} optimization ({first_label})..."
+            if is_hourly
+            else f"Running {total_runs} optimizations ({first_label} to {last_label})..."
+        )
         st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         current_vol = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
