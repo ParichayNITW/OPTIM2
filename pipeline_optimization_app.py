@@ -1430,8 +1430,8 @@ def check_login():
                 st.error("Invalid username or password.")
         st.markdown(
             """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das
+            <div style='text-align: center; color: #1a1a1a; margin-top: 2em; font-size: 0.95em;'>
+            &copy; 2025 Pipeline Optima™ v1.1.2. <strong>Developed by Parichay Das</strong>
             </div>
             """,
             unsafe_allow_html=True
@@ -9139,8 +9139,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 
 st.markdown(
     """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das
+    <div style='text-align: center; color: #1a1a1a; margin-top: 2em; font-size: 0.95em;'>
+    &copy; 2025 Pipeline Optima™ v1.1.2. <strong>Developed by Parichay Das</strong>
     </div>
     """,
     unsafe_allow_html=True
