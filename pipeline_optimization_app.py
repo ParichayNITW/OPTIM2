@@ -4618,13 +4618,14 @@ if auto_batch:
             try:
                 # Ensure pump coefficients are updated for all stations
                 for idx, stn in enumerate(stations_data, start=1):
+                    _b_uid = _ensure_station_uid(stn)
                     if stn.get('pump_types'):
                         for ptype in ['A', 'B']:
                             pdata = stn['pump_types'].get(ptype)
                             if not pdata:
                                 continue
-                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            dfh = st.session_state.get(f"head_data__{_b_uid}{ptype}")
+                            dfe = st.session_state.get(f"eff_data__{_b_uid}{ptype}")
                             if dfh is not None and len(dfh) >= 3:
                                 Qh = dfh.iloc[:, 0].values
                                 Hh = dfh.iloc[:, 1].values
