@@ -2190,9 +2190,23 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
+def _ensure_station_uid(stn: dict) -> str:
+    if not stn.get('uid'):
+        stn['uid'] = str(uuid.uuid4())[:8]
+    return stn['uid']
+
+def _skey(stn: dict, field: str) -> str:
+    return f"{field}__{_ensure_station_uid(stn)}"
+
+def _sinit(stn: dict, field: str, default):
+    k = _skey(stn, field)
+    if k not in st.session_state:
+        st.session_state[k] = stn.get(field, default)
+
 st.subheader("Stations")
 if "stations" not in st.session_state:
     st.session_state["stations"] = [{
+        'uid': str(uuid.uuid4())[:8],
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
         'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
         'min_residual': 50.0, 'is_pump': False,
@@ -2202,6 +2216,9 @@ if "stations" not in st.session_state:
         'delivery': 0.0,
         'supply': 0.0
     }]
+else:
+    for _s in st.session_state["stations"]:
+        _ensure_station_uid(_s)
 with st.sidebar:
     st.markdown("### Stations")
     add_col, rem_col = st.columns(2)
