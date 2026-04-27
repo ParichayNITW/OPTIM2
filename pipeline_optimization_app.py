@@ -2397,10 +2397,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         "Tariff",
                                         ["Fixed", "Varying"],
                                         index=0 if not pdata.get('tariffs') else 1,
-                                        key=f"tmode{idx}{ptype}"
+                                        key=f"tmode__{uid}{ptype}"
                                     )
                                     if tariff_mode == "Fixed":
-                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate__{uid}{ptype}")
                                         tariffs = []
                                     else:
                                         default_rows = [
