@@ -2589,8 +2589,8 @@ def get_full_case_dict():
                     pdata['available'] = pdata.get('available', 0)
                     stn['pump_types'][ptype] = pdata
             else:
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
+                dfh = st.session_state.get(f"head_data__{uid}")
+                dfe = st.session_state.get(f"eff_data__{uid}")
                 if dfh is None and "head_data" in stn:
                     dfh = pd.DataFrame(stn["head_data"])
                 if dfe is None and "eff_data" in stn:
