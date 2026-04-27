@@ -2356,10 +2356,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 names[j] = st.text_input(
                                     f"Pump {ptype} {j+1} Name",
                                     value=names[j],
-                                    key=f"pname{idx}{ptype}{j}"
+                                    key=f"pname__{uid}{ptype}{j}"
                                 )
 
-                            key_head = f"head_data_{idx}{ptype}"
+                            key_head = f"head_data__{uid}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
                                 st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                             df_head = data_editor_copy(
