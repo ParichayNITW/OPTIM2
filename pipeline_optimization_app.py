@@ -3622,8 +3622,9 @@ def gather_pump_curve_sources(
     if sources:
         return sources
 
-    df_head = _load_curve_df(f"head_data_{idx}", stn.get("head_data"))
-    df_eff = _load_curve_df(f"eff_data_{idx}", stn.get("eff_data"))
+    _gpc_uid2 = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
+    df_head = _load_curve_df(f"head_data__{_gpc_uid2}", stn.get("head_data"))
+    df_eff = _load_curve_df(f"eff_data__{_gpc_uid2}", stn.get("eff_data"))
     if isinstance(res, Mapping):
         min_rpm = _coerce_int(res.get(f"min_rpm_{key_base}"), stn.get("MinRPM", 0))
         dol = _coerce_int(res.get(f"dol_{key_base}"), stn.get("DOL", 0))
