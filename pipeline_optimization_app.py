@@ -2563,12 +2563,13 @@ def get_full_case_dict():
     import pandas as pd
 
     for idx, stn in enumerate(st.session_state.get('stations', []), start=1):
+        uid = _ensure_station_uid(stn)
         if stn.get('is_pump', False):
             if 'pump_types' in stn:
                 for ptype in ['A', 'B']:
                     pdata = stn['pump_types'].get(ptype, {})
-                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                    dfh = st.session_state.get(f"head_data__{uid}{ptype}")
+                    dfe = st.session_state.get(f"eff_data__{uid}{ptype}")
                     if dfh is None and pdata.get('head_data') is not None:
                         dfh = pd.DataFrame(pdata['head_data'])
                     if dfe is None and pdata.get('eff_data') is not None:
