@@ -927,8 +927,8 @@ def _prepare_pipeline_context():
                 pdata["head_data"] = dfh
                 pdata["eff_data"] = dfe
         else:
-            dfh = st.session_state.get(f"head_data__{_stn_uid}")
-            dfe = st.session_state.get(f"eff_data__{_stn_uid}")
+                dfh = st.session_state.get(f"head_data__{_stn_uid}")
+                dfe = st.session_state.get(f"eff_data__{_stn_uid}")
                 pdata["head_data"] = dfh
                 pdata["eff_data"] = dfe
         else:
