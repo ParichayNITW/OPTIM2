@@ -913,6 +913,7 @@ def _prepare_pipeline_context():
         stn.setdefault("loopline", False)
         stn.setdefault("max_pumps", stn.get("available", 0))
         stn.setdefault("min_pumps", 0)
+        _stn_uid = _ensure_station_uid(stn)
         pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
         if pump_types:
             for ptype, pdata in pump_types.items():
@@ -921,13 +922,13 @@ def _prepare_pipeline_context():
                 pdata.setdefault("available", pdata.get("count", 0))
                 if int(pdata.get("available", 0)) <= 0:
                     continue
-                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                dfh = st.session_state.get(f"head_data__{_stn_uid}{ptype}")
+                dfe = st.session_state.get(f"eff_data__{_stn_uid}{ptype}")
                 pdata["head_data"] = dfh
                 pdata["eff_data"] = dfe
         else:
-            dfh = st.session_state.get(f"head_data_{idx}")
-            dfe = st.session_state.get(f"eff_data_{idx}")
+            dfh = st.session_state.get(f"head_data__{_stn_uid}")
+            dfe = st.session_state.get(f"eff_data__{_stn_uid}")
             if dfh is None and "head_data" in stn:
                 dfh = pd.DataFrame(stn["head_data"])
             if dfe is None and "eff_data" in stn:
@@ -3572,8 +3573,9 @@ def gather_pump_curve_sources(
             pdata = pump_types.get(ptype, {})
             if not isinstance(pdata, Mapping):
                 continue
-            df_head = _load_curve_df(f"head_data_{idx}{ptype}", pdata.get("head_data"))
-            df_eff = _load_curve_df(f"eff_data_{idx}{ptype}", pdata.get("eff_data"))
+            _gpc_uid = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
+            df_head = _load_curve_df(f"head_data__{_gpc_uid}{ptype}", pdata.get("head_data"))
+            df_eff = _load_curve_df(f"eff_data__{_gpc_uid}{ptype}", pdata.get("eff_data"))
             A = _coerce_float(pdata.get("A"), stn.get("A", 0.0))
             B = _coerce_float(pdata.get("B"), stn.get("B", 0.0))
             C = _coerce_float(pdata.get("C"), stn.get("C", 0.0))
@@ -3621,8 +3623,9 @@ def gather_pump_curve_sources(
     if sources:
         return sources
 
-    df_head = _load_curve_df(f"head_data_{idx}", stn.get("head_data"))
-    df_eff = _load_curve_df(f"eff_data_{idx}", stn.get("eff_data"))
+    _gpc_uid2 = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
+    df_head = _load_curve_df(f"head_data__{_gpc_uid2}", stn.get("head_data"))
+    df_eff = _load_curve_df(f"eff_data__{_gpc_uid2}", stn.get("eff_data"))
     if isinstance(res, Mapping):
         min_rpm = _coerce_int(res.get(f"min_rpm_{key_base}"), stn.get("MinRPM", 0))
         dol = _coerce_int(res.get(f"dol_{key_base}"), stn.get("DOL", 0))
@@ -4616,13 +4619,14 @@ if auto_batch:
             try:
                 # Ensure pump coefficients are updated for all stations
                 for idx, stn in enumerate(stations_data, start=1):
+                    _b_uid = _ensure_station_uid(stn)
                     if stn.get('pump_types'):
                         for ptype in ['A', 'B']:
                             pdata = stn['pump_types'].get(ptype)
                             if not pdata:
                                 continue
-                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            dfh = st.session_state.get(f"head_data__{_b_uid}{ptype}")
+                            dfe = st.session_state.get(f"eff_data__{_b_uid}{ptype}")
                             if dfh is not None and len(dfh) >= 3:
                                 Qh = dfh.iloc[:, 0].values
                                 Hh = dfh.iloc[:, 1].values
@@ -4634,8 +4638,8 @@ if auto_batch:
                                 coeff_e = np.polyfit(Qe, Ee, 4)
                                 pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
                     elif stn.get('is_pump', False):
-                        dfh = st.session_state.get(f"head_data_{idx}")
-                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        dfh = st.session_state.get(f"head_data__{_b_uid}")
+                        dfe = st.session_state.get(f"eff_data__{_b_uid}")
                         if dfh is None and "head_data" in stn:
                             dfh = pd.DataFrame(stn["head_data"])
                         if dfe is None and "eff_data" in stn:
