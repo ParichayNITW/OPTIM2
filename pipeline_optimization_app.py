@@ -2242,57 +2242,69 @@ with st.sidebar:
 
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
+    uid = _ensure_station_uid(stn)
+    _sinit(stn, 'name', f'Station {idx}')
+    _sinit(stn, 'elev', 0.0)
+    _sinit(stn, 'is_pump', False)
+    _sinit(stn, 'L', 50.0)
+    _sinit(stn, 'max_dr', 0.0)
+    _sinit(stn, 'min_residual', 50.0)
+    _sinit(stn, 'SMYS', 52000.0)
+    _sinit(stn, 'rough', 0.00004)
+    _sinit(stn, 'max_pumps', 1)
+    _sinit(stn, 'delivery', 0.0)
+    _sinit(stn, 'supply', 0.0)
+    if _skey(stn, 'D_in') not in st.session_state:
+        st.session_state[_skey(stn, 'D_in')] = stn.get('D', 0.711) / 0.0254
+    if _skey(stn, 't_in') not in st.session_state:
+        st.session_state[_skey(stn, 't_in')] = stn.get('t', 0.007) / 0.0254
+
+    with st.expander(f"Station {idx}: {st.session_state.get(_skey(stn,'name'), stn['name'])}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
-            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
-            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-            stn['max_dr'] = st.number_input(
-                "Max achievable Drag Reduction (%)",
-                value=stn.get('max_dr', 0.0),
-                key=f"mdr{idx}"
-            )
-            if idx == 1:
-                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            stn['name'] = st.text_input("Name", key=_skey(stn, 'name'))
+            stn['elev'] = st.number_input("Elevation (m)", step=0.1, key=_skey(stn, 'elev'))
+            stn['is_pump'] = st.checkbox("Pumping Station?", key=_skey(stn, 'is_pump'))
+            stn['L'] = st.number_input("Length to next Station (km)", step=1.0, key=_skey(stn, 'L'))
+            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", key=_skey(stn, 'max_dr'))
+            stn['min_residual'] = st.number_input("Available Suction Head (m)", step=0.1, key=_skey(stn, 'min_residual'))
         with col2:
-            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
-            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+            D_in = st.number_input("OD (in)", format="%.2f", step=0.01, key=_skey(stn, 'D_in'))
+            t_in = st.number_input("Wall Thk (in)", format="%.3f", step=0.001, key=_skey(stn, 't_in'))
             stn['D'] = D_in * 0.0254
             stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
-            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.7f", step=0.0000001, key=f"rough{idx}")
+            stn['SMYS'] = st.number_input("SMYS (psi)", step=1000.0, key=_skey(stn, 'SMYS'))
+            stn['rough'] = st.number_input("Pipe Roughness (m)", format="%.7f", step=0.0000001, key=_skey(stn, 'rough'))
         with col3:
-            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
-            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
-            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, step=1, key=_skey(stn, 'max_pumps'))
+            stn['delivery'] = st.number_input("Delivery (m³/hr)", key=_skey(stn, 'delivery'))
+            stn['supply'] = st.number_input("Supply (m³/hr)", key=_skey(stn, 'supply'))
         st.markdown("**Loopline (optional)**")
-        has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag{idx}")
+        has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag__{uid}")
         if has_loop:
             loop = stn.setdefault('loopline', {})
             lcol1, lcol2, lcol3 = st.columns(3)
             with lcol1:
-                loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname{idx}")
-                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart{idx}")
-                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend{idx}")
-                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL{idx}")
+                loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname__{uid}")
+                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart__{uid}")
+                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend__{uid}")
+                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL__{uid}")
             with lcol2:
-                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD{idx}")
-                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt{idx}")
+                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD__{uid}")
+                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt__{uid}")
                 loop['D'] = Dloop_in * 0.0254
                 loop['t'] = tloop_in * 0.0254
-                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS{idx}")
+                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS__{uid}")
             with lcol3:
-                loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
+                loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough__{uid}")
                 loop['max_dr'] = st.number_input(
                     "Max Drag Reduction (%)",
                     value=loop.get('max_dr', 0.0),
-                    key=f"loopmdr{idx}"
+                    key=f"loopmdr__{uid}"
                 )
-                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
+                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev__{uid}")
 
-            loop_peak_key = f"loop_peak_data_{idx}"
+            loop_peak_key = f"loop_peak_data__{uid}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
                 st.session_state[loop_peak_key] = pd.DataFrame({
                     "Location (km)": [loop.get('L', stn['L'])/2.0],
