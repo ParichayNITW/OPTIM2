@@ -3572,8 +3572,9 @@ def gather_pump_curve_sources(
             pdata = pump_types.get(ptype, {})
             if not isinstance(pdata, Mapping):
                 continue
-            df_head = _load_curve_df(f"head_data_{idx}{ptype}", pdata.get("head_data"))
-            df_eff = _load_curve_df(f"eff_data_{idx}{ptype}", pdata.get("eff_data"))
+            _gpc_uid = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
+            df_head = _load_curve_df(f"head_data__{_gpc_uid}{ptype}", pdata.get("head_data"))
+            df_eff = _load_curve_df(f"eff_data__{_gpc_uid}{ptype}", pdata.get("eff_data"))
             A = _coerce_float(pdata.get("A"), stn.get("A", 0.0))
             B = _coerce_float(pdata.get("B"), stn.get("B", 0.0))
             C = _coerce_float(pdata.get("C"), stn.get("C", 0.0))
