@@ -913,6 +913,7 @@ def _prepare_pipeline_context():
         stn.setdefault("loopline", False)
         stn.setdefault("max_pumps", stn.get("available", 0))
         stn.setdefault("min_pumps", 0)
+        _stn_uid = _ensure_station_uid(stn)
         pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
         if pump_types:
             for ptype, pdata in pump_types.items():
@@ -921,8 +922,13 @@ def _prepare_pipeline_context():
                 pdata.setdefault("available", pdata.get("count", 0))
                 if int(pdata.get("available", 0)) <= 0:
                     continue
-                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                dfh = st.session_state.get(f"head_data__{_stn_uid}{ptype}")
+                dfe = st.session_state.get(f"eff_data__{_stn_uid}{ptype}")
+                pdata["head_data"] = dfh
+                pdata["eff_data"] = dfe
+        else:
+            dfh = st.session_state.get(f"head_data__{_stn_uid}")
+            dfe = st.session_state.get(f"eff_data__{_stn_uid}")
                 pdata["head_data"] = dfh
                 pdata["eff_data"] = dfe
         else:
