@@ -2369,7 +2369,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             )
                             st.session_state[key_head] = df_head
 
-                            key_eff = f"eff_data_{idx}{ptype}"
+                            key_eff = f"eff_data__{uid}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
                                 st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                             df_eff = data_editor_copy(
