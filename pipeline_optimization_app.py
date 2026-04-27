@@ -913,7 +913,6 @@ def _prepare_pipeline_context():
         stn.setdefault("loopline", False)
         stn.setdefault("max_pumps", stn.get("available", 0))
         stn.setdefault("min_pumps", 0)
-        _stn_uid = _ensure_station_uid(stn)
         pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
         if pump_types:
             for ptype, pdata in pump_types.items():
@@ -922,13 +921,13 @@ def _prepare_pipeline_context():
                 pdata.setdefault("available", pdata.get("count", 0))
                 if int(pdata.get("available", 0)) <= 0:
                     continue
-                dfh = st.session_state.get(f"head_data__{_stn_uid}{ptype}")
-                dfe = st.session_state.get(f"eff_data__{_stn_uid}{ptype}")
+                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
                 pdata["head_data"] = dfh
                 pdata["eff_data"] = dfe
         else:
-            dfh = st.session_state.get(f"head_data__{_stn_uid}")
-            dfe = st.session_state.get(f"eff_data__{_stn_uid}")
+            dfh = st.session_state.get(f"head_data_{idx}")
+            dfe = st.session_state.get(f"eff_data_{idx}")
             if dfh is None and "head_data" in stn:
                 dfh = pd.DataFrame(stn["head_data"])
             if dfe is None and "eff_data" in stn:
@@ -1431,8 +1430,8 @@ def check_login():
                 st.error("Invalid username or password.")
         st.markdown(
             """
-            <div style='text-align: center; color: #1a1a1a; margin-top: 2em; font-size: 0.95em;'>
-            &copy; <strong>2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das</strong>
+            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
             </div>
             """,
             unsafe_allow_html=True
@@ -2191,23 +2190,9 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
-def _ensure_station_uid(stn: dict) -> str:
-    if not stn.get('uid'):
-        stn['uid'] = str(uuid.uuid4())[:8]
-    return stn['uid']
-
-def _skey(stn: dict, field: str) -> str:
-    return f"{field}__{_ensure_station_uid(stn)}"
-
-def _sinit(stn: dict, field: str, default):
-    k = _skey(stn, field)
-    if k not in st.session_state:
-        st.session_state[k] = stn.get(field, default)
-
 st.subheader("Stations")
 if "stations" not in st.session_state:
     st.session_state["stations"] = [{
-        'uid': str(uuid.uuid4())[:8],
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
         'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
         'min_residual': 50.0, 'is_pump': False,
@@ -2217,16 +2202,12 @@ if "stations" not in st.session_state:
         'delivery': 0.0,
         'supply': 0.0
     }]
-else:
-    for _s in st.session_state["stations"]:
-        _ensure_station_uid(_s)
 with st.sidebar:
     st.markdown("### Stations")
     add_col, rem_col = st.columns(2)
     if add_col.button("➕ Add Station", key="add_station"):
         n = len(st.session_state.get('stations', [])) + 1
         default = {
-            'uid': str(uuid.uuid4())[:8],
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
             'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
@@ -2243,69 +2224,57 @@ with st.sidebar:
 
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
-    uid = _ensure_station_uid(stn)
-    _sinit(stn, 'name', f'Station {idx}')
-    _sinit(stn, 'elev', 0.0)
-    _sinit(stn, 'is_pump', False)
-    _sinit(stn, 'L', 50.0)
-    _sinit(stn, 'max_dr', 0.0)
-    _sinit(stn, 'min_residual', 50.0)
-    _sinit(stn, 'SMYS', 52000.0)
-    _sinit(stn, 'rough', 0.00004)
-    _sinit(stn, 'max_pumps', 1)
-    _sinit(stn, 'delivery', 0.0)
-    _sinit(stn, 'supply', 0.0)
-    if _skey(stn, 'D_in') not in st.session_state:
-        st.session_state[_skey(stn, 'D_in')] = stn.get('D', 0.711) / 0.0254
-    if _skey(stn, 't_in') not in st.session_state:
-        st.session_state[_skey(stn, 't_in')] = stn.get('t', 0.007) / 0.0254
-
-    with st.expander(f"Station {idx}: {st.session_state.get(_skey(stn,'name'), stn['name'])}", expanded=False):
+    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
-            stn['name'] = st.text_input("Name", key=_skey(stn, 'name'))
-            stn['elev'] = st.number_input("Elevation (m)", step=0.1, key=_skey(stn, 'elev'))
-            stn['is_pump'] = st.checkbox("Pumping Station?", key=_skey(stn, 'is_pump'))
-            stn['L'] = st.number_input("Length to next Station (km)", step=1.0, key=_skey(stn, 'L'))
-            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", key=_skey(stn, 'max_dr'))
-            stn['min_residual'] = st.number_input("Available Suction Head (m)", step=0.1, key=_skey(stn, 'min_residual'))
+            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
+            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
+            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
+            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
+            stn['max_dr'] = st.number_input(
+                "Max achievable Drag Reduction (%)",
+                value=stn.get('max_dr', 0.0),
+                key=f"mdr{idx}"
+            )
+            if idx == 1:
+                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
         with col2:
-            D_in = st.number_input("OD (in)", format="%.2f", step=0.01, key=_skey(stn, 'D_in'))
-            t_in = st.number_input("Wall Thk (in)", format="%.3f", step=0.001, key=_skey(stn, 't_in'))
+            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
+            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
             stn['D'] = D_in * 0.0254
             stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", step=1000.0, key=_skey(stn, 'SMYS'))
-            stn['rough'] = st.number_input("Pipe Roughness (m)", format="%.7f", step=0.0000001, key=_skey(stn, 'rough'))
+            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
+            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.7f", step=0.0000001, key=f"rough{idx}")
         with col3:
-            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, step=1, key=_skey(stn, 'max_pumps'))
-            stn['delivery'] = st.number_input("Delivery (m³/hr)", key=_skey(stn, 'delivery'))
-            stn['supply'] = st.number_input("Supply (m³/hr)", key=_skey(stn, 'supply'))
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
+            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
+            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
         st.markdown("**Loopline (optional)**")
-        has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag__{uid}")
+        has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag{idx}")
         if has_loop:
             loop = stn.setdefault('loopline', {})
             lcol1, lcol2, lcol3 = st.columns(3)
             with lcol1:
-                loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname__{uid}")
-                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart__{uid}")
-                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend__{uid}")
-                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL__{uid}")
+                loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname{idx}")
+                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart{idx}")
+                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend{idx}")
+                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL{idx}")
             with lcol2:
-                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD__{uid}")
-                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt__{uid}")
+                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD{idx}")
+                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt{idx}")
                 loop['D'] = Dloop_in * 0.0254
                 loop['t'] = tloop_in * 0.0254
-                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS__{uid}")
+                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS{idx}")
             with lcol3:
-                loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough__{uid}")
+                loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
                 loop['max_dr'] = st.number_input(
                     "Max Drag Reduction (%)",
                     value=loop.get('max_dr', 0.0),
-                    key=f"loopmdr__{uid}"
+                    key=f"loopmdr{idx}"
                 )
-                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev__{uid}")
+                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
 
-            loop_peak_key = f"loop_peak_data__{uid}"
+            loop_peak_key = f"loop_peak_data_{idx}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
                 st.session_state[loop_peak_key] = pd.DataFrame({
                     "Location (km)": [loop.get('L', stn['L'])/2.0],
@@ -2333,7 +2302,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             enabled = st.checkbox(
                                 f"Use Pump Type {ptype}",
                                 value=pdata.get('available', 0) > 0,
-                                key=f"enable__{uid}{ptype}"
+                                key=f"enable{idx}{ptype}"
                             )
                             avail = st.number_input(
                                 "Available Pumps",
@@ -2341,7 +2310,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 max_value=3,
                                 step=1,
                                 value=int(pdata.get('available', 0)),
-                                key=f"avail__{uid}{ptype}"
+                                key=f"avail{idx}{ptype}"
                             )
                             if not enabled or avail == 0:
                                 st.info("Pump type disabled")
@@ -2357,10 +2326,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 names[j] = st.text_input(
                                     f"Pump {ptype} {j+1} Name",
                                     value=names[j],
-                                    key=f"pname__{uid}{ptype}{j}"
+                                    key=f"pname{idx}{ptype}{j}"
                                 )
 
-                            key_head = f"head_data__{uid}{ptype}"
+                            key_head = f"head_data_{idx}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
                                 st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                             df_head = data_editor_copy(
@@ -2370,7 +2339,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             )
                             st.session_state[key_head] = df_head
 
-                            key_eff = f"eff_data__{uid}{ptype}"
+                            key_eff = f"eff_data_{idx}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
                                 st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                             df_eff = data_editor_copy(
@@ -2385,23 +2354,23 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 ptype_sel = st.selectbox(
                                     "Power Source", ["Grid", "Diesel"],
                                     index=0 if pdata.get('power_type', 'Grid') == "Grid" else 1,
-                                    key=f"ptype__{uid}{ptype}"
+                                    key=f"ptype{idx}{ptype}"
                                 )
                             with pcol2:
                                 min_label = "Min Pump RPM" if ptype_sel == "Diesel" else "Min RPM"
                                 rated_label = "Rated Pump RPM" if ptype_sel == "Diesel" else "Rated RPM"
-                                minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm__{uid}{ptype}")
-                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol__{uid}{ptype}")
+                                minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
+                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol{idx}{ptype}")
                             with pcol3:
                                 if ptype_sel == "Grid":
                                     tariff_mode = st.radio(
                                         "Tariff",
                                         ["Fixed", "Varying"],
                                         index=0 if not pdata.get('tariffs') else 1,
-                                        key=f"tmode__{uid}{ptype}"
+                                        key=f"tmode{idx}{ptype}"
                                     )
                                     if tariff_mode == "Fixed":
-                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate__{uid}{ptype}")
+                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
                                         tariffs = []
                                     else:
                                         default_rows = [
@@ -2421,7 +2390,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         tdf = data_editor_copy(
                                             pd.DataFrame(raw_tariffs),
                                             num_rows="dynamic",
-                                            key=f"tariff__{uid}{ptype}",
+                                            key=f"tariff{idx}{ptype}",
                                             column_config={
                                                 "rate": st.column_config.NumberColumn("Rate"),
                                                 "start": st.column_config.TimeColumn("Start"),
@@ -2474,19 +2443,19 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         "SFC Input",
                                         ["Enter manually", "System calculated (ISO 3046)"],
                                         index=0 if pdata.get('sfc_mode', 'manual') == 'manual' else 1,
-                                        key=f"sfc_mode__{uid}{ptype}"
+                                        key=f"sfc_mode{idx}{ptype}"
                                     )
                                     if sfc_mode == "Enter manually":
-                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc__{uid}{ptype}")
+                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
                                         engine_params = {}
                                     else:
-                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake__{uid}{ptype}")
-                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel__{uid}{ptype}")
-                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower__{uid}{ptype}")
-                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50__{uid}{ptype}")
-                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75__{uid}{ptype}")
-                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100__{uid}{ptype}")
-                                        if st.button("Compute SFC", key=f"comp_sfc__{uid}{ptype}"):
+                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake{idx}{ptype}")
+                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel{idx}{ptype}")
+                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower{idx}{ptype}")
+                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50{idx}{ptype}")
+                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75{idx}{ptype}")
+                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100{idx}{ptype}")
+                                        if st.button("Compute SFC", key=f"comp_sfc{idx}{ptype}"):
                                             pump_bkw = rated_power * 0.98
                                             sfc_calc = pipeline_model._compute_iso_sfc(
                                                 {'engine_params': {'rated_power': rated_power, 'sfc50': sfc50, 'sfc75': sfc75, 'sfc100': sfc100}},
@@ -2496,8 +2465,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                                 stn.get('elev', 0.0),
                                                 st.session_state.get('Ambient_temp', 25.0),
                                             )
-                                            st.session_state[f"sfc_display__{uid}{ptype}"] = sfc_calc
-                                        sfc = st.session_state.get(f"sfc_display__{uid}{ptype}", 0.0)
+                                            st.session_state[f"sfc_display{idx}{ptype}"] = sfc_calc
+                                        sfc = st.session_state.get(f"sfc_display{idx}{ptype}", 0.0)
                                         if sfc:
                                             st.write(f"Computed SFC at 100% load: {sfc:.2f} gm/bhp·hr")
                                         engine_params = {
@@ -2541,7 +2510,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 st.info("Not a pumping station. No pump data required.")
 
         with tabs[1]:
-            key_peak = f"peak_data__{uid}"
+            key_peak = f"peak_data_{idx}"
             if key_peak not in st.session_state or not isinstance(st.session_state[key_peak], pd.DataFrame):
                 st.session_state[key_peak] = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
             peak_df = data_editor_copy(
@@ -2564,13 +2533,12 @@ def get_full_case_dict():
     import pandas as pd
 
     for idx, stn in enumerate(st.session_state.get('stations', []), start=1):
-        uid = _ensure_station_uid(stn)
         if stn.get('is_pump', False):
             if 'pump_types' in stn:
                 for ptype in ['A', 'B']:
                     pdata = stn['pump_types'].get(ptype, {})
-                    dfh = st.session_state.get(f"head_data__{uid}{ptype}")
-                    dfe = st.session_state.get(f"eff_data__{uid}{ptype}")
+                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
                     if dfh is None and pdata.get('head_data') is not None:
                         dfh = pd.DataFrame(pdata['head_data'])
                     if dfe is None and pdata.get('eff_data') is not None:
@@ -2590,8 +2558,8 @@ def get_full_case_dict():
                     pdata['available'] = pdata.get('available', 0)
                     stn['pump_types'][ptype] = pdata
             else:
-                dfh = st.session_state.get(f"head_data__{uid}")
-                dfe = st.session_state.get(f"eff_data__{uid}")
+                dfh = st.session_state.get(f"head_data_{idx}")
+                dfe = st.session_state.get(f"eff_data_{idx}")
                 if dfh is None and "head_data" in stn:
                     dfh = pd.DataFrame(stn["head_data"])
                 if dfe is None and "eff_data" in stn:
@@ -3567,9 +3535,8 @@ def gather_pump_curve_sources(
             pdata = pump_types.get(ptype, {})
             if not isinstance(pdata, Mapping):
                 continue
-            _gpc_uid = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
-            df_head = _load_curve_df(f"head_data__{_gpc_uid}{ptype}", pdata.get("head_data"))
-            df_eff = _load_curve_df(f"eff_data__{_gpc_uid}{ptype}", pdata.get("eff_data"))
+            df_head = _load_curve_df(f"head_data_{idx}{ptype}", pdata.get("head_data"))
+            df_eff = _load_curve_df(f"eff_data_{idx}{ptype}", pdata.get("eff_data"))
             A = _coerce_float(pdata.get("A"), stn.get("A", 0.0))
             B = _coerce_float(pdata.get("B"), stn.get("B", 0.0))
             C = _coerce_float(pdata.get("C"), stn.get("C", 0.0))
@@ -3617,9 +3584,8 @@ def gather_pump_curve_sources(
     if sources:
         return sources
 
-    _gpc_uid2 = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
-    df_head = _load_curve_df(f"head_data__{_gpc_uid2}", stn.get("head_data"))
-    df_eff = _load_curve_df(f"eff_data__{_gpc_uid2}", stn.get("eff_data"))
+    df_head = _load_curve_df(f"head_data_{idx}", stn.get("head_data"))
+    df_eff = _load_curve_df(f"eff_data_{idx}", stn.get("eff_data"))
     if isinstance(res, Mapping):
         min_rpm = _coerce_int(res.get(f"min_rpm_{key_base}"), stn.get("MinRPM", 0))
         dol = _coerce_int(res.get(f"dol_{key_base}"), stn.get("DOL", 0))
@@ -4613,14 +4579,13 @@ if auto_batch:
             try:
                 # Ensure pump coefficients are updated for all stations
                 for idx, stn in enumerate(stations_data, start=1):
-                    _b_uid = _ensure_station_uid(stn)
                     if stn.get('pump_types'):
                         for ptype in ['A', 'B']:
                             pdata = stn['pump_types'].get(ptype)
                             if not pdata:
                                 continue
-                            dfh = st.session_state.get(f"head_data__{_b_uid}{ptype}")
-                            dfe = st.session_state.get(f"eff_data__{_b_uid}{ptype}")
+                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
+                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
                             if dfh is not None and len(dfh) >= 3:
                                 Qh = dfh.iloc[:, 0].values
                                 Hh = dfh.iloc[:, 1].values
@@ -4632,8 +4597,8 @@ if auto_batch:
                                 coeff_e = np.polyfit(Qe, Ee, 4)
                                 pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
                     elif stn.get('is_pump', False):
-                        dfh = st.session_state.get(f"head_data__{_b_uid}")
-                        dfe = st.session_state.get(f"eff_data__{_b_uid}")
+                        dfh = st.session_state.get(f"head_data_{idx}")
+                        dfe = st.session_state.get(f"eff_data_{idx}")
                         if dfh is None and "head_data" in stn:
                             dfh = pd.DataFrame(stn["head_data"])
                         if dfe is None and "eff_data" in stn:
@@ -6513,16 +6478,18 @@ if not auto_batch:
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
 
-        hours = [(7 + h) % 24 for h in range(1 if is_hourly else 24)]
+        if is_hourly:
+            hours = [7]
+        else:
+            hours = [(7 + h) % 24 for h in range(24)]
         sub_steps = 1
         total_runs = len(hours) * sub_steps if hours else 0
         first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
         last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
-        spinner_msg = (
-            f"Running {total_runs} optimization ({first_label})..."
-            if is_hourly
-            else f"Running {total_runs} optimizations ({first_label} to {last_label})..."
-        )
+        if is_hourly:
+            spinner_msg = f"Running 1 optimization ({first_label})..."
+        else:
+            spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
         st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         current_vol = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
@@ -9174,8 +9141,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 
 st.markdown(
     """
-    <div style='text-align: center; color: #1a1a1a; margin-top: 2em; font-size: 0.95em;'>
-    &copy; <strong>2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das</strong>
+    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
+    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
     </div>
     """,
     unsafe_allow_html=True
