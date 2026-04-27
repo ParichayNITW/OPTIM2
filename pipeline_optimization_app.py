@@ -2540,7 +2540,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 st.info("Not a pumping station. No pump data required.")
 
         with tabs[1]:
-            key_peak = f"peak_data_{idx}"
+            key_peak = f"peak_data__{uid}"
             if key_peak not in st.session_state or not isinstance(st.session_state[key_peak], pd.DataFrame):
                 st.session_state[key_peak] = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
             peak_df = data_editor_copy(
