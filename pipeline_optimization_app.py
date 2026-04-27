@@ -2384,7 +2384,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 ptype_sel = st.selectbox(
                                     "Power Source", ["Grid", "Diesel"],
                                     index=0 if pdata.get('power_type', 'Grid') == "Grid" else 1,
-                                    key=f"ptype{idx}{ptype}"
+                                    key=f"ptype__{uid}{ptype}"
                                 )
                             with pcol2:
                                 min_label = "Min Pump RPM" if ptype_sel == "Diesel" else "Min RPM"
