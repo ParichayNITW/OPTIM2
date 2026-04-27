@@ -2390,7 +2390,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 min_label = "Min Pump RPM" if ptype_sel == "Diesel" else "Min RPM"
                                 rated_label = "Rated Pump RPM" if ptype_sel == "Diesel" else "Rated RPM"
                                 minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm__{uid}{ptype}")
-                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol__{uid}{ptype}"))
+                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol__{uid}{ptype}")
                             with pcol3:
                                 if ptype_sel == "Grid":
                                     tariff_mode = st.radio(
