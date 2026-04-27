@@ -2473,19 +2473,19 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         "SFC Input",
                                         ["Enter manually", "System calculated (ISO 3046)"],
                                         index=0 if pdata.get('sfc_mode', 'manual') == 'manual' else 1,
-                                        key=f"sfc_mode{idx}{ptype}"
+                                        key=f"sfc_mode__{uid}{ptype}"
                                     )
                                     if sfc_mode == "Enter manually":
-                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc__{uid}{ptype}")
                                         engine_params = {}
                                     else:
-                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake{idx}{ptype}")
-                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel{idx}{ptype}")
-                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower{idx}{ptype}")
-                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50{idx}{ptype}")
-                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75{idx}{ptype}")
-                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100{idx}{ptype}")
-                                        if st.button("Compute SFC", key=f"comp_sfc{idx}{ptype}"):
+                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake__{uid}{ptype}")
+                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel__{uid}{ptype}")
+                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower__{uid}{ptype}")
+                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50__{uid}{ptype}")
+                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75__{uid}{ptype}")
+                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100__{uid}{ptype}")
+                                        if st.button("Compute SFC", key=f"comp_sfc__{uid}{ptype}"):
                                             pump_bkw = rated_power * 0.98
                                             sfc_calc = pipeline_model._compute_iso_sfc(
                                                 {'engine_params': {'rated_power': rated_power, 'sfc50': sfc50, 'sfc75': sfc75, 'sfc100': sfc100}},
