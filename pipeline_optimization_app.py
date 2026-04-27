@@ -2225,6 +2225,7 @@ with st.sidebar:
     if add_col.button("➕ Add Station", key="add_station"):
         n = len(st.session_state.get('stations', [])) + 1
         default = {
+            'uid': str(uuid.uuid4())[:8],
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
             'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
