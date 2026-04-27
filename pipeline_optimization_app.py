@@ -2332,7 +2332,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             enabled = st.checkbox(
                                 f"Use Pump Type {ptype}",
                                 value=pdata.get('available', 0) > 0,
-                                key=f"enable{idx}{ptype}"
+                                key=f"enable__{uid}{ptype}"
                             )
                             avail = st.number_input(
                                 "Available Pumps",
@@ -2340,7 +2340,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 max_value=3,
                                 step=1,
                                 value=int(pdata.get('available', 0)),
-                                key=f"avail{idx}{ptype}"
+                                key=f"avail__{uid}{ptype}"
                             )
                             if not enabled or avail == 0:
                                 st.info("Pump type disabled")
