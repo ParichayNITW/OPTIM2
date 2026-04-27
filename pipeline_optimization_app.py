@@ -2495,8 +2495,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                                 stn.get('elev', 0.0),
                                                 st.session_state.get('Ambient_temp', 25.0),
                                             )
-                                            st.session_state[f"sfc_display{idx}{ptype}"] = sfc_calc
-                                        sfc = st.session_state.get(f"sfc_display{idx}{ptype}", 0.0)
+                                            st.session_state[f"sfc_display__{uid}{ptype}"] = sfc_calc
+                                        sfc = st.session_state.get(f"sfc_display__{uid}{ptype}", 0.0)
                                         if sfc:
                                             st.write(f"Computed SFC at 100% load: {sfc:.2f} gm/bhp·hr")
                                         engine_params = {
