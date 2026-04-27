@@ -4637,8 +4637,8 @@ if auto_batch:
                                 coeff_e = np.polyfit(Qe, Ee, 4)
                                 pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
                     elif stn.get('is_pump', False):
-                        dfh = st.session_state.get(f"head_data_{idx}")
-                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        dfh = st.session_state.get(f"head_data__{_b_uid}")
+                        dfe = st.session_state.get(f"eff_data__{_b_uid}")
                         if dfh is None and "head_data" in stn:
                             dfh = pd.DataFrame(stn["head_data"])
                         if dfe is None and "eff_data" in stn:
