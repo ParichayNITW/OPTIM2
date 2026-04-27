@@ -2420,7 +2420,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         tdf = data_editor_copy(
                                             pd.DataFrame(raw_tariffs),
                                             num_rows="dynamic",
-                                            key=f"tariff{idx}{ptype}",
+                                            key=f"tariff__{uid}{ptype}",
                                             column_config={
                                                 "rate": st.column_config.NumberColumn("Rate"),
                                                 "start": st.column_config.TimeColumn("Start"),
