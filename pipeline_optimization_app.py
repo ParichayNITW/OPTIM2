@@ -2627,34 +2627,108 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             )
 
                         if _bstn.get('is_pump'):
-                            _p1, _p2, _p3 = st.columns(3)
-                            with _p1:
-                                _bstn['pump_head_m'] = st.number_input(
-                                    "Rated Head (m)", value=float(_bstn.get('pump_head_m', 200.0)),
-                                    min_value=0.0, step=10.0, key=f"bsph__{_bs_uid}"
-                                )
-                            with _p2:
+                            st.markdown(
+                                '<div style="background:rgba(255,140,66,0.07);border:1px solid rgba(255,140,66,0.3);'
+                                'border-radius:6px;padding:0.55rem 0.75rem;margin-top:0.4rem;">'
+                                '<span style="color:#FF8C42;font-weight:600;font-size:0.82rem;">⚙️ PUMP CONFIGURATION</span>'
+                                '</div>',
+                                unsafe_allow_html=True,
+                            )
+                            # Row 1: count + speed + power
+                            _pa, _pb, _pc, _pd, _pe = st.columns([1, 1.2, 1.2, 1.2, 1])
+                            with _pa:
                                 _bstn['max_pumps'] = int(st.number_input(
-                                    "No. of Pumps", value=int(_bstn.get('max_pumps', 1)),
+                                    "Pumps (units)", value=int(_bstn.get('max_pumps', 1)),
                                     min_value=1, step=1, key=f"bsnp__{_bs_uid}"
                                 ))
-                            with _p3:
+                            with _pb:
+                                _bstn['MinRPM'] = st.number_input(
+                                    "Min RPM", value=float(_bstn.get('MinRPM', 1000.0)),
+                                    min_value=100.0, step=50.0, key=f"bsminrpm__{_bs_uid}"
+                                )
+                            with _pc:
+                                _bstn['DOL'] = st.number_input(
+                                    "DOL (RPM)", value=float(_bstn.get('DOL', 1500.0)),
+                                    min_value=100.0, step=50.0, key=f"bsdol__{_bs_uid}"
+                                )
+                            with _pd:
                                 _bstn['power_type'] = st.selectbox(
                                     "Power Type", ['Grid', 'Diesel'],
                                     index=0 if _bstn.get('power_type', 'Grid') == 'Grid' else 1,
                                     key=f"bspt__{_bs_uid}"
                                 )
-                            _r1, _r2 = st.columns(2)
-                            with _r1:
+                            with _pe:
                                 _bstn['rate'] = st.number_input(
-                                    "Rate (₹/kWh or ₹/L)", value=float(_bstn.get('rate', 9.0)),
+                                    "Rate ₹", value=float(_bstn.get('rate', 9.0)),
                                     min_value=0.0, step=0.5, key=f"bsrate__{_bs_uid}"
                                 )
-                            with _r2:
+                            if _bstn.get('power_type') == 'Diesel':
                                 _bstn['sfc'] = st.number_input(
                                     "SFC (g/kWh)", value=float(_bstn.get('sfc', 150.0)),
                                     min_value=0.0, step=5.0, key=f"bssfc__{_bs_uid}"
                                 )
+
+                            # Pump curve: BEP method vs full Q-H table
+                            _use_tbl = bool(_bstn.get('use_curve_table', False))
+                            _bstn['use_curve_table'] = st.toggle(
+                                "Use Q-H Curve Table (advanced)",
+                                value=_use_tbl,
+                                key=f"bsusetbl__{_bs_uid}",
+                                help="Enter measured Q-H points to derive the pump curve by polynomial fit.",
+                            )
+
+                            if not _bstn.get('use_curve_table'):
+                                st.caption("**BEP Point Method** — curve derived automatically from Best Efficiency Point")
+                                _q1, _q2, _q3 = st.columns(3)
+                                with _q1:
+                                    _bstn['rated_flow_m3h'] = st.number_input(
+                                        "BEP Flow (m³/hr)",
+                                        value=float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))),
+                                        min_value=0.0, step=10.0, key=f"bsrq__{_bs_uid}",
+                                        help="Flow at the pump's Best Efficiency Point (typically = branch design flow).",
+                                    )
+                                with _q2:
+                                    _bstn['rated_head_m'] = st.number_input(
+                                        "Head at BEP (m)",
+                                        value=float(_bstn.get('rated_head_m', _bstn.get('pump_head_m', 200.0))),
+                                        min_value=0.0, step=10.0, key=f"bsrh__{_bs_uid}",
+                                        help="Pump head at BEP flow and DOL speed.",
+                                    )
+                                    _bstn['pump_head_m'] = _bstn['rated_head_m']  # keep legacy field in sync
+                                with _q3:
+                                    _default_shutoff = float(_bstn.get(
+                                        'shutoff_head_m',
+                                        float(_bstn.get('rated_head_m', _bstn.get('pump_head_m', 200.0))) * 1.25,
+                                    ))
+                                    _bstn['shutoff_head_m'] = st.number_input(
+                                        "Shutoff Head (m)",
+                                        value=_default_shutoff,
+                                        min_value=0.0, step=10.0, key=f"bssh__{_bs_uid}",
+                                        help="Head at zero flow. Typical range: 110–130% of BEP head.",
+                                    )
+                            else:
+                                st.caption("**Q-H Curve Table** — enter ≥3 operating points; polynomial fit applied")
+                                _bh_key = f"branch_head_data__{_b_uid}__{_bs_uid}"
+                                _bh_default = pd.DataFrame({
+                                    'Flow (m³/hr)': [0.0,
+                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))) * 0.5,
+                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))),
+                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))) * 1.2],
+                                    'Head (m)':    [float(_bstn.get('shutoff_head_m', _bstn.get('rated_head_m', 250.0))),
+                                                    float(_bstn.get('rated_head_m', 230.0)),
+                                                    float(_bstn.get('rated_head_m', 200.0)),
+                                                    float(_bstn.get('rated_head_m', 200.0)) * 0.75],
+                                })
+                                _bh_df = st.session_state.get(_bh_key, _bh_default)
+                                _bh_df_ed = st.data_editor(
+                                    _bh_df, key=f"bhed__{_bs_uid}",
+                                    use_container_width=True, num_rows="dynamic",
+                                    column_config={
+                                        'Flow (m³/hr)': st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
+                                        'Head (m)':     st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
+                                    },
+                                )
+                                st.session_state[_bh_key] = _bh_df_ed
 
                         _bstns_keep.append(_bstn)
 
@@ -7190,9 +7264,28 @@ def run_all_updates():
             res.get(f"residual_head_{_stn_name_br}", 0.0),
         )
         for _br_item in _stn_br.get('branches', []):
+            # Pre-process branch pump stations: inject A/B/C from Q-H table if available.
+            _br_ready = copy.deepcopy(_br_item)
+            for _bstn_p in _br_ready.get('stations', []):
+                if not _bstn_p.get('is_pump', False):
+                    continue
+                if _bstn_p.get('use_curve_table', False):
+                    _bh_k = f"branch_head_data__{_br_ready.get('uid', '')}__{_bstn_p.get('uid', '')}"
+                    _bh_df_p = st.session_state.get(_bh_k)
+                    if isinstance(_bh_df_p, pd.DataFrame) and len(_bh_df_p) >= 3:
+                        try:
+                            _Qh_p = _bh_df_p.iloc[:, 0].values.astype(float)
+                            _Hh_p = _bh_df_p.iloc[:, 1].values.astype(float)
+                            _cf = np.polyfit(_Qh_p, _Hh_p, 2)
+                            _bstn_p['A'] = float(_cf[0])
+                            _bstn_p['B'] = float(_cf[1])
+                            _bstn_p['C'] = float(_cf[2])
+                        except Exception:
+                            pass  # fall back to solve_branch BEP derivation
+
             _br_res = pipeline_model.solve_branch(
                 junction_suction_head=float(_jh or 0.0),
-                branch=_br_item,
+                branch=_br_ready,
                 KV=_kv_br,
                 rho=_rho_br,
                 RateDRA=float(st.session_state.get('RateDRA', 500.0)),
@@ -7904,7 +7997,11 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         ]
         if _stns_with_branches and _branch_results_map:
             st.markdown("---")
-            st.markdown("### 🔀 Branch Line Results")
+            st.markdown(
+                '<h3 style="color:#FF8C42;font-family:Inter;letter-spacing:0.04em;">'
+                '🔀 Branch Line Results</h3>',
+                unsafe_allow_html=True,
+            )
             for _stn_br_disp in _stns_with_branches:
                 for _br_disp in _stn_br_disp.get('branches', []):
                     _bid = _br_disp.get('uid', '')
@@ -7912,46 +8009,191 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     _bname = _br_disp.get('name', 'Branch')
                     _bjn = _stn_br_disp.get('name', '')
                     _is_ok = not bool(_bres.get('error'))
+                    _b_total_cost = float(_bres.get('total_cost', 0) or 0)
+                    _b_flow = float(_br_disp.get('flow_m3h', 0))
+                    _bt_disp = _br_disp.get('terminal', {})
+                    _bt_name_disp = _bt_disp.get('name', '')
+                    _jh_disp = float(_bres.get('junction_head', 0))
+                    _term_rh = float(
+                        _bres.get(f"residual_head_{_bt_name_disp}", _bres.get('residual', 0.0))
+                        or 0.0
+                    )
+                    _term_min = float(_bt_disp.get('min_residual', 0.0))
+
                     with st.expander(
-                        f"🔀 {_bname}  ← Junction: {_bjn}",
+                        f"🔀 {_bname}  ◄ Junction at {_bjn}  |  {'✅ FEASIBLE' if _is_ok else '❌ INFEASIBLE'}",
                         expanded=True,
                     ):
+                        # Status banner
                         if _is_ok:
-                            st.success(f"✅ Feasible — Total Cost: ₹{float(_bres.get('total_cost', 0) or 0):,.0f}")
+                            st.markdown(
+                                f'<div style="background:rgba(0,255,136,0.08);border-left:4px solid #00FF88;'
+                                f'border-radius:4px;padding:0.5rem 0.9rem;margin-bottom:0.6rem;">'
+                                f'<span style="color:#00FF88;font-weight:700;">✅ Feasible</span>'
+                                f'<span style="color:#7A8BA8;margin-left:1.2rem;">Total Operating Cost:</span>'
+                                f'<span style="color:#E8EAF0;font-weight:600;margin-left:0.5rem;">₹{_b_total_cost:,.0f} / day</span>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
                         else:
-                            st.error(f"❌ Infeasible — {_bres.get('error', 'Optimization failed')}")
+                            st.markdown(
+                                f'<div style="background:rgba(255,51,102,0.10);border-left:4px solid #FF3366;'
+                                f'border-radius:4px;padding:0.5rem 0.9rem;margin-bottom:0.6rem;">'
+                                f'<span style="color:#FF3366;font-weight:700;">❌ Infeasible</span>'
+                                f'<span style="color:#7A8BA8;margin-left:1.2rem;">{_bres.get("error","Optimization failed")}</span>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
 
-                        _bc1, _bc2, _bc3, _bc4 = st.columns(4)
-                        _bc1.metric("Branch Flow", f"{float(_br_disp.get('flow_m3h', 0)):.0f} m³/hr")
-                        _bc2.metric("Junction Head", f"{float(_bres.get('junction_head', 0)):.1f} m")
-
-                        # Terminal residual — try the terminal name key first
-                        _bt_disp = _br_disp.get('terminal', {})
-                        _bt_name_disp = _bt_disp.get('name', '')
-                        _term_rh = float(
-                            _bres.get(f"residual_head_{_bt_name_disp}", _bres.get('residual', 0.0))
-                            or 0.0
+                        # KPI metric row
+                        _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
+                        _bc1.metric("Branch Flow", f"{_b_flow:.0f} m³/hr")
+                        _bc2.metric("Junction Head", f"{_jh_disp:.1f} m")
+                        _bc3.metric(
+                            "Terminal Pressure",
+                            f"{_term_rh:.1f} m",
+                            delta=f"{_term_rh - _term_min:+.1f} m vs min",
+                            delta_color="normal" if _term_rh >= _term_min else "inverse",
                         )
-                        _bc3.metric("Terminal Pressure", f"{_term_rh:.1f} m")
-                        _bc4.metric("Branch Cost", f"₹{float(_bres.get('total_cost', 0) or 0):,.0f}")
+                        _br_pwr = float(_bres.get('power_cost', 0) or sum(
+                            float(_bres.get(f"power_cost_{_bsd.get('name','').lower().replace(' ','_').replace('-','_')}", 0) or 0)
+                            for _bsd in _br_disp.get('stations', [])
+                        ))
+                        _br_dra = float(_bres.get('dra_cost', 0) or sum(
+                            float(_bres.get(f"dra_cost_{_bsd.get('name','').lower().replace(' ','_').replace('-','_')}", 0) or 0)
+                            for _bsd in _br_disp.get('stations', [])
+                        ))
+                        _bc4.metric("Power Cost", f"₹{_br_pwr:,.0f}")
+                        _bc5.metric("DRA Cost", f"₹{_br_dra:,.0f}")
 
-                        # Per-station branch results table
+                        # Pressure profile chart
                         _br_stns_disp = _br_disp.get('stations', [])
+                        if _br_stns_disp and _is_ok:
+                            import plotly.graph_objects as _go_br
+                            _prof_x, _prof_h, _prof_labels, _prof_types = [], [], [], []
+                            _cumL = 0.0
+
+                            # Junction point (entry)
+                            _prof_x.append(0.0)
+                            _prof_h.append(_jh_disp)
+                            _prof_labels.append(f"Junction<br>{_bjn}")
+                            _prof_types.append('junction')
+
+                            for _bsi, _bsd in enumerate(_br_stns_disp):
+                                _brk_p = _bsd.get('name', '').lower().replace(' ', '_').replace('-', '_')
+                                _sdh_val = float(_bres.get(f"sdh_{_brk_p}", 0) or 0)
+                                _rh_out = float(_bres.get(f"residual_head_out_{_brk_p}", 0) or 0)
+                                _is_pump_bsd = bool(_bsd.get('is_pump', False))
+                                _seg_L = float(_bsd.get('L', 0))
+
+                                if _is_pump_bsd and _sdh_val > 0:
+                                    # Suction side (at station x, before pump head added)
+                                    _prof_x.append(_cumL)
+                                    _prof_h.append(float(_bres.get(f"residual_head_in_{_bsd.get('name','')}", _jh_disp) or _jh_disp))
+                                    _prof_labels.append(f"Suction<br>{_bsd.get('name','')}")
+                                    _prof_types.append('suction')
+                                    # Discharge side (after pump head)
+                                    _prof_x.append(_cumL)
+                                    _prof_h.append(_sdh_val)
+                                    _prof_labels.append(f"Discharge<br>{_bsd.get('name','')}")
+                                    _prof_types.append('pump')
+
+                                _cumL += _seg_L
+                                if _rh_out > 0:
+                                    _prof_x.append(_cumL)
+                                    _prof_h.append(_rh_out)
+                                    _prof_labels.append(_bsd.get('name', ''))
+                                    _prof_types.append('station')
+
+                            # Terminal
+                            _prof_x.append(_cumL)
+                            _prof_h.append(_term_rh)
+                            _prof_labels.append(f"Terminal<br>{_bt_name_disp}")
+                            _prof_types.append('terminal')
+
+                            # Colour map for pressure profile
+                            _ptcols = {
+                                'junction': '#4A90D9',
+                                'suction':  '#FFD700',
+                                'pump':     '#00D4FF',
+                                'station':  '#4A90D9',
+                                'terminal': '#FF3366',
+                            }
+
+                            _fig_br = _go_br.Figure()
+                            # Pressure profile line
+                            _fig_br.add_trace(_go_br.Scatter(
+                                x=_prof_x, y=_prof_h,
+                                mode='lines+markers',
+                                line=dict(color='#4A90D9', width=2.5),
+                                marker=dict(
+                                    size=[14 if t in ('pump', 'terminal') else 8 for t in _prof_types],
+                                    color=[_ptcols.get(t, '#4A90D9') for t in _prof_types],
+                                    symbol=['diamond' if t == 'terminal' else 'circle' for t in _prof_types],
+                                    line=dict(color='#080d1a', width=1.5),
+                                ),
+                                text=_prof_labels,
+                                textposition='top center',
+                                hovertemplate='<b>%{text}</b><br>KP: %{x:.1f} km<br>Head: %{y:.1f} m<extra></extra>',
+                                name='Pressure Profile',
+                            ))
+                            # Minimum required line at terminal
+                            if _term_min > 0:
+                                _fig_br.add_hline(
+                                    y=_term_min,
+                                    line=dict(color='#FF3366', width=1.5, dash='dash'),
+                                    annotation_text=f"Min required: {_term_min:.0f} m",
+                                    annotation_font=dict(color='#FF3366', size=10),
+                                )
+                            # Pump station vertical markers
+                            for _bsi2, _bsd2 in enumerate(_br_stns_disp):
+                                if _bsd2.get('is_pump'):
+                                    _px2 = sum(float(_br_stns_disp[k].get('L', 0)) for k in range(_bsi2))
+                                    _fig_br.add_vline(
+                                        x=_px2,
+                                        line=dict(color='rgba(0,212,255,0.35)', width=1, dash='dot'),
+                                        annotation_text=_bsd2.get('name', ''),
+                                        annotation_font=dict(color='#00D4FF', size=9),
+                                        annotation_position='bottom right',
+                                    )
+                            _fig_br.update_layout(
+                                paper_bgcolor='#080d1a', plot_bgcolor='#080d1a',
+                                height=220, margin=dict(l=10, r=10, t=22, b=22),
+                                xaxis=dict(title='Distance (km)', color='#7A8BA8',
+                                           gridcolor='rgba(74,144,217,0.08)', zeroline=False),
+                                yaxis=dict(title='Head (m)', color='#7A8BA8',
+                                           gridcolor='rgba(74,144,217,0.08)', zeroline=False),
+                                font=dict(family='Inter', color='#E8EAF0', size=10),
+                                showlegend=False,
+                            )
+                            st.plotly_chart(_fig_br, use_container_width=True, config={'displaylogo': False},
+                                            key=f"br_profile_{_bid}")
+
+                        # Per-station results table
                         if _br_stns_disp and _is_ok:
                             _br_rows = []
                             for _bstn_d in _br_stns_disp:
                                 _brk = _bstn_d.get('name', '').lower().replace(' ', '_').replace('-', '_')
+                                _n_pumps_row = int(_bres.get(f"num_pumps_{_brk}", 0) or 0)
+                                _sdh_row = float(_bres.get(f"sdh_{_brk}", 0) or 0)
+                                _rh_row  = float(_bres.get(f"residual_head_out_{_brk}", 0) or 0)
                                 _br_rows.append({
-                                    "Station": _bstn_d.get('name', ''),
-                                    "Pumps": int(_bres.get(f"num_pumps_{_brk}", 0) or 0),
-                                    "DRA (ppm)": f"{float(_bres.get(f'dra_ppm_{_brk}', 0) or 0):.0f}",
-                                    "DR (%)": f"{float(_bres.get(f'drag_reduction_{_brk}', 0) or 0):.1f}",
-                                    "SDH (m)": f"{float(_bres.get(f'sdh_{_brk}', 0) or 0):.1f}",
+                                    "Station":    _bstn_d.get('name', ''),
+                                    "Type":       "Pump" if _bstn_d.get('is_pump') else "Pass-through",
+                                    "Pumps ON":   _n_pumps_row,
+                                    "SDH (m)":    f"{_sdh_row:.1f}",
+                                    "RH Out (m)": f"{_rh_row:.1f}",
+                                    "DRA (ppm)":  f"{float(_bres.get(f'dra_ppm_{_brk}', 0) or 0):.0f}",
+                                    "DR (%)":     f"{float(_bres.get(f'drag_reduction_{_brk}', 0) or 0):.1f}",
+                                    "Velocity (m/s)": f"{float(_bres.get(f'velocity_{_brk}', 0) or 0):.2f}",
                                     "Power Cost": f"₹{float(_bres.get(f'power_cost_{_brk}', 0) or 0):,.0f}",
-                                    "DRA Cost": f"₹{float(_bres.get(f'dra_cost_{_brk}', 0) or 0):,.0f}",
+                                    "DRA Cost":   f"₹{float(_bres.get(f'dra_cost_{_brk}', 0) or 0):,.0f}",
                                 })
                             if _br_rows:
-                                st.dataframe(pd.DataFrame(_br_rows), use_container_width=True, hide_index=True)
+                                st.dataframe(
+                                    pd.DataFrame(_br_rows),
+                                    use_container_width=True, hide_index=True,
+                                )
         elif _stns_with_branches and not _branch_results_map:
             st.markdown("---")
             st.info("🔀 Branch lines defined — run the optimizer to see branch results.")
