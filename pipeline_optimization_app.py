@@ -107,74 +107,305 @@ LOGO_PATH = ROOT / "logo.png"
 
 BUTTON_STYLE = """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg-primary:   #0a0e1a;
+  --bg-secondary: #0f1629;
+  --bg-card:      rgba(15,22,41,0.92);
+  --border:       rgba(74,144,217,0.22);
+  --accent:       #4A90D9;
+  --accent2:      #00D4FF;
+  --green:        #00FF88;
+  --red:          #FF3366;
+  --yellow:       #FFD700;
+  --orange:       #FF8C42;
+  --text-primary: #E8EAF0;
+  --text-muted:   #7A8BA8;
+}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:var(--bg-primary); }
+::-webkit-scrollbar-thumb { background:var(--accent); border-radius:3px; }
+
+/* ── GLOBAL APP ── */
+.stApp {
+  background: var(--bg-primary) !important;
+  font-family: 'Inter', sans-serif !important;
+  color: var(--text-primary) !important;
+}
+
+/* ── MAIN AREA ── */
+[data-testid="stMain"] { background: var(--bg-primary) !important; }
+[data-testid="block-container"] { padding-top:1rem !important; }
+
+/* ── HEADER / TOOLBAR ── */
+[data-testid="stHeader"] {
+  background: rgba(10,14,26,0.95) !important;
+  border-bottom: 1px solid var(--border) !important;
+  backdrop-filter: blur(12px) !important;
+}
+[data-testid="stToolbar"] { background: transparent !important; }
+
+/* ── SIDEBAR ── */
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg,#08111f 0%,#0b1526 100%) !important;
+  border-right: 1px solid var(--border) !important;
+}
+[data-testid="stSidebar"] * { color: var(--text-primary) !important; }
+[data-testid="stSidebarContent"] { background: transparent !important; }
+[data-testid="stSidebar"] h3 { color: var(--accent) !important; font-weight:700 !important; }
+[data-testid="stSidebar"] .stMarkdown h3 { color: var(--accent) !important; }
+
+/* ── TYPOGRAPHY ── */
+h1,h2,h3,h4,h5,h6 {
+  color: var(--text-primary) !important;
+  font-family: 'Inter', sans-serif !important;
+}
+p, label, .stMarkdown { color: var(--text-primary) !important; }
+code, .stCode { font-family: 'DM Mono', monospace !important; }
+
+/* ── TABS ── */
+.stTabs [data-baseweb="tab-list"] {
+  background: var(--bg-secondary) !important;
+  border-radius: 12px !important;
+  padding: 4px !important;
+  gap: 3px !important;
+  border: 1px solid var(--border) !important;
+}
+.stTabs [data-baseweb="tab"] {
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  padding: 7px 13px !important;
+  transition: all 0.18s ease !important;
+  border: none !important;
+  font-size: 0.81rem !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+  background: rgba(74,144,217,0.12) !important;
+  color: var(--accent) !important;
+}
+.stTabs [aria-selected="true"] {
+  background: var(--accent) !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 14px rgba(74,144,217,0.45) !important;
+}
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] { display:none !important; }
+.stTabs [data-baseweb="tab-panel"] { background:transparent !important; padding-top:1rem !important; }
+
+/* ── INPUTS ── */
+[data-testid="stNumberInput"] input,
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-primary) !important;
+  border-radius: 8px !important;
+  font-family: 'Inter', sans-serif !important;
+}
+[data-testid="stNumberInput"] input:focus,
+[data-testid="stTextInput"] input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(74,144,217,0.18) !important;
+}
+[data-baseweb="select"] > div {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border) !important;
+  color: var(--text-primary) !important;
+}
+[data-baseweb="popover"], [role="listbox"] { background: var(--bg-secondary) !important; }
+[role="option"] { color: var(--text-primary) !important; }
+[role="option"]:hover { background: rgba(74,144,217,0.15) !important; }
+
+/* ── EXPANDERS ── */
+[data-testid="stExpander"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(10px) !important;
+  margin-bottom: 8px !important;
+}
+[data-testid="stExpander"] details summary {
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
+}
+[data-testid="stExpander"] details summary:hover { color: var(--accent) !important; }
+[data-testid="stExpander"] details > div { background: transparent !important; }
+
+/* ── METRIC CARDS ── */
+[data-testid="metric-container"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+  padding: 18px !important;
+  backdrop-filter: blur(10px) !important;
+  transition: border-color 0.2s, box-shadow 0.2s !important;
+}
+[data-testid="metric-container"]:hover {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 18px rgba(74,144,217,0.18) !important;
+}
+[data-testid="stMetricLabel"] {
+  color: var(--text-muted) !important;
+  font-size: 0.73rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+[data-testid="stMetricValue"] {
+  color: var(--text-primary) !important;
+  font-weight: 800 !important;
+  font-size: 1.55rem !important;
+}
+[data-testid="stMetricDelta"] { color: var(--green) !important; }
+
+/* ── DATA TABLES ── */
+[data-testid="stDataFrame"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+.dvn-scroller { background: var(--bg-secondary) !important; }
+
+/* ── FILE UPLOADER ── */
+[data-testid="stFileUploader"] {
+  background: var(--bg-card) !important;
+  border: 1px dashed var(--border) !important;
+  border-radius: 12px !important;
+}
+[data-testid="stFileUploader"]:hover { border-color: var(--accent) !important; }
+
+/* ── ALERTS ── */
+[data-testid="stAlert"] { border-radius: 10px !important; }
+
+/* ── SECTION TITLE ── */
+.section-title {
+  font-weight: 800;
+  color: var(--text-primary);
+  font-size: 1.35em;
+  letter-spacing: 0.1px;
+  margin-bottom: 0.6em;
+  font-family: 'Inter', sans-serif;
+}
+
+/* ── PIPELINE MAP ── */
+.pipeline-map-container {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px;
+  backdrop-filter: blur(10px);
+  margin-bottom: 12px;
+}
+
+/* ── HR ── */
+hr { border:none !important; border-top:1px solid var(--border) !important; margin:0.8rem 0 !important; }
+
+/* ── HIDE STREAMLIT FOOTER ── */
+#MainMenu, footer { visibility:hidden !important; }
+
+/* ══ BUTTONS ══ */
+
+/* Primary (red gradient) */
 div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #C62828;
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
+  background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  box-shadow: 0 4px 14px rgba(198,40,40,0.28);
+  transition: all 0.2s ease;
 }
 div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #AB2020;
-    color: #ffffff;
+  background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%);
+  box-shadow: 0 6px 20px rgba(198,40,40,0.42);
+  transform: translateY(-1px);
+  color: #fff;
 }
 div[data-testid="stButton"] > button:active,
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #8E1A1A;
-    color: #ffffff;
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(198,40,40,0.28);
+  background: linear-gradient(135deg,#8E1A1A 0%,#6A1212 100%);
+  color: #fff;
 }
 
+/* Download (blue gradient) */
 div[data-testid="stDownloadButton"] > button {
-    background-color: #30427A;
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
+  background: linear-gradient(135deg,#30427A 0%,#1a2444 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  box-shadow: 0 4px 14px rgba(48,66,122,0.28);
+  transition: all 0.2s ease;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-    background-color: #2A3A6B;
-    color: #ffffff;
+  background: linear-gradient(135deg,#2A3A6B 0%,#152044 100%);
+  box-shadow: 0 6px 20px rgba(48,66,122,0.42);
+  transform: translateY(-1px);
+  color: #fff;
 }
 div[data-testid="stDownloadButton"] > button:active {
-    background-color: #23315B;
-    color: #ffffff;
+  transform: translateY(0);
+  background: linear-gradient(135deg,#1a2444 0%,#0f1830 100%);
+  color: #fff;
 }
 
+/* Action (green gradient) */
+button[aria-label="Hydraulic feasibility check"],
+button[aria-label="➕ Add Station"],
+button[aria-label="🗑️ Remove Station"] {
+  background: linear-gradient(135deg,#1B5E20 0%,#0F3612 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px rgba(27,94,32,0.28) !important;
+  transition: all 0.2s ease !important;
+}
+button[aria-label="Hydraulic feasibility check"]:hover,
+button[aria-label="➕ Add Station"]:hover,
+button[aria-label="🗑️ Remove Station"]:hover {
+  background: linear-gradient(135deg,#154A19 0%,#0A280C 100%) !important;
+  box-shadow: 0 6px 20px rgba(27,94,32,0.42) !important;
+  transform: translateY(-1px) !important;
+}
+button[aria-label="Hydraulic feasibility check"]:active,
+button[aria-label="➕ Add Station"]:active,
+button[aria-label="🗑️ Remove Station"]:active {
+  transform: translateY(0) !important;
+  background: linear-gradient(135deg,#0F3612 0%,#081A09 100%) !important;
+}
+
+/* File / Special (red gradient) */
 button[aria-label="Logout"],
 div[data-testid="stFileUploader"] button,
 button[aria-label="Browse files"],
 button[aria-label="💾 Save Case"] {
-    background-color: #C62828 !important;
-    color: #ffffff !important;
+  background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px rgba(198,40,40,0.28) !important;
 }
 button[aria-label="Logout"]:hover,
 div[data-testid="stFileUploader"] button:hover,
 button[aria-label="Browse files"]:hover,
 button[aria-label="💾 Save Case"]:hover {
-    background-color: #AB2020 !important;
-}
-button[aria-label="Logout"]:active,
-div[data-testid="stFileUploader"] button:active,
-button[aria-label="Browse files"]:active,
-button[aria-label="💾 Save Case"]:active {
-    background-color: #8E1A1A !important;
-}
-
-button[aria-label="Hydraulic feasibility check"],
-button[aria-label="➕ Add Station"],
-button[aria-label="🗑️ Remove Station"] {
-    background-color: #1B5E20 !important;
-    color: #ffffff !important;
-}
-button[aria-label="Hydraulic feasibility check"]:hover,
-button[aria-label="➕ Add Station"]:hover,
-button[aria-label="🗑️ Remove Station"]:hover {
-    background-color: #154A19 !important;
-}
-button[aria-label="Hydraulic feasibility check"]:active,
-button[aria-label="➕ Add Station"]:active,
-button[aria-label="🗑️ Remove Station"]:active {
-    background-color: #0F3612 !important;
+  background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%) !important;
+  transform: translateY(-1px) !important;
 }
 </style>
 """
@@ -1365,48 +1596,7 @@ def _get_linefill_snapshot_for_hour(
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
-#Custom Styles
-st.markdown("""
-    <style>
-    .stButton > button {
-        font-weight: 600;
-        border: 1px solid transparent;
-        border-radius: 12px;
-        box-shadow: none;
-        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
-    }
-    .stDownloadButton > button {
-        font-weight: 600;
-        border: 1px solid transparent;
-        border-radius: 12px;
-        box-shadow: none;
-        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
-    }
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        filter: brightness(0.92);
-    }
-    .stButton > button:active,
-    .stDownloadButton > button:active {
-        filter: brightness(0.85);
-        transform: translateY(1px);
-    }
-    .section-title {
-        font-weight: 700;
-        color: #1e293b;
-        font-size: 1.5em;
-        letter-spacing: 0.2px;
-        margin-bottom: 0.7em;
-        margin-top: 0.2em;
-    }
-    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-        color: #d32f2f;
-        border-bottom: 2.5px solid #d32f2f;
-        font-weight: bold;
-        background: #ffeaea33;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# (styles already applied via BUTTON_STYLE above)
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
@@ -1549,47 +1739,48 @@ def restore_case_dict(loaded_data):
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
         ensure_initial_dra_column(st.session_state["linefill_df"], default=0.0, fill_blanks=True)
     for i, stn in enumerate(st.session_state['stations'], start=1):
-        head_data = loaded_data.get(f"head_data_{i}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i}", None)
-        peak_data = loaded_data.get(f"peak_data_{i}", None)
-        loop_peak_data = loaded_data.get(f"loop_peak_data_{i}", None)
+        _uid = _ensure_station_uid(stn)
+        head_data = loaded_data.get(f"head_data__{_uid}", loaded_data.get(f"head_data_{i}", None))
+        eff_data  = loaded_data.get(f"eff_data__{_uid}", loaded_data.get(f"eff_data_{i}", None))
+        peak_data = loaded_data.get(f"peak_data__{_uid}", loaded_data.get(f"peak_data_{i}", None))
+        loop_peak_data = loaded_data.get(f"loop_peak_data__{_uid}", loaded_data.get(f"loop_peak_data_{i}", None))
         if head_data is not None:
             df_head = pd.DataFrame(head_data)
-            st.session_state[f"head_data_{i}"] = df_head
+            st.session_state[f"head_data__{_uid}"] = df_head
             st.session_state['stations'][i-1]['head_data'] = head_data
         if eff_data is not None:
             df_eff = pd.DataFrame(eff_data)
-            st.session_state[f"eff_data_{i}"] = df_eff
+            st.session_state[f"eff_data__{_uid}"] = df_eff
             st.session_state['stations'][i-1]['eff_data'] = eff_data
         if peak_data is not None:
             df_peak = pd.DataFrame(peak_data)
-            st.session_state[f"peak_data_{i}"] = df_peak
+            st.session_state[f"peak_data__{_uid}"] = df_peak
             st.session_state['stations'][i-1]['peak_data'] = peak_data
         if loop_peak_data is not None:
             df_lpeak = pd.DataFrame(loop_peak_data)
-            st.session_state[f"loop_peak_data_{i}"] = df_lpeak
+            st.session_state[f"loop_peak_data__{_uid}"] = df_lpeak
             st.session_state['stations'][i-1].setdefault('loopline', {})['peaks'] = loop_peak_data
         else:
             loop_peaks = st.session_state['stations'][i-1].get('loopline', {}).get('peaks')
             if loop_peaks is not None:
-                st.session_state[f"loop_peak_data_{i}"] = pd.DataFrame(loop_peaks)
+                st.session_state[f"loop_peak_data__{_uid}"] = pd.DataFrame(loop_peaks)
 
         # Load pump type-specific data if present
         for ptype in stn.get('pump_types', {}).keys():
-            head_pt = loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data'))
-            eff_pt  = loaded_data.get(f"eff_data_{i}{ptype}", stn['pump_types'][ptype].get('eff_data'))
-            peak_pt = loaded_data.get(f"peak_data_{i}{ptype}", stn['pump_types'][ptype].get('peak_data'))
+            head_pt = loaded_data.get(f"head_data__{_uid}{ptype}", loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data')))
+            eff_pt  = loaded_data.get(f"eff_data__{_uid}{ptype}", loaded_data.get(f"eff_data_{i}{ptype}", stn['pump_types'][ptype].get('eff_data')))
+            peak_pt = loaded_data.get(f"peak_data__{_uid}{ptype}", loaded_data.get(f"peak_data_{i}{ptype}", stn['pump_types'][ptype].get('peak_data')))
             if head_pt is not None:
                 df_head_pt = pd.DataFrame(head_pt)
-                st.session_state[f"head_data_{i}{ptype}"] = df_head_pt
+                st.session_state[f"head_data__{_uid}{ptype}"] = df_head_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['head_data'] = head_pt
             if eff_pt is not None:
                 df_eff_pt = pd.DataFrame(eff_pt)
-                st.session_state[f"eff_data_{i}{ptype}"] = df_eff_pt
+                st.session_state[f"eff_data__{_uid}{ptype}"] = df_eff_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['eff_data'] = eff_pt
             if peak_pt is not None:
                 df_peak_pt = pd.DataFrame(peak_pt)
-                st.session_state[f"peak_data_{i}{ptype}"] = df_peak_pt
+                st.session_state[f"peak_data__{_uid}{ptype}"] = df_peak_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['peak_data'] = peak_pt
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
@@ -2224,6 +2415,24 @@ else:
     # Backfill UIDs for stations loaded from older saved cases
     for _s in st.session_state["stations"]:
         _ensure_station_uid(_s)
+
+# ── Pipeline Network Preview Map ────────────────────────────────────────────
+with st.expander("🗺️ Pipeline Network Map (Preview)", expanded=True):
+    _preview_result = st.session_state.get("last_res") if "last_res" in st.session_state else None
+    _preview_stns   = (st.session_state.get("last_stations_data")
+                       if _preview_result is not None
+                       else st.session_state.get("stations", []))
+    st.markdown('<div class="pipeline-map-container">', unsafe_allow_html=True)
+    st.plotly_chart(
+        render_pipeline_map(_preview_stns, _preview_result),
+        use_container_width=True,
+        config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+        key="pipeline_map_preview",
+    )
+    if _preview_result is None:
+        st.caption("Run the optimizer to see live pressure and DRA data on the map.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
 with st.sidebar:
     st.markdown("### Stations")
     add_col, rem_col = st.columns(2)
@@ -2562,6 +2771,267 @@ st.subheader("🏁 Terminal Station")
 terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name","Terminal"), key="terminal_name")
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
+
+
+def render_pipeline_map(stations: list, result: dict | None = None):
+    """Return a dark-navy Plotly figure of the pipeline network."""
+    import plotly.graph_objects as go  # already imported at top but safe to re-import
+
+    if not stations:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor="#080d1a", plot_bgcolor="#080d1a", height=280,
+            annotations=[dict(
+                text="No stations configured yet",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False, font=dict(color="#7A8BA8", size=14, family="Inter"),
+            )],
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        )
+        return fig
+
+    # ── KP cumulative positions ──────────────────────────────────────────
+    kp_list = [0.0]
+    for stn in stations:
+        kp_list.append(kp_list[-1] + float(stn.get('L', 50.0)))
+    max_kp = max(kp_list[-1], 1.0)
+
+    # terminal metadata from session state
+    t_name = st.session_state.get('terminal_name', 'Terminal')
+    t_elev = st.session_state.get('terminal_elev', 0.0)
+    t_head = st.session_state.get('terminal_head', 50.0)
+
+    def _xp(kp):
+        return (kp / max_kp) * 88.0 + 6.0
+
+    all_kp    = kp_list                          # len = n_stations + 1
+    all_x     = [_xp(k) for k in all_kp]
+    n_total   = len(all_x)
+
+    # alternating label heights
+    label_y   = [2.6 if i % 2 == 0 else -2.9 for i in range(n_total)]
+
+    # ── per-station colour & metadata ────────────────────────────────────
+    COL_ORIGIN  = "#00FF88"
+    COL_PUMP    = "#4A90D9"
+    COL_PUMPDRA = "#00D4FF"
+    COL_DRA     = "#FFD700"
+    COL_PASS    = "#556070"
+    COL_TERM    = "#FF3366"
+
+    def _rkey(name):
+        return name.lower().replace(' ', '_').replace('-', '_')
+
+    node_cols, node_sizes, node_hover, node_names, node_syms = [], [], [], [], []
+
+    for i, stn in enumerate(stations):
+        name    = stn.get('name', f'Station {i+1}')
+        kp_val  = kp_list[i]
+        elev    = float(stn.get('elev', 0.0))
+        is_pump = bool(stn.get('is_pump', False))
+        max_dr  = float(stn.get('max_dr', 0.0))
+        has_dra = max_dr > 0
+
+        rk = _rkey(name)
+        sdh     = float((result or {}).get(f"sdh_{rk}", 0.0) or 0.0)
+        dra_ppm = float((result or {}).get(f"dra_ppm_{rk}", 0.0) or 0.0)
+        n_pumps = int((result or {}).get(f"num_pumps_{rk}", 0) or 0)
+        dr_pct  = float((result or {}).get(f"drag_reduction_{rk}", 0.0) or 0.0)
+        pw_cost = float((result or {}).get(f"power_cost_{rk}", 0.0) or 0.0)
+
+        if i == 0:
+            col = COL_ORIGIN;  typ = "Origin"
+        elif is_pump and has_dra:
+            col = COL_PUMPDRA; typ = "Pump + DRA"
+        elif is_pump:
+            col = COL_PUMP;    typ = "Pump Station"
+        elif has_dra:
+            col = COL_DRA;     typ = "DRA Only"
+        else:
+            col = COL_PASS;    typ = "Pass-through"
+
+        lines = [
+            f"<b style='color:{col};font-size:13px'>{name}</b>",
+            f"<span style='color:#9AAFC0'>Type:</span> {typ}",
+            f"<span style='color:#9AAFC0'>KP:</span> {kp_val:.1f} km",
+            f"<span style='color:#9AAFC0'>Elevation:</span> {elev:.1f} m",
+        ]
+        if result:
+            lines += [
+                f"<span style='color:#9AAFC0'>Discharge head:</span> <b>{sdh:.1f} m</b>",
+                f"<span style='color:#9AAFC0'>DRA injection:</span> <b>{dra_ppm:.0f} ppm</b>",
+                f"<span style='color:#9AAFC0'>Drag reduction:</span> <b>{dr_pct:.1f}%</b>",
+                f"<span style='color:#9AAFC0'>Pumps running:</span> <b>{n_pumps}</b>",
+                f"<span style='color:#9AAFC0'>Power cost:</span> <b>₹{pw_cost:,.0f}</b>",
+            ]
+
+        node_names.append(name)
+        node_cols.append(col)
+        node_sizes.append(22)
+        node_hover.append("<br>".join(lines) + "<extra></extra>")
+        node_syms.append("circle")
+
+    # Terminal node
+    t_lines = [
+        f"<b style='color:{COL_TERM};font-size:13px'>{t_name}</b>",
+        f"<span style='color:#9AAFC0'>Type:</span> Terminal",
+        f"<span style='color:#9AAFC0'>KP:</span> {kp_list[-1]:.1f} km",
+        f"<span style='color:#9AAFC0'>Elevation:</span> {t_elev:.1f} m",
+        f"<span style='color:#9AAFC0'>Min residual head:</span> {t_head:.1f} m",
+    ]
+    node_names.append(t_name)
+    node_cols.append(COL_TERM)
+    node_sizes.append(22)
+    node_hover.append("<br>".join(t_lines) + "<extra></extra>")
+    node_syms.append("diamond")
+
+    # ── build figure ─────────────────────────────────────────────────────
+    fig = go.Figure()
+
+    # pipe segments — glow layer then bright layer
+    def _seg_col(i):
+        """RGBA color for pipe segment i based on pressure utilisation."""
+        if result is None:
+            return ("rgba(74,144,217,0.12)", "rgba(74,144,217,0.65)")
+        idx_dn = i + 1
+        if idx_dn < len(stations):
+            stn_dn = stations[idx_dn]
+            rk = _rkey(stn_dn.get('name', ''))
+            sdh_v  = float(result.get(f"sdh_{rk}",  0.0) or 0.0)
+            maop_v = float(result.get(f"maop_{rk}", 150.0) or 150.0)
+            ratio  = max(0.0, min(1.0, sdh_v / maop_v if maop_v > 0 else 0.5))
+        else:
+            ratio = 0.3
+        if ratio < 0.5:
+            r = int(ratio * 2 * 210)
+            g = 200; b = 60
+        else:
+            r = 210; b = 40
+            g = int((1 - (ratio - 0.5) * 2) * 200)
+        glow   = f"rgba({r},{g},{b},0.12)"
+        bright = f"rgba({r},{g},{b},0.72)"
+        return glow, bright
+
+    for i in range(len(all_x) - 1):
+        x0, x1 = all_x[i], all_x[i + 1]
+        glow_c, bright_c = _seg_col(i)
+        # glow
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[0, 0], mode="lines",
+            line=dict(color=glow_c, width=20),
+            hoverinfo="skip", showlegend=False,
+        ))
+        # pipe line
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[0, 0], mode="lines",
+            line=dict(color=bright_c, width=5),
+            hoverinfo="skip", showlegend=False,
+        ))
+        # flow-direction arrow annotation at midpoint
+        mx = (x0 + x1) / 2
+        fig.add_annotation(
+            x=mx + 1.8, y=0, ax=mx - 1.8, ay=0,
+            xref="x", yref="y", axref="x", ayref="y",
+            arrowhead=2, arrowsize=1.3, arrowwidth=2.2,
+            arrowcolor=bright_c,
+            showarrow=True,
+        )
+
+    # node glow rings
+    fig.add_trace(go.Scatter(
+        x=all_x, y=[0] * n_total, mode="markers",
+        marker=dict(size=[s + 20 for s in node_sizes], color=node_cols, opacity=0.10),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    # station nodes
+    fig.add_trace(go.Scatter(
+        x=all_x, y=[0] * n_total, mode="markers",
+        marker=dict(
+            size=node_sizes,
+            color=node_cols,
+            line=dict(color="#080d1a", width=3),
+            opacity=0.95,
+            symbol=node_syms,
+        ),
+        hovertemplate=node_hover,
+        showlegend=False,
+        name="",
+    ))
+
+    # connector dotted lines node → label
+    for i in range(n_total):
+        ly = label_y[i]
+        sign = 1 if ly > 0 else -1
+        fig.add_shape(type="line",
+            x0=all_x[i], y0=sign * 0.55,
+            x1=all_x[i], y1=ly * 0.82,
+            line=dict(color=node_cols[i], width=1, dash="dot"),
+        )
+
+    # label boxes
+    for i, (name, col) in enumerate(zip(node_names, node_cols)):
+        short = name if len(name) <= 13 else name[:12] + "…"
+        fig.add_annotation(
+            x=all_x[i], y=label_y[i],
+            text=f"<b>{short}</b>",
+            showarrow=False,
+            font=dict(color=col, size=9.5, family="Inter"),
+            align="center",
+            bgcolor="rgba(8,13,26,0.88)",
+            bordercolor=col, borderwidth=1, borderpad=3,
+        )
+
+    # KP tick marks
+    for i, kp_val in enumerate(all_kp):
+        fig.add_annotation(
+            x=all_x[i], y=-3.8,
+            text=f"KP {kp_val:.0f}",
+            showarrow=False,
+            font=dict(color="#455060", size=7.5, family="DM Mono, monospace"),
+        )
+
+    # legend traces (dummy)
+    for lbl, col, sym in [
+        ("Origin",       COL_ORIGIN,  "circle"),
+        ("Pump Station", COL_PUMP,    "circle"),
+        ("Pump + DRA",   COL_PUMPDRA, "circle"),
+        ("DRA Only",     COL_DRA,     "circle"),
+        ("Terminal",     COL_TERM,    "diamond"),
+    ]:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=9, color=col, symbol=sym),
+            name=lbl, showlegend=True,
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="#080d1a",
+        plot_bgcolor="#080d1a",
+        height=360,
+        margin=dict(l=10, r=10, t=28, b=28),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2, 102]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-4.5, 3.8]),
+        font=dict(family="Inter", color="#E8EAF0", size=11),
+        hoverlabel=dict(
+            bgcolor="#0f1629",
+            bordercolor="#4A90D9",
+            font=dict(family="Inter", size=11, color="#E8EAF0"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.01,
+            xanchor="right", x=1,
+            bgcolor="rgba(10,14,26,0.85)",
+            bordercolor="rgba(74,144,217,0.35)",
+            borderwidth=1,
+            font=dict(color="#E8EAF0", size=10),
+        ),
+        dragmode="pan",
+    )
+    return fig
+
 
 def get_full_case_dict():
     """Collect the complete case description from ``st.session_state``."""
@@ -7084,11 +7554,69 @@ if not auto_batch:
 
 
 if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
+    tab_map, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
+        "🗺️ Pipeline Map",
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
         "📈 Sensitivity", "📊 Benchmarking", "💡 Savings Simulator"
     ])
+
+    # ── Pipeline Map Tab ──────────────────────────────────────────────────
+    with tab_map:
+        _res_map = st.session_state.get("last_res")
+        _stns_map = (st.session_state.get("last_stations_data")
+                     if _res_map is not None
+                     else st.session_state.get("stations", []))
+
+        if _res_map is not None:
+            _stns_for_kpi = st.session_state.get("last_stations_data", [])
+            _rkeys_map    = [s.get("name","").lower().replace(" ","_").replace("-","_")
+                             for s in _stns_for_kpi]
+            _total_len    = sum(float(s.get("L", 0)) for s in _stns_for_kpi)
+            _total_dra    = sum(float(_res_map.get(f"dra_cost_{k}", 0) or 0) for k in _rkeys_map)
+            _total_pwr    = sum(float(_res_map.get(f"power_cost_{k}", 0) or 0) for k in _rkeys_map)
+            _flow_val     = st.session_state.get("FLOW", 0)
+            _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+            with _mc1:
+                st.metric("Pipeline Length", f"{_total_len:.0f} km")
+            with _mc2:
+                st.metric("Flow Rate", f"{_flow_val:.0f} m³/h")
+            with _mc3:
+                st.metric("DRA Cost", f"\u20b9{_total_dra:,.0f}")
+            with _mc4:
+                st.metric("Power Cost", f"\u20b9{_total_pwr:,.0f}")
+
+        st.markdown('<div class="pipeline-map-container">', unsafe_allow_html=True)
+        st.plotly_chart(
+            render_pipeline_map(_stns_map, _res_map),
+            use_container_width=True,
+            config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+            key="pipeline_map_results_tab",
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if _res_map is None:
+            st.info("Run the optimizer to see live pressure, DRA and cost data on the map.")
+        else:
+            st.markdown("#### Station Summary")
+            _map_rows = []
+            for _s in _stns_map:
+                _rk = _s.get("name","").lower().replace(" ","_").replace("-","_")
+                _map_rows.append({
+                    "Station": _s.get("name", ""),
+                    "Type": ("Pump + DRA" if _s.get("is_pump") and float(_s.get("max_dr",0))>0
+                             else "Pump" if _s.get("is_pump")
+                             else "DRA Only" if float(_s.get("max_dr",0))>0
+                             else "Pass-through"),
+                    "SDH (m)":   f"{float(_res_map.get(f'sdh_{_rk}',   0) or 0):.1f}",
+                    "Pumps":     int(_res_map.get(f"num_pumps_{_rk}", 0) or 0),
+                    "DRA (ppm)": f"{float(_res_map.get(f'dra_ppm_{_rk}', 0) or 0):.0f}",
+                    "DR (%)":    f"{float(_res_map.get(f'drag_reduction_{_rk}', 0) or 0):.1f}",
+                    "Power Cost":f"\u20b9{float(_res_map.get(f'power_cost_{_rk}',0) or 0):,.0f}",
+                    "DRA Cost":  f"\u20b9{float(_res_map.get(f'dra_cost_{_rk}', 0) or 0):,.0f}",
+                })
+            if _map_rows:
+                st.dataframe(pd.DataFrame(_map_rows), use_container_width=True, hide_index=True)
     
 
 
