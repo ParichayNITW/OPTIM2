@@ -2409,7 +2409,8 @@ if "stations" not in st.session_state:
         'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
         'max_dr': 0.0,
         'delivery': 0.0,
-        'supply': 0.0
+        'supply': 0.0,
+        'branches': [],
     }]
 else:
     # Backfill UIDs for stations loaded from older saved cases
@@ -2447,7 +2448,8 @@ with st.sidebar:
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
             'max_dr': 0.0,
             'delivery': 0.0,
-            'supply': 0.0
+            'supply': 0.0,
+            'branches': [],
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station", key="rem_station"):
@@ -2469,6 +2471,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
     _sinit(stn, 'max_pumps', 1)
     _sinit(stn, 'delivery', 0.0)
     _sinit(stn, 'supply', 0.0)
+    if 'branches' not in stn:
+        stn['branches'] = []
     # D and t stored in inches in session state to avoid meter↔inch conversion fighting
     if _skey(stn, 'D_in') not in st.session_state:
         st.session_state[_skey(stn, 'D_in')] = stn.get('D', 0.711) / 0.0254
@@ -2495,6 +2499,182 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, step=1, key=_skey(stn, 'max_pumps'))
             stn['delivery'] = st.number_input("Delivery (m³/hr)", key=_skey(stn, 'delivery'))
             stn['supply'] = st.number_input("Supply (m³/hr)", key=_skey(stn, 'supply'))
+
+        # ── Branch / Tap-off lines ────────────────────────────────────────────
+        st.markdown('<hr style="border-color:rgba(74,144,217,0.2);margin:0.5rem 0;">', unsafe_allow_html=True)
+        st.markdown("**🔀 Branch / Tap-off Lines at this Junction**")
+        _branches = stn.get('branches', [])
+        if st.button("➕ Add Branch Line", key=f"add_branch__{uid}"):
+            _new_br = {
+                'uid': str(uuid.uuid4())[:8],
+                'name': f"Branch {len(_branches) + 1}",
+                'flow_m3h': 50.0,
+                'stations': [{
+                    'uid': str(uuid.uuid4())[:8],
+                    'name': 'Branch Stn 1',
+                    'elev': 0.0, 'D': 0.457, 't': 0.006, 'SMYS': 52000.0,
+                    'rough': 0.00004, 'L': 20.0, 'min_residual': 10.0,
+                    'is_pump': False, 'pump_head_m': 0.0, 'max_pumps': 1,
+                    'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+                    'max_dr': 0.0, 'delivery': 0.0, 'supply': 0.0,
+                    'MinRPM': 1500.0, 'DOL': 1500.0,
+                }],
+                'terminal': {'name': 'Branch Terminal', 'elev': 0.0, 'min_residual': 10.0},
+            }
+            _branches.append(_new_br)
+            stn['branches'] = _branches
+
+        _branches_keep = []
+        for _bi, _branch in enumerate(_branches):
+            _b_uid = _branch.get('uid', str(_bi))
+            with st.expander(
+                f"🔀 {_branch.get('name', f'Branch {_bi+1}')} — {_branch.get('flow_m3h', 0):.0f} m³/hr",
+                expanded=False,
+            ):
+                _remove_b = st.button("🗑️ Remove Branch", key=f"del_branch__{_b_uid}")
+                if _remove_b:
+                    continue  # drop from list
+
+                _bc1, _bc2 = st.columns(2)
+                with _bc1:
+                    _branch['name'] = st.text_input(
+                        "Branch Name", value=_branch.get('name', ''), key=f"bname__{_b_uid}"
+                    )
+                with _bc2:
+                    _branch['flow_m3h'] = st.number_input(
+                        "Branch Flow (m³/hr)", value=float(_branch.get('flow_m3h', 50.0)),
+                        min_value=0.0, step=10.0, key=f"bflow__{_b_uid}"
+                    )
+
+                # Branch terminal
+                st.markdown("**Terminal**")
+                _t = _branch.get('terminal', {})
+                _bt1, _bt2, _bt3 = st.columns(3)
+                with _bt1:
+                    _t['name'] = st.text_input(
+                        "Name", value=_t.get('name', ''), key=f"btname__{_b_uid}"
+                    )
+                with _bt2:
+                    _t['elev'] = st.number_input(
+                        "Elevation (m)", value=float(_t.get('elev', 0.0)),
+                        step=0.1, key=f"btelev__{_b_uid}"
+                    )
+                with _bt3:
+                    _t['min_residual'] = st.number_input(
+                        "Min Pressure (m)", value=float(_t.get('min_residual', 10.0)),
+                        min_value=0.0, step=1.0, key=f"btmin__{_b_uid}"
+                    )
+                _branch['terminal'] = _t
+
+                # Branch stations / pipe segments
+                st.markdown("**Branch Stations / Pipe Segments**")
+                _bstns = _branch.get('stations', [])
+                _bstns_keep = []
+                for _si, _bstn in enumerate(_bstns):
+                    _bs_uid = _bstn.get('uid', str(_si))
+                    with st.expander(
+                        f"Stn {_si + 1}: {_bstn.get('name', '')}",
+                        expanded=(_si == 0),
+                    ):
+                        _rem_bs = st.button("🗑️ Remove", key=f"rem_bstn__{_bs_uid}")
+                        if _rem_bs:
+                            continue  # drop station
+
+                        _sc1, _sc2, _sc3 = st.columns(3)
+                        with _sc1:
+                            _bstn['name'] = st.text_input(
+                                "Name", value=_bstn.get('name', ''), key=f"bsn__{_bs_uid}"
+                            )
+                            _bstn['elev'] = st.number_input(
+                                "Elevation (m)", value=float(_bstn.get('elev', 0.0)),
+                                step=0.1, key=f"bse__{_bs_uid}"
+                            )
+                            _bstn['L'] = st.number_input(
+                                "Segment Length (km)", value=float(_bstn.get('L', 20.0)),
+                                min_value=0.01, step=1.0, key=f"bsl__{_bs_uid}"
+                            )
+                        with _sc2:
+                            _bD_in = st.number_input(
+                                "OD (in)", value=float(_bstn.get('D', 0.457)) / 0.0254,
+                                min_value=2.0, format="%.2f", step=0.01, key=f"bsd__{_bs_uid}"
+                            )
+                            _bt_in = st.number_input(
+                                "Wall Thk (in)", value=float(_bstn.get('t', 0.006)) / 0.0254,
+                                min_value=0.1, format="%.3f", step=0.001, key=f"bst__{_bs_uid}"
+                            )
+                            _bstn['D'] = _bD_in * 0.0254
+                            _bstn['t'] = _bt_in * 0.0254
+                            _bstn['SMYS'] = st.number_input(
+                                "SMYS (psi)", value=float(_bstn.get('SMYS', 52000.0)),
+                                step=1000.0, key=f"bsSMYS__{_bs_uid}"
+                            )
+                        with _sc3:
+                            _bstn['rough'] = st.number_input(
+                                "Roughness (m)", value=float(_bstn.get('rough', 0.00004)),
+                                format="%.7f", step=0.0000001, key=f"bsr__{_bs_uid}"
+                            )
+                            _bstn['min_residual'] = st.number_input(
+                                "Min Residual (m)", value=float(_bstn.get('min_residual', 10.0)),
+                                min_value=0.0, step=1.0, key=f"bsmr__{_bs_uid}"
+                            )
+                            _bstn['max_dr'] = st.number_input(
+                                "Max DRA%", value=float(_bstn.get('max_dr', 0.0)),
+                                min_value=0.0, max_value=70.0, step=1.0, key=f"bsdr__{_bs_uid}"
+                            )
+                            _bstn['is_pump'] = st.checkbox(
+                                "Has Pump?", value=bool(_bstn.get('is_pump', False)),
+                                key=f"bsip__{_bs_uid}"
+                            )
+
+                        if _bstn.get('is_pump'):
+                            _p1, _p2, _p3 = st.columns(3)
+                            with _p1:
+                                _bstn['pump_head_m'] = st.number_input(
+                                    "Rated Head (m)", value=float(_bstn.get('pump_head_m', 200.0)),
+                                    min_value=0.0, step=10.0, key=f"bsph__{_bs_uid}"
+                                )
+                            with _p2:
+                                _bstn['max_pumps'] = int(st.number_input(
+                                    "No. of Pumps", value=int(_bstn.get('max_pumps', 1)),
+                                    min_value=1, step=1, key=f"bsnp__{_bs_uid}"
+                                ))
+                            with _p3:
+                                _bstn['power_type'] = st.selectbox(
+                                    "Power Type", ['Grid', 'Diesel'],
+                                    index=0 if _bstn.get('power_type', 'Grid') == 'Grid' else 1,
+                                    key=f"bspt__{_bs_uid}"
+                                )
+                            _r1, _r2 = st.columns(2)
+                            with _r1:
+                                _bstn['rate'] = st.number_input(
+                                    "Rate (₹/kWh or ₹/L)", value=float(_bstn.get('rate', 9.0)),
+                                    min_value=0.0, step=0.5, key=f"bsrate__{_bs_uid}"
+                                )
+                            with _r2:
+                                _bstn['sfc'] = st.number_input(
+                                    "SFC (g/kWh)", value=float(_bstn.get('sfc', 150.0)),
+                                    min_value=0.0, step=5.0, key=f"bssfc__{_bs_uid}"
+                                )
+
+                        _bstns_keep.append(_bstn)
+
+                if st.button("➕ Add Branch Station", key=f"add_bstn__{_b_uid}"):
+                    _bstns_keep.append({
+                        'uid': str(uuid.uuid4())[:8],
+                        'name': f"Branch Stn {len(_bstns_keep) + 1}",
+                        'elev': 0.0, 'D': 0.457, 't': 0.006, 'SMYS': 52000.0,
+                        'rough': 0.00004, 'L': 20.0, 'min_residual': 10.0,
+                        'is_pump': False, 'pump_head_m': 0.0, 'max_pumps': 1,
+                        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+                        'max_dr': 0.0, 'delivery': 0.0, 'supply': 0.0,
+                        'MinRPM': 1500.0, 'DOL': 1500.0,
+                    })
+
+                _branch['stations'] = _bstns_keep
+                _branches_keep.append(_branch)
+
+        stn['branches'] = _branches_keep
+
         st.markdown("**Loopline (optional)**")
         has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag__{uid}")
         if has_loop:
@@ -2993,18 +3173,77 @@ def render_pipeline_map(stations: list, result: dict | None = None):
         )
 
     # legend traces (dummy)
+    COL_BRANCH = "#FF8C42"
+    _has_branches = any(bool(s.get('branches')) for s in stations)
     for lbl, col, sym in [
         ("Origin",       COL_ORIGIN,  "circle"),
         ("Pump Station", COL_PUMP,    "circle"),
         ("Pump + DRA",   COL_PUMPDRA, "circle"),
         ("DRA Only",     COL_DRA,     "circle"),
         ("Terminal",     COL_TERM,    "diamond"),
-    ]:
+    ] + ([("Branch Terminal", COL_BRANCH, "diamond")] if _has_branches else []):
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
             marker=dict(size=9, color=col, symbol=sym),
             name=lbl, showlegend=True,
         ))
+
+    # ── Branch / tap-off lines ────────────────────────────────────────────
+    for _mi, _stn_b in enumerate(stations):
+        _jx = all_x[_mi]
+        for _bri, _branch in enumerate(_stn_b.get('branches', [])):
+            # Alternate branches above/below the pipe spine
+            _side = 1 if _bri % 2 == 0 else -1
+            # Vertical offset grows so multiple branches don't overlap labels
+            _ty = _side * (3.3 + _bri * 0.5)
+            _tx = _jx + 5.0 + _bri * 2.5   # slight horizontal spread
+            _tx = min(_tx, 98.0)
+
+            # Dashed stem from mainline spine to branch terminal
+            fig.add_trace(go.Scatter(
+                x=[_jx, _jx, _tx],
+                y=[0.0, _ty * 0.55, _ty],
+                mode='lines',
+                line=dict(color=COL_BRANCH, width=2, dash='dash'),
+                hoverinfo='skip',
+                showlegend=False,
+            ))
+
+            # Branch terminal node
+            _bt = _branch.get('terminal', {})
+            _bt_name = _bt.get('name', _branch.get('name', f'Branch {_bri+1}'))
+            _bt_elev = float(_bt.get('elev', 0.0))
+            _bf_flow = float(_branch.get('flow_m3h', 0.0))
+            fig.add_trace(go.Scatter(
+                x=[_tx], y=[_ty],
+                mode='markers+text',
+                marker=dict(
+                    symbol='diamond', size=14, color=COL_BRANCH,
+                    line=dict(color='#FFD700', width=1.5),
+                ),
+                text=[_bt_name[:12]],
+                textposition='top center' if _side > 0 else 'bottom center',
+                textfont=dict(color=COL_BRANCH, size=8.5, family="Inter"),
+                hovertemplate=(
+                    f"<b style='color:{COL_BRANCH}'>{_bt_name}</b><br>"
+                    f"Branch: {_branch.get('name','')}<br>"
+                    f"Flow: {_bf_flow:.0f} m³/hr<br>"
+                    f"Elev: {_bt_elev:.1f} m<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+            # Flow label at midpoint of stem
+            fig.add_annotation(
+                x=(_jx + _tx) / 2,
+                y=(_ty * 0.55 + _ty) / 2,
+                text=f"{_bf_flow:.0f} m³/hr",
+                showarrow=False,
+                font=dict(color=COL_BRANCH, size=8, family="Inter"),
+            )
+
+    _y_max = 4.2 + (0.6 if _has_branches else 0.0)
+    _y_min = -4.5 - (0.6 if _has_branches else 0.0)
 
     fig.update_layout(
         paper_bgcolor="#080d1a",
@@ -3012,7 +3251,7 @@ def render_pipeline_map(stations: list, result: dict | None = None):
         height=360,
         margin=dict(l=10, r=10, t=28, b=28),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2, 102]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-4.5, 3.8]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[_y_min, _y_max]),
         font=dict(family="Inter", color="#E8EAF0", size=11),
         hoverlabel=dict(
             bgcolor="#0f1629",
@@ -6893,10 +7132,21 @@ def run_all_updates():
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    # Build a solve copy where branch flows are added to each station's delivery
+    # so the mainline flow correctly decreases at each tap-off junction.
+    stations_data_for_solve = copy.deepcopy(stations_data)
+    for _sfs in stations_data_for_solve:
+        _bf_total = sum(
+            float(_br.get('flow_m3h', 0.0) or 0.0)
+            for _br in _sfs.get('branches', [])
+        )
+        if _bf_total > 0:
+            _sfs['delivery'] = float(_sfs.get('delivery', 0.0) or 0.0) + _bf_total
+
     start_time = time.perf_counter()
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
-            stations_data,
+            stations_data_for_solve,
             term_data,
             st.session_state.get("FLOW", 1000.0),
             kv_list,
@@ -6927,6 +7177,34 @@ def run_all_updates():
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
     st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
     st.session_state["last_station_table"] = build_station_table(res, stations_data)
+
+    # Solve branch hydraulics using junction inlet pressures from the mainline result.
+    _branch_results: dict = {}
+    _kv_br = kv_list[0] if kv_list else float(st.session_state.get("KV_max", 10.0))
+    _rho_br = rho_list[0] if rho_list else float(st.session_state.get("Density", 820.0))
+    for _stn_br in stations_data:
+        _stn_name_br = _stn_br.get('name', '')
+        # residual_head_in gives the pressure arriving at this station via upstream pipe
+        _jh = res.get(
+            f"residual_head_in_{_stn_name_br}",
+            res.get(f"residual_head_{_stn_name_br}", 0.0),
+        )
+        for _br_item in _stn_br.get('branches', []):
+            _br_res = pipeline_model.solve_branch(
+                junction_suction_head=float(_jh or 0.0),
+                branch=_br_item,
+                KV=_kv_br,
+                rho=_rho_br,
+                RateDRA=float(st.session_state.get('RateDRA', 500.0)),
+                Price_HSD=float(st.session_state.get('Price_HSD', 70.0)),
+                Fuel_density=float(st.session_state.get('Fuel_density', 820.0)),
+                Ambient_temp=float(st.session_state.get('Ambient_temp', 25.0)),
+                mop_kgcm2=float(st.session_state.get('MOP_kgcm2') or 0.0),
+                hours=24.0,
+            )
+            _branch_results[_br_item.get('uid', '')] = _br_res
+    st.session_state['branch_results'] = _branch_results
+
     st.session_state["run_mode"] = "instantaneous"
     st.rerun()
 
@@ -7617,7 +7895,66 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                 })
             if _map_rows:
                 st.dataframe(pd.DataFrame(_map_rows), use_container_width=True, hide_index=True)
-    
+
+        # ── Branch line results ───────────────────────────────────────────────
+        _branch_results_map = st.session_state.get('branch_results', {})
+        _stns_with_branches = [
+            s for s in st.session_state.get('last_stations_data', [])
+            if s.get('branches')
+        ]
+        if _stns_with_branches and _branch_results_map:
+            st.markdown("---")
+            st.markdown("### 🔀 Branch Line Results")
+            for _stn_br_disp in _stns_with_branches:
+                for _br_disp in _stn_br_disp.get('branches', []):
+                    _bid = _br_disp.get('uid', '')
+                    _bres = _branch_results_map.get(_bid, {})
+                    _bname = _br_disp.get('name', 'Branch')
+                    _bjn = _stn_br_disp.get('name', '')
+                    _is_ok = not bool(_bres.get('error'))
+                    with st.expander(
+                        f"🔀 {_bname}  ← Junction: {_bjn}",
+                        expanded=True,
+                    ):
+                        if _is_ok:
+                            st.success(f"✅ Feasible — Total Cost: ₹{float(_bres.get('total_cost', 0) or 0):,.0f}")
+                        else:
+                            st.error(f"❌ Infeasible — {_bres.get('error', 'Optimization failed')}")
+
+                        _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+                        _bc1.metric("Branch Flow", f"{float(_br_disp.get('flow_m3h', 0)):.0f} m³/hr")
+                        _bc2.metric("Junction Head", f"{float(_bres.get('junction_head', 0)):.1f} m")
+
+                        # Terminal residual — try the terminal name key first
+                        _bt_disp = _br_disp.get('terminal', {})
+                        _bt_name_disp = _bt_disp.get('name', '')
+                        _term_rh = float(
+                            _bres.get(f"residual_head_{_bt_name_disp}", _bres.get('residual', 0.0))
+                            or 0.0
+                        )
+                        _bc3.metric("Terminal Pressure", f"{_term_rh:.1f} m")
+                        _bc4.metric("Branch Cost", f"₹{float(_bres.get('total_cost', 0) or 0):,.0f}")
+
+                        # Per-station branch results table
+                        _br_stns_disp = _br_disp.get('stations', [])
+                        if _br_stns_disp and _is_ok:
+                            _br_rows = []
+                            for _bstn_d in _br_stns_disp:
+                                _brk = _bstn_d.get('name', '').lower().replace(' ', '_').replace('-', '_')
+                                _br_rows.append({
+                                    "Station": _bstn_d.get('name', ''),
+                                    "Pumps": int(_bres.get(f"num_pumps_{_brk}", 0) or 0),
+                                    "DRA (ppm)": f"{float(_bres.get(f'dra_ppm_{_brk}', 0) or 0):.0f}",
+                                    "DR (%)": f"{float(_bres.get(f'drag_reduction_{_brk}', 0) or 0):.1f}",
+                                    "SDH (m)": f"{float(_bres.get(f'sdh_{_brk}', 0) or 0):.1f}",
+                                    "Power Cost": f"₹{float(_bres.get(f'power_cost_{_brk}', 0) or 0):,.0f}",
+                                    "DRA Cost": f"₹{float(_bres.get(f'dra_cost_{_brk}', 0) or 0):,.0f}",
+                                })
+                            if _br_rows:
+                                st.dataframe(pd.DataFrame(_br_rows), use_container_width=True, hide_index=True)
+        elif _stns_with_branches and not _branch_results_map:
+            st.markdown("---")
+            st.info("🔀 Branch lines defined — run the optimizer to see branch results.")
 
 
 

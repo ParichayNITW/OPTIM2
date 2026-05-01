@@ -6965,6 +6965,83 @@ def solve_pipeline_with_types(
     return best_result
 
 
+def solve_branch(
+    junction_suction_head: float,
+    branch: dict,
+    KV: float,
+    rho: float,
+    *,
+    RateDRA: float,
+    Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
+    mop_kgcm2: float = 0.0,
+    hours: float = 24.0,
+) -> dict:
+    """Solve hydraulics and optimisation for a single branch leg.
+
+    ``junction_suction_head`` is the residual head (m) at the mainline tap-off
+    point taken from the mainline solve result.  ``branch`` must contain
+    ``flow_m3h`` (float), ``stations`` (list[dict]), and ``terminal`` (dict).
+    Branch pump stations use A=0, B=0, C=pump_head_m (constant-head model).
+    Returns the ``solve_pipeline`` result dict augmented with ``branch_uid``
+    and ``branch_name``, plus ``junction_head`` for display purposes.
+    """
+    import copy as _copy
+
+    branch_stations = _copy.deepcopy(branch.get("stations", []))
+    branch_terminal = dict(branch.get("terminal", {}))
+    try:
+        branch_flow = float(branch.get("flow_m3h", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        branch_flow = 0.0
+
+    if not branch_stations or branch_flow <= 0.0:
+        return {
+            "feasible": False,
+            "error": "Branch has no stations or zero flow",
+            "branch_uid": branch.get("uid", ""),
+            "branch_name": branch.get("name", "Branch"),
+            "total_cost": 0.0,
+            "junction_head": float(junction_suction_head or 0.0),
+        }
+
+    # Inject junction pressure as the branch entry suction head.
+    branch_stations[0]["suction_head"] = max(float(junction_suction_head or 0.0), 0.0)
+
+    # Ensure constant-head pump coefficients exist for branch pump stations.
+    for stn in branch_stations:
+        if stn.get("is_pump", False) and "A" not in stn:
+            h = float(stn.get("pump_head_m", 0.0) or 0.0)
+            stn.setdefault("A", 0.0)
+            stn.setdefault("B", 0.0)
+            stn.setdefault("C", h)
+            rpm = float(stn.get("DOL", 1500.0) or 1500.0)
+            stn.setdefault("DOL", rpm)
+            stn.setdefault("MinRPM", rpm)  # single-speed: no affinity variation
+
+    n = len(branch_stations)
+    result = solve_pipeline(
+        stations=branch_stations,
+        terminal=branch_terminal,
+        FLOW=branch_flow,
+        KV_list=[KV] * n,
+        rho_list=[rho] * n,
+        segment_slices=None,
+        RateDRA=RateDRA,
+        Price_HSD=Price_HSD,
+        Fuel_density=Fuel_density,
+        Ambient_temp=Ambient_temp,
+        mop_kgcm2=mop_kgcm2 or None,
+        hours=hours,
+    )
+
+    result["branch_uid"] = branch.get("uid", "")
+    result["branch_name"] = branch.get("name", "Branch")
+    result["junction_head"] = float(junction_suction_head or 0.0)
+    return result
+
+
 _exported_names = [name for name in globals() if not name.startswith('_')]
 _exported_names.extend(['_km_from_volume', '_volume_from_km'])
 __all__ = list(dict.fromkeys(_exported_names))
