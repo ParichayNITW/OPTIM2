@@ -114,7 +114,7 @@ BUTTON_STYLE = """
   --bg-secondary: #ffffff;
   --bg-card:      #ffffff;
   --border:       #d1d5db;
-  --accent:       #1967d2;
+  --accent:       #ff4b4b;
   --green:        #16a34a;
   --red:          #dc2626;
   --yellow:       #d97706;
@@ -175,14 +175,14 @@ code, .stCode { font-family: 'DM Mono', monospace !important; }
   font-size: 0.82rem !important;
 }
 .stTabs [data-baseweb="tab"]:hover {
-  background: rgba(25,103,210,0.09) !important;
+  background: rgba(255,75,75,0.09) !important;
   color: var(--accent) !important;
 }
 .stTabs [aria-selected="true"] {
   background: var(--accent) !important;
   color: #fff !important;
   font-weight: 700 !important;
-  box-shadow: 0 2px 8px rgba(25,103,210,0.3) !important;
+  box-shadow: 0 2px 8px rgba(255,75,75,0.30) !important;
 }
 .stTabs [data-baseweb="tab-highlight"],
 .stTabs [data-baseweb="tab-border"] { display:none !important; }
@@ -201,7 +201,7 @@ code, .stCode { font-family: 'DM Mono', monospace !important; }
 [data-testid="stNumberInput"] input:focus,
 [data-testid="stTextInput"] input:focus {
   border-color: var(--accent) !important;
-  box-shadow: 0 0 0 2px rgba(25,103,210,0.15) !important;
+  box-shadow: 0 0 0 2px rgba(255,75,75,0.15) !important;
 }
 [data-baseweb="select"] > div {
   background: #ffffff !important;
@@ -215,7 +215,7 @@ code, .stCode { font-family: 'DM Mono', monospace !important; }
   box-shadow: 0 4px 12px rgba(0,0,0,0.12) !important;
 }
 [role="option"] { color: #111827 !important; background: #ffffff !important; }
-[role="option"]:hover { background: #eff6ff !important; }
+[role="option"]:hover { background: rgba(255,75,75,0.07) !important; }
 
 /* ── EXPANDERS ── */
 [data-testid="stExpander"] {
@@ -291,24 +291,24 @@ hr { border:none !important; border-top:1px solid #e5e7eb !important; margin:0.8
 /* ── HIDE STREAMLIT FOOTER ── */
 #MainMenu, footer { visibility:hidden !important; }
 
-/* ══ BUTTONS ══ */
+/* ══ BUTTONS — all orange #ff4b4b to match slider thumb ══ */
 
-/* Primary (red gradient) */
+/* Primary button */
 div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
-  background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%);
+  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%);
   color: #fff !important;
   border: none;
   border-radius: 8px;
   font-weight: 600;
   font-family: 'Inter', sans-serif;
-  box-shadow: 0 2px 8px rgba(198,40,40,0.25);
+  box-shadow: 0 2px 8px rgba(255,75,75,0.30);
   transition: all 0.18s ease;
 }
 div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-  background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%);
-  box-shadow: 0 4px 14px rgba(198,40,40,0.38);
+  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%);
+  box-shadow: 0 4px 14px rgba(255,75,75,0.45);
   transform: translateY(-1px);
   color: #fff !important;
 }
@@ -318,62 +318,64 @@ div[data-testid="stButton"] > button[kind="primary"]:active {
   color: #fff !important;
 }
 
-/* Download (blue gradient) */
+/* Download button */
 div[data-testid="stDownloadButton"] > button {
-  background: linear-gradient(135deg,#1967d2 0%,#0d47a1 100%);
+  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%);
   color: #fff !important;
   border: none;
   border-radius: 8px;
   font-weight: 600;
   font-family: 'Inter', sans-serif;
-  box-shadow: 0 2px 8px rgba(25,103,210,0.25);
+  box-shadow: 0 2px 8px rgba(255,75,75,0.30);
   transition: all 0.18s ease;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-  background: linear-gradient(135deg,#1558b0 0%,#0a3d8f 100%);
-  box-shadow: 0 4px 14px rgba(25,103,210,0.38);
+  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%);
+  box-shadow: 0 4px 14px rgba(255,75,75,0.45);
   transform: translateY(-1px);
   color: #fff !important;
 }
 div[data-testid="stDownloadButton"] > button:active { transform: translateY(0); color: #fff !important; }
 
-/* Action (green gradient) */
+/* Action buttons (Add/Remove Station, Hydraulic check) */
 button[aria-label="Hydraulic feasibility check"],
 button[aria-label="➕ Add Station"],
 button[aria-label="🗑️ Remove Station"] {
-  background: linear-gradient(135deg,#1B5E20 0%,#0F3612 100%) !important;
+  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%) !important;
   color: #fff !important;
   border: none !important;
   border-radius: 8px !important;
   font-weight: 600 !important;
-  box-shadow: 0 2px 8px rgba(27,94,32,0.25) !important;
+  box-shadow: 0 2px 8px rgba(255,75,75,0.30) !important;
   transition: all 0.18s ease !important;
 }
 button[aria-label="Hydraulic feasibility check"]:hover,
 button[aria-label="➕ Add Station"]:hover,
 button[aria-label="🗑️ Remove Station"]:hover {
-  box-shadow: 0 4px 14px rgba(27,94,32,0.4) !important;
+  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%) !important;
+  box-shadow: 0 4px 14px rgba(255,75,75,0.45) !important;
   transform: translateY(-1px) !important;
 }
 
-/* File / Special (red gradient) */
+/* File / login / special buttons */
 button[aria-label="Logout"],
 div[data-testid="stFileUploader"] button,
 button[aria-label="Browse files"],
 button[aria-label="💾 Save Case"] {
-  background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%) !important;
+  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%) !important;
   color: #fff !important;
   border: none !important;
   border-radius: 8px !important;
   font-weight: 600 !important;
-  box-shadow: 0 2px 8px rgba(198,40,40,0.25) !important;
+  box-shadow: 0 2px 8px rgba(255,75,75,0.30) !important;
 }
 button[aria-label="Logout"]:hover,
 div[data-testid="stFileUploader"] button:hover,
 button[aria-label="Browse files"]:hover,
 button[aria-label="💾 Save Case"]:hover {
+  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%) !important;
   transform: translateY(-1px) !important;
-  box-shadow: 0 4px 14px rgba(198,40,40,0.38) !important;
+  box-shadow: 0 4px 14px rgba(255,75,75,0.45) !important;
 }
 
 /* ── WIDGET LABELS ── */
