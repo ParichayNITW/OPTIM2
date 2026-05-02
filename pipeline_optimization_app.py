@@ -110,30 +110,28 @@ BUTTON_STYLE = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg-primary:   #0a0e1a;
-  --bg-secondary: #0f1629;
-  --bg-card:      rgba(15,22,41,0.92);
-  --border:       rgba(74,144,217,0.22);
-  --accent:       #4A90D9;
-  --accent2:      #00D4FF;
-  --green:        #00FF88;
-  --red:          #FF3366;
-  --yellow:       #FFD700;
-  --orange:       #FF8C42;
-  --text-primary: #E8EAF0;
-  --text-muted:   #7A8BA8;
+  --bg-primary:   #f5f7fa;
+  --bg-secondary: #ffffff;
+  --bg-card:      #ffffff;
+  --border:       #d1d5db;
+  --accent:       #1967d2;
+  --green:        #16a34a;
+  --red:          #dc2626;
+  --yellow:       #d97706;
+  --orange:       #ea580c;
+  --text-primary: #111827;
+  --text-muted:   #6b7280;
 }
 
 /* ── SCROLLBAR ── */
 ::-webkit-scrollbar { width:6px; height:6px; }
-::-webkit-scrollbar-track { background:var(--bg-primary); }
-::-webkit-scrollbar-thumb { background:var(--accent); border-radius:3px; }
+::-webkit-scrollbar-track { background:#f1f3f4; }
+::-webkit-scrollbar-thumb { background:#aab4be; border-radius:3px; }
 
 /* ── GLOBAL APP ── */
 .stApp {
   background: var(--bg-primary) !important;
   font-family: 'Inter', sans-serif !important;
-  color: var(--text-primary) !important;
 }
 
 /* ── MAIN AREA ── */
@@ -142,34 +140,26 @@ BUTTON_STYLE = """
 
 /* ── HEADER / TOOLBAR ── */
 [data-testid="stHeader"] {
-  background: rgba(10,14,26,0.95) !important;
+  background: rgba(255,255,255,0.95) !important;
   border-bottom: 1px solid var(--border) !important;
-  backdrop-filter: blur(12px) !important;
 }
 [data-testid="stToolbar"] { background: transparent !important; }
 
 /* ── SIDEBAR ── */
 [data-testid="stSidebar"] {
-  background: linear-gradient(180deg,#08111f 0%,#0b1526 100%) !important;
+  background: #eef1f5 !important;
   border-right: 1px solid var(--border) !important;
 }
-[data-testid="stSidebar"] * { color: var(--text-primary) !important; }
 [data-testid="stSidebarContent"] { background: transparent !important; }
-[data-testid="stSidebar"] h3 { color: var(--accent) !important; font-weight:700 !important; }
-[data-testid="stSidebar"] .stMarkdown h3 { color: var(--accent) !important; }
 
 /* ── TYPOGRAPHY ── */
-h1,h2,h3,h4,h5,h6 {
-  color: var(--text-primary) !important;
-  font-family: 'Inter', sans-serif !important;
-}
-p, label, .stMarkdown { color: var(--text-primary) !important; }
+h1,h2,h3,h4,h5,h6 { font-family: 'Inter', sans-serif !important; }
 code, .stCode { font-family: 'DM Mono', monospace !important; }
 
 /* ── TABS ── */
 .stTabs [data-baseweb="tab-list"] {
-  background: var(--bg-secondary) !important;
-  border-radius: 12px !important;
+  background: #e5e7eb !important;
+  border-radius: 10px !important;
   padding: 4px !important;
   gap: 3px !important;
   border: 1px solid var(--border) !important;
@@ -177,22 +167,22 @@ code, .stCode { font-family: 'DM Mono', monospace !important; }
 .stTabs [data-baseweb="tab"] {
   background: transparent !important;
   color: var(--text-muted) !important;
-  border-radius: 8px !important;
+  border-radius: 7px !important;
   font-weight: 500 !important;
   padding: 7px 13px !important;
-  transition: all 0.18s ease !important;
+  transition: all 0.15s ease !important;
   border: none !important;
-  font-size: 0.81rem !important;
+  font-size: 0.82rem !important;
 }
 .stTabs [data-baseweb="tab"]:hover {
-  background: rgba(74,144,217,0.12) !important;
+  background: rgba(25,103,210,0.09) !important;
   color: var(--accent) !important;
 }
 .stTabs [aria-selected="true"] {
   background: var(--accent) !important;
   color: #fff !important;
   font-weight: 700 !important;
-  box-shadow: 0 0 14px rgba(74,144,217,0.45) !important;
+  box-shadow: 0 2px 8px rgba(25,103,210,0.3) !important;
 }
 .stTabs [data-baseweb="tab-highlight"],
 .stTabs [data-baseweb="tab-border"] { display:none !important; }
@@ -202,110 +192,101 @@ code, .stCode { font-family: 'DM Mono', monospace !important; }
 [data-testid="stNumberInput"] input,
 [data-testid="stTextInput"] input,
 [data-testid="stTextArea"] textarea {
-  background: var(--bg-secondary) !important;
-  border: 1px solid var(--border) !important;
-  color: var(--text-primary) !important;
-  border-radius: 8px !important;
+  background: #ffffff !important;
+  border: 1px solid #d1d5db !important;
+  color: #111827 !important;
+  border-radius: 7px !important;
   font-family: 'Inter', sans-serif !important;
 }
 [data-testid="stNumberInput"] input:focus,
 [data-testid="stTextInput"] input:focus {
   border-color: var(--accent) !important;
-  box-shadow: 0 0 0 2px rgba(74,144,217,0.18) !important;
+  box-shadow: 0 0 0 2px rgba(25,103,210,0.15) !important;
 }
 [data-baseweb="select"] > div {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border) !important;
-  color: var(--text-primary) !important;
+  background: #ffffff !important;
+  border-color: #d1d5db !important;
+  color: #111827 !important;
 }
-[data-baseweb="popover"], [role="listbox"] { background: var(--bg-secondary) !important; }
-[role="option"] { color: var(--text-primary) !important; }
-[role="option"]:hover { background: rgba(74,144,217,0.15) !important; }
+[data-baseweb="popover"],
+[role="listbox"] {
+  background: #ffffff !important;
+  border: 1px solid #d1d5db !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12) !important;
+}
+[role="option"] { color: #111827 !important; background: #ffffff !important; }
+[role="option"]:hover { background: #eff6ff !important; }
 
 /* ── EXPANDERS ── */
 [data-testid="stExpander"] {
-  background: var(--bg-card) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 12px !important;
-  backdrop-filter: blur(10px) !important;
+  background: #ffffff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 10px !important;
   margin-bottom: 8px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
 }
-[data-testid="stExpander"] details summary {
-  color: var(--text-primary) !important;
-  font-weight: 600 !important;
-}
+[data-testid="stExpander"] details summary { font-weight: 600 !important; }
 [data-testid="stExpander"] details summary:hover { color: var(--accent) !important; }
 [data-testid="stExpander"] details > div { background: transparent !important; }
 
 /* ── METRIC CARDS ── */
 [data-testid="metric-container"] {
-  background: var(--bg-card) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 14px !important;
-  padding: 18px !important;
-  backdrop-filter: blur(10px) !important;
-  transition: border-color 0.2s, box-shadow 0.2s !important;
-}
-[data-testid="metric-container"]:hover {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 18px rgba(74,144,217,0.18) !important;
+  background: #ffffff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 12px !important;
+  padding: 16px !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08) !important;
 }
 [data-testid="stMetricLabel"] {
-  color: var(--text-muted) !important;
-  font-size: 0.73rem !important;
+  font-size: 0.74rem !important;
   font-weight: 600 !important;
-  letter-spacing: 0.06em !important;
+  letter-spacing: 0.05em !important;
   text-transform: uppercase !important;
 }
-[data-testid="stMetricValue"] {
-  color: var(--text-primary) !important;
-  font-weight: 800 !important;
-  font-size: 1.55rem !important;
-}
+[data-testid="stMetricValue"] { font-weight: 700 !important; }
 [data-testid="stMetricDelta"] { color: var(--green) !important; }
 
 /* ── DATA TABLES ── */
 [data-testid="stDataFrame"] {
-  background: var(--bg-card) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 12px !important;
+  background: #ffffff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 10px !important;
   overflow: hidden !important;
 }
-.dvn-scroller { background: var(--bg-secondary) !important; }
 
 /* ── FILE UPLOADER ── */
 [data-testid="stFileUploader"] {
-  background: var(--bg-card) !important;
-  border: 1px dashed var(--border) !important;
-  border-radius: 12px !important;
+  background: #f9fafb !important;
+  border: 1px dashed #d1d5db !important;
+  border-radius: 10px !important;
 }
 [data-testid="stFileUploader"]:hover { border-color: var(--accent) !important; }
 
 /* ── ALERTS ── */
-[data-testid="stAlert"] { border-radius: 10px !important; }
+[data-testid="stAlert"] { border-radius: 8px !important; }
 
 /* ── SECTION TITLE ── */
 .section-title {
-  font-weight: 800;
-  color: var(--text-primary);
-  font-size: 1.35em;
+  font-weight: 700;
+  color: #111827;
+  font-size: 1.3em;
   letter-spacing: 0.1px;
-  margin-bottom: 0.6em;
+  margin-bottom: 0.5em;
   font-family: 'Inter', sans-serif;
 }
 
 /* ── PIPELINE MAP ── */
 .pipeline-map-container {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
   padding: 12px;
-  backdrop-filter: blur(10px);
   margin-bottom: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07);
 }
 
 /* ── HR ── */
-hr { border:none !important; border-top:1px solid var(--border) !important; margin:0.8rem 0 !important; }
+hr { border:none !important; border-top:1px solid #e5e7eb !important; margin:0.8rem 0 !important; }
 
 /* ── HIDE STREAMLIT FOOTER ── */
 #MainMenu, footer { visibility:hidden !important; }
@@ -316,51 +297,45 @@ hr { border:none !important; border-top:1px solid var(--border) !important; marg
 div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
   background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%);
-  color: #fff;
+  color: #fff !important;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   font-weight: 600;
   font-family: 'Inter', sans-serif;
-  box-shadow: 0 4px 14px rgba(198,40,40,0.28);
-  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(198,40,40,0.25);
+  transition: all 0.18s ease;
 }
 div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
   background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%);
-  box-shadow: 0 6px 20px rgba(198,40,40,0.42);
+  box-shadow: 0 4px 14px rgba(198,40,40,0.38);
   transform: translateY(-1px);
-  color: #fff;
+  color: #fff !important;
 }
 div[data-testid="stButton"] > button:active,
 div[data-testid="stButton"] > button[kind="primary"]:active {
   transform: translateY(0);
-  box-shadow: 0 2px 8px rgba(198,40,40,0.28);
-  background: linear-gradient(135deg,#8E1A1A 0%,#6A1212 100%);
-  color: #fff;
+  color: #fff !important;
 }
 
 /* Download (blue gradient) */
 div[data-testid="stDownloadButton"] > button {
-  background: linear-gradient(135deg,#30427A 0%,#1a2444 100%);
-  color: #fff;
+  background: linear-gradient(135deg,#1967d2 0%,#0d47a1 100%);
+  color: #fff !important;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   font-weight: 600;
   font-family: 'Inter', sans-serif;
-  box-shadow: 0 4px 14px rgba(48,66,122,0.28);
-  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(25,103,210,0.25);
+  transition: all 0.18s ease;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-  background: linear-gradient(135deg,#2A3A6B 0%,#152044 100%);
-  box-shadow: 0 6px 20px rgba(48,66,122,0.42);
+  background: linear-gradient(135deg,#1558b0 0%,#0a3d8f 100%);
+  box-shadow: 0 4px 14px rgba(25,103,210,0.38);
   transform: translateY(-1px);
-  color: #fff;
+  color: #fff !important;
 }
-div[data-testid="stDownloadButton"] > button:active {
-  transform: translateY(0);
-  background: linear-gradient(135deg,#1a2444 0%,#0f1830 100%);
-  color: #fff;
-}
+div[data-testid="stDownloadButton"] > button:active { transform: translateY(0); color: #fff !important; }
 
 /* Action (green gradient) */
 button[aria-label="Hydraulic feasibility check"],
@@ -369,23 +344,16 @@ button[aria-label="🗑️ Remove Station"] {
   background: linear-gradient(135deg,#1B5E20 0%,#0F3612 100%) !important;
   color: #fff !important;
   border: none !important;
-  border-radius: 10px !important;
+  border-radius: 8px !important;
   font-weight: 600 !important;
-  box-shadow: 0 4px 14px rgba(27,94,32,0.28) !important;
-  transition: all 0.2s ease !important;
+  box-shadow: 0 2px 8px rgba(27,94,32,0.25) !important;
+  transition: all 0.18s ease !important;
 }
 button[aria-label="Hydraulic feasibility check"]:hover,
 button[aria-label="➕ Add Station"]:hover,
 button[aria-label="🗑️ Remove Station"]:hover {
-  background: linear-gradient(135deg,#154A19 0%,#0A280C 100%) !important;
-  box-shadow: 0 6px 20px rgba(27,94,32,0.42) !important;
+  box-shadow: 0 4px 14px rgba(27,94,32,0.4) !important;
   transform: translateY(-1px) !important;
-}
-button[aria-label="Hydraulic feasibility check"]:active,
-button[aria-label="➕ Add Station"]:active,
-button[aria-label="🗑️ Remove Station"]:active {
-  transform: translateY(0) !important;
-  background: linear-gradient(135deg,#0F3612 0%,#081A09 100%) !important;
 }
 
 /* File / Special (red gradient) */
@@ -396,68 +364,39 @@ button[aria-label="💾 Save Case"] {
   background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%) !important;
   color: #fff !important;
   border: none !important;
-  border-radius: 10px !important;
+  border-radius: 8px !important;
   font-weight: 600 !important;
-  box-shadow: 0 4px 14px rgba(198,40,40,0.28) !important;
+  box-shadow: 0 2px 8px rgba(198,40,40,0.25) !important;
 }
 button[aria-label="Logout"]:hover,
 div[data-testid="stFileUploader"] button:hover,
 button[aria-label="Browse files"]:hover,
 button[aria-label="💾 Save Case"]:hover {
-  background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%) !important;
   transform: translateY(-1px) !important;
+  box-shadow: 0 4px 14px rgba(198,40,40,0.38) !important;
 }
 
-/* ── WIDGET LABELS (text visibility fix) ── */
-[data-testid="stWidgetLabel"],
+/* ── WIDGET LABELS ── */
 [data-testid="stWidgetLabel"] p,
 [data-testid="stWidgetLabel"] span,
-[data-testid="stWidgetLabel"] label {
-  color: var(--text-primary) !important;
-}
+[data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] { color: #111827 !important; font-weight: 500 !important; }
 [data-baseweb="checkbox"] span,
-[data-baseweb="checkbox"] label {
-  color: var(--text-primary) !important;
-}
+[data-baseweb="checkbox"] label { color: #111827 !important; }
 [data-baseweb="radio"] span,
-[data-baseweb="radio"] label {
-  color: var(--text-primary) !important;
-}
-[data-baseweb="select"] span,
-[data-baseweb="select"] div,
-[data-baseweb="select"] li {
-  color: var(--text-primary) !important;
-}
-[data-baseweb="typography"] { color: var(--text-primary) !important; }
+[data-baseweb="radio"] label { color: #111827 !important; }
+[data-baseweb="select"] span { color: #111827 !important; }
+[data-baseweb="typography"] { color: #111827 !important; }
 [data-testid="stMarkdownContainer"] p,
 [data-testid="stMarkdownContainer"] span,
-[data-testid="stMarkdownContainer"] li,
-[data-testid="stMarkdownContainer"] label {
-  color: var(--text-primary) !important;
-}
-.stApp span { color: var(--text-primary) !important; }
-.stApp div { color: var(--text-primary) !important; }
-.stApp label { color: var(--text-primary) !important; }
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] div,
-[data-testid="stSidebar"] label {
-  color: var(--text-primary) !important;
-}
+[data-testid="stMarkdownContainer"] li { color: #111827 !important; }
 [data-testid="stNumberInput"] label,
 [data-testid="stTextInput"] label,
 [data-testid="stTextArea"] label,
 [data-testid="stSelectbox"] label,
 [data-testid="stSlider"] label,
 [data-testid="stCheckbox"] label,
-[data-testid="stRadio"] label {
-  color: var(--text-primary) !important;
-  font-weight: 500 !important;
-}
-[data-testid="stSlider"] [data-testid="stTickBarMin"],
-[data-testid="stSlider"] [data-testid="stTickBarMax"],
-[data-testid="stSlider"] div[data-baseweb="slider"] span {
-  color: var(--text-muted) !important;
-}
+[data-testid="stRadio"] label { color: #111827 !important; font-weight: 500 !important; }
 </style>
 """
 
@@ -2453,17 +2392,17 @@ st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid
 
 
 def render_pipeline_map(stations: list, result: dict | None = None):
-    """Return a dark-navy Plotly figure of the pipeline network."""
+    """Return a Plotly figure of the pipeline network (light theme)."""
     import plotly.graph_objects as go  # already imported at top but safe to re-import
 
     if not stations:
         fig = go.Figure()
         fig.update_layout(
-            paper_bgcolor="#080d1a", plot_bgcolor="#080d1a", height=280,
+            paper_bgcolor="#f5f7fa", plot_bgcolor="#f5f7fa", height=280,
             annotations=[dict(
                 text="No stations configured yet",
                 x=0.5, y=0.5, xref="paper", yref="paper",
-                showarrow=False, font=dict(color="#7A8BA8", size=14, family="Inter"),
+                showarrow=False, font=dict(color="#9ca3af", size=14, family="Inter"),
             )],
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
@@ -2492,12 +2431,12 @@ def render_pipeline_map(stations: list, result: dict | None = None):
     label_y   = [2.6 if i % 2 == 0 else -2.9 for i in range(n_total)]
 
     # ── per-station colour & metadata ────────────────────────────────────
-    COL_ORIGIN  = "#00FF88"
-    COL_PUMP    = "#4A90D9"
-    COL_PUMPDRA = "#00D4FF"
-    COL_DRA     = "#FFD700"
-    COL_PASS    = "#556070"
-    COL_TERM    = "#FF3366"
+    COL_ORIGIN  = "#16a34a"
+    COL_PUMP    = "#1967d2"
+    COL_PUMPDRA = "#0284c7"
+    COL_DRA     = "#d97706"
+    COL_PASS    = "#6b7280"
+    COL_TERM    = "#dc2626"
 
     def _rkey(name):
         return name.lower().replace(' ', '_').replace('-', '_')
@@ -2532,17 +2471,17 @@ def render_pipeline_map(stations: list, result: dict | None = None):
 
         lines = [
             f"<b style='color:{col};font-size:13px'>{name}</b>",
-            f"<span style='color:#9AAFC0'>Type:</span> {typ}",
-            f"<span style='color:#9AAFC0'>KP:</span> {kp_val:.1f} km",
-            f"<span style='color:#9AAFC0'>Elevation:</span> {elev:.1f} m",
+            f"<span style='color:#6b7280'>Type:</span> {typ}",
+            f"<span style='color:#6b7280'>KP:</span> {kp_val:.1f} km",
+            f"<span style='color:#6b7280'>Elevation:</span> {elev:.1f} m",
         ]
         if result:
             lines += [
-                f"<span style='color:#9AAFC0'>Discharge head:</span> <b>{sdh:.1f} m</b>",
-                f"<span style='color:#9AAFC0'>DRA injection:</span> <b>{dra_ppm:.0f} ppm</b>",
-                f"<span style='color:#9AAFC0'>Drag reduction:</span> <b>{dr_pct:.1f}%</b>",
-                f"<span style='color:#9AAFC0'>Pumps running:</span> <b>{n_pumps}</b>",
-                f"<span style='color:#9AAFC0'>Power cost:</span> <b>₹{pw_cost:,.0f}</b>",
+                f"<span style='color:#6b7280'>Discharge head:</span> <b>{sdh:.1f} m</b>",
+                f"<span style='color:#6b7280'>DRA injection:</span> <b>{dra_ppm:.0f} ppm</b>",
+                f"<span style='color:#6b7280'>Drag reduction:</span> <b>{dr_pct:.1f}%</b>",
+                f"<span style='color:#6b7280'>Pumps running:</span> <b>{n_pumps}</b>",
+                f"<span style='color:#6b7280'>Power cost:</span> <b>₹{pw_cost:,.0f}</b>",
             ]
 
         node_names.append(name)
@@ -2554,10 +2493,10 @@ def render_pipeline_map(stations: list, result: dict | None = None):
     # Terminal node
     t_lines = [
         f"<b style='color:{COL_TERM};font-size:13px'>{t_name}</b>",
-        f"<span style='color:#9AAFC0'>Type:</span> Terminal",
-        f"<span style='color:#9AAFC0'>KP:</span> {kp_list[-1]:.1f} km",
-        f"<span style='color:#9AAFC0'>Elevation:</span> {t_elev:.1f} m",
-        f"<span style='color:#9AAFC0'>Min residual head:</span> {t_head:.1f} m",
+        f"<span style='color:#6b7280'>Type:</span> Terminal",
+        f"<span style='color:#6b7280'>KP:</span> {kp_list[-1]:.1f} km",
+        f"<span style='color:#6b7280'>Elevation:</span> {t_elev:.1f} m",
+        f"<span style='color:#6b7280'>Min residual head:</span> {t_head:.1f} m",
     ]
     node_names.append(t_name)
     node_cols.append(COL_TERM)
@@ -2572,7 +2511,7 @@ def render_pipeline_map(stations: list, result: dict | None = None):
     def _seg_col(i):
         """RGBA color for pipe segment i based on pressure utilisation."""
         if result is None:
-            return ("rgba(74,144,217,0.12)", "rgba(74,144,217,0.65)")
+            return ("rgba(25,103,210,0.15)", "rgba(25,103,210,0.70)")
         idx_dn = i + 1
         if idx_dn < len(stations):
             stn_dn = stations[idx_dn]
@@ -2630,7 +2569,7 @@ def render_pipeline_map(stations: list, result: dict | None = None):
         marker=dict(
             size=node_sizes,
             color=node_cols,
-            line=dict(color="#080d1a", width=3),
+            line=dict(color="#ffffff", width=2),
             opacity=0.95,
             symbol=node_syms,
         ),
@@ -2658,7 +2597,7 @@ def render_pipeline_map(stations: list, result: dict | None = None):
             showarrow=False,
             font=dict(color=col, size=9.5, family="Inter"),
             align="center",
-            bgcolor="rgba(8,13,26,0.88)",
+            bgcolor="rgba(255,255,255,0.92)",
             bordercolor=col, borderwidth=1, borderpad=3,
         )
 
@@ -2668,11 +2607,11 @@ def render_pipeline_map(stations: list, result: dict | None = None):
             x=all_x[i], y=-3.8,
             text=f"KP {kp_val:.0f}",
             showarrow=False,
-            font=dict(color="#455060", size=7.5, family="DM Mono, monospace"),
+            font=dict(color="#9ca3af", size=7.5, family="DM Mono, monospace"),
         )
 
     # legend traces (dummy)
-    COL_BRANCH = "#FF8C42"
+    COL_BRANCH = "#ea580c"
     _has_branches = any(bool(s.get('branches')) for s in stations)
     for lbl, col, sym in [
         ("Origin",       COL_ORIGIN,  "circle"),
@@ -2718,7 +2657,7 @@ def render_pipeline_map(stations: list, result: dict | None = None):
                 mode='markers+text',
                 marker=dict(
                     symbol='diamond', size=14, color=COL_BRANCH,
-                    line=dict(color='#FFD700', width=1.5),
+                    line=dict(color='#ffffff', width=1.5),
                 ),
                 text=[_bt_name[:12]],
                 textposition='top center' if _side > 0 else 'bottom center',
@@ -2745,26 +2684,26 @@ def render_pipeline_map(stations: list, result: dict | None = None):
     _y_min = -4.5 - (0.6 if _has_branches else 0.0)
 
     fig.update_layout(
-        paper_bgcolor="#080d1a",
-        plot_bgcolor="#080d1a",
+        paper_bgcolor="#f5f7fa",
+        plot_bgcolor="#f5f7fa",
         height=360,
         margin=dict(l=10, r=10, t=28, b=28),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2, 102]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[_y_min, _y_max]),
-        font=dict(family="Inter", color="#E8EAF0", size=11),
+        font=dict(family="Inter", color="#111827", size=11),
         hoverlabel=dict(
-            bgcolor="#0f1629",
-            bordercolor="#4A90D9",
-            font=dict(family="Inter", size=11, color="#E8EAF0"),
+            bgcolor="#ffffff",
+            bordercolor="#d1d5db",
+            font=dict(family="Inter", size=11, color="#111827"),
         ),
         legend=dict(
             orientation="h",
             yanchor="bottom", y=1.01,
             xanchor="right", x=1,
-            bgcolor="rgba(10,14,26,0.85)",
-            bordercolor="rgba(74,144,217,0.35)",
+            bgcolor="rgba(255,255,255,0.92)",
+            bordercolor="#d1d5db",
             borderwidth=1,
-            font=dict(color="#E8EAF0", size=10),
+            font=dict(color="#111827", size=10),
         ),
         dragmode="pan",
     )
@@ -8184,20 +8123,20 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                         # Status banner
                         if _is_ok:
                             st.markdown(
-                                f'<div style="background:rgba(0,255,136,0.08);border-left:4px solid #00FF88;'
+                                f'<div style="background:rgba(22,163,74,0.08);border-left:4px solid #16a34a;'
                                 f'border-radius:4px;padding:0.5rem 0.9rem;margin-bottom:0.6rem;">'
-                                f'<span style="color:#00FF88;font-weight:700;">✅ Feasible</span>'
-                                f'<span style="color:#7A8BA8;margin-left:1.2rem;">Total Operating Cost:</span>'
-                                f'<span style="color:#E8EAF0;font-weight:600;margin-left:0.5rem;">₹{_b_total_cost:,.0f} / day</span>'
+                                f'<span style="color:#16a34a;font-weight:700;">✅ Feasible</span>'
+                                f'<span style="color:#6b7280;margin-left:1.2rem;">Total Operating Cost:</span>'
+                                f'<span style="color:#111827;font-weight:600;margin-left:0.5rem;">₹{_b_total_cost:,.0f} / day</span>'
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
                         else:
                             st.markdown(
-                                f'<div style="background:rgba(255,51,102,0.10);border-left:4px solid #FF3366;'
+                                f'<div style="background:rgba(220,38,38,0.08);border-left:4px solid #dc2626;'
                                 f'border-radius:4px;padding:0.5rem 0.9rem;margin-bottom:0.6rem;">'
-                                f'<span style="color:#FF3366;font-weight:700;">❌ Infeasible</span>'
-                                f'<span style="color:#7A8BA8;margin-left:1.2rem;">{_bres.get("error","Optimization failed")}</span>'
+                                f'<span style="color:#dc2626;font-weight:700;">❌ Infeasible</span>'
+                                f'<span style="color:#6b7280;margin-left:1.2rem;">{_bres.get("error","Optimization failed")}</span>'
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
@@ -8287,7 +8226,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                                     size=[14 if t in ('pump', 'terminal') else 8 for t in _prof_types],
                                     color=[_ptcols.get(t, '#4A90D9') for t in _prof_types],
                                     symbol=['diamond' if t == 'terminal' else 'circle' for t in _prof_types],
-                                    line=dict(color='#080d1a', width=1.5),
+                                    line=dict(color='#ffffff', width=1.5),
                                 ),
                                 text=_prof_labels,
                                 textposition='top center',
@@ -8298,9 +8237,9 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                             if _term_min > 0:
                                 _fig_br.add_hline(
                                     y=_term_min,
-                                    line=dict(color='#FF3366', width=1.5, dash='dash'),
+                                    line=dict(color='#dc2626', width=1.5, dash='dash'),
                                     annotation_text=f"Min required: {_term_min:.0f} m",
-                                    annotation_font=dict(color='#FF3366', size=10),
+                                    annotation_font=dict(color='#dc2626', size=10),
                                 )
                             # Pump station vertical markers
                             for _bsi2, _bsd2 in enumerate(_br_stns_disp):
@@ -8308,19 +8247,19 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                                     _px2 = sum(float(_br_stns_disp[k].get('L', 0)) for k in range(_bsi2))
                                     _fig_br.add_vline(
                                         x=_px2,
-                                        line=dict(color='rgba(0,212,255,0.35)', width=1, dash='dot'),
+                                        line=dict(color='rgba(25,103,210,0.35)', width=1, dash='dot'),
                                         annotation_text=_bsd2.get('name', ''),
-                                        annotation_font=dict(color='#00D4FF', size=9),
+                                        annotation_font=dict(color='#1967d2', size=9),
                                         annotation_position='bottom right',
                                     )
                             _fig_br.update_layout(
-                                paper_bgcolor='#080d1a', plot_bgcolor='#080d1a',
+                                paper_bgcolor='#f5f7fa', plot_bgcolor='#f5f7fa',
                                 height=220, margin=dict(l=10, r=10, t=22, b=22),
-                                xaxis=dict(title='Distance (km)', color='#7A8BA8',
-                                           gridcolor='rgba(74,144,217,0.08)', zeroline=False),
-                                yaxis=dict(title='Head (m)', color='#7A8BA8',
-                                           gridcolor='rgba(74,144,217,0.08)', zeroline=False),
-                                font=dict(family='Inter', color='#E8EAF0', size=10),
+                                xaxis=dict(title='Distance (km)', color='#6b7280',
+                                           gridcolor='rgba(0,0,0,0.06)', zeroline=False),
+                                yaxis=dict(title='Head (m)', color='#6b7280',
+                                           gridcolor='rgba(0,0,0,0.06)', zeroline=False),
+                                font=dict(family='Inter', color='#111827', size=10),
                                 showlegend=False,
                             )
                             st.plotly_chart(_fig_br, use_container_width=True, config={'displaylogo': False},
