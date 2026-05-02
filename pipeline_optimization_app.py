@@ -107,74 +107,305 @@ LOGO_PATH = ROOT / "logo.png"
 
 BUTTON_STYLE = """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg-primary:   #0a0e1a;
+  --bg-secondary: #0f1629;
+  --bg-card:      rgba(15,22,41,0.92);
+  --border:       rgba(74,144,217,0.22);
+  --accent:       #4A90D9;
+  --accent2:      #00D4FF;
+  --green:        #00FF88;
+  --red:          #FF3366;
+  --yellow:       #FFD700;
+  --orange:       #FF8C42;
+  --text-primary: #E8EAF0;
+  --text-muted:   #7A8BA8;
+}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:var(--bg-primary); }
+::-webkit-scrollbar-thumb { background:var(--accent); border-radius:3px; }
+
+/* ── GLOBAL APP ── */
+.stApp {
+  background: var(--bg-primary) !important;
+  font-family: 'Inter', sans-serif !important;
+  color: var(--text-primary) !important;
+}
+
+/* ── MAIN AREA ── */
+[data-testid="stMain"] { background: var(--bg-primary) !important; }
+[data-testid="block-container"] { padding-top:1rem !important; }
+
+/* ── HEADER / TOOLBAR ── */
+[data-testid="stHeader"] {
+  background: rgba(10,14,26,0.95) !important;
+  border-bottom: 1px solid var(--border) !important;
+  backdrop-filter: blur(12px) !important;
+}
+[data-testid="stToolbar"] { background: transparent !important; }
+
+/* ── SIDEBAR ── */
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg,#08111f 0%,#0b1526 100%) !important;
+  border-right: 1px solid var(--border) !important;
+}
+[data-testid="stSidebar"] * { color: var(--text-primary) !important; }
+[data-testid="stSidebarContent"] { background: transparent !important; }
+[data-testid="stSidebar"] h3 { color: var(--accent) !important; font-weight:700 !important; }
+[data-testid="stSidebar"] .stMarkdown h3 { color: var(--accent) !important; }
+
+/* ── TYPOGRAPHY ── */
+h1,h2,h3,h4,h5,h6 {
+  color: var(--text-primary) !important;
+  font-family: 'Inter', sans-serif !important;
+}
+p, label, .stMarkdown { color: var(--text-primary) !important; }
+code, .stCode { font-family: 'DM Mono', monospace !important; }
+
+/* ── TABS ── */
+.stTabs [data-baseweb="tab-list"] {
+  background: var(--bg-secondary) !important;
+  border-radius: 12px !important;
+  padding: 4px !important;
+  gap: 3px !important;
+  border: 1px solid var(--border) !important;
+}
+.stTabs [data-baseweb="tab"] {
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  padding: 7px 13px !important;
+  transition: all 0.18s ease !important;
+  border: none !important;
+  font-size: 0.81rem !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+  background: rgba(74,144,217,0.12) !important;
+  color: var(--accent) !important;
+}
+.stTabs [aria-selected="true"] {
+  background: var(--accent) !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 14px rgba(74,144,217,0.45) !important;
+}
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] { display:none !important; }
+.stTabs [data-baseweb="tab-panel"] { background:transparent !important; padding-top:1rem !important; }
+
+/* ── INPUTS ── */
+[data-testid="stNumberInput"] input,
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-primary) !important;
+  border-radius: 8px !important;
+  font-family: 'Inter', sans-serif !important;
+}
+[data-testid="stNumberInput"] input:focus,
+[data-testid="stTextInput"] input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(74,144,217,0.18) !important;
+}
+[data-baseweb="select"] > div {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border) !important;
+  color: var(--text-primary) !important;
+}
+[data-baseweb="popover"], [role="listbox"] { background: var(--bg-secondary) !important; }
+[role="option"] { color: var(--text-primary) !important; }
+[role="option"]:hover { background: rgba(74,144,217,0.15) !important; }
+
+/* ── EXPANDERS ── */
+[data-testid="stExpander"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(10px) !important;
+  margin-bottom: 8px !important;
+}
+[data-testid="stExpander"] details summary {
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
+}
+[data-testid="stExpander"] details summary:hover { color: var(--accent) !important; }
+[data-testid="stExpander"] details > div { background: transparent !important; }
+
+/* ── METRIC CARDS ── */
+[data-testid="metric-container"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+  padding: 18px !important;
+  backdrop-filter: blur(10px) !important;
+  transition: border-color 0.2s, box-shadow 0.2s !important;
+}
+[data-testid="metric-container"]:hover {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 18px rgba(74,144,217,0.18) !important;
+}
+[data-testid="stMetricLabel"] {
+  color: var(--text-muted) !important;
+  font-size: 0.73rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+[data-testid="stMetricValue"] {
+  color: var(--text-primary) !important;
+  font-weight: 800 !important;
+  font-size: 1.55rem !important;
+}
+[data-testid="stMetricDelta"] { color: var(--green) !important; }
+
+/* ── DATA TABLES ── */
+[data-testid="stDataFrame"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+.dvn-scroller { background: var(--bg-secondary) !important; }
+
+/* ── FILE UPLOADER ── */
+[data-testid="stFileUploader"] {
+  background: var(--bg-card) !important;
+  border: 1px dashed var(--border) !important;
+  border-radius: 12px !important;
+}
+[data-testid="stFileUploader"]:hover { border-color: var(--accent) !important; }
+
+/* ── ALERTS ── */
+[data-testid="stAlert"] { border-radius: 10px !important; }
+
+/* ── SECTION TITLE ── */
+.section-title {
+  font-weight: 800;
+  color: var(--text-primary);
+  font-size: 1.35em;
+  letter-spacing: 0.1px;
+  margin-bottom: 0.6em;
+  font-family: 'Inter', sans-serif;
+}
+
+/* ── PIPELINE MAP ── */
+.pipeline-map-container {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px;
+  backdrop-filter: blur(10px);
+  margin-bottom: 12px;
+}
+
+/* ── HR ── */
+hr { border:none !important; border-top:1px solid var(--border) !important; margin:0.8rem 0 !important; }
+
+/* ── HIDE STREAMLIT FOOTER ── */
+#MainMenu, footer { visibility:hidden !important; }
+
+/* ══ BUTTONS ══ */
+
+/* Primary (red gradient) */
 div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
-    background-color: #C62828;
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
+  background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  box-shadow: 0 4px 14px rgba(198,40,40,0.28);
+  transition: all 0.2s ease;
 }
 div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-    background-color: #AB2020;
-    color: #ffffff;
+  background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%);
+  box-shadow: 0 6px 20px rgba(198,40,40,0.42);
+  transform: translateY(-1px);
+  color: #fff;
 }
 div[data-testid="stButton"] > button:active,
 div[data-testid="stButton"] > button[kind="primary"]:active {
-    background-color: #8E1A1A;
-    color: #ffffff;
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(198,40,40,0.28);
+  background: linear-gradient(135deg,#8E1A1A 0%,#6A1212 100%);
+  color: #fff;
 }
 
+/* Download (blue gradient) */
 div[data-testid="stDownloadButton"] > button {
-    background-color: #30427A;
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
+  background: linear-gradient(135deg,#30427A 0%,#1a2444 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  box-shadow: 0 4px 14px rgba(48,66,122,0.28);
+  transition: all 0.2s ease;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-    background-color: #2A3A6B;
-    color: #ffffff;
+  background: linear-gradient(135deg,#2A3A6B 0%,#152044 100%);
+  box-shadow: 0 6px 20px rgba(48,66,122,0.42);
+  transform: translateY(-1px);
+  color: #fff;
 }
 div[data-testid="stDownloadButton"] > button:active {
-    background-color: #23315B;
-    color: #ffffff;
+  transform: translateY(0);
+  background: linear-gradient(135deg,#1a2444 0%,#0f1830 100%);
+  color: #fff;
 }
 
+/* Action (green gradient) */
+button[aria-label="Hydraulic feasibility check"],
+button[aria-label="➕ Add Station"],
+button[aria-label="🗑️ Remove Station"] {
+  background: linear-gradient(135deg,#1B5E20 0%,#0F3612 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px rgba(27,94,32,0.28) !important;
+  transition: all 0.2s ease !important;
+}
+button[aria-label="Hydraulic feasibility check"]:hover,
+button[aria-label="➕ Add Station"]:hover,
+button[aria-label="🗑️ Remove Station"]:hover {
+  background: linear-gradient(135deg,#154A19 0%,#0A280C 100%) !important;
+  box-shadow: 0 6px 20px rgba(27,94,32,0.42) !important;
+  transform: translateY(-1px) !important;
+}
+button[aria-label="Hydraulic feasibility check"]:active,
+button[aria-label="➕ Add Station"]:active,
+button[aria-label="🗑️ Remove Station"]:active {
+  transform: translateY(0) !important;
+  background: linear-gradient(135deg,#0F3612 0%,#081A09 100%) !important;
+}
+
+/* File / Special (red gradient) */
 button[aria-label="Logout"],
 div[data-testid="stFileUploader"] button,
 button[aria-label="Browse files"],
 button[aria-label="💾 Save Case"] {
-    background-color: #C62828 !important;
-    color: #ffffff !important;
+  background: linear-gradient(135deg,#C62828 0%,#8E1A1A 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px rgba(198,40,40,0.28) !important;
 }
 button[aria-label="Logout"]:hover,
 div[data-testid="stFileUploader"] button:hover,
 button[aria-label="Browse files"]:hover,
 button[aria-label="💾 Save Case"]:hover {
-    background-color: #AB2020 !important;
-}
-button[aria-label="Logout"]:active,
-div[data-testid="stFileUploader"] button:active,
-button[aria-label="Browse files"]:active,
-button[aria-label="💾 Save Case"]:active {
-    background-color: #8E1A1A !important;
-}
-
-button[aria-label="Hydraulic feasibility check"],
-button[aria-label="➕ Add Station"],
-button[aria-label="🗑️ Remove Station"] {
-    background-color: #1B5E20 !important;
-    color: #ffffff !important;
-}
-button[aria-label="Hydraulic feasibility check"]:hover,
-button[aria-label="➕ Add Station"]:hover,
-button[aria-label="🗑️ Remove Station"]:hover {
-    background-color: #154A19 !important;
-}
-button[aria-label="Hydraulic feasibility check"]:active,
-button[aria-label="➕ Add Station"]:active,
-button[aria-label="🗑️ Remove Station"]:active {
-    background-color: #0F3612 !important;
+  background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%) !important;
+  transform: translateY(-1px) !important;
 }
 </style>
 """
@@ -913,6 +1144,7 @@ def _prepare_pipeline_context():
         stn.setdefault("loopline", False)
         stn.setdefault("max_pumps", stn.get("available", 0))
         stn.setdefault("min_pumps", 0)
+        _stn_uid = _ensure_station_uid(stn)
         pump_types = stn.get("pump_types") if isinstance(stn.get("pump_types"), Mapping) else None
         if pump_types:
             for ptype, pdata in pump_types.items():
@@ -921,13 +1153,13 @@ def _prepare_pipeline_context():
                 pdata.setdefault("available", pdata.get("count", 0))
                 if int(pdata.get("available", 0)) <= 0:
                     continue
-                dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                dfh = st.session_state.get(f"head_data__{_stn_uid}{ptype}")
+                dfe = st.session_state.get(f"eff_data__{_stn_uid}{ptype}")
                 pdata["head_data"] = dfh
                 pdata["eff_data"] = dfe
         else:
-            dfh = st.session_state.get(f"head_data_{idx}")
-            dfe = st.session_state.get(f"eff_data_{idx}")
+            dfh = st.session_state.get(f"head_data__{_stn_uid}")
+            dfe = st.session_state.get(f"eff_data__{_stn_uid}")
             if dfh is None and "head_data" in stn:
                 dfh = pd.DataFrame(stn["head_data"])
             if dfe is None and "eff_data" in stn:
@@ -1364,48 +1596,7 @@ def _get_linefill_snapshot_for_hour(
 
 st.set_page_config(page_title="Pipeline Optima™", layout="wide", initial_sidebar_state="expanded")
 
-#Custom Styles
-st.markdown("""
-    <style>
-    .stButton > button {
-        font-weight: 600;
-        border: 1px solid transparent;
-        border-radius: 12px;
-        box-shadow: none;
-        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
-    }
-    .stDownloadButton > button {
-        font-weight: 600;
-        border: 1px solid transparent;
-        border-radius: 12px;
-        box-shadow: none;
-        transition: filter 0.19s ease-in-out, transform 0.19s ease-in-out;
-    }
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        filter: brightness(0.92);
-    }
-    .stButton > button:active,
-    .stDownloadButton > button:active {
-        filter: brightness(0.85);
-        transform: translateY(1px);
-    }
-    .section-title {
-        font-weight: 700;
-        color: #1e293b;
-        font-size: 1.5em;
-        letter-spacing: 0.2px;
-        margin-bottom: 0.7em;
-        margin-top: 0.2em;
-    }
-    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-        color: #d32f2f;
-        border-bottom: 2.5px solid #d32f2f;
-        font-weight: bold;
-        background: #ffeaea33;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# (styles already applied via BUTTON_STYLE above)
 
 palette = [c for c in qualitative.Plotly if 'yellow' not in c.lower() and '#FFD700' not in c and '#ffeb3b' not in c.lower()]
 
@@ -1548,47 +1739,48 @@ def restore_case_dict(loaded_data):
         st.session_state["linefill_df"] = pd.DataFrame(loaded_data["linefill"])
         ensure_initial_dra_column(st.session_state["linefill_df"], default=0.0, fill_blanks=True)
     for i, stn in enumerate(st.session_state['stations'], start=1):
-        head_data = loaded_data.get(f"head_data_{i}", None)
-        eff_data  = loaded_data.get(f"eff_data_{i}", None)
-        peak_data = loaded_data.get(f"peak_data_{i}", None)
-        loop_peak_data = loaded_data.get(f"loop_peak_data_{i}", None)
+        _uid = _ensure_station_uid(stn)
+        head_data = loaded_data.get(f"head_data__{_uid}", loaded_data.get(f"head_data_{i}", None))
+        eff_data  = loaded_data.get(f"eff_data__{_uid}", loaded_data.get(f"eff_data_{i}", None))
+        peak_data = loaded_data.get(f"peak_data__{_uid}", loaded_data.get(f"peak_data_{i}", None))
+        loop_peak_data = loaded_data.get(f"loop_peak_data__{_uid}", loaded_data.get(f"loop_peak_data_{i}", None))
         if head_data is not None:
             df_head = pd.DataFrame(head_data)
-            st.session_state[f"head_data_{i}"] = df_head
+            st.session_state[f"head_data__{_uid}"] = df_head
             st.session_state['stations'][i-1]['head_data'] = head_data
         if eff_data is not None:
             df_eff = pd.DataFrame(eff_data)
-            st.session_state[f"eff_data_{i}"] = df_eff
+            st.session_state[f"eff_data__{_uid}"] = df_eff
             st.session_state['stations'][i-1]['eff_data'] = eff_data
         if peak_data is not None:
             df_peak = pd.DataFrame(peak_data)
-            st.session_state[f"peak_data_{i}"] = df_peak
+            st.session_state[f"peak_data__{_uid}"] = df_peak
             st.session_state['stations'][i-1]['peak_data'] = peak_data
         if loop_peak_data is not None:
             df_lpeak = pd.DataFrame(loop_peak_data)
-            st.session_state[f"loop_peak_data_{i}"] = df_lpeak
+            st.session_state[f"loop_peak_data__{_uid}"] = df_lpeak
             st.session_state['stations'][i-1].setdefault('loopline', {})['peaks'] = loop_peak_data
         else:
             loop_peaks = st.session_state['stations'][i-1].get('loopline', {}).get('peaks')
             if loop_peaks is not None:
-                st.session_state[f"loop_peak_data_{i}"] = pd.DataFrame(loop_peaks)
+                st.session_state[f"loop_peak_data__{_uid}"] = pd.DataFrame(loop_peaks)
 
         # Load pump type-specific data if present
         for ptype in stn.get('pump_types', {}).keys():
-            head_pt = loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data'))
-            eff_pt  = loaded_data.get(f"eff_data_{i}{ptype}", stn['pump_types'][ptype].get('eff_data'))
-            peak_pt = loaded_data.get(f"peak_data_{i}{ptype}", stn['pump_types'][ptype].get('peak_data'))
+            head_pt = loaded_data.get(f"head_data__{_uid}{ptype}", loaded_data.get(f"head_data_{i}{ptype}", stn['pump_types'][ptype].get('head_data')))
+            eff_pt  = loaded_data.get(f"eff_data__{_uid}{ptype}", loaded_data.get(f"eff_data_{i}{ptype}", stn['pump_types'][ptype].get('eff_data')))
+            peak_pt = loaded_data.get(f"peak_data__{_uid}{ptype}", loaded_data.get(f"peak_data_{i}{ptype}", stn['pump_types'][ptype].get('peak_data')))
             if head_pt is not None:
                 df_head_pt = pd.DataFrame(head_pt)
-                st.session_state[f"head_data_{i}{ptype}"] = df_head_pt
+                st.session_state[f"head_data__{_uid}{ptype}"] = df_head_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['head_data'] = head_pt
             if eff_pt is not None:
                 df_eff_pt = pd.DataFrame(eff_pt)
-                st.session_state[f"eff_data_{i}{ptype}"] = df_eff_pt
+                st.session_state[f"eff_data__{_uid}{ptype}"] = df_eff_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['eff_data'] = eff_pt
             if peak_pt is not None:
                 df_peak_pt = pd.DataFrame(peak_pt)
-                st.session_state[f"peak_data_{i}{ptype}"] = df_peak_pt
+                st.session_state[f"peak_data__{_uid}{ptype}"] = df_peak_pt
                 st.session_state['stations'][i-1].setdefault('pump_types', {}).setdefault(ptype, {})['peak_data'] = peak_pt
 
 uploaded_case = st.sidebar.file_uploader("🔁 Load Case", type="json", key="casefile")
@@ -2190,9 +2382,26 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
+def _ensure_station_uid(stn: dict) -> str:
+    """Return the station's uid, generating one if absent."""
+    if not stn.get('uid'):
+        stn['uid'] = str(uuid.uuid4())[:8]
+    return stn['uid']
+
+def _skey(stn: dict, field: str) -> str:
+    """Return a stable session-state key for a station field."""
+    return f"{field}__{_ensure_station_uid(stn)}"
+
+def _sinit(stn: dict, field: str, default):
+    """Pre-fill session state from station dict so value= never fights stored state."""
+    k = _skey(stn, field)
+    if k not in st.session_state:
+        st.session_state[k] = stn.get(field, default)
+
 st.subheader("Stations")
 if "stations" not in st.session_state:
     st.session_state["stations"] = [{
+        'uid': str(uuid.uuid4())[:8],
         'name': 'Station 1', 'elev': 0.0, 'D': 0.711, 't': 0.007,
         'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
         'min_residual': 50.0, 'is_pump': False,
@@ -2200,14 +2409,38 @@ if "stations" not in st.session_state:
         'max_pumps': 1, 'MinRPM': 1200.0, 'DOL': 1500.0,
         'max_dr': 0.0,
         'delivery': 0.0,
-        'supply': 0.0
+        'supply': 0.0,
+        'branches': [],
     }]
+else:
+    # Backfill UIDs for stations loaded from older saved cases
+    for _s in st.session_state["stations"]:
+        _ensure_station_uid(_s)
+
+# ── Pipeline Network Preview Map ────────────────────────────────────────────
+with st.expander("🗺️ Pipeline Network Map (Preview)", expanded=True):
+    _preview_result = st.session_state.get("last_res") if "last_res" in st.session_state else None
+    _preview_stns   = (st.session_state.get("last_stations_data")
+                       if _preview_result is not None
+                       else st.session_state.get("stations", []))
+    st.markdown('<div class="pipeline-map-container">', unsafe_allow_html=True)
+    st.plotly_chart(
+        render_pipeline_map(_preview_stns, _preview_result),
+        use_container_width=True,
+        config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+        key="pipeline_map_preview",
+    )
+    if _preview_result is None:
+        st.caption("Run the optimizer to see live pressure and DRA data on the map.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
 with st.sidebar:
     st.markdown("### Stations")
     add_col, rem_col = st.columns(2)
     if add_col.button("➕ Add Station", key="add_station"):
         n = len(st.session_state.get('stations', [])) + 1
         default = {
+            'uid': str(uuid.uuid4())[:8],
             'name': f'Station {n}', 'elev': 0.0, 'D': 0.711, 't': 0.007,
             'SMYS': 52000.0, 'rough': 0.00004, 'L': 50.0,
             'min_residual': 50.0, 'is_pump': False,
@@ -2215,7 +2448,8 @@ with st.sidebar:
             'max_pumps': 1, 'MinRPM': 1000.0, 'DOL': 1500.0,
             'max_dr': 0.0,
             'delivery': 0.0,
-            'supply': 0.0
+            'supply': 0.0,
+            'branches': [],
         }
         st.session_state.stations.append(default)
     if rem_col.button("🗑️ Remove Station", key="rem_station"):
@@ -2224,57 +2458,323 @@ with st.sidebar:
 
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
-    with st.expander(f"Station {idx}: {stn['name']}", expanded=False):
+    uid = _ensure_station_uid(stn)
+    # Pre-fill session state so value= never fights stored state on first render
+    _sinit(stn, 'name', f'Station {idx}')
+    _sinit(stn, 'elev', 0.0)
+    _sinit(stn, 'is_pump', False)
+    _sinit(stn, 'L', 50.0)
+    _sinit(stn, 'max_dr', 0.0)
+    _sinit(stn, 'min_residual', 50.0)
+    _sinit(stn, 'SMYS', 52000.0)
+    _sinit(stn, 'rough', 0.00004)
+    _sinit(stn, 'max_pumps', 1)
+    _sinit(stn, 'delivery', 0.0)
+    _sinit(stn, 'supply', 0.0)
+    if 'branches' not in stn:
+        stn['branches'] = []
+    # D and t stored in inches in session state to avoid meter↔inch conversion fighting
+    if _skey(stn, 'D_in') not in st.session_state:
+        st.session_state[_skey(stn, 'D_in')] = stn.get('D', 0.711) / 0.0254
+    if _skey(stn, 't_in') not in st.session_state:
+        st.session_state[_skey(stn, 't_in')] = stn.get('t', 0.007) / 0.0254
+
+    with st.expander(f"Station {idx}: {st.session_state.get(_skey(stn,'name'), stn['name'])}", expanded=False):
         col1, col2, col3 = st.columns([1.5,1,1])
         with col1:
-            stn['name'] = st.text_input("Name", value=stn['name'], key=f"name{idx}")
-            stn['elev'] = st.number_input("Elevation (m)", value=stn['elev'], step=0.1, key=f"elev{idx}")
-            stn['is_pump'] = st.checkbox("Pumping Station?", value=stn['is_pump'], key=f"pump{idx}")
-            stn['L'] = st.number_input("Length to next Station (km)", value=stn['L'], step=1.0, key=f"L{idx}")
-            stn['max_dr'] = st.number_input(
-                "Max achievable Drag Reduction (%)",
-                value=stn.get('max_dr', 0.0),
-                key=f"mdr{idx}"
-            )
-            if idx == 1:
-                stn['min_residual'] = st.number_input("Available Suction Head (m)", value=stn.get('min_residual',50.0), step=0.1, key=f"res{idx}")
+            stn['name'] = st.text_input("Name", key=_skey(stn, 'name'))
+            stn['elev'] = st.number_input("Elevation (m)", step=0.1, key=_skey(stn, 'elev'))
+            stn['is_pump'] = st.checkbox("Pumping Station?", key=_skey(stn, 'is_pump'))
+            stn['L'] = st.number_input("Length to next Station (km)", step=1.0, key=_skey(stn, 'L'))
+            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", key=_skey(stn, 'max_dr'))
+            stn['min_residual'] = st.number_input("Available Suction Head (m)", step=0.1, key=_skey(stn, 'min_residual'))
         with col2:
-            D_in = st.number_input("OD (in)", value=stn['D']/0.0254, format="%.2f", step=0.01, key=f"D{idx}")
-            t_in = st.number_input("Wall Thk (in)", value=stn['t']/0.0254, format="%.3f", step=0.001, key=f"t{idx}")
+            D_in = st.number_input("OD (in)", format="%.2f", step=0.01, key=_skey(stn, 'D_in'))
+            t_in = st.number_input("Wall Thk (in)", format="%.3f", step=0.001, key=_skey(stn, 't_in'))
             stn['D'] = D_in * 0.0254
             stn['t'] = t_in * 0.0254
-            stn['SMYS'] = st.number_input("SMYS (psi)", value=stn['SMYS'], step=1000.0, key=f"SMYS{idx}")
-            stn['rough'] = st.number_input("Pipe Roughness (m)", value=stn['rough'], format="%.7f", step=0.0000001, key=f"rough{idx}")
+            stn['SMYS'] = st.number_input("SMYS (psi)", step=1000.0, key=_skey(stn, 'SMYS'))
+            stn['rough'] = st.number_input("Pipe Roughness (m)", format="%.7f", step=0.0000001, key=_skey(stn, 'rough'))
         with col3:
-            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, value=stn.get('max_pumps',1), step=1, key=f"mpumps{idx}")
-            stn['delivery'] = st.number_input("Delivery (m³/hr)", value=stn.get('delivery', 0.0), key=f"deliv{idx}")
-            stn['supply'] = st.number_input("Supply (m³/hr)", value=stn.get('supply', 0.0), key=f"sup{idx}")
+            stn['max_pumps'] = st.number_input("Max Pumps available", min_value=1, step=1, key=_skey(stn, 'max_pumps'))
+            stn['delivery'] = st.number_input("Delivery (m³/hr)", key=_skey(stn, 'delivery'))
+            stn['supply'] = st.number_input("Supply (m³/hr)", key=_skey(stn, 'supply'))
+
+        # ── Branch / Tap-off lines ────────────────────────────────────────────
+        st.markdown('<hr style="border-color:rgba(74,144,217,0.2);margin:0.5rem 0;">', unsafe_allow_html=True)
+        st.markdown("**🔀 Branch / Tap-off Lines at this Junction**")
+        _branches = stn.get('branches', [])
+        if st.button("➕ Add Branch Line", key=f"add_branch__{uid}"):
+            _new_br = {
+                'uid': str(uuid.uuid4())[:8],
+                'name': f"Branch {len(_branches) + 1}",
+                'flow_m3h': 50.0,
+                'stations': [{
+                    'uid': str(uuid.uuid4())[:8],
+                    'name': 'Branch Stn 1',
+                    'elev': 0.0, 'D': 0.457, 't': 0.006, 'SMYS': 52000.0,
+                    'rough': 0.00004, 'L': 20.0, 'min_residual': 10.0,
+                    'is_pump': False, 'pump_head_m': 0.0, 'max_pumps': 1,
+                    'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+                    'max_dr': 0.0, 'delivery': 0.0, 'supply': 0.0,
+                    'MinRPM': 1500.0, 'DOL': 1500.0,
+                }],
+                'terminal': {'name': 'Branch Terminal', 'elev': 0.0, 'min_residual': 10.0},
+            }
+            _branches.append(_new_br)
+            stn['branches'] = _branches
+
+        _branches_keep = []
+        for _bi, _branch in enumerate(_branches):
+            _b_uid = _branch.get('uid', str(_bi))
+            with st.expander(
+                f"🔀 {_branch.get('name', f'Branch {_bi+1}')} — {_branch.get('flow_m3h', 0):.0f} m³/hr",
+                expanded=False,
+            ):
+                _remove_b = st.button("🗑️ Remove Branch", key=f"del_branch__{_b_uid}")
+                if _remove_b:
+                    continue  # drop from list
+
+                _bc1, _bc2 = st.columns(2)
+                with _bc1:
+                    _branch['name'] = st.text_input(
+                        "Branch Name", value=_branch.get('name', ''), key=f"bname__{_b_uid}"
+                    )
+                with _bc2:
+                    _branch['flow_m3h'] = st.number_input(
+                        "Branch Flow (m³/hr)", value=float(_branch.get('flow_m3h', 50.0)),
+                        min_value=0.0, step=10.0, key=f"bflow__{_b_uid}"
+                    )
+
+                # Branch terminal
+                st.markdown("**Terminal**")
+                _t = _branch.get('terminal', {})
+                _bt1, _bt2, _bt3 = st.columns(3)
+                with _bt1:
+                    _t['name'] = st.text_input(
+                        "Name", value=_t.get('name', ''), key=f"btname__{_b_uid}"
+                    )
+                with _bt2:
+                    _t['elev'] = st.number_input(
+                        "Elevation (m)", value=float(_t.get('elev', 0.0)),
+                        step=0.1, key=f"btelev__{_b_uid}"
+                    )
+                with _bt3:
+                    _t['min_residual'] = st.number_input(
+                        "Min Pressure (m)", value=float(_t.get('min_residual', 10.0)),
+                        min_value=0.0, step=1.0, key=f"btmin__{_b_uid}"
+                    )
+                _branch['terminal'] = _t
+
+                # Branch stations / pipe segments
+                st.markdown("**Branch Stations / Pipe Segments**")
+                _bstns = _branch.get('stations', [])
+                _bstns_keep = []
+                for _si, _bstn in enumerate(_bstns):
+                    _bs_uid = _bstn.get('uid', str(_si))
+                    with st.expander(
+                        f"Stn {_si + 1}: {_bstn.get('name', '')}",
+                        expanded=(_si == 0),
+                    ):
+                        _rem_bs = st.button("🗑️ Remove", key=f"rem_bstn__{_bs_uid}")
+                        if _rem_bs:
+                            continue  # drop station
+
+                        _sc1, _sc2, _sc3 = st.columns(3)
+                        with _sc1:
+                            _bstn['name'] = st.text_input(
+                                "Name", value=_bstn.get('name', ''), key=f"bsn__{_bs_uid}"
+                            )
+                            _bstn['elev'] = st.number_input(
+                                "Elevation (m)", value=float(_bstn.get('elev', 0.0)),
+                                step=0.1, key=f"bse__{_bs_uid}"
+                            )
+                            _bstn['L'] = st.number_input(
+                                "Segment Length (km)", value=float(_bstn.get('L', 20.0)),
+                                min_value=0.01, step=1.0, key=f"bsl__{_bs_uid}"
+                            )
+                        with _sc2:
+                            _bD_in = st.number_input(
+                                "OD (in)", value=float(_bstn.get('D', 0.457)) / 0.0254,
+                                min_value=2.0, format="%.2f", step=0.01, key=f"bsd__{_bs_uid}"
+                            )
+                            _bt_in = st.number_input(
+                                "Wall Thk (in)", value=float(_bstn.get('t', 0.006)) / 0.0254,
+                                min_value=0.1, format="%.3f", step=0.001, key=f"bst__{_bs_uid}"
+                            )
+                            _bstn['D'] = _bD_in * 0.0254
+                            _bstn['t'] = _bt_in * 0.0254
+                            _bstn['SMYS'] = st.number_input(
+                                "SMYS (psi)", value=float(_bstn.get('SMYS', 52000.0)),
+                                step=1000.0, key=f"bsSMYS__{_bs_uid}"
+                            )
+                        with _sc3:
+                            _bstn['rough'] = st.number_input(
+                                "Roughness (m)", value=float(_bstn.get('rough', 0.00004)),
+                                format="%.7f", step=0.0000001, key=f"bsr__{_bs_uid}"
+                            )
+                            _bstn['min_residual'] = st.number_input(
+                                "Min Residual (m)", value=float(_bstn.get('min_residual', 10.0)),
+                                min_value=0.0, step=1.0, key=f"bsmr__{_bs_uid}"
+                            )
+                            _bstn['max_dr'] = st.number_input(
+                                "Max DRA%", value=float(_bstn.get('max_dr', 0.0)),
+                                min_value=0.0, max_value=70.0, step=1.0, key=f"bsdr__{_bs_uid}"
+                            )
+                            _bstn['is_pump'] = st.checkbox(
+                                "Has Pump?", value=bool(_bstn.get('is_pump', False)),
+                                key=f"bsip__{_bs_uid}"
+                            )
+
+                        if _bstn.get('is_pump'):
+                            st.markdown(
+                                '<div style="background:rgba(255,140,66,0.07);border:1px solid rgba(255,140,66,0.3);'
+                                'border-radius:6px;padding:0.55rem 0.75rem;margin-top:0.4rem;">'
+                                '<span style="color:#FF8C42;font-weight:600;font-size:0.82rem;">⚙️ PUMP CONFIGURATION</span>'
+                                '</div>',
+                                unsafe_allow_html=True,
+                            )
+                            # Row 1: count + speed + power
+                            _pa, _pb, _pc, _pd, _pe = st.columns([1, 1.2, 1.2, 1.2, 1])
+                            with _pa:
+                                _bstn['max_pumps'] = int(st.number_input(
+                                    "Pumps (units)", value=int(_bstn.get('max_pumps', 1)),
+                                    min_value=1, step=1, key=f"bsnp__{_bs_uid}"
+                                ))
+                            with _pb:
+                                _bstn['MinRPM'] = st.number_input(
+                                    "Min RPM", value=float(_bstn.get('MinRPM', 1000.0)),
+                                    min_value=100.0, step=50.0, key=f"bsminrpm__{_bs_uid}"
+                                )
+                            with _pc:
+                                _bstn['DOL'] = st.number_input(
+                                    "DOL (RPM)", value=float(_bstn.get('DOL', 1500.0)),
+                                    min_value=100.0, step=50.0, key=f"bsdol__{_bs_uid}"
+                                )
+                            with _pd:
+                                _bstn['power_type'] = st.selectbox(
+                                    "Power Type", ['Grid', 'Diesel'],
+                                    index=0 if _bstn.get('power_type', 'Grid') == 'Grid' else 1,
+                                    key=f"bspt__{_bs_uid}"
+                                )
+                            with _pe:
+                                _bstn['rate'] = st.number_input(
+                                    "Rate ₹", value=float(_bstn.get('rate', 9.0)),
+                                    min_value=0.0, step=0.5, key=f"bsrate__{_bs_uid}"
+                                )
+                            if _bstn.get('power_type') == 'Diesel':
+                                _bstn['sfc'] = st.number_input(
+                                    "SFC (g/kWh)", value=float(_bstn.get('sfc', 150.0)),
+                                    min_value=0.0, step=5.0, key=f"bssfc__{_bs_uid}"
+                                )
+
+                            # Pump curve: BEP method vs full Q-H table
+                            _use_tbl = bool(_bstn.get('use_curve_table', False))
+                            _bstn['use_curve_table'] = st.toggle(
+                                "Use Q-H Curve Table (advanced)",
+                                value=_use_tbl,
+                                key=f"bsusetbl__{_bs_uid}",
+                                help="Enter measured Q-H points to derive the pump curve by polynomial fit.",
+                            )
+
+                            if not _bstn.get('use_curve_table'):
+                                st.caption("**BEP Point Method** — curve derived automatically from Best Efficiency Point")
+                                _q1, _q2, _q3 = st.columns(3)
+                                with _q1:
+                                    _bstn['rated_flow_m3h'] = st.number_input(
+                                        "BEP Flow (m³/hr)",
+                                        value=float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))),
+                                        min_value=0.0, step=10.0, key=f"bsrq__{_bs_uid}",
+                                        help="Flow at the pump's Best Efficiency Point (typically = branch design flow).",
+                                    )
+                                with _q2:
+                                    _bstn['rated_head_m'] = st.number_input(
+                                        "Head at BEP (m)",
+                                        value=float(_bstn.get('rated_head_m', _bstn.get('pump_head_m', 200.0))),
+                                        min_value=0.0, step=10.0, key=f"bsrh__{_bs_uid}",
+                                        help="Pump head at BEP flow and DOL speed.",
+                                    )
+                                    _bstn['pump_head_m'] = _bstn['rated_head_m']  # keep legacy field in sync
+                                with _q3:
+                                    _default_shutoff = float(_bstn.get(
+                                        'shutoff_head_m',
+                                        float(_bstn.get('rated_head_m', _bstn.get('pump_head_m', 200.0))) * 1.25,
+                                    ))
+                                    _bstn['shutoff_head_m'] = st.number_input(
+                                        "Shutoff Head (m)",
+                                        value=_default_shutoff,
+                                        min_value=0.0, step=10.0, key=f"bssh__{_bs_uid}",
+                                        help="Head at zero flow. Typical range: 110–130% of BEP head.",
+                                    )
+                            else:
+                                st.caption("**Q-H Curve Table** — enter ≥3 operating points; polynomial fit applied")
+                                _bh_key = f"branch_head_data__{_b_uid}__{_bs_uid}"
+                                _bh_default = pd.DataFrame({
+                                    'Flow (m³/hr)': [0.0,
+                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))) * 0.5,
+                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))),
+                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))) * 1.2],
+                                    'Head (m)':    [float(_bstn.get('shutoff_head_m', _bstn.get('rated_head_m', 250.0))),
+                                                    float(_bstn.get('rated_head_m', 230.0)),
+                                                    float(_bstn.get('rated_head_m', 200.0)),
+                                                    float(_bstn.get('rated_head_m', 200.0)) * 0.75],
+                                })
+                                _bh_df = st.session_state.get(_bh_key, _bh_default)
+                                _bh_df_ed = st.data_editor(
+                                    _bh_df, key=f"bhed__{_bs_uid}",
+                                    use_container_width=True, num_rows="dynamic",
+                                    column_config={
+                                        'Flow (m³/hr)': st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
+                                        'Head (m)':     st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
+                                    },
+                                )
+                                st.session_state[_bh_key] = _bh_df_ed
+
+                        _bstns_keep.append(_bstn)
+
+                if st.button("➕ Add Branch Station", key=f"add_bstn__{_b_uid}"):
+                    _bstns_keep.append({
+                        'uid': str(uuid.uuid4())[:8],
+                        'name': f"Branch Stn {len(_bstns_keep) + 1}",
+                        'elev': 0.0, 'D': 0.457, 't': 0.006, 'SMYS': 52000.0,
+                        'rough': 0.00004, 'L': 20.0, 'min_residual': 10.0,
+                        'is_pump': False, 'pump_head_m': 0.0, 'max_pumps': 1,
+                        'power_type': 'Grid', 'rate': 9.0, 'sfc': 150.0,
+                        'max_dr': 0.0, 'delivery': 0.0, 'supply': 0.0,
+                        'MinRPM': 1500.0, 'DOL': 1500.0,
+                    })
+
+                _branch['stations'] = _bstns_keep
+                _branches_keep.append(_branch)
+
+        stn['branches'] = _branches_keep
+
         st.markdown("**Loopline (optional)**")
-        has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag{idx}")
+        has_loop = st.checkbox("Has Loopline?", value=bool(stn.get('loopline')), key=f"loopflag__{uid}")
         if has_loop:
             loop = stn.setdefault('loopline', {})
             lcol1, lcol2, lcol3 = st.columns(3)
             with lcol1:
-                loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname{idx}")
-                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart{idx}")
-                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend{idx}")
-                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL{idx}")
+                loop['name'] = st.text_input("Name", value=loop.get('name', f"Loop {idx}"), key=f"loopname__{uid}")
+                loop['start_km'] = st.number_input("Start (km)", value=loop.get('start_km', 0.0), key=f"loopstart__{uid}")
+                loop['end_km'] = st.number_input("End (km)", value=loop.get('end_km', stn['L']), key=f"loopend__{uid}")
+                loop['L'] = st.number_input("Length (km)", value=loop.get('L', stn['L']), key=f"loopL__{uid}")
             with lcol2:
-                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD{idx}")
-                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt{idx}")
+                Dloop_in = st.number_input("OD (in)", value=loop.get('D', stn['D'])/0.0254, format="%.2f", step=0.01, key=f"loopD__{uid}")
+                tloop_in = st.number_input("Wall Thk (in)", value=loop.get('t', stn['t'])/0.0254, format="%.3f", step=0.001, key=f"loopt__{uid}")
                 loop['D'] = Dloop_in * 0.0254
                 loop['t'] = tloop_in * 0.0254
-                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS{idx}")
+                loop['SMYS'] = st.number_input("SMYS (psi)", value=loop.get('SMYS', stn['SMYS']), step=1000.0, key=f"loopSMYS__{uid}")
             with lcol3:
-                loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough{idx}")
+                loop['rough'] = st.number_input("Pipe Roughness (m)", value=loop.get('rough', 0.00004), format="%.7f", step=0.0000001, key=f"looprough__{uid}")
                 loop['max_dr'] = st.number_input(
                     "Max Drag Reduction (%)",
                     value=loop.get('max_dr', 0.0),
-                    key=f"loopmdr{idx}"
+                    key=f"loopmdr__{uid}"
                 )
-                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev{idx}")
+                loop['elev'] = st.number_input("Elevation (m)", value=loop.get('elev', stn.get('elev',0.0)), step=0.1, key=f"loopelev__{uid}")
 
-            loop_peak_key = f"loop_peak_data_{idx}"
+            loop_peak_key = f"loop_peak_data__{uid}"
             if loop_peak_key not in st.session_state or not isinstance(st.session_state[loop_peak_key], pd.DataFrame):
                 st.session_state[loop_peak_key] = pd.DataFrame({
                     "Location (km)": [loop.get('L', stn['L'])/2.0],
@@ -2302,7 +2802,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             enabled = st.checkbox(
                                 f"Use Pump Type {ptype}",
                                 value=pdata.get('available', 0) > 0,
-                                key=f"enable{idx}{ptype}"
+                                key=f"enable__{uid}{ptype}"
                             )
                             avail = st.number_input(
                                 "Available Pumps",
@@ -2310,7 +2810,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 max_value=3,
                                 step=1,
                                 value=int(pdata.get('available', 0)),
-                                key=f"avail{idx}{ptype}"
+                                key=f"avail__{uid}{ptype}"
                             )
                             if not enabled or avail == 0:
                                 st.info("Pump type disabled")
@@ -2326,10 +2826,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 names[j] = st.text_input(
                                     f"Pump {ptype} {j+1} Name",
                                     value=names[j],
-                                    key=f"pname{idx}{ptype}{j}"
+                                    key=f"pname__{uid}{ptype}{j}"
                                 )
 
-                            key_head = f"head_data_{idx}{ptype}"
+                            key_head = f"head_data__{uid}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
                                 st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
                             df_head = data_editor_copy(
@@ -2339,7 +2839,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             )
                             st.session_state[key_head] = df_head
 
-                            key_eff = f"eff_data_{idx}{ptype}"
+                            key_eff = f"eff_data__{uid}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
                                 st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
                             df_eff = data_editor_copy(
@@ -2354,23 +2854,23 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 ptype_sel = st.selectbox(
                                     "Power Source", ["Grid", "Diesel"],
                                     index=0 if pdata.get('power_type', 'Grid') == "Grid" else 1,
-                                    key=f"ptype{idx}{ptype}"
+                                    key=f"ptype__{uid}{ptype}"
                                 )
                             with pcol2:
                                 min_label = "Min Pump RPM" if ptype_sel == "Diesel" else "Min RPM"
                                 rated_label = "Rated Pump RPM" if ptype_sel == "Diesel" else "Rated RPM"
-                                minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm{idx}{ptype}")
-                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol{idx}{ptype}")
+                                minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm__{uid}{ptype}")
+                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol__{uid}{ptype}")
                             with pcol3:
                                 if ptype_sel == "Grid":
                                     tariff_mode = st.radio(
                                         "Tariff",
                                         ["Fixed", "Varying"],
                                         index=0 if not pdata.get('tariffs') else 1,
-                                        key=f"tmode{idx}{ptype}"
+                                        key=f"tmode__{uid}{ptype}"
                                     )
                                     if tariff_mode == "Fixed":
-                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate{idx}{ptype}")
+                                        rate = st.number_input("Elec Rate (INR/kWh)", value=pdata.get('rate', 9.0), key=f"rate__{uid}{ptype}")
                                         tariffs = []
                                     else:
                                         default_rows = [
@@ -2390,7 +2890,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         tdf = data_editor_copy(
                                             pd.DataFrame(raw_tariffs),
                                             num_rows="dynamic",
-                                            key=f"tariff{idx}{ptype}",
+                                            key=f"tariff__{uid}{ptype}",
                                             column_config={
                                                 "rate": st.column_config.NumberColumn("Rate"),
                                                 "start": st.column_config.TimeColumn("Start"),
@@ -2443,19 +2943,19 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                         "SFC Input",
                                         ["Enter manually", "System calculated (ISO 3046)"],
                                         index=0 if pdata.get('sfc_mode', 'manual') == 'manual' else 1,
-                                        key=f"sfc_mode{idx}{ptype}"
+                                        key=f"sfc_mode__{uid}{ptype}"
                                     )
                                     if sfc_mode == "Enter manually":
-                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc{idx}{ptype}")
+                                        sfc = st.number_input("SFC (gm/bhp·hr)", value=pdata.get('sfc', 150.0), key=f"sfc__{uid}{ptype}")
                                         engine_params = {}
                                     else:
-                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake{idx}{ptype}")
-                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel{idx}{ptype}")
-                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower{idx}{ptype}")
-                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50{idx}{ptype}")
-                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75{idx}{ptype}")
-                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100{idx}{ptype}")
-                                        if st.button("Compute SFC", key=f"comp_sfc{idx}{ptype}"):
+                                        engine_make = st.text_input("Engine Make", value=pdata.get('engine_params', {}).get('make', ''), key=f"emake__{uid}{ptype}")
+                                        engine_model = st.text_input("Engine Model", value=pdata.get('engine_params', {}).get('model', ''), key=f"emodel__{uid}{ptype}")
+                                        rated_power = st.number_input("Engine Rated Power (kW)", value=pdata.get('engine_params', {}).get('rated_power', 0.0), key=f"epower__{uid}{ptype}")
+                                        sfc50 = st.number_input("SFC at 50% load", value=pdata.get('engine_params', {}).get('sfc50', 0.0), key=f"sfc50__{uid}{ptype}")
+                                        sfc75 = st.number_input("SFC at 75% load", value=pdata.get('engine_params', {}).get('sfc75', 0.0), key=f"sfc75__{uid}{ptype}")
+                                        sfc100 = st.number_input("SFC at 100% load", value=pdata.get('engine_params', {}).get('sfc100', 0.0), key=f"sfc100__{uid}{ptype}")
+                                        if st.button("Compute SFC", key=f"comp_sfc__{uid}{ptype}"):
                                             pump_bkw = rated_power * 0.98
                                             sfc_calc = pipeline_model._compute_iso_sfc(
                                                 {'engine_params': {'rated_power': rated_power, 'sfc50': sfc50, 'sfc75': sfc75, 'sfc100': sfc100}},
@@ -2465,8 +2965,8 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                                 stn.get('elev', 0.0),
                                                 st.session_state.get('Ambient_temp', 25.0),
                                             )
-                                            st.session_state[f"sfc_display{idx}{ptype}"] = sfc_calc
-                                        sfc = st.session_state.get(f"sfc_display{idx}{ptype}", 0.0)
+                                            st.session_state[f"sfc_display__{uid}{ptype}"] = sfc_calc
+                                        sfc = st.session_state.get(f"sfc_display__{uid}{ptype}", 0.0)
                                         if sfc:
                                             st.write(f"Computed SFC at 100% load: {sfc:.2f} gm/bhp·hr")
                                         engine_params = {
@@ -2510,7 +3010,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 st.info("Not a pumping station. No pump data required.")
 
         with tabs[1]:
-            key_peak = f"peak_data_{idx}"
+            key_peak = f"peak_data__{uid}"
             if key_peak not in st.session_state or not isinstance(st.session_state[key_peak], pd.DataFrame):
                 st.session_state[key_peak] = pd.DataFrame({"Location (km)": [stn['L']/2.0], "Elevation (m)": [stn['elev']+100.0]})
             peak_df = data_editor_copy(
@@ -2526,6 +3026,326 @@ terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name"
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
+
+def render_pipeline_map(stations: list, result: dict | None = None):
+    """Return a dark-navy Plotly figure of the pipeline network."""
+    import plotly.graph_objects as go  # already imported at top but safe to re-import
+
+    if not stations:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor="#080d1a", plot_bgcolor="#080d1a", height=280,
+            annotations=[dict(
+                text="No stations configured yet",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False, font=dict(color="#7A8BA8", size=14, family="Inter"),
+            )],
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        )
+        return fig
+
+    # ── KP cumulative positions ──────────────────────────────────────────
+    kp_list = [0.0]
+    for stn in stations:
+        kp_list.append(kp_list[-1] + float(stn.get('L', 50.0)))
+    max_kp = max(kp_list[-1], 1.0)
+
+    # terminal metadata from session state
+    t_name = st.session_state.get('terminal_name', 'Terminal')
+    t_elev = st.session_state.get('terminal_elev', 0.0)
+    t_head = st.session_state.get('terminal_head', 50.0)
+
+    def _xp(kp):
+        return (kp / max_kp) * 88.0 + 6.0
+
+    all_kp    = kp_list                          # len = n_stations + 1
+    all_x     = [_xp(k) for k in all_kp]
+    n_total   = len(all_x)
+
+    # alternating label heights
+    label_y   = [2.6 if i % 2 == 0 else -2.9 for i in range(n_total)]
+
+    # ── per-station colour & metadata ────────────────────────────────────
+    COL_ORIGIN  = "#00FF88"
+    COL_PUMP    = "#4A90D9"
+    COL_PUMPDRA = "#00D4FF"
+    COL_DRA     = "#FFD700"
+    COL_PASS    = "#556070"
+    COL_TERM    = "#FF3366"
+
+    def _rkey(name):
+        return name.lower().replace(' ', '_').replace('-', '_')
+
+    node_cols, node_sizes, node_hover, node_names, node_syms = [], [], [], [], []
+
+    for i, stn in enumerate(stations):
+        name    = stn.get('name', f'Station {i+1}')
+        kp_val  = kp_list[i]
+        elev    = float(stn.get('elev', 0.0))
+        is_pump = bool(stn.get('is_pump', False))
+        max_dr  = float(stn.get('max_dr', 0.0))
+        has_dra = max_dr > 0
+
+        rk = _rkey(name)
+        sdh     = float((result or {}).get(f"sdh_{rk}", 0.0) or 0.0)
+        dra_ppm = float((result or {}).get(f"dra_ppm_{rk}", 0.0) or 0.0)
+        n_pumps = int((result or {}).get(f"num_pumps_{rk}", 0) or 0)
+        dr_pct  = float((result or {}).get(f"drag_reduction_{rk}", 0.0) or 0.0)
+        pw_cost = float((result or {}).get(f"power_cost_{rk}", 0.0) or 0.0)
+
+        if i == 0:
+            col = COL_ORIGIN;  typ = "Origin"
+        elif is_pump and has_dra:
+            col = COL_PUMPDRA; typ = "Pump + DRA"
+        elif is_pump:
+            col = COL_PUMP;    typ = "Pump Station"
+        elif has_dra:
+            col = COL_DRA;     typ = "DRA Only"
+        else:
+            col = COL_PASS;    typ = "Pass-through"
+
+        lines = [
+            f"<b style='color:{col};font-size:13px'>{name}</b>",
+            f"<span style='color:#9AAFC0'>Type:</span> {typ}",
+            f"<span style='color:#9AAFC0'>KP:</span> {kp_val:.1f} km",
+            f"<span style='color:#9AAFC0'>Elevation:</span> {elev:.1f} m",
+        ]
+        if result:
+            lines += [
+                f"<span style='color:#9AAFC0'>Discharge head:</span> <b>{sdh:.1f} m</b>",
+                f"<span style='color:#9AAFC0'>DRA injection:</span> <b>{dra_ppm:.0f} ppm</b>",
+                f"<span style='color:#9AAFC0'>Drag reduction:</span> <b>{dr_pct:.1f}%</b>",
+                f"<span style='color:#9AAFC0'>Pumps running:</span> <b>{n_pumps}</b>",
+                f"<span style='color:#9AAFC0'>Power cost:</span> <b>₹{pw_cost:,.0f}</b>",
+            ]
+
+        node_names.append(name)
+        node_cols.append(col)
+        node_sizes.append(22)
+        node_hover.append("<br>".join(lines) + "<extra></extra>")
+        node_syms.append("circle")
+
+    # Terminal node
+    t_lines = [
+        f"<b style='color:{COL_TERM};font-size:13px'>{t_name}</b>",
+        f"<span style='color:#9AAFC0'>Type:</span> Terminal",
+        f"<span style='color:#9AAFC0'>KP:</span> {kp_list[-1]:.1f} km",
+        f"<span style='color:#9AAFC0'>Elevation:</span> {t_elev:.1f} m",
+        f"<span style='color:#9AAFC0'>Min residual head:</span> {t_head:.1f} m",
+    ]
+    node_names.append(t_name)
+    node_cols.append(COL_TERM)
+    node_sizes.append(22)
+    node_hover.append("<br>".join(t_lines) + "<extra></extra>")
+    node_syms.append("diamond")
+
+    # ── build figure ─────────────────────────────────────────────────────
+    fig = go.Figure()
+
+    # pipe segments — glow layer then bright layer
+    def _seg_col(i):
+        """RGBA color for pipe segment i based on pressure utilisation."""
+        if result is None:
+            return ("rgba(74,144,217,0.12)", "rgba(74,144,217,0.65)")
+        idx_dn = i + 1
+        if idx_dn < len(stations):
+            stn_dn = stations[idx_dn]
+            rk = _rkey(stn_dn.get('name', ''))
+            sdh_v  = float(result.get(f"sdh_{rk}",  0.0) or 0.0)
+            maop_v = float(result.get(f"maop_{rk}", 150.0) or 150.0)
+            ratio  = max(0.0, min(1.0, sdh_v / maop_v if maop_v > 0 else 0.5))
+        else:
+            ratio = 0.3
+        if ratio < 0.5:
+            r = int(ratio * 2 * 210)
+            g = 200; b = 60
+        else:
+            r = 210; b = 40
+            g = int((1 - (ratio - 0.5) * 2) * 200)
+        glow   = f"rgba({r},{g},{b},0.12)"
+        bright = f"rgba({r},{g},{b},0.72)"
+        return glow, bright
+
+    for i in range(len(all_x) - 1):
+        x0, x1 = all_x[i], all_x[i + 1]
+        glow_c, bright_c = _seg_col(i)
+        # glow
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[0, 0], mode="lines",
+            line=dict(color=glow_c, width=20),
+            hoverinfo="skip", showlegend=False,
+        ))
+        # pipe line
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[0, 0], mode="lines",
+            line=dict(color=bright_c, width=5),
+            hoverinfo="skip", showlegend=False,
+        ))
+        # flow-direction arrow annotation at midpoint
+        mx = (x0 + x1) / 2
+        fig.add_annotation(
+            x=mx + 1.8, y=0, ax=mx - 1.8, ay=0,
+            xref="x", yref="y", axref="x", ayref="y",
+            arrowhead=2, arrowsize=1.3, arrowwidth=2.2,
+            arrowcolor=bright_c,
+            showarrow=True,
+        )
+
+    # node glow rings
+    fig.add_trace(go.Scatter(
+        x=all_x, y=[0] * n_total, mode="markers",
+        marker=dict(size=[s + 20 for s in node_sizes], color=node_cols, opacity=0.10),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    # station nodes
+    fig.add_trace(go.Scatter(
+        x=all_x, y=[0] * n_total, mode="markers",
+        marker=dict(
+            size=node_sizes,
+            color=node_cols,
+            line=dict(color="#080d1a", width=3),
+            opacity=0.95,
+            symbol=node_syms,
+        ),
+        hovertemplate=node_hover,
+        showlegend=False,
+        name="",
+    ))
+
+    # connector dotted lines node → label
+    for i in range(n_total):
+        ly = label_y[i]
+        sign = 1 if ly > 0 else -1
+        fig.add_shape(type="line",
+            x0=all_x[i], y0=sign * 0.55,
+            x1=all_x[i], y1=ly * 0.82,
+            line=dict(color=node_cols[i], width=1, dash="dot"),
+        )
+
+    # label boxes
+    for i, (name, col) in enumerate(zip(node_names, node_cols)):
+        short = name if len(name) <= 13 else name[:12] + "…"
+        fig.add_annotation(
+            x=all_x[i], y=label_y[i],
+            text=f"<b>{short}</b>",
+            showarrow=False,
+            font=dict(color=col, size=9.5, family="Inter"),
+            align="center",
+            bgcolor="rgba(8,13,26,0.88)",
+            bordercolor=col, borderwidth=1, borderpad=3,
+        )
+
+    # KP tick marks
+    for i, kp_val in enumerate(all_kp):
+        fig.add_annotation(
+            x=all_x[i], y=-3.8,
+            text=f"KP {kp_val:.0f}",
+            showarrow=False,
+            font=dict(color="#455060", size=7.5, family="DM Mono, monospace"),
+        )
+
+    # legend traces (dummy)
+    COL_BRANCH = "#FF8C42"
+    _has_branches = any(bool(s.get('branches')) for s in stations)
+    for lbl, col, sym in [
+        ("Origin",       COL_ORIGIN,  "circle"),
+        ("Pump Station", COL_PUMP,    "circle"),
+        ("Pump + DRA",   COL_PUMPDRA, "circle"),
+        ("DRA Only",     COL_DRA,     "circle"),
+        ("Terminal",     COL_TERM,    "diamond"),
+    ] + ([("Branch Terminal", COL_BRANCH, "diamond")] if _has_branches else []):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=9, color=col, symbol=sym),
+            name=lbl, showlegend=True,
+        ))
+
+    # ── Branch / tap-off lines ────────────────────────────────────────────
+    for _mi, _stn_b in enumerate(stations):
+        _jx = all_x[_mi]
+        for _bri, _branch in enumerate(_stn_b.get('branches', [])):
+            # Alternate branches above/below the pipe spine
+            _side = 1 if _bri % 2 == 0 else -1
+            # Vertical offset grows so multiple branches don't overlap labels
+            _ty = _side * (3.3 + _bri * 0.5)
+            _tx = _jx + 5.0 + _bri * 2.5   # slight horizontal spread
+            _tx = min(_tx, 98.0)
+
+            # Dashed stem from mainline spine to branch terminal
+            fig.add_trace(go.Scatter(
+                x=[_jx, _jx, _tx],
+                y=[0.0, _ty * 0.55, _ty],
+                mode='lines',
+                line=dict(color=COL_BRANCH, width=2, dash='dash'),
+                hoverinfo='skip',
+                showlegend=False,
+            ))
+
+            # Branch terminal node
+            _bt = _branch.get('terminal', {})
+            _bt_name = _bt.get('name', _branch.get('name', f'Branch {_bri+1}'))
+            _bt_elev = float(_bt.get('elev', 0.0))
+            _bf_flow = float(_branch.get('flow_m3h', 0.0))
+            fig.add_trace(go.Scatter(
+                x=[_tx], y=[_ty],
+                mode='markers+text',
+                marker=dict(
+                    symbol='diamond', size=14, color=COL_BRANCH,
+                    line=dict(color='#FFD700', width=1.5),
+                ),
+                text=[_bt_name[:12]],
+                textposition='top center' if _side > 0 else 'bottom center',
+                textfont=dict(color=COL_BRANCH, size=8.5, family="Inter"),
+                hovertemplate=(
+                    f"<b style='color:{COL_BRANCH}'>{_bt_name}</b><br>"
+                    f"Branch: {_branch.get('name','')}<br>"
+                    f"Flow: {_bf_flow:.0f} m³/hr<br>"
+                    f"Elev: {_bt_elev:.1f} m<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+            # Flow label at midpoint of stem
+            fig.add_annotation(
+                x=(_jx + _tx) / 2,
+                y=(_ty * 0.55 + _ty) / 2,
+                text=f"{_bf_flow:.0f} m³/hr",
+                showarrow=False,
+                font=dict(color=COL_BRANCH, size=8, family="Inter"),
+            )
+
+    _y_max = 4.2 + (0.6 if _has_branches else 0.0)
+    _y_min = -4.5 - (0.6 if _has_branches else 0.0)
+
+    fig.update_layout(
+        paper_bgcolor="#080d1a",
+        plot_bgcolor="#080d1a",
+        height=360,
+        margin=dict(l=10, r=10, t=28, b=28),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2, 102]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[_y_min, _y_max]),
+        font=dict(family="Inter", color="#E8EAF0", size=11),
+        hoverlabel=dict(
+            bgcolor="#0f1629",
+            bordercolor="#4A90D9",
+            font=dict(family="Inter", size=11, color="#E8EAF0"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.01,
+            xanchor="right", x=1,
+            bgcolor="rgba(10,14,26,0.85)",
+            bordercolor="rgba(74,144,217,0.35)",
+            borderwidth=1,
+            font=dict(color="#E8EAF0", size=10),
+        ),
+        dragmode="pan",
+    )
+    return fig
+
+
 def get_full_case_dict():
     """Collect the complete case description from ``st.session_state``."""
 
@@ -2533,12 +3353,13 @@ def get_full_case_dict():
     import pandas as pd
 
     for idx, stn in enumerate(st.session_state.get('stations', []), start=1):
+        uid = _ensure_station_uid(stn)
         if stn.get('is_pump', False):
             if 'pump_types' in stn:
                 for ptype in ['A', 'B']:
                     pdata = stn['pump_types'].get(ptype, {})
-                    dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                    dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                    dfh = st.session_state.get(f"head_data__{uid}{ptype}")
+                    dfe = st.session_state.get(f"eff_data__{uid}{ptype}")
                     if dfh is None and pdata.get('head_data') is not None:
                         dfh = pd.DataFrame(pdata['head_data'])
                     if dfe is None and pdata.get('eff_data') is not None:
@@ -2558,8 +3379,8 @@ def get_full_case_dict():
                     pdata['available'] = pdata.get('available', 0)
                     stn['pump_types'][ptype] = pdata
             else:
-                dfh = st.session_state.get(f"head_data_{idx}")
-                dfe = st.session_state.get(f"eff_data_{idx}")
+                dfh = st.session_state.get(f"head_data__{uid}")
+                dfe = st.session_state.get(f"eff_data__{uid}")
                 if dfh is None and "head_data" in stn:
                     dfh = pd.DataFrame(stn["head_data"])
                 if dfe is None and "eff_data" in stn:
@@ -3535,8 +4356,9 @@ def gather_pump_curve_sources(
             pdata = pump_types.get(ptype, {})
             if not isinstance(pdata, Mapping):
                 continue
-            df_head = _load_curve_df(f"head_data_{idx}{ptype}", pdata.get("head_data"))
-            df_eff = _load_curve_df(f"eff_data_{idx}{ptype}", pdata.get("eff_data"))
+            _gpc_uid = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
+            df_head = _load_curve_df(f"head_data__{_gpc_uid}{ptype}", pdata.get("head_data"))
+            df_eff = _load_curve_df(f"eff_data__{_gpc_uid}{ptype}", pdata.get("eff_data"))
             A = _coerce_float(pdata.get("A"), stn.get("A", 0.0))
             B = _coerce_float(pdata.get("B"), stn.get("B", 0.0))
             C = _coerce_float(pdata.get("C"), stn.get("C", 0.0))
@@ -3584,8 +4406,9 @@ def gather_pump_curve_sources(
     if sources:
         return sources
 
-    df_head = _load_curve_df(f"head_data_{idx}", stn.get("head_data"))
-    df_eff = _load_curve_df(f"eff_data_{idx}", stn.get("eff_data"))
+    _gpc_uid2 = _ensure_station_uid(stn) if isinstance(stn, dict) else str(idx)
+    df_head = _load_curve_df(f"head_data__{_gpc_uid2}", stn.get("head_data"))
+    df_eff = _load_curve_df(f"eff_data__{_gpc_uid2}", stn.get("eff_data"))
     if isinstance(res, Mapping):
         min_rpm = _coerce_int(res.get(f"min_rpm_{key_base}"), stn.get("MinRPM", 0))
         dol = _coerce_int(res.get(f"dol_{key_base}"), stn.get("DOL", 0))
@@ -4579,13 +5402,14 @@ if auto_batch:
             try:
                 # Ensure pump coefficients are updated for all stations
                 for idx, stn in enumerate(stations_data, start=1):
+                    _b_uid = _ensure_station_uid(stn)
                     if stn.get('pump_types'):
                         for ptype in ['A', 'B']:
                             pdata = stn['pump_types'].get(ptype)
                             if not pdata:
                                 continue
-                            dfh = st.session_state.get(f"head_data_{idx}{ptype}")
-                            dfe = st.session_state.get(f"eff_data_{idx}{ptype}")
+                            dfh = st.session_state.get(f"head_data__{_b_uid}{ptype}")
+                            dfe = st.session_state.get(f"eff_data__{_b_uid}{ptype}")
                             if dfh is not None and len(dfh) >= 3:
                                 Qh = dfh.iloc[:, 0].values
                                 Hh = dfh.iloc[:, 1].values
@@ -4597,8 +5421,8 @@ if auto_batch:
                                 coeff_e = np.polyfit(Qe, Ee, 4)
                                 pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
                     elif stn.get('is_pump', False):
-                        dfh = st.session_state.get(f"head_data_{idx}")
-                        dfe = st.session_state.get(f"eff_data_{idx}")
+                        dfh = st.session_state.get(f"head_data__{_b_uid}")
+                        dfe = st.session_state.get(f"eff_data__{_b_uid}")
                         if dfh is None and "head_data" in stn:
                             dfh = pd.DataFrame(stn["head_data"])
                         if dfe is None and "eff_data" in stn:
@@ -6382,10 +7206,21 @@ def run_all_updates():
     if isinstance(forced_detail_effective, dict) and not forced_detail_effective:
         forced_detail_effective = None
 
+    # Build a solve copy where branch flows are added to each station's delivery
+    # so the mainline flow correctly decreases at each tap-off junction.
+    stations_data_for_solve = copy.deepcopy(stations_data)
+    for _sfs in stations_data_for_solve:
+        _bf_total = sum(
+            float(_br.get('flow_m3h', 0.0) or 0.0)
+            for _br in _sfs.get('branches', [])
+        )
+        if _bf_total > 0:
+            _sfs['delivery'] = float(_sfs.get('delivery', 0.0) or 0.0) + _bf_total
+
     start_time = time.perf_counter()
     with st.spinner("Solving optimization..."):
         res = pipeline_model.solve_pipeline_with_types(
-            stations_data,
+            stations_data_for_solve,
             term_data,
             st.session_state.get("FLOW", 1000.0),
             kv_list,
@@ -6416,6 +7251,53 @@ def run_all_updates():
     st.session_state["last_term_data"] = copy.deepcopy(term_data)
     st.session_state["last_linefill"] = copy.deepcopy(linefill_df)
     st.session_state["last_station_table"] = build_station_table(res, stations_data)
+
+    # Solve branch hydraulics using junction inlet pressures from the mainline result.
+    _branch_results: dict = {}
+    _kv_br = kv_list[0] if kv_list else float(st.session_state.get("KV_max", 10.0))
+    _rho_br = rho_list[0] if rho_list else float(st.session_state.get("Density", 820.0))
+    for _stn_br in stations_data:
+        _stn_name_br = _stn_br.get('name', '')
+        # residual_head_in gives the pressure arriving at this station via upstream pipe
+        _jh = res.get(
+            f"residual_head_in_{_stn_name_br}",
+            res.get(f"residual_head_{_stn_name_br}", 0.0),
+        )
+        for _br_item in _stn_br.get('branches', []):
+            # Pre-process branch pump stations: inject A/B/C from Q-H table if available.
+            _br_ready = copy.deepcopy(_br_item)
+            for _bstn_p in _br_ready.get('stations', []):
+                if not _bstn_p.get('is_pump', False):
+                    continue
+                if _bstn_p.get('use_curve_table', False):
+                    _bh_k = f"branch_head_data__{_br_ready.get('uid', '')}__{_bstn_p.get('uid', '')}"
+                    _bh_df_p = st.session_state.get(_bh_k)
+                    if isinstance(_bh_df_p, pd.DataFrame) and len(_bh_df_p) >= 3:
+                        try:
+                            _Qh_p = _bh_df_p.iloc[:, 0].values.astype(float)
+                            _Hh_p = _bh_df_p.iloc[:, 1].values.astype(float)
+                            _cf = np.polyfit(_Qh_p, _Hh_p, 2)
+                            _bstn_p['A'] = float(_cf[0])
+                            _bstn_p['B'] = float(_cf[1])
+                            _bstn_p['C'] = float(_cf[2])
+                        except Exception:
+                            pass  # fall back to solve_branch BEP derivation
+
+            _br_res = pipeline_model.solve_branch(
+                junction_suction_head=float(_jh or 0.0),
+                branch=_br_ready,
+                KV=_kv_br,
+                rho=_rho_br,
+                RateDRA=float(st.session_state.get('RateDRA', 500.0)),
+                Price_HSD=float(st.session_state.get('Price_HSD', 70.0)),
+                Fuel_density=float(st.session_state.get('Fuel_density', 820.0)),
+                Ambient_temp=float(st.session_state.get('Ambient_temp', 25.0)),
+                mop_kgcm2=float(st.session_state.get('MOP_kgcm2') or 0.0),
+                hours=24.0,
+            )
+            _branch_results[_br_item.get('uid', '')] = _br_res
+    st.session_state['branch_results'] = _branch_results
+
     st.session_state["run_mode"] = "instantaneous"
     st.rerun()
 
@@ -7045,12 +7927,278 @@ if not auto_batch:
 
 
 if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
+    tab_map, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_sens, tab_bench, tab_sim = st.tabs([
+        "🗺️ Pipeline Map",
         "📋 Summary", "💰 Costs", "⚙️ Performance", "🌀 System Curves",
         "🔄 Pump-System", "📉 DRA Curves", "🧊 3D Analysis and Surface Plots", "🧮 3D Pressure Profile",
         "📈 Sensitivity", "📊 Benchmarking", "💡 Savings Simulator"
     ])
-    
+
+    # ── Pipeline Map Tab ──────────────────────────────────────────────────
+    with tab_map:
+        _res_map = st.session_state.get("last_res")
+        _stns_map = (st.session_state.get("last_stations_data")
+                     if _res_map is not None
+                     else st.session_state.get("stations", []))
+
+        if _res_map is not None:
+            _stns_for_kpi = st.session_state.get("last_stations_data", [])
+            _rkeys_map    = [s.get("name","").lower().replace(" ","_").replace("-","_")
+                             for s in _stns_for_kpi]
+            _total_len    = sum(float(s.get("L", 0)) for s in _stns_for_kpi)
+            _total_dra    = sum(float(_res_map.get(f"dra_cost_{k}", 0) or 0) for k in _rkeys_map)
+            _total_pwr    = sum(float(_res_map.get(f"power_cost_{k}", 0) or 0) for k in _rkeys_map)
+            _flow_val     = st.session_state.get("FLOW", 0)
+            _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+            with _mc1:
+                st.metric("Pipeline Length", f"{_total_len:.0f} km")
+            with _mc2:
+                st.metric("Flow Rate", f"{_flow_val:.0f} m³/h")
+            with _mc3:
+                st.metric("DRA Cost", f"\u20b9{_total_dra:,.0f}")
+            with _mc4:
+                st.metric("Power Cost", f"\u20b9{_total_pwr:,.0f}")
+
+        st.markdown('<div class="pipeline-map-container">', unsafe_allow_html=True)
+        st.plotly_chart(
+            render_pipeline_map(_stns_map, _res_map),
+            use_container_width=True,
+            config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+            key="pipeline_map_results_tab",
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if _res_map is None:
+            st.info("Run the optimizer to see live pressure, DRA and cost data on the map.")
+        else:
+            st.markdown("#### Station Summary")
+            _map_rows = []
+            for _s in _stns_map:
+                _rk = _s.get("name","").lower().replace(" ","_").replace("-","_")
+                _map_rows.append({
+                    "Station": _s.get("name", ""),
+                    "Type": ("Pump + DRA" if _s.get("is_pump") and float(_s.get("max_dr",0))>0
+                             else "Pump" if _s.get("is_pump")
+                             else "DRA Only" if float(_s.get("max_dr",0))>0
+                             else "Pass-through"),
+                    "SDH (m)":   f"{float(_res_map.get(f'sdh_{_rk}',   0) or 0):.1f}",
+                    "Pumps":     int(_res_map.get(f"num_pumps_{_rk}", 0) or 0),
+                    "DRA (ppm)": f"{float(_res_map.get(f'dra_ppm_{_rk}', 0) or 0):.0f}",
+                    "DR (%)":    f"{float(_res_map.get(f'drag_reduction_{_rk}', 0) or 0):.1f}",
+                    "Power Cost":f"\u20b9{float(_res_map.get(f'power_cost_{_rk}',0) or 0):,.0f}",
+                    "DRA Cost":  f"\u20b9{float(_res_map.get(f'dra_cost_{_rk}', 0) or 0):,.0f}",
+                })
+            if _map_rows:
+                st.dataframe(pd.DataFrame(_map_rows), use_container_width=True, hide_index=True)
+
+        # ── Branch line results ───────────────────────────────────────────────
+        _branch_results_map = st.session_state.get('branch_results', {})
+        _stns_with_branches = [
+            s for s in st.session_state.get('last_stations_data', [])
+            if s.get('branches')
+        ]
+        if _stns_with_branches and _branch_results_map:
+            st.markdown("---")
+            st.markdown(
+                '<h3 style="color:#FF8C42;font-family:Inter;letter-spacing:0.04em;">'
+                '🔀 Branch Line Results</h3>',
+                unsafe_allow_html=True,
+            )
+            for _stn_br_disp in _stns_with_branches:
+                for _br_disp in _stn_br_disp.get('branches', []):
+                    _bid = _br_disp.get('uid', '')
+                    _bres = _branch_results_map.get(_bid, {})
+                    _bname = _br_disp.get('name', 'Branch')
+                    _bjn = _stn_br_disp.get('name', '')
+                    _is_ok = not bool(_bres.get('error'))
+                    _b_total_cost = float(_bres.get('total_cost', 0) or 0)
+                    _b_flow = float(_br_disp.get('flow_m3h', 0))
+                    _bt_disp = _br_disp.get('terminal', {})
+                    _bt_name_disp = _bt_disp.get('name', '')
+                    _jh_disp = float(_bres.get('junction_head', 0))
+                    _term_rh = float(
+                        _bres.get(f"residual_head_{_bt_name_disp}", _bres.get('residual', 0.0))
+                        or 0.0
+                    )
+                    _term_min = float(_bt_disp.get('min_residual', 0.0))
+
+                    with st.expander(
+                        f"🔀 {_bname}  ◄ Junction at {_bjn}  |  {'✅ FEASIBLE' if _is_ok else '❌ INFEASIBLE'}",
+                        expanded=True,
+                    ):
+                        # Status banner
+                        if _is_ok:
+                            st.markdown(
+                                f'<div style="background:rgba(0,255,136,0.08);border-left:4px solid #00FF88;'
+                                f'border-radius:4px;padding:0.5rem 0.9rem;margin-bottom:0.6rem;">'
+                                f'<span style="color:#00FF88;font-weight:700;">✅ Feasible</span>'
+                                f'<span style="color:#7A8BA8;margin-left:1.2rem;">Total Operating Cost:</span>'
+                                f'<span style="color:#E8EAF0;font-weight:600;margin-left:0.5rem;">₹{_b_total_cost:,.0f} / day</span>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f'<div style="background:rgba(255,51,102,0.10);border-left:4px solid #FF3366;'
+                                f'border-radius:4px;padding:0.5rem 0.9rem;margin-bottom:0.6rem;">'
+                                f'<span style="color:#FF3366;font-weight:700;">❌ Infeasible</span>'
+                                f'<span style="color:#7A8BA8;margin-left:1.2rem;">{_bres.get("error","Optimization failed")}</span>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+
+                        # KPI metric row
+                        _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
+                        _bc1.metric("Branch Flow", f"{_b_flow:.0f} m³/hr")
+                        _bc2.metric("Junction Head", f"{_jh_disp:.1f} m")
+                        _bc3.metric(
+                            "Terminal Pressure",
+                            f"{_term_rh:.1f} m",
+                            delta=f"{_term_rh - _term_min:+.1f} m vs min",
+                            delta_color="normal" if _term_rh >= _term_min else "inverse",
+                        )
+                        _br_pwr = float(_bres.get('power_cost', 0) or sum(
+                            float(_bres.get(f"power_cost_{_bsd.get('name','').lower().replace(' ','_').replace('-','_')}", 0) or 0)
+                            for _bsd in _br_disp.get('stations', [])
+                        ))
+                        _br_dra = float(_bres.get('dra_cost', 0) or sum(
+                            float(_bres.get(f"dra_cost_{_bsd.get('name','').lower().replace(' ','_').replace('-','_')}", 0) or 0)
+                            for _bsd in _br_disp.get('stations', [])
+                        ))
+                        _bc4.metric("Power Cost", f"₹{_br_pwr:,.0f}")
+                        _bc5.metric("DRA Cost", f"₹{_br_dra:,.0f}")
+
+                        # Pressure profile chart
+                        _br_stns_disp = _br_disp.get('stations', [])
+                        if _br_stns_disp and _is_ok:
+                            import plotly.graph_objects as _go_br
+                            _prof_x, _prof_h, _prof_labels, _prof_types = [], [], [], []
+                            _cumL = 0.0
+
+                            # Junction point (entry)
+                            _prof_x.append(0.0)
+                            _prof_h.append(_jh_disp)
+                            _prof_labels.append(f"Junction<br>{_bjn}")
+                            _prof_types.append('junction')
+
+                            for _bsi, _bsd in enumerate(_br_stns_disp):
+                                _brk_p = _bsd.get('name', '').lower().replace(' ', '_').replace('-', '_')
+                                _sdh_val = float(_bres.get(f"sdh_{_brk_p}", 0) or 0)
+                                _rh_out = float(_bres.get(f"residual_head_out_{_brk_p}", 0) or 0)
+                                _is_pump_bsd = bool(_bsd.get('is_pump', False))
+                                _seg_L = float(_bsd.get('L', 0))
+
+                                if _is_pump_bsd and _sdh_val > 0:
+                                    # Suction side (at station x, before pump head added)
+                                    _prof_x.append(_cumL)
+                                    _prof_h.append(float(_bres.get(f"residual_head_in_{_bsd.get('name','')}", _jh_disp) or _jh_disp))
+                                    _prof_labels.append(f"Suction<br>{_bsd.get('name','')}")
+                                    _prof_types.append('suction')
+                                    # Discharge side (after pump head)
+                                    _prof_x.append(_cumL)
+                                    _prof_h.append(_sdh_val)
+                                    _prof_labels.append(f"Discharge<br>{_bsd.get('name','')}")
+                                    _prof_types.append('pump')
+
+                                _cumL += _seg_L
+                                if _rh_out > 0:
+                                    _prof_x.append(_cumL)
+                                    _prof_h.append(_rh_out)
+                                    _prof_labels.append(_bsd.get('name', ''))
+                                    _prof_types.append('station')
+
+                            # Terminal
+                            _prof_x.append(_cumL)
+                            _prof_h.append(_term_rh)
+                            _prof_labels.append(f"Terminal<br>{_bt_name_disp}")
+                            _prof_types.append('terminal')
+
+                            # Colour map for pressure profile
+                            _ptcols = {
+                                'junction': '#4A90D9',
+                                'suction':  '#FFD700',
+                                'pump':     '#00D4FF',
+                                'station':  '#4A90D9',
+                                'terminal': '#FF3366',
+                            }
+
+                            _fig_br = _go_br.Figure()
+                            # Pressure profile line
+                            _fig_br.add_trace(_go_br.Scatter(
+                                x=_prof_x, y=_prof_h,
+                                mode='lines+markers',
+                                line=dict(color='#4A90D9', width=2.5),
+                                marker=dict(
+                                    size=[14 if t in ('pump', 'terminal') else 8 for t in _prof_types],
+                                    color=[_ptcols.get(t, '#4A90D9') for t in _prof_types],
+                                    symbol=['diamond' if t == 'terminal' else 'circle' for t in _prof_types],
+                                    line=dict(color='#080d1a', width=1.5),
+                                ),
+                                text=_prof_labels,
+                                textposition='top center',
+                                hovertemplate='<b>%{text}</b><br>KP: %{x:.1f} km<br>Head: %{y:.1f} m<extra></extra>',
+                                name='Pressure Profile',
+                            ))
+                            # Minimum required line at terminal
+                            if _term_min > 0:
+                                _fig_br.add_hline(
+                                    y=_term_min,
+                                    line=dict(color='#FF3366', width=1.5, dash='dash'),
+                                    annotation_text=f"Min required: {_term_min:.0f} m",
+                                    annotation_font=dict(color='#FF3366', size=10),
+                                )
+                            # Pump station vertical markers
+                            for _bsi2, _bsd2 in enumerate(_br_stns_disp):
+                                if _bsd2.get('is_pump'):
+                                    _px2 = sum(float(_br_stns_disp[k].get('L', 0)) for k in range(_bsi2))
+                                    _fig_br.add_vline(
+                                        x=_px2,
+                                        line=dict(color='rgba(0,212,255,0.35)', width=1, dash='dot'),
+                                        annotation_text=_bsd2.get('name', ''),
+                                        annotation_font=dict(color='#00D4FF', size=9),
+                                        annotation_position='bottom right',
+                                    )
+                            _fig_br.update_layout(
+                                paper_bgcolor='#080d1a', plot_bgcolor='#080d1a',
+                                height=220, margin=dict(l=10, r=10, t=22, b=22),
+                                xaxis=dict(title='Distance (km)', color='#7A8BA8',
+                                           gridcolor='rgba(74,144,217,0.08)', zeroline=False),
+                                yaxis=dict(title='Head (m)', color='#7A8BA8',
+                                           gridcolor='rgba(74,144,217,0.08)', zeroline=False),
+                                font=dict(family='Inter', color='#E8EAF0', size=10),
+                                showlegend=False,
+                            )
+                            st.plotly_chart(_fig_br, use_container_width=True, config={'displaylogo': False},
+                                            key=f"br_profile_{_bid}")
+
+                        # Per-station results table
+                        if _br_stns_disp and _is_ok:
+                            _br_rows = []
+                            for _bstn_d in _br_stns_disp:
+                                _brk = _bstn_d.get('name', '').lower().replace(' ', '_').replace('-', '_')
+                                _n_pumps_row = int(_bres.get(f"num_pumps_{_brk}", 0) or 0)
+                                _sdh_row = float(_bres.get(f"sdh_{_brk}", 0) or 0)
+                                _rh_row  = float(_bres.get(f"residual_head_out_{_brk}", 0) or 0)
+                                _br_rows.append({
+                                    "Station":    _bstn_d.get('name', ''),
+                                    "Type":       "Pump" if _bstn_d.get('is_pump') else "Pass-through",
+                                    "Pumps ON":   _n_pumps_row,
+                                    "SDH (m)":    f"{_sdh_row:.1f}",
+                                    "RH Out (m)": f"{_rh_row:.1f}",
+                                    "DRA (ppm)":  f"{float(_bres.get(f'dra_ppm_{_brk}', 0) or 0):.0f}",
+                                    "DR (%)":     f"{float(_bres.get(f'drag_reduction_{_brk}', 0) or 0):.1f}",
+                                    "Velocity (m/s)": f"{float(_bres.get(f'velocity_{_brk}', 0) or 0):.2f}",
+                                    "Power Cost": f"₹{float(_bres.get(f'power_cost_{_brk}', 0) or 0):,.0f}",
+                                    "DRA Cost":   f"₹{float(_bres.get(f'dra_cost_{_brk}', 0) or 0):,.0f}",
+                                })
+                            if _br_rows:
+                                st.dataframe(
+                                    pd.DataFrame(_br_rows),
+                                    use_container_width=True, hide_index=True,
+                                )
+        elif _stns_with_branches and not _branch_results_map:
+            st.markdown("---")
+            st.info("🔀 Branch lines defined — run the optimizer to see branch results.")
 
 
 

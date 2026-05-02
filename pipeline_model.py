@@ -6965,6 +6965,110 @@ def solve_pipeline_with_types(
     return best_result
 
 
+def solve_branch(
+    junction_suction_head: float,
+    branch: dict,
+    KV: float,
+    rho: float,
+    *,
+    RateDRA: float,
+    Price_HSD: float,
+    Fuel_density: float,
+    Ambient_temp: float,
+    mop_kgcm2: float = 0.0,
+    hours: float = 24.0,
+) -> dict:
+    """Solve hydraulics and optimisation for a single branch leg.
+
+    ``junction_suction_head`` is the residual head (m) at the mainline tap-off
+    point taken from the mainline solve result.  ``branch`` must contain
+    ``flow_m3h`` (float), ``stations`` (list[dict]), and ``terminal`` (dict).
+
+    Branch pump stations support three curve modes (checked in order):
+    1. Pre-computed: caller has already injected A, B, C polynomial coefficients.
+    2. BEP-point: station dict supplies ``rated_flow_m3h``, ``rated_head_m``
+       (and optionally ``shutoff_head_m``); a parabolic Q-H curve is derived
+       as  H = C + A·Q²  where C = shutoff_head and
+       A = (rated_head − shutoff_head) / rated_flow².
+    3. Constant-head fallback: ``pump_head_m`` is used as the shutoff head
+       with A = B = 0 (treated as a single operating-speed pump).
+
+    All pump stations operate at **variable speed** from ``MinRPM`` to ``DOL``
+    (both taken from the station dict; defaults: MinRPM = 0.7 × DOL, DOL = 1500).
+    The existing ``solve_pipeline`` affinity-law speed search then finds the
+    optimal RPM within that range for each pump.
+    """
+    import copy as _copy
+
+    branch_stations = _copy.deepcopy(branch.get("stations", []))
+    branch_terminal = dict(branch.get("terminal", {}))
+    try:
+        branch_flow = float(branch.get("flow_m3h", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        branch_flow = 0.0
+
+    if not branch_stations or branch_flow <= 0.0:
+        return {
+            "feasible": False,
+            "error": "Branch has no stations or zero flow",
+            "branch_uid": branch.get("uid", ""),
+            "branch_name": branch.get("name", "Branch"),
+            "total_cost": 0.0,
+            "junction_head": float(junction_suction_head or 0.0),
+        }
+
+    # Inject junction pressure as the branch entry suction head.
+    branch_stations[0]["suction_head"] = max(float(junction_suction_head or 0.0), 0.0)
+
+    for stn in branch_stations:
+        if not stn.get("is_pump", False):
+            continue
+
+        # Derive Q-H polynomial if not already supplied by the caller.
+        if "A" not in stn:
+            rated_q = float(stn.get("rated_flow_m3h", 0.0) or 0.0)
+            rated_h = float(stn.get("rated_head_m", stn.get("pump_head_m", 0.0)) or 0.0)
+            shutoff_h = float(stn.get("shutoff_head_m", rated_h * 1.25) or rated_h * 1.25)
+            if rated_q > 0.0 and rated_h > 0.0:
+                # Parabolic curve through (0, shutoff_h) and (rated_q, rated_h).
+                stn["C"] = shutoff_h
+                stn["B"] = 0.0
+                stn["A"] = (rated_h - shutoff_h) / (rated_q ** 2)  # negative value
+            else:
+                # Constant-head fallback: H = pump_head_m for all Q.
+                stn["C"] = float(stn.get("pump_head_m", 0.0) or 0.0)
+                stn["A"] = 0.0
+                stn["B"] = 0.0
+
+        # Variable speed: honour MinRPM and DOL from station dict.
+        dol = float(stn.get("DOL", 1500.0) or 1500.0)
+        min_rpm_default = max(dol * 0.7, 1.0)
+        min_rpm = float(stn.get("MinRPM", min_rpm_default) or min_rpm_default)
+        stn["DOL"] = dol
+        stn["MinRPM"] = min(min_rpm, dol)
+
+    n = len(branch_stations)
+    result = solve_pipeline(
+        stations=branch_stations,
+        terminal=branch_terminal,
+        FLOW=branch_flow,
+        KV_list=[KV] * n,
+        rho_list=[rho] * n,
+        segment_slices=None,
+        RateDRA=RateDRA,
+        Price_HSD=Price_HSD,
+        Fuel_density=Fuel_density,
+        Ambient_temp=Ambient_temp,
+        mop_kgcm2=mop_kgcm2 or None,
+        hours=hours,
+    )
+
+    result["branch_uid"] = branch.get("uid", "")
+    result["branch_name"] = branch.get("name", "Branch")
+    result["junction_head"] = float(junction_suction_head or 0.0)
+    return result
+
+
 _exported_names = [name for name in globals() if not name.startswith('_')]
 _exported_names.extend(['_km_from_volume', '_volume_from_km'])
 __all__ = list(dict.fromkeys(_exported_names))
