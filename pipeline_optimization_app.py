@@ -296,7 +296,7 @@ hr { border:none !important; border-top:1px solid #e5e7eb !important; margin:0.8
 /* Primary button */
 div[data-testid="stButton"] > button,
 div[data-testid="stButton"] > button[kind="primary"] {
-  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%);
+  background: #ff4b4b;
   color: #fff !important;
   border: none;
   border-radius: 8px;
@@ -307,7 +307,7 @@ div[data-testid="stButton"] > button[kind="primary"] {
 }
 div[data-testid="stButton"] > button:hover,
 div[data-testid="stButton"] > button[kind="primary"]:hover {
-  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%);
+  background: #e83a3a;
   box-shadow: 0 4px 14px rgba(255,75,75,0.45);
   transform: translateY(-1px);
   color: #fff !important;
@@ -320,7 +320,7 @@ div[data-testid="stButton"] > button[kind="primary"]:active {
 
 /* Download button */
 div[data-testid="stDownloadButton"] > button {
-  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%);
+  background: #ff4b4b;
   color: #fff !important;
   border: none;
   border-radius: 8px;
@@ -330,7 +330,7 @@ div[data-testid="stDownloadButton"] > button {
   transition: all 0.18s ease;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%);
+  background: #e83a3a;
   box-shadow: 0 4px 14px rgba(255,75,75,0.45);
   transform: translateY(-1px);
   color: #fff !important;
@@ -341,7 +341,7 @@ div[data-testid="stDownloadButton"] > button:active { transform: translateY(0); 
 button[aria-label="Hydraulic feasibility check"],
 button[aria-label="➕ Add Station"],
 button[aria-label="🗑️ Remove Station"] {
-  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%) !important;
+  background: #ff4b4b !important;
   color: #fff !important;
   border: none !important;
   border-radius: 8px !important;
@@ -352,7 +352,7 @@ button[aria-label="🗑️ Remove Station"] {
 button[aria-label="Hydraulic feasibility check"]:hover,
 button[aria-label="➕ Add Station"]:hover,
 button[aria-label="🗑️ Remove Station"]:hover {
-  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%) !important;
+  background: #e83a3a !important;
   box-shadow: 0 4px 14px rgba(255,75,75,0.45) !important;
   transform: translateY(-1px) !important;
 }
@@ -362,7 +362,7 @@ button[aria-label="Logout"],
 div[data-testid="stFileUploader"] button,
 button[aria-label="Browse files"],
 button[aria-label="💾 Save Case"] {
-  background: linear-gradient(135deg,#ff4b4b 0%,#d93b3b 100%) !important;
+  background: #ff4b4b !important;
   color: #fff !important;
   border: none !important;
   border-radius: 8px !important;
@@ -373,7 +373,7 @@ button[aria-label="Logout"]:hover,
 div[data-testid="stFileUploader"] button:hover,
 button[aria-label="Browse files"]:hover,
 button[aria-label="💾 Save Case"]:hover {
-  background: linear-gradient(135deg,#e83a3a 0%,#c42e2e 100%) !important;
+  background: #e83a3a !important;
   transform: translateY(-1px) !important;
   box-shadow: 0 4px 14px rgba(255,75,75,0.45) !important;
 }
