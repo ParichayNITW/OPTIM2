@@ -407,6 +407,57 @@ button[aria-label="💾 Save Case"]:hover {
   background: linear-gradient(135deg,#AB2020 0%,#7A1515 100%) !important;
   transform: translateY(-1px) !important;
 }
+
+/* ── WIDGET LABELS (text visibility fix) ── */
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] span,
+[data-testid="stWidgetLabel"] label {
+  color: var(--text-primary) !important;
+}
+[data-baseweb="checkbox"] span,
+[data-baseweb="checkbox"] label {
+  color: var(--text-primary) !important;
+}
+[data-baseweb="radio"] span,
+[data-baseweb="radio"] label {
+  color: var(--text-primary) !important;
+}
+[data-baseweb="select"] span,
+[data-baseweb="select"] div,
+[data-baseweb="select"] li {
+  color: var(--text-primary) !important;
+}
+[data-baseweb="typography"] { color: var(--text-primary) !important; }
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] label {
+  color: var(--text-primary) !important;
+}
+.stApp span { color: var(--text-primary) !important; }
+.stApp div { color: var(--text-primary) !important; }
+.stApp label { color: var(--text-primary) !important; }
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] div,
+[data-testid="stSidebar"] label {
+  color: var(--text-primary) !important;
+}
+[data-testid="stNumberInput"] label,
+[data-testid="stTextInput"] label,
+[data-testid="stTextArea"] label,
+[data-testid="stSelectbox"] label,
+[data-testid="stSlider"] label,
+[data-testid="stCheckbox"] label,
+[data-testid="stRadio"] label {
+  color: var(--text-primary) !important;
+  font-weight: 500 !important;
+}
+[data-testid="stSlider"] [data-testid="stTickBarMin"],
+[data-testid="stSlider"] [data-testid="stTickBarMax"],
+[data-testid="stSlider"] div[data-baseweb="slider"] span {
+  color: var(--text-muted) !important;
+}
 </style>
 """
 
@@ -1621,8 +1672,8 @@ def check_login():
                 st.error("Invalid username or password.")
         st.markdown(
             """
-            <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-            &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
+            <div style='text-align: center; color: #1a1a1a; margin-top: 2em; font-size: 0.95em;'>
+            &copy; <strong>2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das</strong>
             </div>
             """,
             unsafe_allow_html=True
@@ -1644,6 +1695,22 @@ if st.session_state.get("run_mode") == "hydraulic":
     st.stop()
 
 # ==== 1. EARLY LOAD/RESTORE BLOCK ====
+def _ensure_station_uid(stn: dict) -> str:
+    """Return the station's uid, generating one if absent."""
+    if not stn.get('uid'):
+        stn['uid'] = str(uuid.uuid4())[:8]
+    return stn['uid']
+
+def _skey(stn: dict, field: str) -> str:
+    """Return a stable session-state key for a station field."""
+    return f"{field}__{_ensure_station_uid(stn)}"
+
+def _sinit(stn: dict, field: str, default):
+    """Pre-fill session state from station dict so value= never fights stored state."""
+    k = _skey(stn, field)
+    if k not in st.session_state:
+        st.session_state[k] = stn.get(field, default)
+
 def restore_case_dict(loaded_data):
     """Populate ``st.session_state`` from a saved case dictionary."""
 
@@ -2382,21 +2449,345 @@ st.markdown(
 )
 st.markdown("<hr style='margin-top:0.6em; margin-bottom:1.2em; border: 1px solid #e1e5ec;'>", unsafe_allow_html=True)
 
-def _ensure_station_uid(stn: dict) -> str:
-    """Return the station's uid, generating one if absent."""
-    if not stn.get('uid'):
-        stn['uid'] = str(uuid.uuid4())[:8]
-    return stn['uid']
 
-def _skey(stn: dict, field: str) -> str:
-    """Return a stable session-state key for a station field."""
-    return f"{field}__{_ensure_station_uid(stn)}"
 
-def _sinit(stn: dict, field: str, default):
-    """Pre-fill session state from station dict so value= never fights stored state."""
-    k = _skey(stn, field)
-    if k not in st.session_state:
-        st.session_state[k] = stn.get(field, default)
+
+def render_pipeline_map(stations: list, result: dict | None = None):
+    """Return a dark-navy Plotly figure of the pipeline network."""
+    import plotly.graph_objects as go  # already imported at top but safe to re-import
+
+    if not stations:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor="#080d1a", plot_bgcolor="#080d1a", height=280,
+            annotations=[dict(
+                text="No stations configured yet",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False, font=dict(color="#7A8BA8", size=14, family="Inter"),
+            )],
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        )
+        return fig
+
+    # ── KP cumulative positions ──────────────────────────────────────────
+    kp_list = [0.0]
+    for stn in stations:
+        kp_list.append(kp_list[-1] + float(stn.get('L', 50.0)))
+    max_kp = max(kp_list[-1], 1.0)
+
+    # terminal metadata from session state
+    t_name = st.session_state.get('terminal_name', 'Terminal')
+    t_elev = st.session_state.get('terminal_elev', 0.0)
+    t_head = st.session_state.get('terminal_head', 50.0)
+
+    def _xp(kp):
+        return (kp / max_kp) * 88.0 + 6.0
+
+    all_kp    = kp_list                          # len = n_stations + 1
+    all_x     = [_xp(k) for k in all_kp]
+    n_total   = len(all_x)
+
+    # alternating label heights
+    label_y   = [2.6 if i % 2 == 0 else -2.9 for i in range(n_total)]
+
+    # ── per-station colour & metadata ────────────────────────────────────
+    COL_ORIGIN  = "#00FF88"
+    COL_PUMP    = "#4A90D9"
+    COL_PUMPDRA = "#00D4FF"
+    COL_DRA     = "#FFD700"
+    COL_PASS    = "#556070"
+    COL_TERM    = "#FF3366"
+
+    def _rkey(name):
+        return name.lower().replace(' ', '_').replace('-', '_')
+
+    node_cols, node_sizes, node_hover, node_names, node_syms = [], [], [], [], []
+
+    for i, stn in enumerate(stations):
+        name    = stn.get('name', f'Station {i+1}')
+        kp_val  = kp_list[i]
+        elev    = float(stn.get('elev', 0.0))
+        is_pump = bool(stn.get('is_pump', False))
+        max_dr  = float(stn.get('max_dr', 0.0))
+        has_dra = max_dr > 0
+
+        rk = _rkey(name)
+        sdh     = float((result or {}).get(f"sdh_{rk}", 0.0) or 0.0)
+        dra_ppm = float((result or {}).get(f"dra_ppm_{rk}", 0.0) or 0.0)
+        n_pumps = int((result or {}).get(f"num_pumps_{rk}", 0) or 0)
+        dr_pct  = float((result or {}).get(f"drag_reduction_{rk}", 0.0) or 0.0)
+        pw_cost = float((result or {}).get(f"power_cost_{rk}", 0.0) or 0.0)
+
+        if i == 0:
+            col = COL_ORIGIN;  typ = "Origin"
+        elif is_pump and has_dra:
+            col = COL_PUMPDRA; typ = "Pump + DRA"
+        elif is_pump:
+            col = COL_PUMP;    typ = "Pump Station"
+        elif has_dra:
+            col = COL_DRA;     typ = "DRA Only"
+        else:
+            col = COL_PASS;    typ = "Pass-through"
+
+        lines = [
+            f"<b style='color:{col};font-size:13px'>{name}</b>",
+            f"<span style='color:#9AAFC0'>Type:</span> {typ}",
+            f"<span style='color:#9AAFC0'>KP:</span> {kp_val:.1f} km",
+            f"<span style='color:#9AAFC0'>Elevation:</span> {elev:.1f} m",
+        ]
+        if result:
+            lines += [
+                f"<span style='color:#9AAFC0'>Discharge head:</span> <b>{sdh:.1f} m</b>",
+                f"<span style='color:#9AAFC0'>DRA injection:</span> <b>{dra_ppm:.0f} ppm</b>",
+                f"<span style='color:#9AAFC0'>Drag reduction:</span> <b>{dr_pct:.1f}%</b>",
+                f"<span style='color:#9AAFC0'>Pumps running:</span> <b>{n_pumps}</b>",
+                f"<span style='color:#9AAFC0'>Power cost:</span> <b>₹{pw_cost:,.0f}</b>",
+            ]
+
+        node_names.append(name)
+        node_cols.append(col)
+        node_sizes.append(22)
+        node_hover.append("<br>".join(lines) + "<extra></extra>")
+        node_syms.append("circle")
+
+    # Terminal node
+    t_lines = [
+        f"<b style='color:{COL_TERM};font-size:13px'>{t_name}</b>",
+        f"<span style='color:#9AAFC0'>Type:</span> Terminal",
+        f"<span style='color:#9AAFC0'>KP:</span> {kp_list[-1]:.1f} km",
+        f"<span style='color:#9AAFC0'>Elevation:</span> {t_elev:.1f} m",
+        f"<span style='color:#9AAFC0'>Min residual head:</span> {t_head:.1f} m",
+    ]
+    node_names.append(t_name)
+    node_cols.append(COL_TERM)
+    node_sizes.append(22)
+    node_hover.append("<br>".join(t_lines) + "<extra></extra>")
+    node_syms.append("diamond")
+
+    # ── build figure ─────────────────────────────────────────────────────
+    fig = go.Figure()
+
+    # pipe segments — glow layer then bright layer
+    def _seg_col(i):
+        """RGBA color for pipe segment i based on pressure utilisation."""
+        if result is None:
+            return ("rgba(74,144,217,0.12)", "rgba(74,144,217,0.65)")
+        idx_dn = i + 1
+        if idx_dn < len(stations):
+            stn_dn = stations[idx_dn]
+            rk = _rkey(stn_dn.get('name', ''))
+            sdh_v  = float(result.get(f"sdh_{rk}",  0.0) or 0.0)
+            maop_v = float(result.get(f"maop_{rk}", 150.0) or 150.0)
+            ratio  = max(0.0, min(1.0, sdh_v / maop_v if maop_v > 0 else 0.5))
+        else:
+            ratio = 0.3
+        if ratio < 0.5:
+            r = int(ratio * 2 * 210)
+            g = 200; b = 60
+        else:
+            r = 210; b = 40
+            g = int((1 - (ratio - 0.5) * 2) * 200)
+        glow   = f"rgba({r},{g},{b},0.12)"
+        bright = f"rgba({r},{g},{b},0.72)"
+        return glow, bright
+
+    for i in range(len(all_x) - 1):
+        x0, x1 = all_x[i], all_x[i + 1]
+        glow_c, bright_c = _seg_col(i)
+        # glow
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[0, 0], mode="lines",
+            line=dict(color=glow_c, width=20),
+            hoverinfo="skip", showlegend=False,
+        ))
+        # pipe line
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[0, 0], mode="lines",
+            line=dict(color=bright_c, width=5),
+            hoverinfo="skip", showlegend=False,
+        ))
+        # flow-direction arrow annotation at midpoint
+        mx = (x0 + x1) / 2
+        fig.add_annotation(
+            x=mx + 1.8, y=0, ax=mx - 1.8, ay=0,
+            xref="x", yref="y", axref="x", ayref="y",
+            arrowhead=2, arrowsize=1.3, arrowwidth=2.2,
+            arrowcolor=bright_c,
+            showarrow=True,
+        )
+
+    # node glow rings
+    fig.add_trace(go.Scatter(
+        x=all_x, y=[0] * n_total, mode="markers",
+        marker=dict(size=[s + 20 for s in node_sizes], color=node_cols, opacity=0.10),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    # station nodes
+    fig.add_trace(go.Scatter(
+        x=all_x, y=[0] * n_total, mode="markers",
+        marker=dict(
+            size=node_sizes,
+            color=node_cols,
+            line=dict(color="#080d1a", width=3),
+            opacity=0.95,
+            symbol=node_syms,
+        ),
+        hovertemplate=node_hover,
+        showlegend=False,
+        name="",
+    ))
+
+    # connector dotted lines node → label
+    for i in range(n_total):
+        ly = label_y[i]
+        sign = 1 if ly > 0 else -1
+        fig.add_shape(type="line",
+            x0=all_x[i], y0=sign * 0.55,
+            x1=all_x[i], y1=ly * 0.82,
+            line=dict(color=node_cols[i], width=1, dash="dot"),
+        )
+
+    # label boxes
+    for i, (name, col) in enumerate(zip(node_names, node_cols)):
+        short = name if len(name) <= 13 else name[:12] + "…"
+        fig.add_annotation(
+            x=all_x[i], y=label_y[i],
+            text=f"<b>{short}</b>",
+            showarrow=False,
+            font=dict(color=col, size=9.5, family="Inter"),
+            align="center",
+            bgcolor="rgba(8,13,26,0.88)",
+            bordercolor=col, borderwidth=1, borderpad=3,
+        )
+
+    # KP tick marks
+    for i, kp_val in enumerate(all_kp):
+        fig.add_annotation(
+            x=all_x[i], y=-3.8,
+            text=f"KP {kp_val:.0f}",
+            showarrow=False,
+            font=dict(color="#455060", size=7.5, family="DM Mono, monospace"),
+        )
+
+    # legend traces (dummy)
+    COL_BRANCH = "#FF8C42"
+    _has_branches = any(bool(s.get('branches')) for s in stations)
+    for lbl, col, sym in [
+        ("Origin",       COL_ORIGIN,  "circle"),
+        ("Pump Station", COL_PUMP,    "circle"),
+        ("Pump + DRA",   COL_PUMPDRA, "circle"),
+        ("DRA Only",     COL_DRA,     "circle"),
+        ("Terminal",     COL_TERM,    "diamond"),
+    ] + ([("Branch Terminal", COL_BRANCH, "diamond")] if _has_branches else []):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=9, color=col, symbol=sym),
+            name=lbl, showlegend=True,
+        ))
+
+    # ── Branch / tap-off lines ────────────────────────────────────────────
+    for _mi, _stn_b in enumerate(stations):
+        _jx = all_x[_mi]
+        for _bri, _branch in enumerate(_stn_b.get('branches', [])):
+            # Alternate branches above/below the pipe spine
+            _side = 1 if _bri % 2 == 0 else -1
+            # Vertical offset grows so multiple branches don't overlap labels
+            _ty = _side * (3.3 + _bri * 0.5)
+            _tx = _jx + 5.0 + _bri * 2.5   # slight horizontal spread
+            _tx = min(_tx, 98.0)
+
+            # Dashed stem from mainline spine to branch terminal
+            fig.add_trace(go.Scatter(
+                x=[_jx, _jx, _tx],
+                y=[0.0, _ty * 0.55, _ty],
+                mode='lines',
+                line=dict(color=COL_BRANCH, width=2, dash='dash'),
+                hoverinfo='skip',
+                showlegend=False,
+            ))
+
+            # Branch terminal node
+            _bt = _branch.get('terminal', {})
+            _bt_name = _bt.get('name', _branch.get('name', f'Branch {_bri+1}'))
+            _bt_elev = float(_bt.get('elev', 0.0))
+            _bf_flow = float(_branch.get('flow_m3h', 0.0))
+            fig.add_trace(go.Scatter(
+                x=[_tx], y=[_ty],
+                mode='markers+text',
+                marker=dict(
+                    symbol='diamond', size=14, color=COL_BRANCH,
+                    line=dict(color='#FFD700', width=1.5),
+                ),
+                text=[_bt_name[:12]],
+                textposition='top center' if _side > 0 else 'bottom center',
+                textfont=dict(color=COL_BRANCH, size=8.5, family="Inter"),
+                hovertemplate=(
+                    f"<b style='color:{COL_BRANCH}'>{_bt_name}</b><br>"
+                    f"Branch: {_branch.get('name','')}<br>"
+                    f"Flow: {_bf_flow:.0f} m³/hr<br>"
+                    f"Elev: {_bt_elev:.1f} m<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+            # Flow label at midpoint of stem
+            fig.add_annotation(
+                x=(_jx + _tx) / 2,
+                y=(_ty * 0.55 + _ty) / 2,
+                text=f"{_bf_flow:.0f} m³/hr",
+                showarrow=False,
+                font=dict(color=COL_BRANCH, size=8, family="Inter"),
+            )
+
+    _y_max = 4.2 + (0.6 if _has_branches else 0.0)
+    _y_min = -4.5 - (0.6 if _has_branches else 0.0)
+
+    fig.update_layout(
+        paper_bgcolor="#080d1a",
+        plot_bgcolor="#080d1a",
+        height=360,
+        margin=dict(l=10, r=10, t=28, b=28),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2, 102]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[_y_min, _y_max]),
+        font=dict(family="Inter", color="#E8EAF0", size=11),
+        hoverlabel=dict(
+            bgcolor="#0f1629",
+            bordercolor="#4A90D9",
+            font=dict(family="Inter", size=11, color="#E8EAF0"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.01,
+            xanchor="right", x=1,
+            bgcolor="rgba(10,14,26,0.85)",
+            bordercolor="rgba(74,144,217,0.35)",
+            borderwidth=1,
+            font=dict(color="#E8EAF0", size=10),
+        ),
+        dragmode="pan",
+    )
+    return fig
+
+
+
+# ── Pipeline Network Map (Preview) ────────────────────────────────────────
+with st.expander("🗺️ Pipeline Network Map (Preview)", expanded=True):
+    _preview_result = st.session_state.get("last_res") if "last_res" in st.session_state else None
+    _preview_stns   = (st.session_state.get("last_stations_data")
+                       if _preview_result is not None
+                       else st.session_state.get("stations", []))
+    st.markdown('<div class="pipeline-map-container">', unsafe_allow_html=True)
+    st.plotly_chart(
+        render_pipeline_map(_preview_stns, _preview_result),
+        use_container_width=True,
+        config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+        key="pipeline_map_preview",
+    )
+    if _preview_result is None:
+        st.caption("Run the optimizer to see live pressure and DRA data on the map.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 st.subheader("Stations")
 if "stations" not in st.session_state:
@@ -2417,22 +2808,7 @@ else:
     for _s in st.session_state["stations"]:
         _ensure_station_uid(_s)
 
-# ── Pipeline Network Preview Map ────────────────────────────────────────────
-with st.expander("🗺️ Pipeline Network Map (Preview)", expanded=True):
-    _preview_result = st.session_state.get("last_res") if "last_res" in st.session_state else None
-    _preview_stns   = (st.session_state.get("last_stations_data")
-                       if _preview_result is not None
-                       else st.session_state.get("stations", []))
-    st.markdown('<div class="pipeline-map-container">', unsafe_allow_html=True)
-    st.plotly_chart(
-        render_pipeline_map(_preview_stns, _preview_result),
-        use_container_width=True,
-        config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
-        key="pipeline_map_preview",
-    )
-    if _preview_result is None:
-        st.caption("Run the optimizer to see live pressure and DRA data on the map.")
-    st.markdown('</div>', unsafe_allow_html=True)
+
 
 with st.sidebar:
     st.markdown("### Stations")
@@ -3026,324 +3402,6 @@ terminal_name = st.text_input("Name", value=st.session_state.get("terminal_name"
 terminal_elev = st.number_input("Elevation (m)", value=st.session_state.get("terminal_elev",0.0), step=0.1, key="terminal_elev")
 terminal_head = st.number_input("Minimum Residual Head (m)", value=st.session_state.get("terminal_head",50.0), step=1.0, key="terminal_head")
 
-
-def render_pipeline_map(stations: list, result: dict | None = None):
-    """Return a dark-navy Plotly figure of the pipeline network."""
-    import plotly.graph_objects as go  # already imported at top but safe to re-import
-
-    if not stations:
-        fig = go.Figure()
-        fig.update_layout(
-            paper_bgcolor="#080d1a", plot_bgcolor="#080d1a", height=280,
-            annotations=[dict(
-                text="No stations configured yet",
-                x=0.5, y=0.5, xref="paper", yref="paper",
-                showarrow=False, font=dict(color="#7A8BA8", size=14, family="Inter"),
-            )],
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        )
-        return fig
-
-    # ── KP cumulative positions ──────────────────────────────────────────
-    kp_list = [0.0]
-    for stn in stations:
-        kp_list.append(kp_list[-1] + float(stn.get('L', 50.0)))
-    max_kp = max(kp_list[-1], 1.0)
-
-    # terminal metadata from session state
-    t_name = st.session_state.get('terminal_name', 'Terminal')
-    t_elev = st.session_state.get('terminal_elev', 0.0)
-    t_head = st.session_state.get('terminal_head', 50.0)
-
-    def _xp(kp):
-        return (kp / max_kp) * 88.0 + 6.0
-
-    all_kp    = kp_list                          # len = n_stations + 1
-    all_x     = [_xp(k) for k in all_kp]
-    n_total   = len(all_x)
-
-    # alternating label heights
-    label_y   = [2.6 if i % 2 == 0 else -2.9 for i in range(n_total)]
-
-    # ── per-station colour & metadata ────────────────────────────────────
-    COL_ORIGIN  = "#00FF88"
-    COL_PUMP    = "#4A90D9"
-    COL_PUMPDRA = "#00D4FF"
-    COL_DRA     = "#FFD700"
-    COL_PASS    = "#556070"
-    COL_TERM    = "#FF3366"
-
-    def _rkey(name):
-        return name.lower().replace(' ', '_').replace('-', '_')
-
-    node_cols, node_sizes, node_hover, node_names, node_syms = [], [], [], [], []
-
-    for i, stn in enumerate(stations):
-        name    = stn.get('name', f'Station {i+1}')
-        kp_val  = kp_list[i]
-        elev    = float(stn.get('elev', 0.0))
-        is_pump = bool(stn.get('is_pump', False))
-        max_dr  = float(stn.get('max_dr', 0.0))
-        has_dra = max_dr > 0
-
-        rk = _rkey(name)
-        sdh     = float((result or {}).get(f"sdh_{rk}", 0.0) or 0.0)
-        dra_ppm = float((result or {}).get(f"dra_ppm_{rk}", 0.0) or 0.0)
-        n_pumps = int((result or {}).get(f"num_pumps_{rk}", 0) or 0)
-        dr_pct  = float((result or {}).get(f"drag_reduction_{rk}", 0.0) or 0.0)
-        pw_cost = float((result or {}).get(f"power_cost_{rk}", 0.0) or 0.0)
-
-        if i == 0:
-            col = COL_ORIGIN;  typ = "Origin"
-        elif is_pump and has_dra:
-            col = COL_PUMPDRA; typ = "Pump + DRA"
-        elif is_pump:
-            col = COL_PUMP;    typ = "Pump Station"
-        elif has_dra:
-            col = COL_DRA;     typ = "DRA Only"
-        else:
-            col = COL_PASS;    typ = "Pass-through"
-
-        lines = [
-            f"<b style='color:{col};font-size:13px'>{name}</b>",
-            f"<span style='color:#9AAFC0'>Type:</span> {typ}",
-            f"<span style='color:#9AAFC0'>KP:</span> {kp_val:.1f} km",
-            f"<span style='color:#9AAFC0'>Elevation:</span> {elev:.1f} m",
-        ]
-        if result:
-            lines += [
-                f"<span style='color:#9AAFC0'>Discharge head:</span> <b>{sdh:.1f} m</b>",
-                f"<span style='color:#9AAFC0'>DRA injection:</span> <b>{dra_ppm:.0f} ppm</b>",
-                f"<span style='color:#9AAFC0'>Drag reduction:</span> <b>{dr_pct:.1f}%</b>",
-                f"<span style='color:#9AAFC0'>Pumps running:</span> <b>{n_pumps}</b>",
-                f"<span style='color:#9AAFC0'>Power cost:</span> <b>₹{pw_cost:,.0f}</b>",
-            ]
-
-        node_names.append(name)
-        node_cols.append(col)
-        node_sizes.append(22)
-        node_hover.append("<br>".join(lines) + "<extra></extra>")
-        node_syms.append("circle")
-
-    # Terminal node
-    t_lines = [
-        f"<b style='color:{COL_TERM};font-size:13px'>{t_name}</b>",
-        f"<span style='color:#9AAFC0'>Type:</span> Terminal",
-        f"<span style='color:#9AAFC0'>KP:</span> {kp_list[-1]:.1f} km",
-        f"<span style='color:#9AAFC0'>Elevation:</span> {t_elev:.1f} m",
-        f"<span style='color:#9AAFC0'>Min residual head:</span> {t_head:.1f} m",
-    ]
-    node_names.append(t_name)
-    node_cols.append(COL_TERM)
-    node_sizes.append(22)
-    node_hover.append("<br>".join(t_lines) + "<extra></extra>")
-    node_syms.append("diamond")
-
-    # ── build figure ─────────────────────────────────────────────────────
-    fig = go.Figure()
-
-    # pipe segments — glow layer then bright layer
-    def _seg_col(i):
-        """RGBA color for pipe segment i based on pressure utilisation."""
-        if result is None:
-            return ("rgba(74,144,217,0.12)", "rgba(74,144,217,0.65)")
-        idx_dn = i + 1
-        if idx_dn < len(stations):
-            stn_dn = stations[idx_dn]
-            rk = _rkey(stn_dn.get('name', ''))
-            sdh_v  = float(result.get(f"sdh_{rk}",  0.0) or 0.0)
-            maop_v = float(result.get(f"maop_{rk}", 150.0) or 150.0)
-            ratio  = max(0.0, min(1.0, sdh_v / maop_v if maop_v > 0 else 0.5))
-        else:
-            ratio = 0.3
-        if ratio < 0.5:
-            r = int(ratio * 2 * 210)
-            g = 200; b = 60
-        else:
-            r = 210; b = 40
-            g = int((1 - (ratio - 0.5) * 2) * 200)
-        glow   = f"rgba({r},{g},{b},0.12)"
-        bright = f"rgba({r},{g},{b},0.72)"
-        return glow, bright
-
-    for i in range(len(all_x) - 1):
-        x0, x1 = all_x[i], all_x[i + 1]
-        glow_c, bright_c = _seg_col(i)
-        # glow
-        fig.add_trace(go.Scatter(
-            x=[x0, x1], y=[0, 0], mode="lines",
-            line=dict(color=glow_c, width=20),
-            hoverinfo="skip", showlegend=False,
-        ))
-        # pipe line
-        fig.add_trace(go.Scatter(
-            x=[x0, x1], y=[0, 0], mode="lines",
-            line=dict(color=bright_c, width=5),
-            hoverinfo="skip", showlegend=False,
-        ))
-        # flow-direction arrow annotation at midpoint
-        mx = (x0 + x1) / 2
-        fig.add_annotation(
-            x=mx + 1.8, y=0, ax=mx - 1.8, ay=0,
-            xref="x", yref="y", axref="x", ayref="y",
-            arrowhead=2, arrowsize=1.3, arrowwidth=2.2,
-            arrowcolor=bright_c,
-            showarrow=True,
-        )
-
-    # node glow rings
-    fig.add_trace(go.Scatter(
-        x=all_x, y=[0] * n_total, mode="markers",
-        marker=dict(size=[s + 20 for s in node_sizes], color=node_cols, opacity=0.10),
-        hoverinfo="skip", showlegend=False,
-    ))
-
-    # station nodes
-    fig.add_trace(go.Scatter(
-        x=all_x, y=[0] * n_total, mode="markers",
-        marker=dict(
-            size=node_sizes,
-            color=node_cols,
-            line=dict(color="#080d1a", width=3),
-            opacity=0.95,
-            symbol=node_syms,
-        ),
-        hovertemplate=node_hover,
-        showlegend=False,
-        name="",
-    ))
-
-    # connector dotted lines node → label
-    for i in range(n_total):
-        ly = label_y[i]
-        sign = 1 if ly > 0 else -1
-        fig.add_shape(type="line",
-            x0=all_x[i], y0=sign * 0.55,
-            x1=all_x[i], y1=ly * 0.82,
-            line=dict(color=node_cols[i], width=1, dash="dot"),
-        )
-
-    # label boxes
-    for i, (name, col) in enumerate(zip(node_names, node_cols)):
-        short = name if len(name) <= 13 else name[:12] + "…"
-        fig.add_annotation(
-            x=all_x[i], y=label_y[i],
-            text=f"<b>{short}</b>",
-            showarrow=False,
-            font=dict(color=col, size=9.5, family="Inter"),
-            align="center",
-            bgcolor="rgba(8,13,26,0.88)",
-            bordercolor=col, borderwidth=1, borderpad=3,
-        )
-
-    # KP tick marks
-    for i, kp_val in enumerate(all_kp):
-        fig.add_annotation(
-            x=all_x[i], y=-3.8,
-            text=f"KP {kp_val:.0f}",
-            showarrow=False,
-            font=dict(color="#455060", size=7.5, family="DM Mono, monospace"),
-        )
-
-    # legend traces (dummy)
-    COL_BRANCH = "#FF8C42"
-    _has_branches = any(bool(s.get('branches')) for s in stations)
-    for lbl, col, sym in [
-        ("Origin",       COL_ORIGIN,  "circle"),
-        ("Pump Station", COL_PUMP,    "circle"),
-        ("Pump + DRA",   COL_PUMPDRA, "circle"),
-        ("DRA Only",     COL_DRA,     "circle"),
-        ("Terminal",     COL_TERM,    "diamond"),
-    ] + ([("Branch Terminal", COL_BRANCH, "diamond")] if _has_branches else []):
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers",
-            marker=dict(size=9, color=col, symbol=sym),
-            name=lbl, showlegend=True,
-        ))
-
-    # ── Branch / tap-off lines ────────────────────────────────────────────
-    for _mi, _stn_b in enumerate(stations):
-        _jx = all_x[_mi]
-        for _bri, _branch in enumerate(_stn_b.get('branches', [])):
-            # Alternate branches above/below the pipe spine
-            _side = 1 if _bri % 2 == 0 else -1
-            # Vertical offset grows so multiple branches don't overlap labels
-            _ty = _side * (3.3 + _bri * 0.5)
-            _tx = _jx + 5.0 + _bri * 2.5   # slight horizontal spread
-            _tx = min(_tx, 98.0)
-
-            # Dashed stem from mainline spine to branch terminal
-            fig.add_trace(go.Scatter(
-                x=[_jx, _jx, _tx],
-                y=[0.0, _ty * 0.55, _ty],
-                mode='lines',
-                line=dict(color=COL_BRANCH, width=2, dash='dash'),
-                hoverinfo='skip',
-                showlegend=False,
-            ))
-
-            # Branch terminal node
-            _bt = _branch.get('terminal', {})
-            _bt_name = _bt.get('name', _branch.get('name', f'Branch {_bri+1}'))
-            _bt_elev = float(_bt.get('elev', 0.0))
-            _bf_flow = float(_branch.get('flow_m3h', 0.0))
-            fig.add_trace(go.Scatter(
-                x=[_tx], y=[_ty],
-                mode='markers+text',
-                marker=dict(
-                    symbol='diamond', size=14, color=COL_BRANCH,
-                    line=dict(color='#FFD700', width=1.5),
-                ),
-                text=[_bt_name[:12]],
-                textposition='top center' if _side > 0 else 'bottom center',
-                textfont=dict(color=COL_BRANCH, size=8.5, family="Inter"),
-                hovertemplate=(
-                    f"<b style='color:{COL_BRANCH}'>{_bt_name}</b><br>"
-                    f"Branch: {_branch.get('name','')}<br>"
-                    f"Flow: {_bf_flow:.0f} m³/hr<br>"
-                    f"Elev: {_bt_elev:.1f} m<extra></extra>"
-                ),
-                showlegend=False,
-            ))
-
-            # Flow label at midpoint of stem
-            fig.add_annotation(
-                x=(_jx + _tx) / 2,
-                y=(_ty * 0.55 + _ty) / 2,
-                text=f"{_bf_flow:.0f} m³/hr",
-                showarrow=False,
-                font=dict(color=COL_BRANCH, size=8, family="Inter"),
-            )
-
-    _y_max = 4.2 + (0.6 if _has_branches else 0.0)
-    _y_min = -4.5 - (0.6 if _has_branches else 0.0)
-
-    fig.update_layout(
-        paper_bgcolor="#080d1a",
-        plot_bgcolor="#080d1a",
-        height=360,
-        margin=dict(l=10, r=10, t=28, b=28),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2, 102]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[_y_min, _y_max]),
-        font=dict(family="Inter", color="#E8EAF0", size=11),
-        hoverlabel=dict(
-            bgcolor="#0f1629",
-            bordercolor="#4A90D9",
-            font=dict(family="Inter", size=11, color="#E8EAF0"),
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom", y=1.01,
-            xanchor="right", x=1,
-            bgcolor="rgba(10,14,26,0.85)",
-            bordercolor="rgba(74,144,217,0.35)",
-            borderwidth=1,
-            font=dict(color="#E8EAF0", size=10),
-        ),
-        dragmode="pan",
-    )
-    return fig
 
 
 def get_full_case_dict():
@@ -7360,18 +7418,16 @@ if not auto_batch:
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
 
-        if is_hourly:
-            hours = [7]
-        else:
-            hours = [(7 + h) % 24 for h in range(24)]
+        hours = [(7 + h) % 24 for h in range(1 if is_hourly else 24)]
         sub_steps = 1
         total_runs = len(hours) * sub_steps if hours else 0
         first_label = f"{hours[0] % 24:02d}:00" if hours else "00:00"
         last_label = f"{hours[-1] % 24:02d}:00" if hours else "23:00"
-        if is_hourly:
-            spinner_msg = f"Running 1 optimization ({first_label})..."
-        else:
-            spinner_msg = f"Running {total_runs} optimizations ({first_label} to {last_label})..."
+        spinner_msg = (
+            f"Running {total_runs} optimization ({first_label})..."
+            if is_hourly
+            else f"Running {total_runs} optimizations ({first_label} to {last_label})..."
+        )
         st.session_state["linefill_next_day"] = None
         total_length = sum(stn.get('L', 0.0) for stn in stations_base)
         current_vol = ensure_initial_dra_column(vol_df.copy(), default=0.0, fill_blanks=True)
@@ -10289,8 +10345,8 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 
 st.markdown(
     """
-    <div style='text-align: center; color: gray; margin-top: 2em; font-size: 0.9em;'>
-    &copy; 2025 Pipeline Optima™ v1.1.2. Developed by IOCL Pipelines Division.
+    <div style='text-align: center; color: #1a1a1a; margin-top: 2em; font-size: 0.95em;'>
+    &copy; <strong>2025 Pipeline Optima™ v1.1.2. Developed by Parichay Das</strong>
     </div>
     """,
     unsafe_allow_html=True

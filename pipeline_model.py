@@ -2032,7 +2032,7 @@ def _segment_hydraulics(
     v = flow_m3s / area if area > 0 else np.float64(0.0)
     Re = v * d_inner / (kv * np.float64(1e-6)) if kv > 0 else np.float64(0.0)
     if Re > 0:
-        if Re < 4000:
+        if Re < 2300:
             f = np.float64(64.0) / Re
         else:
             arg = (rough / d_inner / np.float64(3.7)) + (np.float64(5.74) / (Re ** np.float64(0.9)))
@@ -5937,7 +5937,7 @@ def solve_pipeline(
                         elev_to = float(stations[stn_data['idx'] + 1].get('elev', 0.0) or 0.0)
                     else:
                         elev_to = float(terminal.get('elev', 0.0) or 0.0)
-                    elevation_loss = max(elev_to - elev_from, 0.0)
+                    elevation_loss = elev_to - elev_from  # negative = downhill = pressure recovery
 
                     residual_next = int(round(sdh - sc['head_loss'] - elevation_loss))
 
