@@ -2833,6 +2833,93 @@ with st.sidebar:
             st.session_state.stations.pop()
 
 
+# ── Pipeline Profile Editor ────────────────────────────────────────────────
+with st.expander("📋 Pipeline Profile Editor  (edit all stations in one table)", expanded=False):
+    _pe_stns = st.session_state.get("stations", [])
+    if _pe_stns:
+        # Build display dataframe from current station dicts / session state
+        _pe_rows = []
+        _pe_cum_km = 0.0
+        for _pe_s in _pe_stns:
+            _pe_uid = _pe_s.get('uid', '')
+            _pe_rows.append({
+                "Station":        st.session_state.get(_skey(_pe_s, 'name'),        _pe_s.get('name', '')),
+                "Pump?":          bool(st.session_state.get(_skey(_pe_s, 'is_pump'),    _pe_s.get('is_pump', False))),
+                "Chainage (km)":  round(_pe_cum_km, 3),
+                "Seg. Len (km)":  float(st.session_state.get(_skey(_pe_s, 'L'),         _pe_s.get('L', 50.0)) or 0.0),
+                "Elevation (m)":  float(st.session_state.get(_skey(_pe_s, 'elev'),      _pe_s.get('elev', 0.0)) or 0.0),
+                "OD (in)":        round(float(st.session_state.get(_skey(_pe_s, 'D_in'), _pe_s.get('D', 0.711) / 0.0254) or 0.0), 3),
+                "WT (in)":        round(float(st.session_state.get(_skey(_pe_s, 't_in'), _pe_s.get('t', 0.007) / 0.0254) or 0.0), 4),
+                "SMYS (psi)":     float(st.session_state.get(_skey(_pe_s, 'SMYS'),      _pe_s.get('SMYS', 52000.0)) or 52000.0),
+                "Roughness (m)":  float(st.session_state.get(_skey(_pe_s, 'rough'),     _pe_s.get('rough', 0.00004)) or 0.00004),
+                "Max DR (%)":     float(st.session_state.get(_skey(_pe_s, 'max_dr'),    _pe_s.get('max_dr', 0.0)) or 0.0),
+                "Suction Hd (m)": float(st.session_state.get(_skey(_pe_s, 'min_residual'), _pe_s.get('min_residual', 50.0)) or 0.0),
+                "Max Pumps":      int(st.session_state.get(_skey(_pe_s, 'max_pumps'),   _pe_s.get('max_pumps', 1)) or 1),
+            })
+            _pe_cum_km += float(st.session_state.get(_skey(_pe_s, 'L'), _pe_s.get('L', 50.0)) or 0.0)
+
+        _pe_df = pd.DataFrame(_pe_rows)
+        # Key changes only when station count or UIDs change, so individual field edits persist
+        _pe_key = "profile_editor_" + "_".join(_pe_s.get('uid', str(i)) for i, _pe_s in enumerate(_pe_stns))
+
+        st.caption("Edit pipeline geometry for all stations at once. OD & WT in inches; D & t stored in metres internally. Pump curves and RPM are set in the station expanders below.")
+        _pe_edited = st.data_editor(
+            _pe_df,
+            column_config={
+                "Station":        st.column_config.TextColumn("Station", width="medium"),
+                "Pump?":          st.column_config.CheckboxColumn("Pump?", width="small"),
+                "Chainage (km)":  st.column_config.NumberColumn("Chainage (km)", disabled=True, format="%.3f"),
+                "Seg. Len (km)":  st.column_config.NumberColumn("Seg. Len (km)", min_value=0.0, format="%.2f"),
+                "Elevation (m)":  st.column_config.NumberColumn("Elevation (m)", format="%.1f"),
+                "OD (in)":        st.column_config.NumberColumn("OD (in)", min_value=0.0, format="%.3f"),
+                "WT (in)":        st.column_config.NumberColumn("WT (in)", min_value=0.0, format="%.4f"),
+                "SMYS (psi)":     st.column_config.NumberColumn("SMYS (psi)", min_value=0.0, format="%.0f"),
+                "Roughness (m)":  st.column_config.NumberColumn("Roughness (m)", min_value=0.0, format="%.7f"),
+                "Max DR (%)":     st.column_config.NumberColumn("Max DR (%)", min_value=0.0, max_value=100.0, format="%.1f"),
+                "Suction Hd (m)": st.column_config.NumberColumn("Suction Hd (m)", min_value=0.0, format="%.1f"),
+                "Max Pumps":      st.column_config.NumberColumn("Max Pumps", min_value=1, step=1, format="%d"),
+            },
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+            key=_pe_key,
+        )
+
+        # Sync edited values → station dicts and session-state widget keys
+        for _pe_i, _pe_row in _pe_edited.iterrows():
+            if _pe_i >= len(_pe_stns):
+                break
+            _pe_s = _pe_stns[_pe_i]
+            # Simple scalar fields
+            for _pe_field, _pe_col in [
+                ('name',         'Station'),
+                ('is_pump',      'Pump?'),
+                ('L',            'Seg. Len (km)'),
+                ('elev',         'Elevation (m)'),
+                ('SMYS',         'SMYS (psi)'),
+                ('rough',        'Roughness (m)'),
+                ('max_dr',       'Max DR (%)'),
+                ('min_residual', 'Suction Hd (m)'),
+                ('max_pumps',    'Max Pumps'),
+            ]:
+                _pe_val = _pe_row.get(_pe_col)
+                if _pe_val is not None:
+                    _pe_s[_pe_field] = int(_pe_val) if _pe_field == 'max_pumps' else _pe_val
+                    st.session_state[_skey(_pe_s, _pe_field)] = _pe_s[_pe_field]
+            # OD and WT: stored in metres, displayed in inches
+            _pe_D_in = _pe_row.get('OD (in)')
+            _pe_t_in = _pe_row.get('WT (in)')
+            if _pe_D_in is not None:
+                _pe_s['D'] = float(_pe_D_in) * 0.0254
+                st.session_state[_skey(_pe_s, 'D_in')] = float(_pe_D_in)
+            if _pe_t_in is not None:
+                _pe_s['t'] = float(_pe_t_in) * 0.0254
+                st.session_state[_skey(_pe_s, 't_in')] = float(_pe_t_in)
+        st.session_state["stations"] = _pe_stns
+    else:
+        st.info("No stations defined yet. Use '➕ Add Station' in the sidebar to get started.")
+
+
 for idx, stn in enumerate(st.session_state.stations, start=1):
     uid = _ensure_station_uid(stn)
     # Pre-fill session state so value= never fights stored state on first render
@@ -7356,6 +7443,18 @@ def run_all_updates():
             _branch_results[_br_item.get('uid', '')] = _br_res
     st.session_state['branch_results'] = _branch_results
 
+    # Aggregate branch pump + DRA costs into the system total
+    _total_branch_cost = sum(
+        float(_bres.get("total_cost") or 0.0)
+        for _bres in _branch_results.values()
+    )
+    if _total_branch_cost > 0:
+        _res_with_branches = dict(res)
+        _res_with_branches["total_cost"] = _res_with_branches.get("total_cost", 0.0) + _total_branch_cost
+        _res_with_branches["branch_total_cost"] = _total_branch_cost
+        _res_with_branches["mainline_total_cost"] = float(res.get("total_cost", 0.0))
+        st.session_state["last_res"] = _res_with_branches
+
     st.session_state["run_mode"] = "instantaneous"
     st.rerun()
 
@@ -8553,10 +8652,18 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             avg_speed = sum(speeds)/len(speeds) if speeds else 0.0
             
             pattern_name = res.get('flow_pattern_name', 'Mainline Only')
+            _branch_cost_disp = float(res.get("branch_total_cost") or 0.0)
+            _mainline_cost_disp = float(res.get("mainline_total_cost") or total_cost)
+            _cost_detail = (
+                f"<b>System Total Cost (Mainline + Branches):</b> {total_cost:.2f} INR<br>"
+                f"<span style='font-size:0.92em;color:var(--text-muted);'>"
+                f"Mainline: {_mainline_cost_disp:.2f} INR &nbsp;|&nbsp; Branches: {_branch_cost_disp:.2f} INR"
+                f"</span>"
+            ) if _branch_cost_disp > 0 else f"<b>Total Optimized Cost:</b> {total_cost:.2f} INR"
             st.markdown(
                 f"""<br>
                 <div style='font-size:1.1em;'>
-                <b>Total Optimized Cost:</b> {total_cost:.2f} INR<br>
+                {_cost_detail}<br>
                 <b>No. of operating Pumps:</b> {total_pumps}<br>
                 <b>Average Pump Efficiency:</b> {avg_eff:.2f} %<br>
                 <b>Average Pump Speed:</b> {avg_speed:.0f} rpm<br>
