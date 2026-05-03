@@ -2590,14 +2590,28 @@ def render_pipeline_map(stations: list, result: dict | None = None):
             line=dict(color=node_cols[i], width=1, dash="dot"),
         )
 
-    # label boxes
+    # label boxes — include key metrics when result is available
     for i, (name, col) in enumerate(zip(node_names, node_cols)):
         short = name if len(name) <= 13 else name[:12] + "…"
+        label_parts = [f"<b>{short}</b>"]
+        if result and i < len(stations):
+            rk_lbl = _rkey(name)
+            sdh_lbl    = float(result.get(f"sdh_{rk_lbl}", 0.0) or 0.0)
+            np_lbl     = int(result.get(f"num_pumps_{rk_lbl}", 0) or 0)
+            rpm_lbl    = float(result.get(f"speed_{rk_lbl}", 0.0) or 0.0)
+            dra_lbl    = float(result.get(f"dra_ppm_{rk_lbl}", 0.0) or 0.0)
+            dr_lbl     = float(result.get(f"drag_reduction_{rk_lbl}", 0.0) or 0.0)
+            if sdh_lbl > 1:
+                label_parts.append(f"↑{sdh_lbl:.0f} m")
+            if np_lbl > 0 and rpm_lbl > 0:
+                label_parts.append(f"{np_lbl}×{rpm_lbl:.0f} rpm")
+            if dra_lbl > 0:
+                label_parts.append(f"{dra_lbl:.0f} ppm / {dr_lbl:.0f}%")
         fig.add_annotation(
             x=all_x[i], y=label_y[i],
-            text=f"<b>{short}</b>",
+            text="<br>".join(label_parts),
             showarrow=False,
-            font=dict(color=col, size=9.5, family="Inter"),
+            font=dict(color=col, size=9.0, family="Inter"),
             align="center",
             bgcolor="rgba(255,255,255,0.92)",
             bordercolor=col, borderwidth=1, borderpad=3,
@@ -2682,8 +2696,8 @@ def render_pipeline_map(stations: list, result: dict | None = None):
                 font=dict(color=COL_BRANCH, size=8, family="Inter"),
             )
 
-    _y_max = 4.2 + (0.6 if _has_branches else 0.0)
-    _y_min = -4.5 - (0.6 if _has_branches else 0.0)
+    _y_max = (5.8 if result else 4.2) + (0.6 if _has_branches else 0.0)
+    _y_min = (-5.2 if result else -4.5) - (0.6 if _has_branches else 0.0)
 
     fig.update_layout(
         paper_bgcolor="#f5f7fa",
@@ -2712,6 +2726,254 @@ def render_pipeline_map(stations: list, result: dict | None = None):
     return fig
 
 
+def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Terminal",
+                       terminal_elev: float = 0.0, terminal_head: float = 50.0):
+    """Return a Plotly hydraulic-grade-line + elevation profile figure.
+
+    Shows elevation terrain, the HGL (with pump jumps), MAOP reference, and
+    per-station metric annotations so engineers can see pressures at a glance.
+    """
+    import plotly.graph_objects as go
+
+    if not stations or not result:
+        return None
+
+    def _rk(name):
+        return name.strip().lower().replace(" ", "_").replace("-", "_")
+
+    # ── KP list and elevation arrays ─────────────────────────────────────────
+    kp_list = [0.0]
+    for stn in stations:
+        kp_list.append(kp_list[-1] + float(stn.get("L", 50.0)))
+    elevs = [float(stn.get("elev", 0.0)) for stn in stations] + [terminal_elev]
+
+    # ── Build HGL x / y arrays ───────────────────────────────────────────────
+    # Each pump station contributes two y-points at the same x (the jump).
+    # Non-pump stations contribute one point (pass-through).
+    hgl_x, hgl_y = [], []
+    rh_in_vals = []   # arrival head at each station, for annotations
+    sdh_vals   = []   # discharge head at each station
+
+    for i, stn in enumerate(stations):
+        kp      = kp_list[i]
+        rk      = _rk(stn.get("name", ""))
+        is_pump = bool(stn.get("is_pump", False))
+
+        rh_in  = float(result.get(f"residual_head_in_{rk}",
+                        result.get(f"residual_head_{rk}", 0.0)) or 0.0)
+        sdh_out = float(result.get(f"sdh_{rk}", 0.0) or 0.0)
+
+        # For non-pump stations sdh_out holds the pass-through residual
+        if not is_pump:
+            sdh_out = rh_in
+
+        rh_in_vals.append(rh_in)
+        sdh_vals.append(sdh_out)
+
+        hgl_x.append(kp)
+        hgl_y.append(rh_in)
+        if is_pump and sdh_out > rh_in + 0.5:
+            hgl_x.append(kp)       # vertical pump-head jump
+            hgl_y.append(sdh_out)
+
+    # Terminal
+    rk_term  = _rk(terminal_name)
+    rh_term  = float(result.get(f"residual_head_{rk_term}", terminal_head) or terminal_head)
+    hgl_x.append(kp_list[-1])
+    hgl_y.append(rh_term)
+
+    # ── Y-axis range ──────────────────────────────────────────────────────────
+    pos_vals = [v for v in hgl_y + elevs if v is not None]
+    y_max = (max(pos_vals) * 1.18) if pos_vals else 500.0
+    y_min = min(min(elevs) - 30.0, 0.0)
+    y_span = y_max - y_min
+
+    fig = go.Figure()
+
+    # ── Elevation terrain fill ────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=kp_list, y=elevs,
+        fill="tozeroy",
+        fillcolor="rgba(107,114,128,0.12)",
+        line=dict(color="rgba(107,114,128,0.55)", width=1.5),
+        name="Elevation (m)",
+        hovertemplate="KP: %{x:.1f} km<br>Elevation: %{y:.1f} m<extra></extra>",
+    ))
+
+    # ── MAOP reference line ───────────────────────────────────────────────────
+    maop_vals = [
+        float(result.get(f"maop_{_rk(s.get('name',''))}", 0.0) or 0.0)
+        for s in stations
+    ]
+    maop_vals = [v for v in maop_vals if v > 0]
+    if maop_vals:
+        maop_ref = max(maop_vals)
+        fig.add_hline(
+            y=maop_ref,
+            line=dict(color="rgba(220,38,38,0.55)", width=1.5, dash="dot"),
+            annotation_text=f"MAOP {maop_ref:.0f} m",
+            annotation_font=dict(color="#dc2626", size=9, family="Inter"),
+            annotation_position="top right",
+        )
+
+    # ── Minimum residual line ─────────────────────────────────────────────────
+    fig.add_hline(
+        y=terminal_head,
+        line=dict(color="rgba(22,163,74,0.55)", width=1.5, dash="dash"),
+        annotation_text=f"Min residual {terminal_head:.0f} m",
+        annotation_font=dict(color="#16a34a", size=9, family="Inter"),
+        annotation_position="bottom right",
+    )
+
+    # ── HGL line ──────────────────────────────────────────────────────────────
+    # Colour each segment by utilisation vs MAOP
+    maop_ref_use = max(maop_vals) if maop_vals else 1.0
+    seg_x, seg_y, seg_col = [], [], []
+    prev_x, prev_y = None, None
+    for xi, yi in zip(hgl_x, hgl_y):
+        ratio = yi / maop_ref_use if maop_ref_use > 0 else 0.5
+        if ratio < 0.7:
+            c = "#16a34a"
+        elif ratio < 0.9:
+            c = "#d97706"
+        else:
+            c = "#dc2626"
+        if prev_x is not None:
+            fig.add_trace(go.Scatter(
+                x=[prev_x, xi], y=[prev_y, yi],
+                mode="lines",
+                line=dict(color=c, width=3),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+        prev_x, prev_y = xi, yi
+
+    # HGL marker trace (for hover)
+    fig.add_trace(go.Scatter(
+        x=hgl_x, y=hgl_y,
+        mode="markers",
+        marker=dict(size=5, color="#1967d2", opacity=0.8),
+        name="HGL (m)",
+        hovertemplate="KP: %{x:.1f} km<br>Head: %{y:.1f} m<extra></extra>",
+    ))
+
+    # ── Station vertical guides + metric annotations ───────────────────────────
+    for i, stn in enumerate(stations):
+        kp      = kp_list[i]
+        rk      = _rk(stn.get("name", ""))
+        is_pump = bool(stn.get("is_pump", False))
+        max_dr  = float(stn.get("max_dr", 0.0))
+        name    = stn.get("name", f"S{i+1}")
+
+        sdh_out = sdh_vals[i]
+        rh_in   = rh_in_vals[i]
+        n_pumps = int(result.get(f"num_pumps_{rk}", 0) or 0)
+        rpm_val = float(result.get(f"speed_{rk}", 0.0) or 0.0)
+        dra_ppm = float(result.get(f"dra_ppm_{rk}", 0.0) or 0.0)
+        dr_pct  = float(result.get(f"drag_reduction_{rk}", 0.0) or 0.0)
+        pw_cost = float(result.get(f"power_cost_{rk}", 0.0) or 0.0)
+
+        if is_pump:
+            col = "#1967d2"
+        elif max_dr > 0:
+            col = "#d97706"
+        else:
+            col = "#9ca3af"
+
+        # Vertical guide line
+        fig.add_vline(
+            x=kp,
+            line=dict(color=col, width=1, dash="dot"),
+        )
+
+        # Metric annotation box — anchored at the top of the chart
+        badge_lines = [f"<b>{name[:13]}</b>"]
+        if is_pump and sdh_out > 1:
+            badge_lines.append(f"↑{sdh_out:.0f} m")
+        if n_pumps > 0 and rpm_val > 0:
+            badge_lines.append(f"{n_pumps}×{rpm_val:.0f} rpm")
+        if dra_ppm > 0:
+            badge_lines.append(f"{dra_ppm:.0f} ppm ({dr_pct:.0f}%)")
+        if pw_cost > 0:
+            badge_lines.append(f"₹{pw_cost:,.0f}")
+
+        fig.add_annotation(
+            x=kp, y=y_max,
+            text="<br>".join(badge_lines),
+            showarrow=False,
+            font=dict(size=8.5, color=col, family="Inter"),
+            align="center",
+            bgcolor="rgba(255,255,255,0.88)",
+            bordercolor=col, borderwidth=1, borderpad=3,
+            yanchor="top",
+            yref="y",
+        )
+
+    # Terminal annotation
+    t_col = "#dc2626"
+    fig.add_annotation(
+        x=kp_list[-1], y=y_max,
+        text=f"<b>{terminal_name[:13]}</b><br>RH: {rh_term:.0f} m",
+        showarrow=False,
+        font=dict(size=8.5, color=t_col, family="Inter"),
+        align="center",
+        bgcolor="rgba(255,255,255,0.88)",
+        bordercolor=t_col, borderwidth=1, borderpad=3,
+        yanchor="top",
+        yref="y",
+    )
+
+    # ── Legend helper traces (colour-coded by utilisation) ────────────────────
+    for lbl, c in [
+        ("< 70% MAOP (normal)", "#16a34a"),
+        ("70–90% MAOP (caution)", "#d97706"),
+        ("> 90% MAOP (high)", "#dc2626"),
+    ]:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="lines",
+            line=dict(color=c, width=3),
+            name=lbl, showlegend=True,
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="#f5f7fa",
+        plot_bgcolor="#f5f7fa",
+        height=340,
+        margin=dict(l=65, r=15, t=20, b=45),
+        xaxis=dict(
+            title="Chainage (km)",
+            title_font=dict(size=11, color="#374151", family="Inter"),
+            gridcolor="rgba(156,163,175,0.20)",
+            zeroline=False,
+            tickfont=dict(size=9, color="#6b7280", family="Inter"),
+        ),
+        yaxis=dict(
+            title="Hydraulic Head (m)",
+            title_font=dict(size=11, color="#374151", family="Inter"),
+            gridcolor="rgba(156,163,175,0.20)",
+            zeroline=True,
+            zerolinecolor="rgba(156,163,175,0.35)",
+            tickfont=dict(size=9, color="#6b7280", family="Inter"),
+            range=[y_min, y_max * 1.05],
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.01,
+            xanchor="right", x=1,
+            bgcolor="rgba(255,255,255,0.90)",
+            bordercolor="#d1d5db", borderwidth=1,
+            font=dict(color="#111827", size=9, family="Inter"),
+        ),
+        dragmode="pan",
+        font=dict(family="Inter", color="#111827"),
+        hoverlabel=dict(
+            bgcolor="#ffffff",
+            bordercolor="#d1d5db",
+            font=dict(family="Inter", size=11, color="#111827"),
+        ),
+    )
+    return fig
+
 
 # ── Pipeline Network Map (Preview) ────────────────────────────────────────
 with st.expander("🗺️ Pipeline Network Map (Preview)", expanded=True):
@@ -2729,6 +2991,27 @@ with st.expander("🗺️ Pipeline Network Map (Preview)", expanded=True):
     if _preview_result is None:
         st.caption("Run the optimizer to see live pressure and DRA data on the map.")
     st.markdown('</div>', unsafe_allow_html=True)
+    # ── Hydraulic Grade Line profile (shown after optimization) ───────────────
+    if _preview_result is not None:
+        _hgl_fig = render_hgl_profile(
+            _preview_stns,
+            _preview_result,
+            terminal_name=st.session_state.get("terminal_name", "Terminal"),
+            terminal_elev=st.session_state.get("terminal_elev", 0.0),
+            terminal_head=st.session_state.get("terminal_head", 50.0),
+        )
+        if _hgl_fig is not None:
+            st.markdown(
+                '<p style="font-size:0.85rem;color:#6b7280;margin:0.2rem 0 0.1rem;">'
+                '📈 Hydraulic Grade Line — pressure head along the pipeline after optimization</p>',
+                unsafe_allow_html=True,
+            )
+            st.plotly_chart(
+                _hgl_fig,
+                use_container_width=True,
+                config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+                key="hgl_profile_preview",
+            )
 
 st.subheader("Stations")
 if "stations" not in st.session_state:
@@ -8067,6 +8350,26 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
         if _res_map is None:
             st.info("Run the optimizer to see live pressure, DRA and cost data on the map.")
         else:
+            # ── Hydraulic Grade Line profile ──────────────────────────────────
+            _hgl_res_fig = render_hgl_profile(
+                _stns_map,
+                _res_map,
+                terminal_name=st.session_state.get("terminal_name", "Terminal"),
+                terminal_elev=st.session_state.get("terminal_elev", 0.0),
+                terminal_head=st.session_state.get("terminal_head", 50.0),
+            )
+            if _hgl_res_fig is not None:
+                st.markdown(
+                    '<p style="font-size:0.85rem;color:#6b7280;margin:0.2rem 0 0.1rem;">'
+                    '📈 Hydraulic Grade Line — pressure head profile along the optimized pipeline</p>',
+                    unsafe_allow_html=True,
+                )
+                st.plotly_chart(
+                    _hgl_res_fig,
+                    use_container_width=True,
+                    config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+                    key="hgl_profile_results_tab",
+                )
             st.markdown("#### Station Summary")
             _map_rows = []
             for _s in _stns_map:
