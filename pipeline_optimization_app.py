@@ -711,11 +711,6 @@ def _handle_baseline_mode_switch(stations: Sequence[Mapping[str, object]] | None
 
 
 def data_editor_copy(df, **kwargs):
-    # Strip any 'key' from kwargs.  Passing both 'data' and 'key' on every
-    # rerun makes Streamlit treat the new DataFrame object as a reset signal,
-    # reverting edits until the user enters a value twice.  State is persisted
-    # solely through the caller's session_state variable.
-    kwargs.pop("key", None)
     edited = st.data_editor(_prepare_data_editor_source(df), **kwargs)
     if isinstance(edited, pd.DataFrame):
         return edited.copy(deep=True)
@@ -3374,6 +3369,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 st.caption("Q-H Curve: ≥3 points (Flow vs Head at DOL speed). Empty rows ignored.")
                                 _bh_df_ed = st.data_editor(
                                     st.session_state[_bh_key],
+                                    key=f"bhed__{_bh_key}",
                                     use_container_width=True, num_rows="dynamic",
                                     column_config={
                                         'Flow (m³/hr)': st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
@@ -3394,6 +3390,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 st.caption("Efficiency Curve: ≥5 points (Flow vs Efficiency %). Empty rows ignored.")
                                 _be_df_ed = st.data_editor(
                                     st.session_state[_be_key],
+                                    key=f"beff__{_be_key}",
                                     use_container_width=True, num_rows="dynamic",
                                     column_config={
                                         'Flow (m³/hr)': st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
@@ -3456,6 +3453,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 st.session_state[loop_peak_key],
                 num_rows="dynamic",
                 use_container_width=True,
+                key=f"{loop_peak_key}_editor",
             )
             st.session_state[loop_peak_key] = loop_peak_df
             loop['peaks'] = loop_peak_df.to_dict(orient="records")
@@ -3512,6 +3510,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 st.session_state[key_head],
                                 num_rows="dynamic",
                                 use_container_width=True,
+                                key=f"{key_head}_editor",
                                 column_config={
                                     "Flow (m³/hr)": st.column_config.NumberColumn("Flow (m³/hr)", min_value=0.0, format="%.1f"),
                                     "Head (m)": st.column_config.NumberColumn("Head (m)", min_value=0.0, format="%.1f"),
@@ -3530,6 +3529,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
                                 use_container_width=True,
+                                key=f"{key_eff}_editor",
                                 column_config={
                                     "Flow (m³/hr)": st.column_config.NumberColumn("Flow (m³/hr)", min_value=0.0, format="%.1f"),
                                     "Efficiency (%)": st.column_config.NumberColumn("Efficiency (%)", min_value=0.0, max_value=100.0, format="%.1f"),
@@ -3705,6 +3705,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                 st.session_state[key_peak],
                 num_rows="dynamic",
                 use_container_width=True,
+                key=f"{key_peak}_editor",
             )
             st.session_state[key_peak] = peak_df
 
@@ -10583,7 +10584,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
                     "Parameter": ["Total Cost per km (INR/day/km)", "Pump Efficiency (%)", "Specific Energy (kWh/m³)", "Max Velocity (m/s)"],
                     "Benchmark Value": [12000, 70, 0.065, 2.1]
                 })
-                bdf = data_editor_copy(bdf)
+                bdf = data_editor_copy(bdf, key="benchmark_editor")
                 benchmarks = dict(zip(bdf["Parameter"], bdf["Benchmark Value"]))
             elif b_mode == "Upload CSV":
                 up = st.file_uploader("Upload Benchmark CSV", type=["csv"])
