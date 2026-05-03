@@ -717,6 +717,20 @@ def data_editor_copy(df, **kwargs):
     return edited
 
 
+def _safe_polyfit(df_col0, df_col1, degree: int):
+    """Return polyfit coefficients or None if data is invalid/insufficient."""
+    try:
+        q = pd.to_numeric(df_col0, errors='coerce').values
+        h = pd.to_numeric(df_col1, errors='coerce').values
+        mask = np.isfinite(q) & np.isfinite(h)
+        q, h = q[mask], h[mask]
+        if len(q) > degree:
+            return np.polyfit(q, h, degree)
+    except Exception:
+        pass
+    return None
+
+
 def _format_duration(seconds: float) -> str:
     try:
         total_seconds = float(seconds)
@@ -1156,16 +1170,14 @@ def _prepare_pipeline_context():
                 dfh = pd.DataFrame(stn["head_data"])
             if dfe is None and "eff_data" in stn:
                 dfe = pd.DataFrame(stn["eff_data"])
-            if dfh is not None and len(dfh) >= 3:
-                Qh = dfh.iloc[:, 0].values
-                Hh = dfh.iloc[:, 1].values
-                coeff = np.polyfit(Qh, Hh, 2)
-                stn["A"], stn["B"], stn["C"] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-            if dfe is not None and len(dfe) >= 5:
-                Qe = dfe.iloc[:, 0].values
-                Ee = dfe.iloc[:, 1].values
-                coeff_e = np.polyfit(Qe, Ee, 4)
-                stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in coeff_e]
+            if dfh is not None:
+                _ch = _safe_polyfit(dfh.iloc[:, 0], dfh.iloc[:, 1], 2)
+                if _ch is not None:
+                    stn["A"], stn["B"], stn["C"] = float(_ch[0]), float(_ch[1]), float(_ch[2])
+            if dfe is not None:
+                _ce = _safe_polyfit(dfe.iloc[:, 0], dfe.iloc[:, 1], 4)
+                if _ce is not None:
+                    stn["P"], stn["Q"], stn["R"], stn["S"], stn["T"] = [float(c) for c in _ce]
 
         if "forced_dra_detail" in stn and stn["forced_dra_detail"] is None:
             stn.pop("forced_dra_detail")
@@ -2217,10 +2229,19 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
+        st.caption("Add each product currently in the pipeline. Click '+ Add row' at the bottom. Empty rows are ignored.")
         lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            use_container_width=True,
+            column_config={
+                "Product": st.column_config.TextColumn("Product"),
+                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)", min_value=0.0, format="%.1f"),
+                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", min_value=0.0, format="%.2f"),
+                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", min_value=0.0, format="%.1f"),
+                INIT_DRA_COL: st.column_config.NumberColumn("Initial DRA (ppm)", min_value=0.0, format="%.1f"),
+            },
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -2239,10 +2260,20 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
+        _lf_col_cfg = {
+            "Product": st.column_config.TextColumn("Product"),
+            "Volume (m³)": st.column_config.NumberColumn("Volume (m³)", min_value=0.0, format="%.1f"),
+            "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", min_value=0.0, format="%.2f"),
+            "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", min_value=0.0, format="%.1f"),
+            INIT_DRA_COL: st.column_config.NumberColumn("Initial DRA (ppm)", min_value=0.0, format="%.1f"),
+        }
+        st.caption("Products currently in the pipeline. Click '+ Add row' at bottom to add products.")
         lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            use_container_width=True,
+            column_config=_lf_col_cfg,
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -2258,10 +2289,13 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["day_plan_df"], default=0.0, fill_blanks=True)
+        st.caption("Products to be pumped today, in order. Click '+ Add row' to add products.")
         day_df = data_editor_copy(
             st.session_state["day_plan_df"],
             num_rows="dynamic",
             key="day_plan_editor",
+            use_container_width=True,
+            column_config=_lf_col_cfg,
         )
         st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
         hourly_flow = st.number_input(
@@ -2282,10 +2316,19 @@ with st.sidebar:
             })
         else:
             ensure_initial_dra_column(st.session_state["linefill_vol_df"], default=0.0, fill_blanks=True)
+        st.caption("Products currently in the pipeline at 07:00. Click '+ Add row' to add products.")
         lf_df = data_editor_copy(
             st.session_state["linefill_vol_df"],
             num_rows="dynamic",
             key="linefill_vol_editor",
+            use_container_width=True,
+            column_config={
+                "Product": st.column_config.TextColumn("Product"),
+                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)", min_value=0.0, format="%.1f"),
+                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", min_value=0.0, format="%.2f"),
+                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", min_value=0.0, format="%.1f"),
+                INIT_DRA_COL: st.column_config.NumberColumn("Initial DRA (ppm)", min_value=0.0, format="%.1f"),
+            },
         )
         lf_df = ensure_initial_dra_column(lf_df, default=0.0, fill_blanks=True)
         st.session_state["linefill_vol_df"] = lf_df
@@ -2304,14 +2347,16 @@ with st.sidebar:
                 "End": [now + pd.Timedelta(hours=24)],
                 "Flow (m³/h)": [1000.0],
             })
+        st.caption("Click a cell to edit. Click '+ Add row' at bottom to add time slots.")
         flow_df = data_editor_copy(
             st.session_state["proj_flow_df"],
             num_rows="dynamic",
             key="proj_flow_editor",
+            use_container_width=True,
             column_config={
                 "Start": st.column_config.DatetimeColumn("Start", format="DD/MM/YY HH:mm"),
                 "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm"),
-                "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)"),
+                "Flow (m³/h)": st.column_config.NumberColumn("Flow (m³/h)", min_value=0.0, format="%.1f"),
             },
         )
         st.session_state["proj_flow_df"] = flow_df
@@ -2323,15 +2368,17 @@ with st.sidebar:
                 "Viscosity (cSt)": [3.0, 10.0],
                 "Density (kg/m³)": [800.0, 840.0],
             })
+        st.caption("Products to be pumped during the plan period, in order.")
         proj_df = data_editor_copy(
             st.session_state["proj_plan_df"],
             num_rows="dynamic",
             key="proj_plan_editor",
+            use_container_width=True,
             column_config={
                 "Product": st.column_config.TextColumn("Product"),
-                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)"),
-                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)"),
-                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)"),
+                "Volume (m³)": st.column_config.NumberColumn("Volume (m³)", min_value=0.0, format="%.1f"),
+                "Viscosity (cSt)": st.column_config.NumberColumn("Viscosity (cSt)", min_value=0.0, format="%.2f"),
+                "Density (kg/m³)": st.column_config.NumberColumn("Density (kg/m³)", min_value=0.0, format="%.1f"),
             },
         )
         st.session_state["proj_plan_df"] = proj_df
@@ -3057,92 +3104,6 @@ with st.sidebar:
             st.session_state.stations.pop()
 
 
-# ── Pipeline Profile Editor ────────────────────────────────────────────────
-with st.expander("📋 Pipeline Profile Editor  (edit all stations in one table)", expanded=False):
-    _pe_stns = st.session_state.get("stations", [])
-    if _pe_stns:
-        # Build display dataframe from current station dicts / session state
-        _pe_rows = []
-        _pe_cum_km = 0.0
-        for _pe_s in _pe_stns:
-            _pe_uid = _pe_s.get('uid', '')
-            _pe_rows.append({
-                "Station":        st.session_state.get(_skey(_pe_s, 'name'),        _pe_s.get('name', '')),
-                "Pump?":          bool(st.session_state.get(_skey(_pe_s, 'is_pump'),    _pe_s.get('is_pump', False))),
-                "Chainage (km)":  round(_pe_cum_km, 3),
-                "Seg. Len (km)":  float(st.session_state.get(_skey(_pe_s, 'L'),         _pe_s.get('L', 50.0)) or 0.0),
-                "Elevation (m)":  float(st.session_state.get(_skey(_pe_s, 'elev'),      _pe_s.get('elev', 0.0)) or 0.0),
-                "OD (in)":        round(float(st.session_state.get(_skey(_pe_s, 'D_in'), _pe_s.get('D', 0.711) / 0.0254) or 0.0), 3),
-                "WT (in)":        round(float(st.session_state.get(_skey(_pe_s, 't_in'), _pe_s.get('t', 0.007) / 0.0254) or 0.0), 4),
-                "SMYS (psi)":     float(st.session_state.get(_skey(_pe_s, 'SMYS'),      _pe_s.get('SMYS', 52000.0)) or 52000.0),
-                "Roughness (m)":  float(st.session_state.get(_skey(_pe_s, 'rough'),     _pe_s.get('rough', 0.00004)) or 0.00004),
-                "Max DR (%)":     float(st.session_state.get(_skey(_pe_s, 'max_dr'),    _pe_s.get('max_dr', 0.0)) or 0.0),
-                "Suction Hd (m)": float(st.session_state.get(_skey(_pe_s, 'min_residual'), _pe_s.get('min_residual', 50.0)) or 0.0),
-                "Max Pumps":      int(st.session_state.get(_skey(_pe_s, 'max_pumps'),   _pe_s.get('max_pumps', 1)) or 1),
-            })
-            _pe_cum_km += float(st.session_state.get(_skey(_pe_s, 'L'), _pe_s.get('L', 50.0)) or 0.0)
-
-        _pe_df = pd.DataFrame(_pe_rows)
-        # Key changes only when station count or UIDs change, so individual field edits persist
-        _pe_key = "profile_editor_" + "_".join(_pe_s.get('uid', str(i)) for i, _pe_s in enumerate(_pe_stns))
-
-        st.caption("Edit pipeline geometry for all stations at once. OD & WT in inches; D & t stored in metres internally. Pump curves and RPM are set in the station expanders below.")
-        _pe_edited = st.data_editor(
-            _pe_df,
-            column_config={
-                "Station":        st.column_config.TextColumn("Station", width="medium"),
-                "Pump?":          st.column_config.CheckboxColumn("Pump?", width="small"),
-                "Chainage (km)":  st.column_config.NumberColumn("Chainage (km)", disabled=True, format="%.3f"),
-                "Seg. Len (km)":  st.column_config.NumberColumn("Seg. Len (km)", min_value=0.0, format="%.2f"),
-                "Elevation (m)":  st.column_config.NumberColumn("Elevation (m)", format="%.1f"),
-                "OD (in)":        st.column_config.NumberColumn("OD (in)", min_value=0.0, format="%.3f"),
-                "WT (in)":        st.column_config.NumberColumn("WT (in)", min_value=0.0, format="%.4f"),
-                "SMYS (psi)":     st.column_config.NumberColumn("SMYS (psi)", min_value=0.0, format="%.0f"),
-                "Roughness (m)":  st.column_config.NumberColumn("Roughness (m)", min_value=0.0, format="%.7f"),
-                "Max DR (%)":     st.column_config.NumberColumn("Max DR (%)", min_value=0.0, max_value=100.0, format="%.1f"),
-                "Suction Hd (m)": st.column_config.NumberColumn("Suction Hd (m)", min_value=0.0, format="%.1f"),
-                "Max Pumps":      st.column_config.NumberColumn("Max Pumps", min_value=1, step=1, format="%d"),
-            },
-            num_rows="fixed",
-            use_container_width=True,
-            hide_index=True,
-            key=_pe_key,
-        )
-
-        # Sync edited values → station dicts and session-state widget keys
-        for _pe_i, _pe_row in _pe_edited.iterrows():
-            if _pe_i >= len(_pe_stns):
-                break
-            _pe_s = _pe_stns[_pe_i]
-            # Simple scalar fields
-            for _pe_field, _pe_col in [
-                ('name',         'Station'),
-                ('is_pump',      'Pump?'),
-                ('L',            'Seg. Len (km)'),
-                ('elev',         'Elevation (m)'),
-                ('SMYS',         'SMYS (psi)'),
-                ('rough',        'Roughness (m)'),
-                ('max_dr',       'Max DR (%)'),
-                ('min_residual', 'Suction Hd (m)'),
-                ('max_pumps',    'Max Pumps'),
-            ]:
-                _pe_val = _pe_row.get(_pe_col)
-                if _pe_val is not None:
-                    _pe_s[_pe_field] = int(_pe_val) if _pe_field == 'max_pumps' else _pe_val
-                    st.session_state[_skey(_pe_s, _pe_field)] = _pe_s[_pe_field]
-            # OD and WT: stored in metres, displayed in inches
-            _pe_D_in = _pe_row.get('OD (in)')
-            _pe_t_in = _pe_row.get('WT (in)')
-            if _pe_D_in is not None:
-                _pe_s['D'] = float(_pe_D_in) * 0.0254
-                st.session_state[_skey(_pe_s, 'D_in')] = float(_pe_D_in)
-            if _pe_t_in is not None:
-                _pe_s['t'] = float(_pe_t_in) * 0.0254
-                st.session_state[_skey(_pe_s, 't_in')] = float(_pe_t_in)
-        st.session_state["stations"] = _pe_stns
-    else:
-        st.info("No stations defined yet. Use '➕ Add Station' in the sidebar to get started.")
-
 
 for idx, stn in enumerate(st.session_state.stations, start=1):
     uid = _ensure_station_uid(stn)
@@ -3370,7 +3331,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                 with _q1:
                                     _bstn['rated_flow_m3h'] = st.number_input(
                                         "BEP Flow (m³/hr)",
-                                        value=float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))),
+                                        value=float(_bstn.get('rated_flow_m3h', _branch.get('flow_m3h', 100.0))),
                                         min_value=0.0, step=10.0, key=f"bsrq__{_bs_uid}",
                                         help="Flow at the pump's Best Efficiency Point (typically = branch design flow).",
                                     )
@@ -3396,15 +3357,12 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             else:
                                 st.caption("**Q-H Curve Table** — enter ≥3 operating points; polynomial fit applied")
                                 _bh_key = f"branch_head_data__{_b_uid}__{_bs_uid}"
+                                _bep_q = float(_bstn.get('rated_flow_m3h', _branch.get('flow_m3h', 100.0)))
+                                _bep_h = float(_bstn.get('rated_head_m', _bstn.get('pump_head_m', 100.0)))
+                                _shutoff_h = float(_bstn.get('shutoff_head_m', _bep_h * 1.25))
                                 _bh_default = pd.DataFrame({
-                                    'Flow (m³/hr)': [0.0,
-                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))) * 0.5,
-                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))),
-                                                     float(_bstn.get('rated_flow_m3h', branch.get('flow_m3h', 200.0))) * 1.2],
-                                    'Head (m)':    [float(_bstn.get('shutoff_head_m', _bstn.get('rated_head_m', 250.0))),
-                                                    float(_bstn.get('rated_head_m', 230.0)),
-                                                    float(_bstn.get('rated_head_m', 200.0)),
-                                                    float(_bstn.get('rated_head_m', 200.0)) * 0.75],
+                                    'Flow (m³/hr)': [0.0, _bep_q * 0.6, _bep_q, _bep_q * 1.1],
+                                    'Head (m)':    [_shutoff_h, _bep_h * 1.1, _bep_h, _bep_h * 0.85],
                                 })
                                 _bh_df = st.session_state.get(_bh_key, _bh_default)
                                 _bh_df_ed = st.data_editor(
@@ -3518,21 +3476,37 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
 
                             key_head = f"head_data__{uid}{ptype}"
                             if key_head not in st.session_state or not isinstance(st.session_state[key_head], pd.DataFrame):
-                                st.session_state[key_head] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Head (m)": [0.0]})
+                                st.session_state[key_head] = pd.DataFrame({
+                                    "Flow (m³/hr)": [0.0, 200.0, 400.0, 500.0],
+                                    "Head (m)": [250.0, 230.0, 180.0, 100.0],
+                                })
+                            st.caption("Q-H Curve: enter ≥3 operating points (Flow vs Head at DOL RPM). Rows with empty cells are ignored.")
                             df_head = data_editor_copy(
                                 st.session_state[key_head],
                                 num_rows="dynamic",
                                 key=f"{key_head}_editor",
+                                column_config={
+                                    "Flow (m³/hr)": st.column_config.NumberColumn("Flow (m³/hr)", min_value=0.0, format="%.1f"),
+                                    "Head (m)": st.column_config.NumberColumn("Head (m)", min_value=0.0, format="%.1f"),
+                                },
                             )
                             st.session_state[key_head] = df_head
 
                             key_eff = f"eff_data__{uid}{ptype}"
                             if key_eff not in st.session_state or not isinstance(st.session_state[key_eff], pd.DataFrame):
-                                st.session_state[key_eff] = pd.DataFrame({"Flow (m³/hr)": [0.0], "Efficiency (%)": [0.0]})
+                                st.session_state[key_eff] = pd.DataFrame({
+                                    "Flow (m³/hr)": [0.0, 150.0, 300.0, 400.0, 500.0],
+                                    "Efficiency (%)": [30.0, 65.0, 80.0, 75.0, 55.0],
+                                })
+                            st.caption("Efficiency Curve: enter ≥5 points (Flow vs Efficiency %). Rows with empty cells are ignored.")
                             df_eff = data_editor_copy(
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
                                 key=f"{key_eff}_editor",
+                                column_config={
+                                    "Flow (m³/hr)": st.column_config.NumberColumn("Flow (m³/hr)", min_value=0.0, format="%.1f"),
+                                    "Efficiency (%)": st.column_config.NumberColumn("Efficiency (%)", min_value=0.0, max_value=100.0, format="%.1f"),
+                                },
                             )
                             st.session_state[key_eff] = df_eff
 
@@ -3733,16 +3707,14 @@ def get_full_case_dict():
                         dfh = pd.DataFrame(pdata['head_data'])
                     if dfe is None and pdata.get('eff_data') is not None:
                         dfe = pd.DataFrame(pdata['eff_data'])
-                    if dfh is not None and len(dfh) >= 3:
-                        Qh = dfh.iloc[:, 0].values
-                        Hh = dfh.iloc[:, 1].values
-                        coeff = np.polyfit(Qh, Hh, 2)
-                        pdata['A'], pdata['B'], pdata['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                    if dfe is not None and len(dfe) >= 5:
-                        Qe = dfe.iloc[:, 0].values
-                        Ee = dfe.iloc[:, 1].values
-                        coeff_e = np.polyfit(Qe, Ee, 4)
-                        pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
+                    if dfh is not None:
+                        _ch = _safe_polyfit(dfh.iloc[:, 0], dfh.iloc[:, 1], 2)
+                        if _ch is not None:
+                            pdata['A'], pdata['B'], pdata['C'] = float(_ch[0]), float(_ch[1]), float(_ch[2])
+                    if dfe is not None:
+                        _ce = _safe_polyfit(dfe.iloc[:, 0], dfe.iloc[:, 1], 4)
+                        if _ce is not None:
+                            pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in _ce]
                     pdata['head_data'] = dfh.to_dict(orient="records") if isinstance(dfh, pd.DataFrame) else None
                     pdata['eff_data'] = dfe.to_dict(orient="records") if isinstance(dfe, pd.DataFrame) else None
                     pdata['available'] = pdata.get('available', 0)
@@ -3754,16 +3726,14 @@ def get_full_case_dict():
                     dfh = pd.DataFrame(stn["head_data"])
                 if dfe is None and "eff_data" in stn:
                     dfe = pd.DataFrame(stn["eff_data"])
-                if dfh is not None and len(dfh) >= 3:
-                    Qh = dfh.iloc[:, 0].values
-                    Hh = dfh.iloc[:, 1].values
-                    coeff = np.polyfit(Qh, Hh, 2)
-                    stn['A'], stn['B'], stn['C'] = float(coeff[0]), float(coeff[1]), float(coeff[2])
-                if dfe is not None and len(dfe) >= 5:
-                    Qe = dfe.iloc[:, 0].values
-                    Ee = dfe.iloc[:, 1].values
-                    coeff_e = np.polyfit(Qe, Ee, 4)
-                    stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+                if dfh is not None:
+                    _ch = _safe_polyfit(dfh.iloc[:, 0], dfh.iloc[:, 1], 2)
+                    if _ch is not None:
+                        stn['A'], stn['B'], stn['C'] = float(_ch[0]), float(_ch[1]), float(_ch[2])
+                if dfe is not None:
+                    _ce = _safe_polyfit(dfe.iloc[:, 0], dfe.iloc[:, 1], 4)
+                    if _ce is not None:
+                        stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in _ce]
                 if isinstance(dfh, pd.DataFrame):
                     stn['head_data'] = dfh.to_dict(orient="records")
                 if isinstance(dfe, pd.DataFrame):
@@ -5779,16 +5749,14 @@ if auto_batch:
                                 continue
                             dfh = st.session_state.get(f"head_data__{_b_uid}{ptype}")
                             dfe = st.session_state.get(f"eff_data__{_b_uid}{ptype}")
-                            if dfh is not None and len(dfh) >= 3:
-                                Qh = dfh.iloc[:, 0].values
-                                Hh = dfh.iloc[:, 1].values
-                                coeff = np.polyfit(Qh, Hh, 2)
-                                pdata['A'], pdata['B'], pdata['C'] = [float(c) for c in coeff]
-                            if dfe is not None and len(dfe) >= 5:
-                                Qe = dfe.iloc[:, 0].values
-                                Ee = dfe.iloc[:, 1].values
-                                coeff_e = np.polyfit(Qe, Ee, 4)
-                                pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in coeff_e]
+                            if dfh is not None:
+                                _ch = _safe_polyfit(dfh.iloc[:, 0], dfh.iloc[:, 1], 2)
+                                if _ch is not None:
+                                    pdata['A'], pdata['B'], pdata['C'] = [float(c) for c in _ch]
+                            if dfe is not None:
+                                _ce = _safe_polyfit(dfe.iloc[:, 0], dfe.iloc[:, 1], 4)
+                                if _ce is not None:
+                                    pdata['P'], pdata['Q'], pdata['R'], pdata['S'], pdata['T'] = [float(c) for c in _ce]
                     elif stn.get('is_pump', False):
                         dfh = st.session_state.get(f"head_data__{_b_uid}")
                         dfe = st.session_state.get(f"eff_data__{_b_uid}")
@@ -5796,16 +5764,14 @@ if auto_batch:
                             dfh = pd.DataFrame(stn["head_data"])
                         if dfe is None and "eff_data" in stn:
                             dfe = pd.DataFrame(stn["eff_data"])
-                        if dfh is not None and len(dfh) >= 3:
-                            Qh = dfh.iloc[:, 0].values
-                            Hh = dfh.iloc[:, 1].values
-                            coeff = np.polyfit(Qh, Hh, 2)
-                            stn['A'], stn['B'], stn['C'] = [float(c) for c in coeff]
-                        if dfe is not None and len(dfe) >= 5:
-                            Qe = dfe.iloc[:, 0].values
-                            Ee = dfe.iloc[:, 1].values
-                            coeff_e = np.polyfit(Qe, Ee, 4)
-                            stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in coeff_e]
+                        if dfh is not None:
+                            _ch = _safe_polyfit(dfh.iloc[:, 0], dfh.iloc[:, 1], 2)
+                            if _ch is not None:
+                                stn['A'], stn['B'], stn['C'] = [float(c) for c in _ch]
+                        if dfe is not None:
+                            _ce = _safe_polyfit(dfe.iloc[:, 0], dfe.iloc[:, 1], 4)
+                            if _ce is not None:
+                                stn['P'], stn['Q'], stn['R'], stn['S'], stn['T'] = [float(c) for c in _ce]
 
                 # -- 2 product batch --
                 if num_products == 2:
@@ -7641,16 +7607,12 @@ def run_all_updates():
                 if _bstn_p.get('use_curve_table', False):
                     _bh_k = f"branch_head_data__{_br_ready.get('uid', '')}__{_bstn_p.get('uid', '')}"
                     _bh_df_p = st.session_state.get(_bh_k)
-                    if isinstance(_bh_df_p, pd.DataFrame) and len(_bh_df_p) >= 3:
-                        try:
-                            _Qh_p = _bh_df_p.iloc[:, 0].values.astype(float)
-                            _Hh_p = _bh_df_p.iloc[:, 1].values.astype(float)
-                            _cf = np.polyfit(_Qh_p, _Hh_p, 2)
+                    if isinstance(_bh_df_p, pd.DataFrame):
+                        _cf = _safe_polyfit(_bh_df_p.iloc[:, 0], _bh_df_p.iloc[:, 1], 2)
+                        if _cf is not None:
                             _bstn_p['A'] = float(_cf[0])
                             _bstn_p['B'] = float(_cf[1])
                             _bstn_p['C'] = float(_cf[2])
-                        except Exception:
-                            pass  # fall back to solve_branch BEP derivation
 
             _br_res = pipeline_model.solve_branch(
                 junction_suction_head=float(_jh or 0.0),
