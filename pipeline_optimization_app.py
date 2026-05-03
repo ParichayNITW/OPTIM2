@@ -711,6 +711,11 @@ def _handle_baseline_mode_switch(stations: Sequence[Mapping[str, object]] | None
 
 
 def data_editor_copy(df, **kwargs):
+    # Strip any 'key' from kwargs.  Passing both 'data' and 'key' on every
+    # rerun makes Streamlit treat the new DataFrame object as a reset signal,
+    # reverting edits until the user enters a value twice.  State is persisted
+    # solely through the caller's session_state variable.
+    kwargs.pop("key", None)
     edited = st.data_editor(_prepare_data_editor_source(df), **kwargs)
     if isinstance(edited, pd.DataFrame):
         return edited.copy(deep=True)
@@ -3364,9 +3369,11 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                     'Flow (m³/hr)': [0.0, _bep_q * 0.6, _bep_q, _bep_q * 1.1],
                                     'Head (m)':    [_shutoff_h, _bep_h * 1.1, _bep_h, _bep_h * 0.85],
                                 })
-                                _bh_df = st.session_state.get(_bh_key, _bh_default)
+                                if _bh_key not in st.session_state or not isinstance(st.session_state[_bh_key], pd.DataFrame):
+                                    st.session_state[_bh_key] = _bh_default
+                                st.caption("Q-H Curve: ≥3 points (Flow vs Head at DOL speed). Empty rows ignored.")
                                 _bh_df_ed = st.data_editor(
-                                    _bh_df, key=f"bhed__{_bs_uid}",
+                                    st.session_state[_bh_key],
                                     use_container_width=True, num_rows="dynamic",
                                     column_config={
                                         'Flow (m³/hr)': st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
@@ -3374,6 +3381,26 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                     },
                                 )
                                 st.session_state[_bh_key] = _bh_df_ed
+
+                                # Efficiency curve for branch pump
+                                _be_key = f"branch_eff_data__{_b_uid}__{_bs_uid}"
+                                _bep_q2 = float(_bstn.get('rated_flow_m3h', _branch.get('flow_m3h', 100.0)))
+                                _be_default = pd.DataFrame({
+                                    'Flow (m³/hr)': [0.0, _bep_q2 * 0.4, _bep_q2 * 0.7, _bep_q2, _bep_q2 * 1.1],
+                                    'Efficiency (%)': [20.0, 55.0, 75.0, 80.0, 70.0],
+                                })
+                                if _be_key not in st.session_state or not isinstance(st.session_state[_be_key], pd.DataFrame):
+                                    st.session_state[_be_key] = _be_default
+                                st.caption("Efficiency Curve: ≥5 points (Flow vs Efficiency %). Empty rows ignored.")
+                                _be_df_ed = st.data_editor(
+                                    st.session_state[_be_key],
+                                    use_container_width=True, num_rows="dynamic",
+                                    column_config={
+                                        'Flow (m³/hr)': st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
+                                        'Efficiency (%)': st.column_config.NumberColumn(min_value=0.0, max_value=100.0, format="%.1f"),
+                                    },
+                                )
+                                st.session_state[_be_key] = _be_df_ed
 
                         _bstns_keep.append(_bstn)
 
@@ -3428,7 +3455,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             loop_peak_df = data_editor_copy(
                 st.session_state[loop_peak_key],
                 num_rows="dynamic",
-                key=f"{loop_peak_key}_editor",
+                use_container_width=True,
             )
             st.session_state[loop_peak_key] = loop_peak_df
             loop['peaks'] = loop_peak_df.to_dict(orient="records")
@@ -3480,11 +3507,11 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                     "Flow (m³/hr)": [0.0, 200.0, 400.0, 500.0],
                                     "Head (m)": [250.0, 230.0, 180.0, 100.0],
                                 })
-                            st.caption("Q-H Curve: enter ≥3 operating points (Flow vs Head at DOL RPM). Rows with empty cells are ignored.")
+                            st.caption("Q-H Curve: enter ≥3 operating points (Flow vs Head at DOL RPM). Empty rows are ignored.")
                             df_head = data_editor_copy(
                                 st.session_state[key_head],
                                 num_rows="dynamic",
-                                key=f"{key_head}_editor",
+                                use_container_width=True,
                                 column_config={
                                     "Flow (m³/hr)": st.column_config.NumberColumn("Flow (m³/hr)", min_value=0.0, format="%.1f"),
                                     "Head (m)": st.column_config.NumberColumn("Head (m)", min_value=0.0, format="%.1f"),
@@ -3498,11 +3525,11 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                                     "Flow (m³/hr)": [0.0, 150.0, 300.0, 400.0, 500.0],
                                     "Efficiency (%)": [30.0, 65.0, 80.0, 75.0, 55.0],
                                 })
-                            st.caption("Efficiency Curve: enter ≥5 points (Flow vs Efficiency %). Rows with empty cells are ignored.")
+                            st.caption("Efficiency Curve: enter ≥5 points (Flow vs Efficiency %). Empty rows are ignored.")
                             df_eff = data_editor_copy(
                                 st.session_state[key_eff],
                                 num_rows="dynamic",
-                                key=f"{key_eff}_editor",
+                                use_container_width=True,
                                 column_config={
                                     "Flow (m³/hr)": st.column_config.NumberColumn("Flow (m³/hr)", min_value=0.0, format="%.1f"),
                                     "Efficiency (%)": st.column_config.NumberColumn("Efficiency (%)", min_value=0.0, max_value=100.0, format="%.1f"),
@@ -3677,7 +3704,7 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             peak_df = data_editor_copy(
                 st.session_state[key_peak],
                 num_rows="dynamic",
-                key=f"{key_peak}_editor",
+                use_container_width=True,
             )
             st.session_state[key_peak] = peak_df
 
@@ -7599,7 +7626,8 @@ def run_all_updates():
             res.get(f"residual_head_{_stn_name_br}", 0.0),
         )
         for _br_item in _stn_br.get('branches', []):
-            # Pre-process branch pump stations: inject A/B/C from Q-H table if available.
+            # Pre-process branch pump stations: inject A/B/C (Q-H) and
+            # P/Q/R/S/T (efficiency) polynomial coefficients from curve tables.
             _br_ready = copy.deepcopy(_br_item)
             for _bstn_p in _br_ready.get('stations', []):
                 if not _bstn_p.get('is_pump', False):
@@ -7613,6 +7641,17 @@ def run_all_updates():
                             _bstn_p['A'] = float(_cf[0])
                             _bstn_p['B'] = float(_cf[1])
                             _bstn_p['C'] = float(_cf[2])
+                    # Efficiency curve
+                    _be_k = f"branch_eff_data__{_br_ready.get('uid', '')}__{_bstn_p.get('uid', '')}"
+                    _be_df_p = st.session_state.get(_be_k)
+                    if isinstance(_be_df_p, pd.DataFrame):
+                        _ce = _safe_polyfit(_be_df_p.iloc[:, 0], _be_df_p.iloc[:, 1], 4)
+                        if _ce is not None:
+                            _bstn_p['P'] = float(_ce[0])
+                            _bstn_p['Q'] = float(_ce[1])
+                            _bstn_p['R'] = float(_ce[2])
+                            _bstn_p['S'] = float(_ce[3])
+                            _bstn_p['T'] = float(_ce[4])
 
             _br_res = pipeline_model.solve_branch(
                 junction_suction_head=float(_jh or 0.0),
