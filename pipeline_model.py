@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from itertools import product
 import math
+import os
 
 import numpy as np
 
@@ -1081,13 +1083,14 @@ def _summarise_state_for_audit(state_data: Mapping[str, object], station_name: s
     except (TypeError, ValueError):
         summary['dra_ppm_main'] = 0.0
 
-    records = state_data.get('records')
     record = None
-    if isinstance(records, list):
-        for rec in reversed(records):
-            if isinstance(rec, Mapping) and f"num_pumps_{station_name}" in rec:
-                record = rec
-                break
+    chain = state_data.get('_rc')
+    while chain is not None:
+        parent, rec = chain
+        if isinstance(rec, Mapping) and f"num_pumps_{station_name}" in rec:
+            record = rec
+            break
+        chain = parent
 
     if isinstance(record, Mapping):
         try:
@@ -1108,6 +1111,17 @@ def _summarise_state_for_audit(state_data: Mapping[str, object], station_name: s
         summary['dra_ppm_loop'] = 0.0
 
     return summary
+
+
+def _unwind_chain(chain) -> list:
+    """Reconstruct the flat record list from a linked (parent, record) chain."""
+    recs: list = []
+    while chain is not None:
+        parent, rec = chain
+        recs.append(rec)
+        chain = parent
+    recs.reverse()
+    return recs
 
 
 def _queue_signature(
@@ -3850,50 +3864,98 @@ def solve_pipeline(
             flags.append(abs(d_inner_main - d_inner_loop) <= 1e-6)
         # Generate loop-usage patterns based on per-loop diameter equality
         cases = _generate_loop_cases_by_flags(flags)
-        best_res: dict | None = None
+        # Build per-usage lists and shared kwargs for parallel dispatch
+        all_usages: list[list[int]] = []
         for case in cases:
             usage = [0] * len(stations)
             for pos, val in zip(loop_positions, case):
                 usage[pos] = val
-            res = solve_pipeline(
-                stations,
-                terminal,
-                FLOW,
-                KV_list,
-                rho_list,
-                segment_slices,
-                RateDRA,
-                Price_HSD,
-                Fuel_density,
-                Ambient_temp,
-                linefill,
-                dra_reach_km,
-                mop_kgcm2,
-                hours,
-                start_time,
-                pump_shear_rate=pump_shear_rate,
-                loop_usage_by_station=usage,
-                enumerate_loops=False,
-                rpm_step=rpm_step,
-                dra_step=dra_step,
-                coarse_multiplier=coarse_multiplier,
-                state_top_k=state_top_k,
-                state_cost_margin=state_cost_margin,
-                state_cost_margin_pct=state_cost_margin_pct,
-                _exhaustive_pass=_exhaustive_pass,
-                forced_origin_detail=forced_origin_detail,
-                segment_floors=segment_floors,
-                collect_state_audit=collect_state_audit,
-            )
-            if res.get('error'):
-                continue
-            if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
-                # Track which loop usage produced the best result.  Store a
-                # copy to avoid mutating the result of nested calls.  Users
-                # can inspect this field to derive human‑friendly names.
-                res_with_usage = res.copy()
-                res_with_usage['loop_usage'] = usage.copy()
-                best_res = res_with_usage
+            all_usages.append(usage)
+        _lc_kwargs: dict = {
+            'stations': stations,
+            'terminal': terminal,
+            'FLOW': FLOW,
+            'KV_list': KV_list,
+            'rho_list': rho_list,
+            'segment_slices': segment_slices,
+            'RateDRA': RateDRA,
+            'Price_HSD': Price_HSD,
+            'Fuel_density': Fuel_density,
+            'Ambient_temp': Ambient_temp,
+            'linefill': linefill,
+            'dra_reach_km': dra_reach_km,
+            'mop_kgcm2': mop_kgcm2,
+            'hours': hours,
+            'start_time': start_time,
+            'pump_shear_rate': pump_shear_rate,
+            'rpm_step': rpm_step,
+            'dra_step': dra_step,
+            'coarse_multiplier': coarse_multiplier,
+            'state_top_k': state_top_k,
+            'state_cost_margin': state_cost_margin,
+            'state_cost_margin_pct': state_cost_margin_pct,
+            '_exhaustive_pass': _exhaustive_pass,
+            'forced_origin_detail': forced_origin_detail,
+            'segment_floors': segment_floors,
+            'collect_state_audit': collect_state_audit,
+        }
+        best_res: dict | None = None
+        _n_workers = min(len(all_usages), os.cpu_count() or 1, 4)
+        if _n_workers > 1:
+            try:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=_n_workers) as _pool:
+                    _results = list(_pool.map(
+                        _solve_loop_case_worker,
+                        [(u, _lc_kwargs) for u in all_usages],
+                        timeout=600,
+                    ))
+                for res, usage in zip(_results, all_usages):
+                    if res.get('error'):
+                        continue
+                    if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
+                        res_with_usage = res.copy()
+                        res_with_usage['loop_usage'] = usage.copy()
+                        best_res = res_with_usage
+            except Exception:
+                best_res = None  # fall through to serial
+        if best_res is None:
+            for usage in all_usages:
+                res = solve_pipeline(
+                    stations,
+                    terminal,
+                    FLOW,
+                    KV_list,
+                    rho_list,
+                    segment_slices,
+                    RateDRA,
+                    Price_HSD,
+                    Fuel_density,
+                    Ambient_temp,
+                    linefill,
+                    dra_reach_km,
+                    mop_kgcm2,
+                    hours,
+                    start_time,
+                    pump_shear_rate=pump_shear_rate,
+                    loop_usage_by_station=usage,
+                    enumerate_loops=False,
+                    rpm_step=rpm_step,
+                    dra_step=dra_step,
+                    coarse_multiplier=coarse_multiplier,
+                    state_top_k=state_top_k,
+                    state_cost_margin=state_cost_margin,
+                    state_cost_margin_pct=state_cost_margin_pct,
+                    _exhaustive_pass=_exhaustive_pass,
+                    forced_origin_detail=forced_origin_detail,
+                    segment_floors=segment_floors,
+                    collect_state_audit=collect_state_audit,
+                )
+                if res.get('error'):
+                    continue
+                if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
+                    res_with_usage = res.copy()
+                    res_with_usage['loop_usage'] = usage.copy()
+                    best_res = res_with_usage
         return best_res or {
             'error': True,
             'message': 'No feasible pump combination found for stations.',
@@ -5446,7 +5508,7 @@ def solve_pipeline(
         init_residual: {
             'cost': 0.0,
             'residual': init_residual,
-            'records': [],
+            '_rc': None,
             'last_maop': 0.0,
             'last_maop_kg': 0.0,
             'flow': segment_flows[0],
@@ -5482,6 +5544,7 @@ def solve_pipeline(
                 best_cost_seen = cost_val
         return pruned
 
+    _hl_cache: dict = {}
     for stn_data in station_opts:
         station_evaluated = 0
         new_states: dict[object, dict] = {}
@@ -5592,16 +5655,19 @@ def solve_pipeline(
                     dra_len_main = 0.0
                 scenarios = []
                 # Base scenario: flow through mainline only
-                hl_single, v_single, Re_single, f_single = _segment_hydraulics_composite(
-                    flow_total,
-                    stn_data['L'],
-                    stn_data['d_inner'],
-                    stn_data['rough'],
-                    stn_data['kv'],
-                    eff_dra_main,
-                    dra_len_main,
-                    slices=stn_data.get('linefill_slices'),
-                )
+                _hk = (stn_data['idx'], round(flow_total, 4), round(eff_dra_main, 4), round(dra_len_main, 4))
+                if _hk not in _hl_cache:
+                    _hl_cache[_hk] = _segment_hydraulics_composite(
+                        flow_total,
+                        stn_data['L'],
+                        stn_data['d_inner'],
+                        stn_data['rough'],
+                        stn_data['kv'],
+                        eff_dra_main,
+                        dra_len_main,
+                        slices=stn_data.get('linefill_slices'),
+                    )
+                hl_single, v_single, Re_single, f_single = _hl_cache[_hk]
                 scenarios.append({
                     'head_loss': hl_single,
                     'v': v_single,
@@ -5622,21 +5688,24 @@ def solve_pipeline(
                     eff_dra_loop = opt['dra_loop']
                     dra_len_loop = loop['L'] if eff_dra_loop > 0 else 0.0
                     # Parallel scenario (main + loop split by equal head)
-                    hl_par, main_stats, loop_stats = _parallel_segment_hydraulics(
-                        flow_total,
-                        stn_data['L'],
-                        stn_data['d_inner'],
-                        stn_data['rough'],
-                        eff_dra_main,
-                        dra_len_main,
-                        loop['L'],
-                        loop['d_inner'],
-                        loop['rough'],
-                        eff_dra_loop,
-                        dra_len_loop,
-                        stn_data['kv'],
-                        stn_data.get('linefill_slices'),
-                    )
+                    _pk = (stn_data['idx'], 'par', round(flow_total, 4), round(eff_dra_main, 4), round(dra_len_main, 4), round(eff_dra_loop, 4))
+                    if _pk not in _hl_cache:
+                        _hl_cache[_pk] = _parallel_segment_hydraulics(
+                            flow_total,
+                            stn_data['L'],
+                            stn_data['d_inner'],
+                            stn_data['rough'],
+                            eff_dra_main,
+                            dra_len_main,
+                            loop['L'],
+                            loop['d_inner'],
+                            loop['rough'],
+                            eff_dra_loop,
+                            dra_len_loop,
+                            stn_data['kv'],
+                            stn_data.get('linefill_slices'),
+                        )
+                    hl_par, main_stats, loop_stats = _hl_cache[_pk]
                     v_m, Re_m, f_m, q_main = main_stats
                     v_l, Re_l, f_l, q_loop = loop_stats
                     # Parallel scenario without bypass
@@ -5673,15 +5742,18 @@ def solve_pipeline(
                     # Only include when diameters differ; otherwise the parallel
                     # scenario already captures equal pipes.
                     if abs(stn_data['d_inner'] - loop['d_inner']) > 1e-6:
-                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = _segment_hydraulics(
-                            flow_total,
-                            loop['L'],
-                            loop['d_inner'],
-                            loop['rough'],
-                            stn_data['kv'],
-                            eff_dra_loop,
-                            dra_len_loop,
-                        )
+                        _lk = (stn_data['idx'], 'loop', round(flow_total, 4), round(eff_dra_loop, 4))
+                        if _lk not in _hl_cache:
+                            _hl_cache[_lk] = _segment_hydraulics(
+                                flow_total,
+                                loop['L'],
+                                loop['d_inner'],
+                                loop['rough'],
+                                stn_data['kv'],
+                                eff_dra_loop,
+                                dra_len_loop,
+                            )
+                        hl_loop, v_loop_only, Re_loop_only, f_loop_only = _hl_cache[_lk]
                         scenarios.append({
                             'head_loss': hl_loop,
                             'v': 0.0,
@@ -6216,7 +6288,7 @@ def solve_pipeline(
                         best_cost_station = new_cost
                     bucket = residual_next
                     record[f"bypass_next_{stn_data['name']}"] = 1 if sc.get('bypass_next', False) else 0
-                    new_record_list = state['records'] + [record]
+                    new_chain = (state.get('_rc'), record)
                     zero_dra_option = (
                         int(opt.get('dra_main', 0) or 0) == 0
                         and int(opt.get('dra_loop', 0) or 0) == 0
@@ -6328,7 +6400,7 @@ def solve_pipeline(
                     entry = {
                         'cost': new_cost,
                         'residual': residual_next,
-                        'records': new_record_list,
+                        '_rc': new_chain,
                         'last_maop': stn_data['maop_head'],
                         'last_maop_kg': stn_data['maop_kgcm2'],
                         'flow': flow_next,
@@ -6462,7 +6534,7 @@ def solve_pipeline(
         key=lambda x: (x['cost'], x['residual'] - term_req),
     )
     result: dict = {}
-    for rec in best_state['records']:
+    for rec in _unwind_chain(best_state.get('_rc')):
         result.update(rec)
 
     residual = int(best_state['residual'])
@@ -6666,14 +6738,21 @@ def solve_pipeline(
             if cost_target > existing_cost + 1e-9:
                 result[cost_key] = cost_target
                 result['total_cost'] = float(result.get('total_cost', 0.0)) + (cost_target - existing_cost)
-            if best_state.get('records'):
-                record0 = best_state['records'][0]
+            _best_recs = _unwind_chain(best_state.get('_rc'))
+            if _best_recs:
+                record0 = _best_recs[0]
                 if isinstance(record0, dict):
                     record0[ppm_key] = result.get(ppm_key, updated_ppm)
                     record0[cost_key] = result.get(cost_key, cost_target)
             result['forced_origin_detail'] = copy.deepcopy(origin_info)
 
     return result
+
+
+def _solve_loop_case_worker(args: tuple) -> dict:
+    """Top-level picklable worker for parallel loop case evaluation."""
+    usage, solve_kwargs = args
+    return solve_pipeline(**solve_kwargs, loop_usage_by_station=usage, enumerate_loops=False)
 
 
 def solve_pipeline_with_types(
