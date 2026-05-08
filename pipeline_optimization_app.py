@@ -6755,6 +6755,19 @@ def _compute_variable_hourly_flows(
         for kv, r in zip(kv_per_hour, rate_per_hour)
     ]
 
+    # When viscosity and tariff are uniform (single product, no tariff bands),
+    # all weights ≈ 1.0 → constant flow. Add a sinusoidal time-of-day overlay
+    # so the optimizer has meaningful variation to work with: pump more during
+    # cool/off-peak night hours (peak at 03:00), less during midday (trough 15:00).
+    _wmax = max(weights) if weights else 1.0
+    _wmin = min(weights) if weights else 1.0
+    if _wmax <= 0 or (_wmax / max(_wmin, 1e-9)) < 1.05:
+        import math as _math
+        for _hi, _h in enumerate(hours):
+            _hod = _h % 24
+            _sin_factor = 1.0 + 0.10 * _math.cos(_math.pi * (_hod - 3) / 12)
+            weights[_hi] = weights[_hi] * _sin_factor
+
     # Scale weights to per-hour flow targets
     w_sum = sum(weights)
     flow_raw = [total_volume_m3 * w / w_sum for w in weights]
@@ -7935,16 +7948,17 @@ if not auto_batch:
             hourly_flow_rates_arg = _compute_variable_hourly_flows(
                 stations_base, hours, daily_m3, FLOW_sched, current_vol, plan_df,
             )
-            # Generate ±200 m³/hr candidate bracket around each hour's target so the
-            # optimizer has alternatives when the exact target is hydraulically infeasible.
-            _CAND_STEP = 25.0
-            _q_lo = FLOW_sched * 0.5
-            _q_hi = FLOW_sched * 1.6
+            # Generate candidate brackets around each hour's target.
+            # Wide range (±600 m³/hr) with 50 m³/hr step so the optimizer can always
+            # fall back to a feasible flow even if the high-end targets exceed capacity.
+            _CAND_STEP = 50.0
+            _q_lo = max(1.0, FLOW_sched * 0.4)
+            _q_hi = FLOW_sched * 1.8
             hourly_flow_candidates_arg = []
             for _qt in hourly_flow_rates_arg:
                 _cands = sorted(set(
                     round(max(_q_lo, min(_q_hi, _qt + i * _CAND_STEP)), 0)
-                    for i in range(-8, 9)
+                    for i in range(-12, 13)
                 ))
                 hourly_flow_candidates_arg.append(_cands)
 
@@ -7954,7 +7968,10 @@ if not auto_batch:
                     "Flow (m³/hr)": hourly_flow_rates_arg,
                 }
             )
-            st.caption("Proposed variable hourly flows (optimizer will target these):")
+            st.caption(
+                "⚠️ Proposed target flows (viscosity + tariff weighted). "
+                "Actual achieved flows shown in results → Hourly Charts tab after the run."
+            )
             st.bar_chart(_vf_df.set_index("Hour"))
 
         start_time = time.perf_counter()
@@ -7991,20 +8008,41 @@ if not auto_batch:
         dra_reach_km = solver_result["final_dra_reach"]
         st.session_state["day_flows_chosen"] = solver_result.get("hourly_flows", [])
 
-        if hourly_flow_rates_arg and not error_msg:
+        if hourly_flow_rates_arg:
             _chosen_flows = solver_result.get("hourly_flows", [])
             _actual_total = sum(_chosen_flows) if _chosen_flows else 0.0
             if _actual_total > 0.0 and _actual_total < daily_m3 * 0.99:
                 st.warning(
-                    f"Plan deficit of {daily_m3 - _actual_total:,.0f} m³ — "
-                    f"maximum feasible throughput is {_actual_total:,.0f} m³/day "
+                    f"Plan deficit: {daily_m3 - _actual_total:,.0f} m³ — "
+                    f"achieved {_actual_total:,.0f} m³/day out of {daily_m3:,.0f} m³/day target. "
+                    f"Hydraulic capacity limited some hours — see Target vs Achieved chart below."
+                )
+            elif _actual_total >= daily_m3 * 0.99:
+                st.success(
+                    f"Variable flow plan met: {_actual_total:,.0f} m³/day achieved "
                     f"(target: {daily_m3:,.0f} m³/day)."
                 )
+            # Target vs Achieved comparison bar chart
+            if _chosen_flows and len(_chosen_flows) == len(hours) and hourly_flow_rates_arg:
+                _cmp_df = pd.DataFrame({
+                    "Hour": [f"{h % 24:02d}:00" for h in hours],
+                    "Target (m³/hr)": [round(t, 1) for t in hourly_flow_rates_arg],
+                    "Achieved (m³/hr)": [round(a, 1) for a in _chosen_flows],
+                })
+                _fig_flow_cmp = px.bar(
+                    _cmp_df.melt(id_vars="Hour", value_vars=["Target (m³/hr)", "Achieved (m³/hr)"],
+                                 var_name="Type", value_name="Flow (m³/hr)"),
+                    x="Hour", y="Flow (m³/hr)", color="Type", barmode="group",
+                    title="Variable Flow: Target vs Achieved per Hour",
+                )
+                _fig_flow_cmp.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(_fig_flow_cmp, use_container_width=True)
+                st.session_state["_fig_flow_cmp"] = _fig_flow_cmp
 
         if error_msg:
             fallback_note: str | None = None
             fallback: dict | None = None
-            if _should_attempt_max_flow_fallback(solver_result):
+            if _should_attempt_max_flow_fallback(solver_result) and not hourly_flow_rates_arg:
                 with st.spinner("Computing max achievable flow..."):
                     fallback = _find_maximum_feasible_flow(
                         flow_rate=FLOW_sched,
@@ -8136,7 +8174,7 @@ if not auto_batch:
         _dra_rows: list[dict] = []
         _lf_combined: list = []
         _flows_chosen: list[float] = st.session_state.get("day_flows_chosen", [])
-        _fig_cost = _fig_bd = _fig_3d_sdh = _fig_3d_dra = None
+        _fig_cost = _fig_bd = _fig_3d_sdh = _fig_3d_dra = _fig_pump_sys = None
 
         with tab_summary:
             transpose_view = st.checkbox("Transpose output table", key="transpose_day")
@@ -8302,6 +8340,134 @@ if not auto_batch:
                 _fig_cum.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(_fig_cum, use_container_width=True)
 
+                # ── Pump & System Operating Points ───────────────────────────
+                st.subheader("⚡ Pump & System Operating Points")
+                _pump_stns = [_s for _s in stations_base if _s.get("is_pump")]
+                if not _pump_stns:
+                    st.info("No pump stations found in this configuration.")
+                else:
+                    _last_res = reports[-1]["result"] if reports else {}
+                    _ps_tab_labels = [str(_s.get("name", f"Stn {_i}")) for _i, _s in enumerate(_pump_stns)]
+                    _ps_sub_tabs = st.tabs(_ps_tab_labels)
+                    for _pi, (_pt, _ps) in enumerate(zip(_ps_sub_tabs, _pump_stns)):
+                        with _pt:
+                            _pname = str(_ps.get("name", "")).strip()
+                            _pk = _pname.lower().replace(" ", "_")
+                            _pA = float(_last_res.get(f"coef_A_{_pk}", _ps.get("A", 0)) or 0)
+                            _pB = float(_last_res.get(f"coef_B_{_pk}", _ps.get("B", 0)) or 0)
+                            _pC = float(_last_res.get(f"coef_C_{_pk}", _ps.get("C", 0)) or 0)
+                            _pP = float(_last_res.get(f"coef_P_{_pk}", _ps.get("P", 0)) or 0)
+                            _pQc = float(_last_res.get(f"coef_Q_{_pk}", _ps.get("Q", 0)) or 0)
+                            _pRe = float(_last_res.get(f"coef_R_{_pk}", _ps.get("R", 0)) or 0)
+                            _pSe = float(_last_res.get(f"coef_S_{_pk}", _ps.get("S", 0)) or 0)
+                            _pTe = float(_last_res.get(f"coef_T_{_pk}", _ps.get("T", 0)) or 0)
+                            _pdol = float(_last_res.get(f"dol_{_pk}", _ps.get("DOL") or _ps.get("dol") or 1480) or 1480)
+                            _pmin_rpm = float(_last_res.get(f"min_rpm_{_pk}", _ps.get("MinRPM") or _ps.get("min_rpm") or (_pdol * 0.65)) or (_pdol * 0.65))
+                            _pact_rpm = float(_last_res.get(f"speed_{_pk}", _pdol) or _pdol)
+                            _pact_flow = float(_last_res.get(f"pump_flow_{_pk}", 0) or 0)
+                            _pact_head = float(_last_res.get(f"sdh_{_pk}", 0) or 0)
+                            _pact_eff = float(_last_res.get(f"efficiency_{_pk}", 0) or 0)
+                            _pn = int(_last_res.get(f"num_pumps_{_pk}", 1) or 1)
+                            _pdr = float(_last_res.get(f"drag_reduction_{_pk}", 0) or 0)
+                            if _pC <= 0 and _pA == 0 and _pB == 0:
+                                st.info(f"No pump head curve coefficients configured for {_pname}.")
+                                continue
+                            _pq_max = max(_pact_flow * 2.5, 500.0) if _pact_flow > 0 else 2000.0
+                            _pQ = np.linspace(1.0, _pq_max, 300)
+                            _pr_act = _pact_rpm / _pdol if _pdol > 0 else 1.0
+                            _pr_min = _pmin_rpm / _pdol if _pdol > 0 else 0.65
+
+                            def _ph(_q, _r, _npu=_pn, _a=_pA, _b=_pB, _c=_pC):
+                                _qe = _q / _r if _r > 0 else _q
+                                return _npu * np.maximum(_a * _qe**2 + _b * _qe + _c, 0.0) * _r**2
+
+                            def _pe(_q, _r, _p=_pP, _qc=_pQc, _re=_pRe, _se=_pSe, _te=_pTe, _dol=_pdol):
+                                _qe = _q * (_dol / (_r * _dol)) if _r > 0 else _q
+                                return np.clip(_p * _qe**4 + _qc * _qe**3 + _re * _qe**2 + _se * _qe + _te, 0, 100)
+
+                            _H_dol_arr = _ph(_pQ, 1.0)
+                            _H_act_arr = _ph(_pQ, _pr_act)
+                            _H_min_arr = _ph(_pQ, _pr_min)
+                            _Eff_arr = _pe(_pQ, _pr_act)
+
+                            # System curve back-calculated from operating point
+                            _pR_sys = _pact_head / (_pact_flow ** 2) if _pact_flow > 0 else 0.0
+                            _H_sys_arr = _pR_sys * _pQ ** 2
+                            _pR_nd = _pR_sys / max(1.0 - _pdr / 100.0, 0.01) if _pdr > 1.0 else _pR_sys
+                            _H_nd_arr = _pR_nd * _pQ ** 2
+
+                            _col_hq, _col_ef = st.columns(2)
+                            with _col_hq:
+                                _fhq = go.Figure()
+                                _fhq.add_trace(go.Scatter(
+                                    x=_pQ, y=_H_dol_arr,
+                                    name=f"DOL ({_pdol:.0f} RPM)",
+                                    line=dict(dash="dash", color="royalblue"),
+                                ))
+                                if abs(_pr_act - 1.0) > 0.01:
+                                    _fhq.add_trace(go.Scatter(
+                                        x=_pQ, y=_H_act_arr,
+                                        name=f"Actual ({_pact_rpm:.0f} RPM)",
+                                        line=dict(color="seagreen"),
+                                    ))
+                                if abs(_pr_min - _pr_act) > 0.02 and abs(_pr_min - 1.0) > 0.02:
+                                    _fhq.add_trace(go.Scatter(
+                                        x=_pQ, y=_H_min_arr,
+                                        name=f"Min RPM ({_pmin_rpm:.0f})",
+                                        line=dict(dash="dot", color="darkorange"),
+                                    ))
+                                if _pR_sys > 0:
+                                    _sys_lbl = "System curve (with DRA)" if _pdr > 1.0 else "System curve"
+                                    _fhq.add_trace(go.Scatter(
+                                        x=_pQ, y=_H_sys_arr,
+                                        name=_sys_lbl,
+                                        line=dict(color="firebrick"),
+                                    ))
+                                    if _pdr > 1.0:
+                                        _fhq.add_trace(go.Scatter(
+                                            x=_pQ, y=_H_nd_arr,
+                                            name="System curve (no DRA)",
+                                            line=dict(dash="dash", color="darkred"),
+                                        ))
+                                if _pact_flow > 0 and _pact_head > 0:
+                                    _fhq.add_trace(go.Scatter(
+                                        x=[_pact_flow], y=[_pact_head],
+                                        mode="markers",
+                                        marker=dict(symbol="star", size=18, color="red"),
+                                        name=f"Op. Pt: {_pact_flow:.0f} m³/hr @ {_pact_head:.1f} m",
+                                    ))
+                                _fhq.update_layout(
+                                    title=f"{_pname}: H-Q & System Curves ({_pn} pump{'s' if _pn > 1 else ''} in series)",
+                                    xaxis_title="Flow (m³/hr)",
+                                    yaxis_title="Head (m)",
+                                    legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="left", x=0),
+                                    margin=dict(b=130),
+                                )
+                                st.plotly_chart(_fhq, use_container_width=True)
+                                _fig_pump_sys = _fhq
+
+                            with _col_ef:
+                                _fef = go.Figure()
+                                _fef.add_trace(go.Scatter(
+                                    x=_pQ, y=_Eff_arr,
+                                    name=f"η @ {_pact_rpm:.0f} RPM",
+                                    line=dict(color="purple"),
+                                ))
+                                if _pact_flow > 0 and _pact_eff > 0:
+                                    _fef.add_trace(go.Scatter(
+                                        x=[_pact_flow], y=[_pact_eff],
+                                        mode="markers",
+                                        marker=dict(symbol="star", size=18, color="red"),
+                                        name=f"Op. Pt: {_pact_eff:.1f}%",
+                                    ))
+                                _fef.update_layout(
+                                    title=f"{_pname}: Efficiency vs Flow",
+                                    xaxis_title="Flow (m³/hr)",
+                                    yaxis_title="Efficiency (%)",
+                                    yaxis=dict(range=[0, 105]),
+                                )
+                                st.plotly_chart(_fef, use_container_width=True)
+
         with tab_dra:
             if not reports:
                 st.info("Run the optimizer to see DRA analysis.")
@@ -8402,6 +8568,8 @@ if not auto_batch:
                         file_name="pressure_3d_profile.html",
                         mime="text/html",
                     )
+                else:
+                    st.info("No non-zero discharge head data to display. Check that pump stations are active.")
 
                 # ── 3D DRA concentration: station × hour ─────────────────────
                 _dra_z = []
@@ -8428,6 +8596,8 @@ if not auto_batch:
                         height=600,
                     )
                     st.plotly_chart(_fig_3d_dra, use_container_width=True)
+                else:
+                    st.info("No DRA injected in this run (all stations at 0 ppm).")
 
                 # ── 3D Cost surface: power cost by station × hour ────────────
                 _cost_z = []
@@ -8454,6 +8624,8 @@ if not auto_batch:
                         height=600,
                     )
                     st.plotly_chart(_fig_3d_cost, use_container_width=True)
+                else:
+                    st.info("No power cost data available (no electric/diesel pump stations found).")
 
         with tab_downloads:
             st.markdown("#### Download Reports")
@@ -8562,6 +8734,13 @@ if not auto_batch:
                         "🧊 3D DRA Profile (HTML)",
                         _fig_3d_dra.to_html(include_plotlyjs="cdn"),
                         file_name="dra_3d_profile.html",
+                        mime="text/html",
+                    )
+                if _fig_pump_sys is not None:
+                    st.download_button(
+                        "⚡ Pump & System Curve (HTML)",
+                        _fig_pump_sys.to_html(include_plotlyjs="cdn"),
+                        file_name="pump_system_operating_points.html",
                         mime="text/html",
                     )
 
