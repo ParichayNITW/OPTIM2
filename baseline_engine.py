@@ -191,11 +191,13 @@ def schedule_baseline_injections(
             else:
                 remaining -= vol
                 current_linefill.pop()
-        # Inject same volume at head as dummy to preserve pipeline volume (no DRA)
+        # Inject same volume at head as dummy to preserve pipeline volume (no DRA).
+        # Use the last batch's fluid properties so hydraulics are physically meaningful.
         added = delivered
         if added > 0:
-            # Use a single dummy batch (could be split, but sum is preserved)
-            current_linefill.insert(0, {"volume": added, "viscosity": 0.0, "density": 0.0, "dra_ppm": 0.0})
+            _kv_default = float(initial_linefill[-1].get("viscosity", 10.0)) if initial_linefill else 10.0
+            _rho_default = float(initial_linefill[-1].get("density", 850.0)) if initial_linefill else 850.0
+            current_linefill.insert(0, {"volume": added, "viscosity": _kv_default, "density": _rho_default, "dra_ppm": 0.0})
 
     # Precompute segment volumes and inner diameters
     num_segments = len(stations) - 1

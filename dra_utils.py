@@ -31,12 +31,15 @@ DRA_CSV_FILES: Dict[float, str] = {
     40: "40 cst.csv",
 }
 
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Load the drag-reducer curves lazily at import time
 DRA_CURVE_DATA: Dict[float, pd.DataFrame | None] = {}
 for cst, fname in DRA_CSV_FILES.items():
-    if os.path.exists(fname):
+    _full_path = os.path.join(_MODULE_DIR, fname)
+    if os.path.exists(_full_path):
         try:
-            df = pd.read_csv(fname)
+            df = pd.read_csv(_full_path)
             # Ensure required columns exist
             if "%Drag Reduction" in df.columns and "PPM" in df.columns:
                 df = df[["%Drag Reduction", "PPM"]].dropna().sort_values("%Drag Reduction")
