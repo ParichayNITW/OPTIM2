@@ -1827,19 +1827,22 @@ with st.sidebar:
     with st.expander("Global Fluid & Cost Parameters", expanded=True):
         FLOW = st.number_input(
             "Flow rate (m³/hr)",
-            value=st.session_state.get("FLOW", 1000.0),
+            min_value=1.0,
+            value=max(st.session_state.get("FLOW", 1000.0), 1.0),
             step=10.0,
             key="FLOW",
         )
         RateDRA = st.number_input(
             "DRA Cost (INR/L)",
-            value=st.session_state.get("RateDRA", 500.0),
+            min_value=0.0,
+            value=max(st.session_state.get("RateDRA", 500.0), 0.0),
             step=1.0,
             key="RateDRA",
         )
         Price_HSD = st.number_input(
             "Fuel Price (INR/L)",
-            value=st.session_state.get("Price_HSD", 70.0),
+            min_value=0.0,
+            value=max(st.session_state.get("Price_HSD", 70.0), 0.0),
             step=0.5,
             key="Price_HSD",
         )
@@ -1873,7 +1876,8 @@ with st.sidebar:
         )
         st.number_input(
             "MOP (kg/cm²)",
-            value=st.session_state.get("MOP_kgcm2", 100.0),
+            min_value=1.0,
+            value=max(st.session_state.get("MOP_kgcm2", 100.0), 1.0),
             step=1.0,
             key="MOP_kgcm2",
         )
@@ -2296,12 +2300,27 @@ with st.sidebar:
             column_config=_lf_col_cfg,
         )
         st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
-        hourly_flow = st.number_input(
-            "Hourly flow rate (m³/hr)",
-            value=st.session_state.get("hourly_flow", 1000.0),
-            step=10.0,
+        flow_mode = st.radio(
+            "Flow rate mode",
+            options=["Fixed flow rate", "Variable flow (optimizer decides)"],
+            index=0 if st.session_state.get("flow_mode", "Fixed flow rate") == "Fixed flow rate" else 1,
+            horizontal=True,
+            key="flow_mode_radio",
         )
-        st.session_state["hourly_flow"] = hourly_flow
+        st.session_state["flow_mode"] = flow_mode
+        if flow_mode == "Fixed flow rate":
+            hourly_flow = st.number_input(
+                "Hourly flow rate (m³/hr)",
+                value=st.session_state.get("hourly_flow", 1000.0),
+                step=10.0,
+            )
+            st.session_state["hourly_flow"] = hourly_flow
+        else:
+            st.info(
+                "Optimizer will vary hourly flow to minimize cost "
+                "(pump more during low-viscosity / cheap-tariff hours). "
+                "Daily total = sum of day plan volumes."
+            )
     else:
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
@@ -3131,14 +3150,16 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
             stn['name'] = st.text_input("Name", key=_skey(stn, 'name'))
             stn['elev'] = st.number_input("Elevation (m)", step=0.1, key=_skey(stn, 'elev'))
             stn['is_pump'] = st.checkbox("Pumping Station?", key=_skey(stn, 'is_pump'))
-            stn['L'] = st.number_input("Length to next Station (km)", step=1.0, key=_skey(stn, 'L'))
-            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", key=_skey(stn, 'max_dr'))
+            stn['L'] = st.number_input("Length to next Station (km)", min_value=0.01, step=1.0, key=_skey(stn, 'L'))
+            stn['max_dr'] = st.number_input("Max achievable Drag Reduction (%)", min_value=0.0, max_value=80.0, key=_skey(stn, 'max_dr'))
             stn['min_residual'] = st.number_input("Available Suction Head (m)", step=0.1, key=_skey(stn, 'min_residual'))
         with col2:
             D_in = st.number_input("OD (in)", format="%.2f", step=0.01, key=_skey(stn, 'D_in'))
             t_in = st.number_input("Wall Thk (in)", format="%.3f", step=0.001, key=_skey(stn, 't_in'))
             stn['D'] = D_in * 0.0254
             stn['t'] = t_in * 0.0254
+            if D_in > 0.0 and t_in * 2.0 >= D_in:
+                st.error(f"Wall thickness ≥ OD/2 — inner diameter is zero or negative. Reduce wall thickness.")
             stn['SMYS'] = st.number_input("SMYS (psi)", step=1000.0, key=_skey(stn, 'SMYS'))
             stn['rough'] = st.number_input("Pipe Roughness (m)", format="%.7f", step=0.0000001, key=_skey(stn, 'rough'))
         with col3:
@@ -3545,8 +3566,10 @@ for idx, stn in enumerate(st.session_state.stations, start=1):
                             with pcol2:
                                 min_label = "Min Pump RPM" if ptype_sel == "Diesel" else "Min RPM"
                                 rated_label = "Rated Pump RPM" if ptype_sel == "Diesel" else "Rated RPM"
-                                minrpm = st.number_input(min_label, value=pdata.get('MinRPM', 1000.0), key=f"minrpm__{uid}{ptype}")
-                                dol = st.number_input(rated_label, value=pdata.get('DOL', 1500.0), key=f"dol__{uid}{ptype}")
+                                minrpm = st.number_input(min_label, min_value=1.0, value=pdata.get('MinRPM', 1000.0), key=f"minrpm__{uid}{ptype}")
+                                dol = st.number_input(rated_label, min_value=1.0, value=pdata.get('DOL', 1500.0), key=f"dol__{uid}{ptype}")
+                                if minrpm > dol:
+                                    st.warning(f"Min RPM ({minrpm:.0f}) > Rated RPM ({dol:.0f}) — values will be swapped automatically.")
                             with pcol3:
                                 if ptype_sel == "Grid":
                                     tariff_mode = st.radio(
@@ -4140,10 +4163,8 @@ def _append_zero_plan_segments_to_result(
         if head_ppm <= 0.0:
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
-        elif zero_length > 1e-9:
-            # New untreated fluid enters from the origin (index 0 = upstream);
-            # prepend the zero-ppm slug so it appears at the correct position.
-            queue_entries.insert(0, (zero_length, 0.0))
+        # When head_ppm > 0, the solver already set the correct DRA level for new
+        # product via _update_mainline_dra — do not prepend a false zero-ppm slug.
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -6651,6 +6672,111 @@ def _format_plan_injection_label(
     return label
 
 
+def _compute_variable_hourly_flows(
+    stations_base: list[dict],
+    hours: list[int],
+    total_volume_m3: float,
+    nominal_flow: float,
+    current_vol: "pd.DataFrame",
+    plan_df: "pd.DataFrame | None",
+) -> list[float]:
+    """Per-hour flow targets that sum to total_volume_m3, weighted by viscosity and tariff.
+
+    Hours with low-viscosity product and cheap electricity get higher flow targets;
+    hours with heavy crude or peak tariff get lower targets.  All values are clamped
+    to [60%, 150%] of the nominal flow and surplus/deficit is redistributed iteratively.
+    """
+    import datetime as dt
+    import numpy as np
+
+    n = len(hours)
+    if n == 0 or total_volume_m3 <= 0.0:
+        return [nominal_flow] * n
+
+    hourly_vol = total_volume_m3 / n
+
+    # Build per-hour viscosity from plan_df sequence (FIFO product order)
+    kv_per_hour: list[float] = []
+    try:
+        p_vols: list[float] = (
+            list(plan_df["Volume (m³)"].astype(float))
+            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0
+            else []
+        )
+        p_kvs: list[float] = (
+            list(plan_df["Viscosity (cSt)"].astype(float))
+            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0
+            else []
+        )
+    except Exception:
+        p_vols, p_kvs = [], []
+
+    cum_plan = [sum(p_vols[: i + 1]) for i in range(len(p_vols))]
+    cum_vol, pidx = 0.0, 0
+    for _ in hours:
+        if p_kvs:
+            kv_per_hour.append(float(p_kvs[min(pidx, len(p_kvs) - 1)]))
+            cum_vol += hourly_vol
+            while pidx < len(cum_plan) - 1 and cum_vol >= cum_plan[pidx]:
+                pidx += 1
+        else:
+            try:
+                kv_per_hour.append(float(current_vol["Viscosity (cSt)"].iloc[0]))
+            except Exception:
+                kv_per_hour.append(10.0)
+
+    # Build per-hour electricity rate from origin station tariffs (with midnight crossing)
+    origin = stations_base[0] if stations_base else {}
+    tariffs = origin.get("tariffs", []) or []
+    default_rate = float(origin.get("rate", 7.0) or 7.0)
+    rate_per_hour: list[float] = []
+    for h in hours:
+        rate = default_rate
+        for tr in tariffs:
+            try:
+                s = dt.datetime.strptime(tr.get("start", "00:00"), "%H:%M")
+                e = dt.datetime.strptime(tr.get("end", "00:00"), "%H:%M")
+                if e <= s:
+                    e += dt.timedelta(days=1)
+                cur = dt.datetime.strptime(f"{h % 24:02d}:00", "%H:%M")
+                cur_adj = cur + dt.timedelta(days=1) if (e > s and cur < s) else cur
+                if s <= cur_adj < e:
+                    rate = float(tr.get("rate", default_rate) or default_rate)
+                    break
+            except Exception:
+                continue
+        rate_per_hour.append(max(rate, 0.01))
+
+    # Weights: low viscosity + low tariff → pump more that hour
+    kv_ref = float(np.median(kv_per_hour)) if kv_per_hour else 10.0
+    rate_ref = float(np.median(rate_per_hour)) if rate_per_hour else 7.0
+    weights = [
+        max((kv_ref / max(kv, 0.1)) * (rate_ref / max(r, 0.01)), 0.1)
+        for kv, r in zip(kv_per_hour, rate_per_hour)
+    ]
+
+    # Scale weights to per-hour flow targets
+    w_sum = sum(weights)
+    flow_raw = [total_volume_m3 * w / w_sum for w in weights]
+
+    # Clamp to POR [60%–150% of nominal] and redistribute surplus iteratively
+    q_min = nominal_flow * 0.6
+    q_max = nominal_flow * 1.5
+    flow_clamped = flow_raw[:]
+    for _ in range(10):
+        flow_clamped = [max(q_min, min(q_max, f)) for f in flow_clamped]
+        surplus = total_volume_m3 - sum(flow_clamped)
+        if abs(surplus) < 1.0:
+            break
+        headroom = [(q_max - f if surplus > 0 else f - q_min) for f in flow_clamped]
+        tot_hr = sum(headroom)
+        if tot_hr < 1e-6:
+            break
+        flow_raw = [f + surplus * h / tot_hr for f, h in zip(flow_clamped, headroom)]
+
+    return [round(max(q_min, min(q_max, f)), 1) for f in flow_clamped]
+
+
 def _execute_time_series_solver(
     stations_base: list[dict],
     term_data: dict,
@@ -7695,7 +7821,7 @@ def run_all_updates():
         for _bres in _branch_results.values()
     )
     if _total_branch_cost > 0:
-        _res_with_branches = dict(res)
+        _res_with_branches = copy.deepcopy(res)
         _res_with_branches["total_cost"] = _res_with_branches.get("total_cost", 0.0) + _total_branch_cost
         _res_with_branches["branch_total_cost"] = _total_branch_cost
         _res_with_branches["mainline_total_cost"] = float(res.get("total_cost", 0.0))
@@ -7763,6 +7889,8 @@ if not auto_batch:
             daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
             FLOW_sched = daily_m3 / 24.0
 
+        hourly_flow_rates_arg: list[float] | None = None
+
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
 
@@ -7797,6 +7925,38 @@ if not auto_batch:
         base_dra_linefill = copy.deepcopy(dra_linefill)
         base_dra_reach = float(dra_reach_km)
 
+        hourly_flow_candidates_arg: list[list[float]] | None = None
+
+        if (
+            not is_hourly
+            and st.session_state.get("flow_mode") == "Variable flow (optimizer decides)"
+            and FLOW_sched > 0.0
+        ):
+            hourly_flow_rates_arg = _compute_variable_hourly_flows(
+                stations_base, hours, daily_m3, FLOW_sched, current_vol, plan_df,
+            )
+            # Generate ±200 m³/hr candidate bracket around each hour's target so the
+            # optimizer has alternatives when the exact target is hydraulically infeasible.
+            _CAND_STEP = 25.0
+            _q_lo = FLOW_sched * 0.5
+            _q_hi = FLOW_sched * 1.6
+            hourly_flow_candidates_arg = []
+            for _qt in hourly_flow_rates_arg:
+                _cands = sorted(set(
+                    round(max(_q_lo, min(_q_hi, _qt + i * _CAND_STEP)), 0)
+                    for i in range(-8, 9)
+                ))
+                hourly_flow_candidates_arg.append(_cands)
+
+            _vf_df = pd.DataFrame(
+                {
+                    "Hour": [f"{h % 24:02d}:00" for h in hours],
+                    "Flow (m³/hr)": hourly_flow_rates_arg,
+                }
+            )
+            st.caption("Proposed variable hourly flows (optimizer will target these):")
+            st.bar_chart(_vf_df.set_index("Hour"))
+
         start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             solver_result = _execute_time_series_solver(
@@ -7804,6 +7964,8 @@ if not auto_batch:
                 term_data,
                 hours,
                 flow_rate=FLOW_sched,
+                hourly_flow_rates=hourly_flow_rates_arg,
+                hourly_flow_candidates=hourly_flow_candidates_arg,
                 plan_df=plan_df,
                 current_vol=current_vol,
                 dra_linefill=dra_linefill,
@@ -7827,6 +7989,17 @@ if not auto_batch:
         plan_df = solver_result["final_plan"]
         dra_linefill = solver_result["final_dra_linefill"]
         dra_reach_km = solver_result["final_dra_reach"]
+        st.session_state["day_flows_chosen"] = solver_result.get("hourly_flows", [])
+
+        if hourly_flow_rates_arg and not error_msg:
+            _chosen_flows = solver_result.get("hourly_flows", [])
+            _actual_total = sum(_chosen_flows) if _chosen_flows else 0.0
+            if _actual_total > 0.0 and _actual_total < daily_m3 * 0.99:
+                st.warning(
+                    f"Plan deficit of {daily_m3 - _actual_total:,.0f} m³ — "
+                    f"maximum feasible throughput is {_actual_total:,.0f} m³/day "
+                    f"(target: {daily_m3:,.0f} m³/day)."
+                )
 
         if error_msg:
             fallback_note: str | None = None
@@ -7953,7 +8126,17 @@ if not auto_batch:
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
-        tab_summary, tab_log = st.tabs(["Summary", "Candidate search log"])
+        tab_summary, tab_charts, tab_dra, tab_3d, tab_downloads, tab_log = st.tabs([
+            "📋 Summary", "📊 Hourly Charts", "💧 DRA Analysis",
+            "🧊 3D Profile", "⬇ Downloads", "🔍 Candidate Log",
+        ])
+
+        # Shared variables populated by chart tabs and consumed by downloads tab
+        _bd_rows: list[dict] = []
+        _dra_rows: list[dict] = []
+        _lf_combined: list = []
+        _flows_chosen: list[float] = st.session_state.get("day_flows_chosen", [])
+        _fig_cost = _fig_bd = _fig_3d_sdh = _fig_3d_dra = None
 
         with tab_summary:
             transpose_view = st.checkbox("Transpose output table", key="transpose_day")
@@ -8030,6 +8213,358 @@ if not auto_batch:
                     heading=f"Pump Details by Type ({rec['time']:02d}:00)",
                 )
 
+        with tab_charts:
+            if not reports:
+                st.info("Run the optimizer to see charts.")
+            else:
+                # ── Hourly total cost bar chart ──────────────────────────────
+                _cost_rows = [
+                    {"Hour": f"{r['time']:02d}:00", "Total Cost (INR)": float(r["result"].get("total_cost", 0) or 0)}
+                    for r in reports
+                ]
+                _df_hcost = pd.DataFrame(_cost_rows)
+                _fig_cost = px.bar(
+                    _df_hcost, x="Hour", y="Total Cost (INR)",
+                    title="Total Optimized Cost per Hour",
+                    text_auto=".0f",
+                )
+                _fig_cost.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(_fig_cost, use_container_width=True)
+
+                # ── Cost breakdown: Power vs DRA per station ─────────────────
+                _bd_rows = []
+                for _r in reports:
+                    for _s in stations_base:
+                        _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                        _bd_rows.append({
+                            "Hour": f"{_r['time']:02d}:00",
+                            "Station": _s.get("name", _k),
+                            "Power Cost (INR)": float(_r["result"].get(f"power_cost_{_k}", 0) or 0),
+                            "DRA Cost (INR)": float(_r["result"].get(f"dra_cost_{_k}", 0) or 0),
+                        })
+                _df_bd = pd.DataFrame(_bd_rows)
+                if not _df_bd.empty and _df_bd[["Power Cost (INR)", "DRA Cost (INR)"]].sum().sum() > 0:
+                    _fig_bd = px.bar(
+                        _df_bd.melt(
+                            id_vars=["Hour", "Station"],
+                            value_vars=["Power Cost (INR)", "DRA Cost (INR)"],
+                            var_name="Cost Type", value_name="INR",
+                        ),
+                        x="Hour", y="INR", color="Cost Type", facet_col="Station",
+                        barmode="stack",
+                        title="Cost Breakdown by Station (Power vs DRA)",
+                    )
+                    _fig_bd.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(_fig_bd, use_container_width=True)
+
+                # ── Hourly flow rate line chart ─────────────────────────────
+                _flows_chosen = st.session_state.get("day_flows_chosen", [])
+                if _flows_chosen and len(_flows_chosen) == len(hours):
+                    _df_fl = pd.DataFrame({
+                        "Hour": [f"{h % 24:02d}:00" for h in hours],
+                        "Flow (m³/hr)": _flows_chosen,
+                    })
+                    _fig_fl = px.line(
+                        _df_fl, x="Hour", y="Flow (m³/hr)", markers=True,
+                        title="Hourly Flow Rate Achieved",
+                    )
+                    _fig_fl.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(_fig_fl, use_container_width=True)
+
+                # ── Pump efficiency heatmap ──────────────────────────────────
+                _eff_rows = []
+                for _r in reports:
+                    for _s in stations_base:
+                        _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                        _eff = float(_r["result"].get(f"efficiency_{_k}", 0) or 0)
+                        if _eff > 0:
+                            _eff_rows.append({"Hour": f"{_r['time']:02d}:00", "Station": _s.get("name", _k), "Efficiency (%)": _eff})
+                if _eff_rows:
+                    _df_eff = pd.DataFrame(_eff_rows)
+                    _pivot_eff = _df_eff.pivot_table(index="Hour", columns="Station", values="Efficiency (%)", aggfunc="mean")
+                    _fig_eff = px.imshow(
+                        _pivot_eff, text_auto=".1f", aspect="auto",
+                        title="Pump Efficiency Heatmap (%) — Hour × Station",
+                        color_continuous_scale="RdYlGn",
+                    )
+                    st.plotly_chart(_fig_eff, use_container_width=True)
+
+                # ── Cumulative cost accumulation line ───────────────────────
+                _cum = 0.0
+                _cum_rows = []
+                for _r in reports:
+                    _cum += float(_r["result"].get("total_cost", 0) or 0)
+                    _cum_rows.append({"Hour": f"{_r['time']:02d}:00", "Cumulative Cost (INR)": _cum})
+                _fig_cum = px.line(
+                    pd.DataFrame(_cum_rows), x="Hour", y="Cumulative Cost (INR)", markers=True,
+                    title="Cumulative Cost Accumulation over 24 Hours",
+                )
+                _fig_cum.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(_fig_cum, use_container_width=True)
+
+        with tab_dra:
+            if not reports:
+                st.info("Run the optimizer to see DRA analysis.")
+            else:
+                # ── DRA injection ppm per station per hour (heatmap) ─────────
+                _dra_rows = []
+                for _r in reports:
+                    for _s in stations_base:
+                        _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                        _ppm = float(_r["result"].get(f"dra_ppm_{_k}", 0) or 0)
+                        _drag = float(_r["result"].get(f"drag_reduction_{_k}", 0) or 0)
+                        _dra_rows.append({
+                            "Hour": f"{_r['time']:02d}:00",
+                            "Station": _s.get("name", _k),
+                            "DRA Injected (ppm)": _ppm,
+                            "Drag Reduction (%)": _drag,
+                        })
+                if _dra_rows:
+                    _df_dra = pd.DataFrame(_dra_rows)
+                    _pivot_dra = _df_dra.pivot_table(
+                        index="Hour", columns="Station", values="DRA Injected (ppm)", aggfunc="mean"
+                    )
+                    _fig_dra_h = px.imshow(
+                        _pivot_dra, text_auto=".1f", aspect="auto",
+                        title="DRA Injection Heatmap (ppm) — Hour × Station",
+                        color_continuous_scale="Blues",
+                    )
+                    st.plotly_chart(_fig_dra_h, use_container_width=True)
+
+                    _pivot_dr = _df_dra.pivot_table(
+                        index="Hour", columns="Station", values="Drag Reduction (%)", aggfunc="mean"
+                    )
+                    _fig_dr_h = px.imshow(
+                        _pivot_dr, text_auto=".1f", aspect="auto",
+                        title="Drag Reduction Heatmap (%) — Hour × Station",
+                        color_continuous_scale="Greens",
+                    )
+                    st.plotly_chart(_fig_dr_h, use_container_width=True)
+
+                    # DRA cost pie chart (total by station)
+                    _dra_cost_by_stn = {}
+                    for _r in reports:
+                        for _s in stations_base:
+                            _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                            _nm = _s.get("name", _k)
+                            _dra_cost_by_stn[_nm] = _dra_cost_by_stn.get(_nm, 0.0) + float(_r["result"].get(f"dra_cost_{_k}", 0) or 0)
+                    _dra_cost_by_stn = {k: v for k, v in _dra_cost_by_stn.items() if v > 0}
+                    if _dra_cost_by_stn:
+                        _fig_dra_pie = px.pie(
+                            names=list(_dra_cost_by_stn.keys()),
+                            values=list(_dra_cost_by_stn.values()),
+                            title="Total DRA Cost by Station (24 hrs)",
+                        )
+                        st.plotly_chart(_fig_dra_pie, use_container_width=True)
+
+                    # DRA analysis table download
+                    st.download_button(
+                        "Download DRA Analysis CSV",
+                        _df_dra.to_csv(index=False, float_format="%.2f"),
+                        file_name="dra_analysis.csv",
+                    )
+
+        with tab_3d:
+            if not reports:
+                st.info("Run the optimizer to see 3D analysis.")
+            else:
+                _stn_names = [s.get("name", f"Stn{i}") for i, s in enumerate(stations_base)]
+                _hr_labels = [r["time"] for r in reports]
+
+                # ── 3D SDH surface: station × hour ───────────────────────────
+                _sdh_z = []
+                for _r in reports:
+                    _row = []
+                    for _s in stations_base:
+                        _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                        _row.append(float(_r["result"].get(f"sdh_{_k}", 0) or 0))
+                    _sdh_z.append(_row)
+                if _sdh_z and any(any(v > 0 for v in row) for row in _sdh_z):
+                    _fig_3d_sdh = go.Figure(data=[go.Surface(
+                        z=_sdh_z,
+                        x=_stn_names,
+                        y=_hr_labels,
+                        colorscale="Viridis",
+                    )])
+                    _fig_3d_sdh.update_layout(
+                        title="3D Discharge Head Profile (m) — Station × Hour",
+                        scene=dict(
+                            xaxis_title="Station",
+                            yaxis_title="Hour",
+                            zaxis_title="SDH (m)",
+                        ),
+                        height=600,
+                    )
+                    st.plotly_chart(_fig_3d_sdh, use_container_width=True)
+                    st.download_button(
+                        "Download 3D Pressure Profile (HTML)",
+                        _fig_3d_sdh.to_html(include_plotlyjs="cdn"),
+                        file_name="pressure_3d_profile.html",
+                        mime="text/html",
+                    )
+
+                # ── 3D DRA concentration: station × hour ─────────────────────
+                _dra_z = []
+                for _r in reports:
+                    _row = []
+                    for _s in stations_base:
+                        _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                        _row.append(float(_r["result"].get(f"dra_ppm_{_k}", 0) or 0))
+                    _dra_z.append(_row)
+                if _dra_z and any(any(v > 0 for v in row) for row in _dra_z):
+                    _fig_3d_dra = go.Figure(data=[go.Surface(
+                        z=_dra_z,
+                        x=_stn_names,
+                        y=_hr_labels,
+                        colorscale="Blues",
+                    )])
+                    _fig_3d_dra.update_layout(
+                        title="3D DRA Injection Profile (ppm) — Station × Hour",
+                        scene=dict(
+                            xaxis_title="Station",
+                            yaxis_title="Hour",
+                            zaxis_title="DRA (ppm)",
+                        ),
+                        height=600,
+                    )
+                    st.plotly_chart(_fig_3d_dra, use_container_width=True)
+
+                # ── 3D Cost surface: power cost by station × hour ────────────
+                _cost_z = []
+                for _r in reports:
+                    _row = []
+                    for _s in stations_base:
+                        _k = str(_s.get("name", "")).strip().lower().replace(" ", "_")
+                        _row.append(float(_r["result"].get(f"power_cost_{_k}", 0) or 0))
+                    _cost_z.append(_row)
+                if _cost_z and any(any(v > 0 for v in row) for row in _cost_z):
+                    _fig_3d_cost = go.Figure(data=[go.Surface(
+                        z=_cost_z,
+                        x=_stn_names,
+                        y=_hr_labels,
+                        colorscale="RdYlGn",
+                    )])
+                    _fig_3d_cost.update_layout(
+                        title="3D Power Cost (INR) — Station × Hour",
+                        scene=dict(
+                            xaxis_title="Station",
+                            yaxis_title="Hour",
+                            zaxis_title="Power Cost (INR)",
+                        ),
+                        height=600,
+                    )
+                    st.plotly_chart(_fig_3d_cost, use_container_width=True)
+
+        with tab_downloads:
+            st.markdown("#### Download Reports")
+            _label_prefix_dl = "Hourly" if st.session_state.get("run_mode") == "hourly" else "Daily"
+
+            # ── Main schedule CSV ────────────────────────────────────────────
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button(
+                    f"📥 {_label_prefix_dl} Schedule (CSV)",
+                    df_day.to_csv(index=False, float_format="%.2f"),
+                    file_name="daily_schedule_results.csv" if st.session_state.get("run_mode") != "hourly" else "hourly_schedule_results.csv",
+                )
+            with col_dl2:
+                # Linefill snapshots
+                _lf_combined = []
+                for _idx2, _df_line in enumerate(linefill_snaps):
+                    _hr2 = hours[_idx2] % 24
+                    _tmp = _df_line.copy()
+                    _tmp["Time"] = f"{_hr2:02d}:00"
+                    _lf_combined.append(_tmp)
+                if _lf_combined:
+                    _lf_all = pd.concat(_lf_combined, ignore_index=True).round(2)
+                    st.download_button(
+                        "📥 Linefill Snapshots (CSV)",
+                        _lf_all.to_csv(index=False, float_format="%.2f"),
+                        file_name="linefill_snapshots.csv",
+                    )
+
+            col_dl3, col_dl4 = st.columns(2)
+            with col_dl3:
+                _ndlf = st.session_state.get("linefill_next_day")
+                if isinstance(_ndlf, pd.DataFrame) and not _ndlf.empty:
+                    st.download_button(
+                        "📥 Next Day Linefill (CSV)",
+                        _ndlf.to_csv(index=False, float_format="%.4f"),
+                        file_name="next_day_linefill.csv",
+                    )
+
+            with col_dl4:
+                # Cost breakdown CSV
+                if _bd_rows:
+                    st.download_button(
+                        "📥 Cost Breakdown by Station (CSV)",
+                        pd.DataFrame(_bd_rows).to_csv(index=False, float_format="%.2f"),
+                        file_name="cost_breakdown_by_station.csv",
+                    )
+
+            # ── Excel multi-sheet report ─────────────────────────────────────
+            st.markdown("#### Excel Report (All Data)")
+            try:
+                import io as _io
+                import openpyxl as _opx  # noqa: F401 — ensure available
+                _xls_buf = _io.BytesIO()
+                with pd.ExcelWriter(_xls_buf, engine="openpyxl") as _writer:
+                    df_day.to_excel(_writer, sheet_name="Schedule", index=False)
+                    if _bd_rows:
+                        pd.DataFrame(_bd_rows).to_excel(_writer, sheet_name="Cost Breakdown", index=False)
+                    if _dra_rows:
+                        pd.DataFrame(_dra_rows).to_excel(_writer, sheet_name="DRA Analysis", index=False)
+                    if _flows_chosen and len(_flows_chosen) == len(hours):
+                        pd.DataFrame({
+                            "Hour": [f"{h % 24:02d}:00" for h in hours],
+                            "Flow (m³/hr)": _flows_chosen,
+                        }).to_excel(_writer, sheet_name="Flow Rates", index=False)
+                    if _lf_combined:
+                        _lf_all.to_excel(_writer, sheet_name="Linefill Snapshots", index=False)
+                _xls_buf.seek(0)
+                st.download_button(
+                    "📥 Full Optimization Report (Excel)",
+                    _xls_buf.read(),
+                    file_name="pipeline_optimization_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except ImportError:
+                st.info("Install `openpyxl` to enable Excel download: `pip install openpyxl`")
+
+            # ── Interactive chart downloads ──────────────────────────────────
+            st.markdown("#### Download Interactive Charts (HTML)")
+            _chart_dl_col1, _chart_dl_col2 = st.columns(2)
+            with _chart_dl_col1:
+                if _fig_cost is not None:
+                    st.download_button(
+                        "📊 Cost Chart (HTML)",
+                        _fig_cost.to_html(include_plotlyjs="cdn"),
+                        file_name="hourly_cost_chart.html",
+                        mime="text/html",
+                    )
+                if _fig_bd is not None:
+                    st.download_button(
+                        "📊 Cost Breakdown Chart (HTML)",
+                        _fig_bd.to_html(include_plotlyjs="cdn"),
+                        file_name="cost_breakdown_chart.html",
+                        mime="text/html",
+                    )
+            with _chart_dl_col2:
+                if _fig_3d_sdh is not None:
+                    st.download_button(
+                        "🧊 3D Pressure Profile (HTML)",
+                        _fig_3d_sdh.to_html(include_plotlyjs="cdn"),
+                        file_name="pressure_3d_profile.html",
+                        mime="text/html",
+                    )
+                if _fig_3d_dra is not None:
+                    st.download_button(
+                        "🧊 3D DRA Profile (HTML)",
+                        _fig_3d_dra.to_html(include_plotlyjs="cdn"),
+                        file_name="dra_3d_profile.html",
+                        mime="text/html",
+                    )
+
         with tab_log:
             if not reports:
                 st.info("No solver outputs are available yet.")
@@ -8098,27 +8633,6 @@ if not auto_batch:
                     st.info(
                         "No candidate log is available for this solve. Enable 'Capture candidate log (for raw output)' in Optimization controls and re-run to view the raw candidates."
                     )
-
-        combined = []
-        for idx, df_line in enumerate(linefill_snaps):
-            hr = hours[idx] % 24
-            temp = df_line.copy()
-            temp['Time'] = f"{hr:02d}:00"
-            combined.append(temp)
-        lf_all = pd.concat(combined, ignore_index=True).round(2)
-        st.download_button(
-            f"Download {label_prefix} Dynamic Linefill Output",
-            lf_all.to_csv(index=False, float_format="%.2f"),
-            file_name="linefill_snapshots.csv",
-        )
-
-        next_day_linefill = st.session_state.get("linefill_next_day")
-        if isinstance(next_day_linefill, pd.DataFrame) and not next_day_linefill.empty:
-            st.download_button(
-                "Download next day's Linefill and DRA state",
-                next_day_linefill.to_csv(index=False, float_format="%.4f"),
-                file_name="next_day_linefill.csv",
-            )
 
     st.markdown("<div style='text-align:center; margin-top: 0.6rem;'>", unsafe_allow_html=True)
     run_plan = st.button("Run Dynamic Pumping Plan Optimizer", key="run_plan_btn", type="primary")
