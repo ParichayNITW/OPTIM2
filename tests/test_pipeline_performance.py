@@ -3379,7 +3379,12 @@ def test_time_series_solver_extends_zero_plan_injections(monkeypatch):
     def fake_solver(*solver_args, **solver_kwargs):
         dra_linefill_in = copy.deepcopy(solver_args[10])
         origin_diameter = stations_base[0]["D"]
-        linefill_out: list[dict] = []
+        # Simulate _update_mainline_dra: new untreated product enters at 0 ppm,
+        # followed by the existing linefill. No DRA injection (dra_reach_km=0).
+        new_head_km = pm._km_from_volume(flow_rate, origin_diameter)
+        linefill_out: list[dict] = [
+            {"length_km": new_head_km, "dra_ppm": 0.0, "volume": float(flow_rate)}
+        ]
         for entry in dra_linefill_in:
             entry_copy = copy.deepcopy(entry)
             if "length_km" not in entry_copy:

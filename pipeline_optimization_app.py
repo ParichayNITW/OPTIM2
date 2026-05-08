@@ -2296,12 +2296,27 @@ with st.sidebar:
             column_config=_lf_col_cfg,
         )
         st.session_state["day_plan_df"] = ensure_initial_dra_column(day_df, default=0.0, fill_blanks=True)
-        hourly_flow = st.number_input(
-            "Hourly flow rate (m³/hr)",
-            value=st.session_state.get("hourly_flow", 1000.0),
-            step=10.0,
+        flow_mode = st.radio(
+            "Flow rate mode",
+            options=["Fixed flow rate", "Variable flow (optimizer decides)"],
+            index=0 if st.session_state.get("flow_mode", "Fixed flow rate") == "Fixed flow rate" else 1,
+            horizontal=True,
+            key="flow_mode_radio",
         )
-        st.session_state["hourly_flow"] = hourly_flow
+        st.session_state["flow_mode"] = flow_mode
+        if flow_mode == "Fixed flow rate":
+            hourly_flow = st.number_input(
+                "Hourly flow rate (m³/hr)",
+                value=st.session_state.get("hourly_flow", 1000.0),
+                step=10.0,
+            )
+            st.session_state["hourly_flow"] = hourly_flow
+        else:
+            st.info(
+                "Optimizer will vary hourly flow to minimize cost "
+                "(pump more during low-viscosity / cheap-tariff hours). "
+                "Daily total = sum of day plan volumes."
+            )
     else:
         st.markdown("**Linefill at 07:00 Hrs (Volumetric)**")
         if "linefill_vol_df" not in st.session_state:
@@ -4140,10 +4155,8 @@ def _append_zero_plan_segments_to_result(
         if head_ppm <= 0.0:
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
-        elif zero_length > 1e-9:
-            # New untreated fluid enters from the origin (index 0 = upstream);
-            # prepend the zero-ppm slug so it appears at the correct position.
-            queue_entries.insert(0, (zero_length, 0.0))
+        # When head_ppm > 0, the solver already set the correct DRA level for new
+        # product via _update_mainline_dra — do not prepend a false zero-ppm slug.
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -6651,6 +6664,111 @@ def _format_plan_injection_label(
     return label
 
 
+def _compute_variable_hourly_flows(
+    stations_base: list[dict],
+    hours: list[int],
+    total_volume_m3: float,
+    nominal_flow: float,
+    current_vol: "pd.DataFrame",
+    plan_df: "pd.DataFrame | None",
+) -> list[float]:
+    """Per-hour flow targets that sum to total_volume_m3, weighted by viscosity and tariff.
+
+    Hours with low-viscosity product and cheap electricity get higher flow targets;
+    hours with heavy crude or peak tariff get lower targets.  All values are clamped
+    to [60%, 150%] of the nominal flow and surplus/deficit is redistributed iteratively.
+    """
+    import datetime as dt
+    import numpy as np
+
+    n = len(hours)
+    if n == 0 or total_volume_m3 <= 0.0:
+        return [nominal_flow] * n
+
+    hourly_vol = total_volume_m3 / n
+
+    # Build per-hour viscosity from plan_df sequence (FIFO product order)
+    kv_per_hour: list[float] = []
+    try:
+        p_vols: list[float] = (
+            list(plan_df["Volume (m³)"].astype(float))
+            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0
+            else []
+        )
+        p_kvs: list[float] = (
+            list(plan_df["Viscosity (cSt)"].astype(float))
+            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0
+            else []
+        )
+    except Exception:
+        p_vols, p_kvs = [], []
+
+    cum_plan = [sum(p_vols[: i + 1]) for i in range(len(p_vols))]
+    cum_vol, pidx = 0.0, 0
+    for _ in hours:
+        if p_kvs:
+            kv_per_hour.append(float(p_kvs[min(pidx, len(p_kvs) - 1)]))
+            cum_vol += hourly_vol
+            while pidx < len(cum_plan) - 1 and cum_vol >= cum_plan[pidx]:
+                pidx += 1
+        else:
+            try:
+                kv_per_hour.append(float(current_vol["Viscosity (cSt)"].iloc[0]))
+            except Exception:
+                kv_per_hour.append(10.0)
+
+    # Build per-hour electricity rate from origin station tariffs (with midnight crossing)
+    origin = stations_base[0] if stations_base else {}
+    tariffs = origin.get("tariffs", []) or []
+    default_rate = float(origin.get("rate", 7.0) or 7.0)
+    rate_per_hour: list[float] = []
+    for h in hours:
+        rate = default_rate
+        for tr in tariffs:
+            try:
+                s = dt.datetime.strptime(tr.get("start", "00:00"), "%H:%M")
+                e = dt.datetime.strptime(tr.get("end", "00:00"), "%H:%M")
+                if e <= s:
+                    e += dt.timedelta(days=1)
+                cur = dt.datetime.strptime(f"{h % 24:02d}:00", "%H:%M")
+                cur_adj = cur + dt.timedelta(days=1) if (e > s and cur < s) else cur
+                if s <= cur_adj < e:
+                    rate = float(tr.get("rate", default_rate) or default_rate)
+                    break
+            except Exception:
+                continue
+        rate_per_hour.append(max(rate, 0.01))
+
+    # Weights: low viscosity + low tariff → pump more that hour
+    kv_ref = float(np.median(kv_per_hour)) if kv_per_hour else 10.0
+    rate_ref = float(np.median(rate_per_hour)) if rate_per_hour else 7.0
+    weights = [
+        max((kv_ref / max(kv, 0.1)) * (rate_ref / max(r, 0.01)), 0.1)
+        for kv, r in zip(kv_per_hour, rate_per_hour)
+    ]
+
+    # Scale weights to per-hour flow targets
+    w_sum = sum(weights)
+    flow_raw = [total_volume_m3 * w / w_sum for w in weights]
+
+    # Clamp to POR [60%–150% of nominal] and redistribute surplus iteratively
+    q_min = nominal_flow * 0.6
+    q_max = nominal_flow * 1.5
+    flow_clamped = flow_raw[:]
+    for _ in range(10):
+        flow_clamped = [max(q_min, min(q_max, f)) for f in flow_clamped]
+        surplus = total_volume_m3 - sum(flow_clamped)
+        if abs(surplus) < 1.0:
+            break
+        headroom = [(q_max - f if surplus > 0 else f - q_min) for f in flow_clamped]
+        tot_hr = sum(headroom)
+        if tot_hr < 1e-6:
+            break
+        flow_raw = [f + surplus * h / tot_hr for f, h in zip(flow_clamped, headroom)]
+
+    return [round(max(q_min, min(q_max, f)), 1) for f in flow_clamped]
+
+
 def _execute_time_series_solver(
     stations_base: list[dict],
     term_data: dict,
@@ -7763,6 +7881,8 @@ if not auto_batch:
             daily_m3 = float(plan_df["Volume (m³)"].astype(float).sum()) if len(plan_df) else 0.0
             FLOW_sched = daily_m3 / 24.0
 
+        hourly_flow_rates_arg: list[float] | None = None
+
         RateDRA = st.session_state.get("RateDRA", 500.0)
         Price_HSD = st.session_state.get("Price_HSD", 70.0)
 
@@ -7797,6 +7917,23 @@ if not auto_batch:
         base_dra_linefill = copy.deepcopy(dra_linefill)
         base_dra_reach = float(dra_reach_km)
 
+        if (
+            not is_hourly
+            and st.session_state.get("flow_mode") == "Variable flow (optimizer decides)"
+            and FLOW_sched > 0.0
+        ):
+            hourly_flow_rates_arg = _compute_variable_hourly_flows(
+                stations_base, hours, daily_m3, FLOW_sched, current_vol, plan_df,
+            )
+            _vf_df = pd.DataFrame(
+                {
+                    "Hour": [f"{h % 24:02d}:00" for h in hours],
+                    "Flow (m³/hr)": hourly_flow_rates_arg,
+                }
+            )
+            st.caption("Proposed variable hourly flows (optimizer will target these):")
+            st.bar_chart(_vf_df.set_index("Hour"))
+
         start_time = time.perf_counter()
         with st.spinner(spinner_msg):
             solver_result = _execute_time_series_solver(
@@ -7804,6 +7941,7 @@ if not auto_batch:
                 term_data,
                 hours,
                 flow_rate=FLOW_sched,
+                hourly_flow_rates=hourly_flow_rates_arg,
                 plan_df=plan_df,
                 current_vol=current_vol,
                 dra_linefill=dra_linefill,
@@ -7827,6 +7965,16 @@ if not auto_batch:
         plan_df = solver_result["final_plan"]
         dra_linefill = solver_result["final_dra_linefill"]
         dra_reach_km = solver_result["final_dra_reach"]
+
+        if hourly_flow_rates_arg and not error_msg:
+            _chosen_flows = solver_result.get("hourly_flows", [])
+            _actual_total = sum(_chosen_flows) if _chosen_flows else 0.0
+            if _actual_total > 0.0 and _actual_total < daily_m3 * 0.99:
+                st.warning(
+                    f"Plan deficit of {daily_m3 - _actual_total:,.0f} m³ — "
+                    f"maximum feasible throughput is {_actual_total:,.0f} m³/day "
+                    f"(target: {daily_m3:,.0f} m³/day)."
+                )
 
         if error_msg:
             fallback_note: str | None = None
