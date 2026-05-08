@@ -6680,12 +6680,22 @@ def _compute_variable_hourly_flows(
     current_vol: "pd.DataFrame",
     plan_df: "pd.DataFrame | None",
 ) -> list[float]:
-    """Per-hour flow targets that sum to total_volume_m3, weighted by viscosity and tariff.
+    """Lagrange-optimal hourly flow distribution.
 
-    Hours with low-viscosity product and cheap electricity get higher flow targets;
-    hours with heavy crude or peak tariff get lower targets.  All values are clamped
-    to [60%, 150%] of the nominal flow and surplus/deficit is redistributed iteratively.
+    Minimises  J = Σ a_t × Q_t³  subject to  Σ Q_t = total_volume_m3.
+    Closed-form solution (Lagrange multipliers):
+        Q_t = total_volume_m3 × (1/√a_t) / Σ(1/√a_i)
+    where  a_t = rate_t × (kv_t / kv_ref)  (cost coefficient that hour).
+
+    POR bounds come from the pump BEP flow (rated_flow_m3h) and affinity law:
+        q_max     = BEP_DOL × 1.20          (top of POR at full speed)
+        q_min_run = BEP_DOL × (min_rpm/DOL) × 0.70  (bottom of POR at min speed)
+
+    Shutdown (Q_t = 0) is permitted when the unconstrained optimum falls below
+    q_min_run — the pump cannot run within POR at that flow, so the pipeline
+    stops that hour and the volume is redistributed to cheaper running hours.
     """
+    import math as _math
     import datetime as dt
     import numpy as np
 
@@ -6695,22 +6705,19 @@ def _compute_variable_hourly_flows(
 
     hourly_vol = total_volume_m3 / n
 
-    # Build per-hour viscosity from plan_df sequence (FIFO product order)
+    # ── Per-hour viscosity (FIFO from plan_df) ──────────────────────────────
     kv_per_hour: list[float] = []
     try:
         p_vols: list[float] = (
             list(plan_df["Volume (m³)"].astype(float))
-            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0
-            else []
+            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0 else []
         )
         p_kvs: list[float] = (
             list(plan_df["Viscosity (cSt)"].astype(float))
-            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0
-            else []
+            if isinstance(plan_df, pd.DataFrame) and len(plan_df) > 0 else []
         )
     except Exception:
         p_vols, p_kvs = [], []
-
     cum_plan = [sum(p_vols[: i + 1]) for i in range(len(p_vols))]
     cum_vol, pidx = 0.0, 0
     for _ in hours:
@@ -6725,7 +6732,7 @@ def _compute_variable_hourly_flows(
             except Exception:
                 kv_per_hour.append(10.0)
 
-    # Build per-hour electricity rate from origin station tariffs (with midnight crossing)
+    # ── Per-hour electricity tariff ─────────────────────────────────────────
     origin = stations_base[0] if stations_base else {}
     tariffs = origin.get("tariffs", []) or []
     default_rate = float(origin.get("rate", 7.0) or 7.0)
@@ -6747,47 +6754,108 @@ def _compute_variable_hourly_flows(
                 continue
         rate_per_hour.append(max(rate, 0.01))
 
-    # Weights: low viscosity + low tariff → pump more that hour
+    # ── POR bounds from BEP of the first configured pump station ────────────
+    bep_q_dol   = 0.0
+    bep_dol     = 1480.0
+    bep_min_rpm = 962.0
+    for _s in stations_base:
+        if _s.get("is_pump"):
+            _bq = float(_s.get("rated_flow_m3h", 0.0) or 0.0)
+            if _bq > 0.0:
+                bep_q_dol   = _bq
+                bep_dol     = float(_s.get("DOL") or _s.get("dol") or 1480.0) or 1480.0
+                bep_min_rpm = float(_s.get("MinRPM") or _s.get("min_rpm") or bep_dol * 0.65) or (bep_dol * 0.65)
+                break
+
+    if bep_q_dol > 0.0:
+        q_max     = bep_q_dol * 1.20
+        q_min_run = bep_q_dol * (bep_min_rpm / bep_dol) * 0.70
+    else:
+        q_max     = nominal_flow * 1.20
+        q_min_run = nominal_flow * 0.70
+
+    # Guard: nominal_flow must lie within POR (catches misconfigured BEP)
+    q_min_run = min(q_min_run, nominal_flow * 0.70)
+    q_max     = max(q_max,     nominal_flow * 1.20)
+
+    # ── Lagrange cost coefficients ──────────────────────────────────────────
     kv_ref = float(np.median(kv_per_hour)) if kv_per_hour else 10.0
-    rate_ref = float(np.median(rate_per_hour)) if rate_per_hour else 7.0
-    weights = [
-        max((kv_ref / max(kv, 0.1)) * (rate_ref / max(r, 0.01)), 0.1)
-        for kv, r in zip(kv_per_hour, rate_per_hour)
+    # a_t = rate_t × (kv_t/kv_ref): higher tariff or viscosity → costlier hour
+    a_per_hour = [
+        max(r * max(kv / kv_ref, 1e-6), 1e-9)
+        for r, kv in zip(rate_per_hour, kv_per_hour)
     ]
 
-    # When viscosity and tariff are uniform (single product, no tariff bands),
-    # all weights ≈ 1.0 → constant flow. Add a sinusoidal time-of-day overlay
-    # so the optimizer has meaningful variation to work with: pump more during
-    # cool/off-peak night hours (peak at 03:00), less during midday (trough 15:00).
-    _wmax = max(weights) if weights else 1.0
-    _wmin = min(weights) if weights else 1.0
-    if _wmax <= 0 or (_wmax / max(_wmin, 1e-9)) < 1.05:
-        import math as _math
+    # ── Closed-form Lagrange solution ───────────────────────────────────────
+    inv_sqrt_a = [1.0 / _math.sqrt(a) for a in a_per_hour]
+    total_inv_sqrt = sum(inv_sqrt_a)
+    if total_inv_sqrt > 0:
+        flow_raw = [total_volume_m3 * x / total_inv_sqrt for x in inv_sqrt_a]
+    else:
+        flow_raw = [nominal_flow] * n
+
+    # When all a_t are equal (flat tariff + single product) the Lagrange formula
+    # correctly gives uniform flow — add a gentle sinusoidal overlay as a
+    # practical tie-breaker that favours cooler night hours (peak at 03:00).
+    a_max = max(a_per_hour)
+    a_min = min(a_per_hour)
+    if a_max <= 0 or (a_max / max(a_min, 1e-9)) < 1.02:
+        raw_sum = sum(flow_raw)
         for _hi, _h in enumerate(hours):
             _hod = _h % 24
-            _sin_factor = 1.0 + 0.10 * _math.cos(_math.pi * (_hod - 3) / 12)
-            weights[_hi] = weights[_hi] * _sin_factor
+            flow_raw[_hi] *= 1.0 + 0.08 * _math.cos(_math.pi * (_hod - 3) / 12)
+        new_sum = sum(flow_raw)
+        if new_sum > 0:
+            flow_raw = [f * raw_sum / new_sum for f in flow_raw]
 
-    # Scale weights to per-hour flow targets
-    w_sum = sum(weights)
-    flow_raw = [total_volume_m3 * w / w_sum for w in weights]
+    # ── Water-filling: POR bounds + shutdown ────────────────────────────────
+    # If Q_t < q_min_run the pump cannot operate within POR → shut down that
+    # hour (Q_t = 0) and redistribute the volume to cheaper active hours.
+    flow_clamped: list[float] = [0.0] * n
+    for _iter in range(20):
+        for i, q in enumerate(flow_raw):
+            if q < q_min_run:
+                flow_clamped[i] = 0.0       # below POR minimum → shutdown
+            elif q > q_max:
+                flow_clamped[i] = q_max     # above POR maximum → cap
+            else:
+                flow_clamped[i] = q         # within POR
 
-    # Clamp to POR [60%–150% of nominal] and redistribute surplus iteratively
-    q_min = nominal_flow * 0.6
-    q_max = nominal_flow * 1.5
-    flow_clamped = flow_raw[:]
-    for _ in range(10):
-        flow_clamped = [max(q_min, min(q_max, f)) for f in flow_clamped]
         surplus = total_volume_m3 - sum(flow_clamped)
         if abs(surplus) < 1.0:
             break
-        headroom = [(q_max - f if surplus > 0 else f - q_min) for f in flow_clamped]
-        tot_hr = sum(headroom)
-        if tot_hr < 1e-6:
-            break
-        flow_raw = [f + surplus * h / tot_hr for f, h in zip(flow_clamped, headroom)]
 
-    return [round(max(q_min, min(q_max, f)), 1) for f in flow_clamped]
+        # Redistribute surplus to active (unclamped) hours, preserving
+        # Lagrange optimality (weight by 1/√a_t).
+        active_idx = [
+            i for i, q in enumerate(flow_clamped)
+            if q_min_run * 1.001 <= q <= q_max * 0.999
+        ]
+        if not active_idx:
+            break
+        active_w = [inv_sqrt_a[i] for i in active_idx]
+        tot_w = sum(active_w)
+        if tot_w < 1e-9:
+            break
+        flow_raw = list(flow_clamped)
+        for ii, idx in enumerate(active_idx):
+            flow_raw[idx] += surplus * active_w[ii] / tot_w
+
+    # Safety: if shutdown left an unrecoverable shortfall, re-enable all hours
+    if total_volume_m3 - sum(flow_clamped) > 1.0:
+        for i in range(n):
+            if flow_clamped[i] == 0.0:
+                flow_clamped[i] = q_min_run
+        surplus2 = total_volume_m3 - sum(flow_clamped)
+        headroom = [max(q_max - f, 0.0) for f in flow_clamped]
+        tot_hr = sum(headroom)
+        if tot_hr > 1e-6:
+            flow_clamped = [
+                min(q_max, f + surplus2 * h / tot_hr)
+                for f, h in zip(flow_clamped, headroom)
+            ]
+
+    return [round(max(0.0, min(q_max, f)), 1) for f in flow_clamped]
 
 
 def _execute_time_series_solver(
@@ -7957,7 +8025,7 @@ if not auto_batch:
             _CAND_STEP = 50.0
             _q_lo = max(1.0, FLOW_sched * 0.4)
             _q_hi = FLOW_sched * 1.8
-            _nominal_cand = round(FLOW_sched, 0)
+            _nominal_cand = FLOW_sched  # exact value — rounding can miss narrow feasibility window
             hourly_flow_candidates_arg = []
             for _qt in hourly_flow_rates_arg:
                 _cands = sorted(set(
