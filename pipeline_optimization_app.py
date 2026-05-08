@@ -7951,14 +7951,21 @@ if not auto_batch:
             # Generate candidate brackets around each hour's target.
             # Wide range (±600 m³/hr) with 50 m³/hr step so the optimizer can always
             # fall back to a feasible flow even if the high-end targets exceed capacity.
+            # FLOW_sched is always included because it is the only guaranteed-feasible
+            # value (fixed-flow mode uses it successfully) and it may not land on a
+            # 50 m³/hr grid point relative to the weighted target.
             _CAND_STEP = 50.0
             _q_lo = max(1.0, FLOW_sched * 0.4)
             _q_hi = FLOW_sched * 1.8
+            _nominal_cand = round(FLOW_sched, 0)
             hourly_flow_candidates_arg = []
             for _qt in hourly_flow_rates_arg:
                 _cands = sorted(set(
-                    round(max(_q_lo, min(_q_hi, _qt + i * _CAND_STEP)), 0)
-                    for i in range(-12, 13)
+                    [_nominal_cand]  # guaranteed-feasible baseline
+                    + [
+                        round(max(_q_lo, min(_q_hi, _qt + i * _CAND_STEP)), 0)
+                        for i in range(-12, 13)
+                    ]
                 ))
                 hourly_flow_candidates_arg.append(_cands)
 
@@ -7983,6 +7990,10 @@ if not auto_batch:
                 flow_rate=FLOW_sched,
                 hourly_flow_rates=hourly_flow_rates_arg,
                 hourly_flow_candidates=hourly_flow_candidates_arg,
+                # When variable flow is active, pass daily target so that
+                # single-hour failures are non-fatal — the solver continues
+                # to subsequent hours rather than aborting at the first error.
+                daily_throughput_target=daily_m3 if hourly_flow_rates_arg else None,
                 plan_df=plan_df,
                 current_vol=current_vol,
                 dra_linefill=dra_linefill,
@@ -8095,9 +8106,19 @@ if not auto_batch:
                             f"({FLOW_sched:,.0f} m³/h)."
                         )
             if error_msg:
-                st.session_state["linefill_next_day"] = pd.DataFrame()
-                st.error(error_msg)
-                st.stop()
+                # In variable flow mode a throughput shortfall is already
+                # surfaced as a warning above (plan deficit / target vs
+                # achieved chart).  Only raise a hard error when fixed-flow
+                # mode fails or when there are no partial results at all.
+                _vf_shortfall = (
+                    hourly_flow_rates_arg
+                    and "shortfall" in str(error_msg).lower()
+                    and reports
+                )
+                if not _vf_shortfall:
+                    st.session_state["linefill_next_day"] = pd.DataFrame()
+                    st.error(error_msg)
+                    st.stop()
             if fallback_note:
                 st.info(fallback_note)
         _store_run_duration(
