@@ -1299,12 +1299,14 @@ def shift_vol_linefill(
     if day_plan is not None:
         day_plan = ensure_initial_dra_column(day_plan.copy(), default=0.0, fill_blanks=True)
         day_plan["Volume (m³)"] = day_plan["Volume (m³)"].astype(float)
-        injected = 0.0
 
-        while remaining > 1e-9 and len(day_plan) > 0:
+        # Inject exactly pumped_m3 from day_plan at the origin regardless of
+        # how much remained after the terminal-end removal above.
+        inject_remaining = pumped_m3
+        while inject_remaining > 1e-9 and len(day_plan) > 0:
             v = day_plan.iloc[0]["Volume (m³)"]
-            take = min(v, remaining)
-            injected += take
+            take = min(v, inject_remaining)
+            dra_ppm_batch = float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0))
 
             vol_table = pd.concat(
                 [
@@ -1315,7 +1317,7 @@ def shift_vol_linefill(
                                 "Volume (m³)": take,
                                 "Viscosity (cSt)": day_plan.iloc[0]["Viscosity (cSt)"],
                                 "Density (kg/m³)": day_plan.iloc[0]["Density (kg/m³)"],
-                                "Initial DRA (ppm)": day_plan.iloc[0].get("Initial DRA (ppm)", 0.0),
+                                "Initial DRA (ppm)": dra_ppm_batch,
                             }
                         ]
                     ),
@@ -1324,19 +1326,15 @@ def shift_vol_linefill(
                 ignore_index=True,
             )
 
-            remaining -= take
+            # Emit one batch record per source plan batch. Insert at front so
+            # the list order matches vol_table order (most-recently-injected first).
+            injected_batches.insert(0, {"volume": float(take), "dra_ppm": dra_ppm_batch})
+
+            inject_remaining -= take
             if take >= v:
                 day_plan = day_plan.drop(index=0).reset_index(drop=True)
             else:
                 day_plan.at[0, "Volume (m³)"] = v - take
-
-        if injected > 0:
-            injected_batches.append(
-                {
-                    "volume": float(injected),
-                    "dra_ppm": float(day_plan.iloc[0].get("Initial DRA (ppm)", 0.0)) if len(day_plan) else 0.0,
-                }
-            )
 
     vol_table = vol_table.reset_index(drop=True)
 
@@ -4143,9 +4141,9 @@ def _append_zero_plan_segments_to_result(
             if head_length < zero_length - 1e-9:
                 queue_entries[0] = (zero_length, 0.0)
         elif zero_length > 1e-9:
-            # Preserve treated head segments by appending untreated plan slices
-            # to the back of the queue rather than prepending them.
-            queue_entries.append((zero_length, 0.0))
+            # New untreated fluid enters from the origin (index 0 = upstream);
+            # prepend the zero-ppm slug so it appears at the correct position.
+            queue_entries.insert(0, (zero_length, 0.0))
     else:
         queue_entries = [(zero_length, 0.0)]
 
@@ -5031,14 +5029,19 @@ def _build_profiles_from_queue(
                 ppm_clean = 0.0
             entries.append((length_clean, ppm_clean))
 
+        fill_ppm = float(stn.get("fallback_dra_ppm") or 0.0)
         treated = sum(length for length, _ppm in entries)
         untreated = max(seg_length - treated, 0.0)
         if untreated > 1e-9:
-            if entries and abs(entries[-1][1]) <= 1e-9:
-                prev_len, prev_ppm = entries[-1]
-                entries[-1] = (prev_len + untreated, prev_ppm)
+            # Use fallback_ppm unless the last tracked queue entry is explicitly
+            # zero-ppm (meaning untreated fluid is already represented there).
+            last_has_zero = bool(entries) and abs(entries[-1][1]) <= 1e-9
+            effective_fill = 0.0 if last_has_zero else fill_ppm
+            if entries and abs(entries[-1][1] - effective_fill) <= 1e-9:
+                prev_len, _ = entries[-1]
+                entries[-1] = (prev_len + untreated, effective_fill)
             else:
-                entries.append((untreated, 0.0))
+                entries.append((untreated, effective_fill))
 
         if entries:
             merged = pipeline_model._merge_queue(entries)  # type: ignore[attr-defined]
@@ -6369,6 +6372,15 @@ def _enforce_minimum_origin_dra(
         slug_volume_total = existing_total_volume
 
     slug_volume_total = float(max(slug_volume_total, 0.0))
+    # FIX 1: Ensure the treated slug covers at least the full hourly pump volume
+    # so no zero-ppm remainder is left at the origin after injection.
+    if hourly_flow_m3 is not None and step_hours > 0.0:
+        try:
+            _min_hourly = float(hourly_flow_m3) * float(step_hours)
+        except (TypeError, ValueError):
+            _min_hourly = 0.0
+        if _min_hourly > 0.0:
+            slug_volume_total = max(slug_volume_total, _min_hourly)
     if plan_total_volume > 0.0 and slug_volume_total > plan_total_volume + 1e-9:
         reduction_ratio = plan_total_volume / slug_volume_total if slug_volume_total > 0 else 0.0
         slug_volume_total = plan_total_volume
@@ -6919,8 +6931,14 @@ def _execute_time_series_solver(
             best_cost = float("inf")
             best_flow_val: float | None = None
 
+            # FIX 5: Cache evaluated flows to avoid re-evaluating the same
+            # flow value in both the coarse and refine passes.
+            _eval_cache: dict[float, tuple[dict, float, float]] = {}
+
             for candidate in coarse_candidates:
-                cand_res, cand_cost, _ = _evaluate_flow(candidate)
+                if candidate not in _eval_cache:
+                    _eval_cache[candidate] = _evaluate_flow(candidate)
+                cand_res, cand_cost, _ = _eval_cache[candidate]
                 if cand_res.get("error"):
                     continue
                 if cand_cost < best_cost:
@@ -6934,7 +6952,9 @@ def _execute_time_series_solver(
             refine_candidates = _refine_flow_grid(fine_candidates, best_flow_val)
 
             for candidate in refine_candidates:
-                cand_res, cand_cost, _ = _evaluate_flow(candidate)
+                if candidate not in _eval_cache:
+                    _eval_cache[candidate] = _evaluate_flow(candidate)
+                cand_res, cand_cost, _ = _eval_cache[candidate]
                 if cand_res.get("error"):
                     continue
                 if cand_cost < best_cost or (math.isclose(cand_cost, best_cost) and candidate < best_flow_val):

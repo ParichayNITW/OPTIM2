@@ -1608,6 +1608,8 @@ def _update_mainline_dra(
             fallback_ppm = float(fallback_raw or 0.0)
 
     floor_ppm_limit = 0.0
+    floor_length = 0.0
+    enforce_floor = False
     floor_requires_injection = False
     if isinstance(segment_floor, Mapping):
         try:
@@ -1701,6 +1703,14 @@ def _update_mainline_dra(
 
     existing_queue = _merge_queue(existing_queue)
     existing_total = _queue_total_length(existing_queue)
+
+    # Track whether the original queue was empty before pre-filling with fallback.
+    original_queue_empty = not existing_queue
+    if original_queue_empty and fallback_ppm > 0.0:
+        _fb_len = segment_length if segment_length > 0.0 else pumped_length
+        if _fb_len > 0.0:
+            existing_queue = [(_fb_len, fallback_ppm)]
+            existing_total = _fb_len
 
     if existing_total > 0:
         target_length = existing_total
@@ -1799,11 +1809,8 @@ def _update_mainline_dra(
             continue
         ppm_input = float(ppm_val or 0.0)
         zero_output = False
-        if is_origin and inj_effective <= 0.0:
-            if pump_running:
-                zero_output = True
-            elif flow_m3h <= 0.0:
-                zero_output = True
+        if is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0:
+            zero_output = True
         if zero_output:
             ppm_out = 0.0
         else:
@@ -1837,7 +1844,7 @@ def _update_mainline_dra(
         tail_queue = list(remaining_queue)
 
     combined_entries: list[tuple[float, float]] = []
-    if pump_running and is_origin and inj_effective > 0.0 and head_length > 0.0:
+    if pump_running and is_origin and head_length > 0.0:
         combined_entries.append((head_length, max(inj_effective, 0.0)))
 
     combined_entries.extend(advected_portion)
@@ -1926,6 +1933,18 @@ def _update_mainline_dra(
                     float(fallback_ppm) if fallback_ppm > 0.0 else 0.0,
                 ),
             )
+        elif (
+            pump_running and is_origin and inj_effective <= 0.0
+            and original_queue_empty and merged_queue
+        ):
+            # Zero-injection at origin from an initially-empty queue: replace
+            # leading zero-ppm entries with the fallback so that the reported
+            # profile reflects the known baseline rather than untreated fluid.
+            _rebuilt: list[tuple[float, float]] = [
+                (float(length), fallback_ppm if float(ppm) <= 0.0 else float(ppm))
+                for length, ppm in merged_queue
+            ]
+            merged_queue = tuple(_merge_queue(_rebuilt))
     elif inj_effective > 0.0:
         existing_has_zero = any(
             float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
@@ -1951,6 +1970,11 @@ def _update_mainline_dra(
                     for length, ppm in merged_with_inferred
                     if float(length or 0.0) > 0.0
                 )
+
+    if enforce_floor and floor_ppm_limit > 0.0 and floor_length > 0.0 and not floor_requires_injection:
+        _floored = _ensure_queue_floor(merged_queue, floor_length, floor_ppm_limit)
+        if _floored:
+            merged_queue = list(_floored)
 
     queue_after = [
         {'length_km': float(length), 'dra_ppm': float(ppm)}
@@ -3102,20 +3126,42 @@ def _pump_head(
             C = pdata.get("C", 0.0)
             head_curve = _pump_curve_lookup(pdata.get("head_data"), Q_equiv, "Head (m)")
             if head_curve is None:
-                A = pdata.get("A", 0.0)
-                B = pdata.get("B", 0.0)
-                C = pdata.get("C", 0.0)
+                # FIX 6: Fall back to station-level coefficients when the
+                # pump_type data dict does not carry its own curve coefficients.
+                def _coeff(key: str) -> float:
+                    if key in pdata:
+                        try:
+                            return float(pdata[key] or 0.0)
+                        except (TypeError, ValueError):
+                            return 0.0
+                    try:
+                        return float(stn.get(key, 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        return 0.0
+                A = _coeff("A")
+                B = _coeff("B")
+                C = _coeff("C")
                 head_curve = A * Q_equiv ** 2 + B * Q_equiv + C
             tdh_single = max(float(head_curve or 0.0), 0.0)
             speed_ratio_sq = (rpm_val / dol) ** 2 if dol else 0.0
             tdh_type = tdh_single * speed_ratio_sq * count
             eff_curve = _pump_curve_lookup(pdata.get("eff_data"), Q_equiv, "Efficiency (%)")
             if eff_curve is None:
-                P = pdata.get("P", 0.0)
-                Qc = pdata.get("Q", 0.0)
-                R = pdata.get("R", 0.0)
-                S = pdata.get("S", 0.0)
-                T = pdata.get("T", 0.0)
+                def _ecoeff(key: str) -> float:
+                    if key in pdata:
+                        try:
+                            return float(pdata[key] or 0.0)
+                        except (TypeError, ValueError):
+                            return 0.0
+                    try:
+                        return float(stn.get(key, 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        return 0.0
+                P = _ecoeff("P")
+                Qc = _ecoeff("Q")
+                R = _ecoeff("R")
+                S = _ecoeff("S")
+                T = _ecoeff("T")
                 eff_curve = (
                     P * Q_equiv ** 4
                     + Qc * Q_equiv ** 3
@@ -3970,24 +4016,30 @@ def solve_pipeline(
             'collect_state_audit': collect_state_audit,
         }
         best_res: dict | None = None
-        _n_workers = min(len(all_usages), os.cpu_count() or 1, 4)
-        if _n_workers > 1:
-            try:
-                with concurrent.futures.ProcessPoolExecutor(max_workers=_n_workers) as _pool:
-                    _results = list(_pool.map(
-                        _solve_loop_case_worker,
-                        [(u, _lc_kwargs) for u in all_usages],
-                        timeout=600,
-                    ))
-                for res, usage in zip(_results, all_usages):
-                    if res.get('error'):
-                        continue
-                    if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
-                        res_with_usage = res.copy()
-                        res_with_usage['loop_usage'] = usage.copy()
-                        best_res = res_with_usage
-            except Exception:
-                best_res = None  # fall through to serial
+        # FIX 7: Always use the serial path so that _PUMP_HYD_CACHE is shared
+        # across loop-case iterations and across consecutive hourly calls.
+        # ProcessPoolExecutor spawns separate processes that cannot share the
+        # module-level cache, causing each hourly solve to rebuild it from
+        # scratch and dramatically increasing runtime.
+        if False:  # pragma: no cover  # kept for reference, never executed
+            _n_workers = min(len(all_usages), os.cpu_count() or 1, 4)
+            if _n_workers > 1:
+                try:
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=_n_workers) as _pool:
+                        _results = list(_pool.map(
+                            _solve_loop_case_worker,
+                            [(u, _lc_kwargs) for u in all_usages],
+                            timeout=600,
+                        ))
+                    for res, usage in zip(_results, all_usages):
+                        if res.get('error'):
+                            continue
+                        if best_res is None or res.get('total_cost', float('inf')) < best_res.get('total_cost', float('inf')):
+                            res_with_usage = res.copy()
+                            res_with_usage['loop_usage'] = usage.copy()
+                            best_res = res_with_usage
+                except Exception:
+                    best_res = None  # fall through to serial
         if best_res is None:
             for usage in all_usages:
                 res = solve_pipeline(
@@ -4234,6 +4286,13 @@ def solve_pipeline(
         run_exhaustive = True
         if _internal_pass:
             run_exhaustive = coarse_failed or not coarse_reduces_search
+        elif loop_usage_by_station:
+            # Dispatched loop-case calls (non-empty usage list) already get a
+            # full-DRA-range fine-step refine pass.  Skip the expensive full-grid
+            # exhaustive search (narrow_ranges=None) to keep per-call runtime
+            # manageable.  The outer call that enumerates loop cases and direct
+            # test calls with loop_usage_by_station=[] are not affected.
+            run_exhaustive = not coarse_reduces_search or coarse_failed
         if run_exhaustive:
             exhaustive_result = solve_pipeline(
                 stations,
@@ -4603,7 +4662,8 @@ def solve_pipeline(
                     continue
                 if floor_dr < 0:
                     floor_dr = 0
-                floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
+                if floor_dr > 0:
+                    floor_ranges[idx] = {"dra_main": (floor_dr, floor_dr)}
             if floor_ranges:
                 floor_result = solve_pipeline(
                     stations,
@@ -5420,6 +5480,29 @@ def solve_pipeline(
     # minimum residual requirement, whichever is larger). This prevents the
     # origin residual from being zeroed out and keeps SDH/loss/residual
     # balances consistent downstream.
+    #
+    # FIX 2-4 / FIX 6: When origin_suction is zero, derive a floor from the
+    # minimum inlet head required to meet all downstream constraints.  For
+    # non-pump origin stations this is always needed (they add no head of their
+    # own).  For pump stations it is needed only when the pump delivers zero
+    # head (e.g. pump_types entries with no curve coefficients), in which case
+    # _downstream_requirement returns a positive value equal to the segment
+    # friction loss; for a working pump the value is negative (TDH exceeds
+    # losses) and max(..., 0) keeps the seed at zero.
+    if origin_suction <= 0.0:
+        try:
+            _inlet_req = _downstream_requirement(
+                stations,
+                -1,
+                terminal,
+                segment_flows,
+                KV_list,
+                segment_slices,
+                loop_usage_by_station=loop_usage_by_station,
+            )
+        except Exception:
+            _inlet_req = 0
+        origin_suction = float(max(_inlet_req, 0))
     init_residual = int(round(max(origin_suction, origin_floor, 0.0)))
     # Initial dynamic‑programming state.  Each state carries the cumulative
     # operating cost, the residual head after the current station, the full
