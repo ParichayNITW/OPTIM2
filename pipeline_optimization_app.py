@@ -7699,6 +7699,9 @@ if not auto_batch:
         st.session_state["run_mode"] = "hourly" if is_hourly else "daily"
 
         stations_base = copy.deepcopy(st.session_state.stations)
+        # Clear the module-level pump hydraulics cache so any pump curve edits
+        # made since the last run are always picked up on the fresh optimization.
+        pipeline_model._PUMP_HYD_CACHE.clear()
         for stn in stations_base:
             if stn.get('pump_types'):
                 names_all = []
@@ -8107,6 +8110,7 @@ if not auto_batch:
         with st.spinner("Running dynamic pumping plan optimization..."):
             import copy
             stations_base = copy.deepcopy(st.session_state.get("stations", []))
+            pipeline_model._PUMP_HYD_CACHE.clear()
             for stn in stations_base:
                 if stn.get('pump_types'):
                     names_all = []

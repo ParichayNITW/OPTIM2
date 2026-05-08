@@ -466,6 +466,14 @@ V_MAX = 2.5
 STATE_TOP_K = 50
 STATE_COST_MARGIN = 5000.0
 STATE_COST_MARGIN_PCT = 0.01
+
+# Module-level pump hydraulics cache.  Persists across all hourly time-series
+# solves so _pump_head() is called only ONCE per unique (station, nop, RPM-map,
+# flow) combination instead of being recomputed for every one of the 24 hourly
+# solves.  Must be cleared via pipeline_model._PUMP_HYD_CACHE.clear() in the
+# app before each new optimization run so stale curves are never reused after
+# the user edits pump data.
+_PUMP_HYD_CACHE: dict = {}
 # Limit refinement passes to a smaller state budget so the narrowed search
 # completes quickly even when invoked repeatedly (e.g. within scheduling
 # loops).  The coarse and exhaustive passes retain the broader defaults.
@@ -3222,7 +3230,7 @@ def _build_pump_option_cache(
     """Return cached performance data for a pump operating option."""
 
     nop = int(opt.get('nop', 0) or 0)
-    cache = {
+    empty_cache = {
         'pump_details': [],
         'tdh': 0.0,
         'efficiency': 0.0,
@@ -3231,7 +3239,7 @@ def _build_pump_option_cache(
         'power_cost': 0.0,
     }
     if nop <= 0 or flow_total <= 0:
-        return cache
+        return empty_cache
 
     pump_def = {
         'A': stn_data.get('coef_A', 0.0),
@@ -3287,61 +3295,113 @@ def _build_pump_option_cache(
         and fallback_rpm > 0
     ):
         rpm_map_local = {'default': fallback_rpm}
-    has_positive_rpm = any(
-        isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
-    )
-    if has_positive_rpm:
-        pump_details = _pump_head(pump_def, flow_total, rpm_map_local, nop)
-    else:
-        pump_details = []
 
-    tdh = sum(p.get('tdh', 0.0) for p in pump_details)
-    efficiency = (
-        sum(p.get('eff', 0.0) * p.get('count', 0.0) for p in pump_details) / nop
-        if pump_details
-        else 0.0
-    )
-
-    pump_bkw_total = 0.0
-    prime_kw_total = 0.0
-    power_cost = 0.0
+    # ------------------------------------------------------------------
+    # Phase 1: constant hydraulics — cached at module level so _pump_head
+    # is called only ONCE per unique (station, nop, RPM-map, flow) across
+    # all 24 hourly time-series solves instead of being recomputed every
+    # hour.  power_cost is NOT cached here because it changes each hour
+    # (it depends on start_time via the electricity tariff schedule).
+    # ------------------------------------------------------------------
     rho_val = float(stn_data.get('rho', 0.0) or 0.0)
-    for pinfo in pump_details:
-        eff_local = max(min(pinfo.get('eff', 0.0), 100.0), 1e-6)
-        tdh_local = max(pinfo.get('tdh', 0.0), 0.0)
-        pump_bkw_i = (rho_val * flow_total * 9.81 * tdh_local) / (
-            3600.0 * 1000.0 * (eff_local / 100.0)
+    rpm_frozen = tuple(sorted(rpm_map_local.items()))
+    _hyd_key = (
+        stn_data.get('name', ''),
+        nop,
+        round(flow_total, 4),
+        rpm_frozen,
+        round(rho_val, 3),
+        round(ambient_temp, 2),
+        round(fuel_density, 3),
+    )
+    _cached_hyd = _PUMP_HYD_CACHE.get(_hyd_key)
+    if _cached_hyd is not None:
+        # Cache HIT: reuse pre-computed hydraulics; make fresh shallow copies
+        # of pinfo dicts so Phase 2 can safely annotate pump_bkw/prime_kw/
+        # power_cost without mutating the cached originals.
+        _details_snap, tdh, efficiency, pump_bkw_total, prime_kw_total, _per_pump = _cached_hyd
+        pump_details = [dict(p) for p in _details_snap]
+    else:
+        # Cache MISS: compute hydraulics from scratch via _pump_head.
+        has_positive_rpm = any(
+            isinstance(val, (int, float)) and val > 0 for val in rpm_map_local.values()
         )
-        pump_bkw_total += pump_bkw_i
-        pdata = pinfo.get('data', {})
-        rated_rpm = pdata.get('DOL', stn_data.get('dol', 0.0))
-        rpm_operating = pinfo.get('rpm', opt.get('rpm', 0))
-        if pinfo.get('power_type') == 'Diesel':
-            mech_eff = 0.98
-        else:
-            mech_eff = 0.95 if rpm_operating >= rated_rpm else 0.91
-        prime_kw_i = pump_bkw_i / mech_eff if mech_eff else 0.0
-        prime_kw_total += prime_kw_i
-        if pinfo.get('power_type') == 'Diesel':
-            mode = pdata.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
-            if mode == 'manual':
-                sfc_val = pdata.get('sfc', stn_data.get('sfc', 0.0))
-            elif mode == 'iso':
-                sfc_val = _compute_iso_sfc(
-                    pdata,
-                    rpm_operating,
-                    pump_bkw_i,
-                    pdata.get('DOL', stn_data.get('dol', 0.0)),
-                    stn_data.get('elev', 0.0),
-                    ambient_temp,
-                )
+        pump_details_raw = (
+            _pump_head(pump_def, flow_total, rpm_map_local, nop)
+            if has_positive_rpm
+            else []
+        )
+        tdh = sum(p.get('tdh', 0.0) for p in pump_details_raw)
+        efficiency = (
+            sum(p.get('eff', 0.0) * p.get('count', 0.0) for p in pump_details_raw) / nop
+            if pump_details_raw
+            else 0.0
+        )
+        pump_bkw_total = 0.0
+        prime_kw_total = 0.0
+        _per_pump: list = []
+        for pinfo_r in pump_details_raw:
+            eff_local = max(min(pinfo_r.get('eff', 0.0), 100.0), 1e-6)
+            tdh_local = max(pinfo_r.get('tdh', 0.0), 0.0)
+            pump_bkw_i = (rho_val * flow_total * 9.81 * tdh_local) / (
+                3600.0 * 1000.0 * (eff_local / 100.0)
+            )
+            pump_bkw_total += pump_bkw_i
+            pdata_r = pinfo_r.get('data', {})
+            rated_rpm_r = pdata_r.get('DOL', stn_data.get('dol', 0.0))
+            rpm_operating_r = pinfo_r.get('rpm', fallback_rpm)
+            if pinfo_r.get('power_type') == 'Diesel':
+                mech_eff = 0.98
             else:
-                sfc_val = 0.0
-            fuel_per_kwh = (sfc_val * 1.34102) / fuel_density if sfc_val else 0.0
-            cost_i = prime_kw_i * hours * fuel_per_kwh * price_hsd
+                mech_eff = 0.95 if rpm_operating_r >= rated_rpm_r else 0.91
+            prime_kw_i = pump_bkw_i / mech_eff if mech_eff else 0.0
+            prime_kw_total += prime_kw_i
+            fuel_per_kwh_i = 0.0
+            if pinfo_r.get('power_type') == 'Diesel':
+                mode_r = pdata_r.get('sfc_mode', stn_data.get('sfc_mode', 'manual'))
+                if mode_r == 'manual':
+                    sfc_r = pdata_r.get('sfc', stn_data.get('sfc', 0.0))
+                elif mode_r == 'iso':
+                    sfc_r = _compute_iso_sfc(
+                        pdata_r,
+                        rpm_operating_r,
+                        pump_bkw_i,
+                        rated_rpm_r,
+                        stn_data.get('elev', 0.0),
+                        ambient_temp,
+                    )
+                else:
+                    sfc_r = 0.0
+                fuel_per_kwh_i = (sfc_r * 1.34102) / fuel_density if sfc_r else 0.0
+            _per_pump.append((
+                pinfo_r.get('power_type'),
+                pump_bkw_i,
+                prime_kw_i,
+                fuel_per_kwh_i,
+            ))
+        # Store clean snapshot in module-level cache (pinfo dicts from _pump_head,
+        # without pump_bkw/prime_kw/power_cost written into them).
+        _PUMP_HYD_CACHE[_hyd_key] = (
+            list(pump_details_raw), tdh, efficiency,
+            pump_bkw_total, prime_kw_total, _per_pump,
+        )
+        pump_details = [dict(p) for p in pump_details_raw]
+
+    # ------------------------------------------------------------------
+    # Phase 2: power_cost — computed fresh every call because electricity
+    # tariff cost depends on start_time which changes each hour.
+    # Diesel cost also recomputed here (cheap: just a multiply).
+    # BUG-7 fix: tariff bands spanning midnight (e.g. 22:00–06:00) are
+    # now handled correctly by adjusting the comparison window forward.
+    # ------------------------------------------------------------------
+    tariffs = stn_data.get('tariffs') or []
+    rate_default = float(stn_data.get('rate', 0.0) or 0.0)
+    power_cost = 0.0
+    for i, pinfo in enumerate(pump_details):
+        _ptype, pump_bkw_i, prime_kw_i, fuel_per_kwh_i = _per_pump[i]
+        if _ptype == 'Diesel':
+            cost_i = prime_kw_i * hours * fuel_per_kwh_i * price_hsd
         else:
-            tariffs = stn_data.get('tariffs') or []
-            rate_default = stn_data.get('rate', 0.0)
             remaining = hours
             cost_i = 0.0
             try:
@@ -3352,12 +3412,25 @@ def _build_pump_option_cache(
                 applied = False
                 for tr in tariffs:
                     try:
-                        s = dt.datetime.strptime(tr.get('start'), "%H:%M")
-                        e = dt.datetime.strptime(tr.get('end'), "%H:%M")
+                        s = dt.datetime.strptime(tr.get('start', '00:00'), "%H:%M")
+                        e = dt.datetime.strptime(tr.get('end', '00:00'), "%H:%M")
                     except Exception:
                         continue
-                    if s <= current < e:
-                        span = min((e - current).total_seconds() / 3600.0, remaining)
+                    # Fix midnight-crossing bands (e.g. 22:00–06:00): advance
+                    # end by one day so the comparison window is always valid.
+                    if e <= s:
+                        e += dt.timedelta(days=1)
+                        current_cmp = (
+                            current + dt.timedelta(days=1)
+                            if current.time() < s.time()
+                            else current
+                        )
+                    else:
+                        current_cmp = current
+                    if s <= current_cmp < e:
+                        span = min(
+                            (e - current_cmp).total_seconds() / 3600.0, remaining
+                        )
                         rate = float(tr.get('rate', rate_default))
                         cost_i += prime_kw_i * span * rate
                         current += dt.timedelta(hours=span)
@@ -3375,17 +3448,14 @@ def _build_pump_option_cache(
         pinfo['power_cost'] = cost_i
         power_cost += cost_i
 
-    cache.update(
-        {
-            'pump_details': pump_details,
-            'tdh': tdh,
-            'efficiency': efficiency,
-            'pump_bkw': pump_bkw_total,
-            'prime_kw': prime_kw_total,
-            'power_cost': power_cost,
-        }
-    )
-    return cache
+    return {
+        'pump_details': pump_details,
+        'tdh': tdh,
+        'efficiency': efficiency,
+        'pump_bkw': pump_bkw_total,
+        'prime_kw': prime_kw_total,
+        'power_cost': power_cost,
+    }
 
 
 # ---------------------------------------------------------------------------
