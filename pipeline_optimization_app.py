@@ -8016,25 +8016,26 @@ if not auto_batch:
             hourly_flow_rates_arg = _compute_variable_hourly_flows(
                 stations_base, hours, daily_m3, FLOW_sched, current_vol, plan_df,
             )
-            # Generate candidate brackets around each hour's target.
-            # Wide range (±600 m³/hr) with 50 m³/hr step so the optimizer can always
-            # fall back to a feasible flow even if the high-end targets exceed capacity.
-            # FLOW_sched is always included because it is the only guaranteed-feasible
-            # value (fixed-flow mode uses it successfully) and it may not land on a
-            # 50 m³/hr grid point relative to the weighted target.
-            _CAND_STEP = 50.0
-            _q_lo = max(1.0, FLOW_sched * 0.4)
+            # Candidates anchored at Q_t and above so the per-hour solver is forced
+            # to pump at least Q_t each hour. Without this constraint the solver always
+            # picks the cheapest (lowest) feasible flow and produces constant output.
+            # For peak hours (Q_t ≤ FLOW_sched): FLOW_sched added as upper safety fallback.
+            # For off-peak (Q_t > FLOW_sched): FLOW_sched excluded — solver would pick it.
             _q_hi = FLOW_sched * 1.8
-            _nominal_cand = FLOW_sched  # exact value — rounding can miss narrow feasibility window
             hourly_flow_candidates_arg = []
             for _qt in hourly_flow_rates_arg:
-                _cands = sorted(set(
-                    [_nominal_cand]  # guaranteed-feasible baseline
-                    + [
-                        round(max(_q_lo, min(_q_hi, _qt + i * _CAND_STEP)), 0)
-                        for i in range(-12, 13)
-                    ]
-                ))
+                if _qt > 0:
+                    _base = round(max(1.0, _qt), 1)
+                    _cands = sorted(set([
+                        _base,
+                        round(min(_q_hi, _base + 25), 1),
+                        round(min(_q_hi, _base + 50), 1),
+                        round(min(_q_hi, _base + 100), 1),
+                    ]))
+                    if _qt <= FLOW_sched:
+                        _cands = sorted(set(_cands + [round(FLOW_sched, 1)]))
+                else:
+                    _cands = [round(FLOW_sched, 1)]
                 hourly_flow_candidates_arg.append(_cands)
 
             _vf_df = pd.DataFrame(
