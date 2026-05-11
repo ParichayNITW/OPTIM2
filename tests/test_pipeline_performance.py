@@ -6492,6 +6492,7 @@ def test_normalise_station_profile_preserves_zero_segments() -> None:
     raw_profile = (
         (2.0, 0.0),
         (3.0, 5.0),
+        (1.0, 5.0),
         (1.5, 0.0),
         (4.0, 7.0),
         (0.5, 0.0),
@@ -6502,6 +6503,7 @@ def test_normalise_station_profile_preserves_zero_segments() -> None:
     assert normalised == [
         {"length_km": 2.0, "dra_ppm": 0.0},
         {"length_km": 3.0, "dra_ppm": 5.0},
+        {"length_km": 1.0, "dra_ppm": 5.0},
         {"length_km": 1.5, "dra_ppm": 0.0},
         {"length_km": 4.0, "dra_ppm": 7.0},
         {"length_km": 0.5, "dra_ppm": 0.0},
