@@ -80,6 +80,169 @@ def _volume_from_km(length_km: float, diameter_m: float) -> float:
     return length * 1000.0 * area
 
 
+def _station_inner_diameter(station: Mapping[str, object] | None, default: float = 0.0) -> float:
+    """Return the best available inner diameter for a station/segment."""
+
+    if not isinstance(station, Mapping):
+        return float(default or 0.0)
+    for key in ("d_inner", "d"):
+        try:
+            value = float(station.get(key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            return value
+    try:
+        od = float(station.get("D", 0.0) or 0.0)
+        wt = float(station.get("t", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        od = wt = 0.0
+    inner = od - 2.0 * wt
+    if inner > 0.0:
+        return inner
+    return float(default or 0.0)
+
+
+def _linefill_to_segment_length_queue(
+    entries: Sequence[Mapping[str, object]] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    default_diameter: float = 0.0,
+) -> list[tuple[float, float]]:
+    """Convert volumetric/length linefill rows to a downstream length queue.
+
+    Volumetric rows are split at segment boundaries and converted with the
+    actual inner diameter of the segment occupied by that volume.  Explicit
+    zero-ppm rows are retained.
+    """
+
+    if not entries:
+        return []
+    station_list = list(stations or [])
+    seg_idx = 0
+    seg_remaining = (
+        max(float(station_list[0].get("L", 0.0) or 0.0), 0.0)
+        if station_list
+        else float("inf")
+    )
+    queue: list[tuple[float, float]] = []
+
+    def current_diameter() -> float:
+        if 0 <= seg_idx < len(station_list):
+            return _station_inner_diameter(station_list[seg_idx], default_diameter)
+        return float(default_diameter or 0.0)
+
+    def advance_empty_segments() -> None:
+        nonlocal seg_idx, seg_remaining
+        while station_list and seg_idx < len(station_list) and seg_remaining <= 1e-9:
+            seg_idx += 1
+            if seg_idx < len(station_list):
+                seg_remaining = max(float(station_list[seg_idx].get("L", 0.0) or 0.0), 0.0)
+            else:
+                seg_remaining = float("inf")
+
+    for batch in entries:
+        if not isinstance(batch, Mapping):
+            continue
+        try:
+            ppm_val = float(batch.get("dra_ppm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        try:
+            length_val = float(batch.get("length_km", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        if length_val > 0.0:
+            queue.append((length_val, ppm_val))
+            # Advance the segment cursor so subsequent volume rows continue at
+            # the correct physical location.
+            remaining_len = length_val
+            while remaining_len > 1e-9:
+                advance_empty_segments()
+                take = min(remaining_len, seg_remaining) if station_list else remaining_len
+                remaining_len -= take
+                if station_list:
+                    seg_remaining -= take
+            continue
+
+        try:
+            volume_remaining = float(batch.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            volume_remaining = 0.0
+        if volume_remaining <= 0.0:
+            continue
+
+        while volume_remaining > 1e-9:
+            advance_empty_segments()
+            d_inner = current_diameter()
+            if d_inner <= 0.0:
+                break
+            seg_cap_vol = _volume_from_km(seg_remaining, d_inner) if math.isfinite(seg_remaining) else volume_remaining
+            take_vol = min(volume_remaining, seg_cap_vol) if seg_cap_vol > 0.0 else volume_remaining
+            take_len = _km_from_volume(take_vol, d_inner)
+            if take_len <= 1e-12:
+                break
+            queue.append((take_len, ppm_val))
+            volume_remaining -= take_vol
+            if station_list:
+                seg_remaining -= take_len
+            if not station_list:
+                break
+
+    return queue
+
+
+def _queue_to_segment_volume_entries(
+    queue_entries: Sequence[tuple[float, float]] | None,
+    stations: Sequence[Mapping[str, object]] | None,
+    default_diameter: float = 0.0,
+) -> list[dict]:
+    """Convert a length/ppm queue back to volumes using segment diameters."""
+
+    converted: list[dict] = []
+    if not queue_entries:
+        return converted
+    station_list = list(stations or [])
+    position = 0.0
+    cum_lengths: list[float] = []
+    total = 0.0
+    for stn in station_list:
+        total += max(float(stn.get("L", 0.0) or 0.0), 0.0)
+        cum_lengths.append(total)
+
+    def segment_at(pos: float) -> tuple[float, float]:
+        seg_start = 0.0
+        for idx, seg_end in enumerate(cum_lengths):
+            if pos < seg_end - 1e-9:
+                return seg_end - pos, _station_inner_diameter(station_list[idx], default_diameter)
+            seg_start = seg_end
+        return float("inf"), float(default_diameter or 0.0)
+
+    for length_raw, ppm_raw in queue_entries:
+        try:
+            remaining = float(length_raw or 0.0)
+        except (TypeError, ValueError):
+            remaining = 0.0
+        try:
+            ppm_val = float(ppm_raw or 0.0)
+        except (TypeError, ValueError):
+            ppm_val = 0.0
+        while remaining > 1e-9:
+            seg_remaining, d_inner = segment_at(position)
+            take = min(remaining, seg_remaining)
+            if take <= 1e-9:
+                break
+            converted.append({
+                "length_km": take,
+                "dra_ppm": ppm_val if ppm_val > 0.0 else 0.0,
+                "volume": _volume_from_km(take, d_inner) if d_inner > 0.0 else 0.0,
+            })
+            remaining -= take
+            position += take
+            if not station_list:
+                break
+    return converted
+
+
 def generate_type_combinations(maxA: int = 3, maxB: int = 3) -> list[tuple[int, int]]:
     """Return all feasible pump count combinations for two pump types."""
     combos = [
@@ -1526,527 +1689,180 @@ def _update_mainline_dra(
     float,
     bool,
 ]:
-    """Advance the mainline DRA queue for ``segment_length`` kilometres.
+    """Advance the mainline DRA queue using station-reset semantics.
 
-    Parameters
-    ----------
-    queue:
-        Ordered list describing the downstream DRA distribution.  Each element
-        should provide ``length_km`` and ``dra_ppm`` keys (either as a mapping
-        or two-item iterable) with the head of the queue at index ``0``.
-    stn_data:
-        Station metadata containing at least ``d_inner`` for pumped-volume
-        calculations.  Optional keys such as ``kv`` and
-        ``dra_injector_position`` refine the DRA mixing behaviour.
-    opt:
-        Chosen operating option which must include ``dra_ppm_main`` and the
-        number of operating pumps ``nop``.
-    segment_length:
-        Length (km) of the current segment requiring hydraulic evaluation.
-    flow_m3h / hours:
-        Throughput and timestep used to determine the pumped distance.
-    pump_running:
-        ``True`` when the station's pumps are active for this option.
-    dra_shear_factor:
-        Fractional reduction applied to upstream drag reduction when pumps are
-        running.  Values are clamped to ``[0, 1]``.
-    shear_injection:
-        Deprecated flag retained for backward compatibility.  Injection is
-        assumed to occur downstream of the active pumps so the flag is ignored
-        unless ``injector_position`` explicitly marks the injector as
-        "upstream".
-    is_origin:
-        ``True`` when handling the origin station.  A running origin pump with
-        no injection outputs untreated fluid.
-
-    Returns
-    -------
-    tuple
-        ``(dra_segments, queue_after, inj_ppm_main, floor_requires_injection)`` where ``dra_segments``
-        is an ordered list of ``(length_km, ppm)`` describing the portion of
-        the queue covering ``segment_length``.  ``queue_after`` provides the
-        updated downstream queue after pumping ``flow_m3h * hours`` and
-        ``inj_ppm_main`` echoes the injected concentration for reporting.
-        ``floor_requires_injection`` is ``True`` when a downstream DRA floor
-        could not be met without additional injection upstream.
+    The DRA queue is a physical downstream queue.  During one timestep the
+    leading pumped slug reaches the current station boundary and its incoming
+    DRA is reset there.  The slug discharged into the segment downstream of the
+    station receives exactly the station-selected injection ppm, or explicit
+    ``0`` ppm when no injection is selected.  Incoming ppm is never added to
+    station injection ppm.  New injection is sheared only for the legacy
+    ``dra_injector_position == "upstream"`` case.
     """
 
-    inj_ppm_main = float(opt.get("dra_ppm_main", 0.0) or 0.0)
+    inj_requested = max(float(opt.get("dra_ppm_main", 0.0) or 0.0), 0.0)
     if not is_origin:
         idx_val = stn_data.get('idx')
         if isinstance(idx_val, (int, float)):
             is_origin = int(idx_val) == 0
 
-    segment_length = max(float(segment_length) if segment_length is not None else 0.0, 0.0)
-    flow_m3h = float(flow_m3h or 0.0)
-    hours = max(float(hours or 0.0), 0.0)
-    d_inner = float(stn_data.get("d_inner") or stn_data.get("d") or 0.0)
+    try:
+        segment_length = max(float(segment_length or 0.0), 0.0)
+    except (TypeError, ValueError):
+        segment_length = 0.0
+    try:
+        flow_m3h = float(flow_m3h or 0.0)
+    except (TypeError, ValueError):
+        flow_m3h = 0.0
+    try:
+        hours = max(float(hours or 0.0), 0.0)
+    except (TypeError, ValueError):
+        hours = 0.0
+    d_inner = _station_inner_diameter(stn_data)
 
     if precomputed is None:
-        pumped_length = _km_from_volume(flow_m3h * hours, d_inner) if d_inner > 0 else 0.0
+        pumped_length = _km_from_volume(flow_m3h * hours, d_inner) if d_inner > 0.0 else 0.0
+        _unused_consumed: tuple[tuple[float, float], ...] = tuple()
+        remainder_pre: tuple[tuple[float, float], ...] | None = None
     else:
-        pumped_length = float(precomputed[0] if precomputed and len(precomputed) > 0 else 0.0)
-    pumped_length = max(pumped_length, 0.0)
-
-    initial_zero_prefix = _queue_leading_zero_length(queue)
+        pumped_length = max(float(precomputed[0] if len(precomputed) > 0 else 0.0), 0.0)
+        _unused_consumed = tuple(precomputed[1]) if len(precomputed) > 1 else tuple()
+        remainder_pre = tuple(precomputed[2]) if len(precomputed) > 2 else tuple()
 
     local_shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
     global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0)) if pump_running else 0.0
-    if pump_running:
-        shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
-    else:
-        shear = local_shear
+    shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear) if pump_running else local_shear
     shear = max(0.0, min(shear, 1.0))
-    injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
+    injector_pos = str(stn_data.get("dra_injector_position", "") or "").lower()
     apply_injection_shear = pump_running and injector_pos == "upstream"
     kv = float(stn_data.get("kv", 3.0) or 3.0)
 
-    fallback_ppm = 0.0
-    if isinstance(stn_data, Mapping):
-        fallback_raw = stn_data.get('fallback_dra_ppm')
-        if isinstance(fallback_raw, (int, float)):
-            fallback_ppm = float(fallback_raw or 0.0)
+    inj_effective = inj_requested
+    if inj_requested > 0.0 and apply_injection_shear:
+        inj_dr = 0.0
+        if kv > 0.0:
+            try:
+                inj_dr = float(get_dr_for_ppm(kv, inj_requested))
+            except Exception:
+                inj_dr = 0.0
+        if inj_dr > 0.0:
+            dr_use = max(inj_dr * (1.0 - shear), 0.0)
+            if dr_use > 0.0:
+                try:
+                    inj_effective = float(get_ppm_for_dr(kv, dr_use))
+                except Exception:
+                    inj_effective = inj_requested * max(1.0 - shear, 0.0)
+            else:
+                inj_effective = 0.0
+        else:
+            inj_effective = inj_requested * max(1.0 - shear, 0.0)
 
-    floor_ppm_limit = 0.0
-    floor_length = 0.0
-    enforce_floor = False
+    existing_queue: list[tuple[float, float]] = []
+    if queue:
+        for raw in queue:
+            if isinstance(raw, Mapping):
+                length_raw = raw.get("length_km", 0.0)
+                ppm_raw = raw.get("dra_ppm", 0.0)
+            elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                length_raw, ppm_raw = raw[0], raw[1]
+            else:
+                continue
+            try:
+                length = float(length_raw or 0.0)
+            except (TypeError, ValueError):
+                length = 0.0
+            if length <= 0.0:
+                continue
+            try:
+                ppm_val = float(ppm_raw or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            existing_queue.append((length, ppm_val))
+
+    existing_total = _queue_total_length(existing_queue)
+    if existing_total > 0.0:
+        target_length = existing_total
+    elif segment_length > 0.0:
+        target_length = segment_length
+    else:
+        target_length = pumped_length
+
+    if remainder_pre is None:
+        remaining_queue = list(_trim_queue_front(existing_queue, pumped_length))
+    else:
+        remaining_queue = [
+            (float(length or 0.0), float(ppm or 0.0))
+            for length, ppm in remainder_pre
+            if float(length or 0.0) > 0.0
+        ]
+
+    head_length = min(pumped_length, target_length) if target_length > 0.0 else pumped_length
+    discharged_ppm = inj_effective if inj_effective > 0.0 else 0.0
+
+    combined_entries: list[tuple[float, float]] = []
+    if head_length > 1e-9:
+        combined_entries.append((head_length, discharged_ppm))
+    combined_entries.extend(remaining_queue)
+
+    combined_total = _queue_total_length(combined_entries)
+    excess_length = max(combined_total - target_length, 0.0) if target_length > 0.0 else 0.0
+    trimmed_queue, _leftover = _trim_queue_tail(combined_entries, excess_length)
+    merged_queue = _merge_queue(trimmed_queue)
+
     floor_requires_injection = False
-    if isinstance(segment_floor, Mapping):
+    if isinstance(segment_floor, Mapping) and segment_floor.get('enforce_queue', True):
+        floor_ppm_limit = 0.0
         try:
-            floor_length = float(segment_floor.get('length_km', segment_length) or 0.0)
+            floor_ppm_limit = max(floor_ppm_limit, float(segment_floor.get('dra_ppm', 0.0) or 0.0))
         except (TypeError, ValueError):
-            floor_length = 0.0
-        try:
-            floor_ppm = float(segment_floor.get('dra_ppm', 0.0) or 0.0)
-        except (TypeError, ValueError):
-            floor_ppm = 0.0
-        floor_segments: list[tuple[float, float]] = []
+            pass
         seg_floor_raw = segment_floor.get('segments')
         if isinstance(seg_floor_raw, Sequence):
             for seg_entry in seg_floor_raw:
                 if not isinstance(seg_entry, Mapping):
                     continue
                 try:
-                    seg_length = float(seg_entry.get('length_km', 0.0) or 0.0)
+                    floor_ppm_limit = max(floor_ppm_limit, float(seg_entry.get('dra_ppm', 0.0) or 0.0))
                 except (TypeError, ValueError):
-                    seg_length = 0.0
-                try:
-                    seg_ppm = float(seg_entry.get('dra_ppm', 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    seg_ppm = 0.0
-                if seg_ppm <= 0.0:
-                    try:
-                        seg_perc = float(seg_entry.get('dra_perc', 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        seg_perc = 0.0
-                    if seg_perc > 0.0 and kv > 0.0:
-                        try:
-                            seg_ppm = float(get_ppm_for_dr(kv, seg_perc))
-                        except Exception:
-                            seg_ppm = 0.0
-                if seg_length <= 0.0 or seg_ppm < 0.0:
-                    continue
-                floor_segments.append((seg_length, seg_ppm))
-        ppm_candidates = [ppm for ppm in (floor_ppm, *(ppm for _, ppm in floor_segments)) if ppm > 0.0]
-        if ppm_candidates:
-            floor_ppm_limit = max(ppm_candidates)
-        enforce_floor = bool((floor_length > 0.0 or floor_segments) and segment_floor.get('enforce_queue', True))
-        if enforce_floor:
-            if inj_ppm_main <= 0.0:
-                floor_requires_injection = True
-            elif floor_ppm_limit > 0.0 and inj_ppm_main + 1e-9 < floor_ppm_limit:
-                floor_requires_injection = True
+                    pass
+        if floor_ppm_limit > 0.0 and inj_requested + 1e-9 < floor_ppm_limit:
+            floor_requires_injection = True
 
-    inj_requested = max(float(inj_ppm_main or 0.0), 0.0)
-    inj_effective = 0.0
-    if inj_requested > 0:
-        if not pump_running or not apply_injection_shear:
-            inj_effective = inj_requested
-        else:
-            inj_dr = 0.0
-            if kv > 0:
-                try:
-                    inj_dr = float(get_dr_for_ppm(kv, inj_requested))
-                except Exception:
-                    inj_dr = 0.0
-            if inj_dr > 0:
-                dr_use = inj_dr * (1.0 - shear if shear > 0 else 1.0)
-                if dr_use < 0:
-                    dr_use = 0.0
-                if dr_use > 0:
-                    try:
-                        inj_effective = float(get_ppm_for_dr(kv, dr_use))
-                    except Exception:
-                        inj_effective = inj_requested * (1.0 - shear if shear > 0 else 1.0)
-                else:
-                    inj_effective = 0.0
-            else:
-                multiplier = 1.0 - shear if shear > 0 else 1.0
-                if multiplier < 0.0:
-                    multiplier = 0.0
-                inj_effective = inj_requested * multiplier
-
-    existing_queue: list[tuple[float, float]] = []
-    if queue:
-        for raw in queue:
-            if isinstance(raw, Mapping):
-                length = float(raw.get("length_km", 0.0) or 0.0)
-                ppm_val = float(raw.get("dra_ppm", 0.0) or 0.0)
-            elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
-                length = float(raw[0] or 0.0)
-                ppm_val = float(raw[1] or 0.0)
-            else:
-                continue
-            if length <= 0:
-                continue
-            existing_queue.append((length, ppm_val))
-
-    existing_queue = _merge_queue(existing_queue)
-    existing_total = _queue_total_length(existing_queue)
-
-    # Track whether the original queue was empty before pre-filling with fallback.
-    original_queue_empty = not existing_queue
-    if original_queue_empty and fallback_ppm > 0.0:
-        _fb_len = segment_length if segment_length > 0.0 else pumped_length
-        if _fb_len > 0.0:
-            existing_queue = [(_fb_len, fallback_ppm)]
-            existing_total = _fb_len
-
-    if existing_total > 0:
-        target_length = existing_total
-    elif segment_length > 0:
-        target_length = segment_length
-    else:
-        target_length = pumped_length
-
-    head_length = pumped_length
-    if target_length > 0:
-        head_length = min(head_length, target_length)
-
-    pumped_portion: list[tuple[float, float]] = []
-    remaining_queue: list[tuple[float, float]] = []
-    if precomputed is not None and len(precomputed) >= 3:
-        pumped_portion = [
-            (float(length or 0.0), float(ppm or 0.0))
-            for length, ppm in precomputed[1]
-            if float(length or 0.0) > 0.0
-        ]
-        remaining_queue = [
-            (float(length or 0.0), float(ppm or 0.0))
-            for length, ppm in precomputed[2]
-            if float(length or 0.0) > 0.0
-        ]
-        if not pumped_portion and not remaining_queue and existing_queue:
-            pumped_remaining = max(pumped_length, 0.0)
-            for length, ppm_val in existing_queue:
-                length_float = float(length or 0.0)
-                ppm_float = float(ppm_val or 0.0)
-                if length_float <= 0.0:
-                    continue
-                if pumped_remaining > 1e-9:
-                    take = min(length_float, pumped_remaining)
-                    if take > 1e-9:
-                        pumped_portion.append((take, ppm_float))
-                        pumped_remaining -= take
-                    leftover = length_float - take
-                    if leftover > 1e-9:
-                        remaining_queue.append((leftover, ppm_float))
-                else:
-                    remaining_queue.append((length_float, ppm_float))
-            if pumped_remaining > 1e-9:
-                pumped_portion.append((pumped_remaining, 0.0))
-    else:
-        pumped_remaining = max(pumped_length, 0.0)
-        for length, ppm_val in existing_queue:
-            length_float = float(length or 0.0)
-            ppm_float = float(ppm_val or 0.0)
-            if length_float <= 0.0:
-                continue
-            if pumped_remaining > 1e-9:
-                take = min(length_float, pumped_remaining)
-                if take > 1e-9:
-                    pumped_portion.append((take, ppm_float))
-                    pumped_remaining -= take
-                leftover = length_float - take
-                if leftover > 1e-9:
-                    remaining_queue.append((leftover, ppm_float))
-            else:
-                remaining_queue.append((length_float, ppm_float))
-        if pumped_remaining > 1e-9:
-            pumped_portion.append((pumped_remaining, 0.0))
-
-    shear_existing = shear
-    if pump_running and shear_existing > 0.0 and is_origin and not apply_injection_shear:
-        shear_existing = 0.0
-
-    def _apply_shear(ppm_val: float) -> float:
-        ppm_float = float(ppm_val or 0.0)
-        if ppm_float <= 0.0:
-            return 0.0
-        if not pump_running or shear_existing <= 0.0:
-            return ppm_float
-        dr_value = 0.0
-        if kv > 0:
-            try:
-                dr_value = float(get_dr_for_ppm(kv, ppm_float))
-            except Exception:
-                dr_value = 0.0
-        if dr_value > 0.0:
-            dr_value *= (1.0 - shear_existing)
-            if dr_value <= 0.0:
-                return 0.0
-            try:
-                return float(get_ppm_for_dr(kv, dr_value))
-            except Exception:
-                return max(ppm_float * (1.0 - shear_existing), 0.0)
-        return max(ppm_float * (1.0 - shear_existing), 0.0)
-
-    pumped_adjusted: list[tuple[float, float]] = []
-    pumped_differs = False
-    for length, ppm_val in pumped_portion:
-        length_float = float(length or 0.0)
-        if length_float <= 0.0:
-            continue
-        ppm_input = float(ppm_val or 0.0)
-        zero_output = False
-        if is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0:
-            zero_output = True
-        if zero_output:
-            ppm_out = 0.0
-        else:
-            ppm_out = _apply_shear(ppm_input)
-            if inj_effective > 0.0:
-                if not is_origin:
-                    ppm_out += inj_effective
-                elif not pump_running:
-                    ppm_out += inj_effective
-        ppm_out = max(ppm_out, 0.0)
-        if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
-            pumped_differs = True
-        pumped_adjusted.append((length_float, ppm_out))
-
-    tail_queue: list[tuple[float, float]]
-    if pump_running:
-        advected_portion = [
-            (float(length), float(ppm))
-            for length, ppm in pumped_adjusted
-            if float(length or 0.0) > 0.0
-        ]
-        # Always advance the queue by the pumped distance; do not reattach the
-        # untrimmed head when shear alters the pumped slice, otherwise the
-        # pipeline artificially retains distance that has already moved past the
-        # station.
-        tail_queue = list(remaining_queue)
-    else:
-        advected_portion = pumped_adjusted
-        # For idle pumps the queue still advances by the pumped portion (if any)
-        # so the remaining downstream queue should exclude the removed head.
-        tail_queue = list(remaining_queue)
-
-    combined_entries: list[tuple[float, float]] = []
-    if pump_running and is_origin and head_length > 0.0:
-        combined_entries.append((head_length, max(inj_effective, 0.0)))
-
-    combined_entries.extend(advected_portion)
-    combined_entries.extend(tail_queue)
-
-    combined_total = _queue_total_length(combined_entries)
-
-    excess_length = 0.0
-    if target_length > 0:
-        excess_length = max(combined_total - target_length, 0.0)
-
-    trimmed_queue, _leftover = _trim_queue_tail(combined_entries, excess_length)
-    merged_queue = _merge_queue(trimmed_queue)
-
-    queue_contains_zero = any(
-        float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
+    queue_after_tuple = tuple(
+        (float(length), float(ppm))
         for length, ppm in merged_queue
+        if float(length or 0.0) > 0.0
     )
-
-    if (
-        pump_running
-        and is_origin
-        and initial_zero_prefix > 0.0
-        and head_length > 0.0
-        and merged_queue
-    ):
-        zero_tol = 1e-9
-        pipeline_length = _queue_total_length(merged_queue)
-        if pipeline_length > 0.0:
-            base_queue = tuple(
-                (
-                    float(length or 0.0),
-                    float(ppm or 0.0),
-                )
-                for length, ppm in merged_queue
-                if float(length or 0.0) > 0.0
-            )
-
-            inj_entry: tuple[float, float] | None = None
-            inj_length = 0.0
-            if inj_effective > 1e-12:
-                inj_length = min(head_length, pipeline_length)
-                if inj_length > 0.0:
-                    inj_entry = (inj_length, float(max(inj_effective, 0.0)))
-            remainder_after_injection: tuple[tuple[float, float], ...]
-            if inj_length > 0.0:
-                remainder_after_injection = _trim_queue_front(base_queue, inj_length)
-            else:
-                remainder_after_injection = base_queue
-
-            rest_entries = [
-                (float(length or 0.0), float(ppm or 0.0))
-                for length, ppm in remainder_after_injection
-                if float(length or 0.0) > 0.0
-            ]
-
-            zero_front_pre = 0.0
-            if rest_entries and abs(rest_entries[0][1]) <= zero_tol:
-                zero_front_pre = float(rest_entries[0][0])
-                rest_entries = rest_entries[1:]
-
-            zero_capacity = max(pipeline_length - inj_length, 0.0)
-            target_zero_length = min(initial_zero_prefix + head_length, zero_capacity)
-            if target_zero_length < zero_front_pre:
-                target_zero_length = zero_front_pre
-
-            trim_needed = max(0.0, target_zero_length - zero_front_pre)
-            trimmed_rest, leftover = _trim_queue_tail(rest_entries, trim_needed)
-            if leftover > 1e-9 and target_zero_length > 0.0:
-                target_zero_length = max(0.0, target_zero_length - leftover)
-
-            adjusted_entries: list[tuple[float, float]] = []
-            if inj_entry is not None and inj_entry[0] > 0.0:
-                adjusted_entries.append(inj_entry)
-            if target_zero_length > 0.0:
-                adjusted_entries.append((target_zero_length, 0.0))
-            adjusted_entries.extend(trimmed_rest)
-            merged_queue = _merge_queue(adjusted_entries)
-
-    if fallback_ppm > 0.0:
-        fallback_length = target_length if target_length > 0 else segment_length
-        if fallback_length > 0.0 and not merged_queue:
-            merged_queue = (
-                (
-                    float(fallback_length),
-                    float(fallback_ppm) if fallback_ppm > 0.0 else 0.0,
-                ),
-            )
-        elif (
-            pump_running and is_origin and inj_effective <= 0.0
-            and original_queue_empty and merged_queue
-        ):
-            # Zero-injection at origin from an initially-empty queue: replace
-            # leading zero-ppm entries with the fallback so that the reported
-            # profile reflects the known baseline rather than untreated fluid.
-            _rebuilt: list[tuple[float, float]] = [
-                (float(length), fallback_ppm if float(ppm) <= 0.0 else float(ppm))
-                for length, ppm in merged_queue
-            ]
-            merged_queue = tuple(_merge_queue(_rebuilt))
-    elif inj_effective > 0.0:
-        existing_has_zero = any(
-            float(length or 0.0) > 0.0 and float(ppm or 0.0) <= 0.0
-            for length, ppm in existing_queue
-        )
-        if not existing_has_zero:
-            inferred_ppm = 0.0
-            for _len_existing, ppm_existing in reversed(existing_queue):
-                if ppm_existing > 0.0:
-                    inferred_ppm = ppm_existing
-                    break
-            inferred_length = target_length if target_length > 0 else segment_length
-            if inferred_ppm > 0.0 and inferred_length > 0.0 and merged_queue:
-                merged_with_inferred = _ensure_queue_floor(
-                    merged_queue,
-                    inferred_length,
-                    inferred_ppm,
-                    None,
-                    enforce_positive_floor=False,
-                )
-                merged_queue = tuple(
-                    (float(length), float(ppm))
-                    for length, ppm in merged_with_inferred
-                    if float(length or 0.0) > 0.0
-                )
-
-    if enforce_floor and floor_ppm_limit > 0.0 and floor_length > 0.0 and not floor_requires_injection:
-        _floored = _ensure_queue_floor(merged_queue, floor_length, floor_ppm_limit)
-        if _floored:
-            merged_queue = list(_floored)
-
     queue_after = [
-        {'length_km': float(length), 'dra_ppm': float(ppm)}
-        for length, ppm in merged_queue
-        if float(length) > 0
+        {"length_km": float(length), "dra_ppm": float(ppm)}
+        for length, ppm in queue_after_tuple
     ]
 
-    if segment_length > 0:
-        profile_source = _segment_profile_from_queue(merged_queue, 0.0, segment_length)
-    else:
-        profile_source = tuple()
-
-    has_explicit_zero = False
-    if profile_source:
-        for entry in profile_source:
-            if not entry:
-                continue
-            try:
-                length_val = float(entry[0] if len(entry) > 0 else 0.0)
-            except (TypeError, ValueError):
-                length_val = 0.0
-            if length_val <= 0.0:
-                continue
-            try:
-                ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
-            except (TypeError, ValueError):
-                ppm_val = 0.0
-            if ppm_val <= 0.0:
-                has_explicit_zero = True
-                break
-
+    profile_source = _segment_profile_from_queue(queue_after_tuple, 0.0, segment_length) if segment_length > 0.0 else tuple()
     dra_segments: list[tuple[float, float]] = []
     profile_total = 0.0
-    suppress_zero_profile = bool(pump_running and is_origin and inj_effective <= 0.0)
-    has_positive = False
-    for entry in profile_source:
-        if not entry:
+    for length_raw, ppm_raw in profile_source:
+        length = float(length_raw or 0.0)
+        if length <= 0.0:
             continue
-        length = float(entry[0])
-        if length <= 0:
-            continue
+        ppm_val = float(ppm_raw or 0.0)
         profile_total += length
-        ppm_val = float(entry[1] if len(entry) > 1 else 0.0)
-
-        if suppress_zero_profile and ppm_val <= 0.0:
-            continue
-        if ppm_val > 0.0:
-            has_positive = True
-
         if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
-            prev_len, _ = dra_segments[-1]
-            dra_segments[-1] = (prev_len + length, ppm_val)
+            prev_len, prev_ppm = dra_segments[-1]
+            dra_segments[-1] = (prev_len + length, prev_ppm)
         else:
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9 and not suppress_zero_profile:
+    if remaining_length > 1e-9:
         if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
         else:
             dra_segments.append((remaining_length, 0.0))
 
-    if not has_positive:
-        dra_segments = []
-
-    if floor_requires_injection and inj_effective <= 0.0:
-        has_positive = any(float(ppm) > 0.0 for _length, ppm in dra_segments)
-        if not has_positive:
-            dra_segments = []
-
     return dra_segments, queue_after, inj_requested, floor_requires_injection
+
 @njit(cache=True, fastmath=True)
 def _segment_hydraulics(
     flow_m3h: float,
@@ -2846,6 +2662,122 @@ def _effective_dra_response(
         return 0.0, 0.0
     return weighted_dr / treated_length, treated_length
 
+
+
+def _segment_hydraulics_dra_profile(
+    flow_m3h: float,
+    L: float,
+    d_inner: float,
+    rough: float,
+    kv_default: float,
+    dra_profile: Sequence[tuple[float, float]] | Sequence[Mapping[str, object]] | None,
+    slices: list[dict] | tuple[dict, ...] | None = None,
+    limit: float | None = None,
+) -> tuple[float, float, float, float]:
+    """Accumulate losses by intersecting DRA slices with fluid slices."""
+
+    try:
+        total_length = max(float(L or 0.0), 0.0)
+    except (TypeError, ValueError):
+        total_length = 0.0
+    if limit is not None:
+        try:
+            total_length = min(total_length, max(float(limit or 0.0), 0.0))
+        except (TypeError, ValueError):
+            pass
+    if total_length <= 0.0:
+        return _segment_hydraulics(flow_m3h, 0.0, d_inner, rough, kv_default, 0.0, 0.0)
+
+    fluid: list[tuple[float, float]] = []
+    if slices:
+        for entry in slices:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                seg_len = float(entry.get('length_km', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                seg_len = 0.0
+            if seg_len <= 0.0:
+                continue
+            try:
+                seg_kv = float(entry.get('kv', kv_default) or kv_default)
+            except (TypeError, ValueError):
+                seg_kv = kv_default
+            fluid.append((seg_len, seg_kv if seg_kv > 0.0 else (kv_default if kv_default > 0.0 else 1.0)))
+    if not fluid:
+        fluid = [(total_length, kv_default if kv_default > 0.0 else 1.0)]
+
+    dra: list[tuple[float, float]] = []
+    if dra_profile:
+        for entry in dra_profile:
+            if isinstance(entry, Mapping):
+                length_raw = entry.get('length_km', 0.0)
+                ppm_raw = entry.get('dra_ppm', 0.0)
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                length_raw, ppm_raw = entry[0], entry[1]
+            else:
+                continue
+            try:
+                seg_len = float(length_raw or 0.0)
+            except (TypeError, ValueError):
+                seg_len = 0.0
+            if seg_len <= 0.0:
+                continue
+            try:
+                ppm_val = float(ppm_raw or 0.0)
+            except (TypeError, ValueError):
+                ppm_val = 0.0
+            dra.append((seg_len, ppm_val))
+    if not dra:
+        dra = [(total_length, 0.0)]
+
+    i_fluid = 0
+    i_dra = 0
+    rem_fluid = fluid[0][0]
+    kv_cur = fluid[0][1]
+    rem_dra = dra[0][0]
+    ppm_cur = dra[0][1]
+    remaining = total_length
+    total_hl = 0.0
+    first_stats: tuple[float, float, float] | None = None
+
+    while remaining > 1e-9:
+        take = min(remaining, rem_fluid, rem_dra)
+        if take <= 1e-12:
+            break
+        dra_perc = 0.0
+        if ppm_cur > 0.0:
+            try:
+                dra_perc = max(float(get_dr_for_ppm(kv_cur, ppm_cur)), 0.0)
+            except Exception:
+                dra_perc = 0.0
+        hl, v, Re, f = _segment_hydraulics(flow_m3h, take, d_inner, rough, kv_cur, dra_perc, take if dra_perc > 0.0 else 0.0)
+        total_hl += float(hl)
+        if first_stats is None:
+            first_stats = (float(v), float(Re), float(f))
+        remaining -= take
+        rem_fluid -= take
+        rem_dra -= take
+        if rem_fluid <= 1e-9:
+            i_fluid += 1
+            if i_fluid < len(fluid):
+                rem_fluid = fluid[i_fluid][0]
+                kv_cur = fluid[i_fluid][1]
+            else:
+                rem_fluid = float('inf')
+        if rem_dra <= 1e-9:
+            i_dra += 1
+            if i_dra < len(dra):
+                rem_dra = dra[i_dra][0]
+                ppm_cur = dra[i_dra][1]
+            else:
+                rem_dra = float('inf')
+                ppm_cur = 0.0
+
+    if first_stats is None:
+        _, v, Re, f = _segment_hydraulics(flow_m3h, total_length, d_inner, rough, kv_default, 0.0, 0.0)
+        first_stats = (float(v), float(Re), float(f))
+    return total_hl, first_stats[0], first_stats[1], first_stats[2]
 
 def _parallel_segment_hydraulics(
     flow_m3h: float,
@@ -5517,33 +5449,8 @@ def solve_pipeline(
     # slug can be advanced accurately from station to station.
 
     def _linefill_to_queue(entries: list[dict], diameter: float) -> list[tuple[float, float]]:
-        queue_entries: list[tuple[float, float]] = []
-        if not entries:
-            return queue_entries
-        for batch in entries:
-            try:
-                length_val = float(batch.get('length_km', 0.0) or 0.0)
-            except Exception:
-                length_val = 0.0
-            if length_val <= 0:
-                try:
-                    vol_val = float(batch.get('volume', 0.0) or 0.0)
-                except Exception:
-                    vol_val = 0.0
-                if vol_val > 0 and diameter > 0:
-                    length_val = _km_from_volume(vol_val, diameter)
-            if length_val <= 0:
-                continue
-            try:
-                ppm_val = float(batch.get('dra_ppm', 0.0) or 0.0)
-            except Exception:
-                ppm_val = 0.0
-            if queue_entries and abs(queue_entries[-1][1] - ppm_val) <= 1e-9:
-                prev_len, prev_ppm = queue_entries[-1]
-                queue_entries[-1] = (prev_len + length_val, prev_ppm)
-            else:
-                queue_entries.append((length_val, ppm_val))
-        return queue_entries
+        return _linefill_to_segment_length_queue(entries, stations, diameter)
+
 
     _SDH_HISTORY.clear()
     initial_queue_entries = _linefill_to_queue(linefill_state, origin_diameter)
@@ -5807,17 +5714,24 @@ def solve_pipeline(
                     eff_dra_main = 0.0
                     dra_len_main = 0.0
                 scenarios = []
-                # Base scenario: flow through mainline only
-                _hk = (stn_data['idx'], round(flow_total, 4), round(eff_dra_main, 4), round(dra_len_main, 4))
+                # Base scenario: flow through mainline only.  Apply DRA by
+                # intersecting the station DRA profile with the segment's
+                # fluid-property slices rather than approximating the benefit
+                # as one treated prefix.
+                dra_profile_sig = tuple(
+                    (round(float(length or 0.0), 6), round(float(ppm or 0.0), 6))
+                    for length, ppm in dra_segments
+                    if float(length or 0.0) > 0.0
+                )
+                _hk = (stn_data['idx'], round(flow_total, 4), dra_profile_sig)
                 if _hk not in _hl_cache:
-                    _hl_cache[_hk] = _segment_hydraulics_composite(
+                    _hl_cache[_hk] = _segment_hydraulics_dra_profile(
                         flow_total,
                         stn_data['L'],
                         stn_data['d_inner'],
                         stn_data['rough'],
                         stn_data['kv'],
-                        eff_dra_main,
-                        dra_len_main,
+                        dra_segments,
                         slices=stn_data.get('linefill_slices'),
                     )
                 hl_single, v_single, Re_single, f_single = _hl_cache[_hk]
@@ -6410,22 +6324,8 @@ def solve_pipeline(
                         if entry['dra_ppm'] > 0.0
                     )
 
-                    inlet_ppm_profile = 0.0
-                    if profile_entries:
-                        for entry in profile_entries:
-                            if entry['dra_ppm'] > 0.0:
-                                inlet_ppm_profile = entry['dra_ppm']
-                                break
-
-                    outlet_ppm_profile = 0.0
-                    if profile_entries:
-                        for entry in reversed(profile_entries):
-                            if entry['dra_ppm'] > 0.0:
-                                outlet_ppm_profile = entry['dra_ppm']
-                                break
-
-                    if inj_ppm_main <= 0.0 and outlet_ppm_profile <= 0.0:
-                        treated_profile_length = 0.0
+                    inlet_ppm_profile = float(profile_entries[0]['dra_ppm']) if profile_entries else 0.0
+                    outlet_ppm_profile = float(profile_entries[-1]['dra_ppm']) if profile_entries else 0.0
                     record.update({
                         f"dra_profile_{stn_data['name']}": profile_entries,
                         f"dra_treated_length_{stn_data['name']}": treated_profile_length,
@@ -6720,35 +6620,6 @@ def solve_pipeline(
         if float(length) > 0
     ]
 
-    positive_length = sum(length for length, ppm in queue_final if ppm > 0)
-    total_length_queue = sum(length for length, _ppm in queue_final)
-    station_keys: list[str] = []
-    for idx, stn in enumerate(stations):
-        name = stn.get('name', f'station_{idx}')
-        norm = str(name).strip().lower().replace(' ', '_')
-        station_keys.append(norm)
-    any_injection = any(
-        float(result.get(f'dra_ppm_{key}', 0.0) or 0.0) > 0.0
-        or float(result.get(f'dra_ppm_loop_{key}', 0.0) or 0.0) > 0.0
-        for key in station_keys
-    )
-    if not any_injection:
-        any_injection = float(result.get('dra_ppm_terminal', 0.0) or 0.0) > 0.0
-    if (
-        initial_queue_has_zero
-        and queue_final
-        and total_length_queue > 0.0
-        and positive_length >= total_length_queue - 1e-9
-        and not any_injection
-    ):
-        queue_final = [
-            (
-                float(length),
-                float(ppm),
-            )
-            for length, ppm in initial_queue
-            if float(length) > 0.0
-        ]
 
     def _queue_to_linefill_entries(
         queue_entries: list[tuple[float, float]],
@@ -6777,7 +6648,7 @@ def solve_pipeline(
     ]
     result['dra_segments'] = dra_segments_result
 
-    linefill_from_queue = _queue_to_linefill_entries(queue_final, origin_diameter)
+    linefill_from_queue = _queue_to_segment_volume_entries(queue_final, stations, origin_diameter)
     result['linefill'] = linefill_from_queue
     if collect_state_audit:
         result['state_audit'] = state_audit_log
