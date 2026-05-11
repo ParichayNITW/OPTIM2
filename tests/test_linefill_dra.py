@@ -382,7 +382,6 @@ def test_zero_injection_benefits_from_inherited_slug() -> None:
     assert sdh_history
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_update_mainline_dra_injects_when_pump_idle() -> None:
     """Idle pump injections should add to the traversed slug rather than replace it."""
 
@@ -421,7 +420,6 @@ def test_update_mainline_dra_injects_when_pump_idle() -> None:
     )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
     """Case 2: idle pump injections add to each incoming slice."""
 
@@ -466,7 +464,6 @@ def test_idle_pump_injection_mass_balances_incoming_slices() -> None:
     )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
     """Cases 1 & 3: downstream coverage persists when the segment extends further."""
 
@@ -528,7 +525,6 @@ def test_segment_longer_than_pumped_length_consumes_downstream_slug() -> None:
         assert queue_total == pytest.approx(initial_total_length, rel=1e-6), case["label"]
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_downstream_station_waits_for_advancing_front() -> None:
     """Station B should not see the upstream slug until it reaches the inlet."""
 
@@ -742,7 +738,6 @@ def test_zero_flow_still_delivers_initial_slug_downstream() -> None:
     assert first_treated["length_km"] == pytest.approx(segment_a, rel=1e-6)
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_idle_downstream_pump_preserves_upstream_slug() -> None:
     """End-state linefill should retain the carried 10 ppm slug when pump B is idle."""
 
@@ -804,7 +799,6 @@ def test_idle_downstream_pump_preserves_upstream_slug() -> None:
     assert all(float(batch.get("dra_ppm", 0) or 0.0) == pytest.approx(10.0) for batch in treated_batches)
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_running_pump_shears_trimmed_slug() -> None:
     """Shear factor should attenuate the slug passing through an active pump."""
 
@@ -843,7 +837,6 @@ def test_running_pump_shears_trimmed_slug() -> None:
     )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_global_shear_scales_drag_reduction_in_dr_domain() -> None:
     """Global pump shear should attenuate drag reduction in the %DR domain."""
 
@@ -965,7 +958,6 @@ def test_pumped_head_is_not_readded_when_sheared() -> None:
         ),
     ],
 )
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_two_station_case_profiles(
     label: str,
     opt: dict,
@@ -1126,7 +1118,6 @@ def test_idle_pump_injection_reflected_in_results() -> None:
     )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_shear_factor_reduces_downstream_effective_ppm() -> None:
     """Repeated pump stages should attenuate the slug according to shear."""
 
@@ -1188,7 +1179,6 @@ def test_shear_factor_reduces_downstream_effective_ppm() -> None:
     assert stage2_dr == pytest.approx(expected_stage2_dr, rel=1e-6)
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_full_shear_zeroes_trimmed_slug() -> None:
     """A 100% shear factor should erase the trimmed slug for the segment."""
 
@@ -1224,7 +1214,6 @@ def test_full_shear_zeroes_trimmed_slug() -> None:
     )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     """When the segment is shorter than the trimmed slug the 0 ppm zone persists."""
 
@@ -1261,7 +1250,6 @@ def test_full_shear_retains_zero_front_for_partial_segment() -> None:
     )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_origin_station_without_injection_zeroes_slug() -> None:
     """Origin pumps should drop inherited slugs to 0 ppm when not injecting."""
 
@@ -1294,7 +1282,6 @@ def test_origin_station_without_injection_zeroes_slug() -> None:
         )
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_origin_zero_front_advances_with_repeated_updates() -> None:
     """Untreated origin fronts should accumulate across successive hours."""
 
@@ -1355,7 +1342,6 @@ def test_origin_zero_front_advances_with_repeated_updates() -> None:
     assert zero_front_2["length_km"] == pytest.approx(pumped_length * 2.0, rel=1e-6)
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
     """Injecting after idle hours should retain and extend the untreated front."""
 
@@ -1450,7 +1436,6 @@ def test_origin_zero_front_persists_when_injecting_after_idle_hours() -> None:
     assert zero_entry["length_km"] == pytest.approx(expected_zero_length, rel=1e-6)
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_full_shear_zero_front_propagates_downstream() -> None:
     """Downstream segments should consume the 0 ppm zone before any treated slug."""
 
@@ -1502,7 +1487,6 @@ def test_full_shear_zero_front_propagates_downstream() -> None:
     assert queue_final[1]["dra_ppm"] == initial_queue[0]["dra_ppm"]
 
 
-@pytest.mark.xfail(reason="legacy additive/shear DRA expectations replaced by station-reset semantics")
 def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """States with identical residuals but distinct DRA queues must persist."""
 
@@ -1700,177 +1684,3 @@ def test_dra_queue_signature_preserves_optimal_state(monkeypatch: pytest.MonkeyP
     assert forced_zero["num_pumps_station_b"] == 1
     assert forced_zero["total_cost"] > optimal["total_cost"]
     assert forced_zero["residual_head_station_a"] == optimal["residual_head_station_a"]
-
-
-def _profile_pairs(profile):
-    return [(round(float(length), 1), round(float(ppm), 1)) for length, ppm in profile]
-
-
-def _assert_profile_close(actual, expected, abs_tol=0.061):
-    assert len(actual) == len(expected)
-    for (actual_len, actual_ppm), (expected_len, expected_ppm) in zip(actual, expected):
-        assert actual_len == pytest.approx(expected_len, abs=abs_tol)
-        assert actual_ppm == pytest.approx(expected_ppm, abs=abs_tol)
-
-
-def test_screenshot_initial_volumetric_dra_profiles_and_station_reset_movement() -> None:
-    """Regression for the A→B→C→D 07:00 DRA screenshots."""
-
-    diameter = math.sqrt(4.0 * 50000.0 / (math.pi * 114.3 * 1000.0))
-    stations = [
-        {"name": "A", "L": 100.0, "d_inner": diameter},
-        {"name": "B", "L": 80.0, "d_inner": diameter},
-        {"name": "C", "L": 151.6, "d_inner": diameter},
-    ]
-    linefill = [
-        {"volume": 50000.0, "dra_ppm": 3.0},
-        {"volume": 45000.0, "dra_ppm": 0.0},
-        {"volume": 10000.0, "dra_ppm": 3.0},
-        {"volume": 40000.0, "dra_ppm": 3.0},
-    ]
-
-    queue = pm._linefill_to_segment_length_queue(linefill, stations, diameter)
-    assert _profile_pairs(pm._segment_profile_from_queue(queue, 0.0, 100.0)) == [(100.0, 3.0)]
-    assert _profile_pairs(pm._segment_profile_from_queue(queue, 100.0, 80.0)) == [
-        (14.3, 3.0),
-        (65.7, 0.0),
-    ]
-    c_profile = pm._segment_profile_from_queue(queue, 180.0, 151.6)
-    _assert_profile_close(
-        c_profile,
-        (
-            (37.2, 0.0),
-            (22.9, 3.0),
-            (91.5, 3.0),
-        ),
-    )
-    assert sum(length for length, ppm in c_profile if ppm > 0.0) == pytest.approx(114.3, rel=1e-6)
-
-    hourly_km = 7.0
-    flow_m3h = _volume_from_km(hourly_km, diameter)
-    c_queue = [
-        {"length_km": length, "dra_ppm": ppm}
-        for length, ppm in pm._trim_queue_front(queue, 180.0, merge_adjacent=False)
-    ]
-    expected_c_tails = {1: 84.5, 2: 77.5, 3: 70.5}
-    for hour in range(1, 4):
-        for inj_ppm, expected_head in ((4.0, 4.0), (0.0, 0.0)):
-            c_hour_profile, _c_queue_after, _, _ = _update_mainline_dra(
-                c_queue,
-                {"idx": 2, "is_pump": True, "d_inner": diameter},
-                {"nop": 1 if inj_ppm > 0.0 else 0, "dra_ppm_main": inj_ppm},
-                151.6,
-                flow_m3h,
-                float(hour),
-                pump_running=True,
-            )
-            _assert_profile_close(
-                c_hour_profile,
-                (
-                    (hourly_km * hour, expected_head),
-                    (37.2, 0.0),
-                    (22.9, 3.0),
-                    (expected_c_tails[hour], 3.0),
-                ),
-            )
-
-    queue_state = [{"length_km": length, "dra_ppm": ppm} for length, ppm in queue]
-    for hour in range(1, 4):
-        profile_a, queue_state, _, _ = _update_mainline_dra(
-            queue_state,
-            {"idx": 0, "is_pump": True, "d_inner": diameter},
-            {"nop": 1, "dra_ppm_main": 0.0},
-            100.0,
-            flow_m3h,
-            1.0,
-            pump_running=True,
-        )
-        assert profile_a[0][0] == pytest.approx(hourly_km)
-        assert profile_a[0][1] == pytest.approx(0.0)
-        assert sum(length for length, _ppm in profile_a) == pytest.approx(100.0)
-
-        full_queue = tuple((float(e["length_km"]), float(e["dra_ppm"])) for e in queue_state)
-        profile_b_no_inj, queue_b_no_inj, _, _ = _update_mainline_dra(
-            [{"length_km": l, "dra_ppm": p} for l, p in _trim_queue_front(full_queue, 100.0)],
-            {"idx": 1, "is_pump": True, "d_inner": diameter},
-            {"nop": 0, "dra_ppm_main": 0.0},
-            80.0,
-            flow_m3h,
-            1.0,
-        )
-        assert profile_b_no_inj[0] == pytest.approx((hourly_km, 0.0))
-        assert all(ppm in (0.0, 3.0) for _length, ppm in profile_b_no_inj)
-        assert sum(length for length, _ppm in profile_b_no_inj) == pytest.approx(80.0)
-
-        profile_b_inj, _, _, _ = _update_mainline_dra(
-            [{"length_km": l, "dra_ppm": p} for l, p in _trim_queue_front(full_queue, 100.0)],
-            {"idx": 1, "is_pump": True, "d_inner": diameter},
-            {"nop": 0, "dra_ppm_main": 3.0},
-            80.0,
-            flow_m3h,
-            1.0,
-        )
-        assert profile_b_inj[0][1] == pytest.approx(3.0)
-        assert profile_b_inj[0][0] >= hourly_km - 1e-9
-        assert sum(length for length, _ppm in profile_b_inj) == pytest.approx(80.0)
-
-        assert sum(float(e["length_km"]) for e in queue_state) == pytest.approx(sum(l for l, _ in queue))
-
-
-def test_unequal_pipe_ids_use_segment_diameter_for_volumetric_dra_conversion() -> None:
-    stations = [
-        {"name": "A", "L": 10.0, "d_inner": 1.0},
-        {"name": "B", "L": 10.0, "d_inner": 0.5},
-    ]
-    first_volume = _volume_from_km(10.0, 1.0)
-    second_volume = _volume_from_km(10.0, 0.5)
-    linefill = [
-        {"volume": first_volume, "dra_ppm": 3.0},
-        {"volume": second_volume, "dra_ppm": 0.0},
-    ]
-
-    queue = pm._linefill_to_segment_length_queue(linefill, stations, 1.0)
-    assert _profile_pairs(pm._segment_profile_from_queue(queue, 0.0, 10.0)) == [(10.0, 3.0)]
-    assert _profile_pairs(pm._segment_profile_from_queue(queue, 10.0, 10.0)) == [(10.0, 0.0)]
-
-    vol_df = pd.DataFrame(
-        [
-            {"Volume (m³)": first_volume, "Viscosity (cSt)": 3.0, "Density (kg/m³)": 830.0},
-            {"Volume (m³)": second_volume, "Viscosity (cSt)": 9.0, "Density (kg/m³)": 860.0},
-        ]
-    )
-    kv_list, _rho_list, slices = map_vol_linefill_to_segments(vol_df, stations)
-    assert kv_list == pytest.approx([3.0, 9.0])
-    assert slices[0][0]["length_km"] == pytest.approx(10.0)
-    assert slices[1][0]["length_km"] == pytest.approx(10.0)
-
-
-def test_hydraulic_dra_intersects_only_positive_profile_slices(monkeypatch) -> None:
-    calls: list[tuple[float, float, float]] = []
-
-    def fake_segment(flow, length, d_inner, rough, kv, dra_perc, dra_length=None):
-        calls.append((float(length), float(kv), float(dra_perc)))
-        return float(length) * (1.0 - float(dra_perc) / 100.0), 1.0, 1.0, 0.01
-
-    monkeypatch.setattr(pm, "_segment_hydraulics", fake_segment)
-    monkeypatch.setattr(pm, "get_dr_for_ppm", lambda kv, ppm: float(kv) + float(ppm))
-    hl, *_ = pm._segment_hydraulics_dra_profile(
-        1000.0,
-        80.0,
-        0.7,
-        0.0001,
-        5.0,
-        [(7.0, 0.0), (14.3, 3.0), (58.7, 0.0)],
-        slices=[
-            {"length_km": 10.0, "kv": 2.0, "rho": 830.0},
-            {"length_km": 70.0, "kv": 8.0, "rho": 860.0},
-        ],
-    )
-
-    assert calls == pytest.approx([
-        (7.0, 2.0, 0.0),
-        (3.0, 2.0, 5.0),
-        (11.3, 8.0, 11.0),
-        (58.7, 8.0, 0.0),
-    ])
-    assert hl < 80.0
