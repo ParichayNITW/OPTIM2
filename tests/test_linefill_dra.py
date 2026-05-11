@@ -1706,6 +1706,13 @@ def _profile_pairs(profile):
     return [(round(float(length), 1), round(float(ppm), 1)) for length, ppm in profile]
 
 
+def _assert_profile_close(actual, expected, abs_tol=0.061):
+    assert len(actual) == len(expected)
+    for (actual_len, actual_ppm), (expected_len, expected_ppm) in zip(actual, expected):
+        assert actual_len == pytest.approx(expected_len, abs=abs_tol)
+        assert actual_ppm == pytest.approx(expected_ppm, abs=abs_tol)
+
+
 def test_screenshot_initial_volumetric_dra_profiles_and_station_reset_movement() -> None:
     """Regression for the A→B→C→D 07:00 DRA screenshots."""
 
@@ -1729,11 +1736,44 @@ def test_screenshot_initial_volumetric_dra_profiles_and_station_reset_movement()
         (65.7, 0.0),
     ]
     c_profile = pm._segment_profile_from_queue(queue, 180.0, 151.6)
-    assert c_profile[0] == pytest.approx((37.17, 0.0), rel=1e-6)
+    _assert_profile_close(
+        c_profile,
+        (
+            (37.2, 0.0),
+            (22.9, 3.0),
+            (91.5, 3.0),
+        ),
+    )
     assert sum(length for length, ppm in c_profile if ppm > 0.0) == pytest.approx(114.3, rel=1e-6)
 
     hourly_km = 7.0
     flow_m3h = _volume_from_km(hourly_km, diameter)
+    c_queue = [
+        {"length_km": length, "dra_ppm": ppm}
+        for length, ppm in pm._trim_queue_front(queue, 180.0, merge_adjacent=False)
+    ]
+    expected_c_tails = {1: 84.5, 2: 77.5, 3: 70.5}
+    for hour in range(1, 4):
+        for inj_ppm, expected_head in ((4.0, 4.0), (0.0, 0.0)):
+            c_hour_profile, _c_queue_after, _, _ = _update_mainline_dra(
+                c_queue,
+                {"idx": 2, "is_pump": True, "d_inner": diameter},
+                {"nop": 1 if inj_ppm > 0.0 else 0, "dra_ppm_main": inj_ppm},
+                151.6,
+                flow_m3h,
+                float(hour),
+                pump_running=True,
+            )
+            _assert_profile_close(
+                c_hour_profile,
+                (
+                    (hourly_km * hour, expected_head),
+                    (37.2, 0.0),
+                    (22.9, 3.0),
+                    (expected_c_tails[hour], 3.0),
+                ),
+            )
+
     queue_state = [{"length_km": length, "dra_ppm": ppm} for length, ppm in queue]
     for hour in range(1, 4):
         profile_a, queue_state, _, _ = _update_mainline_dra(

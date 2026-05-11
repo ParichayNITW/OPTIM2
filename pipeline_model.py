@@ -1376,8 +1376,16 @@ def _trim_queue_front(
     queue_entries: list[tuple[float, float]]
     | tuple[tuple[float, float], ...],
     trim_length: float,
+    *,
+    merge_adjacent: bool = True,
 ) -> tuple[tuple[float, float], ...]:
-    """Return ``queue_entries`` shortened by ``trim_length`` from the head."""
+    """Return ``queue_entries`` shortened by ``trim_length`` from the head.
+
+    By default the result retains the historical behaviour of coalescing
+    adjacent equal-ppm slices.  DRA profile paths can disable that merge so
+    physical linefill row/product boundaries remain visible even when adjacent
+    slices carry the same concentration.
+    """
 
     remaining = max(float(trim_length or 0.0), 0.0)
     if remaining <= 0:
@@ -1410,13 +1418,13 @@ def _trim_queue_front(
     if not trimmed:
         return ()
 
-    merged_trimmed = _merge_queue(trimmed)
+    result_entries = _merge_queue(trimmed) if merge_adjacent else trimmed
     return tuple(
         (
             float(length),
             float(ppm),
         )
-        for length, ppm in merged_trimmed
+        for length, ppm in result_entries
         if float(length or 0.0) > 0
     )
 
@@ -1524,7 +1532,7 @@ def _segment_profile_from_queue(
     if seg_len <= 0:
         return ()
 
-    segment_queue = _trim_queue_front(queue_entries, upstream)
+    segment_queue = _trim_queue_front(queue_entries, upstream, merge_adjacent=False)
     if not segment_queue:
         return ()
 
@@ -1700,6 +1708,7 @@ def _update_mainline_dra(
     ``dra_injector_position == "upstream"`` case.
     """
 
+    explicit_is_origin = bool(is_origin)
     inj_requested = max(float(opt.get("dra_ppm_main", 0.0) or 0.0), 0.0)
     if not is_origin:
         idx_val = stn_data.get('idx')
@@ -1779,6 +1788,16 @@ def _update_mainline_dra(
                 ppm_val = 0.0
             existing_queue.append((length, ppm_val))
 
+    fallback_seeded_ppm = 0.0
+    if not existing_queue:
+        try:
+            fallback_ppm = max(float(stn_data.get("fallback_dra_ppm", 0.0) or 0.0), 0.0)
+        except (TypeError, ValueError):
+            fallback_ppm = 0.0
+        if fallback_ppm > 0.0 and segment_length > 0.0:
+            existing_queue.append((segment_length, fallback_ppm))
+            fallback_seeded_ppm = fallback_ppm
+
     existing_total = _queue_total_length(existing_queue)
     if existing_total > 0.0:
         target_length = existing_total
@@ -1787,17 +1806,38 @@ def _update_mainline_dra(
     else:
         target_length = pumped_length
 
+    preserve_retained_downstream = (
+        existing_total > 0.0
+        and (is_origin or segment_length <= 0.0 or existing_total <= segment_length + 1e-9)
+    )
+    omit_incomplete_retained_tail = (
+        remainder_pre is None
+        and not is_origin
+        and existing_total > 0.0
+        and segment_length > 0.0
+        and existing_total <= segment_length + 1e-9
+    )
     if remainder_pre is None:
-        remaining_queue = list(_trim_queue_front(existing_queue, pumped_length))
+        if preserve_retained_downstream:
+            # The queue already represents the retained downstream segment.
+            # Prepending the newly discharged station-reset slice should
+            # displace material from the tail rather than consuming the
+            # segment head, otherwise initial linefill row/product boundaries
+            # are shifted and adjacent same-ppm slices can be collapsed.
+            remaining_queue = list(existing_queue)
+        else:
+            remaining_queue = list(_trim_queue_front(existing_queue, pumped_length, merge_adjacent=False))
     else:
         remaining_queue = [
             (float(length or 0.0), float(ppm or 0.0))
             for length, ppm in remainder_pre
             if float(length or 0.0) > 0.0
         ]
+        if not remaining_queue and existing_total > 0.0 and pumped_length < existing_total - 1e-9:
+            remaining_queue = list(existing_queue)
 
     head_length = min(pumped_length, target_length) if target_length > 0.0 else pumped_length
-    discharged_ppm = inj_effective if inj_effective > 0.0 else 0.0
+    discharged_ppm = inj_effective if inj_effective > 0.0 else fallback_seeded_ppm
 
     combined_entries: list[tuple[float, float]] = []
     if head_length > 1e-9:
@@ -1807,7 +1847,10 @@ def _update_mainline_dra(
     combined_total = _queue_total_length(combined_entries)
     excess_length = max(combined_total - target_length, 0.0) if target_length > 0.0 else 0.0
     trimmed_queue, _leftover = _trim_queue_tail(combined_entries, excess_length)
-    merged_queue = _merge_queue(trimmed_queue)
+    # Retain physical linefill/product boundaries in the DRA queue.  Adjacent
+    # equal-ppm slices may represent distinct product rows, so station profile
+    # generation must not collapse them here.
+    merged_queue = trimmed_queue
 
     floor_requires_injection = False
     if isinstance(segment_floor, Mapping) and segment_floor.get('enforce_queue', True):
@@ -1847,14 +1890,18 @@ def _update_mainline_dra(
             continue
         ppm_val = float(ppm_raw or 0.0)
         profile_total += length
-        if dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
+        if explicit_is_origin and inj_requested <= 1e-9 and ppm_val <= 1e-9:
+            continue
+        if fallback_seeded_ppm > 0.0 and dra_segments and abs(dra_segments[-1][1] - ppm_val) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + length, prev_ppm)
         else:
             dra_segments.append((length, ppm_val))
 
     remaining_length = max(segment_length - min(profile_total, segment_length), 0.0)
-    if remaining_length > 1e-9:
+    if remaining_length > 1e-9 and not (
+        omit_incomplete_retained_tail and queue_after_tuple and _queue_total_length(queue_after_tuple) < segment_length - 1e-9
+    ):
         if dra_segments and abs(dra_segments[-1][1]) <= 1e-9:
             prev_len, prev_ppm = dra_segments[-1]
             dra_segments[-1] = (prev_len + remaining_length, prev_ppm)
