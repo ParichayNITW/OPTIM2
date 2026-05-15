@@ -848,6 +848,15 @@ def pipe_cross_section_area_m2(stations: list[dict]) -> float:
     return float((pi * d_inner**2) / 4.0)
 
 
+def _station_d_inner(stn: dict) -> float:
+    """Return the internal pipe diameter (m) for a station dict."""
+    if stn.get('D') is not None:
+        t = float(stn.get('t', 0.007) or 0.007)
+        return max(float(stn.get('D') or 0.0) - 2.0 * t, 0.0)
+    d = stn.get('d_inner') or stn.get('d', 0.711)
+    return float(d or 0.711)
+
+
 def map_vol_linefill_to_segments(
     vol_table: pd.DataFrame | None, stations: list[dict]
 ) -> tuple[list[float], list[float], list[list[dict]]]:
@@ -892,66 +901,52 @@ def map_vol_linefill_to_segments(
         rho_list = [fallback_rho] * len(stations)
         return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
 
-    A = pipe_cross_section_area_m2(stations)
-    if A <= 0:
-        fallback_kv = batches[0]["kv"] if batches else 1.0
-        fallback_rho = batches[0]["rho"] if batches else 850.0
-        kv_list = [fallback_kv] * len(stations)
-        rho_list = [fallback_rho] * len(stations)
-        return kv_list, rho_list, _default_segment_slices(stations, kv_list, rho_list)
-
-    d_inner = sqrt((4.0 * A) / pi)
     km_from_volume = pipeline_model._km_from_volume
+    volume_from_km = pipeline_model._volume_from_km
 
-    for entry in batches:
-        entry["len_km"] = km_from_volume(entry["volume_m3"], d_inner)
-
-    # Map the volumetric batches onto each pipeline segment.
+    # Track remaining batch volume in m³ (volume is conserved; km depends on d_inner)
     seg_kv: list[float] = []
     seg_rho: list[float] = []
     seg_slices: list[list[dict]] = []
     seg_lengths = [float(s.get("L", 0.0) or 0.0) for s in stations]
 
     i_batch = 0
-    remaining = batches[0]["len_km"] if batches else 0.0
-    kv_cur = batches[0]["kv"] if batches else 1.0
-    rho_cur = batches[0]["rho"] if batches else 850.0
+    remaining_vol = batches[0]["volume_m3"]
+    kv_cur = batches[0]["kv"]
+    rho_cur = batches[0]["rho"]
 
-    for L in seg_lengths:
-        need = L
-        if L <= 0:
+    for stn, L in zip(stations, seg_lengths):
+        d_seg = _station_d_inner(stn)
+        if d_seg <= 0:
             seg_kv.append(kv_cur)
             seg_rho.append(rho_cur)
             seg_slices.append([])
             continue
 
+        seg_vol = volume_from_km(L, d_seg)
+        need_vol = seg_vol
+
         segment_entries: list[dict] = []
-        # Consume from batches until this segment is filled from upstream to downstream
-        while need > 1e-9:
-            if remaining <= 1e-9:
+        while need_vol > 1e-9:
+            if remaining_vol <= 1e-9:
                 i_batch += 1
                 if i_batch >= len(batches):
-                    # No more batches: extend with last known properties
-                    segment_entries.append(
-                        {"length_km": need, "kv": kv_cur, "rho": rho_cur}
-                    )
-                    need = 0.0
+                    length_km = km_from_volume(need_vol, d_seg)
+                    segment_entries.append({"length_km": length_km, "kv": kv_cur, "rho": rho_cur})
+                    need_vol = 0.0
                     break
-                remaining = batches[i_batch]["len_km"]
+                remaining_vol = batches[i_batch]["volume_m3"]
                 kv_cur = batches[i_batch]["kv"]
                 rho_cur = batches[i_batch]["rho"]
-                if remaining <= 1e-9:
+                if remaining_vol <= 1e-9:
                     continue
 
-            take = min(need, remaining)
-            if take <= 0:
-                break
-
-            segment_entries.append(
-                {"length_km": take, "kv": kv_cur, "rho": rho_cur}
-            )
-            need -= take
-            remaining -= take
+            take_vol = min(need_vol, remaining_vol)
+            take_km = km_from_volume(take_vol, d_seg)
+            if take_km > 0:
+                segment_entries.append({"length_km": take_km, "kv": kv_cur, "rho": rho_cur})
+            need_vol -= take_vol
+            remaining_vol -= take_vol
 
         if not segment_entries:
             segment_entries.append({"length_km": L, "kv": kv_cur, "rho": rho_cur})
@@ -959,7 +954,7 @@ def map_vol_linefill_to_segments(
         seg_slices.append(segment_entries)
         seg_kv.append(segment_entries[0]["kv"])
         if L > 0:
-            avg_rho = sum(entry["length_km"] * entry["rho"] for entry in segment_entries) / L
+            avg_rho = sum(e["length_km"] * e["rho"] for e in segment_entries) / L
         else:
             avg_rho = segment_entries[0]["rho"]
         seg_rho.append(avg_rho)

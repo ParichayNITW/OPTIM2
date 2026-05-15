@@ -1517,6 +1517,7 @@ def _update_mainline_dra(
         tuple[tuple[float, float], ...],
     ] | None = None,
     segment_floor: Mapping[str, object] | None = None,
+    inlet_product_slices: list[dict] | None = None,
 ) -> tuple[
     list[tuple[float, float]],
     tuple[tuple[float, float], ...],
@@ -1775,16 +1776,16 @@ def _update_mainline_dra(
     if pump_running and shear_existing > 0.0 and is_origin and not apply_injection_shear:
         shear_existing = 0.0
 
-    def _apply_shear(ppm_val: float) -> float:
-        ppm_float = float(ppm_val or 0.0)
+    def _apply_shear_kv(ppm_float: float, kv_val: float) -> float:
+        """Apply shear using the product viscosity at this slice position."""
         if ppm_float <= 0.0:
             return 0.0
         if not pump_running or shear_existing <= 0.0:
             return ppm_float
         dr_value = 0.0
-        if kv > 0:
+        if kv_val > 0:
             try:
-                dr_value = float(get_dr_for_ppm(kv, ppm_float))
+                dr_value = float(get_dr_for_ppm(kv_val, ppm_float))
             except Exception:
                 dr_value = 0.0
         if dr_value > 0.0:
@@ -1792,34 +1793,66 @@ def _update_mainline_dra(
             if dr_value <= 0.0:
                 return 0.0
             try:
-                return float(get_ppm_for_dr(kv, dr_value))
+                return float(get_ppm_for_dr(kv_val, dr_value))
             except Exception:
                 return max(ppm_float * (1.0 - shear_existing), 0.0)
         return max(ppm_float * (1.0 - shear_existing), 0.0)
 
+    # Build product kv queue for the pumped_portion (in current station's km units).
+    # When inlet_product_slices is None (origin or missing), fall back to the
+    # station-level scalar kv so behaviour is unchanged for those cases.
+    _kv_q: list[dict] = list(inlet_product_slices) if inlet_product_slices else []
+    if not _kv_q:
+        _kv_q = [{'length_km': float('inf'), 'kv': kv}]
+    _kv_idx = 0
+    _kv_rem = float(_kv_q[0].get('length_km', float('inf')) or float('inf'))
+    _kv_cur_raw = float(_kv_q[0].get('kv', kv) or kv)
+    _kv_cur = _kv_cur_raw if _kv_cur_raw > 0 else kv
+
     pumped_adjusted: list[tuple[float, float]] = []
     pumped_differs = False
+    zero_output_global = bool(is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0)
+
     for length, ppm_val in pumped_portion:
         length_float = float(length or 0.0)
         if length_float <= 0.0:
             continue
         ppm_input = float(ppm_val or 0.0)
-        zero_output = False
-        if is_origin and inj_effective <= 0.0 and flow_m3h <= 0.0:
-            zero_output = True
-        if zero_output:
-            ppm_out = 0.0
-        else:
-            ppm_out = _apply_shear(ppm_input)
-            if inj_effective > 0.0:
-                if not is_origin:
-                    ppm_out += inj_effective
-                elif not pump_running:
-                    ppm_out += inj_effective
-        ppm_out = max(ppm_out, 0.0)
-        if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
-            pumped_differs = True
-        pumped_adjusted.append((length_float, ppm_out))
+
+        # Walk the kv queue in parallel with this DRA ppm slice.
+        # A single DRA slice may span multiple product batches → split at batch
+        # boundaries so each sub-slice uses the correct product viscosity.
+        remaining_dra = length_float
+        while remaining_dra > 1e-9:
+            if _kv_idx >= len(_kv_q):
+                # Exhausted inlet slices: extend with station fallback kv.
+                _kv_q.append({'length_km': float('inf'), 'kv': kv})
+                _kv_rem = float('inf')
+                _kv_cur = kv
+            take = min(remaining_dra, _kv_rem)
+            if take <= 1e-9:
+                break
+            if zero_output_global:
+                ppm_out = 0.0
+            else:
+                ppm_out = _apply_shear_kv(ppm_input, _kv_cur)
+                if inj_effective > 0.0:
+                    if not is_origin:
+                        ppm_out += inj_effective
+                    elif not pump_running:
+                        ppm_out += inj_effective
+            ppm_out = max(ppm_out, 0.0)
+            if not pumped_differs and abs(ppm_out - ppm_input) > 1e-9:
+                pumped_differs = True
+            pumped_adjusted.append((take, ppm_out))
+            remaining_dra -= take
+            _kv_rem -= take
+            if _kv_rem <= 1e-9:
+                _kv_idx += 1
+                if _kv_idx < len(_kv_q):
+                    _kv_rem = float(_kv_q[_kv_idx].get('length_km', float('inf')) or float('inf'))
+                    _kv_cur_raw = float(_kv_q[_kv_idx].get('kv', kv) or kv)
+                    _kv_cur = _kv_cur_raw if _kv_cur_raw > 0 else kv
 
     tail_queue: list[tuple[float, float]]
     if pump_running:
@@ -5723,6 +5756,41 @@ def solve_pipeline(
                 hours,
                 d_inner_state,
             )
+            _kv_fallback = float(stn_data.get('kv', 3.0) or 3.0)
+            _inlet_product_slices: list[dict] | None = None
+            _stn_idx = int(stn_data.get('idx', 0) or 0)
+            if _stn_idx > 0 and _stn_idx - 1 < len(station_opts):
+                _upstream = station_opts[_stn_idx - 1]
+                _up_slices = _upstream.get('linefill_slices') or []
+                _d_up = float(_upstream.get('d_inner') or _upstream.get('d') or 0.0)
+                _d_cur = float(stn_data.get('d_inner') or stn_data.get('d') or 0.0)
+                if _d_up > 0 and _d_cur > 0 and _up_slices:
+                    _scale = (_d_up / _d_cur) ** 2
+                    _scaled: list[dict] = [
+                        {
+                            'length_km': float(s.get('length_km', 0.0) or 0.0) * _scale,
+                            'kv': float(s.get('kv', _kv_fallback) or _kv_fallback),
+                            'rho': float(s.get('rho', 850.0) or 850.0),
+                        }
+                        for s in _up_slices
+                        if float(s.get('length_km', 0.0) or 0.0) > 0.0
+                    ]
+                    _pumped_len = float(precomputed_queue[0]) if precomputed_queue and len(precomputed_queue) > 0 else 0.0
+                    if _pumped_len > 0 and _scaled:
+                        _total_scaled = sum(s['length_km'] for s in _scaled)
+                        _skip = max(0.0, _total_scaled - _pumped_len)
+                        _tail: list[dict] = []
+                        _rem_skip = _skip
+                        for _s in _scaled:
+                            _sl = _s['length_km']
+                            if _rem_skip >= _sl - 1e-9:
+                                _rem_skip -= _sl
+                                continue
+                            _take = _sl - _rem_skip
+                            _rem_skip = 0.0
+                            _tail.append({'length_km': _take, 'kv': _s['kv'], 'rho': _s['rho']})
+                        if _tail:
+                            _inlet_product_slices = _tail
             for opt in stn_data['options']:
                 # -----------------------------------------------------------------
                 # Enforce bypass rules on loopline injection:
@@ -5759,6 +5827,7 @@ def solve_pipeline(
                     is_origin=stn_data['idx'] == 0,
                     precomputed=precomputed_queue,
                     segment_floor=stn_data.get('baseline_floor'),
+                    inlet_product_slices=_inlet_product_slices,
                 )
                 # When prioritising feasibility, allow options that would
                 # otherwise be skipped for lacking floor injection so the
