@@ -9086,17 +9086,22 @@ if not auto_batch:
                         total_cost = sum(
                             float(r["result"].get("total_cost", 0) or 0) for r in _rpts
                         )
+                        _first_pump_key = ""
+                        for _ps_s in _stns:
+                            if _ps_s.get("is_pump"):
+                                _first_pump_key = str(_ps_s.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                break
                         total_vol = sum(
-                            float(r["result"].get("flow_m3hr", 0) or 0) for r in _rpts
+                            float(r["result"].get(f"pump_flow_{_first_pump_key}", 0) or 0) for r in _rpts
                         )
                         avg_flow  = total_vol / len(_rpts) if _rpts else 0.0
 
                         _eff_list = [
-                            float(r["result"].get(f"pump_eff_{_rk}", 0) or 0)
+                            float(r["result"].get(f"efficiency_{_rk}", 0) or 0)
                             for r in _rpts
                             for _s2 in _stns
                             for _rk in [str(_s2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")]
-                            if float(r["result"].get(f"pump_eff_{_rk}", 0) or 0) > 0
+                            if float(r["result"].get(f"efficiency_{_rk}", 0) or 0) > 0
                         ]
                         avg_eff = sum(_eff_list) / len(_eff_list) if _eff_list else 0.0
 
@@ -9162,7 +9167,7 @@ if not auto_batch:
                                 for _ps2 in pump_stns:
                                     _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
                                     row.append(f"{float(_res2.get(f'speed_{_rk2}', 0) or 0):.0f}")
-                                    row.append(f"{float(_res2.get(f'power_{_rk2}', 0) or 0):.0f}")
+                                    row.append(f"{float(_res2.get(f'motor_kw_{_rk2}', 0) or 0):.0f}")
                                     row.append(f"{float(_res2.get(f'dra_ppm_{_rk2}', 0) or 0):.1f}")
                                 sched_rows.append(row)
 
@@ -9251,7 +9256,7 @@ if not auto_batch:
                         story.append(HRFlowable(width="100%", thickness=1,
                                                 color=colors.HexColor("#d1d5db")))
                         story.append(Spacer(1, 0.3 * cm))
-                        _ps_df = _plan_df.copy().fillna("").astype(str)
+                        _ps_df = _plan_df.copy().fillna("").astype(str).replace("None", "")
                         _ps_data = [list(_ps_df.columns)] + _ps_df.values.tolist()
                         n_c = len(_ps_data[0])
                         _cw = [17 * cm / n_c] * n_c
