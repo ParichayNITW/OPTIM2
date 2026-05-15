@@ -1591,11 +1591,10 @@ def _update_mainline_dra(
     initial_zero_prefix = _queue_leading_zero_length(queue)
 
     local_shear = max(0.0, min(float(dra_shear_factor or 0.0), 1.0))
-    global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0)) if pump_running else 0.0
-    if pump_running:
-        shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
-    else:
-        shear = local_shear
+    # Apply global shear whenever product flows through a station (pump running or not).
+    # DRA degrades at every station crossing regardless of pump status (GSF=1 → DRA→0).
+    global_shear = max(0.0, min(float(pump_shear_rate or 0.0), 1.0))
+    shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
     shear = max(0.0, min(shear, 1.0))
     injector_pos = str(stn_data.get("dra_injector_position", "")).lower()
     apply_injection_shear = pump_running and injector_pos == "upstream"

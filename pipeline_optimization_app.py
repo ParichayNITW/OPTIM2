@@ -2876,7 +2876,7 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
             y=maop_ref,
             line=dict(color="rgba(220,38,38,0.55)", width=1.5, dash="dot"),
             annotation_text=f"MAOP {maop_ref:.0f} m",
-            annotation_font=dict(color="#dc2626", size=9, family="Inter"),
+            annotation_font=dict(color="#dc2626", size=12, family="Inter"),
             annotation_position="top right",
         )
 
@@ -2885,7 +2885,7 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
         y=terminal_head,
         line=dict(color="rgba(22,163,74,0.55)", width=1.5, dash="dash"),
         annotation_text=f"Min residual {terminal_head:.0f} m",
-        annotation_font=dict(color="#16a34a", size=9, family="Inter"),
+        annotation_font=dict(color="#16a34a", size=12, family="Inter"),
         annotation_position="bottom right",
     )
 
@@ -2965,10 +2965,10 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
             x=kp, y=y_max,
             text="<br>".join(badge_lines),
             showarrow=False,
-            font=dict(size=8.5, color=col, family="Inter"),
+            font=dict(size=12, color=col, family="Inter"),
             align="center",
             bgcolor="rgba(255,255,255,0.88)",
-            bordercolor=col, borderwidth=1, borderpad=3,
+            bordercolor=col, borderwidth=1, borderpad=4,
             yanchor="top",
             yref="y",
         )
@@ -2979,10 +2979,10 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
         x=kp_list[-1], y=y_max,
         text=f"<b>{terminal_name[:13]}</b><br>RH: {rh_term:.0f} m",
         showarrow=False,
-        font=dict(size=8.5, color=t_col, family="Inter"),
+        font=dict(size=12, color=t_col, family="Inter"),
         align="center",
         bgcolor="rgba(255,255,255,0.88)",
-        bordercolor=t_col, borderwidth=1, borderpad=3,
+        bordercolor=t_col, borderwidth=1, borderpad=4,
         yanchor="top",
         yref="y",
     )
@@ -3002,22 +3002,22 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
     fig.update_layout(
         paper_bgcolor="#f5f7fa",
         plot_bgcolor="#f5f7fa",
-        height=340,
-        margin=dict(l=65, r=15, t=20, b=45),
+        height=620,
+        margin=dict(l=80, r=40, t=80, b=80),
         xaxis=dict(
             title="Chainage (km)",
-            title_font=dict(size=11, color="#374151", family="Inter"),
+            title_font=dict(size=14, color="#374151", family="Inter"),
             gridcolor="rgba(156,163,175,0.20)",
             zeroline=False,
-            tickfont=dict(size=9, color="#6b7280", family="Inter"),
+            tickfont=dict(size=12, color="#6b7280", family="Inter"),
         ),
         yaxis=dict(
             title="Hydraulic Head (m)",
-            title_font=dict(size=11, color="#374151", family="Inter"),
+            title_font=dict(size=14, color="#374151", family="Inter"),
             gridcolor="rgba(156,163,175,0.20)",
             zeroline=True,
             zerolinecolor="rgba(156,163,175,0.35)",
-            tickfont=dict(size=9, color="#6b7280", family="Inter"),
+            tickfont=dict(size=12, color="#6b7280", family="Inter"),
             range=[y_min, y_max * 1.05],
         ),
         legend=dict(
@@ -3026,7 +3026,7 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
             xanchor="right", x=1,
             bgcolor="rgba(255,255,255,0.90)",
             bordercolor="#d1d5db", borderwidth=1,
-            font=dict(color="#111827", size=9, family="Inter"),
+            font=dict(color="#111827", size=12, family="Inter"),
         ),
         dragmode="pan",
         font=dict(family="Inter", color="#111827"),
@@ -6680,22 +6680,13 @@ def _compute_variable_hourly_flows(
     current_vol: "pd.DataFrame",
     plan_df: "pd.DataFrame | None",
 ) -> list[float]:
-    """Lagrange-optimal hourly flow distribution.
+    """Block-based variable flow: 6 x 4-hour blocks, constant flow per block.
 
-    Minimises  J = Σ a_t × Q_t³  subject to  Σ Q_t = total_volume_m3.
-    Closed-form solution (Lagrange multipliers):
-        Q_t = total_volume_m3 × (1/√a_t) / Σ(1/√a_i)
-    where  a_t = rate_t × (kv_t / kv_ref)  (cost coefficient that hour).
-
-    POR bounds come from the pump BEP flow (rated_flow_m3h) and affinity law:
-        q_max     = BEP_DOL × 1.20          (top of POR at full speed)
-        q_min_run = BEP_DOL × (min_rpm/DOL) × 0.70  (bottom of POR at min speed)
-
-    Shutdown (Q_t = 0) is permitted when the unconstrained optimum falls below
-    q_min_run — the pump cannot run within POR at that flow, so the pipeline
-    stops that hour and the volume is redistributed to cheaper running hours.
+    Assigns higher flow to cheaper (lower tariff / lower viscosity) blocks and
+    lower flow to expensive blocks, all within POR [q_min_run, q_max].
+    Total across all active blocks equals total_volume_m3.
+    Blocks:  07-11 | 11-15 | 15-19 | 19-23 | 23-03 | 03-07
     """
-    import math as _math
     import datetime as dt
     import numpy as np
 
@@ -6778,84 +6769,55 @@ def _compute_variable_hourly_flows(
     q_min_run = min(q_min_run, nominal_flow * 0.70)
     q_max     = max(q_max,     nominal_flow * 1.20)
 
-    # ── Lagrange cost coefficients ──────────────────────────────────────────
+    # ── 4-hour blocks ───────────────────────────────────────────────────────
+    BLOCK_SIZE = 4
+    n_blocks = max(n // BLOCK_SIZE, 1)
+    block_slices = [(i * BLOCK_SIZE, min((i + 1) * BLOCK_SIZE, n)) for i in range(n_blocks)]
+
     kv_ref = float(np.median(kv_per_hour)) if kv_per_hour else 10.0
-    # a_t = rate_t × (kv_t/kv_ref): higher tariff or viscosity → costlier hour
-    a_per_hour = [
-        max(r * max(kv / kv_ref, 1e-6), 1e-9)
-        for r, kv in zip(rate_per_hour, kv_per_hour)
-    ]
+    block_cost: list[float] = []
+    for bs, be in block_slices:
+        r_avg  = float(np.mean(rate_per_hour[bs:be])) if bs < be else default_rate
+        kv_avg = float(np.mean(kv_per_hour[bs:be])) if bs < be else kv_ref
+        block_cost.append(max(r_avg * max(kv_avg / kv_ref, 1e-6), 1e-9))
 
-    # ── Closed-form Lagrange solution ───────────────────────────────────────
-    inv_sqrt_a = [1.0 / _math.sqrt(a) for a in a_per_hour]
-    total_inv_sqrt = sum(inv_sqrt_a)
-    if total_inv_sqrt > 0:
-        flow_raw = [total_volume_m3 * x / total_inv_sqrt for x in inv_sqrt_a]
-    else:
-        flow_raw = [nominal_flow] * n
-
-    # When all a_t are equal (flat tariff + single product) the Lagrange formula
-    # correctly gives uniform flow — add a gentle sinusoidal overlay as a
-    # practical tie-breaker that favours cooler night hours (peak at 03:00).
-    a_max = max(a_per_hour)
-    a_min = min(a_per_hour)
-    if a_max <= 0 or (a_max / max(a_min, 1e-9)) < 1.02:
-        raw_sum = sum(flow_raw)
-        for _hi, _h in enumerate(hours):
-            _hod = _h % 24
-            flow_raw[_hi] *= 1.0 + 0.08 * _math.cos(_math.pi * (_hod - 3) / 12)
-        new_sum = sum(flow_raw)
-        if new_sum > 0:
-            flow_raw = [f * raw_sum / new_sum for f in flow_raw]
-
-    # ── Water-filling: POR bounds + shutdown ────────────────────────────────
-    # If Q_t < q_min_run the pump cannot operate within POR → shut down that
-    # hour (Q_t = 0) and redistribute the volume to cheaper active hours.
-    flow_clamped: list[float] = [0.0] * n
-    for _iter in range(20):
-        for i, q in enumerate(flow_raw):
-            if q < q_min_run:
-                flow_clamped[i] = 0.0       # below POR minimum → shutdown
-            elif q > q_max:
-                flow_clamped[i] = q_max     # above POR maximum → cap
-            else:
-                flow_clamped[i] = q         # within POR
-
-        surplus = total_volume_m3 - sum(flow_clamped)
-        if abs(surplus) < 1.0:
-            break
-
-        # Redistribute surplus to active (unclamped) hours, preserving
-        # Lagrange optimality (weight by 1/√a_t).
-        active_idx = [
-            i for i, q in enumerate(flow_clamped)
-            if q_min_run * 1.001 <= q <= q_max * 0.999
+    # ── Assign block flows: cheapest → q_max, most expensive → q_min_run ───
+    c_min, c_max = min(block_cost), max(block_cost)
+    if c_max > c_min * 1.02:
+        block_flow = [
+            q_min_run + (q_max - q_min_run) * (c_max - c) / (c_max - c_min)
+            for c in block_cost
         ]
-        if not active_idx:
-            break
-        active_w = [inv_sqrt_a[i] for i in active_idx]
-        tot_w = sum(active_w)
-        if tot_w < 1e-9:
-            break
-        flow_raw = list(flow_clamped)
-        for ii, idx in enumerate(active_idx):
-            flow_raw[idx] += surplus * active_w[ii] / tot_w
+    else:
+        # Flat tariff / single product: uniform distribution
+        block_flow = [total_volume_m3 / (n_blocks * BLOCK_SIZE)] * n_blocks
 
-    # Safety: if shutdown left an unrecoverable shortfall, re-enable all hours
-    if total_volume_m3 - sum(flow_clamped) > 1.0:
-        for i in range(n):
-            if flow_clamped[i] == 0.0:
-                flow_clamped[i] = q_min_run
-        surplus2 = total_volume_m3 - sum(flow_clamped)
-        headroom = [max(q_max - f, 0.0) for f in flow_clamped]
-        tot_hr = sum(headroom)
-        if tot_hr > 1e-6:
-            flow_clamped = [
-                min(q_max, f + surplus2 * h / tot_hr)
-                for f, h in zip(flow_clamped, headroom)
-            ]
+    # ── Volume balance: scale + clamp iteratively ───────────────────────────
+    for _ in range(30):
+        total_fl = sum((be - bs) * f for f, (bs, be) in zip(block_flow, block_slices))
+        if abs(total_fl - total_volume_m3) < 0.5:
+            break
+        scale = total_volume_m3 / max(total_fl, 1.0)
+        block_flow = [max(q_min_run, min(q_max, f * scale)) for f in block_flow]
 
-    return [round(max(0.0, min(q_max, f)), 1) for f in flow_clamped]
+    # ── Optional shutdown: drop most expensive blocks if volume already met ─
+    sorted_by_cost = sorted(range(n_blocks), key=lambda i: block_cost[i], reverse=True)
+    active_vol = sum((be - bs) * block_flow[bi] for bi, (bs, be) in enumerate(block_slices))
+    for bi in sorted_by_cost:
+        bs, be = block_slices[bi]
+        removed = (be - bs) * block_flow[bi]
+        if block_flow[bi] > 0 and active_vol - removed >= total_volume_m3 - 1.0:
+            active_vol -= removed
+            block_flow[bi] = 0.0
+
+    # ── Expand to per-hour list ─────────────────────────────────────────────
+    result: list[float] = []
+    for bi, (bs, be) in enumerate(block_slices):
+        for _ in range(be - bs):
+            result.append(round(max(0.0, block_flow[bi]), 1))
+    while len(result) < n:
+        result.append(round(nominal_flow, 1))
+    return result[:n]
 
 
 def _execute_time_series_solver(
@@ -8020,20 +7982,21 @@ if not auto_batch:
             # to pump at least Q_t each hour. Without this constraint the solver always
             # picks the cheapest (lowest) feasible flow and produces constant output.
             # For peak hours (Q_t ≤ FLOW_sched): FLOW_sched added as upper safety fallback.
-            # For off-peak (Q_t > FLOW_sched): FLOW_sched excluded — solver would pick it.
             _q_hi = FLOW_sched * 1.8
             hourly_flow_candidates_arg = []
             for _qt in hourly_flow_rates_arg:
-                if _qt > 0:
-                    _base = round(max(1.0, _qt), 1)
-                    _cands = sorted(set([
-                        _base,
-                        round(min(_q_hi, _base + 25), 1),
-                        round(min(_q_hi, _base + 50), 1),
-                        round(min(_q_hi, _base + 100), 1),
-                    ]))
-                    if _qt <= FLOW_sched:
-                        _cands = sorted(set(_cands + [round(FLOW_sched, 1)]))
+                if _qt <= 0:
+                    # Shutdown block: FLOW_sched keeps at least one feasible candidate
+                    _cands = [round(FLOW_sched, 1)]
+                elif _qt > FLOW_sched * 1.005:
+                    # High-flow (cheap) block: provide ONLY the target so the per-hour
+                    # solver cannot revert to FLOW_sched (which would be cheaper per-hour).
+                    # Q_b > FLOW_sched ≥ hydraulic minimum → always feasible.
+                    _cands = [round(min(_q_hi, _qt), 1)]
+                elif _qt < FLOW_sched * 0.995:
+                    # Low-flow (expensive) block: prefer lower target; FLOW_sched as
+                    # fallback if hydraulics prevent running below it.
+                    _cands = sorted({round(_qt, 1), round(FLOW_sched, 1)})
                 else:
                     _cands = [round(FLOW_sched, 1)]
                 hourly_flow_candidates_arg.append(_cands)
@@ -8341,6 +8304,27 @@ if not auto_batch:
                     heading=f"Pump Details by Type ({rec['time']:02d}:00)",
                 )
 
+            # ── HGL profile — last optimized hour ────────────────────────────
+            if reports:
+                _last_res_hgl = reports[-1]["result"]
+                _term_elev_hgl = float(term_data.get("elev", 0.0) or 0.0)
+                _term_head_hgl = float(term_data.get("min_residual", 50.0) or 50.0)
+                _term_name_hgl = str(term_data.get("name", "Terminal"))
+                _hgl_fig_summary = render_hgl_profile(
+                    stations_base, _last_res_hgl,
+                    terminal_name=_term_name_hgl,
+                    terminal_elev=_term_elev_hgl,
+                    terminal_head=_term_head_hgl,
+                )
+                if _hgl_fig_summary is not None:
+                    st.subheader("Pipeline Hydraulic Grade Line — Last Hour")
+                    st.plotly_chart(
+                        _hgl_fig_summary,
+                        use_container_width=True,
+                        config={"displayModeBar": True, "scrollZoom": True, "displaylogo": False},
+                        key="hgl_profile_summary",
+                    )
+
         with tab_charts:
             if not reports:
                 st.info("Run the optimizer to see charts.")
@@ -8443,14 +8427,6 @@ if not auto_batch:
                         with _pt:
                             _pname = str(_ps.get("name", "")).strip()
                             _pk = _pname.lower().replace(" ", "_")
-                            _pA = float(_last_res.get(f"coef_A_{_pk}", _ps.get("A", 0)) or 0)
-                            _pB = float(_last_res.get(f"coef_B_{_pk}", _ps.get("B", 0)) or 0)
-                            _pC = float(_last_res.get(f"coef_C_{_pk}", _ps.get("C", 0)) or 0)
-                            _pP = float(_last_res.get(f"coef_P_{_pk}", _ps.get("P", 0)) or 0)
-                            _pQc = float(_last_res.get(f"coef_Q_{_pk}", _ps.get("Q", 0)) or 0)
-                            _pRe = float(_last_res.get(f"coef_R_{_pk}", _ps.get("R", 0)) or 0)
-                            _pSe = float(_last_res.get(f"coef_S_{_pk}", _ps.get("S", 0)) or 0)
-                            _pTe = float(_last_res.get(f"coef_T_{_pk}", _ps.get("T", 0)) or 0)
                             _pdol = float(_last_res.get(f"dol_{_pk}", _ps.get("DOL") or _ps.get("dol") or 1480) or 1480)
                             _pmin_rpm = float(_last_res.get(f"min_rpm_{_pk}", _ps.get("MinRPM") or _ps.get("min_rpm") or (_pdol * 0.65)) or (_pdol * 0.65))
                             _pact_rpm = float(_last_res.get(f"speed_{_pk}", _pdol) or _pdol)
@@ -8459,104 +8435,258 @@ if not auto_batch:
                             _pact_eff = float(_last_res.get(f"efficiency_{_pk}", 0) or 0)
                             _pn = int(_last_res.get(f"num_pumps_{_pk}", 1) or 1)
                             _pdr = float(_last_res.get(f"drag_reduction_{_pk}", 0) or 0)
-                            if _pC <= 0 and _pA == 0 and _pB == 0:
-                                st.info(f"No pump head curve coefficients configured for {_pname}.")
-                                continue
-                            _pq_max = max(_pact_flow * 2.5, 500.0) if _pact_flow > 0 else 2000.0
-                            _pQ = np.linspace(1.0, _pq_max, 300)
-                            _pr_act = _pact_rpm / _pdol if _pdol > 0 else 1.0
-                            _pr_min = _pmin_rpm / _pdol if _pdol > 0 else 0.65
 
-                            def _ph(_q, _r, _npu=_pn, _a=_pA, _b=_pB, _c=_pC):
-                                _qe = _q / _r if _r > 0 else _q
-                                return _npu * np.maximum(_a * _qe**2 + _b * _qe + _c, 0.0) * _r**2
+                            # Check for multi-type pump configuration
+                            _ptypes_raw = _ps.get("pump_types") or {}
+                            _valid_types = {
+                                k: v for k, v in _ptypes_raw.items()
+                                if isinstance(v, dict) and (v.get("C") or v.get("A") or v.get("B"))
+                            }
 
-                            def _pe(_q, _r, _p=_pP, _qc=_pQc, _re=_pRe, _se=_pSe, _te=_pTe, _dol=_pdol):
-                                _qe = _q * (_dol / (_r * _dol)) if _r > 0 else _q
-                                return np.clip(_p * _qe**4 + _qc * _qe**3 + _re * _qe**2 + _se * _qe + _te, 0, 100)
+                            def _draw_pump_curves(
+                                fig_title, eff_title,
+                                cA, cB, cC, cP, cQc, cRe, cSe, cTe,
+                                n_pumps, dol, min_rpm, act_rpm,
+                                act_flow, act_head, act_eff, drag_red,
+                                type_label=""
+                            ):
+                                _q_lim = max(act_flow * 2.5, 500.0) if act_flow > 0 else 2000.0
+                                _Q = np.linspace(1.0, _q_lim, 300)
+                                _r_act = act_rpm / dol if dol > 0 else 1.0
+                                _r_min = min_rpm / dol if dol > 0 else 0.65
 
-                            _H_dol_arr = _ph(_pQ, 1.0)
-                            _H_act_arr = _ph(_pQ, _pr_act)
-                            _H_min_arr = _ph(_pQ, _pr_min)
-                            _Eff_arr = _pe(_pQ, _pr_act)
+                                def _h(_q, _r):
+                                    _qe = _q / _r if _r > 0 else _q
+                                    return n_pumps * np.maximum(cA * _qe**2 + cB * _qe + cC, 0.0) * _r**2
 
-                            # System curve back-calculated from operating point
-                            _pR_sys = _pact_head / (_pact_flow ** 2) if _pact_flow > 0 else 0.0
-                            _H_sys_arr = _pR_sys * _pQ ** 2
-                            _pR_nd = _pR_sys / max(1.0 - _pdr / 100.0, 0.01) if _pdr > 1.0 else _pR_sys
-                            _H_nd_arr = _pR_nd * _pQ ** 2
+                                def _e(_q, _r):
+                                    _qe = _q / _r if _r > 0 else _q
+                                    return np.clip(cP*_qe**4 + cQc*_qe**3 + cRe*_qe**2 + cSe*_qe + cTe, 0, 100)
 
-                            _col_hq, _col_ef = st.columns(2)
-                            with _col_hq:
-                                _fhq = go.Figure()
-                                _fhq.add_trace(go.Scatter(
-                                    x=_pQ, y=_H_dol_arr,
-                                    name=f"DOL ({_pdol:.0f} RPM)",
-                                    line=dict(dash="dash", color="royalblue"),
-                                ))
-                                if abs(_pr_act - 1.0) > 0.01:
+                                _H_dol = _h(_Q, 1.0)
+                                _H_act = _h(_Q, _r_act)
+                                _H_min = _h(_Q, _r_min)
+                                _Eff   = _e(_Q, _r_act)
+                                _R_sys = act_head / (act_flow ** 2) if act_flow > 0 else 0.0
+                                _H_sys = _R_sys * _Q ** 2
+                                _R_nd  = _R_sys / max(1.0 - drag_red / 100.0, 0.01) if drag_red > 1.0 else _R_sys
+                                _H_nd  = _R_nd * _Q ** 2
+
+                                _col_hq, _col_ef = st.columns(2)
+                                with _col_hq:
+                                    _fhq = go.Figure()
                                     _fhq.add_trace(go.Scatter(
-                                        x=_pQ, y=_H_act_arr,
-                                        name=f"Actual ({_pact_rpm:.0f} RPM)",
-                                        line=dict(color="seagreen"),
+                                        x=_Q, y=_H_dol,
+                                        name=f"DOL ({dol:.0f} RPM)",
+                                        line=dict(dash="dash", color="royalblue", width=2),
                                     ))
-                                if abs(_pr_min - _pr_act) > 0.02 and abs(_pr_min - 1.0) > 0.02:
-                                    _fhq.add_trace(go.Scatter(
-                                        x=_pQ, y=_H_min_arr,
-                                        name=f"Min RPM ({_pmin_rpm:.0f})",
-                                        line=dict(dash="dot", color="darkorange"),
-                                    ))
-                                if _pR_sys > 0:
-                                    _sys_lbl = "System curve (with DRA)" if _pdr > 1.0 else "System curve"
-                                    _fhq.add_trace(go.Scatter(
-                                        x=_pQ, y=_H_sys_arr,
-                                        name=_sys_lbl,
-                                        line=dict(color="firebrick"),
-                                    ))
-                                    if _pdr > 1.0:
+                                    if abs(_r_act - 1.0) > 0.01:
                                         _fhq.add_trace(go.Scatter(
-                                            x=_pQ, y=_H_nd_arr,
-                                            name="System curve (no DRA)",
-                                            line=dict(dash="dash", color="darkred"),
+                                            x=_Q, y=_H_act,
+                                            name=f"Actual ({act_rpm:.0f} RPM)",
+                                            line=dict(color="seagreen", width=2.5),
                                         ))
-                                if _pact_flow > 0 and _pact_head > 0:
-                                    _fhq.add_trace(go.Scatter(
-                                        x=[_pact_flow], y=[_pact_head],
-                                        mode="markers",
-                                        marker=dict(symbol="star", size=18, color="red"),
-                                        name=f"Op. Pt: {_pact_flow:.0f} m³/hr @ {_pact_head:.1f} m",
-                                    ))
-                                _fhq.update_layout(
-                                    title=f"{_pname}: H-Q & System Curves ({_pn} pump{'s' if _pn > 1 else ''} in series)",
-                                    xaxis_title="Flow (m³/hr)",
-                                    yaxis_title="Head (m)",
-                                    legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="left", x=0),
-                                    margin=dict(b=130),
-                                )
-                                st.plotly_chart(_fhq, use_container_width=True)
-                                _fig_pump_sys = _fhq
+                                    if abs(_r_min - _r_act) > 0.02 and abs(_r_min - 1.0) > 0.02:
+                                        _fhq.add_trace(go.Scatter(
+                                            x=_Q, y=_H_min,
+                                            name=f"Min RPM ({min_rpm:.0f})",
+                                            line=dict(dash="dot", color="darkorange", width=2),
+                                        ))
+                                    if _R_sys > 0:
+                                        _sys_lbl = "System curve (with DRA)" if drag_red > 1.0 else "System curve"
+                                        _fhq.add_trace(go.Scatter(
+                                            x=_Q, y=_H_sys, name=_sys_lbl,
+                                            line=dict(color="firebrick", width=2),
+                                        ))
+                                        if drag_red > 1.0:
+                                            _fhq.add_trace(go.Scatter(
+                                                x=_Q, y=_H_nd,
+                                                name="System curve (no DRA)",
+                                                line=dict(dash="dash", color="darkred", width=1.5),
+                                            ))
+                                    if act_flow > 0 and act_head > 0:
+                                        _fhq.add_trace(go.Scatter(
+                                            x=[act_flow], y=[act_head],
+                                            mode="markers",
+                                            marker=dict(symbol="circle", size=16, color="red",
+                                                        line=dict(color="darkred", width=2)),
+                                            name=f"Operating Point: {act_flow:.0f} m³/hr @ {act_head:.1f} m",
+                                        ))
+                                    _fhq.update_layout(
+                                        title=dict(
+                                            text=fig_title,
+                                            font=dict(size=14),
+                                        ),
+                                        xaxis_title="Flow (m³/hr)",
+                                        yaxis_title="Head (m)",
+                                        legend=dict(orientation="h", yanchor="bottom", y=-0.45, xanchor="left", x=0),
+                                        margin=dict(b=140),
+                                        height=420,
+                                    )
+                                    st.plotly_chart(_fhq, use_container_width=True)
 
-                            with _col_ef:
-                                _fef = go.Figure()
-                                _fef.add_trace(go.Scatter(
-                                    x=_pQ, y=_Eff_arr,
-                                    name=f"η @ {_pact_rpm:.0f} RPM",
-                                    line=dict(color="purple"),
-                                ))
-                                if _pact_flow > 0 and _pact_eff > 0:
+                                with _col_ef:
+                                    _fef = go.Figure()
                                     _fef.add_trace(go.Scatter(
-                                        x=[_pact_flow], y=[_pact_eff],
-                                        mode="markers",
-                                        marker=dict(symbol="star", size=18, color="red"),
-                                        name=f"Op. Pt: {_pact_eff:.1f}%",
+                                        x=_Q, y=_Eff,
+                                        name=f"η @ {act_rpm:.0f} RPM",
+                                        line=dict(color="purple", width=2.5),
                                     ))
-                                _fef.update_layout(
-                                    title=f"{_pname}: Efficiency vs Flow",
-                                    xaxis_title="Flow (m³/hr)",
-                                    yaxis_title="Efficiency (%)",
-                                    yaxis=dict(range=[0, 105]),
+                                    if act_flow > 0 and act_eff > 0:
+                                        _fef.add_trace(go.Scatter(
+                                            x=[act_flow], y=[act_eff],
+                                            mode="markers",
+                                            marker=dict(symbol="circle", size=16, color="red",
+                                                        line=dict(color="darkred", width=2)),
+                                            name=f"Operating Point: {act_eff:.1f}%",
+                                        ))
+                                    _fef.update_layout(
+                                        title=dict(text=eff_title, font=dict(size=14)),
+                                        xaxis_title="Flow (m³/hr)",
+                                        yaxis_title="Efficiency (%)",
+                                        yaxis=dict(range=[0, 105]),
+                                        height=420,
+                                    )
+                                    st.plotly_chart(_fef, use_container_width=True)
+
+                            if len(_valid_types) >= 2:
+                                # Multi-type station: one sub-tab per type + Combined
+                                _type_tab_labels = [f"Type {k}" for k in sorted(_valid_types.keys())] + ["Combined"]
+                                _type_tabs = st.tabs(_type_tab_labels)
+                                _sorted_type_keys = sorted(_valid_types.keys())
+                                for _ti, (_tt, _tk) in enumerate(zip(_type_tabs[:-1], _sorted_type_keys)):
+                                    with _tt:
+                                        _tv = _valid_types[_tk]
+                                        _tA  = float(_tv.get("A", 0) or 0)
+                                        _tB  = float(_tv.get("B", 0) or 0)
+                                        _tC  = float(_tv.get("C", 0) or 0)
+                                        _tP  = float(_tv.get("P", 0) or 0)
+                                        _tQc = float(_tv.get("Q", 0) or 0)
+                                        _tRe = float(_tv.get("R", 0) or 0)
+                                        _tSe = float(_tv.get("S", 0) or 0)
+                                        _tTe = float(_tv.get("T", 0) or 0)
+                                        _t_dol     = float(_tv.get("DOL", _pdol) or _pdol)
+                                        _t_min_rpm = float(_tv.get("MinRPM", _pmin_rpm) or _pmin_rpm)
+                                        _t_avail   = int(_tv.get("available", 1) or 1)
+                                        _t_act_rpm = float(
+                                            _last_res.get(f"speed_{_pk}_{_tk}",
+                                            _last_res.get(f"speed_{_pk}", _t_dol)) or _t_dol
+                                        )
+                                        _t_act_flow = float(
+                                            _last_res.get(f"pump_flow_{_pk}_{_tk}",
+                                            _last_res.get(f"pump_flow_{_pk}", 0)) or 0
+                                        )
+                                        _t_act_head = float(
+                                            _last_res.get(f"sdh_{_pk}_{_tk}",
+                                            _last_res.get(f"sdh_{_pk}", 0)) or 0
+                                        )
+                                        _t_act_eff = float(
+                                            _last_res.get(f"efficiency_{_pk}_{_tk}",
+                                            _last_res.get(f"efficiency_{_pk}", 0)) or 0
+                                        )
+                                        if _tC == 0 and _tA == 0 and _tB == 0:
+                                            st.info(f"No head curve coefficients for Type {_tk} at {_pname}.")
+                                            continue
+                                        _draw_pump_curves(
+                                            fig_title=f"{_pname} — Type {_tk}: H-Q & System Curves ({_t_avail} pump{'s' if _t_avail > 1 else ''})",
+                                            eff_title=f"{_pname} — Type {_tk}: Efficiency vs Flow",
+                                            cA=_tA, cB=_tB, cC=_tC,
+                                            cP=_tP, cQc=_tQc, cRe=_tRe, cSe=_tSe, cTe=_tTe,
+                                            n_pumps=_t_avail, dol=_t_dol, min_rpm=_t_min_rpm,
+                                            act_rpm=_t_act_rpm, act_flow=_t_act_flow,
+                                            act_head=_t_act_head, act_eff=_t_act_eff,
+                                            drag_red=_pdr, type_label=_tk,
+                                        )
+
+                                # Combined tab: overlay all types on same chart
+                                with _type_tabs[-1]:
+                                    _q_comb = max(_pact_flow * 2.5, 500.0) if _pact_flow > 0 else 2000.0
+                                    _Q_comb = np.linspace(1.0, _q_comb, 300)
+                                    _fcomb = go.Figure()
+                                    _colors_comb = ["royalblue", "seagreen", "darkorange", "purple", "firebrick"]
+                                    for _ci, _ck in enumerate(_sorted_type_keys):
+                                        _cv = _valid_types[_ck]
+                                        _cA = float(_cv.get("A", 0) or 0)
+                                        _cB = float(_cv.get("B", 0) or 0)
+                                        _cC = float(_cv.get("C", 0) or 0)
+                                        _c_dol = float(_cv.get("DOL", _pdol) or _pdol)
+                                        _c_avail = int(_cv.get("available", 1) or 1)
+                                        _c_act_rpm = float(
+                                            _last_res.get(f"speed_{_pk}_{_ck}",
+                                            _last_res.get(f"speed_{_pk}", _c_dol)) or _c_dol
+                                        )
+                                        _c_r = _c_act_rpm / _c_dol if _c_dol > 0 else 1.0
+                                        _c_clr = _colors_comb[_ci % len(_colors_comb)]
+                                        _H_c_dol = _c_avail * np.maximum(_cA * (_Q_comb)**2 + _cB * _Q_comb + _cC, 0.0)
+                                        _H_c_act = _c_avail * np.maximum(_cA * (_Q_comb / _c_r)**2 + _cB * (_Q_comb / _c_r) + _cC, 0.0) * _c_r**2
+                                        _fcomb.add_trace(go.Scatter(
+                                            x=_Q_comb, y=_H_c_dol,
+                                            name=f"Type {_ck} DOL",
+                                            line=dict(dash="dash", color=_c_clr, width=2),
+                                        ))
+                                        _fcomb.add_trace(go.Scatter(
+                                            x=_Q_comb, y=_H_c_act,
+                                            name=f"Type {_ck} @ {_c_act_rpm:.0f} RPM",
+                                            line=dict(color=_c_clr, width=2.5),
+                                        ))
+                                    # System curve
+                                    if _pact_flow > 0 and _pact_head > 0:
+                                        _R_sys_c = _pact_head / _pact_flow**2
+                                        _fcomb.add_trace(go.Scatter(
+                                            x=_Q_comb, y=_R_sys_c * _Q_comb**2,
+                                            name="System curve", line=dict(color="firebrick", width=2),
+                                        ))
+                                        _fcomb.add_trace(go.Scatter(
+                                            x=[_pact_flow], y=[_pact_head],
+                                            mode="markers",
+                                            marker=dict(symbol="circle", size=16, color="red",
+                                                        line=dict(color="darkred", width=2)),
+                                            name=f"Operating Point: {_pact_flow:.0f} m³/hr @ {_pact_head:.1f} m",
+                                        ))
+                                    _fcomb.update_layout(
+                                        title=dict(text=f"{_pname}: Combined Pump Types — H-Q Curves", font=dict(size=14)),
+                                        xaxis_title="Flow (m³/hr)",
+                                        yaxis_title="Head (m)",
+                                        legend=dict(orientation="h", yanchor="bottom", y=-0.45, xanchor="left", x=0),
+                                        margin=dict(b=140),
+                                        height=450,
+                                    )
+                                    st.plotly_chart(_fcomb, use_container_width=True)
+
+                            else:
+                                # Single pump type (or no pump_types dict): use station-level coefficients
+                                _pA  = float(_last_res.get(f"coef_A_{_pk}", _ps.get("A", 0)) or 0)
+                                _pB  = float(_last_res.get(f"coef_B_{_pk}", _ps.get("B", 0)) or 0)
+                                _pC  = float(_last_res.get(f"coef_C_{_pk}", _ps.get("C", 0)) or 0)
+                                _pP  = float(_last_res.get(f"coef_P_{_pk}", _ps.get("P", 0)) or 0)
+                                _pQc = float(_last_res.get(f"coef_Q_{_pk}", _ps.get("Q", 0)) or 0)
+                                _pRe = float(_last_res.get(f"coef_R_{_pk}", _ps.get("R", 0)) or 0)
+                                _pSe = float(_last_res.get(f"coef_S_{_pk}", _ps.get("S", 0)) or 0)
+                                _pTe = float(_last_res.get(f"coef_T_{_pk}", _ps.get("T", 0)) or 0)
+                                # Use type A/B coefficients if they exist and station-level is empty
+                                if _pC == 0 and _pA == 0 and _pB == 0 and len(_valid_types) == 1:
+                                    _only_v = next(iter(_valid_types.values()))
+                                    _pA  = float(_only_v.get("A", 0) or 0)
+                                    _pB  = float(_only_v.get("B", 0) or 0)
+                                    _pC  = float(_only_v.get("C", 0) or 0)
+                                    _pP  = float(_only_v.get("P", 0) or 0)
+                                    _pQc = float(_only_v.get("Q", 0) or 0)
+                                    _pRe = float(_only_v.get("R", 0) or 0)
+                                    _pSe = float(_only_v.get("S", 0) or 0)
+                                    _pTe = float(_only_v.get("T", 0) or 0)
+                                if _pC <= 0 and _pA == 0 and _pB == 0:
+                                    st.info(f"No pump head curve coefficients configured for {_pname}.")
+                                    continue
+                                _draw_pump_curves(
+                                    fig_title=f"{_pname}: H-Q & System Curves ({_pn} pump{'s' if _pn > 1 else ''} in series)",
+                                    eff_title=f"{_pname}: Efficiency vs Flow",
+                                    cA=_pA, cB=_pB, cC=_pC,
+                                    cP=_pP, cQc=_pQc, cRe=_pRe, cSe=_pSe, cTe=_pTe,
+                                    n_pumps=_pn, dol=_pdol, min_rpm=_pmin_rpm,
+                                    act_rpm=_pact_rpm, act_flow=_pact_flow,
+                                    act_head=_pact_head, act_eff=_pact_eff,
+                                    drag_red=_pdr,
                                 )
-                                st.plotly_chart(_fef, use_container_width=True)
 
         with tab_dra:
             if not reports:
@@ -8833,6 +8963,333 @@ if not auto_batch:
                         file_name="pump_system_operating_points.html",
                         mime="text/html",
                     )
+
+            # ── PDF Report ───────────────────────────────────────────────────
+            st.divider()
+            st.subheader("PDF Report")
+
+            def _generate_pdf_report(_rpts, _stns, _plan_df, _term, _f_mode, _dmv):
+                """Generate a comprehensive PDF report using reportlab."""
+                try:
+                    import io as _io
+                    import datetime as _dt
+                    from reportlab.platypus import (
+                        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+                        PageBreak, HRFlowable,
+                    )
+                    from reportlab.lib.pagesizes import A4, landscape
+                    from reportlab.lib import colors
+                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                    from reportlab.lib.units import cm
+                    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
+                    buf = _io.BytesIO()
+
+                    styles = getSampleStyleSheet()
+                    H1 = ParagraphStyle("H1", parent=styles["Title"],
+                                        fontSize=22, leading=28, spaceAfter=12,
+                                        textColor=colors.HexColor("#1967d2"))
+                    H2 = ParagraphStyle("H2", parent=styles["Heading1"],
+                                        fontSize=15, leading=20, spaceAfter=8,
+                                        textColor=colors.HexColor("#374151"))
+                    H3 = ParagraphStyle("H3", parent=styles["Heading2"],
+                                        fontSize=12, leading=16, spaceAfter=6,
+                                        textColor=colors.HexColor("#374151"))
+                    BODY = ParagraphStyle("BODY", parent=styles["Normal"],
+                                          fontSize=10, leading=14, spaceAfter=4)
+                    SMALL = ParagraphStyle("SMALL", parent=styles["Normal"],
+                                           fontSize=8, leading=11, spaceAfter=2)
+                    CENTER = ParagraphStyle("CENTER", parent=styles["Normal"],
+                                            fontSize=10, leading=14, alignment=TA_CENTER)
+
+                    def _tbl(data, col_widths=None, hdr_rows=1, font_sz=8):
+                        t = Table(data, colWidths=col_widths, repeatRows=hdr_rows)
+                        hdr_style = [
+                            ("BACKGROUND", (0, 0), (-1, hdr_rows - 1),
+                             colors.HexColor("#1967d2")),
+                            ("TEXTCOLOR", (0, 0), (-1, hdr_rows - 1), colors.white),
+                            ("FONTNAME", (0, 0), (-1, hdr_rows - 1), "Helvetica-Bold"),
+                            ("FONTSIZE", (0, 0), (-1, hdr_rows - 1), font_sz),
+                            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("GRID", (0, 0), (-1, -1), 0.4,
+                             colors.HexColor("#d1d5db")),
+                            ("FONTNAME", (0, hdr_rows), (-1, -1), "Helvetica"),
+                            ("FONTSIZE", (0, hdr_rows), (-1, -1), font_sz),
+                            ("ROWBACKGROUNDS", (0, hdr_rows), (-1, -1),
+                             [colors.HexColor("#f9fafb"), colors.white]),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                        ]
+                        t.setStyle(TableStyle(hdr_style))
+                        return t
+
+                    def _fig_img(fig, w_cm=17, h_cm=9):
+                        """Rasterise plotly figure to reportlab Image flowable."""
+                        try:
+                            from reportlab.platypus import Image as RLImage
+                            _png = fig.to_image(format="png", width=int(w_cm * 37.8),
+                                               height=int(h_cm * 37.8), scale=1.5)
+                            return RLImage(_io.BytesIO(_png), width=w_cm * cm,
+                                           height=h_cm * cm)
+                        except Exception:
+                            return None
+
+                    story = []
+                    origin_name = _stns[0].get("name", "Origin") if _stns else "Origin"
+                    term_name   = _term.get("name", "Terminal")
+                    today_str   = _dt.date.today().strftime("%d %b %Y")
+
+                    # ── Cover page ───────────────────────────────────────────────────────
+                    story.append(Spacer(1, 3 * cm))
+                    story.append(Paragraph("Pipeline Operations", H1))
+                    story.append(Paragraph("Optimization Report", H1))
+                    story.append(HRFlowable(width="100%", thickness=2,
+                                            color=colors.HexColor("#1967d2")))
+                    story.append(Spacer(1, 0.6 * cm))
+
+                    cover_data = [
+                        ["Pipeline", f"{origin_name} → {term_name}"],
+                        ["Report Date", today_str],
+                        ["Flow Mode", str(_f_mode)],
+                        ["Daily Volume (m³)", f"{_dmv:,.1f}" if _dmv else "N/A"],
+                        ["Hours Optimized", str(len(_rpts))],
+                    ]
+                    if _rpts:
+                        _tc_total = sum(
+                            float(r["result"].get("total_cost", 0) or 0)
+                            for r in _rpts
+                        )
+                        cover_data.append(["Total Optimized Cost (INR)", f"{_tc_total:,.2f}"])
+                    story.append(_tbl(cover_data, col_widths=[6 * cm, 11 * cm],
+                                      hdr_rows=0, font_sz=10))
+                    story.append(Spacer(1, 0.4 * cm))
+                    story.append(Paragraph(
+                        "Generated by Pipeline Optimization System",
+                        CENTER,
+                    ))
+                    story.append(PageBreak())
+
+                    # ── Executive Summary ────────────────────────────────────────────────
+                    story.append(Paragraph("Executive Summary", H2))
+                    story.append(HRFlowable(width="100%", thickness=1,
+                                            color=colors.HexColor("#d1d5db")))
+                    story.append(Spacer(1, 0.3 * cm))
+
+                    if _rpts:
+                        total_cost = sum(
+                            float(r["result"].get("total_cost", 0) or 0) for r in _rpts
+                        )
+                        total_vol = sum(
+                            float(r["result"].get("flow_m3hr", 0) or 0) for r in _rpts
+                        )
+                        avg_flow  = total_vol / len(_rpts) if _rpts else 0.0
+
+                        _eff_list = [
+                            float(r["result"].get(f"pump_eff_{_rk}", 0) or 0)
+                            for r in _rpts
+                            for _s2 in _stns
+                            for _rk in [str(_s2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")]
+                            if float(r["result"].get(f"pump_eff_{_rk}", 0) or 0) > 0
+                        ]
+                        avg_eff = sum(_eff_list) / len(_eff_list) if _eff_list else 0.0
+
+                        summ_data = [
+                            ["Metric", "Value"],
+                            ["Total Optimized Cost (INR)", f"{total_cost:,.2f}"],
+                            ["Total Volume Pumped (m³)", f"{total_vol:,.1f}"],
+                            ["Average Flow Rate (m³/hr)", f"{avg_flow:,.1f}"],
+                            ["Average Pump Efficiency (%)", f"{avg_eff:.1f}"],
+                            ["Number of Hours Optimized", str(len(_rpts))],
+                        ]
+                        story.append(_tbl(summ_data, col_widths=[9 * cm, 8 * cm],
+                                          hdr_rows=1, font_sz=10))
+                        story.append(Spacer(1, 0.5 * cm))
+
+                        # Cost by station
+                        story.append(Paragraph("Cost Breakdown by Station", H3))
+                        stn_cost_rows = [["Station", "Power Cost (INR)", "DRA Cost (INR)", "Total (INR)"]]
+                        for _s2 in _stns:
+                            _rk = str(_s2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                            pc = sum(float(r["result"].get(f"power_cost_{_rk}", 0) or 0) for r in _rpts)
+                            dc = sum(float(r["result"].get(f"dra_cost_{_rk}", 0) or 0) for r in _rpts)
+                            if pc > 0 or dc > 0:
+                                stn_cost_rows.append([
+                                    _s2.get("name", _rk),
+                                    f"{pc:,.2f}",
+                                    f"{dc:,.2f}",
+                                    f"{pc + dc:,.2f}",
+                                ])
+                        if len(stn_cost_rows) > 1:
+                            story.append(_tbl(stn_cost_rows,
+                                              col_widths=[6 * cm, 4 * cm, 4 * cm, 4 * cm],
+                                              hdr_rows=1, font_sz=9))
+
+                    story.append(PageBreak())
+
+                    # ── Hourly Schedule ──────────────────────────────────────────────────
+                    story.append(Paragraph("Hourly Optimization Schedule", H2))
+                    story.append(HRFlowable(width="100%", thickness=1,
+                                            color=colors.HexColor("#d1d5db")))
+                    story.append(Spacer(1, 0.3 * cm))
+
+                    if _rpts:
+                        pump_stns = [s for s in _stns if s.get("is_pump")]
+                        for _chunk_start in range(0, len(_rpts), 12):
+                            _chunk = _rpts[_chunk_start: _chunk_start + 12]
+
+                            sched_hdr = ["Time", "Flow\n(m³/hr)", "Total Cost\n(INR)"]
+                            for _ps2 in pump_stns:
+                                _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                sched_hdr.append(f"{_ps2.get('name', _rk2)[:10]}\nRPM")
+                                sched_hdr.append(f"{_ps2.get('name', _rk2)[:10]}\nkW")
+                                sched_hdr.append(f"{_ps2.get('name', _rk2)[:10]}\nDRA ppm")
+
+                            sched_rows = [sched_hdr]
+                            for _r in _chunk:
+                                _res2 = _r["result"]
+                                row = [
+                                    f"{_r['time']:02d}:00",
+                                    f"{float(_res2.get('flow_m3hr', 0) or 0):.0f}",
+                                    f"{float(_res2.get('total_cost', 0) or 0):,.0f}",
+                                ]
+                                for _ps2 in pump_stns:
+                                    _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                    row.append(f"{float(_res2.get(f'speed_{_rk2}', 0) or 0):.0f}")
+                                    row.append(f"{float(_res2.get(f'power_{_rk2}', 0) or 0):.0f}")
+                                    row.append(f"{float(_res2.get(f'dra_ppm_{_rk2}', 0) or 0):.1f}")
+                                sched_rows.append(row)
+
+                            n_cols = len(sched_hdr)
+                            col_w = [1.5 * cm, 1.8 * cm, 2.2 * cm] + [1.6 * cm] * (n_cols - 3)
+                            story.append(_tbl(sched_rows, col_widths=col_w,
+                                              hdr_rows=1, font_sz=7))
+                            story.append(Spacer(1, 0.3 * cm))
+
+                    story.append(PageBreak())
+
+                    # ── Cost charts ─────────────────────────────────────────────────────
+                    story.append(Paragraph("Cost Analysis", H2))
+                    story.append(HRFlowable(width="100%", thickness=1,
+                                            color=colors.HexColor("#d1d5db")))
+                    story.append(Spacer(1, 0.3 * cm))
+
+                    if _rpts:
+                        _cost_rows2 = [
+                            {"Hour": f"{r['time']:02d}:00",
+                             "Total Cost (INR)": float(r["result"].get("total_cost", 0) or 0)}
+                            for r in _rpts
+                        ]
+                        _df_hc = pd.DataFrame(_cost_rows2)
+                        _fc2 = px.bar(_df_hc, x="Hour", y="Total Cost (INR)",
+                                      title="Hourly Total Cost",
+                                      color_discrete_sequence=["#1967d2"])
+                        _fc2.update_layout(height=350, margin=dict(l=60, r=20, t=50, b=60))
+                        _img_cost = _fig_img(_fc2, w_cm=16, h_cm=8)
+                        if _img_cost:
+                            story.append(_img_cost)
+                            story.append(Spacer(1, 0.3 * cm))
+
+                        # Cost breakdown bar
+                        _bd2 = []
+                        for _r2 in _rpts:
+                            for _s3 in _stns:
+                                _rk3 = str(_s3.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                _bd2.append({
+                                    "Hour": f"{_r2['time']:02d}:00",
+                                    "Station": _s3.get("name", _rk3),
+                                    "Power Cost (INR)": float(_r2["result"].get(f"power_cost_{_rk3}", 0) or 0),
+                                    "DRA Cost (INR)": float(_r2["result"].get(f"dra_cost_{_rk3}", 0) or 0),
+                                })
+                        _df_bd2 = pd.DataFrame(_bd2)
+                        if not _df_bd2.empty and _df_bd2[["Power Cost (INR)", "DRA Cost (INR)"]].sum().sum() > 0:
+                            _fig_bd2 = px.bar(
+                                _df_bd2.melt(id_vars=["Hour", "Station"],
+                                             value_vars=["Power Cost (INR)", "DRA Cost (INR)"],
+                                             var_name="Type", value_name="INR"),
+                                x="Hour", y="INR", color="Type",
+                                barmode="stack", title="Cost Breakdown by Station",
+                                facet_col="Station",
+                            )
+                            _fig_bd2.update_layout(height=380, margin=dict(l=60, r=20, t=80, b=60))
+                            _img_bd = _fig_img(_fig_bd2, w_cm=16, h_cm=9)
+                            if _img_bd:
+                                story.append(_img_bd)
+
+                    story.append(PageBreak())
+
+                    # ── HGL Profile ──────────────────────────────────────────────────────
+                    story.append(Paragraph("Hydraulic Grade Line — Last Hour", H2))
+                    story.append(HRFlowable(width="100%", thickness=1,
+                                            color=colors.HexColor("#d1d5db")))
+                    story.append(Spacer(1, 0.3 * cm))
+
+                    if _rpts:
+                        _last_r = _rpts[-1]["result"]
+                        _hgl = render_hgl_profile(
+                            _stns, _last_r,
+                            terminal_name=_term.get("name", "Terminal"),
+                            terminal_elev=float(_term.get("elev", 0.0) or 0.0),
+                            terminal_head=float(_term.get("min_residual", 50.0) or 50.0),
+                        )
+                        if _hgl:
+                            _img_hgl = _fig_img(_hgl, w_cm=16, h_cm=10)
+                            if _img_hgl:
+                                story.append(_img_hgl)
+
+                    story.append(PageBreak())
+
+                    # ── Product Schedule ─────────────────────────────────────────────────
+                    if _plan_df is not None and not _plan_df.empty:
+                        story.append(Paragraph("Product Schedule", H2))
+                        story.append(HRFlowable(width="100%", thickness=1,
+                                                color=colors.HexColor("#d1d5db")))
+                        story.append(Spacer(1, 0.3 * cm))
+                        _ps_df = _plan_df.copy().fillna("").astype(str)
+                        _ps_data = [list(_ps_df.columns)] + _ps_df.values.tolist()
+                        n_c = len(_ps_data[0])
+                        _cw = [17 * cm / n_c] * n_c
+                        story.append(_tbl(_ps_data, col_widths=_cw, hdr_rows=1, font_sz=8))
+
+                    doc = SimpleDocTemplate(
+                        buf,
+                        pagesize=A4,
+                        leftMargin=2 * cm, rightMargin=2 * cm,
+                        topMargin=2.5 * cm, bottomMargin=2 * cm,
+                    )
+                    doc.build(story)
+                    buf.seek(0)
+                    return buf.read()
+                except Exception as _pdf_exc:
+                    import traceback
+                    return None, str(_pdf_exc) + "\n" + traceback.format_exc()
+
+            if st.button("Generate PDF Report", type="primary", key="gen_pdf_btn"):
+                with st.spinner("Generating PDF report…"):
+                    _term_data_pdf = term_data
+                    _plan_df_pdf = plan_df if isinstance(plan_df, pd.DataFrame) else None
+                    _pdf_result = _generate_pdf_report(
+                        reports,
+                        stations_base,
+                        _plan_df_pdf,
+                        _term_data_pdf,
+                        st.session_state.get("flow_mode", "Fixed"),
+                        st.session_state.get("daily_m3", 0.0),
+                    )
+                if isinstance(_pdf_result, tuple):
+                    st.error(f"PDF generation failed: {_pdf_result[1]}")
+                elif _pdf_result:
+                    st.download_button(
+                        "Download PDF Report",
+                        data=_pdf_result,
+                        file_name=f"pipeline_optimization_{dt.date.today().strftime('%Y-%m-%d')}.pdf",
+                        mime="application/pdf",
+                        key="dl_pdf_btn",
+                    )
+                else:
+                    st.error("PDF generation failed. Ensure reportlab is installed: pip install reportlab kaleido")
 
         with tab_log:
             if not reports:
