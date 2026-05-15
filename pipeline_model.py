@@ -1779,7 +1779,7 @@ def _update_mainline_dra(
         ppm_float = float(ppm_val or 0.0)
         if ppm_float <= 0.0:
             return 0.0
-        if not pump_running or shear_existing <= 0.0:
+        if shear_existing <= 0.0:
             return ppm_float
         dr_value = 0.0
         if kv > 0:

@@ -5431,7 +5431,9 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b, [(2.0, 12.0), (18.0, 10.0)])
 
     _, profile_b_idle = _profiles_for_case(12.0, True, 12.0, False)
-    _assert_profile(profile_b_idle, [(2.0, 22.0), (18.0, 10.0)])
+    # With GSF=1.0 (pump_shear_rate=1.0), incoming DRA is destroyed at station B
+    # regardless of pump running status — only B's own downstream injection survives.
+    _assert_profile(profile_b_idle, [(2.0, 12.0), (18.0, 10.0)])
 
     profile_a_zero, profile_b_zero = _profiles_for_case(0.0, True, 0.0, True)
     _assert_profile(profile_a_zero, [(2.0, 0.0), (3.0, 10.0)])
