@@ -6262,6 +6262,7 @@ def solve_pipeline(
                         ),
                         f"sdh_{stn_data['name']}": sdh_display,
                         f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
+                        f"tdh_{stn_data['name']}": tdh,
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],

@@ -8448,7 +8448,7 @@ if not auto_batch:
                             _pmin_rpm = float(_last_res.get(f"min_rpm_{_pk}", _ps.get("MinRPM") or _ps.get("min_rpm") or (_pdol * 0.65)) or (_pdol * 0.65))
                             _pact_rpm = float(_last_res.get(f"speed_{_pk}", _pdol) or _pdol)
                             _pact_flow = float(_last_res.get(f"pump_flow_{_pk}", 0) or 0)
-                            _pact_head = float(_last_res.get(f"sdh_{_pk}", 0) or 0)
+                            _pact_head = float(_last_res.get(f"tdh_{_pk}", 0) or 0)
                             _pact_eff = float(_last_res.get(f"efficiency_{_pk}", 0) or 0)
                             _pn = int(_last_res.get(f"num_pumps_{_pk}", 1) or 1)
                             _pdr = float(_last_res.get(f"drag_reduction_{_pk}", 0) or 0)
@@ -8660,8 +8660,7 @@ if not auto_batch:
                                             _last_res.get(f"pump_flow_{_pk}", 0)) or 0
                                         )
                                         _t_act_head = float(
-                                            _last_res.get(f"sdh_{_pk}_{_tk}",
-                                            _last_res.get(f"sdh_{_pk}", 0)) or 0
+                                            _last_res.get(f"tdh_{_pk}", 0) or 0
                                         )
                                         _t_act_eff = float(
                                             _last_res.get(f"efficiency_{_pk}_{_tk}",
@@ -9281,7 +9280,7 @@ if not auto_batch:
 
                     _tc_total = sum(float(r["result"].get("total_cost", 0) or 0) for r in _rpts) if _rpts else 0.0
                     _cover_info = [
-                        ("Pipeline", f"{_origin_name}  →  {_term_name}"),
+                        ("Pipeline", f"{_origin_name} -> {_term_name}"),
                         ("Report Date", _today_str),
                         ("Flow Mode", str(_f_mode)),
                         ("Daily Volume (m³)", f"{_dmv:,.1f}" if _dmv else "N/A"),
@@ -9430,7 +9429,7 @@ if not auto_batch:
 
                     # ── HGL Profile ──────────────────────────────────────────────────────
                     _pdf.add_page()
-                    _section_title(_pdf, "Hydraulic Grade Line — Last Hour")
+                    _section_title(_pdf, "Hydraulic Grade Line - Last Hour")
 
                     if _rpts:
                         _last_r = _rpts[-1]["result"]
