@@ -1463,12 +1463,9 @@ def _predict_effective_injection(
         global_shear = float(pump_shear_rate or 0.0)
     except (TypeError, ValueError):
         global_shear = 0.0
-    global_shear = max(0.0, min(global_shear, 1.0)) if pump_running else 0.0
+    global_shear = max(0.0, min(global_shear, 1.0))
 
-    if pump_running:
-        shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
-    else:
-        shear = local_shear
+    shear = 1.0 - (1.0 - local_shear) * (1.0 - global_shear)
     shear = max(0.0, min(shear, 1.0))
 
     injector_pos = str(injector_position or "").lower()
