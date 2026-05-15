@@ -7913,6 +7913,7 @@ if not auto_batch:
                     stn['pump_name'] = names[0]
 
         term_data = {"name": terminal_name, "elev": terminal_elev, "min_residual": terminal_head}
+        st.session_state["last_term_data"] = term_data
 
         # Prepare initial volumetric linefill
         vol_df = st.session_state.get("linefill_vol_df", pd.DataFrame())
@@ -8203,6 +8204,7 @@ if not auto_batch:
         st.session_state["day_linefill_snaps"] = linefill_snaps
         st.session_state["day_hours"] = hours
         st.session_state["day_stations"] = stations_base
+        st.session_state["day_plan_df"] = plan_df
 
     if st.session_state.get("run_mode") in ("hourly", "daily") and st.session_state.get("day_df") is not None:
         st.markdown("<div class='section-title'>Optimization Results</div>", unsafe_allow_html=True)
@@ -8217,6 +8219,13 @@ if not auto_batch:
         linefill_snaps = st.session_state.get("day_linefill_snaps", [])
         hours = st.session_state.get("day_hours", [])
         df_day = st.session_state.get("day_df_raw", df_day_numeric)
+        # Recover term_data and plan_df from session state (not re-defined on reruns)
+        term_data = st.session_state.get("last_term_data") or {
+            "name": st.session_state.get("terminal_name", "Terminal"),
+            "elev": st.session_state.get("terminal_elev", 0.0),
+            "min_residual": st.session_state.get("terminal_head", 50.0),
+        }
+        plan_df = st.session_state.get("day_plan_df")
         tab_summary, tab_charts, tab_dra, tab_3d, tab_downloads, tab_log = st.tabs([
             "📋 Summary", "📊 Hourly Charts", "💧 DRA Analysis",
             "🧊 3D Profile", "⬇ Downloads", "🔍 Candidate Log",
