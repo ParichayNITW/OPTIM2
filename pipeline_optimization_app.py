@@ -2798,7 +2798,7 @@ def render_hgl_profile(stations: list, result: dict, terminal_name: str = "Termi
         return None
 
     def _rk(name):
-        return name.strip().lower().replace(" ", "_").replace("-", "_")
+        return name.strip().lower().replace(" ", "_")
 
     # ── KP list and elevation arrays ─────────────────────────────────────────
     kp_list = [0.0]
@@ -9089,7 +9089,7 @@ if not auto_batch:
                         _first_pump_key = ""
                         for _ps_s in _stns:
                             if _ps_s.get("is_pump"):
-                                _first_pump_key = str(_ps_s.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                _first_pump_key = str(_ps_s.get("name", "")).strip().lower().replace(" ", "_")
                                 break
                         total_vol = sum(
                             float(r["result"].get(f"pump_flow_{_first_pump_key}", 0) or 0) for r in _rpts
@@ -9100,7 +9100,7 @@ if not auto_batch:
                             float(r["result"].get(f"efficiency_{_rk}", 0) or 0)
                             for r in _rpts
                             for _s2 in _stns
-                            for _rk in [str(_s2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")]
+                            for _rk in [str(_s2.get("name", "")).strip().lower().replace(" ", "_")]
                             if float(r["result"].get(f"efficiency_{_rk}", 0) or 0) > 0
                         ]
                         avg_eff = sum(_eff_list) / len(_eff_list) if _eff_list else 0.0
@@ -9121,7 +9121,7 @@ if not auto_batch:
                         story.append(Paragraph("Cost Breakdown by Station", H3))
                         stn_cost_rows = [["Station", "Power Cost (INR)", "DRA Cost (INR)", "Total (INR)"]]
                         for _s2 in _stns:
-                            _rk = str(_s2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                            _rk = str(_s2.get("name", "")).strip().lower().replace(" ", "_")
                             pc = sum(float(r["result"].get(f"power_cost_{_rk}", 0) or 0) for r in _rpts)
                             dc = sum(float(r["result"].get(f"dra_cost_{_rk}", 0) or 0) for r in _rpts)
                             if pc > 0 or dc > 0:
@@ -9151,7 +9151,7 @@ if not auto_batch:
 
                             sched_hdr = ["Time", "Flow\n(m³/hr)", "Total Cost\n(INR)"]
                             for _ps2 in pump_stns:
-                                _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_")
                                 sched_hdr.append(f"{_ps2.get('name', _rk2)[:10]}\nRPM")
                                 sched_hdr.append(f"{_ps2.get('name', _rk2)[:10]}\nkW")
                                 sched_hdr.append(f"{_ps2.get('name', _rk2)[:10]}\nDRA ppm")
@@ -9160,7 +9160,7 @@ if not auto_batch:
                             for _r in _chunk:
                                 _res2 = _r["result"]
                                 _fk = (
-                                    str(pump_stns[0].get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                    str(pump_stns[0].get("name", "")).strip().lower().replace(" ", "_")
                                     if pump_stns else ""
                                 )
                                 row = [
@@ -9169,7 +9169,7 @@ if not auto_batch:
                                     f"{float(_res2.get('total_cost', 0) or 0):,.0f}",
                                 ]
                                 for _ps2 in pump_stns:
-                                    _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                    _rk2 = str(_ps2.get("name", "")).strip().lower().replace(" ", "_")
                                     row.append(f"{float(_res2.get(f'speed_{_rk2}', 0) or 0):.0f}")
                                     row.append(f"{float(_res2.get(f'motor_kw_{_rk2}', 0) or 0):.0f}")
                                     row.append(f"{float(_res2.get(f'dra_ppm_{_rk2}', 0) or 0):.1f}")
@@ -9209,7 +9209,7 @@ if not auto_batch:
                         _bd2 = []
                         for _r2 in _rpts:
                             for _s3 in _stns:
-                                _rk3 = str(_s3.get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                _rk3 = str(_s3.get("name", "")).strip().lower().replace(" ", "_")
                                 _bd2.append({
                                     "Hour": f"{_r2['time']:02d}:00",
                                     "Station": _s3.get("name", _rk3),
@@ -9601,7 +9601,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
 
         if _res_map is not None:
             _stns_for_kpi = st.session_state.get("last_stations_data", [])
-            _rkeys_map    = [s.get("name","").lower().replace(" ","_").replace("-","_")
+            _rkeys_map    = [s.get("name","").lower().replace(" ","_")
                              for s in _stns_for_kpi]
             _total_len    = sum(float(s.get("L", 0)) for s in _stns_for_kpi)
             _total_dra    = sum(float(_res_map.get(f"dra_cost_{k}", 0) or 0) for k in _rkeys_map)
@@ -9652,7 +9652,7 @@ if not auto_batch and st.session_state.get("run_mode") == "instantaneous":
             st.markdown("#### Station Summary")
             _map_rows = []
             for _s in _stns_map:
-                _rk = _s.get("name","").lower().replace(" ","_").replace("-","_")
+                _rk = _s.get("name","").lower().replace(" ","_")
                 _map_rows.append({
                     "Station": _s.get("name", ""),
                     "Type": ("Pump + DRA" if _s.get("is_pump") and float(_s.get("max_dr",0))>0
