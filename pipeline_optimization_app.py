@@ -9159,9 +9159,13 @@ if not auto_batch:
                             sched_rows = [sched_hdr]
                             for _r in _chunk:
                                 _res2 = _r["result"]
+                                _fk = (
+                                    str(pump_stns[0].get("name", "")).strip().lower().replace(" ", "_").replace("-", "_")
+                                    if pump_stns else ""
+                                )
                                 row = [
                                     f"{_r['time']:02d}:00",
-                                    f"{float(_res2.get('flow_m3hr', 0) or 0):.0f}",
+                                    f"{float(_res2.get(f'pump_flow_{_fk}', 0) or 0):.0f}",
                                     f"{float(_res2.get('total_cost', 0) or 0):,.0f}",
                                 ]
                                 for _ps2 in pump_stns:
