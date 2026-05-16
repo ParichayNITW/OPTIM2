@@ -6823,3 +6823,96 @@ def test_dra_comprehensive_G_gsf_irrelevant_when_idle():
             assert l0 == pytest.approx(l1, rel=1e-6), f"G H{hr+1} seg{i} length"
             assert p0 == pytest.approx(p1, rel=1e-6), \
                 f"G H{hr+1} seg{i}: GSF=0 vs GSF=1 differ at idle station ({p0} vs {p1})"
+
+
+# ---------------------------------------------------------------------------
+# Regression: linefill with length_km (no volume key) must survive to
+# produce a full-length dra_segments including the zero-ppm tail.
+# Bug: solve_pipeline's linefill normalization only accepted volume-keyed
+# entries; length_km-only entries were silently skipped → empty initial
+# queue → dra_segments truncated to pumped length only.
+# ---------------------------------------------------------------------------
+
+def test_linefill_length_km_key_produces_full_dra_segments():
+    """Linefill entries with length_km (no volume) must not be silently skipped.
+
+    Bug: solve_pipeline's linefill normalisation only accepted volume-keyed
+    entries; length_km-only entries were silently skipped → empty initial queue
+    → dra_segments truncated to pumped length only, zero-ppm tail missing.
+    """
+    import pipeline_model as _pm
+
+    # Use same station parameters as test_floor_schedule_logs_from_laced_queue_each_hour
+    d_inner = 0.7 - 2 * 0.007  # 0.686 m
+    seg_lengths = (4.0, 6.0)
+    total_km = sum(seg_lengths)
+
+    # pumped_km chosen smaller than smaller segment → untreated tail guaranteed
+    pumped_km = 2.0
+    flow = _volume_from_km(pumped_km, d_inner)
+
+    stations = [
+        {"name": "Station A", "is_pump": False, "L": seg_lengths[0],
+         "d": 0.7, "t": 0.007, "rough": 4e-5, "max_dr": 24},
+        {"name": "Station B", "is_pump": False, "L": seg_lengths[1],
+         "d": 0.7, "t": 0.007, "rough": 4e-5, "max_dr": 28},
+    ]
+    terminal = {"name": "Terminal", "elev": 0.0, "min_residual": 0.0}
+
+    segment_slices = [
+        [{"length_km": seg_lengths[0] / 2, "kv": 2.6, "rho": 832.0},
+         {"length_km": seg_lengths[0] / 2, "kv": 3.1, "rho": 838.0}],
+        [{"length_km": 2.0, "kv": 2.7, "rho": 830.0},
+         {"length_km": seg_lengths[1] - 2.0, "kv": 3.3, "rho": 842.0}],
+    ]
+
+    # Linefill has length_km but NO volume key — the bug silently dropped these
+    linefill_length_km_only = [{"length_km": total_km, "dra_ppm": 0.0}]
+
+    result = _pm.solve_pipeline(
+        stations, terminal,
+        FLOW=flow,
+        KV_list=[2.6, 3.0],
+        rho_list=[832.0, 838.0],
+        segment_slices=segment_slices,
+        RateDRA=600.0,
+        Price_HSD=0.0,
+        Fuel_density=850.0,
+        Ambient_temp=25.0,
+        linefill=linefill_length_km_only,
+        dra_reach_km=0.0,
+        mop_kgcm2=100.0,
+        hours=1.0,
+        start_time="00:00",
+        pump_shear_rate=0.0,
+        enumerate_loops=False,
+    )
+
+    assert result.get("error") is not True, (
+        f"solve_pipeline returned error: {result.get('message')}"
+    )
+
+    dra_segs = result.get("dra_segments", [])
+    total = sum(e.get("length_km", 0.0) for e in dra_segs)
+
+    # dra_segments must span the full pipeline including zero-ppm untreated tail
+    assert total == pytest.approx(total_km, rel=1e-4), (
+        f"dra_segments total {total:.3f}km ≠ full pipeline {total_km:.3f}km — "
+        f"zero-ppm tail was dropped (linefill length_km parsing bug)"
+    )
+
+    # Returned linefill must also span full pipeline so next hour gets correct input
+    linefill_out = result.get("linefill", [])
+    linefill_total = sum(e.get("length_km", 0.0) for e in linefill_out)
+    assert linefill_total == pytest.approx(total_km, rel=1e-4), (
+        f"returned linefill total {linefill_total:.3f}km ≠ {total_km:.3f}km"
+    )
+
+    # At least one zero-ppm entry must exist (the untreated portion)
+    has_zero = any(
+        e.get("dra_ppm", 0.0) <= 0.0 and e.get("length_km", 0.0) > 0.0
+        for e in dra_segs
+    )
+    assert has_zero, (
+        "dra_segments has no zero-ppm entry — untreated pipeline tail missing"
+    )

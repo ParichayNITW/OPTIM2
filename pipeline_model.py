@@ -4152,8 +4152,14 @@ def solve_pipeline(
                 try:
                     vol = float(ent.get('volume') or ent.get('Volume (m³)') or ent.get('Volume') or 0.0)
                 except Exception:
-                    continue
+                    vol = 0.0
+                length_km_val = 0.0
                 if vol <= 0:
+                    try:
+                        length_km_val = float(ent.get('length_km', 0.0) or 0.0)
+                    except Exception:
+                        length_km_val = 0.0
+                if vol <= 0 and length_km_val <= 0:
                     continue
                 try:
                     ppm = float(
@@ -4166,7 +4172,10 @@ def solve_pipeline(
                     )
                 except Exception:
                     ppm = 0.0
-                linefill_state.append({'volume': vol, 'dra_ppm': ppm})
+                if vol > 0:
+                    linefill_state.append({'volume': vol, 'dra_ppm': ppm})
+                else:
+                    linefill_state.append({'length_km': length_km_val, 'dra_ppm': ppm})
     linefill_state = copy.deepcopy(linefill_state)
 
     N = len(stations)
