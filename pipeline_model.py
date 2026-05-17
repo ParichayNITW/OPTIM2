@@ -1780,7 +1780,7 @@ def _update_mainline_dra(
         """Apply shear using the product viscosity at this slice position."""
         if ppm_float <= 0.0:
             return 0.0
-        if not pump_running or shear_existing <= 0.0:
+        if shear_existing <= 0.0:
             return ppm_float
         dr_value = 0.0
         if kv_val > 0:
@@ -6340,6 +6340,7 @@ def solve_pipeline(
                         ),
                         f"sdh_{stn_data['name']}": sdh_display,
                         f"sdh_kgcm2_{stn_data['name']}": head_to_kgcm2(sdh_display, stn_data['rho']),
+                        f"tdh_{stn_data['name']}": tdh,
                         f"rho_{stn_data['name']}": stn_data['rho'],
                         f"maop_{stn_data['name']}": stn_data['maop_head'],
                         f"maop_kgcm2_{stn_data['name']}": stn_data['maop_kgcm2'],

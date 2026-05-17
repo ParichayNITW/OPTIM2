@@ -5432,7 +5432,9 @@ def test_dra_profile_reflects_hourly_push_examples() -> None:
     _assert_profile(profile_b, [(2.0, 12.0), (18.0, 10.0)])
 
     _, profile_b_idle = _profiles_for_case(12.0, True, 12.0, False)
-    _assert_profile(profile_b_idle, [(2.0, 22.0), (18.0, 10.0)])
+    # With GSF=1.0 (pump_shear_rate=1.0), incoming DRA is destroyed at station B
+    # regardless of pump running status — only B's own downstream injection survives.
+    _assert_profile(profile_b_idle, [(2.0, 12.0), (18.0, 10.0)])
 
     profile_a_zero, profile_b_zero = _profiles_for_case(0.0, True, 0.0, True)
     _assert_profile(profile_a_zero, [(2.0, 0.0), (3.0, 10.0)])
@@ -6771,20 +6773,21 @@ def test_dra_comprehensive_D_three_stations_no_shear_3hours():
 
 
 def test_dra_comprehensive_E_idle_station2_gsf1_2hours():
-    """Test E: S2 idle (pump_running=False), GSF=1.0 has NO effect.
-    S2 injects 15ppm at full rate. ppm_out = existing + 15 (no shear).
+    """Test E: S2 idle (pump_running=False), GSF=1.0 fully shears transiting DRA.
+    S2 injects 15ppm. Existing 20ppm is destroyed in transit (GSF=1 applies shear
+    regardless of pump state); only the fresh 15ppm injection remains at S2 head.
     """
     q_s1 = [{"length_km": 100.0, "dra_ppm": 0.0}]
     expected_s2 = [
-        [(10.0, 35.0), (90.0, 0.0)],
-        [(10.0, 35.0), (10.0, 20.0), (80.0, 0.0)],
+        [(10.0, 15.0), (90.0, 0.0)],
+        [(10.0, 15.0), (10.0, 20.0), (80.0, 0.0)],
     ]
     for hr in range(2):
         dra_s1, q_s1, _, _ = _dra_run_origin(q_s1, 100.0, 20.0, gsf=1.0)
         dra_s2, _, _, _ = _dra_run_non_origin(q_s1, 1, 100.0, 15.0, gsf=1.0, pump_running=False)
         _dra_assert_segs(dra_s2, expected_s2[hr], f"E H{hr+1} S2 idle")
-        assert dra_s2[0][1] == pytest.approx(35.0, rel=1e-6), \
-            f"E H{hr+1}: idle S2 must inject full 15ppm (20+15=35, no GSF shear)"
+        assert dra_s2[0][1] == pytest.approx(15.0, rel=1e-6), \
+            f"E H{hr+1}: GSF=1 destroys transit DRA at idle station; only fresh 15ppm injection remains"
 
 
 def test_dra_comprehensive_F_shear_scope_only_pumped_portion():
@@ -6802,9 +6805,10 @@ def test_dra_comprehensive_F_shear_scope_only_pumped_portion():
         "F: stationary 40km tail must retain 40ppm — GSF shear ONLY hits pumped slice"
 
 
-def test_dra_comprehensive_G_gsf_irrelevant_when_idle():
-    """Test G: GSF=0.0 vs GSF=1.0 must give identical results at an idle station.
-    Proves pump_running=False fully suppresses all shear regardless of GSF.
+def test_dra_comprehensive_G_gsf_affects_idle_station():
+    """Test G: GSF controls shear at idle stations (pump_running=False).
+    GSF=0: no shear → existing DRA preserved, injection adds on top (20+15=35ppm).
+    GSF=1: full shear → existing DRA destroyed in transit, only injection remains (15ppm).
     """
     def _run_gsf(gsf_val):
         q = [{"length_km": 100.0, "dra_ppm": 0.0}]
@@ -6819,11 +6823,15 @@ def test_dra_comprehensive_G_gsf_irrelevant_when_idle():
 
     results_gsf0 = _run_gsf(0.0)
     results_gsf1 = _run_gsf(1.0)
-    for hr in range(2):
-        for i, ((l0, p0), (l1, p1)) in enumerate(zip(results_gsf0[hr], results_gsf1[hr])):
-            assert l0 == pytest.approx(l1, rel=1e-6), f"G H{hr+1} seg{i} length"
-            assert p0 == pytest.approx(p1, rel=1e-6), \
-                f"G H{hr+1} seg{i}: GSF=0 vs GSF=1 differ at idle station ({p0} vs {p1})"
+    # GSF=0: no shear at idle station — DRA accumulates (20+15=35ppm)
+    assert results_gsf0[0][0][1] == pytest.approx(35.0, rel=1e-6), \
+        "G H1 seg0 GSF=0: no shear → existing 20ppm + injection 15ppm = 35ppm"
+    # GSF=1: full shear at idle station — transit DRA destroyed, only injection survives
+    assert results_gsf1[0][0][1] == pytest.approx(15.0, rel=1e-6), \
+        "G H1 seg0 GSF=1: full shear destroys transit 20ppm; only 15ppm injection remains"
+    # The two GSF values produce different results at an idle station
+    assert results_gsf0[0][0][1] != pytest.approx(results_gsf1[0][0][1], rel=1e-6), \
+        "G: GSF=0 and GSF=1 must give different ppm at idle station"
 
 
 # ---------------------------------------------------------------------------
