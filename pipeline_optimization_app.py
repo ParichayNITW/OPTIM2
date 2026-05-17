@@ -9308,6 +9308,38 @@ if not auto_batch:
                         if len(_hour_labels) > 8:
                             ax.tick_params(axis="x", rotation=45)
 
+                    # ── Unicode → Latin-1 safe transliteration ────────────────────────────
+                    _UNICODE_MAP = str.maketrans({
+                        "→": "->",   # →
+                        "←": "<-",   # ←
+                        "–": "-",    # – en-dash
+                        "—": "--",   # — em-dash
+                        "…": "...",  # … ellipsis
+                        "•": "*",    # • bullet
+                        "≥": ">=",   # ≥
+                        "≤": "<=",   # ≤
+                        "≠": "!=",   # ≠
+                        "≈": "~=",   # ≈
+                        "×": "x",    # × multiplication
+                        "÷": "/",    # ÷ division
+                        "’": "'",    # ' right single quote
+                        "‘": "'",    # ' left single quote
+                        "“": '"',    # " left double quote
+                        "”": '"',    # " right double quote
+                        "‹": "<",    # ‹
+                        "›": ">",    # ›
+                        "−": "-",    # − minus sign
+                        "·": ".",    # · middle dot
+                    })
+
+                    def _san(text):
+                        """Sanitise text to Latin-1 safe characters for Helvetica."""
+                        if not isinstance(text, str):
+                            text = str(text) if text is not None else ""
+                        text = text.translate(_UNICODE_MAP)
+                        # Final pass: drop any remaining non-Latin-1 characters
+                        return text.encode("latin-1", errors="replace").decode("latin-1")
+
                     # ── PDF class ─────────────────────────────────────────────────────────
                     class _PipelinePDF(FPDF):
                         def __init__(self):
@@ -9321,7 +9353,7 @@ if not auto_batch:
                             self.set_text_color(130, 130, 130)
                             self.cell(
                                 0, 6,
-                                f"Pipeline Operations Optimization Report  |  {_origin_name} → {_term_name}  |  {_today_str}",
+                                _san(f"Pipeline Operations Optimization Report  |  {_origin_name} -> {_term_name}  |  {_today_str}"),
                                 align="L", new_x="LMARGIN", new_y="NEXT",
                             )
                             self.set_draw_color(200, 210, 230)
@@ -9336,7 +9368,7 @@ if not auto_batch:
                             self.set_font("Helvetica", "", 8)
                             self.set_text_color(160, 160, 160)
                             self.cell(0, 10,
-                                      f"Page {self.page_no()} | Confidential – Pipeline Operations Report",
+                                      _san(f"Page {self.page_no()} | Confidential - Pipeline Operations Report"),
                                       align="C")
 
                         def chapter_title(self, text):
@@ -9346,7 +9378,7 @@ if not auto_batch:
                             self.set_text_color(255, 255, 255)
                             self.set_font("Helvetica", "B", 13)
                             self.cell(0, 9,
-                                      f"  Chapter {self._chapter_num}: {text}",
+                                      _san(f"  Chapter {self._chapter_num}: {text}"),
                                       border=0, fill=True,
                                       new_x="LMARGIN", new_y="NEXT")
                             self.ln(4)
@@ -9355,7 +9387,7 @@ if not auto_batch:
                         def section_title(self, text):
                             self.set_font("Helvetica", "B", 11)
                             self.set_text_color(25, 103, 210)
-                            self.cell(0, 7, text, new_x="LMARGIN", new_y="NEXT")
+                            self.cell(0, 7, _san(text), new_x="LMARGIN", new_y="NEXT")
                             self.set_draw_color(180, 200, 240)
                             self.set_line_width(0.3)
                             self.line(15, self.get_y(), 195, self.get_y())
@@ -9366,7 +9398,7 @@ if not auto_batch:
                             self.set_font("Helvetica", "", 9.5)
                             self.set_text_color(50, 50, 50)
                             self.set_x(15 + indent)
-                            self.multi_cell(180 - indent, 5.5, text)
+                            self.multi_cell(180 - indent, 5.5, _san(text))
                             self.ln(1)
 
                         def kv_row(self, label, value, fill=False):
@@ -9376,10 +9408,10 @@ if not auto_batch:
                                 self.set_fill_color(255, 255, 255)
                             self.set_font("Helvetica", "B", 9)
                             self.set_text_color(55, 65, 81)
-                            self.cell(78, 6.5, f"  {label}", border="LTB", fill=fill)
+                            self.cell(78, 6.5, _san(f"  {label}"), border="LTB", fill=fill)
                             self.set_font("Helvetica", "", 9)
                             self.set_text_color(30, 30, 30)
-                            self.cell(102, 6.5, f"  {value}", border="RTB", fill=fill,
+                            self.cell(102, 6.5, _san(f"  {value}"), border="RTB", fill=fill,
                                       new_x="LMARGIN", new_y="NEXT")
 
                     # ── draw_table (with multi-line cell wrapping) ────────────────────────
@@ -9391,7 +9423,8 @@ if not auto_batch:
                         pdf.set_draw_color(210, 220, 240)
                         pdf.set_line_width(0.2)
                         for _hdr, _cw in zip(headers, col_widths):
-                            pdf.cell(_cw, _hdr_h, str(_hdr).replace("\n", " "),
+                            pdf.cell(_cw, _hdr_h,
+                                     _san(str(_hdr).replace("\n", " ")),
                                      border=1, align="C", fill=True)
                         pdf.ln()
                         pdf.set_font("Helvetica", "", font_sz)
@@ -9405,7 +9438,7 @@ if not auto_batch:
                             # compute max lines needed for this row
                             _lines_per_cell = []
                             for _cell_val, _cw in zip(_row, col_widths):
-                                _txt = str(_cell_val) if _cell_val is not None else ""
+                                _txt = _san(str(_cell_val) if _cell_val is not None else "")
                                 _chars_per_line = max(int(_cw / (font_sz * 0.42)), 1)
                                 _lines_per_cell.append(
                                     max(1, _math.ceil(len(_txt) / _chars_per_line))
@@ -9422,7 +9455,8 @@ if not auto_batch:
                                 pdf.set_fill_color(25, 103, 210)
                                 pdf.set_text_color(255, 255, 255)
                                 for _hdr, _cw in zip(headers, col_widths):
-                                    pdf.cell(_cw, _hdr_h, str(_hdr).replace("\n", " "),
+                                    pdf.cell(_cw, _hdr_h,
+                                             _san(str(_hdr).replace("\n", " ")),
                                              border=1, align="C", fill=True)
                                 pdf.ln()
                                 pdf.set_font("Helvetica", "", font_sz)
@@ -9436,7 +9470,7 @@ if not auto_batch:
                             # draw each cell using multi_cell with fixed height trick
                             _cur_x = _x0
                             for _cell_val, _cw in zip(_row, col_widths):
-                                _txt = str(_cell_val) if _cell_val is not None else ""
+                                _txt = _san(str(_cell_val) if _cell_val is not None else "")
                                 pdf.set_xy(_cur_x, _y0)
                                 pdf.multi_cell(_cw, _row_h, _txt,
                                                border=1, align=align, fill=True,
@@ -9454,7 +9488,7 @@ if not auto_batch:
                             if caption:
                                 pdf.set_font("Helvetica", "I", 8)
                                 pdf.set_text_color(100, 100, 100)
-                                pdf.cell(0, 5, caption, align="C",
+                                pdf.cell(0, 5, _san(caption), align="C",
                                          new_x="LMARGIN", new_y="NEXT")
                                 pdf.set_text_color(30, 30, 30)
                         pdf.ln(3)
@@ -9488,7 +9522,7 @@ if not auto_batch:
                     _pdf.set_font("Helvetica", "", 13)
                     _pdf.set_text_color(70, 70, 70)
                     _pdf.cell(0, 8,
-                               f"{_origin_name}  →  {_term_name}",
+                               _san(f"{_origin_name}  ->  {_term_name}"),
                                align="C", new_x="LMARGIN", new_y="NEXT")
                     _pdf.ln(18)
 
@@ -9512,16 +9546,16 @@ if not auto_batch:
                         _pdf.set_font("Helvetica", "B", 10)
                         _pdf.set_text_color(55, 65, 81)
                         _pdf.set_x(35)
-                        _pdf.cell(60, 8, _lbl + " :", align="R")
+                        _pdf.cell(60, 8, _san(_lbl + " :"), align="R")
                         _pdf.set_font("Helvetica", "", 10)
                         _pdf.set_text_color(25, 103, 210)
-                        _pdf.cell(80, 8, _val, new_x="LMARGIN", new_y="NEXT")
+                        _pdf.cell(80, 8, _san(str(_val)), new_x="LMARGIN", new_y="NEXT")
 
                     _pdf.ln(16)
                     _pdf.set_font("Helvetica", "I", 8.5)
                     _pdf.set_text_color(140, 140, 140)
                     _pdf.cell(0, 5,
-                               "Confidential – Pipeline Operations Optimization System",
+                               "Confidential - Pipeline Operations Optimization System",
                                align="C", new_x="LMARGIN", new_y="NEXT")
                     _pdf.cell(0, 5,
                                "This document contains commercially sensitive operational data.",
