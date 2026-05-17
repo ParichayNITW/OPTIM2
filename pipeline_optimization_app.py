@@ -4095,13 +4095,24 @@ def _append_zero_plan_segments_to_result(
     if stations:
         first_station = stations[0]
         if isinstance(first_station, Mapping):
-            for key in ("d_inner", "D", "d"):
+            d_inner_val = first_station.get("d_inner")
+            if d_inner_val is not None:
                 try:
-                    origin_diameter = float(first_station.get(key, 0.0) or 0.0)
+                    origin_diameter = float(d_inner_val or 0.0)
                 except (TypeError, ValueError):
                     origin_diameter = 0.0
-                if origin_diameter > 0.0:
-                    break
+            if origin_diameter <= 0.0 and first_station.get("D") is not None:
+                try:
+                    outer_d = float(first_station.get("D") or 0.0)
+                    t = float(first_station.get("t", 0.007) or 0.007)
+                    origin_diameter = max(outer_d - 2 * t, 0.0)
+                except (TypeError, ValueError):
+                    origin_diameter = 0.0
+            if origin_diameter <= 0.0:
+                try:
+                    origin_diameter = float(first_station.get("d", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    origin_diameter = 0.0
     if origin_diameter <= 0.0:
         return
 
@@ -4206,15 +4217,24 @@ def _build_forced_detail_from_batches(
     if stations:
         first = stations[0]
         if isinstance(first, Mapping):
-            try:
-                origin_diameter = float(
-                    first.get("d_inner")
-                    or first.get("D")
-                    or first.get("d")
-                    or 0.0
-                )
-            except (TypeError, ValueError):
-                origin_diameter = 0.0
+            d_inner_val = first.get("d_inner")
+            if d_inner_val is not None:
+                try:
+                    origin_diameter = float(d_inner_val or 0.0)
+                except (TypeError, ValueError):
+                    origin_diameter = 0.0
+            if origin_diameter <= 0.0 and first.get("D") is not None:
+                try:
+                    outer_d = float(first.get("D") or 0.0)
+                    t = float(first.get("t", 0.007) or 0.007)
+                    origin_diameter = max(outer_d - 2 * t, 0.0)
+                except (TypeError, ValueError):
+                    origin_diameter = 0.0
+            if origin_diameter <= 0.0:
+                try:
+                    origin_diameter = float(first.get("d", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    origin_diameter = 0.0
 
     plan_segments: list[dict[str, object]] = []
     total_volume = 0.0

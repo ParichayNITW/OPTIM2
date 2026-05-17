@@ -3429,7 +3429,8 @@ def test_time_series_solver_extends_zero_plan_injections(monkeypatch):
     assert isinstance(final_linefill, list) and final_linefill
     head = final_linefill[0]
     assert head.get("dra_ppm", 1.0) == pytest.approx(0.0)
-    expected_length = pm._km_from_volume(flow_rate, stations_base[0]["D"])
+    d_inner = stations_base[0]["D"] - 2 * stations_base[0].get("t", 0.007)
+    expected_length = pm._km_from_volume(flow_rate, d_inner)
     assert head.get("length_km", 0.0) == pytest.approx(expected_length)
 
     reports = result.get("reports") or []
