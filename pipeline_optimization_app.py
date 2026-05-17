@@ -10022,102 +10022,402 @@ if not auto_batch:
                     _pdf.add_page()
                     _pdf.chapter_title("Pump Performance Analysis")
 
-                    _pdf.section_title("7.1  Pump Speed Schedule (RPM)")
+                    _pdf.section_title("7.1  Overview")
                     _pdf.body_text(
-                        "Variable-speed pump drives allow precise flow control by varying "
-                        "rotational speed. The optimizer selects pump speeds to match the "
-                        "required flow rate at minimum energy cost, subject to minimum and "
-                        "maximum speed constraints and hydraulic feasibility."
+                        "This chapter presents the pump hydraulic performance for each station "
+                        "across the optimization period. For each pump type, H-Q family curves "
+                        "are shown from DOL (rated) speed down to the minimum allowable speed in "
+                        "50 RPM steps. The system resistance curve is derived from the actual "
+                        "operating point, and per-hour operating points are overlaid on both the "
+                        "H-Q chart and the efficiency chart. Brake kW (shaft power) and electrical "
+                        "power cost are tabulated for each hour."
                     )
 
                     if _rpts and _pump_stns:
-                        # Speed chart
-                        _fig71, _ax71 = _plt.subplots(figsize=(10, 3.8), facecolor="white")
+
+                        # ── helper: build RPM set for a station ───────────────────────
+                        def _rpm_set_for(dol_val, min_rpm_val, act_rpms):
+                            _dol_i = int(round(dol_val))
+                            _min_i = int(round(min_rpm_val))
+                            _step_s = int(round(dol_val / 50) * 50)
+                            _step_e = int(round(min_rpm_val / 50) * 50)
+                            _levels = list(range(_step_s, _step_e - 1, -50))
+                            _act_ints = [int(round(a)) for a in act_rpms if a > 0]
+                            return sorted(set(_levels + [_dol_i, _min_i] + _act_ints), reverse=True)
+
+                        # ── helper: blend colour for RPM gradient ─────────────────────
+                        def _rpm_color(idx, total):
+                            t = idx / max(total - 1, 1)
+                            r = int(31 + t * (255 - 31))
+                            g = int(119 + t * (127 - 119))
+                            b = int(180 + t * (14 - 180))
+                            return (r / 255, g / 255, b / 255)
+
+                        # ── helper: pump H and efficiency at speed ratio r ─────────────
+                        def _pump_H(Q, cA, cB, cC, n_p, r):
+                            Qe = Q / r if r > 0 else Q
+                            return n_p * _np.maximum(cA * Qe**2 + cB * Qe + cC, 0.0) * r**2
+
+                        def _pump_eff(Q, cP, cQc, cRe, cSe, cTe, r):
+                            Qe = Q / r if r > 0 else Q
+                            return _np.clip(cP*Qe**4 + cQc*Qe**3 + cRe*Qe**2 + cSe*Qe + cTe, 0, 100)
+
+                        # ── helper: draw H-Q + Eff charts for one pump type ────────────
+                        def _pump_type_page(pdf, title, cA, cB, cC, cP, cQc, cRe, cSe, cTe,
+                                            dol, min_rpm, n_pumps,
+                                            hr_flows, hr_heads, hr_effs, hr_labels, hr_rpms,
+                                            drag_reds):
+                            """Draw H-Q family + system curves + per-hour operating points,
+                            then efficiency family curves + per-hour operating points."""
+                            # determine Q axis
+                            _q_shutoff = None
+                            if cA < 0:
+                                _disc = cB**2 - 4*cA*cC
+                                if _disc >= 0:
+                                    _qs = (-cB - _math.sqrt(_disc)) / (2*cA)
+                                    if _qs > 0:
+                                        _q_shutoff = _qs
+                            _max_f = max((q for q in hr_flows if q > 0), default=0)
+                            if _max_f > 0:
+                                _q_lim = _max_f * 1.15
+                            elif _q_shutoff:
+                                _q_lim = _q_shutoff * 0.97
+                            else:
+                                _q_lim = 2000.0
+                            if _q_shutoff:
+                                _q_lim = min(_q_lim, _q_shutoff * 0.98)
+                            _Q = _np.linspace(1.0, max(_q_lim, 50.0), 400)
+
+                            _rpm_set = _rpm_set_for(dol, min_rpm, hr_rpms)
+                            _n_c = max(len(_rpm_set), 2)
+                            _dol_i = int(round(dol))
+                            _min_i = int(round(min_rpm))
+
+                            # ── Figure 1: H-Q ─────────────────────────────────────────
+                            _fig, _ax = _plt.subplots(figsize=(10, 4.2), facecolor="white")
+                            for _ci, _rv in enumerate(_rpm_set):
+                                _r = _rv / dol if dol > 0 else 1.0
+                                _H = _pump_H(_Q, cA, cB, cC, n_pumps, _r)
+                                _lw = 2.4 if _rv == _dol_i else (1.8 if _rv == _min_i else 0.9)
+                                _ls = "--" if _rv == _dol_i else (":" if _rv == _min_i else "-")
+                                _al = 1.0 if _rv in [_dol_i, _min_i] else 0.55
+                                _lbl = (f"{_rv} RPM (DOL)" if _rv == _dol_i else
+                                        f"{_rv} RPM (min)" if _rv == _min_i else
+                                        f"{_rv} RPM")
+                                _ax.plot(_Q, _H, color=_rpm_color(_ci, _n_c),
+                                          linewidth=_lw, linestyle=_ls, alpha=_al,
+                                          label=_lbl if _rv in [_dol_i, _min_i] else "_nolegend_")
+                            # system curves per hour
+                            _sc_colors = [_ORANGE, "#e74c3c", "#9b59b6", _GREEN, "#1abc9c",
+                                          "#f39c12", "#2980b9"]
+                            for _hi, (_hf, _hh, _hl, _hdr) in enumerate(
+                                    zip(hr_flows, hr_heads, hr_labels, drag_reds)):
+                                if _hf > 0 and _hh > 0:
+                                    _Rsys = _hh / (_hf**2)
+                                    _Hs = _Rsys * _Q**2
+                                    _cc = _sc_colors[_hi % len(_sc_colors)]
+                                    _ax.plot(_Q, _Hs, color=_cc, linewidth=1.0,
+                                              linestyle="-.", alpha=0.7,
+                                              label=f"Sys {_hl}")
+                            # operating points
+                            _op_colors = _plt.cm.tab10(_np.linspace(0, 1, max(len(hr_flows), 1)))
+                            for _hi, (_hf, _hh, _hl, _hr) in enumerate(
+                                    zip(hr_flows, hr_heads, hr_labels, hr_rpms)):
+                                if _hf > 0 and _hh > 0:
+                                    _ax.scatter([_hf], [_hh], color=_op_colors[_hi],
+                                                 s=60, zorder=7,
+                                                 edgecolors="white", linewidths=0.8)
+                                    _ax.annotate(_hl, (_hf, _hh),
+                                                  textcoords="offset points", xytext=(4, 4),
+                                                  fontsize=6, color="#333333")
+                            _style_ax(_ax, f"{_san(title)} - H-Q Family & System Curves",
+                                       "Flow (m3/hr)", "Head (m)")
+                            _ax.set_ylim(bottom=0)
+                            # compact legend: only DOL, min, and first few op points
+                            _handles, _lbls = _ax.get_legend_handles_labels()
+                            _keep = [(h, l) for h, l in zip(_handles, _lbls) if not l.startswith("_")][:12]
+                            if _keep:
+                                _ax.legend(*zip(*_keep), fontsize=6.5, loc="upper right",
+                                            ncol=2, framealpha=0.85)
+                            _fig.tight_layout()
+                            _p = _save_fig(_fig)
+                            _insert_chart(pdf, _p, caption=f"H-Q family curves with system curves and hourly operating points")
+
+                            # ── Figure 2: Efficiency ──────────────────────────────────
+                            _fig2, _ax2 = _plt.subplots(figsize=(10, 4.0), facecolor="white")
+                            for _ci, _rv in enumerate(_rpm_set):
+                                _r = _rv / dol if dol > 0 else 1.0
+                                _E = _pump_eff(_Q, cP, cQc, cRe, cSe, cTe, _r)
+                                if not _np.any(_E > 0):
+                                    continue
+                                _lw = 2.2 if _rv == _dol_i else (1.6 if _rv == _min_i else 0.8)
+                                _ls = "--" if _rv == _dol_i else (":" if _rv == _min_i else "-")
+                                _al = 1.0 if _rv in [_dol_i, _min_i] else 0.5
+                                _lbl = (f"{_rv} RPM (DOL)" if _rv == _dol_i else
+                                        f"{_rv} RPM (min)" if _rv == _min_i else
+                                        f"{_rv} RPM")
+                                _ax2.plot(_Q, _E, color=_rpm_color(_ci, _n_c),
+                                           linewidth=_lw, linestyle=_ls, alpha=_al,
+                                           label=_lbl if _rv in [_dol_i, _min_i] else "_nolegend_")
+                            for _hi, (_hf, _he, _hl) in enumerate(
+                                    zip(hr_flows, hr_effs, hr_labels)):
+                                if _hf > 0 and _he > 0:
+                                    _ax2.scatter([_hf], [_he], color=_op_colors[_hi],
+                                                  s=60, zorder=7,
+                                                  edgecolors="white", linewidths=0.8)
+                                    _ax2.annotate(f"{_hl}\n{_he:.1f}%", (_hf, _he),
+                                                   textcoords="offset points", xytext=(4, 4),
+                                                   fontsize=6, color="#333333")
+                            _style_ax(_ax2, f"{_san(title)} - Efficiency Curves",
+                                       "Flow (m3/hr)", "Efficiency (%)")
+                            _ax2.set_ylim(0, 105)
+                            _h2, _l2 = _ax2.get_legend_handles_labels()
+                            _k2 = [(h, l) for h, l in zip(_h2, _l2) if not l.startswith("_")][:8]
+                            if _k2:
+                                _ax2.legend(*zip(*_k2), fontsize=6.5, loc="lower right",
+                                             ncol=2, framealpha=0.85)
+                            _fig2.tight_layout()
+                            _p2 = _save_fig(_fig2)
+                            _insert_chart(pdf, _p2, caption=f"Efficiency family curves with hourly operating points")
+
+                        # ── 7.2  Per-station pump curves ──────────────────────────────
+                        _pdf.section_title("7.2  Pump H-Q and Efficiency Curves by Station")
+                        _fig_num_pump = 1
                         for _si, _ps in enumerate(_pump_stns):
                             _sk = _rk(_ps.get("name", ""))
-                            _speeds = [_f(_r0["result"].get(f"speed_{_sk}")) for _r0 in _rpts]
-                            _c71 = [_BLUE, _ORANGE, _GREEN, "#9b59b6", "#e74c3c"][_si % 5]
-                            _ax71.plot(_hour_labels, _speeds, marker="s", linewidth=2,
-                                        markersize=5, color=_c71,
-                                        label=str(_ps.get("name", _sk)))
-                        _style_ax(_ax71, "Pump Speed Schedule (RPM)",
+                            _pname = str(_ps.get("name", _sk))
+                            _pdol_v = float(_ps.get("DOL") or _ps.get("dol") or 1480)
+                            _pmin_v = float(_ps.get("MinRPM") or _ps.get("min_rpm") or _pdol_v * 0.65)
+                            _pn_v = int(_ps.get("num_pumps", 1) or 1)
+
+                            # per-hour operating data for this station
+                            _hr_flows = [_f(r["result"].get(f"pump_flow_{_sk}",
+                                            r["result"].get("flow_m3hr"))) for r in _rpts]
+                            _hr_heads = [_f(r["result"].get(f"tdh_{_sk}")) for r in _rpts]
+                            _hr_effs = [_f(r["result"].get(f"efficiency_{_sk}",
+                                          r["result"].get(f"pump_eff_{_sk}"))) for r in _rpts]
+                            _hr_rpms = [_f(r["result"].get(f"speed_{_sk}")) for r in _rpts]
+                            _hr_drs = [_f(r["result"].get(f"drag_reduction_{_sk}")) for r in _rpts]
+
+                            _ptypes_raw = _ps.get("pump_types") or {}
+                            _valid_pt = {
+                                k: v for k, v in _ptypes_raw.items()
+                                if isinstance(v, dict) and (v.get("C") or v.get("A") or v.get("B"))
+                            }
+
+                            # Add section break for each station
+                            _pdf.set_font("Helvetica", "B", 10.5)
+                            _pdf.set_text_color(25, 103, 210)
+                            _pdf.cell(0, 7, _san(f"Station: {_pname}"), new_x="LMARGIN", new_y="NEXT")
+                            _pdf.set_text_color(30, 30, 30)
+                            _pdf.ln(1)
+
+                            if _valid_pt:
+                                for _tk, _tv in sorted(_valid_pt.items()):
+                                    _tA = float(_tv.get("A", 0) or 0)
+                                    _tB = float(_tv.get("B", 0) or 0)
+                                    _tC = float(_tv.get("C", 0) or 0)
+                                    _tP = float(_tv.get("P", 0) or 0)
+                                    _tQc = float(_tv.get("Q", 0) or 0)
+                                    _tRe = float(_tv.get("R", 0) or 0)
+                                    _tSe = float(_tv.get("S", 0) or 0)
+                                    _tTe = float(_tv.get("T", 0) or 0)
+                                    _t_dol = float(_tv.get("DOL", _pdol_v) or _pdol_v)
+                                    _t_min = float(_tv.get("MinRPM", _pmin_v) or _pmin_v)
+                                    _t_avail = int(_tv.get("available", _pn_v) or _pn_v)
+                                    if _tC == 0 and _tA == 0 and _tB == 0:
+                                        continue
+                                    # per-hour data for this type
+                                    _thr_rpms = [_f(r["result"].get(f"speed_{_sk}_{_tk}",
+                                                    r["result"].get(f"speed_{_sk}"))) for r in _rpts]
+                                    _thr_flows = [_f(r["result"].get(f"pump_flow_{_sk}_{_tk}",
+                                                     r["result"].get(f"pump_flow_{_sk}",
+                                                     r["result"].get("flow_m3hr")))) for r in _rpts]
+                                    _thr_heads = [_f(r["result"].get(f"tdh_{_sk}")) for r in _rpts]
+                                    _thr_effs = [_f(r["result"].get(f"efficiency_{_sk}_{_tk}",
+                                                    r["result"].get(f"efficiency_{_sk}",
+                                                    r["result"].get(f"pump_eff_{_sk}")))) for r in _rpts]
+                                    _pdf.body_text(
+                                        f"Pump Type {_tk}: {_t_avail} pump(s), "
+                                        f"DOL={_t_dol:.0f} RPM, MinRPM={_t_min:.0f} RPM"
+                                    )
+                                    _pump_type_page(_pdf, f"{_pname} Type {_tk}",
+                                                    _tA, _tB, _tC, _tP, _tQc, _tRe, _tSe, _tTe,
+                                                    _t_dol, _t_min, _t_avail,
+                                                    _thr_flows, _thr_heads, _thr_effs,
+                                                    _hour_labels, _thr_rpms, _hr_drs)
+                            else:
+                                # single-type station
+                                _cA = float(_ps.get("A", 0) or 0)
+                                _cB = float(_ps.get("B", 0) or 0)
+                                _cC = float(_ps.get("C", 0) or 0)
+                                _cP = float(_ps.get("P", 0) or 0)
+                                _cQc = float(_ps.get("Q", 0) or 0)
+                                _cRe = float(_ps.get("R", 0) or 0)
+                                _cSe = float(_ps.get("S", 0) or 0)
+                                _cTe = float(_ps.get("T", 0) or 0)
+                                if _cC == 0 and _cA == 0 and _cB == 0:
+                                    _pdf.body_text(
+                                        f"Pump curve coefficients not configured for {_pname}. "
+                                        f"Enter head curve data (A, B, C) in station settings to "
+                                        f"enable this chart."
+                                    )
+                                else:
+                                    _pdf.body_text(
+                                        f"DOL={_pdol_v:.0f} RPM, MinRPM={_pmin_v:.0f} RPM, "
+                                        f"{_pn_v} pump(s)"
+                                    )
+                                    _pump_type_page(_pdf, _pname,
+                                                    _cA, _cB, _cC, _cP, _cQc, _cRe, _cSe, _cTe,
+                                                    _pdol_v, _pmin_v, _pn_v,
+                                                    _hr_flows, _hr_heads, _hr_effs,
+                                                    _hour_labels, _hr_rpms, _hr_drs)
+
+                        # ── 7.3  Hourly speed schedule ─────────────────────────────────
+                        _pdf.add_page()
+                        _pdf.section_title("7.3  Pump Speed Schedule (RPM)")
+                        _fig73, _ax73 = _plt.subplots(figsize=(10, 3.8), facecolor="white")
+                        for _si, _ps in enumerate(_pump_stns):
+                            _sk = _rk(_ps.get("name", ""))
+                            _speeds = [_f(r["result"].get(f"speed_{_sk}")) for r in _rpts]
+                            _c7 = [_BLUE, _ORANGE, _GREEN, "#9b59b6", "#e74c3c"][_si % 5]
+                            _ax73.plot(_hour_labels, _speeds, marker="s", linewidth=2,
+                                        markersize=5, color=_c7,
+                                        label=_san(str(_ps.get("name", _sk))))
+                        _style_ax(_ax73, "Pump Speed Schedule (RPM)",
                                    "Hour of Day", "Speed (RPM)")
-                        _rotate_xlabels(_ax71)
-                        _ax71.legend(fontsize=8)
-                        _fig71.tight_layout()
-                        _p71 = _save_fig(_fig71)
-                        _insert_chart(_pdf, _p71, caption="Figure 7.1 – Hourly pump speed (RPM) per station")
+                        _rotate_xlabels(_ax73)
+                        _ax73.legend(fontsize=8)
+                        _fig73.tight_layout()
+                        _insert_chart(_pdf, _save_fig(_fig73),
+                                       caption="Figure 7.A - Hourly pump speed (RPM) per station")
 
-                        # Power chart
-                        _pdf.section_title("7.2  Pump Power Consumption (kW)")
-                        _fig72, _ax72 = _plt.subplots(figsize=(10, 3.8), facecolor="white")
-                        _bottom72 = _np.zeros(len(_rpts))
-                        for _si, _ps in enumerate(_pump_stns):
-                            _sk = _rk(_ps.get("name", ""))
-                            _powers = [_f(_r0["result"].get(f"power_{_sk}")) for _r0 in _rpts]
-                            _c72 = [_BLUE, _ORANGE, _GREEN, "#9b59b6", "#e74c3c"][_si % 5]
-                            _ax72.bar(_hour_labels, _powers, bottom=_bottom72,
-                                       label=str(_ps.get("name", _sk)),
-                                       color=_c72, edgecolor="white", linewidth=0.4, zorder=3)
-                            _bottom72 += _np.array(_powers)
-                        _style_ax(_ax72, "Pump Power Consumption by Station (kW)",
-                                   "Hour of Day", "Power (kW)")
-                        _rotate_xlabels(_ax72)
-                        _ax72.legend(fontsize=8, loc="upper right")
-                        _fig72.tight_layout()
-                        _p72 = _save_fig(_fig72)
-                        _insert_chart(_pdf, _p72, caption="Figure 7.2 – Stacked pump power consumption per station")
-
-                        # Efficiency table
-                        _pdf.section_title("7.3  Pump Efficiency (%) by Hour and Station")
-                        _eff_hdrs = ["Time"] + [str(s.get("name", ""))[:12] for s in _pump_stns]
-                        _eff_rows = []
+                        # ── 7.4  BkW & Power Table ─────────────────────────────────────
+                        _pdf.section_title("7.4  Hourly Brake kW, Electrical Power & Efficiency")
+                        _bkw_hdrs = ["Time", "Flow\n(m3/hr)"]
+                        for _ps in _pump_stns:
+                            _sn = str(_ps.get("name", ""))[:10]
+                            _bkw_hdrs += [f"{_sn}\nRPM", f"{_sn}\nBkW", f"{_sn}\nkW",
+                                           f"{_sn}\nEff%", f"{_sn}\nHead(m)"]
+                        _bkw_rows = []
                         for _r0 in _rpts:
-                            _erow = [f"{_r0['time']:02d}:00"]
+                            _brow = [f"{_r0['time']:02d}:00",
+                                      f"{_f(_r0['result'].get('flow_m3hr')):,.0f}"]
                             for _ps in _pump_stns:
                                 _sk = _rk(_ps.get("name", ""))
-                                _ev = _f(_r0["result"].get(f"pump_eff_{_sk}"))
-                                _erow.append(f"{_ev:.1f}%" if _ev > 0 else "–")
-                            _eff_rows.append(_erow)
-                        _eff_cw = [18] + [int(162 / max(len(_pump_stns), 1))] * len(_pump_stns)
-                        if sum(_eff_cw) > 180:
-                            _esc = 180.0 / sum(_eff_cw)
-                            _eff_cw = [w * _esc for w in _eff_cw]
-                        _draw_table(_pdf, _eff_hdrs, _eff_rows, _eff_cw, font_sz=8.5)
+                                _brow.append(f"{_f(_r0['result'].get(f'speed_{_sk}')):.0f}")
+                                _brow.append(f"{_f(_r0['result'].get(f'pump_bkw_{_sk}')):.1f}")
+                                _brow.append(f"{_f(_r0['result'].get(f'power_{_sk}')):.1f}")
+                                _ev = _f(_r0['result'].get(f"efficiency_{_sk}",
+                                         _r0['result'].get(f"pump_eff_{_sk}")))
+                                _brow.append(f"{_ev:.1f}" if _ev > 0 else "-")
+                                _brow.append(f"{_f(_r0['result'].get(f'tdh_{_sk}')):.1f}")
+                            _bkw_rows.append(_brow)
+                        _bkw_base = [16, 18]
+                        _bkw_per = [12, 14, 14, 12, 16]
+                        _bkw_cw = _bkw_base + _bkw_per * len(_pump_stns)
+                        if sum(_bkw_cw) > 180:
+                            _bsc = 180.0 / sum(_bkw_cw)
+                            _bkw_cw = [w * _bsc for w in _bkw_cw]
+                        _draw_table(_pdf, _bkw_hdrs, _bkw_rows, _bkw_cw, font_sz=7.0)
                         _pdf.ln(3)
 
-                        _pdf.section_title("7.4  Performance Analysis")
-                        _all_speeds = [
-                            _f(r["result"].get(f"speed_{_rk(s.get('name',''))}"))
-                            for r in _rpts for s in _pump_stns
-                            if _f(r["result"].get(f"speed_{_rk(s.get('name',''))}")) > 0
-                        ]
-                        _all_powers = [
-                            _f(r["result"].get(f"power_{_rk(s.get('name',''))}"))
-                            for r in _rpts for s in _pump_stns
-                            if _f(r["result"].get(f"power_{_rk(s.get('name',''))}")) > 0
-                        ]
-                        _peak_power_agg = max(
-                            sum(_f(r["result"].get(f"power_{_rk(s.get('name',''))}"))
-                                for s in _pump_stns)
-                            for r in _rpts
-                        )
+                        # ── 7.5  Stacked power chart ───────────────────────────────────
+                        _pdf.section_title("7.5  Pump Power Consumption (kW) by Station")
+                        _fig75, _ax75 = _plt.subplots(figsize=(10, 3.8), facecolor="white")
+                        _bot75 = _np.zeros(len(_rpts))
+                        for _si, _ps in enumerate(_pump_stns):
+                            _sk = _rk(_ps.get("name", ""))
+                            _pws = [_f(r["result"].get(f"power_{_sk}")) for r in _rpts]
+                            _c75 = [_BLUE, _ORANGE, _GREEN, "#9b59b6", "#e74c3c"][_si % 5]
+                            _ax75.bar(_hour_labels, _pws, bottom=_bot75,
+                                       label=_san(str(_ps.get("name", _sk))),
+                                       color=_c75, edgecolor="white", linewidth=0.4, zorder=3)
+                            _bot75 += _np.array(_pws)
+                        _style_ax(_ax75, "Pump Electrical Power Consumption by Station (kW)",
+                                   "Hour of Day", "Power (kW)")
+                        _rotate_xlabels(_ax75)
+                        _ax75.legend(fontsize=8, loc="upper right")
+                        _fig75.tight_layout()
+                        _insert_chart(_pdf, _save_fig(_fig75),
+                                       caption="Figure 7.B - Stacked electrical power draw per station")
+
+                        # ── 7.6  Efficiency heatmap ────────────────────────────────────
+                        _pdf.section_title("7.6  Pump Efficiency (%) - Heatmap")
+                        if len(_pump_stns) > 0:
+                            _eff_mat = []
+                            _eff_ylbls = []
+                            for _ps in _pump_stns:
+                                _sk = _rk(_ps.get("name", ""))
+                                _row_eff = [_f(r["result"].get(f"efficiency_{_sk}",
+                                               r["result"].get(f"pump_eff_{_sk}"))) for r in _rpts]
+                                if any(v > 0 for v in _row_eff):
+                                    _eff_mat.append(_row_eff)
+                                    _eff_ylbls.append(_san(str(_ps.get("name", _sk))))
+                            if _eff_mat:
+                                _fig76, _ax76 = _plt.subplots(
+                                    figsize=(10, max(2.5, len(_eff_mat) * 0.9 + 1.0)),
+                                    facecolor="white")
+                                _im76 = _ax76.imshow(
+                                    _eff_mat, aspect="auto", cmap="RdYlGn",
+                                    vmin=50, vmax=90,
+                                    extent=[-0.5, len(_hour_labels) - 0.5,
+                                             len(_eff_ylbls) - 0.5, -0.5])
+                                _ax76.set_xticks(range(len(_hour_labels)))
+                                _ax76.set_xticklabels(_hour_labels, fontsize=7,
+                                                       rotation=45 if len(_hour_labels) > 8 else 0)
+                                _ax76.set_yticks(range(len(_eff_ylbls)))
+                                _ax76.set_yticklabels(_eff_ylbls, fontsize=8)
+                                _cbar76 = _fig76.colorbar(_im76, ax=_ax76, fraction=0.03)
+                                _cbar76.set_label("Efficiency (%)", fontsize=8)
+                                for _ri76, _row76 in enumerate(_eff_mat):
+                                    for _ci76, _val76 in enumerate(_row76):
+                                        if _val76 > 0:
+                                            _ax76.text(_ci76, _ri76, f"{_val76:.1f}",
+                                                        ha="center", va="center",
+                                                        fontsize=6.5, color="black")
+                                _ax76.set_title("Pump Efficiency Heatmap (%) - Hour x Station",
+                                                 fontsize=9, fontweight="bold", color="#212529")
+                                _fig76.tight_layout()
+                                _insert_chart(_pdf, _save_fig(_fig76),
+                                               caption="Figure 7.C - Efficiency heatmap (green = high, red = low)")
+
+                        # ── 7.7  Performance narrative ─────────────────────────────────
+                        _pdf.section_title("7.7  Performance Analysis")
+                        _all_spds = [_f(r["result"].get(f"speed_{_rk(s.get('name',''))}"))
+                                      for r in _rpts for s in _pump_stns
+                                      if _f(r["result"].get(f"speed_{_rk(s.get('name',''))}")) > 0]
+                        _all_bkw = [_f(r["result"].get(f"pump_bkw_{_rk(s.get('name',''))}"))
+                                     for r in _rpts for s in _pump_stns
+                                     if _f(r["result"].get(f"pump_bkw_{_rk(s.get('name',''))}")) > 0]
+                        _all_tdh = [_f(r["result"].get(f"tdh_{_rk(s.get('name',''))}"))
+                                     for r in _rpts for s in _pump_stns
+                                     if _f(r["result"].get(f"tdh_{_rk(s.get('name',''))}")) > 0]
+                        _all_pw = [_f(r["result"].get(f"power_{_rk(s.get('name',''))}"))
+                                    for r in _rpts for s in _pump_stns
+                                    if _f(r["result"].get(f"power_{_rk(s.get('name',''))}")) > 0]
+                        _peak_pw = max((sum(_f(r["result"].get(f"power_{_rk(s.get('name',''))}"))
+                                         for s in _pump_stns) for r in _rpts), default=0)
                         _bep_note = (
-                            "indicates well-optimized operating points close to the BEP curve."
-                            if _avg_eff > 75 else
-                            "suggests opportunities to review operating points relative to the pump BEP."
+                            "indicating well-optimized operation near the BEP envelope."
+                            if _avg_eff >= 75 else
+                            "suggesting potential for operating point improvement relative to the pump BEP."
                         )
-                        _pump_analysis = (
-                            f"The {len(_pump_stns)} active pump station(s) operated at speeds "
-                            f"ranging from {min(_all_speeds):.0f} to {max(_all_speeds):.0f} RPM "
-                            f"with a mean of {sum(_all_speeds)/len(_all_speeds):.0f} RPM across "
-                            f"the optimization period. "
-                            f"Peak aggregate power draw was {_peak_power_agg:,.0f} kW. "
-                            f"Average pump efficiency of {_avg_eff:.1f}% {_bep_note}"
-                        ) if _all_speeds and _all_powers else (
-                            "Pump performance data is not available for this run."
+                        _p_analysis = (
+                            f"Across the {len(_rpts)}-hour period, the {len(_pump_stns)} pump station(s) "
+                            f"operated at speeds between {min(_all_spds):.0f} and "
+                            f"{max(_all_spds):.0f} RPM (mean {sum(_all_spds)/len(_all_spds):.0f} RPM). "
+                            f"Total discharge head (TDH) ranged from "
+                            f"{min(_all_tdh):.0f} m to {max(_all_tdh):.0f} m. "
+                            f"Brake kW ranged from {min(_all_bkw):.1f} to {max(_all_bkw):.1f} kW per pump. "
+                            f"Peak aggregate electrical power draw was {_peak_pw:,.0f} kW. "
+                            f"Average pump efficiency was {_avg_eff:.1f}%, {_bep_note}"
+                        ) if _all_spds and _all_tdh and _all_bkw else (
+                            "Detailed pump performance data (TDH, BkW, efficiency) is not available. "
+                            "Ensure pump curve coefficients (A, B, C, P, Q, R, S, T) are configured "
+                            "in station settings and the solver has executed successfully."
                         )
-                        _pdf.body_text(_pump_analysis)
+                        _pdf.body_text(_p_analysis)
 
                     # ════════════════════════════════════════════════════════════════════
                     # CHAPTER 8: FLOW RATE ANALYSIS
