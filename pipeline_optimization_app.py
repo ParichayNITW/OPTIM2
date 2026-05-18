@@ -9302,11 +9302,22 @@ if not auto_batch:
                             for s in (_pump_stns or []))
                         for r in (_rpts or [])
                     )
-                    # SEC electricity-only and SEC total (power + DRA)
-                    _sec = (_total_power_cost / (_total_MT * _total_km)
-                            if (_total_MT > 0 and _total_km > 0) else 0.0)
-                    _sec_total = (_total_cost / (_total_MT * _total_km)
+
+                    # ── Unit Pipeline Transportation Cost (UPTC) in INR/MT/km ────────
+                    _uptc_elec = (_total_power_cost / (_total_MT * _total_km)
                                   if (_total_MT > 0 and _total_km > 0) else 0.0)
+                    _uptc_total = (_total_cost / (_total_MT * _total_km)
+                                   if (_total_MT > 0 and _total_km > 0) else 0.0)
+
+                    # ── SEC (Specific Energy Consumption) in kWh/MT/km & kcal/MT/km ─
+                    _total_kwh = sum(
+                        sum(_f(r["result"].get(f"motor_kw_{_rk(s.get('name',''))}"))
+                            for s in (_pump_stns or []))
+                        for r in (_rpts or [])
+                    )  # motor_kw × 1 hr per report entry = kWh
+                    _sec_kwh = (_total_kwh / (_total_MT * _total_km)
+                                if (_total_MT > 0 and _total_km > 0) else 0.0)
+                    _sec_kcal = _sec_kwh * 860.0  # 1 kWh = 860 kcal
 
                     # per-station cost breakdown
                     _stn_costs = {}
@@ -9477,10 +9488,10 @@ if not auto_batch:
                             return _total
 
                         def _draw_header_row():
-                            """Draw the blue header row using multi_cell per cell."""
+                            """Draw the blue header row with uniform cell heights using rect()."""
                             _max_ln = max((_count_hdr_lines(h, w)
                                            for h, w in zip(headers, col_widths)), default=1)
-                            _h_total = _hdr_line_h * _max_ln
+                            _h_total = _hdr_line_h * max(_max_ln, 2)
                             pdf.set_font("Helvetica", "B", font_sz)
                             pdf.set_fill_color(25, 103, 210)
                             pdf.set_text_color(255, 255, 255)
@@ -9490,10 +9501,18 @@ if not auto_batch:
                             _yh = pdf.get_y()
                             _cx = _xh
                             for _hdr, _cw in zip(headers, col_widths):
-                                pdf.set_xy(_cx, _yh)
-                                pdf.multi_cell(_cw, _hdr_line_h, _san(str(_hdr)),
-                                               border=1, align="C", fill=True,
-                                               max_line_height=_hdr_line_h)
+                                # Draw uniform filled rect border for every cell
+                                pdf.set_fill_color(25, 103, 210)
+                                pdf.rect(_cx, _yh, _cw, _h_total, style="FD")
+                                pdf.set_draw_color(210, 220, 240)
+                                pdf.rect(_cx, _yh, _cw, _h_total)
+                                # Split header text on \n and center vertically
+                                _lines = [_san(ln) for ln in str(_hdr).split("\n")]
+                                _text_block_h = len(_lines) * _hdr_line_h
+                                _text_y = _yh + (_h_total - _text_block_h) / 2.0
+                                for _li, _line in enumerate(_lines):
+                                    pdf.set_xy(_cx, _text_y + _li * _hdr_line_h)
+                                    pdf.cell(_cw, _hdr_line_h, _line.strip(), align="C")
                                 _cx += _cw
                             pdf.set_xy(_xh, _yh + _h_total)
                             return _h_total
@@ -9604,8 +9623,10 @@ if not auto_batch:
                         ("Daily Volume Target", f"{_total_vol:,.1f} m3"),
                         ("Hours Optimized", str(len(_rpts or []))),
                         ("Total Optimized Cost", f"INR {_tc_total:,.2f}"),
-                        ("SEC - Electricity only (INR/MT/km)", f"{_sec:.6f}"),
-                        ("SEC - Total incl. DRA (INR/MT/km)", f"{_sec_total:.6f}"),
+                        ("UPTC - Electricity only (INR/MT/km)", f"{_uptc_elec:.6f}"),
+                        ("UPTC - Total incl. DRA (INR/MT/km)", f"{_uptc_total:.6f}"),
+                        ("SEC - Electricity (kWh/MT/km)", f"{_sec_kwh:.4f}"),
+                        ("SEC - Electricity (kcal/MT/km)", f"{_sec_kcal:.2f}"),
                     ]
                     for _lbl, _val in _cover_kv:
                         _pdf.set_font("Helvetica", "B", 10)
@@ -9640,8 +9661,10 @@ if not auto_batch:
                         ["Average Hourly Flow Rate", f"{_avg_flow:,.1f}", "m3/hr"],
                         ["Total Mass Throughput", f"{_total_MT:,.2f}", "MT"],
                         ["Pipeline Length (main+loop)", f"{_total_km:.1f}", "km"],
-                        ["SEC - Electricity only", f"{_sec:.6f}", "INR/MT/km"],
-                        ["SEC - Total (incl. DRA)", f"{_sec_total:.6f}", "INR/MT/km"],
+                        ["UPTC - Electricity only", f"{_uptc_elec:.6f}", "INR/MT/km"],
+                        ["UPTC - Total (incl. DRA)", f"{_uptc_total:.6f}", "INR/MT/km"],
+                        ["SEC - Electricity only", f"{_sec_kwh:.4f}", "kWh/MT/km"],
+                        ["SEC - Electricity only", f"{_sec_kcal:.2f}", "kcal/MT/km"],
                         ["Average Pump Efficiency", f"{_avg_eff:.1f}" if _avg_eff > 0 else "N/A", "%"],
                         ["Peak Hourly Cost", f"{_peak_cost:,.2f}", "INR"],
                         ["Minimum Hourly Cost", f"{_min_cost:,.2f}", "INR"],
@@ -9685,11 +9708,12 @@ if not auto_batch:
                         f"({_total_MT:,.2f} MT) at an average flow rate of {_avg_flow:,.1f} m3/hr.",
 
                         f"The total optimized operating cost for the period was INR {_total_cost:,.2f}. "
-                        f"SEC (electricity only) = {_sec:.6f} INR/MT/km; "
-                        f"SEC (total incl. DRA) = {_sec_total:.6f} INR/MT/km over "
-                        f"{_total_km:.1f} km pipeline. Peak hourly cost of INR {_peak_cost:,.2f} "
-                        f"occurred at {_max_flow_hr:02d}:00 hrs; most economical hour was "
-                        f"{_min_flow_hr:02d}:00 hrs at INR {_min_cost:,.2f}.",
+                        f"Unit Pipeline Transportation Cost (UPTC): {_uptc_elec:.6f} INR/MT/km (electricity only), "
+                        f"{_uptc_total:.6f} INR/MT/km (total incl. DRA). "
+                        f"Specific Energy Consumption (SEC): {_sec_kwh:.4f} kWh/MT/km "
+                        f"({_sec_kcal:.2f} kcal/MT/km) over the {_total_km:.1f} km pipeline. "
+                        f"Peak hourly cost of INR {_peak_cost:,.2f} occurred at {_max_flow_hr:02d}:00 hrs; "
+                        f"most economical hour was {_min_flow_hr:02d}:00 hrs at INR {_min_cost:,.2f}.",
 
                         ("Drag Reducing Agent (DRA) injection was active during the optimization period, "
                          "contributing to improved pipeline hydraulic efficiency and enabling higher "
@@ -9752,6 +9776,63 @@ if not auto_batch:
                         ]
                         for _pi, (_plbl, _pval) in enumerate(_pipe_rows):
                             _pdf.kv_row(_plbl, _pval, fill=(_pi % 2 == 0))
+
+                    # 2.3  3D Pipeline Elevation Profile
+                    _pdf.section_title("2.3  3D Pipeline Elevation Profile")
+                    if _stns and len(_stns) >= 2:
+                        try:
+                            from mpl_toolkits.mplot3d import Axes3D as _Axes3D
+                            _kp23 = [0.0]
+                            for _s23i in (_stns or []):
+                                _kp23.append(_kp23[-1] + _f(_s23i.get("L", 50.0)))
+                            _elev23 = [_f(s.get("elev", 0.0)) for s in (_stns or [])] + [_term_elev]
+                            _fig23 = _plt.figure(figsize=(12, 5), facecolor="white")
+                            _ax23 = _fig23.add_subplot(111, projection="3d")
+                            _kp_arr23 = _kp23
+                            _elev_arr23 = _elev23
+                            _z_zero = [0.0] * len(_kp_arr23)
+                            # 3D ribbon: plot surface between ground (0) and elevation
+                            _ax23.plot(_kp_arr23, _z_zero, _elev_arr23,
+                                       color="#1967d2", linewidth=2.5, zorder=5, label="Elevation")
+                            # vertical fill lines for terrain ribbon
+                            for _ki23 in range(len(_kp_arr23)):
+                                _ax23.plot([_kp_arr23[_ki23], _kp_arr23[_ki23]],
+                                           [0, 0],
+                                           [0, _elev_arr23[_ki23]],
+                                           color="#a8c4f5", linewidth=0.5, alpha=0.4)
+                            # shade the terrain surface with triangles
+                            import numpy as _np23
+                            _KP23 = _np23.array(_kp_arr23)
+                            _EL23 = _np23.array(_elev_arr23)
+                            _Y23 = _np23.zeros_like(_KP23)
+                            _ax23.plot_surface(
+                                _KP23.reshape(1, -1), _Y23.reshape(1, -1), _EL23.reshape(1, -1),
+                                alpha=0.25, color="#1967d2"
+                            )
+                            # mark pump stations
+                            for _s23 in (_pump_stns or []):
+                                _idx23 = (_stns or []).index(_s23) if _s23 in (_stns or []) else -1
+                                if 0 <= _idx23 < len(_kp_arr23):
+                                    _ax23.scatter([_kp_arr23[_idx23]], [0], [_elev_arr23[_idx23]],
+                                                  color="#e8710a", s=60, zorder=6)
+                                    _ax23.text(_kp_arr23[_idx23], 0, _elev_arr23[_idx23] + 5,
+                                               _san(str(_s23.get("name", ""))[:8]),
+                                               fontsize=6.5, color="#e8710a")
+                            _ax23.set_xlabel("Chainage (km)", fontsize=8)
+                            _ax23.set_ylabel("", fontsize=6)
+                            _ax23.set_zlabel("Elevation (m)", fontsize=8)
+                            _ax23.set_title("3D Pipeline Elevation Profile", fontsize=10,
+                                            fontweight="bold", color="#212529")
+                            _ax23.tick_params(labelsize=7)
+                            _ax23.set_yticklabels([])
+                            _ax23.view_init(elev=25, azim=-70)
+                            _ax23.set_facecolor("#f8f9fa")
+                            _fig23.tight_layout()
+                            _insert_chart(_pdf, _save_fig(_fig23),
+                                          caption="Figure 2.3 - 3D Pipeline Elevation Profile (chainage vs elevation)")
+                        except Exception:
+                            pass
+                    _pdf.ln(3)
 
                     # ════════════════════════════════════════════════════════════════════
                     # CHAPTER 3: HOURLY OPTIMIZATION SCHEDULE
@@ -10345,6 +10426,61 @@ if not auto_batch:
                                                     _hr_flows, _hr_heads, _hr_effs,
                                                     _hour_labels, _hr_rpms, _hr_drs)
 
+                        # ── 3D pump H-Q-speed surface (7.2b) ──────────────────────────
+                        _pdf.section_title("7.2b  3D Pump H-Q-Speed Surface")
+                        if _pump_stns:
+                            try:
+                                from mpl_toolkits.mplot3d import Axes3D as _Axes3Db
+                                import numpy as _np3d
+                                _ps3d = _pump_stns[0]
+                                _sk3d = _rk(_ps3d.get("name", ""))
+                                _pdol3d = float(_ps3d.get("DOL") or _ps3d.get("dol") or 1480)
+                                _pmin3d = float(_ps3d.get("MinRPM") or _ps3d.get("min_rpm") or _pdol3d * 0.65)
+                                _ptypes3d = {k: v for k, v in (_ps3d.get("pump_types") or {}).items()
+                                             if isinstance(v, dict) and (v.get("A") or v.get("C"))}
+                                if _ptypes3d:
+                                    _tv3d = next(iter(_ptypes3d.values()))
+                                    _tA3d = float(_tv3d.get("A", 0) or 0)
+                                    _tB3d = float(_tv3d.get("B", 0) or 0)
+                                    _tC3d = float(_tv3d.get("C", 0) or 0)
+                                    _tdol3d = float(_tv3d.get("DOL", _pdol3d) or _pdol3d)
+                                    _Q3d_ref = _np3d.linspace(0, _f(_tv3d.get("Q", 500) or 500), 40)
+                                    _N3d = _np3d.linspace(_pmin3d, _tdol3d, 30)
+                                    _QQ3d, _NN3d = _np3d.meshgrid(_Q3d_ref, _N3d)
+                                    _r3d = _NN3d / _tdol3d
+                                    _HH3d = (_tA3d * _r3d**2 + _tB3d * _r3d * (_QQ3d * _r3d)
+                                             + _tC3d * (_QQ3d * _r3d)**2)
+                                    _HH3d = _np3d.clip(_HH3d, 0, None)
+                                    _fig72b = _plt.figure(figsize=(12, 5.5), facecolor="white")
+                                    _ax72b = _fig72b.add_subplot(111, projection="3d")
+                                    _surf3d = _ax72b.plot_surface(_QQ3d, _NN3d, _HH3d,
+                                                                   cmap="coolwarm", alpha=0.85,
+                                                                   linewidth=0, antialiased=True)
+                                    _fig72b.colorbar(_surf3d, ax=_ax72b, shrink=0.5,
+                                                      label="Head (m)", pad=0.1)
+                                    # scatter actual operating points
+                                    for _r0 in _rpts:
+                                        _qop = _f(_r0["result"].get(f"pump_flow_{_sk3d}",
+                                                  _r0["result"].get("flow_m3hr")))
+                                        _hop = _f(_r0["result"].get(f"tdh_{_sk3d}"))
+                                        _nop = _f(_r0["result"].get(f"speed_{_sk3d}"))
+                                        if _qop > 0 and _hop > 0 and _nop > 0:
+                                            _ax72b.scatter([_qop], [_nop], [_hop],
+                                                           color="#e8710a", s=40, zorder=6)
+                                    _ax72b.set_xlabel("Flow (m3/hr)", fontsize=8)
+                                    _ax72b.set_ylabel("Speed (RPM)", fontsize=8)
+                                    _ax72b.set_zlabel("Head (m)", fontsize=8)
+                                    _pname3d = _san(str(_ps3d.get("name", _sk3d)))
+                                    _ax72b.set_title(f"3D Pump H-Q-Speed Surface: {_pname3d}",
+                                                      fontsize=10, fontweight="bold", color="#212529")
+                                    _ax72b.tick_params(labelsize=7)
+                                    _ax72b.view_init(elev=30, azim=-60)
+                                    _fig72b.tight_layout()
+                                    _insert_chart(_pdf, _save_fig(_fig72b),
+                                                  caption=f"Figure 7.2b - 3D H-Q-Speed Surface for {_pname3d} (orange dots = actual operating points)")
+                            except Exception:
+                                pass
+
                         # ── 7.3  Hourly speed schedule ─────────────────────────────────
                         _pdf.add_page()
                         _pdf.section_title("7.3  Pump Speed Schedule (RPM)")
@@ -10397,9 +10533,10 @@ if not auto_batch:
 
                         # ── 7.5  Hourly SEC table ──────────────────────────────────────
                         _pdf.add_page(orientation="L")
-                        _pdf.section_title("7.5  Hourly Specific Energy Consumption (INR/MT/km)")
+                        _pdf.section_title("7.5  Hourly UPTC & SEC (Unit Pipeline Transportation Cost & Specific Energy)")
                         _sec_hdrs75 = ["Time", "Flow\n(m3/hr)", "Energy\n(kW)",
-                                        "Power\nCost(INR)", "Mass\n(MT)", "SEC\n(INR/MT/km)"]
+                                        "Power\nCost(INR)", "Mass\n(MT)",
+                                        "UPTC\n(INR/MT/km)", "SEC\n(kWh/MT/km)", "SEC\n(kcal/MT/km)"]
                         _sec_rows75 = []
                         for _r0 in _rpts:
                             _res75 = _r0["result"]
@@ -10409,18 +10546,23 @@ if not auto_batch:
                             _hr_cost75 = sum(_f(_res75.get(f"power_cost_{_rk(s.get('name',''))}"))
                                              for s in _pump_stns)
                             _hr_mass75 = _hr_flow75 * _avg_density / 1000.0
-                            _hr_sec75 = (_hr_cost75 / (_hr_mass75 * _total_km)
+                            _hr_uptc75 = (_hr_cost75 / (_hr_mass75 * _total_km)
                                           if (_hr_mass75 > 0 and _total_km > 0) else 0.0)
+                            _hr_sec_kwh75 = (_hr_kw75 / (_hr_mass75 * _total_km)
+                                             if (_hr_mass75 > 0 and _total_km > 0) else 0.0)
+                            _hr_sec_kcal75 = _hr_sec_kwh75 * 860.0
                             _sec_rows75.append([
                                 f"{_r0['time']:02d}:00",
                                 f"{_hr_flow75:,.0f}",
                                 f"{_hr_kw75:,.1f}",
                                 f"{_hr_cost75:,.0f}",
                                 f"{_hr_mass75:.2f}",
-                                f"{_hr_sec75:.6f}",
+                                f"{_hr_uptc75:.6f}",
+                                f"{_hr_sec_kwh75:.4f}",
+                                f"{_hr_sec_kcal75:.2f}",
                             ])
                         _draw_table(_pdf, _sec_hdrs75, _sec_rows75,
-                                     [20, 28, 28, 36, 26, 40], font_sz=8.5)
+                                     [18, 24, 24, 30, 20, 34, 30, 30], font_sz=8.0)
                         _pdf.ln(3)
 
                         # ── 7.6  Efficiency heatmap ────────────────────────────────────
@@ -10532,34 +10674,54 @@ if not auto_batch:
                         _p81 = _save_fig(_fig81)
                         _insert_chart(_pdf, _p81, caption="Figure 8.1 - Hourly flow rate profile with average and target reference")
 
-                        # SEC chart
-                        _pdf.section_title("8.2  Hourly Specific Energy Consumption (INR/MT/km)")
-                        _sec_hourly = []
+                        # UPTC + SEC chart (dual-axis)
+                        _pdf.section_title("8.2  Hourly UPTC & SEC")
+                        _uptc_hourly82 = []
+                        _sec_kwh_hourly82 = []
                         for _r0_sec, _fv_sec in zip(_rpts, _flows):
                             _hr_cost_sec = sum(
                                 _f(_r0_sec["result"].get(f"power_cost_{_rk(s.get('name',''))}"))
                                 for s in _pump_stns
                             )
+                            _hr_kw_sec = sum(
+                                _f(_r0_sec["result"].get(f"motor_kw_{_rk(s.get('name',''))}"))
+                                for s in _pump_stns
+                            )
                             _hr_mass_sec = _fv_sec * _avg_density / 1000.0
-                            _sec_hourly.append(
+                            _uptc_hourly82.append(
                                 _hr_cost_sec / (_hr_mass_sec * _total_km)
                                 if (_hr_mass_sec > 0 and _total_km > 0) else 0.0
                             )
-                        _avg_sec_hr = sum(_sec_hourly) / len(_sec_hourly) if _sec_hourly else 0.0
-                        _fig82, _ax82 = _plt.subplots(figsize=(10, 3.2), facecolor="white")
-                        _ax82.plot(_hour_labels, _sec_hourly, color=_GREEN, linewidth=2,
-                                    marker="o", markersize=5, zorder=3)
-                        _ax82.fill_between(_hour_labels, _sec_hourly, alpha=0.15, color=_GREEN)
-                        _ax82.axhline(_avg_sec_hr, color=_BLUE, linewidth=1.2, linestyle="--",
-                                       label=f"Average: {_avg_sec_hr:.5f} INR/MT/km")
-                        _style_ax(_ax82, "Hourly Specific Energy Consumption (INR/MT/km)",
-                                   "Hour of Day", "SEC (INR/MT/km)")
-                        _rotate_xlabels(_ax82)
-                        _ax82.legend(fontsize=8)
-                        _ax82.set_ylim(bottom=0)
+                            _sec_kwh_hourly82.append(
+                                _hr_kw_sec / (_hr_mass_sec * _total_km)
+                                if (_hr_mass_sec > 0 and _total_km > 0) else 0.0
+                            )
+                        _avg_uptc_hr82 = sum(_uptc_hourly82) / len(_uptc_hourly82) if _uptc_hourly82 else 0.0
+                        _avg_sec_kwh82 = sum(_sec_kwh_hourly82) / len(_sec_kwh_hourly82) if _sec_kwh_hourly82 else 0.0
+                        _fig82, _ax82a = _plt.subplots(figsize=(10, 3.8), facecolor="white")
+                        _ax82b = _ax82a.twinx()
+                        _l1, = _ax82a.plot(_hour_labels, _uptc_hourly82, color=_GREEN, linewidth=2,
+                                    marker="o", markersize=5, zorder=3, label="UPTC (INR/MT/km)")
+                        _ax82a.fill_between(_hour_labels, _uptc_hourly82, alpha=0.12, color=_GREEN)
+                        _ax82a.axhline(_avg_uptc_hr82, color=_GREEN, linewidth=1.2, linestyle="--",
+                                       alpha=0.7, label=f"Avg UPTC: {_avg_uptc_hr82:.5f}")
+                        _l2, = _ax82b.plot(_hour_labels, _sec_kwh_hourly82, color=_ORANGE, linewidth=2,
+                                    marker="s", markersize=5, zorder=3, label="SEC (kWh/MT/km)")
+                        _ax82b.axhline(_avg_sec_kwh82, color=_ORANGE, linewidth=1.2, linestyle="--",
+                                       alpha=0.7, label=f"Avg SEC: {_avg_sec_kwh82:.4f}")
+                        _style_ax(_ax82a, "Hourly UPTC (INR/MT/km) & SEC (kWh/MT/km)",
+                                   "Hour of Day", "UPTC (INR/MT/km)")
+                        _ax82b.set_ylabel("SEC (kWh/MT/km)", fontsize=9, color=_ORANGE)
+                        _ax82b.tick_params(axis="y", labelcolor=_ORANGE)
+                        _rotate_xlabels(_ax82a)
+                        _lns82 = [_l1, _l2]
+                        _labs82 = [l.get_label() for l in _lns82]
+                        _ax82a.legend(_lns82, _labs82, fontsize=8, loc="upper left")
+                        _ax82a.set_ylim(bottom=0)
+                        _ax82b.set_ylim(bottom=0)
                         _fig82.tight_layout()
                         _p82 = _save_fig(_fig82)
-                        _insert_chart(_pdf, _p82, caption="Figure 8.2 - Hourly SEC (INR per metric-tonne per km)")
+                        _insert_chart(_pdf, _p82, caption="Figure 8.2 - Hourly UPTC (INR/MT/km) and SEC (kWh/MT/km)")
 
                     # ════════════════════════════════════════════════════════════════════
                     # CHAPTER 9: PRODUCT SCHEDULE
@@ -10592,7 +10754,7 @@ if not auto_batch:
                     _pdf.add_page()
                     _pdf.chapter_title("Engineering Recommendations")
 
-                    _pdf.section_title("10.1  Operational Observations")
+                    _pdf.section_title("10.1  Optimization Findings")
                     _rec_items = []
 
                     # Pump efficiency observation
@@ -10617,12 +10779,14 @@ if not auto_batch:
                             "of {:.1f}% across all active stations and hours.".format(_avg_eff)
                         )
 
-                    # SEC observation
-                    if _sec > 0:
+                    # UPTC and SEC observation
+                    if _uptc_elec > 0 or _sec_kwh > 0:
                         _rec_items.append(
-                            f"The optimized schedule achieves a Specific Energy Consumption (SEC) "
-                            f"of {_sec:.6f} INR/MT/km (electricity only) and "
-                            f"{_sec_total:.6f} INR/MT/km (total including DRA) over the "
+                            f"The optimized schedule achieves a Unit Pipeline Transportation Cost (UPTC) "
+                            f"of {_uptc_elec:.6f} INR/MT/km (electricity only) and "
+                            f"{_uptc_total:.6f} INR/MT/km (total including DRA). "
+                            f"Specific Energy Consumption (SEC) is {_sec_kwh:.4f} kWh/MT/km "
+                            f"({_sec_kcal:.2f} kcal/MT/km) over the "
                             f"{_total_km:.1f} km pipeline, transporting {_total_MT:,.1f} MT "
                             f"at a total operating cost of INR {_total_cost:,.2f}."
                         )
@@ -10671,10 +10835,16 @@ if not auto_batch:
                     )
 
                     for _ri, _rec in enumerate(_rec_items, 1):
+                        _pdf.ln(1)
+                        _bullet_y = _pdf.get_y()
                         _pdf.set_font("Helvetica", "B", 9.5)
                         _pdf.set_text_color(25, 103, 210)
-                        _pdf.cell(0, 6, f"  {_ri}.", new_x="LMARGIN", new_y="NEXT")
-                        _pdf.body_text(_rec, indent=8)
+                        _pdf.set_xy(15, _bullet_y)
+                        _pdf.cell(8, 6, f"{_ri}.", align="R")
+                        _pdf.set_font("Helvetica", "", 9.5)
+                        _pdf.set_text_color(50, 50, 50)
+                        _pdf.set_xy(24, _bullet_y)
+                        _pdf.multi_cell(171, 5.5, _san(_rec))
                         _pdf.ln(1)
 
                     return bytes(_pdf.output())
