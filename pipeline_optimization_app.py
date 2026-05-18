@@ -10686,7 +10686,7 @@ if not auto_batch:
             _col_gen, _col_status = st.columns([1, 3])
             with _col_gen:
                 if st.button("Generate PDF Report", type="primary", key="gen_pdf_btn"):
-                    with st.spinner("Building comprehensive PDF report — please wait…"):
+                    with st.spinner("Generating Optimization Report — please wait…"):
                         _term_data_pdf = term_data
                         _plan_df_pdf = plan_df if isinstance(plan_df, pd.DataFrame) else None
                         _pdf_result = _generate_pdf_report(
