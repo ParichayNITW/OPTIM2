@@ -10601,56 +10601,51 @@ if not auto_batch:
                                         _ep3d = _tR3d + _tS3d * _qp3d + _tT3d * _qp3d ** 2
                                         if 0 < _qp3d < 3 * _tQmax3d and _ep3d > 30:
                                             _poly3d = True
-                                    # Grid: actual flow vs speed
-                                    _q_lo3d = max(_qpk3d * 0.20, 1.0)
-                                    _q_hi3d = _qpk3d * 1.65
-                                    _q_arr3d = _np3d.linspace(_q_lo3d, _q_hi3d, 40)
-                                    _N_arr   = _np3d.linspace(_tmin3d, _tdol3d, 30)
+                                    # Grid: actual flow at each speed
+                                    # Affinity law: Q_BEP(N) = Q_BEP_DOL * (N/Ndol)
+                                    # BEP shifts to lower flow at lower speed
+                                    # Efficiency η(Q,N) = η_DOL(Q * Ndol/N)
+                                    # — same efficiency at same relative position on curve
+                                    _q_lo3d = max(_qpk3d * 0.15, 1.0)
+                                    _q_hi3d = _qpk3d * 1.75
+                                    _q_arr3d = _np3d.linspace(_q_lo3d, _q_hi3d, 45)
+                                    _N_arr   = _np3d.linspace(_tmin3d, _tdol3d, 35)
                                     _QQ3d, _NN3d = _np3d.meshgrid(_q_arr3d, _N_arr)
-                                    # q_n = Q / Q_rated(N); at q_n=1 is best efficiency point
-                                    _Q_rated3d = _qpk3d * (_NN3d / _tdol3d)
-                                    _qn3d = _QQ3d / _np3d.maximum(_Q_rated3d, 1.0)
+                                    # Q_ref = Q_actual × (Ndol/N) — DOL-equivalent flow
+                                    # At BEP for speed N: Q_actual = Q_BEP_dol × (N/Ndol)
+                                    # → Q_ref = Q_BEP_dol → always evaluates at polynomial BEP
+                                    _Qref3d = _QQ3d * (_tdol3d / _np3d.maximum(_NN3d, 1.0))
                                     if _poly3d:
-                                        _Qref3d = _qn3d * _qpk3d
                                         _EE3d = _tR3d + _tS3d * _Qref3d + _tT3d * _Qref3d ** 2
                                     else:
-                                        # Parabolic bell: peak at q_n=1, zero at q_n=0 and q_n=2
+                                        # Parabolic bell centred at Q_BEP_dol, peak = _epk3d
+                                        _qn3d = _Qref3d / max(_qpk3d, 1.0)
                                         _EE3d = _epk3d * (1.0 - (_qn3d - 1.0) ** 2)
-                                    # Speed factor: 50% variation gives clear hill in N-direction
-                                    _EE3d *= (0.50 + 0.50 * (_NN3d / _tdol3d))
+                                    # No speed-scaling factor: by affinity law pump efficiency
+                                    # at same relative position is speed-independent
                                     _EE3d = _np3d.clip(_EE3d, 0.0, 100.0)
-                                    _fig72b = _plt.figure(figsize=(14, 6.5), facecolor="white")
+                                    _fig72b = _plt.figure(figsize=(14, 7), facecolor="white")
                                     _ax72b = _fig72b.add_subplot(111, projection="3d")
                                     _cmap3d = _cmaps3d[_surf_count % len(_cmaps3d)]
+                                    _vmax3d = float(_np3d.max(_EE3d))
                                     _surf3d = _ax72b.plot_surface(
                                         _QQ3d, _NN3d, _EE3d,
-                                        cmap=_cmap3d, alpha=0.90,
+                                        cmap=_cmap3d, alpha=0.92,
                                         rstride=1, cstride=1,
                                         linewidth=0, antialiased=True,
-                                        vmin=0, vmax=_np3d.max(_EE3d) if _np3d.max(_EE3d) > 1 else 90)
+                                        vmin=0, vmax=_vmax3d if _vmax3d > 1 else 90)
                                     _fig72b.colorbar(_surf3d, ax=_ax72b, shrink=0.42,
-                                                      label="Efficiency (%)", pad=0.08)
-                                    # Actual hourly operating points
-                                    for _r0 in _rpts:
-                                        _qop3d = _f(_r0["result"].get(f"pump_flow_{_sk3d}",
-                                                    _r0["result"].get("flow_m3hr")))
-                                        _nop3d = _f(_r0["result"].get(f"speed_{_sk3d}"))
-                                        _eop3d = _f(_r0["result"].get(f"efficiency_{_sk3d}",
-                                                    _r0["result"].get(f"pump_eff_{_sk3d}")))
-                                        if _qop3d > 0 and _nop3d > 0:
-                                            _ax72b.scatter([_qop3d], [_nop3d],
-                                                           [_eop3d if _eop3d > 0 else 0.0],
-                                                           color="#ff4500", s=55, zorder=9,
-                                                           edgecolors="white", linewidths=0.6,
-                                                           depthshade=False)
-                                    _ax72b.set_xlabel("Flow (m³/hr)", fontsize=9, labelpad=16)
+                                                      label="Efficiency (%)", pad=0.10)
+                                    _ax72b.set_xlabel("Flow (m3/hr)", fontsize=9, labelpad=16)
                                     _ax72b.set_ylabel("Speed (RPM)", fontsize=9, labelpad=16)
                                     _ax72b.set_zlabel("Efficiency (%)", fontsize=9, labelpad=14)
+                                    _ax72b.zaxis.set_rotate_label(False)
                                     _ax72b.set_title(
                                         f"Speed-Flow-Efficiency: {_pname3d} / Type {_tk3d}",
                                         fontsize=10, fontweight="bold", color="#212529", pad=10)
                                     _ax72b.tick_params(labelsize=7)
-                                    _ax72b.view_init(elev=40, azim=-30)
+                                    # View from left-back so BEP ridge (diagonal) is clearly visible
+                                    _ax72b.view_init(elev=30, azim=135)
                                     _ax72b.xaxis.pane.fill = False
                                     _ax72b.yaxis.pane.fill = False
                                     _ax72b.zaxis.pane.fill = False
@@ -10658,8 +10653,9 @@ if not auto_batch:
                                                              bottom=0.10, top=0.90)
                                     _insert_chart(_pdf, _save_fig(_fig72b),
                                                   caption=(f"Figure 7.2b — 3D Speed-Flow-Efficiency: "
-                                                           f"{_pname3d} / Type {_tk3d}  "
-                                                           f"(red dots = actual hourly operating points)"))
+                                                           f"{_pname3d} / Type {_tk3d}. "
+                                                           f"BEP ridge shifts to lower flow at lower speed "
+                                                           f"(affinity law)."))
                                     _surf_count += 1
                         except Exception as _e72b:
                             _pdf.body_text(f"3D surface unavailable: {_san(str(_e72b))}")
@@ -10908,11 +10904,12 @@ if not auto_batch:
                         _pdf.add_page()
                         _pdf.section_title("8.3  3D Cost Surface: Total Cost vs Pump Speed vs DRA Dosage")
                         _pdf.body_text(
-                            "Each chart shows the optimized total cost surface for one station "
-                            "as a function of pump speed (RPM) and DRA injection rate (ppm). "
-                            "The surface is generated from the hourly optimization results extended "
-                            "over the full feasible speed/DRA envelope. "
-                            "Actual operating points are shown as red dots on the surface."
+                            "Each chart shows the total cost surface for one station as a "
+                            "function of pump speed (RPM) and DRA injection rate (ppm) over the "
+                            "full feasible operating envelope. Power cost scales as N^3 (affinity "
+                            "law) and decreases with DRA dosage (drag reduction lowers friction "
+                            "head). DRA material cost increases linearly with ppm. The surface "
+                            "reveals the optimal (cost-minimum) operating point."
                         )
                         _pdf.ln(2)
                         try:
@@ -10926,8 +10923,8 @@ if not auto_batch:
                                                 or _pdol83 * 0.65)
                                 if _pdol83 - _pmin83 < 0.05 * _pdol83:
                                     _pmin83 = _pdol83 * 0.60
-                                # Collect actual (speed, dra, cost) per hour
-                                _cs83, _ds83, _ts83 = [], [], []
+                                # Collect actual power cost and DRA cost separately
+                                _cs83, _pcs83, _dcs83, _ds83 = [], [], [], []
                                 for _r83 in _rpts:
                                     _spd83 = _f(_r83["result"].get(f"speed_{_sk83}"))
                                     _dra83 = _f(_r83["result"].get(f"dra_ppm_{_sk83}"))
@@ -10936,56 +10933,64 @@ if not auto_batch:
                                     if _spd83 > 0:
                                         _cs83.append(_spd83)
                                         _ds83.append(_dra83)
-                                        _ts83.append(_pc83 + _dc83)
+                                        _pcs83.append(_pc83)
+                                        _dcs83.append(_dc83)
                                 if len(_cs83) < 2:
                                     continue
-                                # Derive base cost at median speed to build surface
-                                _spd_med = float(_np83.median(_cs83))
-                                _dra_med = float(_np83.median(_ds83)) if max(_ds83) > 0 else 0.0
-                                _idx_base = min(range(len(_cs83)),
-                                                key=lambda i: abs(_cs83[i] - _spd_med))
-                                _base_cost = _ts83[_idx_base]
-                                _base_spd  = max(_cs83[_idx_base], 1.0)
-                                # Use fixed 0-100 ppm DRA range for meaningful surface variation
-                                # DRA contribution: 20% of peak power cost at 100 ppm
-                                _max_pow83 = max(_ts83) if _ts83 else _base_cost
-                                _dra_cost_per_ppm = 0.20 * _max_pow83 / 100.0
-                                # Build synthetic surface grid
-                                _N83   = _np83.linspace(_pmin83, _pdol83, 35)
-                                _DRA83 = _np83.linspace(0.0, 100.0, 30)
+                                # Base power cost extrapolated to DOL speed (N^3 scaling)
+                                _spd_med83 = float(_np83.median(_cs83)) or _pdol83
+                                _pow_med83 = float(_np83.median(_pcs83)) if _pcs83 else 5000.0
+                                _base_pow83 = max(_pow_med83 * (_pdol83 / max(_spd_med83, 1.0))**3,
+                                                  1.0)
+                                # DRA cost per ppm (INR/ppm/hr) from actual data
+                                _valid_dra83 = [(p, c) for p, c in zip(_ds83, _dcs83)
+                                               if p > 0 and c > 0]
+                                if _valid_dra83:
+                                    _dra_rate83 = float(_np83.median(
+                                        [c / p for p, c in _valid_dra83]))
+                                else:
+                                    # fallback: DRA at 100 ppm = 25% of DOL power cost
+                                    _dra_rate83 = 0.0025 * _base_pow83
+                                # Surface grid: N (RPM) × DRA (ppm 0-100)
+                                _N83   = _np83.linspace(_pmin83, _pdol83, 40)
+                                _DRA83 = _np83.linspace(0.0, 100.0, 35)
                                 _NG83, _DG83 = _np83.meshgrid(_N83, _DRA83)
-                                # Power cost scales as N³ (affinity law)
-                                _pow_surf = _base_cost * (_NG83 / _base_spd) ** 3
-                                # DRA cost: linear with ppm, 20% of max power at 100 ppm
-                                _dra_surf = _dra_cost_per_ppm * _DG83
-                                _TC83 = _pow_surf + _dra_surf
-                                _fig83 = _plt.figure(figsize=(14, 6.5), facecolor="white")
+                                # Drag reduction model: exponential saturation (Virk asymptote)
+                                # DR(ppm) = 0.30 * (1 - exp(-ppm/25))
+                                # → 0% at 0 ppm, ~22% at 30 ppm, ~30% max at high ppm
+                                _DR83 = 0.30 * (1.0 - _np83.exp(-_DG83 / 25.0))
+                                # Friction head fraction of total pump head (~65%)
+                                _f_fric83 = 0.65
+                                # Power cost: N^3 scaling, reduced by DRA drag reduction
+                                _pow_surf83 = (_base_pow83 * (_NG83 / _pdol83)**3
+                                               * (1.0 - _DR83 * _f_fric83))
+                                # DRA material cost: linear in ppm, flow proportional to N
+                                _dra_surf83 = _dra_rate83 * _DG83 * (_NG83 / _pdol83)
+                                # Total cost: minimum exists where DRA savings = DRA material cost
+                                _TC83 = _pow_surf83 + _dra_surf83
+                                _fig83 = _plt.figure(figsize=(14, 7), facecolor="white")
                                 _ax83 = _fig83.add_subplot(111, projection="3d")
                                 _surf83 = _ax83.plot_surface(
                                     _NG83, _DG83, _TC83,
-                                    cmap="hot_r", alpha=0.88,
+                                    cmap="RdYlGn_r", alpha=0.90,
                                     rstride=1, cstride=1,
                                     linewidth=0, antialiased=True,
                                     vmin=float(_np83.min(_TC83)),
                                     vmax=float(_np83.max(_TC83)))
                                 _fig83.colorbar(_surf83, ax=_ax83, shrink=0.42,
-                                                label="Total Cost (INR/hr)", pad=0.08)
-                                # Plot actual operating points on the surface
-                                for _ics83, (_sp83, _dp83, _tc83) in enumerate(
-                                        zip(_cs83, _ds83, _ts83)):
-                                    _ax83.scatter([_sp83], [_dp83], [_tc83],
-                                                  color="#ff4500", s=55, zorder=9,
-                                                  edgecolors="white", linewidths=0.6,
-                                                  depthshade=False)
+                                                label="Total Cost (INR/hr)", pad=0.10)
                                 _ax83.set_xlabel("Pump Speed (RPM)", fontsize=9, labelpad=16)
                                 _ax83.set_ylabel("DRA Dosage (ppm)", fontsize=9, labelpad=16)
                                 _ax83.set_zlabel("Total Cost (INR/hr)", fontsize=9, labelpad=14)
+                                _ax83.zaxis.set_rotate_label(False)
                                 _ax83.set_title(
                                     f"3D Cost Surface: {_pname83}",
                                     fontsize=10, fontweight="bold",
                                     color="#212529", pad=10)
                                 _ax83.tick_params(labelsize=7)
-                                _ax83.view_init(elev=35, azim=-45)
+                                # View from front-left: shows N^3 rise with speed and
+                                # the cost valley (optimal DRA) clearly
+                                _ax83.view_init(elev=30, azim=210)
                                 _ax83.xaxis.pane.fill = False
                                 _ax83.yaxis.pane.fill = False
                                 _ax83.zaxis.pane.fill = False
@@ -10993,8 +10998,8 @@ if not auto_batch:
                                                         bottom=0.10, top=0.90)
                                 _insert_chart(_pdf, _save_fig(_fig83),
                                               caption=(f"Figure 8.3 — 3D Cost Surface: {_pname83}. "
-                                                       f"Surface = total cost (INR/hr) vs speed & DRA. "
-                                                       f"Red dots = actual hourly operating points."))
+                                                       f"Power cost (N^3) reduced by DRA drag reduction + "
+                                                       f"DRA material cost. Valley = cost-optimal DRA ppm."))
                         except Exception as _e83:
                             _pdf.body_text(f"3D cost surface unavailable: {_san(str(_e83))}")
 
