@@ -9311,10 +9311,11 @@ if not auto_batch:
 
                     # ── SEC (Specific Energy Consumption) in kWh/MT/km & kcal/MT/km ─
                     _total_kwh = sum(
-                        sum(_f(r["result"].get(f"motor_kw_{_rk(s.get('name',''))}"))
+                        sum(_f(r["result"].get(f"motor_kw_{_rk(s.get('name',''))}")) *
+                            max(int(_f(r["result"].get(f"num_pumps_{_rk(s.get('name',''))}"))), 1)
                             for s in (_pump_stns or []))
                         for r in (_rpts or [])
-                    )  # motor_kw × 1 hr per report entry = kWh
+                    )  # motor_kw (per-pump) × num_pumps × 1 hr = kWh total
                     _sec_kwh = (_total_kwh / (_total_MT * _total_km)
                                 if (_total_MT > 0 and _total_km > 0) else 0.0)
                     _sec_kcal = _sec_kwh * 860.0  # 1 kWh = 860 kcal
@@ -10333,7 +10334,7 @@ if not auto_batch:
                         def _pump_type_page(pdf, title, cA, cB, cC, cP, cQc, cRe, cSe, cTe,
                                             dol, min_rpm, n_pumps,
                                             hr_flows, hr_heads, hr_effs, hr_labels, hr_rpms,
-                                            drag_reds):
+                                            drag_reds, hr_head_losses=None):
                             """Draw H-Q family + system curves + per-hour operating points,
                             then efficiency family curves + per-hour operating points."""
                             # determine Q axis
@@ -10377,11 +10378,13 @@ if not auto_batch:
                             # system curves per hour
                             _sc_colors = [_ORANGE, "#e74c3c", "#9b59b6", _GREEN, "#1abc9c",
                                           "#f39c12", "#2980b9"]
-                            for _hi, (_hf, _hh, _hl, _hdr) in enumerate(
-                                    zip(hr_flows, hr_heads, hr_labels, drag_reds)):
+                            _hhl_list = hr_head_losses if hr_head_losses else [0.0] * len(hr_flows)
+                            for _hi, (_hf, _hh, _hhl, _hl, _hdr) in enumerate(
+                                    zip(hr_flows, hr_heads, _hhl_list, hr_labels, drag_reds)):
                                 if _hf > 0 and _hh > 0:
-                                    _Rsys = _hh / (_hf**2)
-                                    _Hs = _Rsys * _Q**2
+                                    _Hstatic = max(_hh - _hhl, 0.0)
+                                    _Rfric = _hhl / max(_hf**2, 1.0)
+                                    _Hs = _Hstatic + _Rfric * _Q**2
                                     _cc = _sc_colors[_hi % len(_sc_colors)]
                                     _ax.plot(_Q, _Hs, color=_cc, linewidth=1.0,
                                               linestyle="-.", alpha=0.7,
@@ -10468,6 +10471,7 @@ if not auto_batch:
                                           r["result"].get(f"pump_eff_{_sk}"))) for r in _rpts]
                             _hr_rpms = [_f(r["result"].get(f"speed_{_sk}")) for r in _rpts]
                             _hr_drs = [_f(r["result"].get(f"drag_reduction_{_sk}")) for r in _rpts]
+                            _hr_head_losses = [_f(r["result"].get(f"head_loss_{_sk}")) for r in _rpts]
 
                             _ptypes_raw = _ps.get("pump_types") or {}
                             _valid_pt = {
@@ -10504,6 +10508,7 @@ if not auto_batch:
                                                      r["result"].get(f"pump_flow_{_sk}",
                                                      r["result"].get("flow_m3hr")))) for r in _rpts]
                                     _thr_heads = [_f(r["result"].get(f"tdh_{_sk}")) for r in _rpts]
+                                    _thr_head_losses = [_f(r["result"].get(f"head_loss_{_sk}")) for r in _rpts]
                                     _thr_effs = [_f(r["result"].get(f"efficiency_{_sk}_{_tk}",
                                                     r["result"].get(f"efficiency_{_sk}",
                                                     r["result"].get(f"pump_eff_{_sk}")))) for r in _rpts]
@@ -10515,7 +10520,8 @@ if not auto_batch:
                                                     _tA, _tB, _tC, _tP, _tQc, _tRe, _tSe, _tTe,
                                                     _t_dol, _t_min, _t_avail,
                                                     _thr_flows, _thr_heads, _thr_effs,
-                                                    _hour_labels, _thr_rpms, _hr_drs)
+                                                    _hour_labels, _thr_rpms, _hr_drs,
+                                                    _thr_head_losses)
                             else:
                                 # single-type station
                                 _cA = float(_ps.get("A", 0) or 0)
@@ -10541,7 +10547,8 @@ if not auto_batch:
                                                     _cA, _cB, _cC, _cP, _cQc, _cRe, _cSe, _cTe,
                                                     _pdol_v, _pmin_v, _pn_v,
                                                     _hr_flows, _hr_heads, _hr_effs,
-                                                    _hour_labels, _hr_rpms, _hr_drs)
+                                                    _hour_labels, _hr_rpms, _hr_drs,
+                                                    _hr_head_losses)
 
                         # ── 3D pump Speed-Flow-Efficiency surface (7.2b) ──────────────
                         _pdf.add_page()
@@ -10570,6 +10577,8 @@ if not auto_batch:
                                     if _tdol3d - _tmin3d < 0.05 * _tdol3d:
                                         _tmin3d = _tdol3d * 0.60
                                     _tQmax3d = max(float(_tv3d.get("Q", 0) or 0), 100.0)
+                                    _tP3d = float(_tv3d.get("P", 0) or 0)
+                                    _tQc3d = float(_tv3d.get("Q", 0) or 0)  # cubic coefficient
                                     _tR3d = float(_tv3d.get("R", 0) or 0)
                                     _tS3d = float(_tv3d.get("S", 0) or 0)
                                     _tT3d = float(_tv3d.get("T", 0) or 0)
@@ -10594,13 +10603,16 @@ if not auto_batch:
                                     else:
                                         _epk3d = 78.0
                                         _qpk3d = _tQmax3d * 0.70
-                                    # Validate polynomial (use only if peak is sensible)
+                                    # Validate quartic polynomial numerically (find BEP location)
                                     _poly3d = False
-                                    if _tT3d < 0 and _tS3d != 0:
-                                        _qp3d = -_tS3d / (2 * _tT3d)
-                                        _ep3d = _tR3d + _tS3d * _qp3d + _tT3d * _qp3d ** 2
-                                        if 0 < _qp3d < 3 * _tQmax3d and _ep3d > 30:
-                                            _poly3d = True
+                                    _q_chk3d = _np3d.linspace(1.0, max(_tQmax3d * 3, 300.0), 500)
+                                    _e_chk3d = (_tP3d*_q_chk3d**4 + _tQc3d*_q_chk3d**3 +
+                                                _tR3d*_q_chk3d**2 + _tS3d*_q_chk3d + _tT3d)
+                                    _pk_i3d = int(_np3d.argmax(_e_chk3d))
+                                    _qp3d = float(_q_chk3d[_pk_i3d])
+                                    _ep3d = float(_e_chk3d[_pk_i3d])
+                                    if 0 < _qp3d < 3 * max(_tQmax3d, 100.0) and _ep3d > 30:
+                                        _poly3d = True
                                     # Grid: actual flow at each speed
                                     # Affinity law: Q_BEP(N) = Q_BEP_DOL * (N/Ndol)
                                     # BEP shifts to lower flow at lower speed
@@ -10616,7 +10628,8 @@ if not auto_batch:
                                     # → Q_ref = Q_BEP_dol → always evaluates at polynomial BEP
                                     _Qref3d = _QQ3d * (_tdol3d / _np3d.maximum(_NN3d, 1.0))
                                     if _poly3d:
-                                        _EE3d = _tR3d + _tS3d * _Qref3d + _tT3d * _Qref3d ** 2
+                                        _EE3d = (_tP3d*_Qref3d**4 + _tQc3d*_Qref3d**3 +
+                                                 _tR3d*_Qref3d**2 + _tS3d*_Qref3d + _tT3d)
                                     else:
                                         # Parabolic bell centred at Q_BEP_dol, peak = _epk3d
                                         _qn3d = _Qref3d / max(_qpk3d, 1.0)
@@ -10721,8 +10734,11 @@ if not auto_batch:
                         for _r0 in _rpts:
                             _res75 = _r0["result"]
                             _hr_flow75 = _get_flow(_r0)
-                            _hr_kw75 = sum(_f(_res75.get(f"motor_kw_{_rk(s.get('name',''))}"))
-                                           for s in _pump_stns)
+                            _hr_kw75 = sum(
+                                _f(_res75.get(f"motor_kw_{_rk(s.get('name',''))}")) *
+                                max(int(_f(_res75.get(f"num_pumps_{_rk(s.get('name',''))}"))), 1)
+                                for s in _pump_stns
+                            )
                             _hr_cost75 = sum(_f(_res75.get(f"power_cost_{_rk(s.get('name',''))}"))
                                              for s in _pump_stns)
                             _hr_mass75 = _hr_flow75 * _avg_density / 1000.0
@@ -10864,7 +10880,8 @@ if not auto_batch:
                                 for s in _pump_stns
                             )
                             _hr_kw_sec = sum(
-                                _f(_r0_sec["result"].get(f"motor_kw_{_rk(s.get('name',''))}"))
+                                _f(_r0_sec["result"].get(f"motor_kw_{_rk(s.get('name',''))}")) *
+                                max(int(_f(_r0_sec["result"].get(f"num_pumps_{_rk(s.get('name',''))}"))), 1)
                                 for s in _pump_stns
                             )
                             _hr_mass_sec = _fv_sec * _avg_density / 1000.0
@@ -10904,12 +10921,17 @@ if not auto_batch:
                         _pdf.add_page()
                         _pdf.section_title("8.3  3D Cost Surface: Total Cost vs Pump Speed vs DRA Dosage")
                         _pdf.body_text(
-                            "Each chart shows the total cost surface for one station as a "
-                            "function of pump speed (RPM) and DRA injection rate (ppm) over the "
-                            "full feasible operating envelope. Power cost scales as N^3 (affinity "
-                            "law) and decreases with DRA dosage (drag reduction lowers friction "
-                            "head). DRA material cost increases linearly with ppm. The surface "
-                            "reveals the optimal (cost-minimum) operating point."
+                            "Each chart shows the total operating cost for one station as a "
+                            "function of pump speed (RPM) and DRA injection rate (ppm). "
+                            "Power cost is derived from the actual pump H-Q polynomial "
+                            "(affinity law: H proportional to N^2, flow proportional to N) and "
+                            "the full quartic efficiency polynomial at the median operating "
+                            "Q-equivalent. System hydraulics use actual friction head loss and "
+                            "static head from the optimizer results. DRA drag reduction is "
+                            "derived from the optimizer's actual drag_reduction vs dra_ppm data. "
+                            "DRA material cost uses the actual INR/litre rate from the optimizer. "
+                            "Grey (NaN) regions indicate infeasible operating points where pump "
+                            "TDH is insufficient to overcome system resistance."
                         )
                         _pdf.ln(2)
                         try:
@@ -10923,51 +10945,120 @@ if not auto_batch:
                                                 or _pdol83 * 0.65)
                                 if _pdol83 - _pmin83 < 0.05 * _pdol83:
                                     _pmin83 = _pdol83 * 0.60
-                                # Collect actual power cost and DRA cost separately
-                                _cs83, _pcs83, _dcs83, _ds83 = [], [], [], []
+                                # Collect actual per-hour operating data
+                                _cs83 = []; _pcs83 = []; _dcs83 = []; _ds83 = []
+                                _fs83 = []; _hls83 = []; _tdhs83 = []; _nps83 = []; _drs83 = []
                                 for _r83 in _rpts:
                                     _spd83 = _f(_r83["result"].get(f"speed_{_sk83}"))
                                     _dra83 = _f(_r83["result"].get(f"dra_ppm_{_sk83}"))
                                     _pc83  = _f(_r83["result"].get(f"power_cost_{_sk83}"))
                                     _dc83  = _f(_r83["result"].get(f"dra_cost_{_sk83}"))
+                                    _fl83  = _f(_r83["result"].get(f"pump_flow_{_sk83}",
+                                                _r83["result"].get("flow_m3hr")))
+                                    _hl83  = _f(_r83["result"].get(f"head_loss_{_sk83}"))
+                                    _th83  = _f(_r83["result"].get(f"tdh_{_sk83}"))
+                                    _dr83_ = _f(_r83["result"].get(f"drag_reduction_{_sk83}"))
+                                    _np83_ = max(int(_f(_r83["result"].get(f"num_pumps_{_sk83}"))), 1)
                                     if _spd83 > 0:
-                                        _cs83.append(_spd83)
-                                        _ds83.append(_dra83)
-                                        _pcs83.append(_pc83)
-                                        _dcs83.append(_dc83)
+                                        _cs83.append(_spd83); _ds83.append(_dra83)
+                                        _pcs83.append(_pc83); _dcs83.append(_dc83)
+                                        _fs83.append(_fl83); _hls83.append(_hl83)
+                                        _tdhs83.append(_th83); _nps83.append(_np83_)
+                                        _drs83.append(_dr83_)
                                 if len(_cs83) < 2:
                                     continue
-                                # Base power cost extrapolated to DOL speed (N^3 scaling)
-                                _spd_med83 = float(_np83.median(_cs83)) or _pdol83
-                                _pow_med83 = float(_np83.median(_pcs83)) if _pcs83 else 5000.0
-                                _base_pow83 = max(_pow_med83 * (_pdol83 / max(_spd_med83, 1.0))**3,
-                                                  1.0)
-                                # DRA cost per ppm (INR/ppm/hr) from actual data
-                                _valid_dra83 = [(p, c) for p, c in zip(_ds83, _dcs83)
-                                               if p > 0 and c > 0]
-                                if _valid_dra83:
-                                    _dra_rate83 = float(_np83.median(
-                                        [c / p for p, c in _valid_dra83]))
-                                else:
-                                    # fallback: DRA at 100 ppm = 25% of DOL power cost
-                                    _dra_rate83 = 0.0025 * _base_pow83
-                                # Surface grid: N (RPM) × DRA (ppm 0-100)
+                                # Median reference conditions
+                                _N_med83  = float(_np83.median(_cs83))
+                                _Q_med83  = float(_np83.median([f for f in _fs83 if f > 0]) or 100.0)
+                                _HL_med83 = float(_np83.median([h for h in _hls83 if h > 0]) or 50.0)
+                                _TDH_med83 = float(_np83.median([t for t in _tdhs83 if t > 0])
+                                                   or _HL_med83 + 10.0)
+                                _nump83   = max(int(round(_np83.median(_nps83))), 1)
+                                _rho83    = float(next(
+                                    (_f(_r["result"].get(f"rho_{_sk83}")) for _r in _rpts
+                                     if _f(_r["result"].get(f"rho_{_sk83}")) > 100), 850.0))
+                                # Pump polynomial coefficients (station-level, fallback to first type)
+                                def _gc83(key):
+                                    v = float(_ps83.get(key, 0) or 0)
+                                    if v == 0:
+                                        for _tv in (_ps83.get("pump_types") or {}).values():
+                                            if isinstance(_tv, dict):
+                                                v = float(_tv.get(key, 0) or 0)
+                                                if v != 0:
+                                                    break
+                                    return v
+                                _A83 = _gc83("A"); _B83 = _gc83("B"); _C83 = _gc83("C")
+                                _P83 = _gc83("P"); _Qc83 = _gc83("Q"); _R83 = _gc83("R")
+                                _S83 = _gc83("S"); _T83 = _gc83("T")
+                                # System curve parameters from actual results
+                                _H_static83 = max(_TDH_med83 - _HL_med83, 0.0)
+                                _Rsys83 = _HL_med83 / max(_Q_med83**2, 1.0)
+                                # DRA effectiveness: dr_per_ppm from actual optimizer results
+                                _vdr83 = [(dr, p) for dr, p in zip(_drs83, _ds83) if p > 0 and dr > 0]
+                                _dr_per_ppm83 = (float(_np83.median([dr/p for dr, p in _vdr83]))
+                                                 if _vdr83 else 0.25)
+                                _max_dr83 = min(
+                                    float(_np83.max([dr for dr, _ in _vdr83])) * 1.1
+                                    if _vdr83 else 30.0, 50.0)
+                                # Tariff (INR/kWh) = power_cost / (motor_kw × num_pumps)
+                                _tariff_v83 = []
+                                for _r83t, _np83n in zip(_rpts, _nps83):
+                                    _pc = _f(_r83t["result"].get(f"power_cost_{_sk83}"))
+                                    _mk = _f(_r83t["result"].get(f"motor_kw_{_sk83}"))
+                                    if _mk > 0 and _pc > 0:
+                                        _tariff_v83.append(_pc / (_mk * _np83n))
+                                _tariff83 = float(_np83.median(_tariff_v83)) if _tariff_v83 else 8.0
+                                # DRA rate (INR/L): dra_cost = ppm × Q × 1000/1e6 × rate
+                                _ratedr83 = []
+                                for _dc, _dpm, _fl in zip(_dcs83, _ds83, _fs83):
+                                    if _dpm > 0 and _fl > 0 and _dc > 0:
+                                        _ratedr83.append(_dc / (_dpm * _fl * 1000.0 / 1e6))
+                                _RateDRA83 = float(_np83.median(_ratedr83)) if _ratedr83 else 1000.0
+                                # Grid: N (RPM) × DRA ppm
                                 _N83   = _np83.linspace(_pmin83, _pdol83, 40)
                                 _DRA83 = _np83.linspace(0.0, 100.0, 35)
                                 _NG83, _DG83 = _np83.meshgrid(_N83, _DRA83)
-                                # Drag reduction model: exponential saturation (Virk asymptote)
-                                # DR(ppm) = 0.30 * (1 - exp(-ppm/25))
-                                # → 0% at 0 ppm, ~22% at 30 ppm, ~30% max at high ppm
-                                _DR83 = 0.30 * (1.0 - _np83.exp(-_DG83 / 25.0))
-                                # Friction head fraction of total pump head (~65%)
-                                _f_fric83 = 0.65
-                                # Power cost: N^3 scaling, reduced by DRA drag reduction
-                                _pow_surf83 = (_base_pow83 * (_NG83 / _pdol83)**3
-                                               * (1.0 - _DR83 * _f_fric83))
-                                # DRA material cost: linear in ppm, flow proportional to N
-                                _dra_surf83 = _dra_rate83 * _DG83 * (_NG83 / _pdol83)
-                                # Total cost: minimum exists where DRA savings = DRA material cost
-                                _TC83 = _pow_surf83 + _dra_surf83
+                                # Q_equiv = Q_med × (N_DOL / N_med): constant reference on pump curve
+                                _Qeq83 = _Q_med83 * (_pdol83 / max(_N_med83, 1.0))
+                                # Pump head per pump at DOL (H-Q polynomial)
+                                if _C83 != 0 or _A83 != 0:
+                                    _H_DOL83 = _A83 * _Qeq83**2 + _B83 * _Qeq83 + _C83
+                                else:
+                                    _H_DOL83 = _TDH_med83 / _nump83
+                                # Total pump TDH at speed N: H(N) = H_DOL × (N/N_DOL)² × n_pumps
+                                _H_pump83 = _H_DOL83 * (_NG83 / _pdol83)**2 * _nump83
+                                # Pump efficiency (affinity law: speed-independent at Q_equiv)
+                                _eta83_v = (_P83*_Qeq83**4 + _Qc83*_Qeq83**3 +
+                                            _R83*_Qeq83**2 + _S83*_Qeq83 + _T83)
+                                if not (20.0 < _eta83_v < 100.0):
+                                    _effv83 = [_f(_r["result"].get(f"efficiency_{_sk83}"))
+                                               for _r in _rpts]
+                                    _eta83_v = float(_np83.median(
+                                        [e for e in _effv83 if 10 < e < 100]) or 70.0)
+                                # DRA drag reduction from actual data (linear, clipped)
+                                _DR83 = _np83.clip(_dr_per_ppm83 * _DG83, 0.0, _max_dr83)
+                                # Required head: H_req = H_static + R_sys × Q_med² × (1 - DR/100)
+                                _H_req83 = (_H_static83 +
+                                            _Rsys83 * _Q_med83**2 * (1.0 - _DR83 / 100.0))
+                                # Feasibility: pump must deliver >= required head
+                                _feasible83 = (_H_pump83 >= _H_req83) & (_eta83_v > 0)
+                                # BkW total: ρ × Q_total × g × TDH / (3600 × 1000 × η/100)
+                                _BkW83 = (_rho83 * _Q_med83 * 9.81 * _H_pump83 /
+                                          (3600.0 * 1000.0 * (_eta83_v / 100.0)))
+                                # Mech efficiency: 0.91 below DOL (VFD), 0.95 at DOL
+                                _mech83 = _np83.where(_NG83 >= _pdol83 * 0.995, 0.95, 0.91)
+                                _motor_kW83 = _BkW83 / _mech83
+                                _pow_cost83 = _motor_kW83 * _tariff83
+                                # DRA material cost: ppm × Q × 1000/1e6 × RateDRA
+                                _dra_cost83 = _DG83 * _Q_med83 * 1000.0 / 1e6 * _RateDRA83
+                                # Total cost (NaN for infeasible points)
+                                _TC83 = _np83.where(_feasible83,
+                                                    _pow_cost83 + _dra_cost83,
+                                                    _np83.nan)
+                                _vmin83 = (float(_np83.nanmin(_TC83))
+                                           if not _np83.all(_np83.isnan(_TC83)) else 0.0)
+                                _vmax83 = (float(_np83.nanmax(_TC83))
+                                           if not _np83.all(_np83.isnan(_TC83)) else 1.0)
                                 _fig83 = _plt.figure(figsize=(14, 7), facecolor="white")
                                 _ax83 = _fig83.add_subplot(111, projection="3d")
                                 _surf83 = _ax83.plot_surface(
@@ -10975,8 +11066,7 @@ if not auto_batch:
                                     cmap="RdYlGn_r", alpha=0.90,
                                     rstride=1, cstride=1,
                                     linewidth=0, antialiased=True,
-                                    vmin=float(_np83.min(_TC83)),
-                                    vmax=float(_np83.max(_TC83)))
+                                    vmin=_vmin83, vmax=_vmax83)
                                 _fig83.colorbar(_surf83, ax=_ax83, shrink=0.42,
                                                 label="Total Cost (INR/hr)", pad=0.10)
                                 _ax83.set_xlabel("Pump Speed (RPM)", fontsize=9, labelpad=16)
@@ -10988,8 +11078,6 @@ if not auto_batch:
                                     fontsize=10, fontweight="bold",
                                     color="#212529", pad=10)
                                 _ax83.tick_params(labelsize=7)
-                                # View from front-left: shows N^3 rise with speed and
-                                # the cost valley (optimal DRA) clearly
                                 _ax83.view_init(elev=30, azim=210)
                                 _ax83.xaxis.pane.fill = False
                                 _ax83.yaxis.pane.fill = False
@@ -10997,9 +11085,15 @@ if not auto_batch:
                                 _fig83.subplots_adjust(left=0.08, right=0.88,
                                                         bottom=0.10, top=0.90)
                                 _insert_chart(_pdf, _save_fig(_fig83),
-                                              caption=(f"Figure 8.3 — 3D Cost Surface: {_pname83}. "
-                                                       f"Power cost (N^3) reduced by DRA drag reduction + "
-                                                       f"DRA material cost. Valley = cost-optimal DRA ppm."))
+                                              caption=(
+                                                  f"Figure 8.3 - 3D Cost Surface: {_pname83}. "
+                                                  f"Power: pump H-Q polynomial (affinity H proportional to N^2), "
+                                                  f"efficiency quartic at Q_eq={_Qeq83:.0f} m3/hr. "
+                                                  f"System: H_static={_H_static83:.1f} m, "
+                                                  f"R_sys={_Rsys83:.5f} m/(m3/hr)^2. "
+                                                  f"DRA: {_dr_per_ppm83:.3f}%/ppm (optimizer data), "
+                                                  f"rate={_RateDRA83:.1f} INR/L. "
+                                                  f"All equations from actual optimizer results."))
                         except Exception as _e83:
                             _pdf.body_text(f"3D cost surface unavailable: {_san(str(_e83))}")
 
