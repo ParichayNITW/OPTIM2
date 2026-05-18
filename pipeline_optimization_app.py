@@ -9241,24 +9241,69 @@ if not auto_batch:
 
                     _pump_stns = [s for s in (_stns or []) if s.get("is_pump")]
 
+                    # ── flow key helpers (fix: flow_m3hr not set; use pump_flow_{origin}) ──
+                    _origin_sk = _rk(_pump_stns[0].get("name", "")) if _pump_stns else ""
+                    def _get_flow(r):
+                        v = _f(r["result"].get(f"pump_flow_{_origin_sk}"))
+                        return v if v > 0 else _f(r["result"].get("flow_m3hr"))
+
                     # ── aggregate stats ───────────────────────────────────────────────────
                     _total_cost = sum(_f(r["result"].get("total_cost")) for r in _rpts) if _rpts else 0.0
                     _hours_list = [r["time"] for r in _rpts] if _rpts else []
-                    _flows = [_f(r["result"].get("flow_m3hr")) for r in _rpts] if _rpts else []
+                    _flows = [_get_flow(r) for r in _rpts] if _rpts else []
                     _costs = [_f(r["result"].get("total_cost")) for r in _rpts] if _rpts else []
                     _avg_flow = sum(_flows) / len(_flows) if _flows else 0.0
                     _total_vol = sum(_flows)
                     _peak_cost = max(_costs) if _costs else 0.0
                     _min_cost = min(_costs) if _costs else 0.0
-                    _cost_per_m3 = _total_cost / _total_vol if _total_vol > 0 else 0.0
 
+                    # ── pump efficiency (fix: use efficiency_{sk} not pump_eff_{sk}) ────
                     _eff_vals = []
                     for _r0 in (_rpts or []):
                         for _s0 in (_pump_stns or []):
-                            _ev = _f(_r0["result"].get(f"pump_eff_{_rk(_s0.get('name',''))}"))
+                            _esk = _rk(_s0.get("name", ""))
+                            _ev = _f(_r0["result"].get(f"efficiency_{_esk}",
+                                     _r0["result"].get(f"pump_eff_{_esk}")))
                             if _ev > 0:
                                 _eff_vals.append(_ev)
                     _avg_eff = sum(_eff_vals) / len(_eff_vals) if _eff_vals else 0.0
+
+                    # ── SEC (Specific Energy Consumption) in INR/MT/km ────────────────
+                    _km_main = sum(_f(s.get("L", 0)) for s in (_stns or []))
+                    _km_loop = sum(_f((s.get("loopline") or {}).get("L", 0))
+                                   for s in (_stns or []) if s.get("loopline"))
+                    _total_km = max(_km_main + _km_loop, 1.0)
+                    _avg_density = 850.0
+                    _total_MT = 0.0
+                    if _plan_df is not None and not _plan_df.empty:
+                        _vol_col = next((c for c in _plan_df.columns
+                                         if "vol" in c.lower()), None)
+                        _den_col = next((c for c in _plan_df.columns
+                                         if "dens" in c.lower()), None)
+                        if _vol_col and _den_col:
+                            try:
+                                import pandas as _pd_sec
+                                _total_MT = sum(
+                                    float(_pd_sec.to_numeric(row[_vol_col], errors="coerce") or 0) *
+                                    float(_pd_sec.to_numeric(row[_den_col], errors="coerce") or 850) / 1000
+                                    for _, row in _plan_df.iterrows()
+                                )
+                            except Exception:
+                                _total_MT = 0.0
+                    if _total_MT <= 0.0:
+                        try:
+                            import streamlit as _st_sec
+                            _avg_density = float(_st_sec.session_state.get("laced_density_kgm3", 850.0))
+                        except Exception:
+                            _avg_density = 850.0
+                        _total_MT = _total_vol * _avg_density / 1000.0
+                    _total_power_cost = sum(
+                        sum(_f(r["result"].get(f"power_cost_{_rk(s.get('name',''))}"))
+                            for s in (_pump_stns or []))
+                        for r in (_rpts or [])
+                    )
+                    _sec = (_total_power_cost / (_total_MT * _total_km)
+                            if (_total_MT > 0 and _total_km > 0) else 0.0)
 
                     # per-station cost breakdown
                     _stn_costs = {}
@@ -9537,10 +9582,10 @@ if not auto_batch:
                     _cover_kv = [
                         ("Report Date", _today_str),
                         ("Flow Mode", str(_f_mode or "Fixed")),
-                        ("Daily Volume Target", f"{_dmv:,.0f} m³" if _dmv else "N/A"),
+                        ("Daily Volume Target", f"{_total_vol:,.1f} m3"),
                         ("Hours Optimized", str(len(_rpts or []))),
                         ("Total Optimized Cost", f"INR {_tc_total:,.2f}"),
-                        ("Cost per m³", f"INR {_cost_per_m3:.2f}"),
+                        ("SEC (INR/MT/km)", f"{_sec:.6f}"),
                     ]
                     for _lbl, _val in _cover_kv:
                         _pdf.set_font("Helvetica", "B", 10)
@@ -9571,9 +9616,11 @@ if not auto_batch:
                     _summ_hdrs = ["Performance Metric", "Value", "Unit"]
                     _summ_rows = [
                         ["Total Optimized Operating Cost", f"{_total_cost:,.2f}", "INR"],
-                        ["Total Volume Throughput", f"{_total_vol:,.1f}", "m³"],
-                        ["Average Hourly Flow Rate", f"{_avg_flow:,.1f}", "m³/hr"],
-                        ["Specific Energy Cost", f"{_cost_per_m3:.2f}", "INR / m³"],
+                        ["Total Volume Throughput", f"{_total_vol:,.1f}", "m3"],
+                        ["Average Hourly Flow Rate", f"{_avg_flow:,.1f}", "m3/hr"],
+                        ["Total Mass Throughput", f"{_total_MT:,.2f}", "MT"],
+                        ["Pipeline Length (main+loop)", f"{_total_km:.1f}", "km"],
+                        ["SEC (Specific Energy)", f"{_sec:.6f}", "INR/MT/km"],
                         ["Average Pump Efficiency", f"{_avg_eff:.1f}" if _avg_eff > 0 else "N/A", "%"],
                         ["Peak Hourly Cost", f"{_peak_cost:,.2f}", "INR"],
                         ["Minimum Hourly Cost", f"{_min_cost:,.2f}", "INR"],
@@ -9613,13 +9660,13 @@ if not auto_batch:
                     _summary_paras = [
                         f"The optimization covered {len(_rpts or [])} hours of pipeline operation "
                         f"on the {_origin_name} to {_term_name} corridor under {str(_f_mode or 'Fixed')} "
-                        f"flow mode. The system processed a total throughput of {_total_vol:,.1f} m³ "
-                        f"at an average flow rate of {_avg_flow:,.1f} m³/hr.",
+                        f"flow mode. The system processed a total throughput of {_total_vol:,.1f} m3 "
+                        f"({_total_MT:,.2f} MT) at an average flow rate of {_avg_flow:,.1f} m3/hr.",
 
-                        f"The total optimized operating cost for the period was INR {_total_cost:,.2f}, "
-                        f"equivalent to a specific cost of INR {_cost_per_m3:.2f} per m³ of "
-                        f"throughput. Peak hourly expenditure of INR {_peak_cost:,.2f} occurred at "
-                        f"{_max_flow_hr:02d}:00 hrs, while the most economical hour was "
+                        f"The total optimized operating cost for the period was INR {_total_cost:,.2f}. "
+                        f"Specific Energy Consumption (SEC) was {_sec:.6f} INR/MT/km over "
+                        f"{_total_km:.1f} km pipeline. Peak hourly expenditure of INR {_peak_cost:,.2f} "
+                        f"occurred at {_max_flow_hr:02d}:00 hrs, while the most economical hour was "
                         f"{_min_flow_hr:02d}:00 hrs at INR {_min_cost:,.2f}.",
 
                         ("Drag Reducing Agent (DRA) injection was active during the optimization period, "
@@ -9687,16 +9734,16 @@ if not auto_batch:
                     # ════════════════════════════════════════════════════════════════════
                     # CHAPTER 3: HOURLY OPTIMIZATION SCHEDULE
                     # ════════════════════════════════════════════════════════════════════
-                    _pdf.add_page()
+                    _pdf.add_page(orientation="L")   # landscape for wide table
                     _pdf.chapter_title("Hourly Optimization Schedule")
 
-                    _pdf.section_title("3.1  Hourly Schedule – Flow, Cost & Pump Parameters")
+                    _pdf.section_title("3.1  Hourly Schedule - Flow, Cost & Pump Parameters")
                     if _rpts:
-                        _sched_hdrs = ["Time", "Flow\n(m³/hr)", "Cost\n(INR)"]
+                        _sched_hdrs = ["Time", "Flow\n(m3/hr)", "Cost\n(INR)"]
                         _stn_col_keys2 = []
                         for _ps in _pump_stns:
                             _rk2 = _rk(_ps.get("name", ""))
-                            _sname2 = str(_ps.get("name", _rk2))[:9]
+                            _sname2 = str(_ps.get("name", _rk2))[:8]
                             _sched_hdrs += [f"{_sname2}\nRPM", f"{_sname2}\nkW",
                                              f"{_sname2}\nppm", f"{_sname2}\nEff%"]
                             _stn_col_keys2.append(_rk2)
@@ -9706,26 +9753,27 @@ if not auto_batch:
                             _res0 = _r0["result"]
                             _row0 = [
                                 f"{_r0['time']:02d}:00",
-                                f"{_f(_res0.get('flow_m3hr')):,.0f}",
+                                f"{_get_flow(_r0):,.0f}",
                                 f"{_f(_res0.get('total_cost')):,.0f}",
                             ]
                             for _ck in _stn_col_keys2:
                                 _row0.append(f"{_f(_res0.get(f'speed_{_ck}')):.0f}")
-                                _row0.append(f"{_f(_res0.get(f'power_{_ck}')):.0f}")
+                                _row0.append(f"{_f(_res0.get(f'motor_kw_{_ck}')):.0f}")
                                 _row0.append(f"{_f(_res0.get(f'dra_ppm_{_ck}')):.1f}")
-                                _eff_v = _f(_res0.get(f"pump_eff_{_ck}"))
-                                _row0.append(f"{_eff_v:.1f}" if _eff_v > 0 else "–")
+                                _eff_v = _f(_res0.get(f"efficiency_{_ck}",
+                                            _res0.get(f"pump_eff_{_ck}")))
+                                _row0.append(f"{_eff_v:.1f}" if _eff_v > 0 else "-")
                             _sched_rows2.append(_row0)
 
-                        _n_sc = len(_sched_hdrs)
-                        _base_w = [16, 18, 22]
-                        _per_stn_w = [14, 14, 14, 14]
+                        _base_w = [18, 22, 26]
+                        _per_stn_w = [16, 16, 15, 15]
                         _sched_cw = _base_w + _per_stn_w * len(_pump_stns)
                         _total_w2 = sum(_sched_cw)
-                        if _total_w2 > 180:
-                            _sc2 = 180.0 / _total_w2
+                        _ls_avail = 265.0
+                        if _total_w2 > _ls_avail:
+                            _sc2 = _ls_avail / _total_w2
                             _sched_cw = [w * _sc2 for w in _sched_cw]
-                        _draw_table(_pdf, _sched_hdrs, _sched_rows2, _sched_cw, font_sz=7.5)
+                        _draw_table(_pdf, _sched_hdrs, _sched_rows2, _sched_cw, font_sz=7.0)
                         _pdf.ln(4)
 
                     _pdf.section_title("3.2  Schedule Analysis")
@@ -9740,7 +9788,7 @@ if not auto_batch:
                             f"(at {_p_hr:02d}:00), representing a peak-to-trough variation of "
                             f"INR {_peak_cost - _min_cost:,.0f} ({(_peak_cost - _min_cost) / _min_cost * 100:.1f}% "
                             f"of minimum cost). "
-                            f"Flow rates varied by {_flow_range:,.0f} m³/hr across the schedule, "
+                            f"Flow rates varied by {_flow_range:,.0f} m3/hr across the schedule, "
                             f"reflecting demand-responsive operation."
                         )
                         _pdf.body_text(_sched_analysis)
@@ -9764,14 +9812,15 @@ if not auto_batch:
                                       zorder=4)
                         for _bar, _v in zip(_bars41, _costs):
                             _ax41.text(_bar.get_x() + _bar.get_width() / 2,
-                                        _bar.get_height() + _peak_cost * 0.01,
+                                        _bar.get_height() + _peak_cost * 0.005,
                                         f"{_v:,.0f}", ha="center", va="bottom",
-                                        fontsize=6.5, color="#333333")
+                                        fontsize=7.5, color="#333333",
+                                        rotation=90, rotation_mode="anchor")
                         _style_ax(_ax41, "Hourly Total Operating Cost (INR)",
                                    "Hour of Day", "Cost (INR)")
                         _rotate_xlabels(_ax41)
                         _ax41.legend(fontsize=8)
-                        _ax41.set_ylim(0, _peak_cost * 1.18)
+                        _ax41.set_ylim(0, _peak_cost * 1.35)
                         _fig41.tight_layout()
                         _p41 = _save_fig(_fig41)
                         _insert_chart(_pdf, _p41, caption="Figure 4.1 – Hourly operating cost with average reference line")
@@ -9982,12 +10031,18 @@ if not auto_batch:
                         _pdf.section_title("6.4  DRA Injection Rate Chart")
                         _fig61, _ax61 = _plt.subplots(figsize=(10, 3.8), facecolor="white")
                         _stn_colors2 = [_BLUE, _ORANGE, _GREEN, "#9b59b6", "#e74c3c", "#1abc9c"]
+                        _stn_linestyles = ["solid", "dashed", "dotted", "dashdot",
+                                            (0, (3, 1, 1, 1)), (0, (5, 1))]
+                        _stn_markers = ["o", "s", "^", "D", "v", "P"]
                         for _si, _ps in enumerate(_pump_stns):
                             _sk = _rk(_ps.get("name", ""))
                             _ppms = [_f(r["result"].get(f"dra_ppm_{_sk}")) for r in _rpts]
                             _c61 = _stn_colors2[_si % len(_stn_colors2)]
-                            _ax61.plot(_hour_labels, _ppms, marker="o", linewidth=2,
-                                        markersize=5, color=_c61,
+                            _ls61 = _stn_linestyles[_si % len(_stn_linestyles)]
+                            _mk61 = _stn_markers[_si % len(_stn_markers)]
+                            _ax61.plot(_hour_labels, _ppms,
+                                        marker=_mk61, linewidth=2, linestyle=_ls61,
+                                        markersize=6, color=_c61,
                                         label=str(_ps.get("name", _sk)))
                         _style_ax(_ax61, "DRA Injection Rate by Station",
                                    "Hour of Day", "DRA Concentration (ppm)")
@@ -10121,15 +10176,20 @@ if not auto_batch:
                                               label=f"Sys {_hl}")
                             # operating points
                             _op_colors = _plt.cm.tab10(_np.linspace(0, 1, max(len(hr_flows), 1)))
+                            _ann_offsets = [(12, 8), (-12, 8), (12, -14), (-12, -14),
+                                            (16, 4), (-16, 4), (8, 16), (-8, -16)]
                             for _hi, (_hf, _hh, _hl, _hr) in enumerate(
                                     zip(hr_flows, hr_heads, hr_labels, hr_rpms)):
                                 if _hf > 0 and _hh > 0:
                                     _ax.scatter([_hf], [_hh], color=_op_colors[_hi],
                                                  s=60, zorder=7,
                                                  edgecolors="white", linewidths=0.8)
+                                    _ox, _oy = _ann_offsets[_hi % len(_ann_offsets)]
                                     _ax.annotate(_hl, (_hf, _hh),
-                                                  textcoords="offset points", xytext=(4, 4),
-                                                  fontsize=6, color="#333333")
+                                                  textcoords="offset points", xytext=(_ox, _oy),
+                                                  fontsize=8, color="#333333",
+                                                  arrowprops=dict(arrowstyle="-",
+                                                                  color="#aaaaaa", lw=0.5))
                             _style_ax(_ax, f"{_san(title)} - H-Q Family & System Curves",
                                        "Flow (m3/hr)", "Head (m)")
                             _ax.set_ylim(bottom=0)
@@ -10165,9 +10225,12 @@ if not auto_batch:
                                     _ax2.scatter([_hf], [_he], color=_op_colors[_hi],
                                                   s=60, zorder=7,
                                                   edgecolors="white", linewidths=0.8)
+                                    _ox2, _oy2 = _ann_offsets[_hi % len(_ann_offsets)]
                                     _ax2.annotate(f"{_hl}\n{_he:.1f}%", (_hf, _he),
-                                                   textcoords="offset points", xytext=(4, 4),
-                                                   fontsize=6, color="#333333")
+                                                   textcoords="offset points", xytext=(_ox2, _oy2),
+                                                   fontsize=8, color="#333333",
+                                                   arrowprops=dict(arrowstyle="-",
+                                                                   color="#aaaaaa", lw=0.5))
                             _style_ax(_ax2, f"{_san(title)} - Efficiency Curves",
                                        "Flow (m3/hr)", "Efficiency (%)")
                             _ax2.set_ylim(0, 105)
@@ -10293,54 +10356,63 @@ if not auto_batch:
                                        caption="Figure 7.A - Hourly pump speed (RPM) per station")
 
                         # ── 7.4  BkW & Power Table ─────────────────────────────────────
+                        _pdf.add_page(orientation="L")
                         _pdf.section_title("7.4  Hourly Brake kW, Electrical Power & Efficiency")
                         _bkw_hdrs = ["Time", "Flow\n(m3/hr)"]
                         for _ps in _pump_stns:
-                            _sn = str(_ps.get("name", ""))[:10]
+                            _sn = str(_ps.get("name", ""))[:7]
                             _bkw_hdrs += [f"{_sn}\nRPM", f"{_sn}\nBkW", f"{_sn}\nkW",
                                            f"{_sn}\nEff%", f"{_sn}\nHead(m)"]
                         _bkw_rows = []
                         for _r0 in _rpts:
                             _brow = [f"{_r0['time']:02d}:00",
-                                      f"{_f(_r0['result'].get('flow_m3hr')):,.0f}"]
+                                      f"{_get_flow(_r0):,.0f}"]
                             for _ps in _pump_stns:
                                 _sk = _rk(_ps.get("name", ""))
                                 _brow.append(f"{_f(_r0['result'].get(f'speed_{_sk}')):.0f}")
                                 _brow.append(f"{_f(_r0['result'].get(f'pump_bkw_{_sk}')):.1f}")
-                                _brow.append(f"{_f(_r0['result'].get(f'power_{_sk}')):.1f}")
+                                _brow.append(f"{_f(_r0['result'].get(f'motor_kw_{_sk}')):.1f}")
                                 _ev = _f(_r0['result'].get(f"efficiency_{_sk}",
                                          _r0['result'].get(f"pump_eff_{_sk}")))
                                 _brow.append(f"{_ev:.1f}" if _ev > 0 else "-")
                                 _brow.append(f"{_f(_r0['result'].get(f'tdh_{_sk}')):.1f}")
                             _bkw_rows.append(_brow)
-                        _bkw_base = [16, 18]
-                        _bkw_per = [12, 14, 14, 12, 16]
+                        _bkw_base = [18, 20]
+                        _bkw_per = [14, 16, 16, 13, 18]
                         _bkw_cw = _bkw_base + _bkw_per * len(_pump_stns)
-                        if sum(_bkw_cw) > 180:
-                            _bsc = 180.0 / sum(_bkw_cw)
+                        if sum(_bkw_cw) > 265.0:
+                            _bsc = 265.0 / sum(_bkw_cw)
                             _bkw_cw = [w * _bsc for w in _bkw_cw]
-                        _draw_table(_pdf, _bkw_hdrs, _bkw_rows, _bkw_cw, font_sz=7.0)
+                        _draw_table(_pdf, _bkw_hdrs, _bkw_rows, _bkw_cw, font_sz=6.5)
                         _pdf.ln(3)
 
-                        # ── 7.5  Stacked power chart ───────────────────────────────────
-                        _pdf.section_title("7.5  Pump Power Consumption (kW) by Station")
-                        _fig75, _ax75 = _plt.subplots(figsize=(10, 3.8), facecolor="white")
-                        _bot75 = _np.zeros(len(_rpts))
-                        for _si, _ps in enumerate(_pump_stns):
-                            _sk = _rk(_ps.get("name", ""))
-                            _pws = [_f(r["result"].get(f"power_{_sk}")) for r in _rpts]
-                            _c75 = [_BLUE, _ORANGE, _GREEN, "#9b59b6", "#e74c3c"][_si % 5]
-                            _ax75.bar(_hour_labels, _pws, bottom=_bot75,
-                                       label=_san(str(_ps.get("name", _sk))),
-                                       color=_c75, edgecolor="white", linewidth=0.4, zorder=3)
-                            _bot75 += _np.array(_pws)
-                        _style_ax(_ax75, "Pump Electrical Power Consumption by Station (kW)",
-                                   "Hour of Day", "Power (kW)")
-                        _rotate_xlabels(_ax75)
-                        _ax75.legend(fontsize=8, loc="upper right")
-                        _fig75.tight_layout()
-                        _insert_chart(_pdf, _save_fig(_fig75),
-                                       caption="Figure 7.B - Stacked electrical power draw per station")
+                        # ── 7.5  Hourly SEC table ──────────────────────────────────────
+                        _pdf.add_page(orientation="L")
+                        _pdf.section_title("7.5  Hourly Specific Energy Consumption (INR/MT/km)")
+                        _sec_hdrs75 = ["Time", "Flow\n(m3/hr)", "Energy\n(kW)",
+                                        "Power\nCost(INR)", "Mass\n(MT)", "SEC\n(INR/MT/km)"]
+                        _sec_rows75 = []
+                        for _r0 in _rpts:
+                            _res75 = _r0["result"]
+                            _hr_flow75 = _get_flow(_r0)
+                            _hr_kw75 = sum(_f(_res75.get(f"motor_kw_{_rk(s.get('name',''))}"))
+                                           for s in _pump_stns)
+                            _hr_cost75 = sum(_f(_res75.get(f"power_cost_{_rk(s.get('name',''))}"))
+                                             for s in _pump_stns)
+                            _hr_mass75 = _hr_flow75 * _avg_density / 1000.0
+                            _hr_sec75 = (_hr_cost75 / (_hr_mass75 * _total_km)
+                                          if (_hr_mass75 > 0 and _total_km > 0) else 0.0)
+                            _sec_rows75.append([
+                                f"{_r0['time']:02d}:00",
+                                f"{_hr_flow75:,.0f}",
+                                f"{_hr_kw75:,.1f}",
+                                f"{_hr_cost75:,.0f}",
+                                f"{_hr_mass75:.2f}",
+                                f"{_hr_sec75:.6f}",
+                            ])
+                        _draw_table(_pdf, _sec_hdrs75, _sec_rows75,
+                                     [20, 28, 28, 36, 26, 40], font_sz=8.5)
+                        _pdf.ln(3)
 
                         # ── 7.6  Efficiency heatmap ────────────────────────────────────
                         _pdf.section_title("7.6  Pump Efficiency (%) - Heatmap")
@@ -10393,10 +10465,10 @@ if not auto_batch:
                         _all_tdh = [_f(r["result"].get(f"tdh_{_rk(s.get('name',''))}"))
                                      for r in _rpts for s in _pump_stns
                                      if _f(r["result"].get(f"tdh_{_rk(s.get('name',''))}")) > 0]
-                        _all_pw = [_f(r["result"].get(f"power_{_rk(s.get('name',''))}"))
+                        _all_pw = [_f(r["result"].get(f"motor_kw_{_rk(s.get('name',''))}"))
                                     for r in _rpts for s in _pump_stns
-                                    if _f(r["result"].get(f"power_{_rk(s.get('name',''))}")) > 0]
-                        _peak_pw = max((sum(_f(r["result"].get(f"power_{_rk(s.get('name',''))}"))
+                                    if _f(r["result"].get(f"motor_kw_{_rk(s.get('name',''))}")) > 0]
+                        _peak_pw = max((sum(_f(r["result"].get(f"motor_kw_{_rk(s.get('name',''))}"))
                                          for s in _pump_stns) for r in _rpts), default=0)
                         _bep_note = (
                             "indicating well-optimized operation near the BEP envelope."
@@ -10427,45 +10499,58 @@ if not auto_batch:
 
                     _pdf.section_title("8.1  Hourly Flow Rate Profile")
                     if _rpts and _flows:
+                        _max_fv = max(_flows) if _flows else 1.0
                         _fig81, _ax81 = _plt.subplots(figsize=(10, 3.6), facecolor="white")
                         _ax81.fill_between(_hour_labels, _flows, alpha=0.18, color=_BLUE)
                         _ax81.plot(_hour_labels, _flows, color=_BLUE, linewidth=2.2,
                                     marker="o", markersize=5, label="Flow Rate")
                         _ax81.axhline(_avg_flow, color=_ORANGE, linewidth=1.2, linestyle="--",
-                                       label=f"Average: {_avg_flow:,.1f} m³/hr")
+                                       label=f"Average: {_avg_flow:,.1f} m3/hr")
                         if _dmv and _dmv > 0:
                             _target_hourly = _dmv / 24.0
                             _ax81.axhline(_target_hourly, color=_GREEN, linewidth=1.0,
-                                           linestyle=":", label=f"Target: {_target_hourly:,.1f} m³/hr")
+                                           linestyle=":", label=f"Target: {_target_hourly:,.1f} m3/hr")
                         for _xi, (_hl2, _fv) in enumerate(zip(_hour_labels, _flows)):
-                            _ax81.text(_xi, _fv + (_max_flow_hr if len(_flows) < 25 else 0) * 0.01,
+                            _ax81.text(_xi, _fv + _max_fv * 0.02,
                                         f"{_fv:,.0f}", ha="center", va="bottom",
-                                        fontsize=6.0, color="#333333")
-                        _style_ax(_ax81, "Hourly Flow Rate (m³/hr)",
-                                   "Hour of Day", "Flow Rate (m³/hr)")
+                                        fontsize=6.5, color="#333333")
+                        _style_ax(_ax81, "Hourly Flow Rate (m3/hr)",
+                                   "Hour of Day", "Flow Rate (m3/hr)")
                         _rotate_xlabels(_ax81)
                         _ax81.legend(fontsize=8)
                         _ax81.set_ylim(bottom=0)
                         _fig81.tight_layout()
                         _p81 = _save_fig(_fig81)
-                        _insert_chart(_pdf, _p81, caption="Figure 8.1 – Hourly flow rate profile with average and target reference")
+                        _insert_chart(_pdf, _p81, caption="Figure 8.1 - Hourly flow rate profile with average and target reference")
 
-                        # Cost per m³ chart
-                        _pdf.section_title("8.2  Specific Cost Efficiency (INR per m³)")
-                        _cpu = [_c / _fv if _fv > 0 else 0 for _c, _fv in zip(_costs, _flows)]
+                        # SEC chart
+                        _pdf.section_title("8.2  Hourly Specific Energy Consumption (INR/MT/km)")
+                        _sec_hourly = []
+                        for _r0_sec, _fv_sec in zip(_rpts, _flows):
+                            _hr_cost_sec = sum(
+                                _f(_r0_sec["result"].get(f"power_cost_{_rk(s.get('name',''))}"))
+                                for s in _pump_stns
+                            )
+                            _hr_mass_sec = _fv_sec * _avg_density / 1000.0
+                            _sec_hourly.append(
+                                _hr_cost_sec / (_hr_mass_sec * _total_km)
+                                if (_hr_mass_sec > 0 and _total_km > 0) else 0.0
+                            )
+                        _avg_sec_hr = sum(_sec_hourly) / len(_sec_hourly) if _sec_hourly else 0.0
                         _fig82, _ax82 = _plt.subplots(figsize=(10, 3.2), facecolor="white")
-                        _ax82.bar(_hour_labels, _cpu, color=_GREEN, edgecolor="white",
-                                   linewidth=0.4, zorder=3)
-                        _ax82.axhline(_cost_per_m3, color=_BLUE, linewidth=1.2, linestyle="--",
-                                       label=f"Average: INR {_cost_per_m3:.2f}/m³")
-                        _style_ax(_ax82, "Specific Operating Cost (INR/m³)",
-                                   "Hour of Day", "Cost (INR/m³)")
+                        _ax82.plot(_hour_labels, _sec_hourly, color=_GREEN, linewidth=2,
+                                    marker="o", markersize=5, zorder=3)
+                        _ax82.fill_between(_hour_labels, _sec_hourly, alpha=0.15, color=_GREEN)
+                        _ax82.axhline(_avg_sec_hr, color=_BLUE, linewidth=1.2, linestyle="--",
+                                       label=f"Average: {_avg_sec_hr:.5f} INR/MT/km")
+                        _style_ax(_ax82, "Hourly Specific Energy Consumption (INR/MT/km)",
+                                   "Hour of Day", "SEC (INR/MT/km)")
                         _rotate_xlabels(_ax82)
                         _ax82.legend(fontsize=8)
                         _ax82.set_ylim(bottom=0)
                         _fig82.tight_layout()
                         _p82 = _save_fig(_fig82)
-                        _insert_chart(_pdf, _p82, caption="Figure 8.2 – Specific cost (INR per m³) per hour")
+                        _insert_chart(_pdf, _p82, caption="Figure 8.2 - Hourly SEC (INR per metric-tonne per km)")
 
                     # ════════════════════════════════════════════════════════════════════
                     # CHAPTER 9: PRODUCT SCHEDULE
@@ -10516,12 +10601,12 @@ if not auto_batch:
                             "pipeline conditions evolve.".format(_avg_eff)
                         )
 
-                    if _cost_per_m3 > 0:
+                    if _sec > 0:
                         _rec_items.append(
-                            f"The specific operating cost of INR {_cost_per_m3:.2f}/m³ establishes "
-                            f"the baseline for comparative analysis. Track this metric across different "
-                            f"operating scenarios (flow rates, DRA dosages, seasonal conditions) to "
-                            f"identify cost reduction opportunities."
+                            f"The Specific Energy Consumption (SEC) of {_sec:.6f} INR/MT/km "
+                            f"establishes the baseline for comparative analysis. Track this metric "
+                            f"across different operating scenarios (flow rates, DRA dosages, seasonal "
+                            f"conditions) to identify cost reduction opportunities."
                         )
 
                     if _dra_used:
@@ -10557,24 +10642,6 @@ if not auto_batch:
                         _pdf.set_text_color(25, 103, 210)
                         _pdf.cell(0, 6, f"  {_ri}.", new_x="LMARGIN", new_y="NEXT")
                         _pdf.body_text(_rec, indent=8)
-                        _pdf.ln(1)
-
-                    _pdf.section_title("10.2  Next Steps")
-                    _next_steps = [
-                        "Validate optimizer outputs against field measurements (flow meters, pressure transmitters) "
-                        "at the next scheduled inspection to confirm model accuracy.",
-                        "Update pump curve data if any speed stages or impeller changes have been made since "
-                        "the last calibration, as stale curves degrade solution quality.",
-                        "Review the DRA injection programme quarterly using the injection log and power metering "
-                        "data to verify drag-reduction efficiency in the current batch.",
-                        "Archive this report and compare against the next period's report to identify "
-                        "performance trends, schedule drift, and emerging cost pressures.",
-                    ]
-                    for _ni, _ns in enumerate(_next_steps, 1):
-                        _pdf.set_font("Helvetica", "B", 9.5)
-                        _pdf.set_text_color(25, 103, 210)
-                        _pdf.cell(0, 6, f"  {_ni}.", new_x="LMARGIN", new_y="NEXT")
-                        _pdf.body_text(_ns, indent=8)
                         _pdf.ln(1)
 
                     return bytes(_pdf.output())
