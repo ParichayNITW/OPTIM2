@@ -9302,8 +9302,11 @@ if not auto_batch:
                             for s in (_pump_stns or []))
                         for r in (_rpts or [])
                     )
+                    # SEC electricity-only and SEC total (power + DRA)
                     _sec = (_total_power_cost / (_total_MT * _total_km)
                             if (_total_MT > 0 and _total_km > 0) else 0.0)
+                    _sec_total = (_total_cost / (_total_MT * _total_km)
+                                  if (_total_MT > 0 and _total_km > 0) else 0.0)
 
                     # per-station cost breakdown
                     _stn_costs = {}
@@ -9324,7 +9327,7 @@ if not auto_batch:
                     _LIGHT = "#f8f9fa"
                     _CHART_FONT = 9
 
-                    def _save_fig(fig, dpi=160):
+                    def _save_fig(fig, dpi=220):
                         _buf = _io.BytesIO()
                         fig.savefig(_buf, format="png", dpi=dpi, bbox_inches="tight",
                                     facecolor=fig.get_facecolor())
@@ -9461,20 +9464,44 @@ if not auto_batch:
 
                     # ── draw_table (with multi-line cell wrapping) ────────────────────────
                     def _draw_table(pdf, headers, rows, col_widths, font_sz=8.5, align="C"):
-                        _hdr_h = 7
-                        pdf.set_font("Helvetica", "B", font_sz)
-                        pdf.set_fill_color(25, 103, 210)
-                        pdf.set_text_color(255, 255, 255)
-                        pdf.set_draw_color(210, 220, 240)
-                        pdf.set_line_width(0.2)
-                        for _hdr, _cw in zip(headers, col_widths):
-                            pdf.cell(_cw, _hdr_h,
-                                     _san(str(_hdr).replace("\n", " ")),
-                                     border=1, align="C", fill=True)
-                        pdf.ln()
+                        _hdr_line_h = max(font_sz * 0.72, 5.5)  # height per header line
+                        _row_h = 5.5
+
+                        def _count_hdr_lines(hdr, cw):
+                            """Count lines in header accounting for explicit \\n and wrapping."""
+                            _parts = str(hdr).split("\n")
+                            _total = 0
+                            for _p in _parts:
+                                _chars = max(int(cw / (font_sz * 0.42)), 1)
+                                _total += max(1, _math.ceil(len(_p) / _chars)) if _p else 1
+                            return _total
+
+                        def _draw_header_row():
+                            """Draw the blue header row using multi_cell per cell."""
+                            _max_ln = max((_count_hdr_lines(h, w)
+                                           for h, w in zip(headers, col_widths)), default=1)
+                            _h_total = _hdr_line_h * _max_ln
+                            pdf.set_font("Helvetica", "B", font_sz)
+                            pdf.set_fill_color(25, 103, 210)
+                            pdf.set_text_color(255, 255, 255)
+                            pdf.set_draw_color(210, 220, 240)
+                            pdf.set_line_width(0.2)
+                            _xh = pdf.get_x()
+                            _yh = pdf.get_y()
+                            _cx = _xh
+                            for _hdr, _cw in zip(headers, col_widths):
+                                pdf.set_xy(_cx, _yh)
+                                pdf.multi_cell(_cw, _hdr_line_h, _san(str(_hdr)),
+                                               border=1, align="C", fill=True,
+                                               max_line_height=_hdr_line_h)
+                                _cx += _cw
+                            pdf.set_xy(_xh, _yh + _h_total)
+                            return _h_total
+
+                        _draw_header_row()
+
                         pdf.set_font("Helvetica", "", font_sz)
                         pdf.set_text_color(30, 30, 30)
-                        _row_h = 5.5
                         for _ri, _row in enumerate(rows):
                             if _ri % 2 == 0:
                                 pdf.set_fill_color(248, 250, 255)
@@ -9495,15 +9522,7 @@ if not auto_batch:
                             # check page break
                             if _y0 + _cell_h > pdf.h - pdf.b_margin - 5:
                                 pdf.add_page()
-                                # re-draw header
-                                pdf.set_font("Helvetica", "B", font_sz)
-                                pdf.set_fill_color(25, 103, 210)
-                                pdf.set_text_color(255, 255, 255)
-                                for _hdr, _cw in zip(headers, col_widths):
-                                    pdf.cell(_cw, _hdr_h,
-                                             _san(str(_hdr).replace("\n", " ")),
-                                             border=1, align="C", fill=True)
-                                pdf.ln()
+                                _draw_header_row()
                                 pdf.set_font("Helvetica", "", font_sz)
                                 pdf.set_text_color(30, 30, 30)
                                 if _ri % 2 == 0:
@@ -9512,7 +9531,7 @@ if not auto_batch:
                                     pdf.set_fill_color(255, 255, 255)
                                 _x0 = pdf.get_x()
                                 _y0 = pdf.get_y()
-                            # draw each cell using multi_cell with fixed height trick
+                            # draw each cell using multi_cell
                             _cur_x = _x0
                             for _cell_val, _cw in zip(_row, col_widths):
                                 _txt = _san(str(_cell_val) if _cell_val is not None else "")
@@ -9585,7 +9604,8 @@ if not auto_batch:
                         ("Daily Volume Target", f"{_total_vol:,.1f} m3"),
                         ("Hours Optimized", str(len(_rpts or []))),
                         ("Total Optimized Cost", f"INR {_tc_total:,.2f}"),
-                        ("SEC (INR/MT/km)", f"{_sec:.6f}"),
+                        ("SEC - Electricity only (INR/MT/km)", f"{_sec:.6f}"),
+                        ("SEC - Total incl. DRA (INR/MT/km)", f"{_sec_total:.6f}"),
                     ]
                     for _lbl, _val in _cover_kv:
                         _pdf.set_font("Helvetica", "B", 10)
@@ -9620,7 +9640,8 @@ if not auto_batch:
                         ["Average Hourly Flow Rate", f"{_avg_flow:,.1f}", "m3/hr"],
                         ["Total Mass Throughput", f"{_total_MT:,.2f}", "MT"],
                         ["Pipeline Length (main+loop)", f"{_total_km:.1f}", "km"],
-                        ["SEC (Specific Energy)", f"{_sec:.6f}", "INR/MT/km"],
+                        ["SEC - Electricity only", f"{_sec:.6f}", "INR/MT/km"],
+                        ["SEC - Total (incl. DRA)", f"{_sec_total:.6f}", "INR/MT/km"],
                         ["Average Pump Efficiency", f"{_avg_eff:.1f}" if _avg_eff > 0 else "N/A", "%"],
                         ["Peak Hourly Cost", f"{_peak_cost:,.2f}", "INR"],
                         ["Minimum Hourly Cost", f"{_min_cost:,.2f}", "INR"],
@@ -9664,9 +9685,10 @@ if not auto_batch:
                         f"({_total_MT:,.2f} MT) at an average flow rate of {_avg_flow:,.1f} m3/hr.",
 
                         f"The total optimized operating cost for the period was INR {_total_cost:,.2f}. "
-                        f"Specific Energy Consumption (SEC) was {_sec:.6f} INR/MT/km over "
-                        f"{_total_km:.1f} km pipeline. Peak hourly expenditure of INR {_peak_cost:,.2f} "
-                        f"occurred at {_max_flow_hr:02d}:00 hrs, while the most economical hour was "
+                        f"SEC (electricity only) = {_sec:.6f} INR/MT/km; "
+                        f"SEC (total incl. DRA) = {_sec_total:.6f} INR/MT/km over "
+                        f"{_total_km:.1f} km pipeline. Peak hourly cost of INR {_peak_cost:,.2f} "
+                        f"occurred at {_max_flow_hr:02d}:00 hrs; most economical hour was "
                         f"{_min_flow_hr:02d}:00 hrs at INR {_min_cost:,.2f}.",
 
                         ("Drag Reducing Agent (DRA) injection was active during the optimization period, "
@@ -10149,7 +10171,7 @@ if not auto_batch:
                             _min_i = int(round(min_rpm))
 
                             # ── Figure 1: H-Q ─────────────────────────────────────────
-                            _fig, _ax = _plt.subplots(figsize=(10, 4.2), facecolor="white")
+                            _fig, _ax = _plt.subplots(figsize=(12, 4.8), facecolor="white")
                             for _ci, _rv in enumerate(_rpm_set):
                                 _r = _rv / dol if dol > 0 else 1.0
                                 _H = _pump_H(_Q, cA, cB, cC, n_pumps, _r)
@@ -10174,22 +10196,14 @@ if not auto_batch:
                                     _ax.plot(_Q, _Hs, color=_cc, linewidth=1.0,
                                               linestyle="-.", alpha=0.7,
                                               label=f"Sys {_hl}")
-                            # operating points
+                            # operating points (dots only, no data labels)
                             _op_colors = _plt.cm.tab10(_np.linspace(0, 1, max(len(hr_flows), 1)))
-                            _ann_offsets = [(12, 8), (-12, 8), (12, -14), (-12, -14),
-                                            (16, 4), (-16, 4), (8, 16), (-8, -16)]
                             for _hi, (_hf, _hh, _hl, _hr) in enumerate(
                                     zip(hr_flows, hr_heads, hr_labels, hr_rpms)):
                                 if _hf > 0 and _hh > 0:
                                     _ax.scatter([_hf], [_hh], color=_op_colors[_hi],
-                                                 s=60, zorder=7,
+                                                 s=70, zorder=7,
                                                  edgecolors="white", linewidths=0.8)
-                                    _ox, _oy = _ann_offsets[_hi % len(_ann_offsets)]
-                                    _ax.annotate(_hl, (_hf, _hh),
-                                                  textcoords="offset points", xytext=(_ox, _oy),
-                                                  fontsize=8, color="#333333",
-                                                  arrowprops=dict(arrowstyle="-",
-                                                                  color="#aaaaaa", lw=0.5))
                             _style_ax(_ax, f"{_san(title)} - H-Q Family & System Curves",
                                        "Flow (m3/hr)", "Head (m)")
                             _ax.set_ylim(bottom=0)
@@ -10204,7 +10218,7 @@ if not auto_batch:
                             _insert_chart(pdf, _p, caption=f"H-Q family curves with system curves and hourly operating points")
 
                             # ── Figure 2: Efficiency ──────────────────────────────────
-                            _fig2, _ax2 = _plt.subplots(figsize=(10, 4.0), facecolor="white")
+                            _fig2, _ax2 = _plt.subplots(figsize=(12, 4.5), facecolor="white")
                             for _ci, _rv in enumerate(_rpm_set):
                                 _r = _rv / dol if dol > 0 else 1.0
                                 _E = _pump_eff(_Q, cP, cQc, cRe, cSe, cTe, _r)
@@ -10219,18 +10233,13 @@ if not auto_batch:
                                 _ax2.plot(_Q, _E, color=_rpm_color(_ci, _n_c),
                                            linewidth=_lw, linestyle=_ls, alpha=_al,
                                            label=_lbl if _rv in [_dol_i, _min_i] else "_nolegend_")
+                            # efficiency operating points (dots only, no data labels)
                             for _hi, (_hf, _he, _hl) in enumerate(
                                     zip(hr_flows, hr_effs, hr_labels)):
                                 if _hf > 0 and _he > 0:
                                     _ax2.scatter([_hf], [_he], color=_op_colors[_hi],
-                                                  s=60, zorder=7,
+                                                  s=70, zorder=7,
                                                   edgecolors="white", linewidths=0.8)
-                                    _ox2, _oy2 = _ann_offsets[_hi % len(_ann_offsets)]
-                                    _ax2.annotate(f"{_hl}\n{_he:.1f}%", (_hf, _he),
-                                                   textcoords="offset points", xytext=(_ox2, _oy2),
-                                                   fontsize=8, color="#333333",
-                                                   arrowprops=dict(arrowstyle="-",
-                                                                   color="#aaaaaa", lw=0.5))
                             _style_ax(_ax2, f"{_san(title)} - Efficiency Curves",
                                        "Flow (m3/hr)", "Efficiency (%)")
                             _ax2.set_ylim(0, 105)
@@ -10586,56 +10595,80 @@ if not auto_batch:
                     _pdf.section_title("10.1  Operational Observations")
                     _rec_items = []
 
+                    # Pump efficiency observation
                     if _avg_eff > 0 and _avg_eff < 72:
                         _rec_items.append(
-                            "Average pump efficiency of {:.1f}% is below the 72% threshold. "
-                            "Review pump impeller condition and consider trimming or replacement "
-                            "to restore BEP performance. Operating consistently away from BEP "
-                            "accelerates mechanical wear and increases energy expenditure.".format(_avg_eff)
+                            "The optimizer selected pump operating points with an average efficiency "
+                            "of {:.1f}% across all active stations and hours. This is below the "
+                            "typical 72% BEP threshold, indicating the optimized schedule has the "
+                            "pumps running in a lower-efficiency region of their characteristic "
+                            "curves under the given hydraulic constraints.".format(_avg_eff)
                         )
                     elif _avg_eff >= 80:
                         _rec_items.append(
-                            "Excellent average pump efficiency of {:.1f}% indicates the optimizer "
-                            "is consistently selecting operating points near the pump BEP. "
-                            "Continue monitoring to ensure this efficiency is maintained as "
-                            "pipeline conditions evolve.".format(_avg_eff)
+                            "The optimizer achieved an average pump efficiency of {:.1f}%, placing "
+                            "the selected operating points well within the high-efficiency envelope "
+                            "of the pump characteristic curves across all active stations and "
+                            "hours.".format(_avg_eff)
+                        )
+                    elif _avg_eff > 0:
+                        _rec_items.append(
+                            "The optimizer selected pump operating points with an average efficiency "
+                            "of {:.1f}% across all active stations and hours.".format(_avg_eff)
                         )
 
+                    # SEC observation
                     if _sec > 0:
                         _rec_items.append(
-                            f"The Specific Energy Consumption (SEC) of {_sec:.6f} INR/MT/km "
-                            f"establishes the baseline for comparative analysis. Track this metric "
-                            f"across different operating scenarios (flow rates, DRA dosages, seasonal "
-                            f"conditions) to identify cost reduction opportunities."
+                            f"The optimized schedule achieves a Specific Energy Consumption (SEC) "
+                            f"of {_sec:.6f} INR/MT/km (electricity only) and "
+                            f"{_sec_total:.6f} INR/MT/km (total including DRA) over the "
+                            f"{_total_km:.1f} km pipeline, transporting {_total_MT:,.1f} MT "
+                            f"at a total operating cost of INR {_total_cost:,.2f}."
                         )
 
+                    # DRA cost observation
                     if _dra_used:
                         _total_dra_cost = sum(
                             _f(r["result"].get(f"dra_cost_{_rk(s.get('name',''))}"))
                             for r in (_rpts or []) for s in (_pump_stns or [])
                         )
                         _dra_pct = _total_dra_cost / _total_cost * 100 if _total_cost > 0 else 0
+                        _total_pwr_obs = _total_cost - _total_dra_cost
                         _rec_items.append(
-                            f"DRA costs represent {_dra_pct:.1f}% of total operating expenditure "
-                            f"(INR {_total_dra_cost:,.0f}). Evaluate whether the DRA spend is offset "
-                            f"by measurable power savings. Conduct a DRA dose-response trial to "
-                            f"identify the optimal injection rate for current pipeline conditions."
+                            f"DRA injection was active during this schedule. The total DRA chemical "
+                            f"cost was INR {_total_dra_cost:,.0f} ({_dra_pct:.1f}% of total "
+                            f"operating cost), with the remaining INR {_total_pwr_obs:,.0f} "
+                            f"({100-_dra_pct:.1f}%) attributable to pump energy."
                         )
 
+                    # Hourly cost variation observation
                     if (_peak_cost - _min_cost) / max(_min_cost, 1) > 0.30:
                         _rec_items.append(
-                            f"The wide peak-to-trough cost variation ({(_peak_cost - _min_cost)/max(_min_cost,1)*100:.0f}%) "
-                            f"indicates potential for demand-side scheduling. If operational flexibility "
-                            f"allows, shifting high-volume pumping to off-peak tariff hours could "
-                            f"significantly reduce total electricity cost."
+                            f"Hourly operating costs in the optimized schedule ranged from "
+                            f"INR {_min_cost:,.0f} to INR {_peak_cost:,.0f}, a peak-to-trough "
+                            f"variation of {(_peak_cost-_min_cost)/max(_min_cost,1)*100:.0f}%. "
+                            f"This variation reflects the optimizer adjusting pump speeds and "
+                            f"DRA dosing hour-by-hour to meet the throughput target at minimum cost "
+                            f"under the applied tariff and hydraulic constraints."
+                        )
+                    else:
+                        _rec_items.append(
+                            f"Hourly operating costs in the optimized schedule were stable, ranging "
+                            f"from INR {_min_cost:,.0f} to INR {_peak_cost:,.0f} "
+                            f"({(_peak_cost-_min_cost)/max(_min_cost,1)*100:.1f}% variation), "
+                            f"reflecting consistent hydraulic and tariff conditions across the "
+                            f"optimization horizon."
                         )
 
-                    if not _rec_items:
-                        _rec_items.append(
-                            "No specific anomalies identified in this optimization run. "
-                            "Continue operating to the optimized schedule and review monthly "
-                            "aggregates for trend analysis."
-                        )
+                    # Throughput summary
+                    _rec_items.append(
+                        f"Over the {len(_rpts or [])} optimized hours, the schedule delivered "
+                        f"{_total_vol:,.1f} m3 ({_total_MT:,.1f} MT) at an average flow rate of "
+                        f"{_avg_flow:,.1f} m3/hr. This represents the global cost-minimum "
+                        f"combination of pump speeds, DRA dosages, and operating configurations "
+                        f"satisfying all hydraulic, pressure, and throughput constraints."
+                    )
 
                     for _ri, _rec in enumerate(_rec_items, 1):
                         _pdf.set_font("Helvetica", "B", 9.5)
