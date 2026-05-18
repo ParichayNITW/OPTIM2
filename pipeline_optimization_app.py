@@ -9918,7 +9918,8 @@ if not auto_batch:
                                                fontweight="bold")
                             _ax23.set_xlabel("Chainage (km)", fontsize=10, labelpad=18)
                             _ax23.set_ylabel("", fontsize=1)
-                            _ax23.set_zlabel("Elevation (m)", fontsize=10, labelpad=18)
+                            _ax23.set_zlabel("Elevation (m)", fontsize=10, labelpad=28)
+                            _ax23.zaxis.set_rotate_label(False)
                             _ax23.set_yticks([])
                             _ax23.set_title("3D Pipeline Elevation Profile",
                                             fontsize=11, fontweight="bold",
@@ -9930,8 +9931,11 @@ if not auto_batch:
                             _ax23.xaxis.pane.fill = False
                             _ax23.yaxis.pane.fill = False
                             _ax23.zaxis.pane.fill = False
-                            _fig23.subplots_adjust(left=0.08, right=0.92,
+                            _fig23.subplots_adjust(left=0.08, right=0.86,
                                                    bottom=0.12, top=0.90)
+                            _fig23.text(0.97, 0.50, "Elevation (m)", rotation=90,
+                                        fontsize=9, va="center", ha="center",
+                                        transform=_fig23.transFigure, color="#333333")
                             _insert_chart(_pdf, _save_fig(_fig23),
                                           caption="Figure 2.3 - 3D Pipeline Elevation Profile "
                                                   "(blue ribbon = terrain; orange = pump stations)")
@@ -10390,6 +10394,10 @@ if not auto_batch:
                                     _ax.scatter([_hf], [_hh], color=_op_colors[_hi],
                                                  s=70, zorder=7,
                                                  edgecolors="white", linewidths=0.8)
+                            # Single legend entry for all 24 hourly operating points
+                            _ax.scatter([], [], color="#555555", s=70, marker="o",
+                                        edgecolors="white", linewidths=0.8,
+                                        label="Hourly Operating Points (24h)")
                             _style_ax(_ax, f"{_san(title)} - H-Q Family & System Curves",
                                        "Flow (m3/hr)", "Head (m)")
                             _ax.set_ylim(bottom=0)
@@ -10426,6 +10434,10 @@ if not auto_batch:
                                     _ax2.scatter([_hf], [_he], color=_op_colors[_hi],
                                                   s=70, zorder=7,
                                                   edgecolors="white", linewidths=0.8)
+                            # Single legend entry for all 24 hourly operating points
+                            _ax2.scatter([], [], color="#555555", s=70, marker="o",
+                                         edgecolors="white", linewidths=0.8,
+                                         label="Hourly Operating Points (24h)")
                             _style_ax(_ax2, f"{_san(title)} - Efficiency Curves",
                                        "Flow (m3/hr)", "Efficiency (%)")
                             _ax2.set_ylim(0, 105)
@@ -10558,40 +10570,60 @@ if not auto_batch:
                                     if _tdol3d - _tmin3d < 0.05 * _tdol3d:
                                         _tmin3d = _tdol3d * 0.60
                                     _tQmax3d = max(float(_tv3d.get("Q", 0) or 0), 100.0)
-                                    # Efficiency polynomial at DOL: R + S*q + T*q²
-                                    # where q is flow at DOL speed (normalised same as Qmax)
                                     _tR3d = float(_tv3d.get("R", 0) or 0)
                                     _tS3d = float(_tv3d.get("S", 0) or 0)
                                     _tT3d = float(_tv3d.get("T", 0) or 0)
-                                    # Verify the polynomial gives a sensible peak
-                                    _has_eff = (_tT3d < 0 and
-                                                0 < -_tS3d / (2 * _tT3d) < 1.5 * _tQmax3d)
-                                    if not _has_eff:
-                                        # Synthetic bell curve: peak 82% at 70% of Qmax
-                                        _qpk = 0.70 * _tQmax3d
-                                        _tR3d = -82.0 * (0.15 * _tQmax3d)**2 / _qpk**2
-                                        _tS3d = 82.0 * 2 * 1.15 * _tQmax3d / _qpk**2
-                                        _tT3d = -82.0 * (1.15 / _qpk)**2
-                                    # Key insight: use NORMALISED flow q ∈ [0.05, 1.0]
-                                    # At each speed N, actual flow = q * Qmax * (N/Ndol)
-                                    # Q_ref at DOL speed = q * Qmax  (always in polynomial range)
-                                    _q_norm = _np3d.linspace(0.05, 1.0, 40)
-                                    _N_arr  = _np3d.linspace(_tmin3d, _tdol3d, 30)
-                                    _QN, _NN = _np3d.meshgrid(_q_norm, _N_arr)
-                                    # Actual flow axis (for labels)
-                                    _QQ3d = _QN * _tQmax3d * (_NN / _tdol3d)
-                                    # Q_ref = q * Qmax (constant for a given q column)
-                                    _Qref3d = _QN * _tQmax3d
-                                    # Efficiency surface: same shape at every speed
-                                    _EE3d = _tR3d + _tS3d * _Qref3d + _tT3d * _Qref3d ** 2
-                                    # Speed penalty: efficiency drops ~2% per 10% speed reduction
-                                    _EE3d *= (0.80 + 0.20 * (_NN / _tdol3d))
+                                    # Collect actual operating points for this station
+                                    _ops3d = []
+                                    for _r3 in _rpts:
+                                        _q3 = _f(_r3["result"].get(f"pump_flow_{_sk3d}",
+                                                 _r3["result"].get("flow_m3hr")))
+                                        _n3 = _f(_r3["result"].get(f"speed_{_sk3d}"))
+                                        _e3 = _f(_r3["result"].get(f"efficiency_{_sk3d}",
+                                                 _r3["result"].get(f"pump_eff_{_sk3d}")))
+                                        if _q3 > 0 and _n3 > 0:
+                                            _ops3d.append((_q3, _n3, _e3))
+                                    # Anchor surface at actual operating region
+                                    if _ops3d:
+                                        _b3d = (max(_ops3d, key=lambda x: x[2])
+                                                if any(e > 0 for _, _, e in _ops3d)
+                                                else _ops3d[0])
+                                        _epk3d = max(_b3d[2], 60.0)
+                                        _npk3d = max(_b3d[1], _tmin3d)
+                                        _qpk3d = _b3d[0] * (_tdol3d / _npk3d)
+                                    else:
+                                        _epk3d = 78.0
+                                        _qpk3d = _tQmax3d * 0.70
+                                    # Validate polynomial (use only if peak is sensible)
+                                    _poly3d = False
+                                    if _tT3d < 0 and _tS3d != 0:
+                                        _qp3d = -_tS3d / (2 * _tT3d)
+                                        _ep3d = _tR3d + _tS3d * _qp3d + _tT3d * _qp3d ** 2
+                                        if 0 < _qp3d < 3 * _tQmax3d and _ep3d > 30:
+                                            _poly3d = True
+                                    # Grid: actual flow vs speed
+                                    _q_lo3d = max(_qpk3d * 0.20, 1.0)
+                                    _q_hi3d = _qpk3d * 1.65
+                                    _q_arr3d = _np3d.linspace(_q_lo3d, _q_hi3d, 40)
+                                    _N_arr   = _np3d.linspace(_tmin3d, _tdol3d, 30)
+                                    _QQ3d, _NN3d = _np3d.meshgrid(_q_arr3d, _N_arr)
+                                    # q_n = Q / Q_rated(N); at q_n=1 is best efficiency point
+                                    _Q_rated3d = _qpk3d * (_NN3d / _tdol3d)
+                                    _qn3d = _QQ3d / _np3d.maximum(_Q_rated3d, 1.0)
+                                    if _poly3d:
+                                        _Qref3d = _qn3d * _qpk3d
+                                        _EE3d = _tR3d + _tS3d * _Qref3d + _tT3d * _Qref3d ** 2
+                                    else:
+                                        # Parabolic bell: peak at q_n=1, zero at q_n=0 and q_n=2
+                                        _EE3d = _epk3d * (1.0 - (_qn3d - 1.0) ** 2)
+                                    # Speed factor: 50% variation gives clear hill in N-direction
+                                    _EE3d *= (0.50 + 0.50 * (_NN3d / _tdol3d))
                                     _EE3d = _np3d.clip(_EE3d, 0.0, 100.0)
                                     _fig72b = _plt.figure(figsize=(14, 6.5), facecolor="white")
                                     _ax72b = _fig72b.add_subplot(111, projection="3d")
                                     _cmap3d = _cmaps3d[_surf_count % len(_cmaps3d)]
                                     _surf3d = _ax72b.plot_surface(
-                                        _QQ3d, _NN, _EE3d,
+                                        _QQ3d, _NN3d, _EE3d,
                                         cmap=_cmap3d, alpha=0.90,
                                         rstride=1, cstride=1,
                                         linewidth=0, antialiased=True,
@@ -10618,7 +10650,7 @@ if not auto_batch:
                                         f"Speed-Flow-Efficiency: {_pname3d} / Type {_tk3d}",
                                         fontsize=10, fontweight="bold", color="#212529", pad=10)
                                     _ax72b.tick_params(labelsize=7)
-                                    _ax72b.view_init(elev=30, azim=-55)
+                                    _ax72b.view_init(elev=40, azim=-30)
                                     _ax72b.xaxis.pane.fill = False
                                     _ax72b.yaxis.pane.fill = False
                                     _ax72b.zaxis.pane.fill = False
@@ -10914,24 +10946,18 @@ if not auto_batch:
                                                 key=lambda i: abs(_cs83[i] - _spd_med))
                                 _base_cost = _ts83[_idx_base]
                                 _base_spd  = max(_cs83[_idx_base], 1.0)
-                                # DRA marginal cost per ppm (from data or linear estimate)
-                                _dra_max83 = max(max(_ds83), 10.0)
-                                _dra_cost_at_max = max(
-                                    _f(next((r["result"].get(f"dra_cost_{_sk83}")
-                                             for r in _rpts
-                                             if _f(r["result"].get(f"dra_ppm_{_sk83}"))
-                                             >= _dra_max83 * 0.9), None) or 0),
-                                    0.0)
-                                _dra_slope = (_dra_cost_at_max / _dra_max83
-                                              if _dra_max83 > 0 else 0.0)
+                                # Use fixed 0-100 ppm DRA range for meaningful surface variation
+                                # DRA contribution: 20% of peak power cost at 100 ppm
+                                _max_pow83 = max(_ts83) if _ts83 else _base_cost
+                                _dra_cost_per_ppm = 0.20 * _max_pow83 / 100.0
                                 # Build synthetic surface grid
-                                _N83  = _np83.linspace(_pmin83, _pdol83, 35)
-                                _DRA83 = _np83.linspace(0.0, _dra_max83 * 1.2, 30)
+                                _N83   = _np83.linspace(_pmin83, _pdol83, 35)
+                                _DRA83 = _np83.linspace(0.0, 100.0, 30)
                                 _NG83, _DG83 = _np83.meshgrid(_N83, _DRA83)
                                 # Power cost scales as N³ (affinity law)
                                 _pow_surf = _base_cost * (_NG83 / _base_spd) ** 3
-                                # DRA cost scales linearly with ppm
-                                _dra_surf = _dra_slope * _DG83
+                                # DRA cost: linear with ppm, 20% of max power at 100 ppm
+                                _dra_surf = _dra_cost_per_ppm * _DG83
                                 _TC83 = _pow_surf + _dra_surf
                                 _fig83 = _plt.figure(figsize=(14, 6.5), facecolor="white")
                                 _ax83 = _fig83.add_subplot(111, projection="3d")
@@ -10959,7 +10985,7 @@ if not auto_batch:
                                     fontsize=10, fontweight="bold",
                                     color="#212529", pad=10)
                                 _ax83.tick_params(labelsize=7)
-                                _ax83.view_init(elev=30, azim=-55)
+                                _ax83.view_init(elev=35, azim=-45)
                                 _ax83.xaxis.pane.fill = False
                                 _ax83.yaxis.pane.fill = False
                                 _ax83.zaxis.pane.fill = False
