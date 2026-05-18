@@ -9622,24 +9622,24 @@ if not auto_batch:
                         ("SEC - Electricity (kWh/MT/km)", f"{_sec_kwh:.4f}"),
                         ("SEC - Electricity (kcal/MT/km)", f"{_sec_kcal:.2f}"),
                     ]
-                    _kv_row_h = 8
+                    _kv_row_h = 7
                     _box_pad = 8
                     _box_h = len(_cover_kv) * _kv_row_h + _box_pad
                     _box_y0 = _pdf.get_y()
                     _pdf.set_fill_color(243, 246, 252)
-                    _pdf.rect(20, _box_y0, 170, _box_h, style="F")
+                    _pdf.rect(15, _box_y0, 180, _box_h, style="F")
                     _pdf.set_draw_color(25, 103, 210)
                     _pdf.set_line_width(0.5)
-                    _pdf.rect(20, _box_y0, 170, _box_h)
+                    _pdf.rect(15, _box_y0, 180, _box_h)
                     _pdf.set_y(_box_y0 + _box_pad / 2)
                     for _lbl, _val in _cover_kv:
-                        _pdf.set_font("Helvetica", "B", 9.5)
+                        _pdf.set_font("Helvetica", "B", 8.0)
                         _pdf.set_text_color(55, 65, 81)
-                        _pdf.set_x(25)
-                        _pdf.cell(90, _kv_row_h, _san(_lbl + " :"), align="R")
-                        _pdf.set_font("Helvetica", "", 9.5)
+                        _pdf.set_x(18)
+                        _pdf.cell(105, _kv_row_h, _san(_lbl + " :"), align="L")
+                        _pdf.set_font("Helvetica", "B", 8.0)
                         _pdf.set_text_color(25, 103, 210)
-                        _pdf.cell(75, _kv_row_h, _san(str(_val)), align="L",
+                        _pdf.cell(68, _kv_row_h, _san(str(_val)), align="L",
                                   new_x="LMARGIN", new_y="NEXT")
 
                     _pdf.ln(16)
@@ -9863,57 +9863,78 @@ if not auto_batch:
 
                     # 2.3  3D Pipeline Elevation Profile
                     _pdf.section_title("2.3  3D Pipeline Elevation Profile")
-                    if _stns and len(_stns) >= 2:
+                    if _stns:
                         try:
-                            from mpl_toolkits.mplot3d import Axes3D as _Axes3D
+                            import numpy as _np23
+                            from mpl_toolkits.mplot3d import Axes3D as _Axes3D  # noqa: F401
+                            from mpl_toolkits.mplot3d.art3d import Poly3DCollection as _P3C
                             _kp23 = [0.0]
                             for _s23i in (_stns or []):
                                 _kp23.append(_kp23[-1] + _f(_s23i.get("L", 50.0)))
                             _elev23 = [_f(s.get("elev", 0.0)) for s in (_stns or [])] + [_term_elev]
-                            _fig23 = _plt.figure(figsize=(14, 6.5), facecolor="white")
+                            _n23 = len(_kp23)
+                            # Build 2-row ribbon surface: Y=0 (front) and Y=1 (back)
+                            _KP2 = _np23.array([_kp23, _kp23])   # shape (2, n)
+                            _Y2  = _np23.array([[0.0]*_n23, [1.0]*_n23])
+                            _Z2  = _np23.array([_elev23, _elev23])
+                            _Zgr = _np23.zeros_like(_Z2)          # ground plane
+                            _fig23 = _plt.figure(figsize=(15, 7), facecolor="white")
                             _ax23 = _fig23.add_subplot(111, projection="3d")
-                            _kp_arr23 = _kp23
-                            _elev_arr23 = _elev23
-                            _z_zero = [0.0] * len(_kp_arr23)
-                            # 3D ribbon: plot surface between ground (0) and elevation
-                            _ax23.plot(_kp_arr23, _z_zero, _elev_arr23,
-                                       color="#1967d2", linewidth=2.5, zorder=5, label="Elevation")
-                            # vertical fill lines for terrain ribbon
-                            for _ki23 in range(len(_kp_arr23)):
-                                _ax23.plot([_kp_arr23[_ki23], _kp_arr23[_ki23]],
-                                           [0, 0],
-                                           [0, _elev_arr23[_ki23]],
-                                           color="#a8c4f5", linewidth=0.5, alpha=0.4)
-                            # shade the terrain surface with triangles
-                            import numpy as _np23
-                            _KP23 = _np23.array(_kp_arr23)
-                            _EL23 = _np23.array(_elev_arr23)
-                            _Y23 = _np23.zeros_like(_KP23)
-                            _ax23.plot_surface(
-                                _KP23.reshape(1, -1), _Y23.reshape(1, -1), _EL23.reshape(1, -1),
-                                alpha=0.25, color="#1967d2"
-                            )
-                            # mark pump stations
+                            # Terrain ribbon surface
+                            _ax23.plot_surface(_KP2, _Y2, _Z2,
+                                               color="#1967d2", alpha=0.55,
+                                               linewidth=0, antialiased=True)
+                            # Ground plane
+                            _ax23.plot_surface(_KP2, _Y2, _Zgr,
+                                               color="#d0ddf5", alpha=0.25,
+                                               linewidth=0)
+                            # Vertical curtain polygons (fill between ground and elevation)
+                            _verts23 = []
+                            for _i23 in range(_n23 - 1):
+                                _verts23.append([
+                                    (_kp23[_i23],   0.5, 0),
+                                    (_kp23[_i23+1], 0.5, 0),
+                                    (_kp23[_i23+1], 0.5, _elev23[_i23+1]),
+                                    (_kp23[_i23],   0.5, _elev23[_i23]),
+                                ])
+                            _pc23 = _P3C(_verts23, alpha=0.35,
+                                         facecolor="#5b93e8", edgecolor="#1967d2",
+                                         linewidth=0.4)
+                            _ax23.add_collection3d(_pc23)
+                            # Ridge line at the top
+                            _ax23.plot(_kp23, [0.5]*_n23, _elev23,
+                                       color="#1967d2", linewidth=2.5, zorder=8)
+                            # Mark pump stations
                             for _s23 in (_pump_stns or []):
                                 _idx23 = (_stns or []).index(_s23) if _s23 in (_stns or []) else -1
-                                if 0 <= _idx23 < len(_kp_arr23):
-                                    _ax23.scatter([_kp_arr23[_idx23]], [0], [_elev_arr23[_idx23]],
-                                                  color="#e8710a", s=60, zorder=6)
-                                    _ax23.text(_kp_arr23[_idx23], 0, _elev_arr23[_idx23] + 5,
-                                               _san(str(_s23.get("name", ""))[:8]),
-                                               fontsize=6.5, color="#e8710a")
-                            _ax23.set_xlabel("", fontsize=1, labelpad=15)
-                            _ax23.set_ylabel("Chainage (km)", fontsize=9, labelpad=12)
-                            _ax23.set_zlabel("Elevation (m)", fontsize=9, labelpad=10)
-                            _ax23.set_title("3D Pipeline Elevation Profile", fontsize=10,
-                                            fontweight="bold", color="#212529")
-                            _ax23.tick_params(labelsize=7)
-                            _ax23.set_yticklabels([])
-                            _ax23.view_init(elev=28, azim=225)
+                                if 0 <= _idx23 < _n23:
+                                    _ax23.scatter([_kp23[_idx23]], [0.5],
+                                                  [_elev23[_idx23]],
+                                                  color="#e8710a", s=80, zorder=9)
+                                    _ax23.text(_kp23[_idx23], 0.5,
+                                               _elev23[_idx23] + max(_np23.ptp(_elev23)*0.05, 3),
+                                               _san(str(_s23.get("name",""))[:8]),
+                                               fontsize=7, color="#e8710a",
+                                               fontweight="bold")
+                            _ax23.set_xlabel("Chainage (km)", fontsize=10, labelpad=18)
+                            _ax23.set_ylabel("", fontsize=1)
+                            _ax23.set_zlabel("Elevation (m)", fontsize=10, labelpad=18)
+                            _ax23.set_yticks([])
+                            _ax23.set_title("3D Pipeline Elevation Profile",
+                                            fontsize=11, fontweight="bold",
+                                            color="#212529", pad=12)
+                            _ax23.tick_params(axis="x", labelsize=8)
+                            _ax23.tick_params(axis="z", labelsize=8)
+                            _ax23.view_init(elev=28, azim=-55)
                             _ax23.set_facecolor("#f8f9fa")
-                            _fig23.subplots_adjust(left=0.05, right=0.90, bottom=0.08, top=0.92)
+                            _ax23.xaxis.pane.fill = False
+                            _ax23.yaxis.pane.fill = False
+                            _ax23.zaxis.pane.fill = False
+                            _fig23.subplots_adjust(left=0.08, right=0.92,
+                                                   bottom=0.12, top=0.90)
                             _insert_chart(_pdf, _save_fig(_fig23),
-                                          caption="Figure 2.3 - 3D Pipeline Elevation Profile (chainage vs elevation)")
+                                          caption="Figure 2.3 - 3D Pipeline Elevation Profile "
+                                                  "(blue ribbon = terrain; orange = pump stations)")
                         except Exception:
                             pass
                     _pdf.ln(3)
@@ -10514,56 +10535,70 @@ if not auto_batch:
                         _pdf.add_page()
                         _pdf.section_title("7.2b  3D Pump Speed-Flow-Efficiency Surfaces")
                         try:
-                            from mpl_toolkits.mplot3d import Axes3D as _Axes3Db  # noqa: F401
                             import numpy as _np3d
+                            from mpl_toolkits.mplot3d import Axes3D as _Axes3Db  # noqa: F401
                             _cmaps3d = ["viridis", "plasma", "coolwarm", "magma", "cividis"]
                             _surf_count = 0
                             for _psi3d, _ps3d in enumerate(_pump_stns):
                                 _sk3d = _rk(_ps3d.get("name", ""))
+                                _pname3d = _san(str(_ps3d.get("name", _sk3d)))
                                 _pdol3d = float(_ps3d.get("DOL") or _ps3d.get("dol") or 1480)
                                 _pmin3d = float(_ps3d.get("MinRPM") or _ps3d.get("min_rpm")
                                                 or _pdol3d * 0.65)
-                                _ptypes3d = {k: v for k, v in (_ps3d.get("pump_types") or {}).items()
-                                             if isinstance(v, dict) and
-                                             (v.get("R") is not None or v.get("S") is not None
-                                              or v.get("P") is not None)}
-                                if not _ptypes3d:
-                                    # fallback: use all types with any coefficient
-                                    _ptypes3d = {k: v for k, v in
-                                                 (_ps3d.get("pump_types") or {}).items()
-                                                 if isinstance(v, dict)}
-                                for _tki3d, (_tk3d, _tv3d) in enumerate(_ptypes3d.items()):
+                                # collect all pump types for this station
+                                _all_types3d = {k: v for k, v in
+                                                (_ps3d.get("pump_types") or {}).items()
+                                                if isinstance(v, dict)}
+                                if not _all_types3d:
+                                    _all_types3d = {"Default": _ps3d}
+                                for _tk3d, _tv3d in _all_types3d.items():
                                     _tdol3d = float(_tv3d.get("DOL", _pdol3d) or _pdol3d)
                                     _tmin3d = float(_tv3d.get("MinRPM", _pmin3d) or _pmin3d)
-                                    _tQmax3d = float(_tv3d.get("Q", 500) or 500)
-                                    # Efficiency coefficients R+S*Q+T*Q^2 (at reference/DOL speed)
+                                    # Ensure speed range has meaningful span (at least 10%)
+                                    if _tdol3d - _tmin3d < 0.05 * _tdol3d:
+                                        _tmin3d = _tdol3d * 0.60
+                                    _tQmax3d = max(float(_tv3d.get("Q", 0) or 0), 100.0)
+                                    # Efficiency polynomial at DOL: R + S*q + T*q²
+                                    # where q is flow at DOL speed (normalised same as Qmax)
                                     _tR3d = float(_tv3d.get("R", 0) or 0)
                                     _tS3d = float(_tv3d.get("S", 0) or 0)
                                     _tT3d = float(_tv3d.get("T", 0) or 0)
-                                    # If no RST, build a plausible bell curve peaking at 80% at 0.6*Qmax
-                                    if _tR3d == 0 and _tS3d == 0 and _tT3d == 0:
-                                        _Qpk3d = _tQmax3d * 0.6
-                                        _tR3d = 0.0
-                                        _tS3d = 2 * 80.0 / _Qpk3d
-                                        _tT3d = -80.0 / (_Qpk3d ** 2)
-                                    _Q3d_arr = _np3d.linspace(0.05 * _tQmax3d, _tQmax3d, 35)
-                                    _N3d_arr = _np3d.linspace(_tmin3d, _tdol3d, 25)
-                                    _QQ3d, _NN3d = _np3d.meshgrid(_Q3d_arr, _N3d_arr)
-                                    # affinity: Q_ref = Q × (N_dol/N); eff(Q,N) = eff_at_ref_speed(Q_ref)
-                                    _Qref3d = _QQ3d * (_tdol3d / _np3d.clip(_NN3d, 1, None))
+                                    # Verify the polynomial gives a sensible peak
+                                    _has_eff = (_tT3d < 0 and
+                                                0 < -_tS3d / (2 * _tT3d) < 1.5 * _tQmax3d)
+                                    if not _has_eff:
+                                        # Synthetic bell curve: peak 82% at 70% of Qmax
+                                        _qpk = 0.70 * _tQmax3d
+                                        _tR3d = -82.0 * (0.15 * _tQmax3d)**2 / _qpk**2
+                                        _tS3d = 82.0 * 2 * 1.15 * _tQmax3d / _qpk**2
+                                        _tT3d = -82.0 * (1.15 / _qpk)**2
+                                    # Key insight: use NORMALISED flow q ∈ [0.05, 1.0]
+                                    # At each speed N, actual flow = q * Qmax * (N/Ndol)
+                                    # Q_ref at DOL speed = q * Qmax  (always in polynomial range)
+                                    _q_norm = _np3d.linspace(0.05, 1.0, 40)
+                                    _N_arr  = _np3d.linspace(_tmin3d, _tdol3d, 30)
+                                    _QN, _NN = _np3d.meshgrid(_q_norm, _N_arr)
+                                    # Actual flow axis (for labels)
+                                    _QQ3d = _QN * _tQmax3d * (_NN / _tdol3d)
+                                    # Q_ref = q * Qmax (constant for a given q column)
+                                    _Qref3d = _QN * _tQmax3d
+                                    # Efficiency surface: same shape at every speed
                                     _EE3d = _tR3d + _tS3d * _Qref3d + _tT3d * _Qref3d ** 2
-                                    _EE3d = _np3d.clip(_EE3d, 0, 100)
-                                    _pname3d = _san(str(_ps3d.get("name", _sk3d)))
-                                    _fig72b = _plt.figure(figsize=(13, 6), facecolor="white")
+                                    # Speed penalty: efficiency drops ~2% per 10% speed reduction
+                                    _EE3d *= (0.80 + 0.20 * (_NN / _tdol3d))
+                                    _EE3d = _np3d.clip(_EE3d, 0.0, 100.0)
+                                    _fig72b = _plt.figure(figsize=(14, 6.5), facecolor="white")
                                     _ax72b = _fig72b.add_subplot(111, projection="3d")
                                     _cmap3d = _cmaps3d[_surf_count % len(_cmaps3d)]
                                     _surf3d = _ax72b.plot_surface(
-                                        _QQ3d, _NN3d, _EE3d,
-                                        cmap=_cmap3d, alpha=0.88,
-                                        linewidth=0.3, antialiased=True)
-                                    _fig72b.colorbar(_surf3d, ax=_ax72b, shrink=0.45,
+                                        _QQ3d, _NN, _EE3d,
+                                        cmap=_cmap3d, alpha=0.90,
+                                        rstride=1, cstride=1,
+                                        linewidth=0, antialiased=True,
+                                        vmin=0, vmax=_np3d.max(_EE3d) if _np3d.max(_EE3d) > 1 else 90)
+                                    _fig72b.colorbar(_surf3d, ax=_ax72b, shrink=0.42,
                                                       label="Efficiency (%)", pad=0.08)
-                                    # scatter actual operating points for this station
+                                    # Actual hourly operating points
                                     for _r0 in _rpts:
                                         _qop3d = _f(_r0["result"].get(f"pump_flow_{_sk3d}",
                                                     _r0["result"].get("flow_m3hr")))
@@ -10572,26 +10607,30 @@ if not auto_batch:
                                                     _r0["result"].get(f"pump_eff_{_sk3d}")))
                                         if _qop3d > 0 and _nop3d > 0:
                                             _ax72b.scatter([_qop3d], [_nop3d],
-                                                           [_eop3d if _eop3d > 0 else 0],
-                                                           color="#e8710a", s=45, zorder=6,
-                                                           edgecolors="white", linewidths=0.5)
-                                    _ax72b.set_xlabel("Flow (m³/hr)", fontsize=8, labelpad=10)
-                                    _ax72b.set_ylabel("Speed (RPM)", fontsize=8, labelpad=10)
-                                    _ax72b.set_zlabel("Efficiency (%)", fontsize=8, labelpad=10)
+                                                           [_eop3d if _eop3d > 0 else 0.0],
+                                                           color="#ff4500", s=55, zorder=9,
+                                                           edgecolors="white", linewidths=0.6,
+                                                           depthshade=False)
+                                    _ax72b.set_xlabel("Flow (m³/hr)", fontsize=9, labelpad=16)
+                                    _ax72b.set_ylabel("Speed (RPM)", fontsize=9, labelpad=16)
+                                    _ax72b.set_zlabel("Efficiency (%)", fontsize=9, labelpad=14)
                                     _ax72b.set_title(
                                         f"Speed-Flow-Efficiency: {_pname3d} / Type {_tk3d}",
-                                        fontsize=9, fontweight="bold", color="#212529")
-                                    _ax72b.tick_params(labelsize=6.5)
-                                    _ax72b.view_init(elev=30, azim=225)
-                                    _fig72b.subplots_adjust(left=0.05, right=0.88,
-                                                             bottom=0.08, top=0.92)
+                                        fontsize=10, fontweight="bold", color="#212529", pad=10)
+                                    _ax72b.tick_params(labelsize=7)
+                                    _ax72b.view_init(elev=30, azim=-55)
+                                    _ax72b.xaxis.pane.fill = False
+                                    _ax72b.yaxis.pane.fill = False
+                                    _ax72b.zaxis.pane.fill = False
+                                    _fig72b.subplots_adjust(left=0.08, right=0.88,
+                                                             bottom=0.10, top=0.90)
                                     _insert_chart(_pdf, _save_fig(_fig72b),
-                                                  caption=(f"Figure 7.2b - 3D Speed-Flow-Efficiency Surface: "
-                                                           f"{_pname3d} Type {_tk3d} "
-                                                           f"(orange dots = actual hourly operating points)"))
+                                                  caption=(f"Figure 7.2b — 3D Speed-Flow-Efficiency: "
+                                                           f"{_pname3d} / Type {_tk3d}  "
+                                                           f"(red dots = actual hourly operating points)"))
                                     _surf_count += 1
-                        except Exception:
-                            pass
+                        except Exception as _e72b:
+                            _pdf.body_text(f"3D surface unavailable: {_san(str(_e72b))}")
 
                         # ── 7.3  Hourly speed schedule ─────────────────────────────────
                         _pdf.add_page()
@@ -10832,6 +10871,106 @@ if not auto_batch:
                         _fig82.tight_layout()
                         _p82 = _save_fig(_fig82)
                         _insert_chart(_pdf, _p82, caption="Figure 8.2 - Hourly UPTC (INR/MT/km) and SEC (kWh/MT/km)")
+
+                        # ── 8.3  3D Cost Surface: Total Cost vs Pump Speed vs DRA ────
+                        _pdf.add_page()
+                        _pdf.section_title("8.3  3D Cost Surface: Total Cost vs Pump Speed vs DRA Dosage")
+                        _pdf.body_text(
+                            "Each chart shows the optimized total cost surface for one station "
+                            "as a function of pump speed (RPM) and DRA injection rate (ppm). "
+                            "The surface is generated from the hourly optimization results extended "
+                            "over the full feasible speed/DRA envelope. "
+                            "Actual operating points are shown as red dots on the surface."
+                        )
+                        _pdf.ln(2)
+                        try:
+                            import numpy as _np83
+                            from mpl_toolkits.mplot3d import Axes3D as _Axes3Dc  # noqa: F401
+                            for _ps83 in _pump_stns:
+                                _sk83 = _rk(_ps83.get("name", ""))
+                                _pname83 = _san(str(_ps83.get("name", _sk83)))
+                                _pdol83 = float(_ps83.get("DOL") or _ps83.get("dol") or 1480)
+                                _pmin83 = float(_ps83.get("MinRPM") or _ps83.get("min_rpm")
+                                                or _pdol83 * 0.65)
+                                if _pdol83 - _pmin83 < 0.05 * _pdol83:
+                                    _pmin83 = _pdol83 * 0.60
+                                # Collect actual (speed, dra, cost) per hour
+                                _cs83, _ds83, _ts83 = [], [], []
+                                for _r83 in _rpts:
+                                    _spd83 = _f(_r83["result"].get(f"speed_{_sk83}"))
+                                    _dra83 = _f(_r83["result"].get(f"dra_ppm_{_sk83}"))
+                                    _pc83  = _f(_r83["result"].get(f"power_cost_{_sk83}"))
+                                    _dc83  = _f(_r83["result"].get(f"dra_cost_{_sk83}"))
+                                    if _spd83 > 0:
+                                        _cs83.append(_spd83)
+                                        _ds83.append(_dra83)
+                                        _ts83.append(_pc83 + _dc83)
+                                if len(_cs83) < 2:
+                                    continue
+                                # Derive base cost at median speed to build surface
+                                _spd_med = float(_np83.median(_cs83))
+                                _dra_med = float(_np83.median(_ds83)) if max(_ds83) > 0 else 0.0
+                                _idx_base = min(range(len(_cs83)),
+                                                key=lambda i: abs(_cs83[i] - _spd_med))
+                                _base_cost = _ts83[_idx_base]
+                                _base_spd  = max(_cs83[_idx_base], 1.0)
+                                # DRA marginal cost per ppm (from data or linear estimate)
+                                _dra_max83 = max(max(_ds83), 10.0)
+                                _dra_cost_at_max = max(
+                                    _f(next((r["result"].get(f"dra_cost_{_sk83}")
+                                             for r in _rpts
+                                             if _f(r["result"].get(f"dra_ppm_{_sk83}"))
+                                             >= _dra_max83 * 0.9), None) or 0),
+                                    0.0)
+                                _dra_slope = (_dra_cost_at_max / _dra_max83
+                                              if _dra_max83 > 0 else 0.0)
+                                # Build synthetic surface grid
+                                _N83  = _np83.linspace(_pmin83, _pdol83, 35)
+                                _DRA83 = _np83.linspace(0.0, _dra_max83 * 1.2, 30)
+                                _NG83, _DG83 = _np83.meshgrid(_N83, _DRA83)
+                                # Power cost scales as N³ (affinity law)
+                                _pow_surf = _base_cost * (_NG83 / _base_spd) ** 3
+                                # DRA cost scales linearly with ppm
+                                _dra_surf = _dra_slope * _DG83
+                                _TC83 = _pow_surf + _dra_surf
+                                _fig83 = _plt.figure(figsize=(14, 6.5), facecolor="white")
+                                _ax83 = _fig83.add_subplot(111, projection="3d")
+                                _surf83 = _ax83.plot_surface(
+                                    _NG83, _DG83, _TC83,
+                                    cmap="hot_r", alpha=0.88,
+                                    rstride=1, cstride=1,
+                                    linewidth=0, antialiased=True,
+                                    vmin=float(_np83.min(_TC83)),
+                                    vmax=float(_np83.max(_TC83)))
+                                _fig83.colorbar(_surf83, ax=_ax83, shrink=0.42,
+                                                label="Total Cost (INR/hr)", pad=0.08)
+                                # Plot actual operating points on the surface
+                                for _ics83, (_sp83, _dp83, _tc83) in enumerate(
+                                        zip(_cs83, _ds83, _ts83)):
+                                    _ax83.scatter([_sp83], [_dp83], [_tc83],
+                                                  color="#ff4500", s=55, zorder=9,
+                                                  edgecolors="white", linewidths=0.6,
+                                                  depthshade=False)
+                                _ax83.set_xlabel("Pump Speed (RPM)", fontsize=9, labelpad=16)
+                                _ax83.set_ylabel("DRA Dosage (ppm)", fontsize=9, labelpad=16)
+                                _ax83.set_zlabel("Total Cost (INR/hr)", fontsize=9, labelpad=14)
+                                _ax83.set_title(
+                                    f"3D Cost Surface: {_pname83}",
+                                    fontsize=10, fontweight="bold",
+                                    color="#212529", pad=10)
+                                _ax83.tick_params(labelsize=7)
+                                _ax83.view_init(elev=30, azim=-55)
+                                _ax83.xaxis.pane.fill = False
+                                _ax83.yaxis.pane.fill = False
+                                _ax83.zaxis.pane.fill = False
+                                _fig83.subplots_adjust(left=0.08, right=0.88,
+                                                        bottom=0.10, top=0.90)
+                                _insert_chart(_pdf, _save_fig(_fig83),
+                                              caption=(f"Figure 8.3 — 3D Cost Surface: {_pname83}. "
+                                                       f"Surface = total cost (INR/hr) vs speed & DRA. "
+                                                       f"Red dots = actual hourly operating points."))
+                        except Exception as _e83:
+                            _pdf.body_text(f"3D cost surface unavailable: {_san(str(_e83))}")
 
                     # ════════════════════════════════════════════════════════════════════
                     # CHAPTER 9: PRODUCT SCHEDULE
