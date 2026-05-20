@@ -1864,8 +1864,12 @@ with st.sidebar:
         st.session_state["selected_pipeline_code"] = _sel_code
         st.session_state["selected_pipeline_name"] = _pipeline_sel
         dra_dispatcher.set_active_pipeline(_sel_code)
-        import dra_utils as _dra_utils_mod
-        _dra_utils_mod.set_pipeline(_sel_code)
+        try:
+            import dra_utils as _dra_utils_mod
+            if hasattr(_dra_utils_mod, "set_pipeline"):
+                _dra_utils_mod.set_pipeline(_sel_code)
+        except Exception:
+            pass
         if dra_dispatcher.has_model(_sel_code):
             st.success(f"Pipeline-specific ML model loaded for **{_sel_code}**")
         else:
