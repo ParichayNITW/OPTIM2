@@ -100,6 +100,14 @@ from dra_utils import (
     get_ppm_for_dr,
     DRA_CURVE_DATA,
 )
+from pipeline_registry import (
+    PIPELINE_CATEGORIES,
+    DEFAULT_CATEGORY,
+    DEFAULT_PIPELINE_CODE,
+    get_display_options,
+    code_from_display,
+)
+import dra_dispatcher
 
 
 INIT_DRA_COL = "Initial DRA (ppm)"
@@ -1827,6 +1835,45 @@ with st.sidebar:
             step=10.0,
             key="FLOW",
         )
+        # ── Pipeline Selection ───────────────────────────────────────────
+        st.markdown("**Pipeline**")
+        _pipeline_cat = st.selectbox(
+            "Pipeline Category",
+            options=list(PIPELINE_CATEGORIES.keys()),
+            index=list(PIPELINE_CATEGORIES.keys()).index(
+                st.session_state.get("pipeline_category", DEFAULT_CATEGORY)
+            ),
+            key="pipeline_category",
+            help="Select the pipeline category for DRA model dispatch.",
+        )
+        _pipeline_opts = get_display_options(_pipeline_cat)
+        _default_disp = next(
+            (o for o in _pipeline_opts if o.startswith(
+                st.session_state.get("selected_pipeline_code", DEFAULT_PIPELINE_CODE) + " - "
+            )),
+            _pipeline_opts[0] if _pipeline_opts else "",
+        )
+        _pipeline_sel = st.selectbox(
+            "Pipeline",
+            options=_pipeline_opts,
+            index=_pipeline_opts.index(_default_disp) if _default_disp in _pipeline_opts else 0,
+            key="pipeline_display_selection",
+            help="Select the pipeline. DRA curves are pipeline-specific.",
+        )
+        _sel_code = code_from_display(_pipeline_sel) if _pipeline_sel else DEFAULT_PIPELINE_CODE
+        st.session_state["selected_pipeline_code"] = _sel_code
+        st.session_state["selected_pipeline_name"] = _pipeline_sel
+        dra_dispatcher.set_active_pipeline(_sel_code)
+        import dra_utils as _dra_utils_mod
+        _dra_utils_mod.set_pipeline(_sel_code)
+        if dra_dispatcher.has_model(_sel_code):
+            st.success(f"Pipeline-specific ML model loaded for **{_sel_code}**")
+        else:
+            st.info(
+                f"No ML model for **{_sel_code}** yet — using default DRA curves "
+                f"(PHBPL data) as fallback."
+            )
+        # ─────────────────────────────────────────────────────────────────
         RateDRA = st.number_input(
             "DRA Cost (INR/L)",
             min_value=0.0,

@@ -6,6 +6,23 @@ Adds inverse interpolation (ppm_to_dr) and keeps get_ppm_for_dr API.
 
 from __future__ import annotations
 
+from typing import Optional
+
+# ── Pipeline context (set by app before each optimizer run) ──────────────────
+_ACTIVE_PIPELINE_CODE: Optional[str] = None
+
+
+def set_pipeline(code: Optional[str]) -> None:
+    """Store the active pipeline code so dispatcher context is accessible."""
+    global _ACTIVE_PIPELINE_CODE
+    _ACTIVE_PIPELINE_CODE = code
+
+
+def get_active_pipeline() -> Optional[str]:
+    """Return the currently active pipeline code, or None if not set."""
+    return _ACTIVE_PIPELINE_CODE
+# ─────────────────────────────────────────────────────────────────────────────
+
 import math
 import os
 from typing import Dict, Tuple
