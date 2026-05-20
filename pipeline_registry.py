@@ -32,7 +32,7 @@ PIPELINE_REGISTRY: Dict[str, Dict[str, str]] = {
     "PHPL":   {"name": "Paradip Hyderabad Pipeline",             "category": "Product Pipelines"},
     "PSHPL":  {"name": "Paradip Somnathpur Haldia Pipeline",     "category": "Product Pipelines"},
     "KASPL":  {"name": "Koyali Ahmednagar Solapur Pipeline",     "category": "Product Pipelines"},
-    "HBPL18": {"name": "18\" HBPL Conversion Project - Haldia Barauni Pipeline",
+    "18\" HBPL": {"name": "18\" HBPL - Haldia Barauni Product Pipeline",
                                                                   "category": "Product Pipelines"},
 
     # ── ATF Pipelines (A2) ────────────────────────────────────────────────────
