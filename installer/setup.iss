@@ -19,10 +19,13 @@ AppUpdatesURL={#AppURL}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
-; Installer output
+; Installer output — paths relative to this .iss file (inside installer\ folder)
 OutputDir=..\dist\installer
 OutputBaseFilename=PipelineOptima-Setup-v{#AppVersion}
+; Icon is optional — build still succeeds if the .ico file doesn't exist yet
+#if FileExists("..\assets\icon.ico")
 SetupIconFile=..\assets\icon.ico
+#endif
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
