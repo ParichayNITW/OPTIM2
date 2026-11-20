@@ -11,7 +11,8 @@ version: "3.9"
 #   redis       — Celery broker/backend       localhost:6379
 #   api         — FastAPI REST API            localhost:8000  (/api/docs)
 #   worker      — Celery worker (solver)
-#   streamlit   — existing UI (unchanged)     localhost:8501
+#   frontend    — React 18 UI (nginx)         localhost:80
+#   streamlit   — legacy UI (unchanged)       localhost:8501
 #
 # CRITICAL: The OPTIM2 solver files are mounted READ-ONLY.
 # None of them are modified by this setup.
@@ -54,7 +55,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       SOLVER_PATH: /solver
       JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost}
     volumes:
       # Mount the solver READ-ONLY — never modified
       - .:/solver:ro
@@ -83,6 +84,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  frontend:
+    build:
+      context: frontend/
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    # nginx serves React app + proxies /api/ → api:8000 (no CORS issues)
 
   streamlit:
     image: python:3.11-slim
