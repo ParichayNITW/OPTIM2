@@ -17,16 +17,20 @@ PORT = int(os.environ.get("OPTIMA_PORT", "8765"))
 HOST = "127.0.0.1"
 
 # ---------------------------------------------------------------------------
-# Ensure the solver directory is on sys.path.
-# In a PyInstaller bundle, sys._MEIPASS is the extraction directory.
-# When running from source, this file lives in the project root.
+# In windowed mode (no console), sys.stdout/stderr are None.
+# Redirect them to a log file so uvicorn logging doesn't crash on isatty().
 # ---------------------------------------------------------------------------
 _base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-# Change working directory so relative paths (SQLite, frontend/dist) resolve correctly
 os.chdir(_base)
+
+_log_path = os.path.join(os.path.expanduser("~"), "PipelineOptima.log")
+if sys.stdout is None:
+    sys.stdout = open(_log_path, "w", buffering=1, encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = sys.stdout
 
 
 def _open_browser() -> None:
@@ -35,7 +39,6 @@ def _open_browser() -> None:
 
 
 if __name__ == "__main__":
-    print(f"Pipeline Optima™ starting on http://{HOST}:{PORT} ...")
     threading.Thread(target=_open_browser, daemon=True).start()
 
     import uvicorn
@@ -43,5 +46,5 @@ if __name__ == "__main__":
         "backend.main:app",
         host=HOST,
         port=PORT,
-        log_level="warning",
+        log_config=None,   # skip uvicorn logging config (avoids isatty crash)
     )
