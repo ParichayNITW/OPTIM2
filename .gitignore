@@ -1,1 +1,10 @@
 dra_analysis.py
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.db
+frontend/node_modules/
+frontend/dist/
+dist/
+*.spec.bak

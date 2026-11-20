@@ -46,6 +46,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r desktop_requirements.txt
+          pip install PySide6
 
       # ----------------------------------------------------------------
       # 5. Build React frontend

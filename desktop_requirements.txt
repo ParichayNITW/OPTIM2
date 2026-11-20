@@ -1,13 +1,18 @@
 # Pipeline Optima™ — desktop/standalone requirements
 # No Celery, Redis, or PostgreSQL — thread pool + SQLite
+# No browser needed — PySide6 Qt window embeds the UI
 
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 sqlalchemy==2.0.30
 pydantic[email]==2.7.1
-python-jose[cryptography]==3.3.0
+# JWT: pure-python hmac/hashlib in backend/auth_utils.py — no external JWT lib needed
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-multipart==0.0.9
+
+# Qt6 desktop window (native window, no browser)
+PySide6==6.7.0
 
 # Solver dependencies — pinned to pre-built wheels (fast install, no compiler needed)
 numpy==1.26.4
