@@ -25,13 +25,15 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
-            <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-              <Route index element={<Navigate to="/dashboard" replace />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/optimize" element={<OptimizePage />} />
-              <Route path="/results/:jobId" element={<ResultsPage />} />
-              <Route path="/history" element={<HistoryPage />} />
-              <Route path="/pipelines" element={<PipelinesPage />} />
+            <Route element={<ProtectedRoute />}>
+              <Route element={<Layout />}>
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/optimize" element={<OptimizePage />} />
+                <Route path="/results/:jobId" element={<ResultsPage />} />
+                <Route path="/history" element={<HistoryPage />} />
+                <Route path="/pipelines" element={<PipelinesPage />} />
+              </Route>
             </Route>
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>

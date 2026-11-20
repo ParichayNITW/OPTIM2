@@ -1,4 +1,4 @@
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 
 const navItems = [
@@ -8,7 +8,7 @@ const navItems = [
   { to: '/pipelines', label: 'Pipelines',  icon: '⊜' },
 ]
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export function Layout() {
   const { user, logout } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
@@ -55,7 +55,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto">
-        <div className="max-w-7xl mx-auto px-6 py-6">{children}</div>
+        <div className="max-w-7xl mx-auto px-6 py-6"><Outlet /></div>
       </main>
     </div>
   )
