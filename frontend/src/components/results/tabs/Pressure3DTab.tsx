@@ -1,14 +1,23 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
 
+import { usePipelineStore } from '../../../store/pipelineStore';
+
 interface Props { result: Record<string, unknown>; }
 
 export function Pressure3DTab({result}: Props) {
+  const rhoRaw = usePipelineStore(s => s.global.rho_list);
+  const rho = (rhoRaw?.[0] ?? 850);  // kg/m³, default crude oil density
+
   const ml = (result.mainline || result) as Record<string, unknown>;
   const hglData = (ml.hgl_data || []) as Array<{km: number; head: number; elev: number; pressure_barg?: number}>;
   const stationsUsed = (ml.stations_used || []) as Array<Record<string, unknown>>;
 
-  // Build 3D profile from HGL data
+  // Convert head (meters of fluid) to pressure in barg using fluid density
+  // pressure_barg = (head - elev) * rho * g / 100000 where g=9.81 m/s², /100000 for Pa→barg
+  const headToPressure = (head: number, elev: number): number =>
+    Math.max(0, (head - elev) * rho * 9.81 / 100000);
+
   let cumKm = 0;
   const kpArr: number[] = [];
   const elevArr: number[] = [];
@@ -20,7 +29,7 @@ export function Pressure3DTab({result}: Props) {
       kpArr.push(pt.km);
       elevArr.push(pt.elev);
       headArr.push(pt.head);
-      pressureArr.push(pt.pressure_barg || Math.max(0, (pt.head - pt.elev) * 0.0981));
+      pressureArr.push(pt.pressure_barg ?? headToPressure(pt.head, pt.elev));
     });
   } else {
     stationsUsed.forEach((s, i) => {
@@ -29,7 +38,7 @@ export function Pressure3DTab({result}: Props) {
       const h = (s.sdh || s.discharge_head || 0) as number;
       headArr.push(h);
       const elev = (s.elevation || 0) as number;
-      pressureArr.push(Math.max(0, (h - elev) * 0.0981));
+      pressureArr.push(headToPressure(h, elev));
       if (i < stationsUsed.length - 1) cumKm += (stationsUsed[i].length_km || 0) as number;
     });
   }

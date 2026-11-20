@@ -31,7 +31,7 @@ class BranchInput(BaseModel):
     terminal: dict[str, Any]
     uid: str = ""
     name: str = "Branch"
-    KV: float = 1.0
+    KV: float = 10.0   # cSt; will be overridden by KV_list[0] in worker if not set
     rho: float = 850.0
 
 

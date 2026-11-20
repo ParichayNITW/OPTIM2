@@ -15,11 +15,11 @@ export function PipelineMapPreview() {
   const {data, layout} = useMemo(() => {
     if (stations.length === 0) return {data: [], layout: {}};
 
-    // Compute cumulative KP
+    // Compute cumulative KP — each station's length_km is the downstream pipe segment length
     let cumKm = 0;
     const nodes = stations.map((s, i) => {
       const kp = cumKm;
-      if (i < stations.length - 1) cumKm += s.length_km;
+      cumKm += s.length_km;  // ALL stations contribute (last station's L reaches terminal)
       return {
         name: s.name, kp, elev: s.elevation,
         is_pump: s.is_pump, is_first: i === 0, is_last: false,
@@ -33,8 +33,9 @@ export function PipelineMapPreview() {
     const segY: number[] = [];
     nodes.forEach((n, i) => {
       const nextKp = i < nodes.length - 1 ? nodes[i + 1].kp : terminalKp;
+      const nextElev = i < nodes.length - 1 ? nodes[i + 1].elev : terminal.elevation;
       segX.push(n.kp, nextKp, null as never);
-      segY.push(n.elev, i < nodes.length - 1 ? nodes[i + 1].elev : 0, null as never);
+      segY.push(n.elev, nextElev, null as never);
     });
 
     // Station scatter
@@ -60,7 +61,7 @@ export function PipelineMapPreview() {
         hovertemplate: '%{text}<br>KP: %{x:.1f} km<br>Elev: %{y:.1f} m<extra></extra>',
       } as Plotly.Data,
       {
-        x: [terminalKp], y: [0], type: 'scatter', mode: 'markers+text' as never,
+        x: [terminalKp], y: [terminal.elevation], type: 'scatter', mode: 'markers+text' as never,
         marker: {color: '#ef4444', size: 14, symbol: 'diamond'},
         text: [terminal.name],
         textposition: 'top center',

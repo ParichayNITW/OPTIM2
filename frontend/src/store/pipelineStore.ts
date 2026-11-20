@@ -335,7 +335,30 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
   exportCase: () => {
     const {global: g, stations, terminal, loopline, linefill_table, day_plan, proj_flow, proj_plan} = get();
 
-    const serializedStations = stations.map(s => {
+    // Build loopline config once with correct field names and unit conversions
+    const looplineConfigForSolver = loopline.enabled ? {
+      name: loopline.name,
+      start_km: loopline.start_km,
+      end_km: loopline.end_km,
+      L: loopline.L_km,
+      D: loopline.D_in * 0.0254,        // inches → meters
+      t: loopline.t_in * 0.0254,         // inches → meters
+      SMYS: loopline.SMYS_psi,
+      rough: loopline.roughness_m,       // correct key for solver
+      max_dr: loopline.max_dra_pct,      // correct key for solver
+      elev: loopline.elev,
+      peaks: loopline.peak_profile,
+    } : null;
+
+    // Compute cumulative KP for loopline station mapping
+    let cumKp = 0;
+    const cumKpAtStation: number[] = stations.map(s => {
+      const kp = cumKp;
+      cumKp += s.length_km;
+      return kp;
+    });
+
+    const serializedStations = stations.map((s, idx) => {
       const pump_types: Record<string, unknown> = {};
 
       for (const [key, pmp] of Object.entries({A: s.pumpA, B: s.pumpB})) {
@@ -360,30 +383,42 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
         };
       }
 
+      // Assign loopline only to the station whose cumulative KP is within [start_km, end_km)
+      // This prevents the same loopline from being added to every station
+      const stationKp = cumKpAtStation[idx];
+      const nextKp = idx < stations.length - 1 ? cumKpAtStation[idx + 1] : stationKp + s.length_km;
+      const hasLoopline = looplineConfigForSolver !== null &&
+        stationKp < loopline.end_km &&
+        nextKp > loopline.start_km;
+
       return {
         name: s.name,
         elev: s.elevation,
         is_pump: s.is_pump,
         L: s.length_km,
-        max_dra_pct: s.max_dra_pct,
-        min_suction_head: s.min_suction_head,
-        OD: s.OD_in,
-        wall_thk: s.wall_thk_in,
+        max_dr: s.max_dra_pct,          // correct key: solver reads stn.get('max_dr')
+        min_residual: s.min_suction_head, // correct key: solver reads stn.get('min_residual')
+        D: s.OD_in * 0.0254,            // inches → meters; solver reads stn.get('D')
+        t: s.wall_thk_in * 0.0254,      // inches → meters; solver reads stn.get('t')
         SMYS: s.SMYS_psi,
-        roughness: s.roughness_m,
+        rough: s.roughness_m,            // correct key: solver reads stn.get('rough')
         max_pumps: s.max_pumps,
         delivery: s.delivery,
         supply: s.supply,
         pump_types,
         peaks: s.peaks_table,
-        loopline: loopline.enabled ? {
-          name: loopline.name, start_km: loopline.start_km, end_km: loopline.end_km,
-          L: loopline.L_km, D: loopline.D_in, t: loopline.t_in, SMYS: loopline.SMYS_psi,
-          roughness: loopline.roughness_m, max_dra_pct: loopline.max_dra_pct, elev: loopline.elev,
-          peak_profile: loopline.peak_profile,
-        } : null,
+        loopline: hasLoopline ? looplineConfigForSolver : null,
       };
     });
+
+    // Broadcast KV_list and rho_list to match station count (solver indexes by position)
+    const nStations = serializedStations.length;
+    const kvRaw = g.kv_list?.length > 0 ? g.kv_list : [10];
+    const rhoRaw = g.rho_list?.length > 0 ? g.rho_list : [850];
+    const lastKV = kvRaw[kvRaw.length - 1] ?? 10;
+    const lastRho = rhoRaw[rhoRaw.length - 1] ?? 850;
+    const KV_list = [...kvRaw, ...Array.from({length: Math.max(0, nStations - kvRaw.length)}, () => lastKV)];
+    const rho_list = [...rhoRaw, ...Array.from({length: Math.max(0, nStations - rhoRaw.length)}, () => lastRho)];
 
     const branches = stations.flatMap(s => s.branches.map(b => ({
       name: b.branch_name,
@@ -391,21 +426,23 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       terminal: {name: b.terminal_name, elev: b.terminal_elev, min_residual: b.terminal_min_pressure},
       stations: b.stations,
       uid: b.id,
+      KV: KV_list[0],   // pass fluid viscosity to branch solver
+      rho: rho_list[0],  // pass fluid density to branch solver
     })));
 
     return {
       stations: serializedStations,
       terminal: {name: terminal.name, elev: terminal.elevation, min_residual: terminal.min_residual},
       FLOW: g.FLOW,
-      KV_list: g.kv_list,
-      rho_list: g.rho_list,
+      KV_list,
+      rho_list,
       RateDRA: g.RateDRA,
       Price_HSD: g.Price_HSD,
       Fuel_density: g.Fuel_density,
       Ambient_temp: g.Ambient_temp,
-      MOP_kgcm2: g.MOP_kgcm2,
+      mop_kgcm2: g.MOP_kgcm2,          // correct snake_case: backend expects mop_kgcm2
       op_mode: g.op_mode,
-      linefill: linefill_table,
+      linefill: linefill_table.map(r => ({volume: r.volume, dra_ppm: r.init_dra ?? 0})),
       day_plan,
       proj_flow,
       proj_plan,
