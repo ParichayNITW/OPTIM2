@@ -2,14 +2,14 @@
 ; Build with: ISCC.exe installer\setup.iss
 ; Requires Inno Setup 6 (free): https://jrsoftware.org/isinfo.php
 
-#define AppName "Pipeline Optima"
+#define AppName "Pipeline Optima Pro"
 #define AppVersion "1.0.0"
 #define AppPublisher "Pipeline Optima"
 #define AppURL "https://github.com/ParichayNITW/OPTIM2"
 #define AppExeName "PipelineOptima.exe"
 
 [Setup]
-AppId={{B7E3A4F2-6C1D-4E8B-9A3F-2D5E7C8B1A09}
+AppId={{C9F4B2E1-7D3A-4F9C-8B5E-3A6F8D2C4B17}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
@@ -61,7 +61,18 @@ Type: files; Name: "{app}\optima.db"
 Type: dirifempty; Name: "{app}"
 
 [Code]
-// Check if the app is running before uninstall
+// Kill PipelineOptima and all its child processes (Qt WebEngine subprocesses)
+// before overwriting files — prevents "DeleteFile failed; code 5" on reinstall.
+procedure CurStepChanged(CurStep: TSetupStep);
+var ResultCode: Integer;
+begin
+  if CurStep = ssInstall then begin
+    Exec('taskkill.exe', '/F /T /IM PipelineOptima.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('taskkill.exe', '/F /T /IM QtWebEngineProcess.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1500);
+  end;
+end;
+
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
