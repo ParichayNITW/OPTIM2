@@ -37,8 +37,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
 
       # ----------------------------------------------------------------
       # 4. Install Python dependencies + PyInstaller
@@ -54,7 +52,7 @@ jobs:
       # ----------------------------------------------------------------
       - name: Install npm packages
         working-directory: frontend
-        run: npm ci
+        run: npm install
 
       - name: Build React app
         working-directory: frontend
@@ -76,10 +74,10 @@ jobs:
       # 8. Create the Windows installer
       # ----------------------------------------------------------------
       - name: Build installer with Inno Setup
-        run: |
-          mkdir -p dist\installer
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
         shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\installer | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
 
       # ----------------------------------------------------------------
       # 9. Upload the installer as a downloadable artifact

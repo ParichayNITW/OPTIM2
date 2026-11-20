@@ -1,5 +1,5 @@
 # Pipeline Optima™ — desktop/standalone requirements
-# No Celery, Redis, or PostgreSQL needed — thread pool + SQLite
+# No Celery, Redis, or PostgreSQL — thread pool + SQLite
 
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
@@ -9,9 +9,9 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
 
-# Solver dependencies (must match what pipeline_model.py uses)
-numpy
-scipy
-pandas
-scikit-learn
-numba
+# Solver dependencies — pinned to pre-built wheels (fast install, no compiler needed)
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.2.2
+scikit-learn==1.5.0
+numba==0.60.0
