@@ -32,8 +32,7 @@ def submit_optimization(
     session.add(job)
     session.commit()
 
-    # Import here to avoid circular import at module load
-    from backend.worker import run_optimization
-    run_optimization.delay(job_id, payload)
+    from backend.worker import submit_job
+    submit_job(job_id, payload)
 
     return OptimizeResponse(job_id=job_id, status=JobStatus.PENDING)

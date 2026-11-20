@@ -13,10 +13,17 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://optima:optima@localhost:5432/optima"
+    "sqlite:///./optima.db"
 )
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
+_is_sqlite = DATABASE_URL.startswith("sqlite")
+_engine_kwargs: dict = {}
+if _is_sqlite:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    _engine_kwargs.update({"pool_pre_ping": True, "pool_size": 5, "max_overflow": 10})
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
 
 def get_session() -> Session:

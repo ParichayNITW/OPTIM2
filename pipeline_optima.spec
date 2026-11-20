@@ -1,95 +1,124 @@
 # -*- mode: python ; coding: utf-8 -*-
-#
-# PyInstaller build spec for Pipeline Optima™
-#
-# Build command (run from the OPTIM2 directory):
-#   pip install pyinstaller
-#   pyinstaller pipeline_optima.spec
-#
-# Output:
-#   dist/PipelineOptima/          (--onedir, recommended — faster startup)
-#   dist/PipelineOptima.exe       (--onefile alternative — slower cold start)
-#
-# The dist/PipelineOptima/ folder can be zipped and distributed to any
-# Windows machine — no Python installation required.
+"""
+PyInstaller spec for Pipeline Optima™ desktop application.
+
+Build with:
+    pyinstaller pipeline_optima.spec
+
+Output: dist/pipeline_optima/PipelineOptima.exe  (Windows)
+        dist/pipeline_optima/PipelineOptima       (Linux/Mac)
+"""
 
 import os
-from PyInstaller.utils.hooks import collect_data_files, collect_all
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# ── Collect Streamlit's own static assets (HTML, JS, CSS) ─────────────────
-datas = collect_data_files('streamlit', include_py_files=False)
+# ---------------------------------------------------------------------------
+# Data files to include
+# ---------------------------------------------------------------------------
+datas = []
 
-# ── Collect streamlit-agraph static assets ────────────────────────────────
-try:
-    datas += collect_data_files('streamlit_agraph')
-except Exception:
-    pass
+# React frontend build output (must be built first: npm run build)
+frontend_dist = os.path.join("frontend", "dist")
+if os.path.isdir(frontend_dist):
+    datas += [(frontend_dist, os.path.join("frontend", "dist"))]
 
-# ── App source files & data ───────────────────────────────────────────────
-app_files = [
-    ('pipeline_optimization_app.py', '.'),
-    ('pipeline_model.py', '.'),
-    ('hydraulic_check.py', '.'),
-    ('baseline_engine.py', '.'),
-    ('dra_analysis.py', '.'),
-    ('dra_utils.py', '.'),
-    ('linefill_utils.py', '.'),
-    ('schedule_utils.py', '.'),
-    ('generate_thesis.py', '.'),
-    ('logo.png', '.'),
-    ('secrets.toml', '.'),
-    ('.streamlit/config.toml', '.streamlit'),
+# OPTIM2 solver Python files (called at runtime — not imported statically)
+solver_files = [
+    "pipeline_model.py",
+    "dra_dispatcher.py",
+    "dra_utils.py",
+    "baseline_engine.py",
+    "pipeline_registry.py",
 ]
+for f in solver_files:
+    if os.path.exists(f):
+        datas += [(f, ".")]
 
-# Add all DRA lookup CSV files (e.g. "1 cst.csv", "10 cst.csv", ...)
-import glob
-for csv_path in glob.glob('*.csv'):
-    app_files.append((csv_path, '.'))
+# DRA data CSV / model files (if present)
+for pattern in ["*.csv", "*.pkl", "*.joblib"]:
+    import glob
+    for f in glob.glob(pattern):
+        datas += [(f, ".")]
 
-datas += app_files
+# Backend package
+datas += collect_data_files("backend", include_py_files=True)
 
-# ── Hidden imports that PyInstaller may miss ──────────────────────────────
+# ---------------------------------------------------------------------------
+# Hidden imports that PyInstaller static analysis misses
+# ---------------------------------------------------------------------------
 hiddenimports = [
-    'streamlit',
-    'streamlit.web.cli',
-    'streamlit.web.server',
-    'streamlit_agraph',
-    'pyomo',
-    'pyomo.environ',
-    'fpdf',
-    'fpdf2',
-    'kaleido',
-    'plotly',
-    'plotly.graph_objects',
-    'plotly.express',
-    'numba',
-    'scipy',
-    'scipy.optimize',
-    'scipy.interpolate',
-    'xlsxwriter',
-    'openpyxl',
-    'matplotlib',
-    'matplotlib.backends.backend_agg',
-    'pandas',
-    'numpy',
-    'altair',
-    'pydeck',
-    'click',
-    'tornado',
+    # FastAPI / Uvicorn
+    "uvicorn.logging",
+    "uvicorn.loops",
+    "uvicorn.loops.auto",
+    "uvicorn.loops.asyncio",
+    "uvicorn.protocols",
+    "uvicorn.protocols.http",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.websockets",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.lifespan",
+    "uvicorn.lifespan.on",
+    "fastapi.staticfiles",
+    # SQLAlchemy SQLite
+    "sqlalchemy.dialects.sqlite",
+    "sqlalchemy.dialects.sqlite.pysqlite",
+    # Passlib
+    "passlib.handlers.bcrypt",
+    "passlib.handlers.sha2_crypt",
+    # jose
+    "jose",
+    "jose.jwt",
+    # Pydantic
+    "pydantic.deprecated.class_validators",
+    # NumPy / SciPy / Numba (solver dependencies)
+    "numpy",
+    "scipy",
+    "scipy.special._ufuncs_cxx",
+    "scipy.linalg.cython_blas",
+    "scipy.linalg.cython_lapack",
+    # Pandas
+    "pandas",
+    # Sklearn (DRA dispatcher may use it)
+    "sklearn",
+    "sklearn.utils._cython_blas",
+    "sklearn.neighbors._partition_nodes",
+    # Backend submodules
+    "backend",
+    "backend.main",
+    "backend.db",
+    "backend.worker",
+    "backend.models",
+    "backend.deps",
+    "backend.auth_utils",
+    "backend.routers",
+    "backend.routers.auth",
+    "backend.routers.optimize",
+    "backend.routers.results",
+    "backend.routers.pipelines",
 ]
 
+# Collect all submodules for packages that use dynamic imports
+hiddenimports += collect_submodules("uvicorn")
+hiddenimports += collect_submodules("fastapi")
+hiddenimports += collect_submodules("starlette")
+hiddenimports += collect_submodules("sqlalchemy")
+
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
 a = Analysis(
-    ['launcher.py'],
-    pathex=['.'],
+    ["launcher.py"],
+    pathex=["."],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'PyQt5', 'wx'],
+    excludes=["tkinter", "matplotlib", "IPython", "notebook", "jupyter"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -98,19 +127,19 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# ── One-directory build (recommended: faster startup, easier debugging) ───
 exe = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PipelineOptima',
+    name="PipelineOptima",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,        # set False to hide the terminal window after testing
-    icon='logo.png',     # requires logo.ico on Windows; use logo.png as fallback
+    console=False,                      # no black console window
+    icon="assets/icon.ico" if os.path.exists("assets/icon.ico") else None,
+    version_file=None,
 )
 
 coll = COLLECT(
@@ -121,20 +150,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='PipelineOptima',
+    name="pipeline_optima",
 )
-
-# ── Uncomment below for single-file .exe (slower cold start ~30s) ──────────
-# exe_onefile = EXE(
-#     pyz,
-#     a.scripts,
-#     a.binaries,
-#     a.zipfiles,
-#     a.datas,
-#     name='PipelineOptima',
-#     debug=False,
-#     strip=False,
-#     upx=True,
-#     console=True,
-#     icon='logo.png',
-# )

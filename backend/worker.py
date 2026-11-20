@@ -1,43 +1,29 @@
-"""Celery worker — calls the OPTIM2 solver without modifying it."""
+"""Thread-based job worker — no Celery or Redis required for desktop deployment."""
 
 from __future__ import annotations
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from celery import Celery
-
 # ---------------------------------------------------------------------------
-# Solver path — /solver in Docker (mounted read-only), or local dev path
+# Solver path — project root (desktop) or /solver (Docker)
 # ---------------------------------------------------------------------------
-SOLVER_PATH = os.environ.get("SOLVER_PATH", "/home/user/OPTIM2")
+SOLVER_PATH = os.environ.get(
+    "SOLVER_PATH",
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if SOLVER_PATH not in sys.path:
     sys.path.insert(0, SOLVER_PATH)
 
-# These imports must come AFTER the path insertion
 from pipeline_model import solve_pipeline_with_types, solve_branch  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Celery application
+# Thread pool — max 2 concurrent solver runs on desktop
 # ---------------------------------------------------------------------------
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+_executor = ThreadPoolExecutor(max_workers=2)
 
-celery_app = Celery(
-    "pipeline_optima",
-    broker=REDIS_URL,
-    backend=REDIS_URL,
-)
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    task_track_started=True,
-    result_expires=86400,     # keep results 24 h
-)
-
-# Keys that map directly onto solve_pipeline_with_types positional/keyword args
 _MAINLINE_KEYS = (
     "stations", "terminal", "FLOW", "KV_list", "rho_list", "segment_slices",
     "RateDRA", "Price_HSD", "Fuel_density", "Ambient_temp",
@@ -49,16 +35,15 @@ _MAINLINE_OPT = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Task
-# ---------------------------------------------------------------------------
+def submit_job(job_id: str, payload: dict) -> None:
+    """Submit job to the thread pool. Returns immediately."""
+    _executor.submit(_run_optimization, job_id, payload)
 
-@celery_app.task(bind=True, max_retries=0, name="worker.run_optimization")
-def run_optimization(self, job_id: str, payload: dict) -> dict:
-    """Run the full pipeline optimization and persist the result to the DB."""
+
+def _run_optimization(job_id: str, payload: dict) -> None:
+    """Runs in a worker thread — mirrors the Celery task logic exactly."""
     from backend.db import OptimizationJob, get_session  # deferred to avoid circular import
 
-    # --- mark job as running ---
     with get_session() as session:
         job = session.get(OptimizationJob, job_id)
         if job:
@@ -66,7 +51,6 @@ def run_optimization(self, job_id: str, payload: dict) -> dict:
             session.commit()
 
     try:
-        # Phase 1: mainline
         kwargs: dict = {k: payload[k] for k in _MAINLINE_KEYS if k in payload}
         for k in _MAINLINE_OPT:
             if k in payload and payload[k] is not None:
@@ -77,7 +61,6 @@ def run_optimization(self, job_id: str, payload: dict) -> dict:
         if mainline_result.get("error"):
             raise RuntimeError(mainline_result.get("message", "Solver returned error"))
 
-        # Phase 2: branch lines (optional)
         branch_results: list[dict] = []
         for branch_input in payload.get("branches") or []:
             junction_head = float(
@@ -107,7 +90,6 @@ def run_optimization(self, job_id: str, payload: dict) -> dict:
 
         result_payload = {"mainline": mainline_result, "branches": branch_results}
 
-        # --- persist success ---
         with get_session() as session:
             job = session.get(OptimizationJob, job_id)
             if job:
@@ -115,8 +97,6 @@ def run_optimization(self, job_id: str, payload: dict) -> dict:
                 job.result = result_payload
                 job.finished_at = datetime.utcnow()
                 session.commit()
-
-        return result_payload
 
     except Exception as exc:
         err = str(exc)
@@ -127,4 +107,3 @@ def run_optimization(self, job_id: str, payload: dict) -> dict:
                 job.error_message = err
                 job.finished_at = datetime.utcnow()
                 session.commit()
-        raise
