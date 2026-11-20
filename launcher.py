@@ -22,7 +22,24 @@ try:
 except Exception:
     pass
 
-# ── 2. Standard imports ────────────────────────────────────────────────────────────
+# ── 2. Set writable data directory BEFORE any import reads DATABASE_URL ──────────
+# On Windows: %APPDATA%\Pipeline Optima\  (always writable, persists across restarts)
+# On other platforms: ~/.pipeline-optima/
+if sys.platform == "win32":
+    _appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    _data_dir = os.path.join(_appdata, "Pipeline Optima")
+else:
+    _data_dir = os.path.join(os.path.expanduser("~"), ".pipeline-optima")
+
+try:
+    os.makedirs(_data_dir, exist_ok=True)
+except Exception:
+    _data_dir = os.path.expanduser("~")  # fallback to home dir
+
+_db_path = os.path.join(_data_dir, "optima.db")
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{_db_path}")
+
+# ── 3. Standard imports ────────────────────────────────────────────────────────────
 import socket
 import threading
 import time
@@ -37,7 +54,7 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 os.chdir(_base)
 
-# ── 3. Safe uvicorn log config (plain Formatter, no isatty calls) ─────────────────
+# ── 4. Safe uvicorn log config (plain Formatter, no isatty calls) ─────────────────
 _LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
