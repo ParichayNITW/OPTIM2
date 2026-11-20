@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.db import create_tables
-from backend.routers import auth, optimize, pipelines, results
+from backend.routers import auth, optimize, pipelines, results, registry, baseline
 
 # ---------------------------------------------------------------------------
 # App
@@ -52,6 +52,8 @@ app.include_router(auth.router)
 app.include_router(optimize.router)
 app.include_router(results.router)
 app.include_router(pipelines.router)
+app.include_router(registry.router)
+app.include_router(baseline.router)
 
 
 # ---------------------------------------------------------------------------
