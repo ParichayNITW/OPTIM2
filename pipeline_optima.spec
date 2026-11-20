@@ -138,7 +138,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,                      # no black console window
-    icon="assets/icon.ico" if os.path.exists("assets/icon.ico") else ("assets/icon.svg" if os.path.exists("assets/icon.svg") else None),
+    icon="assets/icon.ico" if os.path.exists("assets/icon.ico") else None,
     version_file=None,
 )
 
