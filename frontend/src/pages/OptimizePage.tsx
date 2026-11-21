@@ -5,6 +5,7 @@ import { LooplineConfigPanel } from '../components/pipeline/LooplineConfigPanel'
 import { OperatingModePanel } from '../components/pipeline/OperatingModePanel';
 import { DRALacingPanel } from '../components/pipeline/DRALacingPanel';
 import { AdvancedSearchPanel } from '../components/pipeline/AdvancedSearchPanel';
+import { PumpFleetSummary } from '../components/pipeline/PumpFleetSummary';
 import { PipelineMapPreview } from '../components/pipeline/PipelineMapPreview';
 import { ResultsPanel } from '../components/results/ResultsPanel';
 import { usePipelineStore } from '../store/pipelineStore';
@@ -152,7 +153,7 @@ export function OptimizePage() {
               <AdvancedSearchPanel />
             </>
           )}
-          {inputTab === 'pumps' && <StationBuilder />}
+          {inputTab === 'pumps' && <PumpFleetSummary />}
           {inputTab === 'loopline' && <LooplineConfigPanel />}
           {inputTab === 'operating' && <OperatingModePanel />}
         </div>
