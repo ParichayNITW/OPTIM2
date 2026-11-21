@@ -73,7 +73,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist\installer | Out-Null
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
 
-      # ── 10. Upload installer — download from Actions → Artifacts ──────────────
+      # ── 10. Publish to GitHub Releases — fast CDN direct download ───────────────
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-dev
+          name: "Pipeline Optima — Latest Build"
+          prerelease: true
+          files: dist\installer\PipelineOptima-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 11. Also keep artifact backup ─────────────────────────────────────────
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -81,7 +92,7 @@ jobs:
           path: dist\installer\PipelineOptima-Setup-*.exe
           retention-days: 90
 
-      # ── 11. Also upload the raw app folder (for quick testing) ────────────────
+      # ── 12. Also upload the raw app folder (for quick testing) ────────────────
       - name: Upload app bundle
         uses: actions/upload-artifact@v4
         with:
