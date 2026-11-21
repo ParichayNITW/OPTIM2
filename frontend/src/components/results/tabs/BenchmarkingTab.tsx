@@ -25,7 +25,7 @@ export function BenchmarkingTab({ parsed }: Props) {
   const draFrac = parsed.totalCost > 0 ? (parsed.totalDraCost / parsed.totalCost) * 100 : 0;
   const totalMotorKw = parsed.stations.reduce((a, s) => a + s.motor_kw, 0);
   const specificEnergy = parsed.flow > 0 && totalKm > 0 && totalMotorKw > 0
-    ? (totalMotorKw / (parsed.flow / 3600)) / (totalKm / 100)   // kWh / m³ / 100km approx
+    ? (totalMotorKw / parsed.flow) / (totalKm / 100)   // kW/(m³/h) = kWh/m³, then per 100km
     : 0;
 
   const rows = [

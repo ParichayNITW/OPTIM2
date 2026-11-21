@@ -120,6 +120,7 @@ export function BranchBuilder({stationId, branches}: Props) {
                       {key: 'SMYS', label: 'SMYS (psi)', type: 'number'},
                       {key: 'roughness', label: 'Roughness (m)', type: 'number'},
                       {key: 'min_residual', label: 'Min Head (m)', type: 'number'},
+                      {key: 'max_dra', label: 'Max DRA%', type: 'number'},
                     ].map(f => (
                       <div key={f.key}>
                         <label className="text-xs text-gray-400">{f.label}</label>

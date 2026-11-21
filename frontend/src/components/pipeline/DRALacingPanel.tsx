@@ -13,7 +13,7 @@ export function DRALacingPanel() {
     setError('');
     try {
       const caseDict = exportCase() as Record<string, unknown>;
-      const r = await apiClient.post('/api/baseline-dra', {
+      const r = await apiClient.post('/baseline-dra', {
         stations: caseDict.stations,
         terminal: caseDict.terminal,
         max_flow_m3h: g.laced_flow || g.FLOW,

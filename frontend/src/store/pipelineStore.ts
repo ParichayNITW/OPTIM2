@@ -309,10 +309,12 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
 
   loadCase: (json) => {
     const g = json as Record<string, unknown>;
-    // Restore global params
+    // Restore global params — includes all fields exportCase() writes
     const global: Partial<GlobalParams> = {
       FLOW: (g.FLOW as number) || 450,
       op_mode: (g.op_mode as GlobalParams['op_mode']) || 'flow_rate',
+      pipeline_category: (g.pipeline_category as string) || 'Crude Oil Pipelines',
+      pipeline_code: (g.pipeline_code as string) || '',
       RateDRA: (g.RateDRA as number) || 0,
       Price_HSD: (g.Price_HSD as number) || 90,
       Fuel_density: (g.Fuel_density as number) || 0.83,
@@ -321,6 +323,15 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       pump_shear_rate: (g.pump_shear_rate as number) || 0,
       kv_list: (g.KV_list as number[]) || [10],
       rho_list: (g.rho_list as number[]) || [850],
+      dra_lacing_mode: (g.dra_lacing_mode as GlobalParams['dra_lacing_mode']) || 'auto',
+      laced_flow: (g.laced_flow as number) || 0,
+      laced_visc: (g.laced_visc as number) || 0,
+      laced_suction: (g.laced_suction as number) || 0,
+      laced_density: (g.laced_density as number) || 0,
+      rpm_step: (g.rpm_step as number) || 25,
+      dra_step: (g.dra_step as number) || 2,
+      priority_feasibility: Boolean(g.priority_feasibility),
+      collect_state_audit: Boolean(g.collect_state_audit),
     };
     set(s => ({global: {...s.global, ...global}}));
     // Restore terminal

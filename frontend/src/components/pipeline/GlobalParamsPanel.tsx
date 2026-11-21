@@ -12,7 +12,7 @@ export function GlobalParamsPanel() {
   const [registry, setRegistry] = useState<RegistryData | null>(null);
 
   useEffect(() => {
-    apiClient.get('/api/pipeline-registry').then(r => setRegistry(r.data)).catch(() => {});
+    apiClient.get('/pipeline-registry').then(r => setRegistry(r.data)).catch(() => {});
   }, []);
 
   const categories = registry ? Object.keys(registry.categories) : ['Crude Oil Pipelines'];

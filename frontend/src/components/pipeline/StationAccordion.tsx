@@ -85,8 +85,11 @@ export function StationAccordion({station, index, total}: Props) {
               <span className="text-gray-600">Is Pumping Station</span>
             </label>
           </div>
-          {up('max_pumps', 'Max Pumps', 1, 1)}
           {up('delivery', 'Delivery (m³/h)', 0, 10)}
+          {up('supply', 'Supply (m³/h)', 0, 10)}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {up('max_pumps', 'Max Pumps Available', 1, 1)}
         </div>
 
         {/* Pump config tabs — only show if pump station */}
