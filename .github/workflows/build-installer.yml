@@ -2,55 +2,54 @@ name: Build Windows Installer
 
 # Triggers:
 #   - Every push to the development branch
-#   - Manual trigger from GitHub Actions tab (you can click "Run workflow")
+#   - Manual trigger from GitHub Actions tab (click "Run workflow")
 on:
   push:
     branches:
       - claude/optim2-file-count-ymv3s0
       - main
       - master
-  workflow_dispatch:          # manual trigger button in GitHub UI
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest   # GitHub's Windows Server VM — Python + Node pre-installed
+    runs-on: windows-latest
 
     steps:
-      # ----------------------------------------------------------------
-      # 1. Get the code
-      # ----------------------------------------------------------------
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------------------
-      # 2. Set up Python 3.11
-      # ----------------------------------------------------------------
+      # ── 2. Python 3.11 ────────────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ----------------------------------------------------------------
-      # 3. Set up Node.js 20
-      # ----------------------------------------------------------------
+      # ── 3. Node 20 ────────────────────────────────────────────────────────────
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
 
-      # ----------------------------------------------------------------
-      # 4. Install Python dependencies + PyInstaller
-      # ----------------------------------------------------------------
+      # ── 4. Cache pip ──────────────────────────────────────────────────────────
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('desktop_requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      # ── 5. Install Python dependencies ────────────────────────────────────────
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r desktop_requirements.txt
-          pip install PySide6
 
-      # ----------------------------------------------------------------
-      # 5. Build React frontend
-      # ----------------------------------------------------------------
+      # ── 6. Build React frontend ───────────────────────────────────────────────
       - name: Install npm packages
         working-directory: frontend
         run: npm install
@@ -59,42 +58,31 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      # ----------------------------------------------------------------
-      # 6. Bundle with PyInstaller
-      # ----------------------------------------------------------------
+      # ── 7. Bundle with PyInstaller ────────────────────────────────────────────
       - name: Bundle with PyInstaller
-        run: pyinstaller pipeline_optima.spec --noconfirm
+        run: pyinstaller pipeline_optima.spec --clean --noconfirm
 
-      # ----------------------------------------------------------------
-      # 7. Install Inno Setup (pre-available via chocolatey on windows-latest)
-      # ----------------------------------------------------------------
+      # ── 8. Install Inno Setup (pre-available via chocolatey on windows-latest) ─
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      # ----------------------------------------------------------------
-      # 8. Create the Windows installer
-      # ----------------------------------------------------------------
+      # ── 9. Build the Windows installer (.exe) ─────────────────────────────────
       - name: Build installer with Inno Setup
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path dist\installer | Out-Null
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
 
-      # ----------------------------------------------------------------
-      # 9. Upload the installer as a downloadable artifact
-      #    Go to: GitHub → Actions tab → this run → Artifacts section
-      # ----------------------------------------------------------------
+      # ── 10. Upload installer — download from Actions → Artifacts ──────────────
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: PipelineOptima-Windows-Installer
           path: dist\installer\PipelineOptima-Setup-*.exe
-          retention-days: 90    # keep for 90 days
+          retention-days: 90
 
-      # ----------------------------------------------------------------
-      # 10. Also upload the raw app folder (useful for testing)
-      # ----------------------------------------------------------------
-      - name: Upload app bundle (no installer)
+      # ── 11. Also upload the raw app folder (for quick testing) ────────────────
+      - name: Upload app bundle
         uses: actions/upload-artifact@v4
         with:
           name: PipelineOptima-App-Bundle
