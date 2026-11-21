@@ -2,130 +2,225 @@ import React, { useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import { usePipelineStore } from '../../store/pipelineStore';
 
-function nodeColor(isFirst: boolean, isLast: boolean, isPump: boolean): string {
-  if (isFirst) return '#22c55e';   // green — Origin
-  if (isLast) return '#ef4444';    // red — Terminal
-  if (isPump) return '#3b82f6';    // blue — Pump
-  return '#9ca3af';                // gray — Pass-through
+function nodeColor(isOrigin: boolean, isPump: boolean): string {
+  if (isOrigin) return '#16a34a';
+  if (isPump) return '#1967d2';
+  return '#6b7280';
 }
 
+const TERM_COLOR = '#dc2626';
+
+const LEGEND = [
+  { color: '#16a34a', label: 'Origin' },
+  { color: '#1967d2', label: 'Pump Station' },
+  { color: '#6b7280', label: 'Pass-through' },
+  { color: '#dc2626', label: 'Terminal' },
+  { color: '#f97316', label: 'Branch Tap-off' },
+];
+
+interface BranchInput { branch_name: string; flow_m3h: number; }
+
 export function PipelineMapPreview() {
-  const {stations, terminal} = usePipelineStore();
+  const { stations, terminal } = usePipelineStore();
 
-  const {data, layout} = useMemo(() => {
-    if (stations.length === 0) return {data: [], layout: {}};
+  const { data, layout } = useMemo(() => {
+    if (stations.length === 0) return { data: [] as Plotly.Data[], layout: {} as Plotly.Layout };
 
-    // Compute cumulative KP — each station's length_km is the downstream pipe segment length
+    // Cumulative KP
     let cumKm = 0;
     const nodes = stations.map((s, i) => {
       const kp = cumKm;
-      cumKm += s.length_km;  // ALL stations contribute (last station's L reaches terminal)
+      cumKm += s.length_km;
       return {
-        name: s.name, kp, elev: s.elevation,
-        is_pump: s.is_pump, is_first: i === 0, is_last: false,
-        branches: s.branches,
+        name: s.name, kp, is_origin: i === 0, is_pump: s.is_pump,
+        branches: (s.branches || []) as BranchInput[],
       };
     });
-    const terminalKp = cumKm;
+    const totalKm = cumKm;
 
-    // Pipe segments trace (line)
-    const segX: number[] = [];
-    const segY: number[] = [];
-    nodes.forEach((n, i) => {
-      const nextKp = i < nodes.length - 1 ? nodes[i + 1].kp : terminalKp;
-      const nextElev = i < nodes.length - 1 ? nodes[i + 1].elev : terminal.elevation;
-      segX.push(n.kp, nextKp, null as never);
-      segY.push(n.elev, nextElev, null as never);
+    // Map KP → canvas x in [6, 94]
+    const toX = (kp: number, idx: number) =>
+      totalKm > 0 ? 6 + (kp / totalKm) * 88 : 6 + (idx / Math.max(1, nodes.length)) * 88;
+
+    const nodeXs = nodes.map((n, i) => toX(n.kp, i));
+    const termX = 94;
+    const allX = [...nodeXs, termX];
+    const allColors = [...nodes.map(n => nodeColor(n.is_origin, n.is_pump)), TERM_COLOR];
+
+    // Spine segments at y=0
+    const spineX: (number | null)[] = [];
+    const spineY: (number | null)[] = [];
+    nodes.forEach((_, i) => {
+      const nextX = i < nodes.length - 1 ? nodeXs[i + 1] : termX;
+      spineX.push(nodeXs[i], nextX, null);
+      spineY.push(0, 0, null);
     });
 
-    // Station scatter
-    const stX = nodes.map(n => n.kp);
-    const stY = nodes.map(n => n.elev);
-    const stColors = nodes.map((n, i) => nodeColor(n.is_first, false, n.is_pump));
-    const stText = nodes.map(n => n.name);
+    // Glow rings (behind nodes)
+    const glowTrace: Plotly.Data = {
+      x: allX, y: Array(allX.length).fill(0),
+      type: 'scatter', mode: 'markers',
+      marker: { color: allColors, size: 36, opacity: 0.08, line: { width: 0 } },
+      showlegend: false, hoverinfo: 'skip',
+    } as Plotly.Data;
 
-    // Terminal
-    const traces: Plotly.Data[] = [
-      {
-        x: segX, y: segY, type: 'scatter', mode: 'lines',
-        line: {color: '#6366f1', width: 3},
-        name: 'Pipeline', showlegend: false,
-      } as Plotly.Data,
-      {
-        x: stX, y: stY, type: 'scatter', mode: 'markers+text' as never,
-        marker: {color: stColors, size: 12, symbol: 'circle'},
-        text: stText,
-        textposition: 'top center',
-        textfont: {size: 10},
-        name: 'Stations', showlegend: false,
-        hovertemplate: '%{text}<br>KP: %{x:.1f} km<br>Elev: %{y:.1f} m<extra></extra>',
-      } as Plotly.Data,
-      {
-        x: [terminalKp], y: [terminal.elevation], type: 'scatter', mode: 'markers+text' as never,
-        marker: {color: '#ef4444', size: 14, symbol: 'diamond'},
-        text: [terminal.name],
-        textposition: 'top center',
-        textfont: {size: 10},
-        name: terminal.name, showlegend: false,
-      } as Plotly.Data,
-    ];
+    // Node circles
+    const nodeTrace: Plotly.Data = {
+      x: nodeXs, y: Array(nodeXs.length).fill(0),
+      type: 'scatter', mode: 'markers',
+      marker: {
+        color: nodes.map(n => nodeColor(n.is_origin, n.is_pump)),
+        size: 20, line: { width: 2.5, color: 'white' },
+      },
+      showlegend: false,
+      hovertemplate: nodes.map(n =>
+        `<b>${n.name}</b><br>KP: ${n.kp.toFixed(1)} km<extra></extra>`
+      ),
+    } as Plotly.Data;
 
-    // Branch lines
-    nodes.forEach(n => {
+    // Terminal diamond
+    const termTrace: Plotly.Data = {
+      x: [termX], y: [0],
+      type: 'scatter', mode: 'markers',
+      marker: { color: TERM_COLOR, size: 22, symbol: 'diamond', line: { width: 2.5, color: 'white' } },
+      showlegend: false,
+      hovertemplate: `<b>${terminal.name}</b><br>KP: ${totalKm.toFixed(1)} km<extra></extra>`,
+    } as Plotly.Data;
+
+    // Spine line (drawn after glow so it appears on top of glow)
+    const spineTrace: Plotly.Data = {
+      x: spineX, y: spineY,
+      type: 'scatter', mode: 'lines',
+      line: { color: '#4f46e5', width: 7 },
+      showlegend: false, hoverinfo: 'skip',
+    } as Plotly.Data;
+
+    // Branch stubs (dashed orange)
+    const branchTraces: Plotly.Data[] = [];
+    nodes.forEach((n, i) => {
       n.branches.forEach(b => {
-        traces.push({
-          x: [n.kp, n.kp + 2],
-          y: [n.elev, n.elev + 20],
+        const goDown = i % 2 === 0;
+        branchTraces.push({
+          x: [nodeXs[i], nodeXs[i] + 2, nodeXs[i] + 3.5],
+          y: [0, goDown ? -1.5 : 1.5, goDown ? -2.0 : 2.0],
           type: 'scatter', mode: 'lines+markers',
-          line: {color: '#f97316', width: 2, dash: 'dot'},
-          marker: {color: '#f97316', size: 8, symbol: 'diamond'},
-          name: b.branch_name,
+          line: { color: '#f97316', width: 2, dash: 'dot' },
+          marker: { color: '#f97316', size: 8, symbol: 'diamond' },
           showlegend: false,
-          hovertemplate: `${b.branch_name}<br>${b.flow_m3h} m³/h<extra></extra>`,
+          hovertemplate: `<b>${b.branch_name}</b><br>${b.flow_m3h} m³/h<extra></extra>`,
         } as Plotly.Data);
       });
     });
 
-    const lyt = {
-      height: 300,
-      margin: {t: 20, r: 20, b: 50, l: 60},
-      xaxis: {title: 'KP (km)', gridcolor: '#f3f4f6'},
-      yaxis: {title: 'Elevation (m)', gridcolor: '#f3f4f6'},
-      plot_bgcolor: '#fafafa',
-      paper_bgcolor: 'transparent',
-      font: {size: 11},
-    } as unknown as Plotly.Layout;
+    // Annotations — station labels (alternating above/below), KP ticks, flow arrows
+    const ann: Partial<Plotly.Annotations>[] = [];
 
-    return {data: traces, layout: lyt};
+    nodes.forEach((n, i) => {
+      const above = i % 2 === 0;
+      const col = nodeColor(n.is_origin, n.is_pump);
+      ann.push({
+        x: nodeXs[i], y: 0,
+        ax: nodeXs[i], ay: above ? 2.0 : -2.0,
+        xref: 'x' as const, yref: 'y' as const,
+        axref: 'x' as const, ayref: 'y' as const,
+        text: `<b>${n.name}</b>`,
+        showarrow: true,
+        arrowhead: 1, arrowsize: 0.8, arrowwidth: 1.5, arrowcolor: col,
+        bgcolor: 'rgba(255,255,255,0.93)', bordercolor: col,
+        borderwidth: 1.5, borderpad: 3,
+        font: { size: 10, color: '#1f2937' },
+      } as Partial<Plotly.Annotations>);
+
+      // KP tick
+      ann.push({
+        x: nodeXs[i], y: -0.5,
+        xref: 'x' as const, yref: 'y' as const,
+        text: `${n.kp.toFixed(0)} km`,
+        showarrow: false,
+        font: { size: 8, color: '#9ca3af' },
+        yanchor: 'top',
+      } as Partial<Plotly.Annotations>);
+    });
+
+    // Terminal label
+    const termAbove = nodes.length % 2 === 0;
+    ann.push({
+      x: termX, y: 0,
+      ax: termX, ay: termAbove ? 2.0 : -2.0,
+      xref: 'x' as const, yref: 'y' as const,
+      axref: 'x' as const, ayref: 'y' as const,
+      text: `<b>${terminal.name}</b>`,
+      showarrow: true,
+      arrowhead: 1, arrowsize: 0.8, arrowwidth: 1.5, arrowcolor: TERM_COLOR,
+      bgcolor: 'rgba(255,255,255,0.93)', bordercolor: TERM_COLOR,
+      borderwidth: 1.5, borderpad: 3,
+      font: { size: 10, color: '#1f2937' },
+    } as Partial<Plotly.Annotations>);
+    ann.push({
+      x: termX, y: -0.5,
+      xref: 'x' as const, yref: 'y' as const,
+      text: `${totalKm.toFixed(0)} km`,
+      showarrow: false,
+      font: { size: 8, color: '#9ca3af' },
+      yanchor: 'top',
+    } as Partial<Plotly.Annotations>);
+
+    // Flow arrows at midpoints
+    nodes.forEach((n, i) => {
+      const nextX = i < nodes.length - 1 ? nodeXs[i + 1] : termX;
+      const midX = (nodeXs[i] + nextX) / 2;
+      const halfStep = Math.min(1.5, (nextX - nodeXs[i]) / 4);
+      ann.push({
+        x: midX + halfStep, y: 0.3,
+        ax: midX - halfStep, ay: 0.3,
+        xref: 'x' as const, yref: 'y' as const,
+        axref: 'x' as const, ayref: 'y' as const,
+        arrowhead: 2, arrowsize: 1.0, arrowwidth: 2.5, arrowcolor: '#818cf8',
+        text: '', showarrow: true,
+      } as Partial<Plotly.Annotations>);
+    });
+
+    const lyt: Partial<Plotly.Layout> = {
+      height: 360,
+      margin: { t: 60, r: 20, b: 60, l: 20 },
+      xaxis: { visible: false, range: [-2, 102], fixedrange: true },
+      yaxis: { visible: false, range: [-3.5, 3.5], fixedrange: true },
+      plot_bgcolor: '#f8fafc',
+      paper_bgcolor: 'transparent',
+      annotations: ann as Plotly.Annotations[],
+      showlegend: false,
+      font: { family: 'system-ui, sans-serif' },
+      hovermode: 'closest',
+    };
+
+    return {
+      data: [spineTrace, glowTrace, nodeTrace, termTrace, ...branchTraces],
+      layout: lyt,
+    };
   }, [stations, terminal]);
 
   if (stations.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64 text-gray-400 text-sm">
-        Add stations to see pipeline schematic
+      <div className="flex flex-col items-center justify-center h-64 text-gray-400 text-sm gap-2">
+        <div className="text-2xl font-bold text-gray-300">|--o--o--|</div>
+        Add stations in the Pipeline tab to see the schematic
       </div>
     );
   }
 
   return (
     <div>
-      <h3 className="text-sm font-semibold text-gray-700 mb-2 px-1">Pipeline Network Preview</h3>
+      <h3 className="text-sm font-semibold text-gray-700 mb-1 px-1">Pipeline Network Schematic</h3>
       <Plot
         data={data}
         layout={layout as Plotly.Layout}
-        config={{displayModeBar: false, responsive: true}}
-        style={{width: '100%'}}
+        config={{ displayModeBar: false, responsive: true, staticPlot: false }}
+        style={{ width: '100%' }}
       />
       <div className="flex flex-wrap gap-3 px-2 mt-1 text-xs text-gray-500">
-        {[
-          {color: '#22c55e', label: 'Origin'},
-          {color: '#3b82f6', label: 'Pump Station'},
-          {color: '#9ca3af', label: 'Pass-through'},
-          {color: '#ef4444', label: 'Terminal'},
-          {color: '#f97316', label: 'Branch Tap-off'},
-        ].map(({color, label}) => (
+        {LEGEND.map(({ color, label }) => (
           <div key={label} className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full inline-block" style={{background: color}} />
+            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: color }} />
             {label}
           </div>
         ))}

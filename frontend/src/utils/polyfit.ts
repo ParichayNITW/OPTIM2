@@ -70,20 +70,29 @@ export function polyval(coeffs: number[], x: number): number {
   return coeffs.reduce((acc, c) => acc * x + c, 0);
 }
 
-/** Q-H curve: fit degree-2, return {A, B, C} where H = A + B*Q + C*Q² */
+/**
+ * Q-H curve: fit degree-2, return {A, B, C} matching solver formula: head = A*Q² + B*Q + C
+ * Solver (pipeline_model.py line 3173): head_curve = A * Q_equiv**2 + B * Q_equiv + C
+ * polyfit returns highest-degree first → [Q²-coeff, Q¹-coeff, constant] = [A, B, C]
+ */
 export function computePumpCoeffs(qhTable: {flow: number; head: number}[]): {A: number; B: number; C: number} {
-  if (qhTable.length < 3) return {A: 100, B: 0, C: 0};
+  if (qhTable.length < 3) return {A: 0, B: 0, C: 100};
   const flows = qhTable.map(r => r.flow);
   const heads = qhTable.map(r => r.head);
-  const [C, B, A] = polyfit(flows, heads, 2); // highest-degree first: C*Q^2 + B*Q + A
+  const [A, B, C] = polyfit(flows, heads, 2); // A=Q²-coeff, B=Q¹-coeff, C=constant
   return {A, B, C};
 }
 
-/** Efficiency curve: fit degree-4, return {P, Q, R, S, T} where Eff = P + Q*f + R*f² + S*f³ + T*f⁴ */
+/**
+ * Efficiency curve: fit degree-4, return {P,Q,R,S,T} matching solver formula:
+ * eff = P*Q⁴ + Q*Q³ + R*Q² + S*Q + T
+ * Solver (pipeline_model.py line 3195): eff_curve = P*Q**4 + Qc*Q**3 + R*Q**2 + S*Q + T
+ * polyfit returns highest-degree first → [Q⁴, Q³, Q², Q¹, constant] = [P, Q, R, S, T]
+ */
 export function computeEffCoeffs(effTable: {flow: number; eff: number}[]): {P: number; Q: number; R: number; S: number; T: number} {
-  if (effTable.length < 5) return {P: 70, Q: 0, R: 0, S: 0, T: 0};
+  if (effTable.length < 5) return {P: 0, Q: 0, R: 0, S: 0, T: 70};
   const flows = effTable.map(r => r.flow);
   const effs = effTable.map(r => r.eff);
-  const [T, S, R, Q, P] = polyfit(flows, effs, 4);
+  const [P, Q, R, S, T] = polyfit(flows, effs, 4); // P=Q⁴, Q=Q³, R=Q², S=Q¹, T=constant
   return {P, Q, R, S, T};
 }

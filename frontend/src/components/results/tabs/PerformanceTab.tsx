@@ -1,100 +1,167 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
+import { ParsedResult } from '../../../utils/resultParser';
 
-interface Props { result: Record<string, unknown>; }
+interface Props { parsed: ParsedResult; }
 
-export function PerformanceTab({result}: Props) {
-  const ml = (result.mainline || result) as Record<string, unknown>;
-  const stationsUsed = (ml.stations_used || []) as Array<Record<string, unknown>>;
+export function PerformanceTab({ parsed }: Props) {
+  const names = parsed.stations.map(s => s.name);
+  const hasData = parsed.stations.some(s => s.velocity > 0 || s.efficiency > 0);
 
-  const names = stationsUsed.map((s, i) => (s.name || `S${i+1}`) as string);
-  const velocities = stationsUsed.map(s => (s.velocity || 0) as number);
-  const reynolds = stationsUsed.map(s => (s.reynolds || 0) as number);
-  const headLoss = stationsUsed.map(s => (s.head_loss || 0) as number);
-  const motorKw = stationsUsed.map(s => (s.motor_kw || s.power_kw || 0) as number);
+  if (!hasData) {
+    return (
+      <div className="p-4 flex items-center justify-center h-48 text-gray-400 text-sm">
+        Run optimization to see performance metrics
+      </div>
+    );
+  }
 
-  if (names.length === 0) return <div className="p-4 text-sm text-gray-400">No performance data yet.</div>;
+  const velocities   = parsed.stations.map(s => s.velocity);
+  const efficiencies = parsed.stations.map(s => s.efficiency);
+  const headLosses   = parsed.stations.map(s => s.head_loss);
+  const motorKws     = parsed.stations.map(s => s.motor_kw);
+  const reynolds     = parsed.stations.map(s => s.reynolds);
 
   return (
-    <div className="p-4 space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+    <div className="p-3 space-y-4">
+      {/* Top row charts */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {/* Velocity */}
+        <div>
+          <h4 className="text-xs font-semibold text-gray-600 mb-1">Flow Velocity (m/s)</h4>
+          <Plot
+            data={[{
+              x: names, y: velocities, type: 'bar', name: 'Velocity',
+              marker: {
+                color: velocities.map(v =>
+                  v < 1.0 ? '#10b981' : v < 2.0 ? '#f59e0b' : '#ef4444'
+                ),
+              },
+              hovertemplate: '%{x}<br>%{y:.2f} m/s<extra></extra>',
+            } as Plotly.Data]}
+            layout={{
+              height: 200, margin: { t: 10, r: 10, b: 70, l: 50 },
+              xaxis: { tickangle: -30, automargin: true },
+              yaxis: { title: 'm/s' },
+              plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+              showlegend: false,
+              shapes: [{ type: 'line', x0: -0.5, x1: names.length - 0.5, y0: 1.5, y1: 1.5, line: { color: '#ef4444', dash: 'dot', width: 1 } }],
+            } as unknown as Plotly.Layout}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: '100%' }}
+          />
+        </div>
+
+        {/* Efficiency */}
+        <div>
+          <h4 className="text-xs font-semibold text-gray-600 mb-1">Pump Efficiency (%)</h4>
+          <Plot
+            data={[{
+              x: names.filter((_, i) => parsed.stations[i].is_pump && efficiencies[i] > 0),
+              y: efficiencies.filter((_, i) => parsed.stations[i].is_pump && efficiencies[i] > 0),
+              type: 'bar', name: 'Efficiency',
+              marker: {
+                color: efficiencies
+                  .filter((_, i) => parsed.stations[i].is_pump && efficiencies[i] > 0)
+                  .map(e => e >= 70 ? '#10b981' : e >= 60 ? '#f59e0b' : '#ef4444'),
+              },
+              hovertemplate: '%{x}<br>%{y:.1f}%<extra></extra>',
+            } as Plotly.Data]}
+            layout={{
+              height: 200, margin: { t: 10, r: 10, b: 70, l: 50 },
+              xaxis: { tickangle: -30, automargin: true },
+              yaxis: { title: '%', range: [0, 100] },
+              plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+              showlegend: false,
+            } as unknown as Plotly.Layout}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: '100%' }}
+          />
+        </div>
+
         {/* Head Loss */}
         <div>
-          <h4 className="text-sm font-semibold text-gray-700 mb-2">Head Loss per Station</h4>
+          <h4 className="text-xs font-semibold text-gray-600 mb-1">Segment Head Loss (m)</h4>
           <Plot
-            data={[{x: names, y: headLoss, type: 'bar', marker: {color: '#6366f1'}, name: 'Head Loss'} as Plotly.Data]}
+            data={[{
+              x: names, y: headLosses, type: 'bar', name: 'Head Loss',
+              marker: { color: '#6366f1' },
+              hovertemplate: '%{x}<br>%{y:.1f} m<extra></extra>',
+            } as Plotly.Data]}
             layout={{
-              height: 220, margin: {t: 10, r: 10, b: 60, l: 60},
-              xaxis: {tickangle: -30}, yaxis: {title: 'Head Loss (m)'},
-              plot_bgcolor: '#fafafa', paper_bgcolor: 'transparent', font: {size: 10},
+              height: 200, margin: { t: 10, r: 10, b: 70, l: 60 },
+              xaxis: { tickangle: -30, automargin: true },
+              yaxis: { title: 'm' },
+              plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+              showlegend: false,
             } as unknown as Plotly.Layout}
-            config={{displayModeBar: false, responsive: true}}
-            style={{width: '100%'}}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: '100%' }}
           />
         </div>
 
-        {/* Power */}
+        {/* Motor kW */}
         <div>
-          <h4 className="text-sm font-semibold text-gray-700 mb-2">Motor Power (kW)</h4>
+          <h4 className="text-xs font-semibold text-gray-600 mb-1">Motor Shaft Power (kW)</h4>
           <Plot
-            data={[{x: names, y: motorKw, type: 'bar', marker: {color: '#22c55e'}, name: 'kW'} as Plotly.Data]}
+            data={[{
+              x: names.filter((_, i) => motorKws[i] > 0),
+              y: motorKws.filter(v => v > 0),
+              type: 'bar', name: 'Motor kW',
+              marker: { color: '#0284c7' },
+              hovertemplate: '%{x}<br>%{y:.1f} kW<extra></extra>',
+            } as Plotly.Data]}
             layout={{
-              height: 220, margin: {t: 10, r: 10, b: 60, l: 60},
-              xaxis: {tickangle: -30}, yaxis: {title: 'Power (kW)'},
-              plot_bgcolor: '#fafafa', paper_bgcolor: 'transparent', font: {size: 10},
+              height: 200, margin: { t: 10, r: 10, b: 70, l: 60 },
+              xaxis: { tickangle: -30, automargin: true },
+              yaxis: { title: 'kW' },
+              plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+              showlegend: false,
             } as unknown as Plotly.Layout}
-            config={{displayModeBar: false, responsive: true}}
-            style={{width: '100%'}}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: '100%' }}
           />
         </div>
       </div>
 
-      {/* Velocity & Reynolds */}
+      {/* Performance table */}
       <div>
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Velocity & Reynolds Number</h4>
-        <Plot
-          data={[
-            {x: names, y: velocities, type: 'bar', name: 'Velocity (m/s)', marker: {color: '#06b6d4'}, yaxis: 'y'} as Plotly.Data,
-            {x: names, y: reynolds, type: 'bar', name: 'Reynolds No.', marker: {color: '#f97316'}, yaxis: 'y2'} as Plotly.Data,
-          ]}
-          layout={{
-            barmode: 'group', height: 240,
-            margin: {t: 10, r: 70, b: 60, l: 60},
-            xaxis: {tickangle: -30},
-            yaxis: {title: 'Velocity (m/s)'},
-            yaxis2: {title: 'Reynolds No.', overlaying: 'y', side: 'right'},
-            plot_bgcolor: '#fafafa', paper_bgcolor: 'transparent',
-            legend: {orientation: 'h', y: -0.35, font: {size: 10}},
-            font: {size: 10},
-          } as unknown as Plotly.Layout}
-          config={{displayModeBar: false, responsive: true}}
-          style={{width: '100%'}}
-        />
-      </div>
-
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs border-collapse">
-          <thead className="bg-gray-100">
-            <tr>
-              {['Station', 'Head Loss (m)', 'Velocity (m/s)', 'Reynolds No.', 'Motor (kW)', 'Efficiency (%)'].map(h => (
-                <th key={h} className="px-2 py-1.5 border border-gray-200 text-left font-medium">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {stationsUsed.map((s, i) => (
-              <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                <td className="px-2 py-1 border border-gray-200 font-medium">{names[i]}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">{headLoss[i].toFixed(1)}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">{velocities[i].toFixed(2)}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">{reynolds[i].toFixed(0)}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">{motorKw[i].toFixed(0)}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">{((s.efficiency || 0) as number).toFixed(1)}%</td>
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">Detailed Performance Metrics</h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-100 text-gray-600">
+                {['Station', 'Velocity (m/s)', 'Reynolds', 'Efficiency %', 'TDH (m)',
+                  'Motor kW', 'Num Pumps', 'Speed (rpm)', 'Pipeline Flow (m³/h)'].map(h => (
+                  <th key={h} className="px-2 py-1.5 text-left font-semibold border-b whitespace-nowrap">{h}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {parsed.stations.map((s, i) => (
+                <tr key={s.key} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                  <td className="px-2 py-1 font-medium border-b">{s.name}</td>
+                  <td className="px-2 py-1 border-b">
+                    <span className={s.velocity > 2.0 ? 'text-red-600 font-medium' : s.velocity > 1.5 ? 'text-amber-600' : ''}>
+                      {s.velocity > 0 ? s.velocity.toFixed(2) : '—'}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 border-b">{s.reynolds > 0 ? (s.reynolds / 1000).toFixed(1) + 'k' : '—'}</td>
+                  <td className="px-2 py-1 border-b">
+                    <span className={s.efficiency < 60 && s.efficiency > 0 ? 'text-red-600' : s.efficiency < 70 && s.efficiency > 0 ? 'text-amber-600' : 'text-green-700'}>
+                      {s.efficiency > 0 ? s.efficiency.toFixed(1) + '%' : '—'}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 border-b">{s.tdh > 0 ? s.tdh.toFixed(1) : '—'}</td>
+                  <td className="px-2 py-1 border-b">{s.motor_kw > 0 ? s.motor_kw.toFixed(1) : '—'}</td>
+                  <td className="px-2 py-1 border-b">{s.num_pumps > 0 ? s.num_pumps : '—'}</td>
+                  <td className="px-2 py-1 border-b">{s.speed > 0 ? s.speed.toFixed(0) : '—'}</td>
+                  <td className="px-2 py-1 border-b">{s.pipeline_flow > 0 ? s.pipeline_flow.toFixed(1) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

@@ -1,85 +1,139 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
+import { ParsedResult } from '../../../utils/resultParser';
 
-interface Props { result: Record<string, unknown>; }
+interface Props { parsed: ParsedResult; }
 
-export function DRACurvesTab({result}: Props) {
-  const ml = (result.mainline || result) as Record<string, unknown>;
-  const draCurves = (ml.dra_curves || {}) as Record<string, {flows: number[], dr_pct: number[]}>;
-  const stationsUsed = (ml.stations_used || []) as Array<Record<string, unknown>>;
+export function DRACurvesTab({ parsed }: Props) {
+  const draStations = parsed.stations.filter(s => s.dra_ppm > 0 || s.drag_reduction > 0);
+  const hasData = draStations.length > 0;
 
-  const names = Object.keys(draCurves);
-  const palette = ['#f97316','#eab308','#22c55e','#06b6d4','#8b5cf6','#ec4899'];
+  if (!hasData) {
+    return (
+      <div className="p-4 flex items-center justify-center h-48 text-gray-400 text-sm">
+        No DRA injection in this optimization run
+      </div>
+    );
+  }
 
-  const plotData: Plotly.Data[] = names.map((name, i) => ({
-    x: draCurves[name].flows, y: draCurves[name].dr_pct,
-    type: 'scatter', mode: 'lines',
-    line: {color: palette[i % palette.length], width: 2},
-    name,
-  } as Plotly.Data));
-
-  // Add actual operating points as markers
-  stationsUsed.forEach((s, i) => {
-    const ppm = (s.dra_ppm || 0) as number;
-    const dr = (s.drag_reduction || s.dr_pct || 0) as number;
-    const flow = (ml.FLOW || 0) as number;
-    if (ppm > 0 || dr > 0) {
-      plotData.push({
-        x: [flow], y: [dr],
-        type: 'scatter', mode: 'markers',
-        marker: {color: palette[i % palette.length], size: 12, symbol: 'diamond', line: {width: 2, color: 'white'}},
-        name: `${(s.name || `S${i+1}`) as string} op.`,
-        showlegend: true,
-      } as Plotly.Data);
-    }
-  });
+  const names = draStations.map(s => s.name);
+  const ppms  = draStations.map(s => s.dra_ppm);
+  const drs   = draStations.map(s => s.drag_reduction);
+  const costs = draStations.map(s => s.dra_cost);
 
   return (
-    <div className="p-4 space-y-3">
-      <h4 className="text-sm font-semibold text-gray-700">DRA Drag Reduction % vs Flow</h4>
-      {plotData.length > 0 ? (
-        <Plot
-          data={plotData}
-          layout={{
-            height: 340, margin: {t: 10, r: 20, b: 50, l: 70},
-            xaxis: {title: 'Flow Rate (m³/h)', gridcolor: '#f3f4f6'},
-            yaxis: {title: 'Drag Reduction (%)', range: [0, 100], gridcolor: '#f3f4f6'},
-            plot_bgcolor: '#fafafa', paper_bgcolor: 'transparent',
-            legend: {orientation: 'h', y: -0.2, font: {size: 10}},
-            font: {size: 11},
-          } as unknown as Plotly.Layout}
-          config={{displayModeBar: false, responsive: true}}
-          style={{width: '100%'}}
-        />
-      ) : (
-        <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
-          DRA curve data not available. Run with DRA to see this chart.
+    <div className="p-3 space-y-4">
+      {/* KPI summary */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-lg border-l-4 border-green-500 bg-green-50 p-3">
+          <div className="text-xs text-gray-500">Total DRA Cost</div>
+          <div className="text-base font-bold text-gray-900">
+            {`₹${parsed.totalDraCost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+          </div>
         </div>
-      )}
+        <div className="rounded-lg border-l-4 border-teal-500 bg-teal-50 p-3">
+          <div className="text-xs text-gray-500">Injection Points</div>
+          <div className="text-base font-bold text-gray-900">{draStations.length}</div>
+        </div>
+        <div className="rounded-lg border-l-4 border-cyan-500 bg-cyan-50 p-3">
+          <div className="text-xs text-gray-500">Max DRA ppm</div>
+          <div className="text-base font-bold text-gray-900">{Math.max(...ppms).toFixed(1)} ppm</div>
+        </div>
+      </div>
 
-      {stationsUsed.length > 0 && (
+      {/* DRA ppm and DR% bar charts */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <h4 className="text-xs font-semibold text-gray-600 mb-1">DRA Dosage (ppm)</h4>
+          <Plot
+            data={[{
+              x: names, y: ppms, type: 'bar', name: 'DRA ppm',
+              marker: { color: '#14b8a6' },
+              hovertemplate: '%{x}<br>%{y:.1f} ppm<extra></extra>',
+            } as Plotly.Data]}
+            layout={{
+              height: 220, margin: { t: 10, r: 10, b: 80, l: 60 },
+              xaxis: { tickangle: -30, automargin: true },
+              yaxis: { title: 'ppm' },
+              plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+              showlegend: false,
+            } as unknown as Plotly.Layout}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: '100%' }}
+          />
+        </div>
+        <div>
+          <h4 className="text-xs font-semibold text-gray-600 mb-1">Drag Reduction (%)</h4>
+          <Plot
+            data={[{
+              x: names, y: drs, type: 'bar', name: 'DR %',
+              marker: { color: '#8b5cf6' },
+              hovertemplate: '%{x}<br>%{y:.1f}%<extra></extra>',
+            } as Plotly.Data]}
+            layout={{
+              height: 220, margin: { t: 10, r: 10, b: 80, l: 60 },
+              xaxis: { tickangle: -30, automargin: true },
+              yaxis: { title: '%', range: [0, 100] },
+              plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+              showlegend: false,
+            } as unknown as Plotly.Layout}
+            config={{ displayModeBar: false, responsive: true }}
+            style={{ width: '100%' }}
+          />
+        </div>
+      </div>
+
+      {/* DRA ppm vs DR% scatter */}
+      <div>
+        <h4 className="text-xs font-semibold text-gray-600 mb-1">DRA Dosage vs Drag Reduction Characteristic</h4>
+        <Plot
+          data={[{
+            x: ppms, y: drs,
+            type: 'scatter', mode: 'text+markers',
+            text: names, textposition: 'top center',
+            marker: { size: 10, color: costs, colorscale: 'Viridis', showscale: true,
+              colorbar: { title: 'DRA Cost (₹)', len: 0.8 } },
+            hovertemplate: '<b>%{text}</b><br>DRA: %{x:.1f} ppm<br>DR: %{y:.1f}%<extra></extra>',
+          } as Plotly.Data]}
+          layout={{
+            height: 280, margin: { t: 20, r: 80, b: 60, l: 60 },
+            xaxis: { title: 'DRA Dosage (ppm)' },
+            yaxis: { title: 'Drag Reduction (%)' },
+            plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 10 },
+            showlegend: false,
+          } as unknown as Plotly.Layout}
+          config={{ displayModeBar: false, responsive: true }}
+          style={{ width: '100%' }}
+        />
+      </div>
+
+      {/* DRA table */}
+      <div>
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">DRA Injection Summary</h4>
         <div className="overflow-x-auto">
           <table className="w-full text-xs border-collapse">
-            <thead className="bg-gray-100">
-              <tr>
-                {['Station', 'DRA PPM', 'DR (%)', 'DRA Cost (₹)'].map(h => (
-                  <th key={h} className="px-2 py-1.5 border border-gray-200 text-left font-medium">{h}</th>
+            <thead>
+              <tr className="bg-gray-100 text-gray-600">
+                {['Station', 'DRA ppm', 'Drag Reduction %', 'DRA Cost (₹)'].map(h => (
+                  <th key={h} className="px-2 py-1.5 text-left font-semibold border-b whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {stationsUsed.map((s, i) => (
-                <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                  <td className="px-2 py-1 border border-gray-200 font-medium">{(s.name || `S${i+1}`) as string}</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right">{((s.dra_ppm || 0) as number).toFixed(0)}</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right">{((s.drag_reduction || s.dr_pct || 0) as number).toFixed(1)}%</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right">₹{((s.dra_cost || 0) as number).toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
+              {draStations.map((s, i) => (
+                <tr key={s.key} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                  <td className="px-2 py-1 font-medium border-b">{s.name}</td>
+                  <td className="px-2 py-1 border-b">{s.dra_ppm.toFixed(1)}</td>
+                  <td className="px-2 py-1 border-b">{s.drag_reduction.toFixed(1)}%</td>
+                  <td className="px-2 py-1 border-b text-green-700">
+                    {`₹${s.dra_cost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      )}
+      </div>
     </div>
   );
 }

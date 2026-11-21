@@ -1,106 +1,118 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
+import { ParsedResult } from '../../../utils/resultParser';
 
-interface Props {
-  result: Record<string, unknown>;
-}
+interface Props { parsed: ParsedResult; }
 
-export function CostsTab({result}: Props) {
-  const ml = (result.mainline || result) as Record<string, unknown>;
-  const stationsUsed = (ml.stations_used || []) as Array<Record<string, unknown>>;
+const fmtCur = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
-  const names = stationsUsed.map((s, i) => (s.name || `S${i+1}`) as string);
-  const powerCosts = stationsUsed.map(s => (s.power_cost || 0) as number);
-  const draCosts = stationsUsed.map(s => (s.dra_cost || 0) as number);
-  const totalPerStation = powerCosts.map((p, i) => p + draCosts[i]);
-  const grandTotal = totalPerStation.reduce((a, b) => a + b, 0);
+export function CostsTab({ parsed }: Props) {
+  const names = parsed.stations.map(s => s.name);
+  const powerCosts = parsed.stations.map(s => s.power_cost);
+  const draCosts = parsed.stations.map(s => s.dra_cost);
 
-  if (names.length === 0) {
-    return <div className="p-4 text-sm text-gray-400">No cost data available yet.</div>;
+  const hasData = powerCosts.some(v => v > 0) || draCosts.some(v => v > 0);
+
+  if (!hasData) {
+    return (
+      <div className="p-4 flex items-center justify-center h-48 text-gray-400 text-sm">
+        Run optimization to see cost breakdown
+      </div>
+    );
   }
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-3 space-y-4">
+      {/* KPI summary */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { label: 'Total Cost', value: fmtCur(parsed.totalCost), color: 'bg-indigo-50 border-indigo-400' },
+          { label: 'Power Cost', value: fmtCur(parsed.totalPowerCost), color: 'bg-amber-50 border-amber-400' },
+          { label: 'DRA Cost', value: fmtCur(parsed.totalDraCost), color: 'bg-green-50 border-green-400' },
+        ].map(c => (
+          <div key={c.label} className={`rounded-lg border-l-4 p-3 ${c.color}`}>
+            <div className="text-xs text-gray-500">{c.label}</div>
+            <div className="text-base font-bold text-gray-900">{c.value}</div>
+          </div>
+        ))}
+      </div>
+
       {/* Stacked bar chart */}
       <div>
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Cost Breakdown by Station</h4>
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">Cost per Station</h4>
         <Plot
           data={[
             {
-              x: names, y: powerCosts, type: 'bar', name: 'Power & Fuel Cost',
-              marker: {color: '#3b82f6'},
+              x: names, y: powerCosts, type: 'bar', name: 'Power/Fuel Cost',
+              marker: { color: '#f59e0b' },
+              hovertemplate: '%{x}<br>Power: ₹%{y:,.0f}<extra></extra>',
             } as Plotly.Data,
             {
               x: names, y: draCosts, type: 'bar', name: 'DRA Cost',
-              marker: {color: '#f59e0b'},
+              marker: { color: '#10b981' },
+              hovertemplate: '%{x}<br>DRA: ₹%{y:,.0f}<extra></extra>',
             } as Plotly.Data,
           ]}
           layout={{
             barmode: 'stack',
             height: 280,
-            margin: {t: 10, r: 20, b: 70, l: 70},
-            xaxis: {title: 'Station', tickangle: -30},
-            yaxis: {title: 'Cost (₹)'},
-            plot_bgcolor: '#fafafa',
+            margin: { t: 20, r: 20, b: 90, l: 80 },
+            xaxis: { tickangle: -30 },
+            yaxis: { title: 'Cost (₹)' },
+            legend: { orientation: 'h', y: -0.35 },
+            plot_bgcolor: '#f8fafc',
             paper_bgcolor: 'transparent',
-            legend: {orientation: 'h', y: -0.35, font: {size: 10}},
-            font: {size: 10},
+            font: { size: 11 },
           } as unknown as Plotly.Layout}
-          config={{displayModeBar: false, responsive: true}}
-          style={{width: '100%'}}
-        />
-      </div>
-
-      {/* Pie chart */}
-      <div>
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Cost Contribution (%)</h4>
-        <Plot
-          data={[{
-            labels: names,
-            values: totalPerStation,
-            type: 'pie',
-            hole: 0.4,
-            textinfo: 'label+percent',
-          } as Plotly.Data]}
-          layout={{
-            height: 260,
-            margin: {t: 10, r: 20, b: 10, l: 20},
-            paper_bgcolor: 'transparent',
-            font: {size: 10},
-          } as unknown as Plotly.Layout}
-          config={{displayModeBar: false, responsive: true}}
-          style={{width: '100%'}}
+          config={{ displayModeBar: false, responsive: true }}
+          style={{ width: '100%' }}
         />
       </div>
 
       {/* Cost table */}
       <div>
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Cost Summary Table</h4>
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">Cost Breakdown by Station</h4>
         <div className="overflow-x-auto">
           <table className="w-full text-xs border-collapse">
-            <thead className="bg-gray-100">
-              <tr>
-                {['Station', 'Power & Fuel (₹)', 'DRA (₹)', 'Total (₹)', 'Share (%)'].map(h => (
-                  <th key={h} className="px-2 py-1.5 text-left border border-gray-200 font-medium">{h}</th>
+            <thead>
+              <tr className="bg-gray-100 text-gray-600">
+                {['Station', 'Type', 'Power/Fuel Cost (₹)', 'DRA Cost (₹)', 'Total (₹)', '% of Total'].map(h => (
+                  <th key={h} className="px-2 py-1.5 text-left font-semibold border-b whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {names.map((name, i) => (
-                <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                  <td className="px-2 py-1 border border-gray-200 font-medium">{name}</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right">₹{powerCosts[i].toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right">₹{draCosts[i].toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right font-medium">₹{totalPerStation[i].toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
-                  <td className="px-2 py-1 border border-gray-200 text-right">{grandTotal > 0 ? (100 * totalPerStation[i] / grandTotal).toFixed(1) : '0.0'}%</td>
-                </tr>
-              ))}
-              <tr className="bg-blue-50 font-bold">
-                <td className="px-2 py-1 border border-gray-200">TOTAL</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">₹{powerCosts.reduce((a, b) => a + b, 0).toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">₹{draCosts.reduce((a, b) => a + b, 0).toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">₹{grandTotal.toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
-                <td className="px-2 py-1 border border-gray-200 text-right">100%</td>
+              {parsed.stations.map((s, i) => {
+                const stationTotal = s.power_cost + s.dra_cost;
+                const pct = parsed.totalCost > 0 ? (stationTotal / parsed.totalCost) * 100 : 0;
+                return (
+                  <tr key={s.key} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                    <td className="px-2 py-1 font-medium border-b">{s.name}</td>
+                    <td className="px-2 py-1 border-b">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${i === 0 ? 'bg-green-100 text-green-800' : s.is_pump ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600'}`}>
+                        {i === 0 ? 'Origin' : s.is_pump ? 'Pump' : 'Pass-thru'}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 border-b text-amber-700">{s.power_cost > 0 ? fmtCur(s.power_cost) : '—'}</td>
+                    <td className="px-2 py-1 border-b text-green-700">{s.dra_cost > 0 ? fmtCur(s.dra_cost) : '—'}</td>
+                    <td className="px-2 py-1 border-b font-medium">{stationTotal > 0 ? fmtCur(stationTotal) : '—'}</td>
+                    <td className="px-2 py-1 border-b">
+                      {pct > 0 ? (
+                        <div className="flex items-center gap-1">
+                          <div className="h-2 bg-indigo-400 rounded" style={{ width: `${Math.min(pct, 100) * 0.6}px` }} />
+                          <span>{pct.toFixed(1)}%</span>
+                        </div>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+              <tr className="bg-gray-100 font-semibold">
+                <td className="px-2 py-1.5 border-t" colSpan={2}>Total</td>
+                <td className="px-2 py-1.5 border-t text-amber-700">{fmtCur(parsed.totalPowerCost)}</td>
+                <td className="px-2 py-1.5 border-t text-green-700">{fmtCur(parsed.totalDraCost)}</td>
+                <td className="px-2 py-1.5 border-t">{fmtCur(parsed.totalCost)}</td>
+                <td className="px-2 py-1.5 border-t">100%</td>
               </tr>
             </tbody>
           </table>

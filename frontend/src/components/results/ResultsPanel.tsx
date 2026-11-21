@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
+import { parseResult, ParsedResult } from '../../utils/resultParser';
 import { SummaryTab } from './tabs/SummaryTab';
 import { CostsTab } from './tabs/CostsTab';
 import { PerformanceTab } from './tabs/PerformanceTab';
@@ -18,7 +19,6 @@ interface StationInput {
 interface TerminalInput {
   name: string; elevation: number; min_residual: number;
 }
-
 interface Props {
   result: Record<string, unknown>;
   stationsInput: StationInput[];
@@ -26,44 +26,48 @@ interface Props {
 }
 
 const TABS = [
-  {id: 'summary',      label: 'Summary'},
-  {id: 'costs',        label: 'Costs'},
-  {id: 'performance',  label: 'Performance'},
-  {id: 'system',       label: 'System Curves'},
-  {id: 'pump_system',  label: 'Pump-System'},
-  {id: 'dra',          label: 'DRA Curves'},
-  {id: 'analysis3d',   label: '3D Analysis'},
-  {id: 'pressure3d',   label: '3D Pressure'},
-  {id: 'map',          label: 'Pipeline Map'},
-  {id: 'sensitivity',  label: 'Sensitivity'},
-  {id: 'benchmarking', label: 'Benchmarking'},
-  {id: 'savings',      label: 'Savings'},
+  { id: 'summary',      label: 'Summary' },
+  { id: 'costs',        label: 'Costs' },
+  { id: 'performance',  label: 'Performance' },
+  { id: 'system',       label: 'System Curves' },
+  { id: 'pump_system',  label: 'Pump-System' },
+  { id: 'dra',          label: 'DRA Curves' },
+  { id: 'analysis3d',   label: '3D Analysis' },
+  { id: 'pressure3d',   label: '3D Pressure' },
+  { id: 'map',          label: 'Pipeline Map' },
+  { id: 'sensitivity',  label: 'Sensitivity' },
+  { id: 'benchmarking', label: 'Benchmarking' },
+  { id: 'savings',      label: 'Savings' },
 ];
 
-export function ResultsPanel({result, stationsInput, terminal}: Props) {
+export function ResultsPanel({ result, stationsInput, terminal }: Props) {
   const [active, setActive] = useState('summary');
+
+  const parsed: ParsedResult = useMemo(
+    () => parseResult(result, stationsInput, terminal),
+    [result, stationsInput, terminal],
+  );
 
   const renderTab = () => {
     switch (active) {
-      case 'summary':     return <SummaryTab result={result} stationsInput={stationsInput} terminal={terminal} />;
-      case 'costs':       return <CostsTab result={result} />;
-      case 'performance': return <PerformanceTab result={result} />;
-      case 'system':      return <SystemCurvesTab result={result} />;
-      case 'pump_system': return <PumpSystemTab result={result} />;
-      case 'dra':         return <DRACurvesTab result={result} />;
-      case 'analysis3d':  return <Analysis3DTab result={result} />;
-      case 'pressure3d':  return <Pressure3DTab result={result} />;
-      case 'map':         return <PipelineMapTab result={result} stationsInput={stationsInput} terminal={terminal} />;
-      case 'sensitivity': return <SensitivityTab result={result} />;
-      case 'benchmarking':return <BenchmarkingTab result={result} />;
-      case 'savings':     return <SavingsTab result={result} />;
-      default:            return null;
+      case 'summary':      return <SummaryTab parsed={parsed} />;
+      case 'costs':        return <CostsTab parsed={parsed} />;
+      case 'performance':  return <PerformanceTab parsed={parsed} />;
+      case 'system':       return <SystemCurvesTab parsed={parsed} />;
+      case 'pump_system':  return <PumpSystemTab parsed={parsed} />;
+      case 'dra':          return <DRACurvesTab parsed={parsed} />;
+      case 'analysis3d':   return <Analysis3DTab parsed={parsed} />;
+      case 'pressure3d':   return <Pressure3DTab parsed={parsed} />;
+      case 'map':          return <PipelineMapTab parsed={parsed} />;
+      case 'sensitivity':  return <SensitivityTab result={result} />;
+      case 'benchmarking': return <BenchmarkingTab parsed={parsed} />;
+      case 'savings':      return <SavingsTab parsed={parsed} />;
+      default:             return null;
     }
   };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Tab bar */}
       <div className="flex overflow-x-auto border-b bg-white shrink-0">
         {TABS.map(tab => (
           <button key={tab.id} onClick={() => setActive(tab.id)}
@@ -76,8 +80,6 @@ export function ResultsPanel({result, stationsInput, terminal}: Props) {
           </button>
         ))}
       </div>
-
-      {/* Tab content */}
       <div className="flex-1 overflow-y-auto">
         {renderTab()}
       </div>

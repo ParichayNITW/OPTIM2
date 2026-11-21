@@ -61,6 +61,23 @@ def _run_optimization(job_id: str, payload: dict) -> None:
         if mainline_result.get("error"):
             raise RuntimeError(mainline_result.get("message", "Solver returned error"))
 
+        # Inject aggregate metrics — solver stores per-station flat keys only;
+        # the frontend needs totals at the top level for quick display.
+        _stn_keys = [
+            s['name'].strip().lower().replace(' ', '_')
+            for s in kwargs.get('stations', [])
+        ]
+        mainline_result['power_cost'] = sum(
+            float(mainline_result.get(f'power_cost_{k}', 0) or 0) for k in _stn_keys
+        )
+        mainline_result['dra_cost'] = sum(
+            float(mainline_result.get(f'dra_cost_{k}', 0) or 0) for k in _stn_keys
+        )
+        mainline_result['num_pumps'] = sum(
+            int(mainline_result.get(f'num_pumps_{k}', 0) or 0) for k in _stn_keys
+        )
+        mainline_result['FLOW'] = float(kwargs.get('FLOW', 0) or 0)
+
         branch_results: list[dict] = []
         for branch_input in payload.get("branches") or []:
             junction_head = float(
