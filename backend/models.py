@@ -65,6 +65,28 @@ class OptimizeRequest(BaseModel):
     priority_feasibility: bool = False
     collect_state_audit: bool = False
 
+    # --- operating mode ---
+    op_mode: str = "flow_rate"           # "flow_rate" | "daily_schedule" | "pumping_planner"
+    flow_mode: str = "fixed"             # "fixed" | "variable"
+    hourly_flow: float = 0.0             # Fixed mode: m³/h for all hours (0 → use FLOW)
+    daily_throughput_target: float | None = None   # Variable mode: total m³ target for 24 h
+    start_hour: int = 7                  # Schedule start hour (default 07:00)
+    retry_with_max_dra: bool = False     # Backtrack with DRA enforcement on infeasibility
+
+    # --- daily schedule inputs ---
+    day_plan: list[dict[str, Any]] | None = None   # [{Product, Volume (m³), Viscosity (cSt), Density (kg/m³), Initial DRA (ppm)}]
+
+    # --- pumping planner inputs ---
+    proj_flow: list[dict[str, Any]] | None = None  # [{start, end, flow}] datetime intervals
+    proj_plan: list[dict[str, Any]] | None = None  # [{product, volume, visc, density}]
+    planner_days: int = 7
+
+    # --- time-of-use tariff ---
+    tou_tariff: list[dict[str, Any]] | None = None  # [{start_hr, end_hr, rate}]
+
+    # --- injection branch type (per branch, stored here as global default) ---
+    # actual branch_type is in BranchInput
+
 
 # ---------------------------------------------------------------------------
 # API responses

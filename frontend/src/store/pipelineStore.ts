@@ -119,6 +119,9 @@ export interface GlobalParams {
   planner_days: number;
   flow_mode: 'fixed' | 'variable';
   hourly_flow: number;
+  daily_throughput_target: number | null;
+  start_hour: number;
+  retry_with_max_dra: boolean;
 }
 
 const defaultPumpConfig = (): PumpConfig => ({
@@ -226,6 +229,9 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
     planner_days: 7,
     flow_mode: 'fixed',
     hourly_flow: 1000,
+    daily_throughput_target: null,
+    start_hour: 7,
+    retry_with_max_dra: false,
   },
   stations: [defaultStation(0), defaultStation(1)],
   terminal: {name: 'Terminal', elevation: 0, min_residual: 50},
@@ -585,10 +591,15 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       Ambient_temp: g.Ambient_temp,
       mop_kgcm2: g.MOP_kgcm2,          // correct snake_case: backend expects mop_kgcm2
       op_mode: g.op_mode,
+      flow_mode: g.flow_mode,
+      hourly_flow: g.hourly_flow,
+      daily_throughput_target: g.daily_throughput_target,
+      start_hour: g.start_hour,
+      retry_with_max_dra: g.retry_with_max_dra,
       linefill: linefill_table.map(r => ({'Product': r.product, 'Volume (m³)': r.volume, 'Viscosity (cSt)': r.visc, 'Density (kg/m³)': r.density, 'Initial DRA (ppm)': r.init_dra ?? 0})),
-      day_plan,
-      proj_flow,
-      proj_plan,
+      day_plan: day_plan.map(r => ({'Product': r.product, 'Volume (m³)': r.volume, 'Viscosity (cSt)': r.visc, 'Density (kg/m³)': r.density, 'Initial DRA (ppm)': r.init_dra ?? 0})),
+      proj_flow: proj_flow.map(r => ({start: r.start, end: r.end, flow: r.flow})),
+      proj_plan: proj_plan.map(r => ({'Product': r.product, 'Volume (m³)': r.volume, 'Viscosity (cSt)': r.visc, 'Density (kg/m³)': r.density, 'Initial DRA (ppm)': 0})),
       pump_shear_rate: g.pump_shear_rate,
       rpm_step: g.rpm_step,
       dra_step: g.dra_step,

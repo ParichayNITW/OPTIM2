@@ -58,6 +58,172 @@ export interface ParsedResult {
   terminalHead: number;
 }
 
+// ---------------------------------------------------------------------------
+// Schedule / Planner result types
+// ---------------------------------------------------------------------------
+
+export interface HourlyRow {
+  hour: number;
+  hour_label: string;
+  step: number;
+  flow: number;
+  power_cost: number;
+  dra_cost: number;
+  total_cost: number;
+  num_pumps: number;
+  error: boolean;
+  error_msg?: string;
+  // per-station metrics — keyed by station key
+  stations: Record<string, {
+    num_pumps: number;
+    speed: number;
+    efficiency: number;
+    power_cost: number;
+    dra_cost: number;
+    dra_ppm: number;
+    drag_reduction: number;
+    sdh: number;
+    residual_head_in: number;
+    motor_kw: number;
+  }>;
+}
+
+export interface LinefillSnap {
+  Product: string;
+  'Volume (m³)': number;
+  'Viscosity (cSt)': number;
+  'Density (kg/m³)': number;
+  'Initial DRA (ppm)': number;
+}
+
+export interface FinalSegmentSlice {
+  segment_idx: number;
+  station_name: string;
+  slices: Array<{length_km: number; kv: number; rho: number}>;
+  avg_kv: number;
+  avg_rho: number;
+}
+
+export interface IntervalRow {
+  start: string;
+  end: string;
+  duration_hours: number;
+  flow_m3h: number;
+  volume_m3: number;
+  cost: number;
+}
+
+export interface ParsedScheduleResult {
+  op_mode: 'daily_schedule' | 'pumping_planner';
+  hourly: HourlyRow[];              // 24 rows for daily_schedule
+  linefill_snaps: LinefillSnap[][]; // per-hour linefill queue snapshots
+  final_vol: LinefillSnap[];        // next-day starting state
+  final_segment_slices: FinalSegmentSlice[];
+  hourly_flows: number[];
+  total_cost: number;
+  total_throughput: number;
+  backtrack_notes: string[];
+  enforced_actions: Array<{hour: string; action: string}>;
+  hourly_errors: string[];
+  interval_results: IntervalRow[];  // pumping_planner only
+  branch_schedules: Record<string, unknown[]>;
+  // Convenience aggregates
+  avg_flow: number;
+  avg_efficiency: number;
+  peak_cost_hour: number;
+}
+
+export function parseScheduleResult(
+  result: Record<string, unknown>,
+  stationList: Array<{name: string; elevation: number; length_km: number; is_pump: boolean}>,
+): ParsedScheduleResult {
+  const op_mode = (result.op_mode as string || 'daily_schedule') as 'daily_schedule' | 'pumping_planner';
+  const rawHours = (result.mainline_schedule as Array<Record<string, unknown>>) || [];
+  const rawIntervals = (result.interval_results as IntervalRow[]) || [];
+
+  const hourly: HourlyRow[] = rawHours.map(r => {
+    const isErr = Boolean(r.error);
+    const pc = Number(r.power_cost || 0);
+    const dc = Number(r.dra_cost   || 0);
+    const stationMetrics: HourlyRow['stations'] = {};
+    for (const s of stationList) {
+      const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
+      stationMetrics[k] = {
+        num_pumps:        Number(r[`num_pumps_${k}`]   || 0),
+        speed:            Number(r[`speed_${k}`]        || 0),
+        efficiency:       Number(r[`efficiency_${k}`]   || 0),
+        power_cost:       Number(r[`power_cost_${k}`]   || 0),
+        dra_cost:         Number(r[`dra_cost_${k}`]     || 0),
+        dra_ppm:          Number(r[`dra_ppm_${k}`]      || 0),
+        drag_reduction:   Number(r[`drag_reduction_${k}`] || 0),
+        sdh:              Number(r[`sdh_${k}`]           || 0),
+        residual_head_in: Number(r[`residual_head_in_${k}`] || 0),
+        motor_kw:         Number(r[`motor_kw_${k}`]     || 0),
+      };
+    }
+    return {
+      hour:       Number(r.hour  || 0),
+      hour_label: String(r.hour_label || '00:00'),
+      step:       Number(r.step  || 0),
+      flow:       Number(r.FLOW  || 0),
+      power_cost: pc,
+      dra_cost:   dc,
+      total_cost: pc + dc,
+      num_pumps:  Number(r.num_pumps || 0),
+      error:      isErr,
+      error_msg:  isErr ? String(r.message || '') : undefined,
+      stations:   stationMetrics,
+    };
+  });
+
+  const hourly_flows    = (result.hourly_flows    as number[]) || hourly.map(h => h.flow);
+  const total_cost      = Number(result.total_cost      || 0);
+  const total_throughput = Number(result.total_throughput || 0);
+  const backtrack_notes  = (result.backtrack_notes  as string[]) || [];
+  const enforced_actions = (result.enforced_actions as Array<{hour: string; action: string}>) || [];
+  const hourly_errors    = (result.hourly_errors    as string[]) || [];
+  const linefill_snaps   = (result.linefill_snaps   as LinefillSnap[][]) || [];
+  const final_vol        = (result.final_vol        as LinefillSnap[]) || [];
+  const final_segment_slices = (result.final_segment_slices as FinalSegmentSlice[]) || [];
+  const branch_schedules = (result.branch_schedules as Record<string, unknown[]>) || {};
+
+  const goodHours = hourly.filter(h => !h.error && h.flow > 0);
+  const avg_flow = goodHours.length > 0
+    ? goodHours.reduce((a, h) => a + h.flow, 0) / goodHours.length : 0;
+
+  const effValues = goodHours.flatMap(h =>
+    stationList.filter(s => s.is_pump).map(s => {
+      const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
+      return h.stations[k]?.efficiency || 0;
+    }).filter(e => e > 0)
+  );
+  const avg_efficiency = effValues.length > 0
+    ? effValues.reduce((a, v) => a + v, 0) / effValues.length : 0;
+
+  const peak_cost_hour = hourly.reduce(
+    (best, h, i) => h.total_cost > (hourly[best]?.total_cost || 0) ? i : best, 0
+  );
+
+  return {
+    op_mode,
+    hourly,
+    linefill_snaps,
+    final_vol,
+    final_segment_slices,
+    hourly_flows,
+    total_cost,
+    total_throughput,
+    backtrack_notes,
+    enforced_actions,
+    hourly_errors,
+    interval_results: rawIntervals,
+    branch_schedules,
+    avg_flow,
+    avg_efficiency,
+    peak_cost_hour,
+  };
+}
+
 function g(ml: Record<string, unknown>, key: string): number {
   const v = ml[key];
   if (v === null || v === undefined) return 0;

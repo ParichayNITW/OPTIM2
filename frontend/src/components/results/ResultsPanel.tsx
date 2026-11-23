@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { parseResult, ParsedResult } from '../../utils/resultParser';
+import { parseResult, parseScheduleResult, ParsedResult, ParsedScheduleResult } from '../../utils/resultParser';
 import { SummaryTab } from './tabs/SummaryTab';
 import { CostsTab } from './tabs/CostsTab';
 import { PerformanceTab } from './tabs/PerformanceTab';
@@ -12,6 +12,14 @@ import { PipelineMapTab } from './tabs/PipelineMapTab';
 import { SensitivityTab } from './tabs/SensitivityTab';
 import { BenchmarkingTab } from './tabs/BenchmarkingTab';
 import { SavingsTab } from './tabs/SavingsTab';
+import { ReportsTab } from './tabs/ReportsTab';
+import { ScheduleResultsTab } from './tabs/ScheduleResultsTab';
+import { HourlyChartsTab } from './tabs/HourlyChartsTab';
+import { DRAHeatmapTab } from './tabs/DRAHeatmapTab';
+import { NextDayLinefillTab } from './tabs/NextDayLinefillTab';
+import { PumpingPlannerTab } from './tabs/PumpingPlannerTab';
+import { ScheduleAuditTab } from './tabs/ScheduleAuditTab';
+import type { StationData } from '../../store/pipelineStore';
 
 interface StationInput {
   name: string; length_km: number; elevation: number; is_pump: boolean;
@@ -23,9 +31,11 @@ interface Props {
   result: Record<string, unknown>;
   stationsInput: StationInput[];
   terminal: TerminalInput;
+  fullStations?: StationData[];
+  jobId?: string;
 }
 
-const TABS = [
+const FLOW_RATE_TABS = [
   { id: 'summary',      label: 'Summary' },
   { id: 'costs',        label: 'Costs' },
   { id: 'performance',  label: 'Performance' },
@@ -38,17 +48,83 @@ const TABS = [
   { id: 'sensitivity',  label: 'Sensitivity' },
   { id: 'benchmarking', label: 'Benchmarking' },
   { id: 'savings',      label: 'Savings' },
+  { id: 'reports',      label: 'Reports' },
 ];
 
-export function ResultsPanel({ result, stationsInput, terminal }: Props) {
-  const [active, setActive] = useState('summary');
+const SCHEDULE_TABS = [
+  { id: 'schedule',     label: 'Schedule Results' },
+  { id: 'hourly_charts',label: 'Hourly Charts' },
+  { id: 'dra_heatmap',  label: 'DRA Heatmap' },
+  { id: 'next_day_lf',  label: 'Next-Day Linefill' },
+  { id: 'audit',        label: 'Audit Log' },
+  { id: 'summary',      label: 'Summary' },
+  { id: 'costs',        label: 'Costs' },
+  { id: 'performance',  label: 'Performance' },
+  { id: 'benchmarking', label: 'Benchmarking' },
+  { id: 'reports',      label: 'Reports' },
+];
+
+const PLANNER_TABS = [
+  { id: 'planner',      label: 'Pumping Planner' },
+  { id: 'next_day_lf',  label: 'Next-Day Linefill' },
+  { id: 'audit',        label: 'Audit Log' },
+  { id: 'summary',      label: 'Summary' },
+  { id: 'costs',        label: 'Costs' },
+  { id: 'reports',      label: 'Reports' },
+];
+
+export function ResultsPanel({ result, stationsInput, terminal, fullStations, jobId }: Props) {
+  const opMode = (result.op_mode as string) || 'flow_rate';
+  const isSchedule = opMode === 'daily_schedule';
+  const isPlanner  = opMode === 'pumping_planner';
+  const isScheduleMode = isSchedule || isPlanner;
+
+  const TABS = isSchedule ? SCHEDULE_TABS : isPlanner ? PLANNER_TABS : FLOW_RATE_TABS;
+  const [active, setActive] = useState(TABS[0].id);
 
   const parsed: ParsedResult = useMemo(
     () => parseResult(result, stationsInput, terminal),
     [result, stationsInput, terminal],
   );
 
+  const schedule: ParsedScheduleResult | null = useMemo(() => {
+    if (!isScheduleMode) return null;
+    return parseScheduleResult(result, stationsInput);
+  }, [result, stationsInput, isScheduleMode]);
+
+  const stationsForTabs: StationData[] = fullStations || stationsInput.map(s => ({
+    id: s.name,
+    name: s.name,
+    elevation: s.elevation,
+    is_pump: s.is_pump,
+    length_km: s.length_km,
+    max_dra_pct: 20,
+    min_suction_head: 0,
+    OD_in: 20,
+    wall_thk_in: 0.375,
+    SMYS_psi: 52000,
+    roughness_m: 0.000046,
+    max_pumps: 3,
+    delivery: 0,
+    supply: 0,
+    pumpA: {} as never,
+    pumpB: {} as never,
+    peaks_table: [],
+    branches: [],
+  }));
+
   const renderTab = () => {
+    if (isScheduleMode && schedule) {
+      switch (active) {
+        case 'schedule':      return <ScheduleResultsTab schedule={schedule} stations={stationsForTabs} />;
+        case 'hourly_charts': return <HourlyChartsTab schedule={schedule} stations={stationsForTabs} />;
+        case 'dra_heatmap':   return <DRAHeatmapTab schedule={schedule} stations={stationsForTabs} />;
+        case 'next_day_lf':   return <NextDayLinefillTab schedule={schedule} />;
+        case 'planner':       return <PumpingPlannerTab schedule={schedule} />;
+        case 'audit':         return <ScheduleAuditTab schedule={schedule} />;
+        // Fall through to common tabs:
+      }
+    }
     switch (active) {
       case 'summary':      return <SummaryTab parsed={parsed} />;
       case 'costs':        return <CostsTab parsed={parsed} />;
@@ -62,12 +138,27 @@ export function ResultsPanel({ result, stationsInput, terminal }: Props) {
       case 'sensitivity':  return <SensitivityTab result={result} />;
       case 'benchmarking': return <BenchmarkingTab parsed={parsed} />;
       case 'savings':      return <SavingsTab parsed={parsed} />;
+      case 'reports':      return <ReportsTab jobId={jobId} opMode={opMode} />;
       default:             return null;
     }
   };
 
   return (
     <div className="flex flex-col h-full">
+      {isScheduleMode && schedule && (
+        <div className="bg-blue-600 text-white px-3 py-1.5 text-xs flex items-center gap-3 shrink-0">
+          <span className="font-semibold">
+            {isSchedule ? '24-hr Daily Schedule' : 'Multi-Day Planner'}
+          </span>
+          <span>Total: ₹{schedule.total_cost.toLocaleString('en-IN', {maximumFractionDigits: 0})}</span>
+          <span>{schedule.total_throughput.toLocaleString('en-IN', {maximumFractionDigits: 0})} m³</span>
+          {schedule.hourly_errors.length > 0 && (
+            <span className="bg-orange-400 px-1.5 rounded text-orange-900 font-medium">
+              ⚠ {schedule.hourly_errors.length} infeasible
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex overflow-x-auto border-b bg-white shrink-0">
         {TABS.map(tab => (
           <button key={tab.id} onClick={() => setActive(tab.id)}

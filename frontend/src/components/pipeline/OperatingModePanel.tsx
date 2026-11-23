@@ -82,6 +82,22 @@ export function OperatingModePanel() {
                   className="w-24 px-2 py-1 text-xs border border-gray-300 rounded" />
               </div>
             )}
+            {g.flow_mode === 'variable' && (
+              <div className="flex items-center gap-2 mt-1">
+                <label className="text-xs text-gray-600 w-40">Daily Throughput Target (m³)</label>
+                <input type="number" value={g.daily_throughput_target ?? ''} min={0} placeholder="e.g. 10800"
+                  onChange={e => setGlobal({daily_throughput_target: e.target.value ? parseFloat(e.target.value) : null})}
+                  className="w-28 px-2 py-1 text-xs border border-gray-300 rounded" />
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <input type="checkbox" id="retry_dra" checked={g.retry_with_max_dra}
+              onChange={e => setGlobal({retry_with_max_dra: e.target.checked})}
+              className="w-3.5 h-3.5" />
+            <label htmlFor="retry_dra" className="text-xs text-gray-600 cursor-pointer">
+              Retry infeasible hours with max DRA
+            </label>
           </div>
         </div>
       )}
