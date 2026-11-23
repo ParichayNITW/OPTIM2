@@ -132,8 +132,6 @@ def _post_process_engineering(result: dict, payload: dict, stn_keys: list[str]) 
 
     # Pump shear-degradation factor (20% loss per pump pass)
     f_shear = 0.80
-    mop = float(payload.get("mop_kgcm2") or 0.0)
-    mop_m = mop * 10000.0 / 850.0  # crude approximation kgf/cm² → m head (at ρ≈850)
 
     for idx, stn in enumerate(stations):
         k = stn_keys[idx] if idx < len(stn_keys) else _stn_key(stn.get("name", ""))
@@ -377,11 +375,11 @@ def _run_daily_schedule(payload: dict) -> dict:
         except Exception as exc:
             error_msg = f"Hour {hour_label}: {exc}"
 
-        # Backtrack: retry with maximum DRA if infeasible
+        # Backtrack: retry with DRA cost zeroed so solver freely injects up to max_dra_pct
         if hour_result is None and retry_dra:
             try:
                 kwargs_retry = dict(kwargs)
-                kwargs_retry["RateDRA"] = payload.get("RateDRA", 0)
+                kwargs_retry["RateDRA"] = 0.0  # zero cost forces max-benefit DRA selection
                 hour_result = solve_pipeline_with_types(**kwargs_retry)
                 if hour_result.get("error"):
                     hour_result = None

@@ -53,7 +53,7 @@ export function Layout() {
       <aside className="w-56 bg-brand-900 text-white flex flex-col shrink-0">
         <div className="px-5 py-5 border-b border-brand-700">
           <div className="text-lg font-bold tracking-tight">Pipeline Optima™</div>
-          <div className="text-xs text-blue-300 mt-0.5">Globally optimal scheduling</div>
+          <div className="text-xs text-blue-300 mt-0.5 leading-tight">Smart Scheduling and Optimization for Cross-country Pipeline Networks</div>
         </div>
 
         <nav className="flex-1 py-4 space-y-1 px-2">

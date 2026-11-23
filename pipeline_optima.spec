@@ -102,6 +102,12 @@ hiddenimports = [
     "backend.routers.optimize",
     "backend.routers.results",
     "backend.routers.pipelines",
+    "backend.routers.registry",
+    "backend.routers.baseline",
+    "backend.routers.exports",
+    "backend.schedule_helpers",
+    "openpyxl",
+    "fpdf",
     # Qt WebEngine (PySide6)
     "PySide6.QtWebEngineWidgets",
     "PySide6.QtWebEngineCore",

@@ -20,7 +20,7 @@ from backend.routers import exports
 app = FastAPI(
     title="Pipeline Optima™ API",
     description=(
-        "Globally optimal pipeline scheduling via Dynamic Programming. "
+        "Smart Scheduling and Optimization for Cross-country Pipeline Networks. "
         "Wraps the OPTIM2 DP solver — provably optimal on the discretized MINLP."
     ),
     version="1.0.0",

@@ -29,7 +29,7 @@ export function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="text-2xl font-bold text-brand-900">Pipeline Optima™</div>
-          <div className="text-sm text-gray-500 mt-1">Globally optimal pipeline scheduling</div>
+          <div className="text-sm text-gray-500 mt-1 leading-snug">Smart Scheduling and Optimization for Cross-country Pipeline Networks</div>
         </div>
         <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow p-8 space-y-4">
           <h2 className="text-lg font-semibold text-gray-800">Sign in</h2>
