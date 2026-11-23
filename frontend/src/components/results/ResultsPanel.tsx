@@ -9,7 +9,7 @@ import { DRACurvesTab } from './tabs/DRACurvesTab';
 import { Analysis3DTab } from './tabs/Analysis3DTab';
 import { Pressure3DTab } from './tabs/Pressure3DTab';
 import { PipelineMapTab } from './tabs/PipelineMapTab';
-import { SensitivityTab } from './tabs/SensitivityTab';
+// import { SensitivityTab } from './tabs/SensitivityTab';
 import { BenchmarkingTab } from './tabs/BenchmarkingTab';
 import { SavingsTab } from './tabs/SavingsTab';
 import { ReportsTab } from './tabs/ReportsTab';
@@ -45,7 +45,7 @@ const FLOW_RATE_TABS = [
   { id: 'analysis3d',   label: '3D Analysis' },
   { id: 'pressure3d',   label: '3D Pressure' },
   { id: 'map',          label: 'Pipeline Map' },
-  { id: 'sensitivity',  label: 'Sensitivity' },
+  // { id: 'sensitivity',  label: 'Sensitivity' },
   { id: 'benchmarking', label: 'Benchmarking' },
   { id: 'savings',      label: 'Savings' },
   { id: 'reports',      label: 'Reports' },
@@ -56,7 +56,9 @@ const SCHEDULE_TABS = [
   { id: 'hourly_charts',label: 'Hourly Charts' },
   { id: 'dra_heatmap',  label: 'DRA Heatmap' },
   { id: 'next_day_lf',  label: 'Next-Day Linefill' },
-  { id: 'audit',        label: 'Audit Log' },
+  { id: 'system',       label: 'System Curves' },
+  { id: 'pump_system',  label: 'Pump-System' },
+  { id: 'dra',          label: 'DRA Curves' },
   { id: 'summary',      label: 'Summary' },
   { id: 'costs',        label: 'Costs' },
   { id: 'performance',  label: 'Performance' },
@@ -67,7 +69,9 @@ const SCHEDULE_TABS = [
 const PLANNER_TABS = [
   { id: 'planner',      label: 'Pumping Planner' },
   { id: 'next_day_lf',  label: 'Next-Day Linefill' },
-  { id: 'audit',        label: 'Audit Log' },
+  { id: 'system',       label: 'System Curves' },
+  { id: 'pump_system',  label: 'Pump-System' },
+  { id: 'dra',          label: 'DRA Curves' },
   { id: 'summary',      label: 'Summary' },
   { id: 'costs',        label: 'Costs' },
   { id: 'reports',      label: 'Reports' },
@@ -91,6 +95,14 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
     if (!isScheduleMode) return null;
     return parseScheduleResult(result, stationsInput);
   }, [result, stationsInput, isScheduleMode]);
+
+  const parsedHour0: ParsedResult | null = useMemo(() => {
+    if (!isScheduleMode) return null;
+    const hourlyArr = (result.mainline_schedule as Record<string, unknown>[] | undefined) || [];
+    const firstGood = hourlyArr.find(h => !h.error);
+    if (!firstGood) return null;
+    return parseResult({...firstGood, op_mode: 'flow_rate'}, stationsInput, terminal);
+  }, [isScheduleMode, result, stationsInput, terminal]);
 
   const stationsForTabs: StationData[] = fullStations || stationsInput.map(s => ({
     id: s.name,
@@ -122,6 +134,18 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
         case 'next_day_lf':   return <NextDayLinefillTab schedule={schedule} />;
         case 'planner':       return <PumpingPlannerTab schedule={schedule} />;
         case 'audit':         return <ScheduleAuditTab schedule={schedule} />;
+        case 'system':
+          return parsedHour0 ? (
+            <><p className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 border-b border-blue-100">Curves/data as of start time (Hour 0)</p><SystemCurvesTab parsed={parsedHour0} /></>
+          ) : null;
+        case 'pump_system':
+          return parsedHour0 ? (
+            <><p className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 border-b border-blue-100">Curves/data as of start time (Hour 0)</p><PumpSystemTab parsed={parsedHour0} /></>
+          ) : null;
+        case 'dra':
+          return parsedHour0 ? (
+            <><p className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 border-b border-blue-100">Curves/data as of start time (Hour 0)</p><DRACurvesTab parsed={parsedHour0} /></>
+          ) : null;
         // Fall through to common tabs:
       }
     }
@@ -135,7 +159,7 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
       case 'analysis3d':   return <Analysis3DTab parsed={parsed} />;
       case 'pressure3d':   return <Pressure3DTab parsed={parsed} />;
       case 'map':          return <PipelineMapTab parsed={parsed} />;
-      case 'sensitivity':  return <SensitivityTab result={result} />;
+      // case 'sensitivity':  return <SensitivityTab result={result} />;
       case 'benchmarking': return <BenchmarkingTab parsed={parsed} />;
       case 'savings':      return <SavingsTab parsed={parsed} />;
       case 'reports':      return <ReportsTab jobId={jobId} opMode={opMode} />;

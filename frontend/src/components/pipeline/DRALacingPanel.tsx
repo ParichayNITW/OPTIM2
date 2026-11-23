@@ -43,6 +43,8 @@ export function DRALacingPanel() {
         dr_pct: s.dra_perc || 0,
       }));
       setResult(segs);
+      const applied = segs.map(s => ({segment: s.segment, ppm: s.ppm}));
+      setGlobal({baseline_ppm_table: applied});
     } catch {
       setError('Baseline computation failed — ensure stations and pump data are configured');
     } finally {

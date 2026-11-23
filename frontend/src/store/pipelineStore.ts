@@ -559,14 +559,18 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       };
     });
 
-    // Broadcast KV_list and rho_list to match station count (solver indexes by position)
+    // Derive KV/rho from linefill batches (source of truth for fluid properties)
+    const kvFromLinefill = linefill_table.length > 0
+      ? linefill_table.map(r => r.visc).filter(v => v > 0)
+      : [10];
+    const rhoFromLinefill = linefill_table.length > 0
+      ? linefill_table.map(r => r.density).filter(v => v > 0)
+      : [850];
     const nStations = serializedStations.length;
-    const kvRaw = g.kv_list?.length > 0 ? g.kv_list : [10];
-    const rhoRaw = g.rho_list?.length > 0 ? g.rho_list : [850];
-    const lastKV = kvRaw[kvRaw.length - 1] ?? 10;
-    const lastRho = rhoRaw[rhoRaw.length - 1] ?? 850;
-    const KV_list = [...kvRaw, ...Array.from({length: Math.max(0, nStations - kvRaw.length)}, () => lastKV)];
-    const rho_list = [...rhoRaw, ...Array.from({length: Math.max(0, nStations - rhoRaw.length)}, () => lastRho)];
+    const lastKV = kvFromLinefill[kvFromLinefill.length - 1] ?? 10;
+    const lastRho = rhoFromLinefill[rhoFromLinefill.length - 1] ?? 850;
+    const KV_list = [...kvFromLinefill, ...Array.from({length: Math.max(0, nStations - kvFromLinefill.length)}, () => lastKV)];
+    const rho_list = [...rhoFromLinefill, ...Array.from({length: Math.max(0, nStations - rhoFromLinefill.length)}, () => lastRho)];
 
     const branches = stations.flatMap(s => s.branches.map(b => ({
       name: b.branch_name,
@@ -606,6 +610,9 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       priority_feasibility: g.priority_feasibility,
       collect_state_audit: g.collect_state_audit,
       planner_days: g.planner_days,
+      dra_lacing_mode: g.dra_lacing_mode,
+      baseline_ppm_table: g.baseline_ppm_table,
+      tou_tariff: [],
       branches,
     };
   },

@@ -63,7 +63,7 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
               <th className="px-2 py-2 text-right font-semibold text-gray-700">DRA ₹</th>
               {pumpStations.map(s => (
                 <React.Fragment key={s.id}>
-                  <th className="px-2 py-2 text-center font-semibold text-gray-700 border-l border-gray-200" colSpan={4}>
+                  <th className="px-2 py-2 text-center font-semibold text-gray-700 border-l border-gray-200" colSpan={8}>
                     {s.name}
                   </th>
                 </React.Fragment>
@@ -77,9 +77,13 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
               {pumpStations.map(s => (
                 <React.Fragment key={s.id}>
                   <th className="px-1 py-1 text-center text-gray-500 font-normal border-l border-gray-200">Pumps</th>
+                  <th className="px-1 py-1 text-center text-gray-500 font-normal">BkW</th>
                   <th className="px-1 py-1 text-center text-gray-500 font-normal">Eff%</th>
+                  <th className="px-1 py-1 text-center text-gray-500 font-normal">RPM</th>
                   <th className="px-1 py-1 text-center text-gray-500 font-normal">DRA ppm</th>
+                  <th className="px-1 py-1 text-center text-gray-500 font-normal">DR%</th>
                   <th className="px-1 py-1 text-center text-gray-500 font-normal">SDH m</th>
+                  <th className="px-1 py-1 text-center text-gray-500 font-normal">Res Head m</th>
                 </React.Fragment>
               ))}
             </tr>
@@ -108,9 +112,13 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
                     return (
                       <React.Fragment key={s.id}>
                         <td className="px-1 py-1.5 text-center border-l border-gray-100">{sm?.num_pumps || '—'}</td>
+                        <td className="px-1 py-1.5 text-center">{sm?.motor_kw ? `${sm.motor_kw.toFixed(0)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.efficiency ? `${sm.efficiency.toFixed(1)}` : '—'}</td>
+                        <td className="px-1 py-1.5 text-center">{sm?.speed ? `${sm.speed.toFixed(0)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.dra_ppm ? `${sm.dra_ppm.toFixed(0)}` : '—'}</td>
+                        <td className="px-1 py-1.5 text-center">{sm?.drag_reduction ? `${sm.drag_reduction.toFixed(1)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.sdh ? `${sm.sdh.toFixed(0)}` : '—'}</td>
+                        <td className="px-1 py-1.5 text-center">{sm?.residual_head_in ? `${sm.residual_head_in.toFixed(0)}` : '—'}</td>
                       </React.Fragment>
                     );
                   })}

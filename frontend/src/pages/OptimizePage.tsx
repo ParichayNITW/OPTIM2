@@ -19,6 +19,7 @@ export function OptimizePage() {
   const [error, setError] = useState('');
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [jobStatus, setJobStatus] = useState('');
+  const [jobId, setJobId] = useState<string>('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const {stations, terminal, exportCase, loadCase, global: g, setGlobal} = usePipelineStore();
@@ -45,12 +46,14 @@ export function OptimizePage() {
   const handleRun = async () => {
     setError('');
     setResult(null);
+    setJobId('');
     setJobStatus('Submitting…');
     setRunning(true);
 
     try {
       const payload = exportCase();
       const {job_id} = await submitOptimization(payload as never);
+      setJobId(job_id);
       setJobStatus('Running…');
 
       pollRef.current = setInterval(async () => {
@@ -212,6 +215,8 @@ export function OptimizePage() {
             result={result}
             stationsInput={stationsForResults}
             terminal={terminal}
+            jobId={jobId}
+            fullStations={stations}
           />
         ) : (
           <div className="flex-1 overflow-y-auto p-4">

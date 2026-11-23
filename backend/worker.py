@@ -39,7 +39,7 @@ _MAINLINE_KEYS = (
     "stations", "terminal", "FLOW", "KV_list", "rho_list", "segment_slices",
     "RateDRA", "Price_HSD", "Fuel_density", "Ambient_temp",
     "linefill", "dra_reach_km", "mop_kgcm2", "hours", "start_time",
-    "pump_shear_rate",
+    "pump_shear_rate", "baseline_ppm_table", "dra_lacing_mode",
 )
 _MAINLINE_OPT = (
     "rpm_step", "dra_step", "priority_feasibility", "collect_state_audit",

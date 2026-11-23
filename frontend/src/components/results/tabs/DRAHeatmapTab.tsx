@@ -38,57 +38,69 @@ function Heatmap({ title, pumpStations, hours, matrix, colorFn, unit, maxOverrid
   const totalH = pumpStations.length * (cellH + 2) + topPad + 20;
   const allVals = matrix.flat();
   const maxVal = maxOverride ?? Math.max(...allVals, 1);
+  const allZero = allVals.every(v => v === 0);
 
   return (
     <div>
       <h4 className="text-xs font-semibold text-gray-600 mb-1">{title}</h4>
-      <div className="overflow-x-auto">
-        <svg width={totalW} height={totalH}>
-          {/* Hour headers */}
-          {hours.map((lbl, hi) => (
-            hi % 4 === 0 && (
-              <text key={hi}
-                x={leftPad + hi * (cellW + 1) + cellW / 2}
-                y={topPad - 4}
-                textAnchor="middle" fontSize={8} fill="#6b7280">{lbl}</text>
-            )
-          ))}
-          {/* Cells */}
-          {pumpStations.map((s, si) =>
-            matrix[si].map((val, hi) => {
-              const fill = colorFn(val, maxVal);
-              const textFill = val / maxVal > 0.6 ? '#fff' : '#1e3a5f';
-              return (
-                <g key={`${si}-${hi}`}>
-                  <rect
-                    x={leftPad + hi * (cellW + 1)}
-                    y={topPad + si * (cellH + 2)}
-                    width={cellW} height={cellH}
-                    fill={fill} rx={2}
-                  />
-                  {cellW >= 20 && val > 0 && (
-                    <text
-                      x={leftPad + hi * (cellW + 1) + cellW / 2}
-                      y={topPad + si * (cellH + 2) + 13}
-                      textAnchor="middle" fontSize={7} fill={textFill}>
-                      {val.toFixed(0)}
-                    </text>
-                  )}
-                </g>
-              );
-            })
-          )}
-          {/* Station labels */}
-          {pumpStations.map((s, si) => (
-            <text key={si}
-              x={leftPad - 4}
-              y={topPad + si * (cellH + 2) + 13}
-              textAnchor="end" fontSize={8} fill="#374151">{s.name}</text>
-          ))}
-          {/* Unit label */}
-          <text x={leftPad - 4} y={topPad - 10} textAnchor="end" fontSize={7} fill="#9ca3af">{unit}</text>
-        </svg>
-      </div>
+      {allZero && (
+        <p className="text-xs text-gray-400 italic py-1">
+          {unit === 'ppm'
+            ? 'No DRA injection — configure DRA Lacing Baseline in the Pipeline inputs tab'
+            : unit === '%DR'
+            ? 'No drag reduction — no DRA injection in this run'
+            : 'No DRA cost — no DRA injection in this run'}
+        </p>
+      )}
+      {!allZero && (
+        <div className="overflow-x-auto">
+          <svg width={totalW} height={totalH}>
+            {/* Hour headers */}
+            {hours.map((lbl, hi) => (
+              hi % 4 === 0 && (
+                <text key={hi}
+                  x={leftPad + hi * (cellW + 1) + cellW / 2}
+                  y={topPad - 4}
+                  textAnchor="middle" fontSize={10} fill="#6b7280">{lbl}</text>
+              )
+            ))}
+            {/* Cells */}
+            {pumpStations.map((s, si) =>
+              matrix[si].map((val, hi) => {
+                const fill = colorFn(val, maxVal);
+                const textFill = val / maxVal > 0.6 ? '#fff' : '#1e3a5f';
+                return (
+                  <g key={`${si}-${hi}`}>
+                    <rect
+                      x={leftPad + hi * (cellW + 1)}
+                      y={topPad + si * (cellH + 2)}
+                      width={cellW} height={cellH}
+                      fill={fill} rx={2}
+                    />
+                    {cellW >= 20 && val > 0 && (
+                      <text
+                        x={leftPad + hi * (cellW + 1) + cellW / 2}
+                        y={topPad + si * (cellH + 2) + 13}
+                        textAnchor="middle" fontSize={10} fill={textFill}>
+                        {val.toFixed(0)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })
+            )}
+            {/* Station labels */}
+            {pumpStations.map((s, si) => (
+              <text key={si}
+                x={leftPad - 4}
+                y={topPad + si * (cellH + 2) + 13}
+                textAnchor="end" fontSize={10} fill="#374151">{s.name}</text>
+            ))}
+            {/* Unit label */}
+            <text x={leftPad - 4} y={topPad - 10} textAnchor="end" fontSize={10} fill="#9ca3af">{unit}</text>
+          </svg>
+        </div>
+      )}
     </div>
   );
 }

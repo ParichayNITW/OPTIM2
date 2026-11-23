@@ -82,34 +82,6 @@ export function GlobalParamsPanel() {
         />
       </div>
 
-      <div className="border-t pt-2 mt-1">
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-xs text-gray-500">Viscosities (cSt), comma-sep</label>
-            <input
-              type="text"
-              value={g.kv_list.join(', ')}
-              onChange={e => {
-                const vals = e.target.value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
-                if (vals.length > 0) setGlobal({kv_list: vals});
-              }}
-              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-blue-400"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500">Densities (kg/m³), comma-sep</label>
-            <input
-              type="text"
-              value={g.rho_list.join(', ')}
-              onChange={e => {
-                const vals = e.target.value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
-                if (vals.length > 0) setGlobal({rho_list: vals});
-              }}
-              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-blue-400"
-            />
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

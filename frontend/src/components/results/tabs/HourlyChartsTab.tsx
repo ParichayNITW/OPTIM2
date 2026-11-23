@@ -40,7 +40,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
           {/* DRA bar stacked */}
           <rect x={x} y={y0 - hDra} width={barWidth} height={hDra}
             fill="#10b981" opacity={0.85}/>
-          <text x={x + barWidth/2} y={chartH - 2} textAnchor="middle" fontSize={8} fill="#6b7280">
+          <text x={x + barWidth/2} y={chartH - 2} textAnchor="middle" fontSize={10} fill="#6b7280">
             {lbl.slice(0,2)}
           </text>
         </g>
@@ -74,7 +74,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
               <text
                 x={leftPad + hi * (heatCellW + 1) + heatCellW/2}
                 y={topPad + si * (heatCellH + 2) + 13}
-                textAnchor="middle" fontSize={7} fill="#1e3a5f">
+                textAnchor="middle" fontSize={10} fill="#1e3a5f">
                 {val.toFixed(0)}
               </text>
             )}
@@ -125,7 +125,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
                 <g key={frac}>
                   <line x1={leftPad} y1={y} x2={chartW - rightPad} y2={y}
                     stroke="#e5e7eb" strokeWidth={1}/>
-                  <text x={leftPad - 4} y={y + 3} textAnchor="end" fontSize={8} fill="#9ca3af">
+                  <text x={leftPad - 4} y={y + 3} textAnchor="end" fontSize={10} fill="#9ca3af">
                     {(frac * maxCost / 1000).toFixed(0)}k
                   </text>
                 </g>
@@ -146,7 +146,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
               {/* Station labels */}
               {pumpStations.map((s, si) => (
                 <text key={si} x={leftPad - 4} y={topPad + si * (heatCellH + 2) + 13}
-                  textAnchor="end" fontSize={8} fill="#374151">{s.name}</text>
+                  textAnchor="end" fontSize={10} fill="#374151">{s.name}</text>
               ))}
               {/* Hour labels */}
               {hours.map((lbl, hi) => (
@@ -154,7 +154,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
                   <text key={hi}
                     x={leftPad + hi * (heatCellW + 1) + heatCellW/2}
                     y={topPad + pumpStations.length * (heatCellH + 2) + 10}
-                    textAnchor="middle" fontSize={8} fill="#6b7280">{lbl.slice(0,2)}</text>
+                    textAnchor="middle" fontSize={10} fill="#6b7280">{lbl.slice(0,2)}</text>
                 )
               ))}
             </svg>
@@ -173,7 +173,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
                 <g key={frac}>
                   <line x1={leftPad} y1={y} x2={lineW - rightPad} y2={y}
                     stroke="#e5e7eb" strokeWidth={1}/>
-                  <text x={leftPad - 4} y={y + 3} textAnchor="end" fontSize={8} fill="#9ca3af">
+                  <text x={leftPad - 4} y={y + 3} textAnchor="end" fontSize={10} fill="#9ca3af">
                     {(frac * maxCum / 1000).toFixed(0)}k
                   </text>
                 </g>
@@ -185,7 +185,7 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
               i % 4 === 0 && (
                 <text key={i}
                   x={leftPad + (i / Math.max(hours.length - 1, 1)) * (lineW - leftPad - rightPad)}
-                  y={chartH - 4} textAnchor="middle" fontSize={8} fill="#6b7280">{lbl}</text>
+                  y={chartH - 4} textAnchor="middle" fontSize={10} fill="#6b7280">{lbl}</text>
               )
             ))}
           </svg>
@@ -204,37 +204,48 @@ export function HourlyChartsTab({ schedule, stations }: Props) {
               </span>
             ))}
           </div>
-          <div className="overflow-x-auto">
-            <svg width={lineW} height={chartH}>
-              {(() => {
-                const allPpm = pumpStations.flatMap(s => {
-                  const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
-                  return schedule.hourly.map(h => h.stations[k]?.dra_ppm || 0);
-                });
-                const maxPpm = Math.max(...allPpm, 1);
-                return pumpStations.map((s, si) => {
-                  const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
-                  const vals = schedule.hourly.map(h => h.stations[k]?.dra_ppm || 0);
-                  const pts = vals.map((v, i) => {
-                    const x = leftPad + (i / Math.max(hours.length - 1, 1)) * (lineW - leftPad - rightPad);
-                    const y = chartH - bottomPad - (v / maxPpm) * (chartH - topPad - bottomPad);
-                    return `${x},${y}`;
-                  });
-                  return (
-                    <polyline key={s.id} points={pts.join(' ')} fill="none"
-                      stroke={COLORS[si % COLORS.length]} strokeWidth={1.5} opacity={0.85}/>
-                  );
-                });
-              })()}
-              {hours.map((lbl, i) => (
-                i % 4 === 0 && (
-                  <text key={i}
-                    x={leftPad + (i / Math.max(hours.length - 1, 1)) * (lineW - leftPad - rightPad)}
-                    y={chartH - 4} textAnchor="middle" fontSize={8} fill="#6b7280">{lbl}</text>
-                )
-              ))}
-            </svg>
-          </div>
+          {(() => {
+            const totalDraPpm = pumpStations.flatMap(s => {
+              const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
+              return schedule.hourly.map(h => h.stations[k]?.dra_ppm || 0);
+            }).reduce((a, v) => a + v, 0);
+            if (totalDraPpm === 0) {
+              return <p className="text-xs text-gray-400 italic py-2">No DRA injection in this run — configure DRA Lacing Baseline in the Pipeline inputs tab</p>;
+            }
+            return (
+              <div className="overflow-x-auto">
+                <svg width={lineW} height={chartH}>
+                  {(() => {
+                    const allPpm = pumpStations.flatMap(s => {
+                      const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
+                      return schedule.hourly.map(h => h.stations[k]?.dra_ppm || 0);
+                    });
+                    const maxPpm = Math.max(...allPpm, 1);
+                    return pumpStations.map((s, si) => {
+                      const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
+                      const vals = schedule.hourly.map(h => h.stations[k]?.dra_ppm || 0);
+                      const pts = vals.map((v, i) => {
+                        const x = leftPad + (i / Math.max(hours.length - 1, 1)) * (lineW - leftPad - rightPad);
+                        const y = chartH - bottomPad - (v / maxPpm) * (chartH - topPad - bottomPad);
+                        return `${x},${y}`;
+                      });
+                      return (
+                        <polyline key={s.id} points={pts.join(' ')} fill="none"
+                          stroke={COLORS[si % COLORS.length]} strokeWidth={1.5} opacity={0.85}/>
+                      );
+                    });
+                  })()}
+                  {hours.map((lbl, i) => (
+                    i % 4 === 0 && (
+                      <text key={i}
+                        x={leftPad + (i / Math.max(hours.length - 1, 1)) * (lineW - leftPad - rightPad)}
+                        y={chartH - 4} textAnchor="middle" fontSize={10} fill="#6b7280">{lbl}</text>
+                    )
+                  ))}
+                </svg>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
