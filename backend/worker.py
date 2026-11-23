@@ -273,6 +273,139 @@ def _variable_flow_candidates(
     return cands
 
 
+def _compute_variable_hourly_flows(
+    payload: dict,
+    base_flow: float,
+    daily_target: float,
+    start_hour: int,
+    n_hours: int = 24,
+    block_size: int = 4,
+) -> list[float]:
+    """6×4-hour block demand-shifting: assign higher flow to cheaper tariff blocks.
+
+    Ports _compute_variable_hourly_flows from pipeline_optimization_app.py.
+    Flow is constant within each 4-hour block; total volume equals daily_target.
+    Branch deliveries are summed as the hard minimum flow floor.
+    """
+    import datetime as dt
+    import statistics
+
+    if daily_target <= 0 or base_flow <= 0:
+        return [base_flow] * n_hours
+
+    hourly_vol = daily_target / n_hours
+    stations   = payload.get("stations", []) or []
+
+    # --- Per-hour KV from day_plan FIFO product queue (fall back to linefill) ---
+    plan_rows = payload.get("day_plan") or payload.get("linefill") or []
+    p_vols = [float(r.get("Volume (m³)", r.get("volume", 0)) or 0) for r in plan_rows]
+    p_kvs  = [float(r.get("Viscosity (cSt)", r.get("visc", 10)) or 10) for r in plan_rows]
+    cum_plan: list[float] = []
+    running = 0.0
+    for v in p_vols:
+        running += v
+        cum_plan.append(running)
+    fallback_kv = p_kvs[0] if p_kvs else 10.0
+    kv_per_hour: list[float] = []
+    cum_vol, pidx = 0.0, 0
+    for _ in range(n_hours):
+        kv_per_hour.append(float(p_kvs[min(pidx, len(p_kvs) - 1)]) if p_kvs else fallback_kv)
+        cum_vol += hourly_vol
+        while pidx < len(cum_plan) - 1 and cum_vol >= cum_plan[pidx]:
+            pidx += 1
+
+    # --- Per-hour tariff from first pump station that has time-varying tariffs ---
+    tariff_slots: list[dict] = []
+    default_rate = 7.0
+    for stn in stations:
+        if not stn.get("is_pump"):
+            continue
+        for key in ("A", "B"):
+            pt = (stn.get("pump_types") or {}).get(key)
+            if not pt:
+                continue
+            default_rate = float(pt.get("rate", default_rate) or default_rate)
+            if pt.get("tariffs"):
+                tariff_slots = pt["tariffs"]
+                break
+        if tariff_slots:
+            break
+
+    rate_per_hour: list[float] = []
+    for i in range(n_hours):
+        h = (start_hour + i) % 24
+        rate = default_rate
+        for tr in tariff_slots:
+            try:
+                s = dt.datetime.strptime(tr.get("start", "00:00"), "%H:%M")
+                e = dt.datetime.strptime(tr.get("end",   "00:00"), "%H:%M")
+                if e <= s:
+                    e += dt.timedelta(days=1)
+                cur = dt.datetime.strptime(f"{h:02d}:00", "%H:%M")
+                cur_adj = cur + dt.timedelta(days=1) if (e > s and cur < s) else cur
+                if s <= cur_adj < e:
+                    rate = float(tr.get("rate", default_rate) or default_rate)
+                    break
+            except Exception:
+                continue
+        rate_per_hour.append(max(rate, 0.01))
+
+    # --- q_max / q_min_run; guard against dropping below branch deliveries ---
+    q_max = base_flow * 1.20
+    min_branch = sum(float(stn.get("delivery", 0) or 0) for stn in stations)
+    q_min_run = max(base_flow * 0.70, min_branch)
+
+    # --- 4-hour blocks ---
+    n_blocks     = max(n_hours // block_size, 1)
+    block_slices = [(i * block_size, min((i + 1) * block_size, n_hours)) for i in range(n_blocks)]
+
+    kv_ref = statistics.median(kv_per_hour) if kv_per_hour else 10.0
+    block_cost: list[float] = []
+    for bs, be in block_slices:
+        r_sl  = rate_per_hour[bs:be]
+        kv_sl = kv_per_hour[bs:be]
+        r_avg  = sum(r_sl)  / len(r_sl)  if r_sl  else default_rate
+        kv_avg = sum(kv_sl) / len(kv_sl) if kv_sl else kv_ref
+        block_cost.append(max(r_avg * max(kv_avg / max(kv_ref, 1e-6), 1e-6), 1e-9))
+
+    c_min, c_max = min(block_cost), max(block_cost)
+    if c_max > c_min * 1.02:
+        block_flow = [
+            q_min_run + (q_max - q_min_run) * (c_max - c) / (c_max - c_min)
+            for c in block_cost
+        ]
+    else:
+        # Flat tariff or single product: distribute evenly
+        block_flow = [daily_target / (n_blocks * block_size)] * n_blocks
+
+    # --- Volume balance: iterative scale + clamp to [q_min_run, q_max] ---
+    for _ in range(30):
+        total_fl = sum((be - bs) * f for f, (bs, be) in zip(block_flow, block_slices))
+        if abs(total_fl - daily_target) < 0.5:
+            break
+        scale = daily_target / max(total_fl, 1.0)
+        block_flow = [max(q_min_run, min(q_max, f * scale)) for f in block_flow]
+
+    # --- Shutdown pass: drop most expensive blocks if remaining volume still meets target ---
+    sorted_by_cost = sorted(range(n_blocks), key=lambda i: block_cost[i], reverse=True)
+    active_vol = sum((be - bs) * block_flow[bi] for bi, (bs, be) in enumerate(block_slices))
+    for bi in sorted_by_cost:
+        bs, be = block_slices[bi]
+        removed = (be - bs) * block_flow[bi]
+        if block_flow[bi] > 0 and active_vol - removed >= daily_target - 1.0:
+            active_vol -= removed
+            block_flow[bi] = 0.0
+
+    # --- Expand blocks to per-hour list ---
+    result: list[float] = []
+    for bi, (bs, be) in enumerate(block_slices):
+        for _ in range(be - bs):
+            result.append(round(max(0.0, block_flow[bi]), 1))
+    while len(result) < n_hours:
+        result.append(round(base_flow, 1))
+    return result[:n_hours]
+
+
 def _run_daily_schedule(payload: dict) -> dict:
     """
     Run the 24-hour daily schedule optimisation loop.
@@ -304,14 +437,13 @@ def _run_daily_schedule(payload: dict) -> dict:
     if day_plan.empty:
         day_plan = None
 
-    # Variable mode: compute per-hour flows that meet the daily throughput
-    # using a simple proportional allocation weighted by hourly tariff.
+    # Variable mode: 4-hour block demand-shifting; fixed mode: constant flow
     if flow_mode == "variable" and daily_target:
         daily_target = float(daily_target)
-        # Distribute equally to start; tariff weighting below is a TODO
-        hourly_flows = [daily_target / 24.0] * 24
+        hourly_flows = _compute_variable_hourly_flows(
+            payload, base_flow, daily_target, start_hour
+        )
     else:
-        # Fixed mode: same flow every hour
         hourly_flows = [hourly_flow if hourly_flow > 0 else base_flow] * 24
 
     # -------------------------------------------------------------------------

@@ -37,7 +37,7 @@ export function OperatingModePanel() {
       {/* Linefill section — always shown */}
       <div>
         <h4 className="text-xs font-semibold text-gray-600 mb-1">
-          Linefill at Start (07:00)
+          Linefill at Start ({String(g.start_hour ?? 7).padStart(2, '0')}:00)
         </h4>
         <EditableTable<LinefillRow>
           rows={linefill_table}
@@ -90,6 +90,16 @@ export function OperatingModePanel() {
                   className="w-28 px-2 py-1 text-xs border border-gray-300 rounded" />
               </div>
             )}
+          </div>
+          <div className="flex items-center gap-2 py-1">
+            <label className="text-xs text-gray-600 w-44 shrink-0">Schedule Start Hour</label>
+            <input
+              type="number" min={0} max={23} step={1}
+              value={g.start_hour ?? 7}
+              onChange={e => setGlobal({start_hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0))})}
+              className="w-20 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-blue-400"
+            />
+            <span className="text-xs text-gray-400">hr (0–23)</span>
           </div>
           <div className="flex items-center gap-2 mt-1">
             <input type="checkbox" id="retry_dra" checked={g.retry_with_max_dra}
