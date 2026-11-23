@@ -39,7 +39,7 @@ _MAINLINE_KEYS = (
     "stations", "terminal", "FLOW", "KV_list", "rho_list", "segment_slices",
     "RateDRA", "Price_HSD", "Fuel_density", "Ambient_temp",
     "linefill", "dra_reach_km", "mop_kgcm2", "hours", "start_time",
-    "pump_shear_rate", "baseline_ppm_table", "dra_lacing_mode",
+    "pump_shear_rate",
 )
 _MAINLINE_OPT = (
     "rpm_step", "dra_step", "priority_feasibility", "collect_state_audit",
@@ -57,6 +57,25 @@ def submit_job(job_id: str, payload: dict) -> None:
 
 def _stn_key(name: str) -> str:
     return re.sub(r"\s+", "_", name.strip().lower())
+
+
+def _build_segment_floors(baseline_ppm_table: list | None, stations: list[dict]) -> list[dict] | None:
+    """Convert [{segment, ppm}] baseline to solver's segment_floors=[{station_idx, dra_ppm}]."""
+    if not baseline_ppm_table:
+        return None
+    stn_names = [_stn_key(s.get("name", "")) for s in stations]
+    floors: list[dict] = []
+    for entry in baseline_ppm_table:
+        seg = _stn_key(str(entry.get("segment", "")))
+        ppm = float(entry.get("ppm", 0.0) or 0.0)
+        if ppm <= 0:
+            continue
+        try:
+            idx = stn_names.index(seg)
+            floors.append({"station_idx": idx, "dra_ppm": ppm})
+        except ValueError:
+            pass
+    return floors if floors else None
 
 
 def _inject_aggregate_metrics(result: dict, stn_keys: list[str]) -> None:
@@ -187,6 +206,10 @@ def _run_single_point(payload: dict) -> dict:
             kwargs[k] = payload[k]
 
     kwargs["stations"] = _add_branch_deliveries(payload, kwargs.get("stations", []))
+
+    segment_floors = _build_segment_floors(payload.get("baseline_ppm_table"), payload.get("stations", []))
+    if segment_floors is not None:
+        kwargs["segment_floors"] = segment_floors
 
     mainline_result = solve_pipeline_with_types(**kwargs)
     if mainline_result.get("error"):
@@ -458,11 +481,37 @@ def _run_daily_schedule(payload: dict) -> dict:
     total_cost        = 0.0
     total_volume      = 0.0
 
+    # Build DRA lacing data once before the hour loop
+    segment_floors = _build_segment_floors(payload.get("baseline_ppm_table"), stations)
+    dra_linefill = [
+        {
+            "volume": float(r.get("Volume (m³)", r.get("volume", 0)) or 0),
+            "dra_ppm": float(r.get("Initial DRA (ppm)", r.get("init_dra", 0)) or 0),
+        }
+        for r in linefill_list
+    ]
+
+    # Tariff gap fallback: flat rate from first pump station
+    _flat_rate_fallback: float | None = None
+    for _stn in stations:
+        if not _stn.get("is_pump"):
+            continue
+        for _pkey in ("A", "B"):
+            _pt = (_stn.get("pump_types") or {}).get(_pkey)
+            if _pt and _pt.get("rate"):
+                _flat_rate_fallback = float(_pt["rate"])
+                break
+        if _flat_rate_fallback is not None:
+            break
+
     for step in range(24):
         hour       = (start_hour + step) % 24
         hour_label = f"{hour:02d}:00"
         flow_h     = hourly_flows[step]
         tou_rate   = _get_tou_rate(tou_tariff, hour)
+        # Fill tariff gap: if TOU is configured but no slot covers this hour, use flat fallback
+        if tou_rate is None and tou_tariff and _flat_rate_fallback is not None:
+            tou_rate = _flat_rate_fallback
 
         # -- advance linefill queue (uses flow from PREVIOUS step) -----------
         if step > 0:
@@ -470,6 +519,7 @@ def _run_daily_schedule(payload: dict) -> dict:
             vol_table, day_plan, _injected = shift_vol_linefill(
                 vol_table, prev_flow, day_plan
             )
+            vol_table = apply_dra_ppm(vol_table, dra_linefill)
 
         # -- compute next-hour linefill for combine_volumetric_profiles ------
         if step < 23:
@@ -495,6 +545,8 @@ def _run_daily_schedule(payload: dict) -> dict:
         kwargs = _build_kwargs_for_hour(
             payload, flow_h, kv_list, rho_list, seg_slices, hour_label, tou_rate
         )
+        if segment_floors is not None:
+            kwargs["segment_floors"] = segment_floors
 
         # -- solve mainline --------------------------------------------------
         hour_result: dict | None = None

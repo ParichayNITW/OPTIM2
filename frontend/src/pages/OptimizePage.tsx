@@ -83,14 +83,20 @@ export function OptimizePage() {
   };
 
   const handleSaveCase = () => {
-    const json = JSON.stringify(exportCase(), null, 2);
-    const blob = new Blob([json], {type: 'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pipeline_case_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const json = JSON.stringify(exportCase(), null, 2);
+      const blob = new Blob([json], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pipeline_case_${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+    } catch (err) {
+      setError('Failed to save case: ' + String(err));
+    }
   };
 
   const handleLoadCase = (e: React.ChangeEvent<HTMLInputElement>) => {

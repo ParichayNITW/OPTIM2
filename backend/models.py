@@ -84,6 +84,10 @@ class OptimizeRequest(BaseModel):
     # --- time-of-use tariff ---
     tou_tariff: list[dict[str, Any]] | None = None  # [{start_hr, end_hr, rate}]
 
+    # --- DRA lacing baseline (manual or auto mode) ---
+    baseline_ppm_table: list | None = None   # [{segment: str, ppm: float}]
+    dra_lacing_mode: str | None = None       # "auto" | "manual"
+
     # --- injection branch type (per branch, stored here as global default) ---
     # actual branch_type is in BranchInput
 

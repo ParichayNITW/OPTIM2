@@ -40,6 +40,18 @@ def _stn_key(name: str) -> str:
     return re.sub(r"\s+", "_", name.strip().lower())
 
 
+def _extract_stn_keys(schedule: list[dict]) -> list[str]:
+    """Extract station key names from flat solver output keys (num_pumps_<stn>)."""
+    seen: list[str] = []
+    for h in schedule:
+        for k in h.keys():
+            if k.startswith("num_pumps_"):
+                stn = k[len("num_pumps_"):]
+                if stn and stn not in seen:
+                    seen.append(stn)
+    return seen
+
+
 def _csv_response(content: str, filename: str) -> StreamingResponse:
     return StreamingResponse(
         io.BytesIO(content.encode("utf-8-sig")),
@@ -64,25 +76,25 @@ def export_schedule_csv(
     if not schedule:
         raise HTTPException(status_code=400, detail="No schedule data in result")
 
+    stn_keys = _extract_stn_keys(schedule)
     rows: list[dict] = []
     for h in schedule:
         row: dict = {
             "Hour": h.get("hour_label", ""),
             "Step": h.get("step", ""),
-            "Flow (m3/h)": h.get("flow", ""),
+            "Flow (m3/h)": h.get("FLOW", ""),
             "Total Cost (INR)": h.get("total_cost", ""),
             "Power Cost (INR)": h.get("power_cost", ""),
             "DRA Cost (INR)": h.get("dra_cost", ""),
             "Num Pumps": h.get("num_pumps", ""),
             "Error": "YES" if h.get("error") else "NO",
         }
-        stns = h.get("stations", {})
-        for k, sv in stns.items():
-            row[f"{k}_pumps"] = sv.get("num_pumps", "")
-            row[f"{k}_eff_pct"] = sv.get("efficiency", "")
-            row[f"{k}_dra_ppm"] = sv.get("dra_ppm", "")
-            row[f"{k}_sdh_m"] = sv.get("sdh", "")
-            row[f"{k}_power_kw"] = sv.get("power_cost", "")
+        for k in stn_keys:
+            row[f"{k}_pumps"]    = h.get(f"num_pumps_{k}", "")
+            row[f"{k}_eff_pct"]  = h.get(f"efficiency_{k}", "")
+            row[f"{k}_dra_ppm"]  = h.get(f"dra_ppm_{k}", "")
+            row[f"{k}_sdh_m"]    = h.get(f"sdh_m_{k}", h.get(f"sdh_{k}", ""))
+            row[f"{k}_power_kw"] = h.get(f"power_cost_{k}", "")
         rows.append(row)
 
     if not rows:
@@ -271,11 +283,7 @@ def export_excel(
     schedule = result.get("mainline_schedule") or []
     if schedule:
         ws2 = wb.create_sheet("Schedule")
-        all_stn_keys: list[str] = []
-        for h in schedule:
-            for k in (h.get("stations") or {}).keys():
-                if k not in all_stn_keys:
-                    all_stn_keys.append(k)
+        all_stn_keys = _extract_stn_keys(schedule)
         base_hdrs = ["Hour", "Flow (m3/h)", "Total Cost", "Power Cost", "DRA Cost", "Pumps", "Error"]
         stn_hdrs: list[str] = []
         for k in all_stn_keys:
@@ -285,17 +293,20 @@ def export_excel(
         for h in schedule:
             row: list = [
                 h.get("hour_label", ""),
-                h.get("flow", ""),
+                h.get("FLOW", ""),
                 h.get("total_cost", ""),
                 h.get("power_cost", ""),
                 h.get("dra_cost", ""),
                 h.get("num_pumps", ""),
                 "YES" if h.get("error") else "NO",
             ]
-            stns = h.get("stations", {})
             for k in all_stn_keys:
-                sv = stns.get(k, {})
-                row += [sv.get("num_pumps", ""), sv.get("efficiency", ""), sv.get("dra_ppm", ""), sv.get("sdh", "")]
+                row += [
+                    h.get(f"num_pumps_{k}", ""),
+                    h.get(f"efficiency_{k}", ""),
+                    h.get(f"dra_ppm_{k}", ""),
+                    h.get(f"sdh_m_{k}", h.get(f"sdh_{k}", "")),
+                ]
             rows2.append(row)
         _write_sheet(ws2, hdrs, rows2)
 
@@ -344,15 +355,19 @@ def export_pdf(
 
     # Cover
     pdf.set_font("Helvetica", "B", 20)
-    pdf.cell(0, 12, "Pipeline Optimization Report", ln=True, align="C")
+    pdf.cell(0, 12, "Pipeline Optimization Report", align="C")
+    pdf.ln()
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 7, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", ln=True, align="C")
-    pdf.cell(0, 7, f"Job ID: {job_id}", ln=True, align="C")
+    pdf.cell(0, 7, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", align="C")
+    pdf.ln()
+    pdf.cell(0, 7, f"Job ID: {job_id}", align="C")
+    pdf.ln()
     pdf.ln(6)
 
     # Summary table
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Executive Summary", ln=True)
+    pdf.cell(0, 8, "Executive Summary")
+    pdf.ln()
     pdf.set_font("Helvetica", "", 9)
     op_mode = result.get("op_mode", "flow_rate")
     rows_kv = [
@@ -363,7 +378,8 @@ def export_pdf(
     ]
     for k, v in rows_kv:
         pdf.cell(60, 7, k, border=1)
-        pdf.cell(80, 7, str(v), border=1, ln=True)
+        pdf.cell(80, 7, str(v), border=1)
+        pdf.ln()
     pdf.ln(4)
 
     # Schedule table (if available)
@@ -371,7 +387,8 @@ def export_pdf(
     if schedule:
         pdf.add_page("L")
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 8, "24-Hour Schedule", ln=True)
+        pdf.cell(0, 8, "24-Hour Schedule")
+        pdf.ln()
         pdf.set_font("Helvetica", "B", 7)
         hdrs = ["Hour", "Flow", "Total ₹", "Power ₹", "DRA ₹", "Pumps", "OK"]
         col_w = [22, 22, 28, 28, 22, 18, 12]
@@ -382,7 +399,7 @@ def export_pdf(
         for row in schedule:
             vals = [
                 row.get("hour_label", ""),
-                f"{row.get('flow', 0):.0f}",
+                f"{row.get('FLOW', 0):.0f}",
                 f"{row.get('total_cost', 0):,.0f}",
                 f"{row.get('power_cost', 0):,.0f}",
                 f"{row.get('dra_cost', 0):,.0f}",
@@ -399,7 +416,8 @@ def export_pdf(
     if bt:
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 8, "Backtrack / Audit Log", ln=True)
+        pdf.cell(0, 8, "Backtrack / Audit Log")
+        pdf.ln()
         pdf.set_font("Helvetica", "", 9)
         for note in bt:
             pdf.multi_cell(0, 6, f"- {note}")

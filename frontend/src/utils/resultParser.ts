@@ -143,8 +143,8 @@ export function parseScheduleResult(
 
   const hourly: HourlyRow[] = rawHours.map(r => {
     const isErr = Boolean(r.error);
-    const pc = Number(r.power_cost || 0);
-    const dc = Number(r.dra_cost   || 0);
+    const pc = Number(r.power_cost ?? 0);
+    const dc = Number(r.dra_cost   ?? 0);
     const stationMetrics: HourlyRow['stations'] = {};
     for (const s of stationList) {
       const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');

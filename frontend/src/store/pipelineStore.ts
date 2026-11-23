@@ -366,6 +366,9 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       priority_feasibility: Boolean(g.priority_feasibility),
       collect_state_audit: Boolean(g.collect_state_audit),
       planner_days: (g.planner_days as number) || 1,
+      baseline_ppm_table: Array.isArray(g.baseline_ppm_table)
+        ? (g.baseline_ppm_table as Array<{segment: string; ppm: number}>)
+        : [],
     };
     set(s => ({ global: {...s.global, ...global} }));
 
