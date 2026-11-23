@@ -173,6 +173,7 @@ def main():
     # ── Main window ───────────────────────────────────────────────────────────────
     window = QMainWindow()
     window.setWindowTitle("Pipeline Optima™")
+    window.setMinimumSize(900, 600)
     window.resize(1400, 900)
     if os.path.exists(icon_path):
         window.setWindowIcon(QIcon(icon_path))

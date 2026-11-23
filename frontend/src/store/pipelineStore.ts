@@ -196,6 +196,7 @@ interface PipelineStore {
   updateBranch: (stationId: string, branchId: string, patch: Partial<BranchConfig>) => void;
   loadCase: (json: Record<string, unknown>) => void;
   exportCase: () => Record<string, unknown>;
+  saveCase: () => Record<string, unknown>;
 }
 
 export const usePipelineStore = create<PipelineStore>((set, get) => ({
@@ -309,38 +310,168 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
 
   loadCase: (json) => {
     const g = json as Record<string, unknown>;
-    // Restore global params — includes all fields exportCase() writes
+
+    const mapPump = (pt: Record<string, unknown> | null | undefined, forceEnabled: boolean): PumpConfig => {
+      if (!pt || !pt.head_data) return {...defaultPumpConfig(), enabled: false};
+      const headData = pt.head_data as Array<Record<string, number>>;
+      const effData = (pt.eff_data as Array<Record<string, number>>) || [];
+      return {
+        ...defaultPumpConfig(),
+        enabled: forceEnabled,
+        available: (pt.available as number) ?? 1,
+        name: (pt.name as string) || '',
+        qh_table: headData.map(r => ({ flow: r['Flow (m³/hr)'] ?? r.flow ?? 0, head: r['Head (m)'] ?? r.head ?? 0 })),
+        eff_table: effData.map(r => ({ flow: r['Flow (m³/hr)'] ?? r.flow ?? 0, eff: r['Efficiency (%)'] ?? r.eff ?? 0 })),
+        power_source: ((pt.power_type as string) === 'Diesel' ? 'Diesel' : 'Grid') as 'Grid' | 'Diesel',
+        min_rpm: (pt.MinRPM as number) || 1000,
+        dol_rpm: (pt.DOL as number) || 1480,
+        fixed_rate: (pt.rate as number) || 7.5,
+        sfc: (pt.sfc as number) || 220,
+        sfc_mode: (pt.sfc_mode as string) === 'iso3046' ? 'iso3046' : 'manual',
+      };
+    };
+
+    const opModeRaw = (g.op_mode as string) || 'flow_rate';
+    const opMode: GlobalParams['op_mode'] =
+      (opModeRaw.toLowerCase().includes('daily') || opModeRaw.toLowerCase().includes('schedule')) ? 'daily_schedule' :
+      opModeRaw.toLowerCase().includes('planner') ? 'pumping_planner' : 'flow_rate';
+
     const global: Partial<GlobalParams> = {
-      FLOW: (g.FLOW as number) || 450,
-      op_mode: (g.op_mode as GlobalParams['op_mode']) || 'flow_rate',
+      FLOW: (g.FLOW as number) || 1000,
+      op_mode: opMode,
       pipeline_category: (g.pipeline_category as string) || 'Crude Oil Pipelines',
       pipeline_code: (g.pipeline_code as string) || '',
       RateDRA: (g.RateDRA as number) || 0,
-      Price_HSD: (g.Price_HSD as number) || 90,
-      Fuel_density: (g.Fuel_density as number) || 0.83,
-      Ambient_temp: (g.Ambient_temp as number) || 35,
-      MOP_kgcm2: (g.MOP_kgcm2 as number) || 0,
+      Price_HSD: (g.Price_HSD as number) || 70,
+      Fuel_density: (g.Fuel_density as number) || 820,
+      Ambient_temp: (g.Ambient_temp as number) || 25,
+      MOP_kgcm2: ((g.MOP_kgcm2 ?? g.mop_kgcm2) as number) || 100,
       pump_shear_rate: (g.pump_shear_rate as number) || 0,
-      kv_list: (g.KV_list as number[]) || [10],
+      kv_list: ((g.KV_list ?? g.kv_list) as number[]) || [10],
       rho_list: (g.rho_list as number[]) || [850],
       dra_lacing_mode: (g.dra_lacing_mode as GlobalParams['dra_lacing_mode']) || 'auto',
-      laced_flow: (g.laced_flow as number) || 0,
-      laced_visc: (g.laced_visc as number) || 0,
-      laced_suction: (g.laced_suction as number) || 0,
-      laced_density: (g.laced_density as number) || 0,
+      laced_flow: ((g.max_laced_flow_m3h ?? g.laced_flow) as number) || 1000,
+      laced_visc: ((g.max_laced_visc_cst ?? g.laced_visc) as number) || 10,
+      laced_suction: ((g.min_laced_suction_m ?? g.laced_suction) as number) || 0,
+      laced_density: ((g.laced_density_kgm3 ?? g.laced_density) as number) || 820,
+      hourly_flow: (g.hourly_flow as number) || 1000,
       rpm_step: (g.rpm_step as number) || 25,
       dra_step: (g.dra_step as number) || 2,
       priority_feasibility: Boolean(g.priority_feasibility),
       collect_state_audit: Boolean(g.collect_state_audit),
+      planner_days: (g.planner_days as number) || 1,
     };
-    set(s => ({global: {...s.global, ...global}}));
-    // Restore terminal
+    set(s => ({ global: {...s.global, ...global} }));
+
     if (g.terminal) {
       const t = g.terminal as Record<string, unknown>;
-      set({terminal: {name: (t.name as string) || 'Terminal', elevation: (t.elev as number) || 0, min_residual: (t.min_residual as number) || 50}});
+      set({ terminal: { name: (t.name as string) || 'Terminal', elevation: (t.elev as number) || 0, min_residual: (t.min_residual as number) || 50 } });
     }
-    if (g.linefill) set({linefill_table: g.linefill as LinefillRow[]});
-    if (g.day_plan) set({day_plan: g.day_plan as DayPlanRow[]});
+
+    if (Array.isArray(g.stations)) {
+      const stations: StationData[] = (g.stations as Array<Record<string, unknown>>).map(stn => {
+        const pumpTypes = (stn.pump_types as Record<string, Record<string, unknown>>) || {};
+        const ptA = pumpTypes.A || null;
+        const ptB = pumpTypes.B || null;
+        const D = (stn.D as number) || 0.4;
+        const t = (stn.t as number) || 0.006;
+        return {
+          id: crypto.randomUUID(),
+          name: (stn.name as string) || 'Station',
+          elevation: (stn.elev as number) || 0,
+          is_pump: Boolean(stn.is_pump),
+          length_km: (stn.L as number) || 50,
+          max_dra_pct: (stn.max_dr as number) ?? 20,
+          min_suction_head: (stn.min_residual as number) || 0,
+          OD_in: D / 0.0254,
+          wall_thk_in: t / 0.0254,
+          SMYS_psi: (stn.SMYS as number) || 52000,
+          roughness_m: (stn.rough as number) || 0.000046,
+          max_pumps: (stn.max_pumps as number) || 3,
+          delivery: (stn.delivery as number) || 0,
+          supply: (stn.supply as number) || 0,
+          pumpA: mapPump(ptA, Boolean(ptA && ptA.head_data)),
+          pumpB: mapPump(ptB && (ptB.head_data !== null) ? ptB : null, Boolean(ptB && ptB.head_data && (ptB.available as number) > 0)),
+          peaks_table: [],
+          branches: [],
+        };
+      });
+      set({ stations });
+    }
+
+    if (Array.isArray(g.linefill)) {
+      set({ linefill_table: (g.linefill as Array<Record<string, unknown>>).map(r => ({
+        product: ((r.Product ?? r.product) as string) || '',
+        volume: ((r['Volume (m³)'] ?? r.volume) as number) || 0,
+        visc: ((r['Viscosity (cSt)'] ?? r.visc) as number) || 10,
+        density: ((r['Density (kg/m³)'] ?? r.density) as number) || 850,
+        init_dra: ((r['Initial DRA (ppm)'] ?? r.init_dra) as number) || 0,
+      })) });
+    }
+
+    if (Array.isArray(g.day_plan)) {
+      set({ day_plan: (g.day_plan as Array<Record<string, unknown>>).map(r => ({
+        product: ((r.Product ?? r.product) as string) || '',
+        volume: ((r['Volume (m³)'] ?? r.volume) as number) || 0,
+        visc: ((r['Viscosity (cSt)'] ?? r.visc) as number) || 10,
+        density: ((r['Density (kg/m³)'] ?? r.density) as number) || 850,
+        init_dra: ((r['Initial DRA (ppm)'] ?? r.init_dra) as number) || 0,
+      })) });
+    }
+  },
+
+  saveCase: () => {
+    const {global: g, stations, terminal, linefill_table, day_plan} = get();
+    const serializedStations = stations.map(s => {
+      const pump_types: Record<string, unknown> = {};
+      if (s.pumpA.enabled && s.pumpA.qh_table.length > 0) {
+        const qh = computePumpCoeffs(s.pumpA.qh_table);
+        const ef = computeEffCoeffs(s.pumpA.eff_table);
+        pump_types['A'] = {
+          available: s.pumpA.available, name: s.pumpA.name,
+          head_data: s.pumpA.qh_table.map(p => ({'Flow (m³/hr)': p.flow, 'Head (m)': p.head})),
+          eff_data: s.pumpA.eff_table.map(p => ({'Flow (m³/hr)': p.flow, 'Efficiency (%)': p.eff})),
+          power_type: s.pumpA.power_source, MinRPM: s.pumpA.min_rpm, DOL: s.pumpA.dol_rpm,
+          rate: s.pumpA.fixed_rate, tariffs: [], sfc_mode: s.pumpA.sfc_mode, sfc: s.pumpA.sfc, engine_params: {},
+          ...qh, ...ef,
+        };
+      }
+      if (s.pumpB.enabled && s.pumpB.qh_table.length > 0) {
+        const qh = computePumpCoeffs(s.pumpB.qh_table);
+        const ef = computeEffCoeffs(s.pumpB.eff_table);
+        pump_types['B'] = {
+          available: s.pumpB.available, name: s.pumpB.name,
+          head_data: s.pumpB.qh_table.map(p => ({'Flow (m³/hr)': p.flow, 'Head (m)': p.head})),
+          eff_data: s.pumpB.eff_table.map(p => ({'Flow (m³/hr)': p.flow, 'Efficiency (%)': p.eff})),
+          power_type: s.pumpB.power_source, MinRPM: s.pumpB.min_rpm, DOL: s.pumpB.dol_rpm,
+          rate: s.pumpB.fixed_rate, tariffs: [], sfc_mode: s.pumpB.sfc_mode, sfc: s.pumpB.sfc, engine_params: {},
+          ...qh, ...ef,
+        };
+      }
+      return {
+        name: s.name, elev: s.elevation, is_pump: s.is_pump, L: s.length_km,
+        D: s.OD_in * 0.0254, t: s.wall_thk_in * 0.0254,
+        SMYS: s.SMYS_psi, rough: s.roughness_m,
+        max_dr: s.max_dra_pct, min_residual: s.min_suction_head,
+        max_pumps: s.max_pumps, delivery: s.delivery, supply: s.supply,
+        pump_types, branches: [],
+      };
+    });
+    return {
+      stations: serializedStations,
+      terminal: {name: terminal.name, elev: terminal.elevation, min_residual: terminal.min_residual},
+      FLOW: g.FLOW, RateDRA: g.RateDRA, Price_HSD: g.Price_HSD,
+      Fuel_density: g.Fuel_density, Ambient_temp: g.Ambient_temp,
+      MOP_kgcm2: g.MOP_kgcm2, op_mode: g.op_mode, hourly_flow: g.hourly_flow,
+      pipeline_category: g.pipeline_category, pipeline_code: g.pipeline_code,
+      rpm_step: g.rpm_step, dra_step: g.dra_step,
+      pump_shear_rate: g.pump_shear_rate,
+      priority_feasibility: g.priority_feasibility,
+      collect_state_audit: g.collect_state_audit,
+      planner_days: g.planner_days,
+      linefill: linefill_table.map(r => ({'Product': r.product, 'Volume (m³)': r.volume, 'Viscosity (cSt)': r.visc, 'Density (kg/m³)': r.density, 'Initial DRA (ppm)': r.init_dra})),
+      day_plan: day_plan.map(r => ({'Product': r.product, 'Volume (m³)': r.volume, 'Viscosity (cSt)': r.visc, 'Density (kg/m³)': r.density, 'Initial DRA (ppm)': r.init_dra})),
+    };
   },
 
   exportCase: () => {
