@@ -29,26 +29,44 @@ export function SystemCurvesTab({ parsed }: Props) {
 
   const hasData = pumpStations.length > 0;
 
-  const { pumpCurveX, pumpCurveY, sysX, sysY, opX, opY } = useMemo(() => {
-    if (!hasData || pumpStations.length === 0) return { pumpCurveX: [], pumpCurveY: [], sysX: [], sysY: [], opX: [], opY: [] };
+  const { pumpCurveX, pumpCurveY, sysXnoDRA, sysYnoDRA, sysXDRA, sysYDRA, opX, opY } = useMemo(() => {
+    const empty = { pumpCurveX: [], pumpCurveY: [], sysXnoDRA: [], sysYnoDRA: [], sysXDRA: [], sysYDRA: [], opX: [], opY: [] };
+    if (!hasData || pumpStations.length === 0) return empty;
     const idx = Math.min(selected, pumpStations.length - 1);
     const s = pumpStations[idx];
     const { qArr, hArr } = buildPumpCurve(s);
 
-    // System resistance: H_sys = H_static + k * Q^2 where through origin simplified to H_sys = k * Q^2
-    // Using operating point (pipeline_flow, tdh) → k = tdh / pipeline_flow^2
-    const k = s.pipeline_flow > 0 ? s.tdh / (s.pipeline_flow * s.pipeline_flow) : 0;
     const qMax = qArr.length > 0 ? qArr[qArr.length - 1] : s.pipeline_flow * 1.8;
-    const sysX: number[] = [], sysY: number[] = [];
+
+    // Static head + friction coefficient
+    const k_fric = s.pipeline_flow > 0 && s.head_loss > 0
+      ? s.head_loss / (s.pipeline_flow * s.pipeline_flow) : 0;
+    const H_static = s.head_loss > 0 ? s.tdh - s.head_loss : 0;
+    const kFricFallback = s.pipeline_flow > 0 ? s.tdh / (s.pipeline_flow * s.pipeline_flow) : 0;
+    const kf = k_fric > 0 ? k_fric : kFricFallback;
+    const hs = k_fric > 0 ? H_static : 0;
+
+    // No DRA system curve
+    const sysXnoDRA: number[] = [], sysYnoDRA: number[] = [];
     for (let i = 0; i <= 50; i++) {
       const q = (i / 50) * qMax;
-      sysX.push(q);
-      sysY.push(k * q * q);
+      sysXnoDRA.push(q);
+      sysYnoDRA.push(hs + kf * q * q);
+    }
+
+    // With DRA system curve (only when drag_reduction > 0)
+    const sysXDRA: number[] = [], sysYDRA: number[] = [];
+    if (s.drag_reduction > 0) {
+      for (let i = 0; i <= 50; i++) {
+        const q = (i / 50) * qMax;
+        sysXDRA.push(q);
+        sysYDRA.push(hs + (1 - s.drag_reduction / 100) * kf * q * q);
+      }
     }
 
     return {
       pumpCurveX: qArr, pumpCurveY: hArr,
-      sysX, sysY,
+      sysXnoDRA, sysYnoDRA, sysXDRA, sysYDRA,
       opX: [s.pipeline_flow], opY: [s.tdh],
     };
   }, [selected, pumpStations, hasData]);
@@ -96,7 +114,7 @@ export function SystemCurvesTab({ parsed }: Props) {
         ))}
       </div>
 
-      {/* Pump curve + System curve */}
+      {/* Pump curve + System curves */}
       <div>
         <h4 className="text-xs font-semibold text-gray-600 mb-1">Pump H-Q Curve and System Resistance Curve</h4>
         <Plot
@@ -108,65 +126,42 @@ export function SystemCurvesTab({ parsed }: Props) {
               hovertemplate: 'Q: %{x:.0f} m³/h<br>H: %{y:.1f} m<extra>Pump Curve</extra>',
             } as Plotly.Data,
             {
-              x: sysX, y: sysY,
-              type: 'scatter', mode: 'lines', name: 'System Curve',
+              x: sysXnoDRA, y: sysYnoDRA,
+              type: 'scatter', mode: 'lines', name: 'System Curve (No DRA)',
               line: { color: '#dc2626', width: 2, dash: 'dash' },
-              hovertemplate: 'Q: %{x:.0f} m³/h<br>H: %{y:.1f} m<extra>System Curve</extra>',
+              hovertemplate: 'Q: %{x:.0f} m³/h<br>H: %{y:.1f} m<extra>No DRA</extra>',
             } as Plotly.Data,
+            ...(sysXDRA.length > 0 ? [{
+              x: sysXDRA, y: sysYDRA,
+              type: 'scatter', mode: 'lines',
+              name: `System Curve (DRA ${pumpStations[Math.min(selected, pumpStations.length-1)]?.dra_ppm?.toFixed(0) ?? ''}ppm)`,
+              line: { color: '#16a34a', width: 2, dash: 'dashdot' },
+              hovertemplate: 'Q: %{x:.0f} m³/h<br>H: %{y:.1f} m<extra>With DRA</extra>',
+            } as Plotly.Data] : []),
             {
               x: opX, y: opY,
               type: 'scatter', mode: 'markers', name: 'Operating Point',
-              marker: { color: '#16a34a', size: 14, symbol: 'star', line: { width: 1.5, color: 'white' } },
+              marker: { color: '#7c3aed', size: 14, symbol: 'star', line: { width: 1.5, color: 'white' } },
               hovertemplate: `<b>Operating Point</b><br>Q: %{x:.1f} m³/h<br>H: %{y:.1f} m<extra></extra>`,
             } as Plotly.Data,
           ]}
           layout={{
-            height: 350,
-            margin: { t: 20, r: 30, b: 60, l: 70 },
+            height: 380,
+            margin: { t: 20, r: 30, b: 70, l: 70 },
             xaxis: { title: 'Flow Rate Q (m³/h)', rangemode: 'nonnegative' },
             yaxis: { title: 'Head H (m)', rangemode: 'nonnegative' },
-            legend: { orientation: 'h', y: -0.2 },
+            legend: { orientation: 'h', y: -0.25 },
             plot_bgcolor: '#f8fafc', paper_bgcolor: 'transparent', font: { size: 11 },
             annotations: [{
               x: opX[0] ?? 0, y: opY[0] ?? 0,
               text: `  OP (${(opX[0] ?? 0).toFixed(0)}, ${(opY[0] ?? 0).toFixed(0)})`,
               xanchor: 'left', showarrow: false,
-              font: { color: '#16a34a', size: 11, family: 'monospace' },
+              font: { color: '#7c3aed', size: 11, family: 'monospace' },
             }],
           } as unknown as Plotly.Layout}
           config={{ displayModeBar: false, responsive: true }}
           style={{ width: '100%' }}
         />
-      </div>
-
-      {/* Coefficients table */}
-      <div>
-        <h4 className="text-xs font-semibold text-gray-600 mb-1">Pump H-Q Polynomial: H = A·Q² + B·Q + C</h4>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs border-collapse">
-            <thead>
-              <tr className="bg-gray-100 text-gray-600">
-                {['Station', 'A (Q² coeff)', 'B (Q coeff)', 'C (Constant / Shutoff Head m)',
-                  'Operating Q (m³/h)', 'TDH (m)', 'Efficiency %'].map(h => (
-                  <th key={h} className="px-2 py-1.5 text-left font-semibold border-b whitespace-nowrap">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {pumpStations.map((ps, i) => (
-                <tr key={ps.key} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                  <td className="px-2 py-1 font-medium border-b">{ps.name}</td>
-                  <td className="px-2 py-1 border-b font-mono">{ps.coef_A.toExponential(4)}</td>
-                  <td className="px-2 py-1 border-b font-mono">{ps.coef_B.toExponential(4)}</td>
-                  <td className="px-2 py-1 border-b font-mono">{ps.coef_C.toFixed(2)}</td>
-                  <td className="px-2 py-1 border-b">{ps.pipeline_flow.toFixed(1)}</td>
-                  <td className="px-2 py-1 border-b">{ps.tdh.toFixed(1)}</td>
-                  <td className="px-2 py-1 border-b">{ps.efficiency.toFixed(1)}%</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       </div>
     </div>
   );

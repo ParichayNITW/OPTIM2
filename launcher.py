@@ -198,7 +198,14 @@ def main():
 
     view.setUrl(QUrl(APP_URL))
     window.setCentralWidget(view)
-    window.show()
+
+    def _on_load_finished(ok: bool) -> None:
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    view.loadFinished.connect(_on_load_finished)
+    QTimer.singleShot(8000, lambda: window.show() if not window.isVisible() else None)
 
     sys.exit(app.exec())
 

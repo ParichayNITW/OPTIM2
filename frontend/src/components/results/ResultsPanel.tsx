@@ -140,7 +140,7 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
           ) : null;
         case 'pump_system':
           return parsedHour0 ? (
-            <><p className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 border-b border-blue-100">Curves/data as of start time (Hour 0)</p><PumpSystemTab parsed={parsedHour0} /></>
+            <><p className="text-xs text-blue-700 bg-blue-50 px-3 py-1.5 border-b border-blue-100">Curves/data as of start time (Hour 0)</p><PumpSystemTab parsed={parsedHour0} fullStations={stationsForTabs} /></>
           ) : null;
         case 'dra':
           return parsedHour0 ? (
@@ -154,7 +154,7 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
       case 'costs':        return <CostsTab parsed={parsed} />;
       case 'performance':  return <PerformanceTab parsed={parsed} />;
       case 'system':       return <SystemCurvesTab parsed={parsed} />;
-      case 'pump_system':  return <PumpSystemTab parsed={parsed} />;
+      case 'pump_system':  return <PumpSystemTab parsed={parsed} fullStations={stationsForTabs} />;
       case 'dra':          return <DRACurvesTab parsed={parsed} />;
       case 'analysis3d':   return <Analysis3DTab parsed={parsed} />;
       case 'pressure3d':   return <Pressure3DTab parsed={parsed} />;

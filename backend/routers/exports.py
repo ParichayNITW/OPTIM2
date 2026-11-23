@@ -392,7 +392,7 @@ def export_pdf(
             pdf.cell(0, 8, "24-Hour Schedule")
             pdf.ln()
             pdf.set_font("Helvetica", "B", 7)
-            hdrs = ["Hour", "Flow", "Total ₹", "Power ₹", "DRA ₹", "Pumps", "OK"]
+            hdrs = ["Hour", "Flow", "Total INR", "Power INR", "DRA INR", "Pumps", "OK"]
             col_w = [22, 22, 28, 28, 22, 18, 12]
             for h, w in zip(hdrs, col_w):
                 pdf.cell(w, 6, h, border=1, align="C")

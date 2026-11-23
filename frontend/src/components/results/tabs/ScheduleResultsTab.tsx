@@ -122,9 +122,21 @@ export function ScheduleResultsTab({ schedule, stations, terminal, onHourSelect 
                     return (
                       <React.Fragment key={s.id}>
                         <td className="px-1 py-1.5 text-center border-l border-gray-100">{pumpLabel}</td>
-                        <td className="px-1 py-1.5 text-center">{sm?.motor_kw ? `${sm.motor_kw.toFixed(0)}` : '—'}</td>
-                        <td className="px-1 py-1.5 text-center">{sm?.efficiency ? `${sm.efficiency.toFixed(1)}` : '—'}</td>
-                        <td className="px-1 py-1.5 text-center">{sm?.speed ? `${sm.speed.toFixed(0)}` : '—'}</td>
+                        <td className="px-1 py-1.5 text-center">
+                          {(sm?.pump_types?.length ?? 0) > 1
+                            ? sm!.pump_types.map(pt => `${(pt.bkw * pt.count).toFixed(0)}(${pt.ptype})`).join(' / ')
+                            : sm?.motor_kw ? `${sm.motor_kw.toFixed(0)}` : '—'}
+                        </td>
+                        <td className="px-1 py-1.5 text-center">
+                          {(sm?.pump_types?.length ?? 0) > 1
+                            ? sm!.pump_types.map(pt => `${pt.eff.toFixed(1)}(${pt.ptype})`).join(' / ')
+                            : sm?.efficiency ? `${sm.efficiency.toFixed(1)}` : '—'}
+                        </td>
+                        <td className="px-1 py-1.5 text-center">
+                          {(sm?.pump_types?.length ?? 0) > 1
+                            ? sm!.pump_types.map(pt => `${pt.rpm.toFixed(0)}(${pt.ptype})`).join(' / ')
+                            : sm?.speed ? `${sm.speed.toFixed(0)}` : '—'}
+                        </td>
                         <td className="px-1 py-1.5 text-center">{sm?.dra_ppm != null ? `${sm.dra_ppm.toFixed(0)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.drag_reduction ? `${sm.drag_reduction.toFixed(1)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.sdh ? `${sm.sdh.toFixed(0)}` : '—'}</td>

@@ -5,13 +5,14 @@ import { ParsedResult } from '../../../utils/resultParser';
 interface Props { parsed: ParsedResult; }
 
 export function DRACurvesTab({ parsed }: Props) {
-  const draStations = parsed.stations.filter(s => s.dra_ppm > 0 || s.drag_reduction > 0);
+  const draStations = parsed.stations.filter(s => s.is_pump);
+  const hasActiveDRA = draStations.some(s => s.dra_ppm > 0 || s.drag_reduction > 0);
   const hasData = draStations.length > 0;
 
   if (!hasData) {
     return (
       <div className="p-4 flex items-center justify-center h-48 text-gray-400 text-sm">
-        No DRA injection in this optimization run
+        No pump stations found
       </div>
     );
   }
@@ -23,6 +24,11 @@ export function DRACurvesTab({ parsed }: Props) {
 
   return (
     <div className="p-3 space-y-4">
+      {!hasActiveDRA && (
+        <div className="bg-blue-50 border border-blue-200 rounded px-3 py-2 text-xs text-blue-700">
+          No DRA injection in current run — showing station capacities (all values at 0 ppm baseline)
+        </div>
+      )}
       {/* KPI summary */}
       <div className="grid grid-cols-3 gap-2">
         <div className="rounded-lg border-l-4 border-green-500 bg-green-50 p-3">

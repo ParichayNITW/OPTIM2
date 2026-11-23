@@ -510,7 +510,7 @@ def _run_daily_schedule(payload: dict) -> dict:
         flow_h     = hourly_flows[step]
         tou_rate   = _get_tou_rate(tou_tariff, hour)
         # Fill tariff gap: if TOU is configured but no slot covers this hour, use flat fallback
-        if tou_rate is None and tou_tariff and _flat_rate_fallback is not None:
+        if tou_rate is None and _flat_rate_fallback is not None:
             tou_rate = _flat_rate_fallback
 
         # -- advance linefill queue (uses flow from PREVIOUS step) -----------
