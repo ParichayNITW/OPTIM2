@@ -57,6 +57,21 @@ def _run_optimization(job_id: str, payload: dict) -> None:
             if k in payload and payload[k] is not None:
                 kwargs[k] = payload[k]
 
+        # Add branch deliveries to their tap-off station so the mainline
+        # flow conservation is correct downstream of each junction.
+        import copy as _copy
+        if payload.get("branches"):
+            stations_copy = _copy.deepcopy(kwargs.get("stations", []))
+            for branch_input in payload["branches"]:
+                jname = (branch_input.get("junction_station_name") or "").strip().lower()
+                bflow = float(branch_input.get("flow_m3h") or 0.0)
+                if jname and bflow > 0:
+                    for stn in stations_copy:
+                        if re.sub(r'\s+', '_', stn.get('name', '').strip().lower()) == re.sub(r'\s+', '_', jname):
+                            stn['delivery'] = float(stn.get('delivery') or 0.0) + bflow
+                            break
+            kwargs["stations"] = stations_copy
+
         mainline_result = solve_pipeline_with_types(**kwargs)
 
         if mainline_result.get("error"):
@@ -81,8 +96,12 @@ def _run_optimization(job_id: str, payload: dict) -> None:
 
         branch_results: list[dict] = []
         for branch_input in payload.get("branches") or []:
+            # Use the residual head at the specific tap-off station.
+            jname_key = re.sub(r'\s+', '_', (branch_input.get("junction_station_name") or "").strip().lower())
             junction_head = float(
-                mainline_result.get("terminal_head")
+                mainline_result.get(f"residual_head_in_{jname_key}")
+                or mainline_result.get(f"sdh_{jname_key}")
+                or mainline_result.get("terminal_head")
                 or mainline_result.get("delivery_head", 0.0)
             )
             branch_dict = {

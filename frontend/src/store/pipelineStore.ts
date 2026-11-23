@@ -564,12 +564,13 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
 
     const branches = stations.flatMap(s => s.branches.map(b => ({
       name: b.branch_name,
+      junction_station_name: s.name,  // which mainline station this branch taps from
       flow_m3h: b.flow_m3h,
       terminal: {name: b.terminal_name, elev: b.terminal_elev, min_residual: b.terminal_min_pressure},
       stations: b.stations,
       uid: b.id,
-      KV: KV_list[0],   // pass fluid viscosity to branch solver
-      rho: rho_list[0],  // pass fluid density to branch solver
+      KV: KV_list[0],
+      rho: rho_list[0],
     })));
 
     return {
