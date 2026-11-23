@@ -67,7 +67,7 @@ export function GlobalParamsPanel() {
       <div className="border-t pt-2 mt-1">
         {field('DRA Cost', 'RateDRA', 0, 1, '₹/kg')}
         {field('Fuel Price (HSD)', 'Price_HSD', 0, 1, '₹/L')}
-        {field('Fuel Density', 'Fuel_density', 0, 0.001, 'kg/L')}
+        {field('Fuel Density', 'Fuel_density', 0, 1, 'kg/m³')}
         {field('Ambient Temperature', 'Ambient_temp', -20, 1, '°C')}
         {field('MOP', 'MOP_kgcm2', 0, 1, 'kg/cm²')}
       </div>

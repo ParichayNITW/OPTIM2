@@ -207,7 +207,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
     pipeline_code: 'PHBPL',
     RateDRA: 0,
     Price_HSD: 70,
-    Fuel_density: 0.820,
+    Fuel_density: 820,
     Ambient_temp: 25,
     pump_shear_rate: 0,
     MOP_kgcm2: 100,
