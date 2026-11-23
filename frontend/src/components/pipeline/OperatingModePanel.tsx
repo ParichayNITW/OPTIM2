@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { usePipelineStore, LinefillRow, DayPlanRow, ProjFlowRow, ProjPlanRow } from '../../store/pipelineStore';
 import { EditableTable } from './EditableTable';
 
@@ -7,9 +7,81 @@ const LINEFILL_COLS = [
   {key: 'volume' as const, label: 'Volume (m³)', min: 0, step: 100},
   {key: 'visc' as const, label: 'Viscosity (cSt)', min: 0, step: 1},
   {key: 'density' as const, label: 'Density (kg/m³)', min: 0, step: 1},
-  {key: 'init_dra' as const, label: 'Initial DRA ppm', min: 0, step: 10},
 ];
 const DEFAULT_LF_ROW: LinefillRow = {product: 'Crude', volume: 5000, visc: 10, density: 850, init_dra: 0};
+
+function InitialDRAFillTable() {
+  const {global: g, setGlobal, stations, terminal} = usePipelineStore();
+
+  const segments = useMemo(() => {
+    const result: {from: string; to: string}[] = [];
+    for (let i = 0; i < stations.length - 1; i++) {
+      result.push({from: stations[i].name, to: stations[i + 1].name});
+    }
+    if (stations.length > 0) {
+      result.push({from: stations[stations.length - 1].name, to: terminal.name});
+    }
+    return result;
+  }, [stations, terminal]);
+
+  const fillMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of g.initial_dra_fill ?? []) {
+      m.set(`${e.from}||${e.to}`, e.ppm);
+    }
+    return m;
+  }, [g.initial_dra_fill]);
+
+  const handleChange = (from: string, to: string, ppm: number) => {
+    const current = g.initial_dra_fill ?? [];
+    const key = `${from}||${to}`;
+    const idx = current.findIndex(e => `${e.from}||${e.to}` === key);
+    const updated = [...current];
+    if (idx >= 0) {
+      updated[idx] = {from, to, ppm};
+    } else {
+      updated.push({from, to, ppm});
+    }
+    setGlobal({initial_dra_fill: updated});
+  };
+
+  if (segments.length === 0) return null;
+
+  return (
+    <div>
+      <h4 className="text-xs font-semibold text-gray-600 mb-1">
+        Initial DRA Fill at Start ({String(g.start_hour ?? 7).padStart(2, '0')}:00)
+      </h4>
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="bg-gray-100">
+            <th className="px-2 py-1 border border-gray-200 text-left">Segment</th>
+            <th className="px-2 py-1 border border-gray-200 text-center w-32">DRA ppm</th>
+          </tr>
+        </thead>
+        <tbody>
+          {segments.map(seg => (
+            <tr key={`${seg.from}||${seg.to}`} className="hover:bg-gray-50">
+              <td className="px-2 py-1 border border-gray-200 text-gray-700">
+                {seg.from} → {seg.to}
+              </td>
+              <td className="px-2 py-1 border border-gray-200 text-center">
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={fillMap.get(`${seg.from}||${seg.to}`) ?? 0}
+                  onChange={e => handleChange(seg.from, seg.to, parseFloat(e.target.value) || 0)}
+                  className="w-24 px-1 py-0.5 text-xs border border-gray-300 rounded text-center"
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export function OperatingModePanel() {
   const {global: g, setGlobal, linefill_table, setLinefill, day_plan, setDayPlan, proj_flow, setProjFlow, proj_plan, setProjPlan} = usePipelineStore();
@@ -48,6 +120,9 @@ export function OperatingModePanel() {
           addLabel="+ Add Product Batch"
         />
       </div>
+
+      {/* Initial DRA Fill — always shown */}
+      <InitialDRAFillTable />
 
       {/* Daily schedule mode */}
       {g.op_mode === 'daily_schedule' && (

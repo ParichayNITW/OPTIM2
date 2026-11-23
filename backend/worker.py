@@ -483,13 +483,40 @@ def _run_daily_schedule(payload: dict) -> dict:
 
     # Build DRA lacing data once before the hour loop
     segment_floors = _build_segment_floors(payload.get("baseline_ppm_table"), stations)
-    dra_linefill = [
-        {
-            "volume": float(r.get("Volume (m³)", r.get("volume", 0)) or 0),
-            "dra_ppm": float(r.get("Initial DRA (ppm)", r.get("init_dra", 0)) or 0),
-        }
-        for r in linefill_list
-    ]
+
+    _initial_dra_fill = payload.get("initial_dra_fill") or []
+    if _initial_dra_fill:
+        # Build dra_linefill from segment-wise ppm + pipe geometry
+        import math as _math
+        _linefill_total_vol = sum(float(r.get("Volume (m³)", r.get("volume", 0)) or 0) for r in linefill_list)
+        _stn_lookup = {_stn_key(s.get("name", "")): s for s in stations}
+        _cum_vol = 0.0
+        dra_linefill: list[dict] = []
+        for _i, _seg in enumerate(_initial_dra_fill):
+            _ppm = float(_seg.get("ppm", 0) or 0)
+            _to = _stn_key(str(_seg.get("to", "")))
+            _stn = _stn_lookup.get(_to)
+            if _stn and _i < len(_initial_dra_fill) - 1:
+                # Compute pipe volume from geometry: D (outer m), t (wall m), L (km)
+                _D = float(_stn.get("D", 0.508) or 0.508)
+                _t = float(_stn.get("t", 0.00953) or 0.00953)
+                _L = float(_stn.get("L", 100) or 100)
+                _D_i = _D - 2 * _t
+                _vol = (_math.pi / 4) * _D_i ** 2 * _L * 1000.0
+            else:
+                # Last segment: assign remaining linefill volume
+                _vol = max(0.0, _linefill_total_vol - _cum_vol)
+            dra_linefill.append({"volume": round(_vol, 1), "dra_ppm": _ppm})
+            _cum_vol += _vol
+    else:
+        # Fallback: build from per-row init_dra (backward compatibility)
+        dra_linefill = [
+            {
+                "volume": float(r.get("Volume (m³)", r.get("volume", 0)) or 0),
+                "dra_ppm": float(r.get("Initial DRA (ppm)", r.get("init_dra", 0)) or 0),
+            }
+            for r in linefill_list
+        ]
 
     # Tariff gap fallback: flat rate from first pump station
     _flat_rate_fallback: float | None = None

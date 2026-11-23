@@ -88,6 +88,9 @@ class OptimizeRequest(BaseModel):
     baseline_ppm_table: list | None = None   # [{segment: str, ppm: float}]
     dra_lacing_mode: str | None = None       # "auto" | "manual"
 
+    # --- Initial DRA fill: segment-wise DRA ppm at schedule start ---
+    initial_dra_fill: list | None = None     # [{from: str, to: str, ppm: float}]
+
     # --- injection branch type (per branch, stored here as global default) ---
     # actual branch_type is in BranchInput
 
