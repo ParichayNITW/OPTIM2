@@ -138,7 +138,7 @@ export function ScheduleResultsTab({ schedule, stations, terminal, onHourSelect 
                             : sm?.speed ? `${sm.speed.toFixed(0)}` : '—'}
                         </td>
                         <td className="px-1 py-1.5 text-center">{sm?.dra_ppm != null ? `${sm.dra_ppm.toFixed(0)}` : '—'}</td>
-                        <td className="px-1 py-1.5 text-center">{sm?.drag_reduction ? `${sm.drag_reduction.toFixed(1)}` : '—'}</td>
+                        <td className="px-1 py-1.5 text-center">{sm?.drag_reduction != null ? `${sm.drag_reduction.toFixed(1)}%` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.sdh ? `${sm.sdh.toFixed(0)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.residual_head_in ? `${sm.residual_head_in.toFixed(0)}` : '—'}</td>
                       </React.Fragment>

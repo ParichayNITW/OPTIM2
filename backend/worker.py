@@ -443,6 +443,14 @@ def _run_daily_schedule(payload: dict) -> dict:
     Returns a structured result dict suitable for JSON serialisation.
     """
     stations     = payload.get("stations", [])
+    # Normalize station names so solver writes lowercase_underscore keys that match
+    # frontend expectations and worker.py's own _stn_key lookups
+    for _s in stations:
+        if "name" in _s:
+            _s["name"] = _stn_key(_s["name"])
+    _term = payload.get("terminal")
+    if isinstance(_term, dict) and "name" in _term:
+        _term["name"] = _stn_key(_term["name"])
     stn_keys     = [_stn_key(s["name"]) for s in stations]
     start_hour   = int(payload.get("start_hour", 7) or 7)
     base_flow    = float(payload.get("FLOW", 0) or 0)
@@ -574,6 +582,11 @@ def _run_daily_schedule(payload: dict) -> dict:
         )
         if segment_floors is not None:
             kwargs["segment_floors"] = segment_floors
+
+        # Pass current DRA concentration profile to solver — the solver builds its
+        # internal DRA queue from the linefill kwarg; without it the solver has no
+        # history and re-optimises injection from scratch each hour → constant DR%
+        kwargs["linefill"] = dra_linefill
 
         # -- solve mainline --------------------------------------------------
         hour_result: dict | None = None
