@@ -9,7 +9,7 @@ export function DRALacingPanel() {
   // Auto-populate baseline_ppm_table segment names from station/terminal names
   useEffect(() => {
     if (g.dra_lacing_mode !== 'manual') return;
-    const segmentNames = stations.map(s => s.name).concat(terminal.name ? [terminal.name] : []);
+    const segmentNames = stations.map(s => s.name);
     if (segmentNames.length === 0) return;
     const existing = new Map(g.baseline_ppm_table.map(r => [r.segment, r.ppm]));
     const synced = segmentNames.map(seg => ({segment: seg, ppm: existing.get(seg) ?? 0}));

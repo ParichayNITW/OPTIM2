@@ -5,10 +5,11 @@ import type { StationData } from '../../../store/pipelineStore';
 interface Props {
   schedule: ParsedScheduleResult;
   stations: StationData[];
+  terminal?: {name: string; elevation: number; min_residual: number};
   onHourSelect?: (hour: number) => void;
 }
 
-export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) {
+export function ScheduleResultsTab({ schedule, stations, terminal, onHourSelect }: Props) {
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
   const pumpStations = stations.filter(s => s.is_pump);
 
@@ -68,6 +69,11 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
                   </th>
                 </React.Fragment>
               ))}
+              {terminal && (
+                <th className="px-2 py-2 text-center font-semibold text-gray-700 border-l border-gray-200">
+                  {terminal.name} RH (m)
+                </th>
+              )}
             </tr>
             <tr className="border-t border-gray-100">
               <th className="px-2 py-1 sticky left-0 bg-gray-50"></th>
@@ -86,6 +92,7 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
                   <th className="px-1 py-1 text-center text-gray-500 font-normal">Res Head m</th>
                 </React.Fragment>
               ))}
+              {terminal && <th className="px-1 py-1 border-l border-gray-200"></th>}
             </tr>
           </thead>
           <tbody>
@@ -109,9 +116,12 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
                   {pumpStations.map(s => {
                     const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
                     const sm = row.stations[k];
+                    const pumpLabel = (sm?.pump_types?.length ?? 0) > 1
+                      ? sm!.pump_types.map(pt => `${pt.count}${pt.ptype}`).join('+')
+                      : String(sm?.num_pumps || '—');
                     return (
                       <React.Fragment key={s.id}>
-                        <td className="px-1 py-1.5 text-center border-l border-gray-100">{sm?.num_pumps || '—'}</td>
+                        <td className="px-1 py-1.5 text-center border-l border-gray-100">{pumpLabel}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.motor_kw ? `${sm.motor_kw.toFixed(0)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.efficiency ? `${sm.efficiency.toFixed(1)}` : '—'}</td>
                         <td className="px-1 py-1.5 text-center">{sm?.speed ? `${sm.speed.toFixed(0)}` : '—'}</td>
@@ -122,6 +132,11 @@ export function ScheduleResultsTab({ schedule, stations, onHourSelect }: Props) 
                       </React.Fragment>
                     );
                   })}
+                  {terminal && (
+                    <td className="px-2 py-1.5 text-center border-l border-gray-100">
+                      {row.terminalHead ? row.terminalHead.toFixed(0) : '—'}
+                    </td>
+                  )}
                 </tr>
               );
             })}

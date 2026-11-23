@@ -590,6 +590,14 @@ def _run_daily_schedule(payload: dict) -> dict:
             hour_result["FLOW"] = flow_h
             _post_process_engineering(hour_result, payload, stn_keys)
             hourly_errors.append(None)
+            # Update DRA linefill queue from solver output per hour (matches Streamlit logic)
+            new_linefill = hour_result.get("linefill")
+            if new_linefill:
+                dra_linefill = new_linefill
+            new_reach = hour_result.get("dra_front_km")
+            if new_reach is not None:
+                dra_reach_km = float(new_reach)
+                payload["dra_reach_km"] = dra_reach_km
 
         hour_result["hour"]       = hour
         hour_result["hour_label"] = hour_label

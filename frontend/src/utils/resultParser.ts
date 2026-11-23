@@ -71,6 +71,7 @@ export interface HourlyRow {
   dra_cost: number;
   total_cost: number;
   num_pumps: number;
+  terminalHead: number;
   error: boolean;
   error_msg?: string;
   // per-station metrics — keyed by station key
@@ -85,6 +86,7 @@ export interface HourlyRow {
     sdh: number;
     residual_head_in: number;
     motor_kw: number;
+    pump_types: Array<{ptype: string; count: number; rpm: number; eff: number; bkw: number; power_cost: number}>;
   }>;
 }
 
@@ -136,18 +138,39 @@ export interface ParsedScheduleResult {
 export function parseScheduleResult(
   result: Record<string, unknown>,
   stationList: Array<{name: string; elevation: number; length_km: number; is_pump: boolean}>,
+  terminal: {name: string; elevation: number; min_residual: number} = {name: '', elevation: 0, min_residual: 0},
 ): ParsedScheduleResult {
   const op_mode = (result.op_mode as string || 'daily_schedule') as 'daily_schedule' | 'pumping_planner';
   const rawHours = (result.mainline_schedule as Array<Record<string, unknown>>) || [];
   const rawIntervals = (result.interval_results as IntervalRow[]) || [];
 
+  const termKey = terminal.name.trim().toLowerCase().replace(/\s+/g, '_');
+
   const hourly: HourlyRow[] = rawHours.map(r => {
     const isErr = Boolean(r.error);
     const pc = Number(r.power_cost ?? 0);
     const dc = Number(r.dra_cost   ?? 0);
+
+    // Terminal residual head per hour
+    const termRho = Number(r[`rho_${termKey}`] || 850);
+    const termRhKgcm2 = Number(r[`rh_kgcm2_${termKey}`] || 0);
+    const terminalHead = termRhKgcm2 > 0 ? termRhKgcm2 * 10000 / termRho : 0;
+
     const stationMetrics: HourlyRow['stations'] = {};
     for (const s of stationList) {
       const k = s.name.trim().toLowerCase().replace(/\s+/g, '_');
+      const rawPumpDetails = r[`pump_details_${k}`];
+      const pumpDetailsList = Array.isArray(rawPumpDetails) ? rawPumpDetails : [];
+      const pump_types = pumpDetailsList
+        .filter((pd: Record<string, unknown>) => Number(pd.count) > 0)
+        .map((pd: Record<string, unknown>) => ({
+          ptype: String(pd.ptype || ''),
+          count: Number(pd.count || 0),
+          rpm: Number(pd.rpm || 0),
+          eff: Number(pd.eff || 0),
+          bkw: Number(pd.pump_bkw || 0),
+          power_cost: Number(pd.power_cost || 0),
+        }));
       stationMetrics[k] = {
         num_pumps:        Number(r[`num_pumps_${k}`]   || 0),
         speed:            Number(r[`speed_${k}`]        || 0),
@@ -159,20 +182,22 @@ export function parseScheduleResult(
         sdh:              Number(r[`sdh_${k}`]           || 0),
         residual_head_in: Number(r[`residual_head_in_${k}`] || 0),
         motor_kw:         Number(r[`motor_kw_${k}`]     || 0),
+        pump_types,
       };
     }
     return {
-      hour:       Number(r.hour  || 0),
-      hour_label: String(r.hour_label || '00:00'),
-      step:       Number(r.step  || 0),
-      flow:       Number(r.FLOW  || 0),
-      power_cost: pc,
-      dra_cost:   dc,
-      total_cost: pc + dc,
-      num_pumps:  Number(r.num_pumps || 0),
-      error:      isErr,
-      error_msg:  isErr ? String(r.message || '') : undefined,
-      stations:   stationMetrics,
+      hour:         Number(r.hour  || 0),
+      hour_label:   String(r.hour_label || '00:00'),
+      step:         Number(r.step  || 0),
+      flow:         Number(r.FLOW  || 0),
+      power_cost:   pc,
+      dra_cost:     dc,
+      total_cost:   pc + dc,
+      num_pumps:    Number(r.num_pumps || 0),
+      terminalHead,
+      error:        isErr,
+      error_msg:    isErr ? String(r.message || '') : undefined,
+      stations:     stationMetrics,
     };
   });
 

@@ -122,6 +122,7 @@ export interface GlobalParams {
   daily_throughput_target: number | null;
   start_hour: number;
   retry_with_max_dra: boolean;
+  tou_tariff: Array<{start: string; end: string; rate: number}>;
 }
 
 const defaultPumpConfig = (): PumpConfig => ({
@@ -232,6 +233,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
     daily_throughput_target: null,
     start_hour: 7,
     retry_with_max_dra: false,
+    tou_tariff: [],
   },
   stations: [defaultStation(0), defaultStation(1)],
   terminal: {name: 'Terminal', elevation: 0, min_residual: 50},
@@ -615,7 +617,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       planner_days: g.planner_days,
       dra_lacing_mode: g.dra_lacing_mode,
       baseline_ppm_table: g.baseline_ppm_table,
-      tou_tariff: [],
+      tou_tariff: g.tou_tariff ?? [],
       branches,
     };
   },

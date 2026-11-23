@@ -93,8 +93,8 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
 
   const schedule: ParsedScheduleResult | null = useMemo(() => {
     if (!isScheduleMode) return null;
-    return parseScheduleResult(result, stationsInput);
-  }, [result, stationsInput, isScheduleMode]);
+    return parseScheduleResult(result, stationsInput, terminal);
+  }, [result, stationsInput, isScheduleMode, terminal]);
 
   const parsedHour0: ParsedResult | null = useMemo(() => {
     if (!isScheduleMode) return null;
@@ -128,7 +128,7 @@ export function ResultsPanel({ result, stationsInput, terminal, fullStations, jo
   const renderTab = () => {
     if (isScheduleMode && schedule) {
       switch (active) {
-        case 'schedule':      return <ScheduleResultsTab schedule={schedule} stations={stationsForTabs} />;
+        case 'schedule':      return <ScheduleResultsTab schedule={schedule} stations={stationsForTabs} terminal={terminal} />;
         case 'hourly_charts': return <HourlyChartsTab schedule={schedule} stations={stationsForTabs} />;
         case 'dra_heatmap':   return <DRAHeatmapTab schedule={schedule} stations={stationsForTabs} />;
         case 'next_day_lf':   return <NextDayLinefillTab schedule={schedule} />;

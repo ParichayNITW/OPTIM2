@@ -351,76 +351,85 @@ def export_pdf(
 
     pdf = FPDF()
     pdf.set_margins(15, 15, 15)
-    pdf.add_page()
 
-    # Cover
-    pdf.set_font("Helvetica", "B", 20)
-    pdf.cell(0, 12, "Pipeline Optimization Report", align="C")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 7, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", align="C")
-    pdf.ln()
-    pdf.cell(0, 7, f"Job ID: {job_id}", align="C")
-    pdf.ln()
-    pdf.ln(6)
-
-    # Summary table
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Executive Summary")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 9)
-    op_mode = result.get("op_mode", "flow_rate")
-    rows_kv = [
-        ("Mode", op_mode),
-        ("Total Cost (INR)", f"{result.get('total_cost', 0):,.0f}"),
-        ("Total Throughput (m³)", f"{result.get('total_throughput', 0):,.0f}"),
-        ("Flow (m³/h)", f"{result.get('flow', result.get('hourly_flow', 0)):,.0f}"),
-    ]
-    for k, v in rows_kv:
-        pdf.cell(60, 7, k, border=1)
-        pdf.cell(80, 7, str(v), border=1)
-        pdf.ln()
-    pdf.ln(4)
-
-    # Schedule table (if available)
-    schedule = result.get("mainline_schedule") or []
-    if schedule:
-        pdf.add_page("L")
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 8, "24-Hour Schedule")
-        pdf.ln()
-        pdf.set_font("Helvetica", "B", 7)
-        hdrs = ["Hour", "Flow", "Total ₹", "Power ₹", "DRA ₹", "Pumps", "OK"]
-        col_w = [22, 22, 28, 28, 22, 18, 12]
-        for h, w in zip(hdrs, col_w):
-            pdf.cell(w, 6, h, border=1, align="C")
-        pdf.ln()
-        pdf.set_font("Helvetica", "", 7)
-        for row in schedule:
-            vals = [
-                row.get("hour_label", ""),
-                f"{row.get('FLOW', 0):.0f}",
-                f"{row.get('total_cost', 0):,.0f}",
-                f"{row.get('power_cost', 0):,.0f}",
-                f"{row.get('dra_cost', 0):,.0f}",
-                str(row.get("num_pumps", "")),
-                "N" if row.get("error") else "Y",
-            ]
-            fill = row.get("error", False)
-            for v, w in zip(vals, col_w):
-                pdf.cell(w, 5, v, border=1, align="C")
-            pdf.ln()
-
-    # Backtrack notes
-    bt = result.get("backtrack_notes") or []
-    if bt:
+    try:
         pdf.add_page()
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 8, "Backtrack / Audit Log")
+
+        # Cover
+        pdf.set_font("Helvetica", "B", 20)
+        pdf.cell(0, 12, "Pipeline Optimization Report", align="C")
+        pdf.ln()
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 7, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", align="C")
+        pdf.ln()
+        pdf.cell(0, 7, f"Job ID: {job_id}", align="C")
+        pdf.ln()
+        pdf.ln(6)
+
+        # Summary table
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Executive Summary")
         pdf.ln()
         pdf.set_font("Helvetica", "", 9)
-        for note in bt:
-            pdf.multi_cell(0, 6, f"- {note}")
+        op_mode = result.get("op_mode", "flow_rate")
+        rows_kv = [
+            ("Mode", op_mode),
+            ("Total Cost (INR)", f"{float(result.get('total_cost') or 0):,.0f}"),
+            ("Total Throughput (m³)", f"{float(result.get('total_throughput') or 0):,.0f}"),
+            ("Flow (m³/h)", f"{float(result.get('flow') or result.get('hourly_flow') or 0):,.0f}"),
+        ]
+        for k, v in rows_kv:
+            pdf.cell(60, 7, k, border=1)
+            pdf.cell(80, 7, str(v), border=1)
+            pdf.ln()
+        pdf.ln(4)
+
+        # Schedule table (if available)
+        schedule = result.get("mainline_schedule") or []
+        if schedule:
+            pdf.add_page("L")
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.cell(0, 8, "24-Hour Schedule")
+            pdf.ln()
+            pdf.set_font("Helvetica", "B", 7)
+            hdrs = ["Hour", "Flow", "Total ₹", "Power ₹", "DRA ₹", "Pumps", "OK"]
+            col_w = [22, 22, 28, 28, 22, 18, 12]
+            for h, w in zip(hdrs, col_w):
+                pdf.cell(w, 6, h, border=1, align="C")
+            pdf.ln()
+            pdf.set_font("Helvetica", "", 7)
+            for row in schedule:
+                fill = bool(row.get("error", False))
+                if fill:
+                    pdf.set_fill_color(255, 220, 220)
+                vals = [
+                    row.get("hour_label", ""),
+                    f"{float(row.get('FLOW') or 0):.0f}",
+                    f"{float(row.get('total_cost') or 0):,.0f}",
+                    f"{float(row.get('power_cost') or 0):,.0f}",
+                    f"{float(row.get('dra_cost') or 0):,.0f}",
+                    str(row.get("num_pumps", "")),
+                    "N" if row.get("error") else "Y",
+                ]
+                for v, w in zip(vals, col_w):
+                    pdf.cell(w, 5, v, border=1, fill=fill, align="C")
+                pdf.ln()
+                if fill:
+                    pdf.set_fill_color(255, 255, 255)
+
+        # Backtrack notes
+        bt = result.get("backtrack_notes") or []
+        if bt:
+            pdf.add_page()
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.cell(0, 8, "Backtrack / Audit Log")
+            pdf.ln()
+            pdf.set_font("Helvetica", "", 9)
+            for note in bt:
+                pdf.multi_cell(0, 6, f"- {note}")
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}") from exc
 
     buf = io.BytesIO(pdf.output())
     return StreamingResponse(
