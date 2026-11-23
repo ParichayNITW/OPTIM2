@@ -63,7 +63,7 @@ export function BenchmarkingTab({ parsed }: Props) {
     },
     {
       metric: 'Terminal Delivery Head', value: `${parsed.terminalHead.toFixed(1)} m`,
-      note: `Min required: ${(parsed.terminalMinResidual * 10000 / 850).toFixed(1)} m (approx)`,
+      note: `Min required: ${parsed.terminalMinResidual.toFixed(1)} m`,
     },
   ];
 

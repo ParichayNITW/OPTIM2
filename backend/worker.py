@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -64,7 +65,7 @@ def _run_optimization(job_id: str, payload: dict) -> None:
         # Inject aggregate metrics — solver stores per-station flat keys only;
         # the frontend needs totals at the top level for quick display.
         _stn_keys = [
-            s['name'].strip().lower().replace(' ', '_')
+            re.sub(r'\s+', '_', s['name'].strip().lower())
             for s in kwargs.get('stations', [])
         ]
         mainline_result['power_cost'] = sum(
