@@ -30,7 +30,7 @@ export function PumpFleetSummary() {
   if (rows.length === 0) {
     return (
       <div className="p-3 space-y-2">
-        <h3 className="text-sm font-semibold text-gray-700">Pump Fleet Overview</h3>
+        <h3 className="text-sm font-semibold text-gray-700">Pump Overview</h3>
         <p className="text-xs text-gray-400 italic">
           {pumpStations.length} pump station(s) found but no Type A or Type B pumps enabled.
           Configure pump types in the Pipeline tab.
@@ -42,16 +42,15 @@ export function PumpFleetSummary() {
   return (
     <div className="p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-700">Pump Fleet Overview</h3>
+        <h3 className="text-sm font-semibold text-gray-700">Pump Overview</h3>
         <span className="text-xs text-gray-400">{rows.length} pump unit(s) across {pumpStations.length} station(s)</span>
       </div>
-      <p className="text-xs text-gray-400 italic">Read-only. Edit pump curves in the Pipeline tab → Pumps sub-tab.</p>
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs border-collapse">
           <thead>
             <tr className="bg-gray-100 text-gray-600">
-              {['Station', 'Type', 'Avail.', 'Model', 'Min / DOL RPM', 'Shutoff Head (m)', 'BEP Flow (m³/h)', 'BEP Eff (%)', 'Power', 'Tariff'].map(h => (
+              {['Station', 'Type', 'Avail.', 'Name', 'Min / DOL RPM', 'Shutoff Head (m)', 'BEP Flow (m³/h)', 'BEP Eff (%)', 'Power', 'Tariff'].map(h => (
                 <th key={h} className="px-2 py-1.5 text-left font-semibold border-b whitespace-nowrap">{h}</th>
               ))}
             </tr>

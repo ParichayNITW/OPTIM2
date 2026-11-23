@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { GlobalParamsPanel } from '../components/pipeline/GlobalParamsPanel';
 import { StationBuilder } from '../components/pipeline/StationBuilder';
 import { LooplineConfigPanel } from '../components/pipeline/LooplineConfigPanel';
@@ -21,7 +21,26 @@ export function OptimizePage() {
   const [jobStatus, setJobStatus] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const {stations, terminal, exportCase, loadCase} = usePipelineStore();
+  const {stations, terminal, exportCase, loadCase, global: g, setGlobal} = usePipelineStore();
+
+  // Resizable splitter state
+  const [leftWidthPct, setLeftWidthPct] = useState(40);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    const onMove = (ev: MouseEvent) => {
+      if (!draggingRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setLeftWidthPct(Math.min(70, Math.max(25, pct)));
+    };
+    const onUp = () => { draggingRef.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
 
   const handleRun = async () => {
     setError('');
@@ -100,10 +119,16 @@ export function OptimizePage() {
     name: s.name, length_km: s.length_km, elevation: s.elevation, is_pump: s.is_pump,
   }));
 
+  const OP_MODES = [
+    {id: 'flow_rate', label: 'Flow Rate'},
+    {id: 'daily_schedule', label: 'Daily Schedule'},
+    {id: 'pumping_planner', label: 'Pumping Planner'},
+  ] as const;
+
   return (
-    <div className="flex h-[calc(100vh-56px)] overflow-hidden">
+    <div ref={containerRef} className="flex h-[calc(100vh-56px)] overflow-hidden select-none">
       {/* ── LEFT PANEL: inputs ── */}
-      <div className="w-2/5 min-w-[380px] flex flex-col border-r bg-white overflow-hidden">
+      <div className="flex flex-col border-r bg-white overflow-hidden" style={{width: `${leftWidthPct}%`, minWidth: 320}}>
         {/* Toolbar */}
         <div className="flex items-center gap-2 px-3 py-2 border-b bg-gray-50 shrink-0">
           <span className="text-sm font-bold text-gray-800 mr-auto">Pipeline Builder</span>
@@ -119,6 +144,20 @@ export function OptimizePage() {
             className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded px-3 py-1 transition-colors">
             {running ? (jobStatus || 'Running…') : '▶ Run'}
           </button>
+        </div>
+
+        {/* Operating mode selector — always visible */}
+        <div className="flex gap-1 px-3 py-1.5 border-b bg-gray-50 shrink-0">
+          {OP_MODES.map(m => (
+            <button key={m.id} onClick={() => setGlobal({op_mode: m.id})}
+              className={`flex-1 py-1 text-xs rounded transition-colors ${
+                g.op_mode === m.id
+                  ? 'bg-blue-600 text-white font-semibold'
+                  : 'text-gray-600 hover:bg-gray-200'
+              }`}>
+              {m.label}
+            </button>
+          ))}
         </div>
 
         {/* Input tabs */}
@@ -158,6 +197,13 @@ export function OptimizePage() {
           {inputTab === 'operating' && <OperatingModePanel />}
         </div>
       </div>
+
+      {/* ── DRAG HANDLE ── */}
+      <div
+        onMouseDown={onDividerMouseDown}
+        className="w-1 bg-gray-200 hover:bg-blue-400 cursor-col-resize shrink-0 transition-colors"
+        title="Drag to resize"
+      />
 
       {/* ── RIGHT PANEL: map or results ── */}
       <div className="flex-1 overflow-hidden flex flex-col bg-gray-50">

@@ -102,7 +102,10 @@ export function Layout() {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto">
-        <div className="max-w-7xl mx-auto px-6 py-6"><Outlet /></div>
+        {location.pathname === '/optimize'
+          ? <Outlet />
+          : <div className="max-w-7xl mx-auto px-6 py-6"><Outlet /></div>
+        }
       </main>
     </div>
   )

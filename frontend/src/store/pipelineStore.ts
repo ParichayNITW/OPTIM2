@@ -584,7 +584,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       Ambient_temp: g.Ambient_temp,
       mop_kgcm2: g.MOP_kgcm2,          // correct snake_case: backend expects mop_kgcm2
       op_mode: g.op_mode,
-      linefill: linefill_table.map(r => ({volume: r.volume, dra_ppm: r.init_dra ?? 0})),
+      linefill: linefill_table.map(r => ({'Product': r.product, 'Volume (m³)': r.volume, 'Viscosity (cSt)': r.visc, 'Density (kg/m³)': r.density, 'Initial DRA (ppm)': r.init_dra ?? 0})),
       day_plan,
       proj_flow,
       proj_plan,

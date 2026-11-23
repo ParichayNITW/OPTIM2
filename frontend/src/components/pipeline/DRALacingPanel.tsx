@@ -1,10 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { usePipelineStore } from '../../store/pipelineStore';
 import apiClient from '../../api/client';
 
 export function DRALacingPanel() {
   const {global: g, setGlobal, stations, terminal, exportCase} = usePipelineStore();
   const [loading, setLoading] = useState(false);
+
+  // Auto-populate baseline_ppm_table segment names from station/terminal names
+  useEffect(() => {
+    if (g.dra_lacing_mode !== 'manual') return;
+    const segmentNames = stations.map(s => s.name).concat(terminal.name ? [terminal.name] : []);
+    if (segmentNames.length === 0) return;
+    const existing = new Map(g.baseline_ppm_table.map(r => [r.segment, r.ppm]));
+    const synced = segmentNames.map(seg => ({segment: seg, ppm: existing.get(seg) ?? 0}));
+    const changed = synced.length !== g.baseline_ppm_table.length ||
+      synced.some((r, i) => r.segment !== g.baseline_ppm_table[i]?.segment);
+    if (changed) setGlobal({baseline_ppm_table: synced});
+  }, [g.dra_lacing_mode, stations, terminal.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const [result, setResult] = useState<Array<{segment: string; ppm: number; dr_pct: number}>>([]);
   const [error, setError] = useState('');
 
