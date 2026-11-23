@@ -83,7 +83,6 @@ export function GlobalParamsPanel() {
       </div>
 
       <div className="border-t pt-2 mt-1">
-        <h4 className="text-xs font-semibold text-gray-600 mb-1">Fluid Properties (per segment)</h4>
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-xs text-gray-500">Viscosities (cSt), comma-sep</label>
